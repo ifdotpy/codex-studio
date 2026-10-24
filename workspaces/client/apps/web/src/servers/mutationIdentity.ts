@@ -35,6 +35,8 @@ export function createMutationJournal(
     body: unknown,
     explicitRequestId?: string,
   ) {
+    // Session control recovers by reopening the full stream; dead sessions have no durable receipt.
+    if (path === "/api/sync/subscriptions") return null;
     if (explicitRequestId)
       return {
         requestId: explicitRequestId,

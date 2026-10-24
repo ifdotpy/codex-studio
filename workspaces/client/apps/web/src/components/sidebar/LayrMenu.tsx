@@ -44,7 +44,7 @@ export default function LayrMenu({
             vault={chip.vault}
           />
         </Menu.Target>
-        <Menu.Dropdown>{children}</Menu.Dropdown>
+        <Menu.Dropdown className="fleet-menu">{children}</Menu.Dropdown>
       </Menu>
     </div>
   );

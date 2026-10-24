@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ResourceEntityDelivery } from "./resourceEntityDelivery";
 import type { ResourceChangeEvent } from "./resourceEvents";
 
@@ -7,7 +7,7 @@ function frame(
   reason: ResourceChangeEvent["reason"] = "change",
 ) {
   return {
-    protocol: 3,
+    protocol: 4,
     workspaceId: "a".repeat(32),
     epoch: "one",
     revision,
@@ -21,10 +21,11 @@ function frame(
           through: revision,
           documents: [
             {
-              id: "entity:agent:one",
+              op: "upsert",
+              collection: "agent",
+              id: "one",
               seq: revision,
-              payload: "{}",
-              _deleted: false,
+              value: { id: "one" },
             },
           ],
         },
@@ -34,6 +35,7 @@ function frame(
 }
 
 describe("bounded stream entity delivery", () => {
+  beforeEach(() => vi.useFakeTimers());
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -55,7 +57,8 @@ describe("bounded stream entity delivery", () => {
     expect(persist).toHaveBeenCalledTimes(1);
     expect(dispatch).not.toHaveBeenCalled();
     finish();
-    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dispatch).toHaveBeenCalledTimes(2);
     expect(dispatch.mock.calls.map(([event]) => event.revision)).toEqual([
       1, 2,
     ]);
@@ -80,7 +83,7 @@ describe("bounded stream entity delivery", () => {
       expect(current()).toBe(false);
       expect(dispatch).toHaveBeenCalledWith(frame(3, reason));
       finish();
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await vi.advanceTimersByTimeAsync(0);
       expect(persist).toHaveBeenCalledTimes(1);
       expect(dispatch.mock.calls.map(([event]) => event.revision)).toEqual([
         1, 2, 3,
@@ -118,7 +121,7 @@ describe("bounded stream entity delivery", () => {
       Array.from({ length: 10 }, (_, index) => index + 1),
     );
     finish();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.advanceTimersByTimeAsync(0);
     expect(persist).toHaveBeenCalledTimes(1);
   });
 
@@ -146,12 +149,12 @@ describe("bounded stream entity delivery", () => {
     delivery.receive(transcript);
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(transcript);
     finish();
-    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(3));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dispatch).toHaveBeenCalledTimes(3);
     expect(persist.mock.calls.map(([event]) => event.revision)).toEqual([1, 2]);
   });
 
   it("expires a stuck write and keeps its ordinary invalidation", async () => {
-    vi.useFakeTimers();
     vi.spyOn(console, "error").mockImplementation(() => {});
     let current!: () => boolean;
     const persist = vi.fn((_event, isCurrent) => {
@@ -172,13 +175,11 @@ describe("bounded stream entity delivery", () => {
       vi.fn().mockRejectedValue(new Error("storage failed")),
       dispatch,
     ).receive(frame(1));
-    await vi.waitFor(() =>
-      expect(dispatch).toHaveBeenCalledExactlyOnceWith(frame(1)),
-    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(frame(1));
   });
 
   it("does not accumulate unresolved writes after a storage timeout", async () => {
-    vi.useFakeTimers();
     vi.spyOn(console, "error").mockImplementation(() => {});
     let finish!: () => void;
     const persist = vi

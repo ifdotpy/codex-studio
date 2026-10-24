@@ -191,23 +191,19 @@ function main() {
   let run;
   let leaked = [];
   try {
-    run = spawnSync(
-      python,
-      ["-B", "-m", "unittest", "discover", "-s", guest, "-p", "test_*.py"],
-      {
-        cwd: root,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          TMPDIR: temporary,
-          STUDIO_SUPERVISOR_BINARY: supervisor,
-          // The retained guest must not reach a removed backend Python.
-          CODEX_AGENTS_PYTHON: "/nonexistent",
-        },
-        stdio: ["ignore", "inherit", "pipe"],
-        timeout: SUITE_TIMEOUT_MS,
+    run = spawnSync(python, ["-B", path.join(guest, "guest_suite.py")], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        TMPDIR: temporary,
+        STUDIO_SUPERVISOR_BINARY: supervisor,
+        // The retained guest must not reach a removed backend Python.
+        CODEX_AGENTS_PYTHON: "/nonexistent",
       },
-    );
+      stdio: ["ignore", "inherit", "pipe"],
+      timeout: SUITE_TIMEOUT_MS,
+    });
   } finally {
     leaked = stopSuiteProcesses(temporary);
     rmSync(temporary, { recursive: true, force: true });

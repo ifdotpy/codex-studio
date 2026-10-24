@@ -145,7 +145,14 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const ready = async () => page.waitForFunction(() => !!window.setAgent);
-    const settle = () => page.waitForTimeout(120);
+    const settle = () =>
+      page.evaluate(
+        () =>
+          new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          ),
+      );
+    await page.clock.install();
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
@@ -195,7 +202,6 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
       0,
       "Unloaded transcript is unread",
     );
-    console.log("PASS offscreen, hidden, unfocused, unloaded");
     await page.evaluate(() => {
       window.setStreaming(true);
       window.setLoaded(true);
@@ -218,7 +224,6 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     );
     await page.evaluate(() => window.setPhase("final_answer"));
     await page.waitForFunction(() => window.state?.read === true);
-    await settle();
     assert.equal(await page.evaluate(() => window.calls.length), 1);
     assert.equal(await page.evaluate(() => window.calls[0].workspace), "first");
     await page.evaluate(() => {
@@ -238,19 +243,14 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
       true,
       "Unrelated updates preserve callback identities",
     );
-    console.log(
-      "PASS visible result acknowledged once; canonical handoff and callback identities survive old snapshot",
-    );
     await page.evaluate(() => window.markUnread());
     await page.waitForFunction(
       () => window.state?.read === false && window.marking.length === 0,
     );
-    await settle();
     assert.equal(await page.evaluate(() => window.calls.length), 2);
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await settle();
     assert.equal(await page.evaluate(() => window.calls.length), 2);
-    console.log("PASS explicit unread remains unread while open");
     await page.reload();
     await ready();
     assert.equal(await page.evaluate(() => window.state.read), false);
@@ -261,7 +261,6 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
       window.dispatchEvent(new Event("focus"));
     });
     await page.waitForFunction(() => window.state?.read === true);
-    console.log("PASS persisted unread reload and reopen");
     await page.evaluate(() =>
       window.setAgent({
         ...window.agent,
@@ -289,9 +288,6 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
         },
       }),
     );
-    console.log(
-      "PASS another device's Unread survives unchanged visible result",
-    );
     await page.evaluate(() => {
       window.setAgent({ ...window.agent, lastCompletedTurn: "new-turn" });
       window.observe({ id: "one", threadId: "thread", turnId: "turn" });
@@ -314,10 +310,12 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     });
     await settle();
     const refreshes = await page.evaluate(() => window.refreshes);
+    const staleWrite = page.waitForResponse("**/api/test/read-state");
     await page.evaluate(() => {
       window.release();
       window.hold = false;
     });
+    await (await staleWrite).finished();
     await settle();
     assert.equal(
       await page.evaluate(() => window.refreshes),
@@ -329,7 +327,6 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
       "turn",
       "Old workspace response cannot set canonical state",
     );
-    console.log("PASS unseen newer tuple and stale workspace response");
     await page.evaluate(() => {
       window.foreground = false;
       window.setAgent({ ...window.agent, readStateSupported: false });
@@ -340,7 +337,6 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     await page.evaluate(() => window.markUnread());
     await settle();
     assert.equal(await page.evaluate(() => window.calls.length), count);
-    console.log("PASS unsupported server has no local write fallback");
     await page.evaluate(() => {
       window.setAgent({ ...window.agent, readStateSupported: true });
       window.setWorkspace("fourth");
@@ -357,7 +353,6 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
       failed,
       "A rejected acknowledgement cannot loop",
     );
-    console.log("PASS rejected acknowledgement is visible and does not loop");
     await page.evaluate(() => {
       window.foreground = false;
       window.fail = false;
@@ -367,13 +362,14 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     });
     await page.waitForFunction(() => window.marking.length > 0);
     const beforeUnmount = await page.evaluate(() => window.refreshes);
+    const unmountedWrite = page.waitForResponse("**/api/test/read-state");
     await page.evaluate(() => {
       window.unmount();
       window.release();
     });
+    await (await unmountedWrite).finished();
     await settle();
     assert.equal(await page.evaluate(() => window.refreshes), beforeUnmount);
-    console.log("PASS unmount ignores in-flight response");
     await page.evaluate(() => localStorage.clear());
     await page.reload();
     await ready();
@@ -396,16 +392,12 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     await page.waitForFunction(
       () => window.state?.read === false && window.marking.length === 0,
     );
-    await settle();
     assert.equal(await page.evaluate(() => window.calls.length), 2);
     assert.deepEqual(
       await page.evaluate(() =>
         window.calls.map((call) => call.read_state.read),
       ),
       [true, false],
-    );
-    console.log(
-      "PASS explicit unread follows in-flight auto-read exactly once",
     );
     // Earlier history can replace a keyed turn without changing the final message ID.
     await page.evaluate(() => localStorage.clear());
@@ -418,10 +410,9 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     });
     await settle();
     await page.evaluate(() => window.setOffset(0));
-    await page.waitForFunction(() => window.state?.read === true, {
+    await page.waitForFunction(() => window.state?.read === true, undefined, {
       timeout: 2000,
     });
-    console.log("PASS replaced turn still acknowledges its visible result");
 
     await page.evaluate(() => localStorage.clear());
     await page.reload();
@@ -441,9 +432,6 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     );
     await page.evaluate(() => window.setLatestPage(true));
     await page.waitForFunction(() => window.state?.read === true);
-    console.log(
-      "PASS completed turn without a final answer, only on latest page",
-    );
 
     await page.evaluate(() => localStorage.clear());
     await page.reload();
@@ -530,9 +518,6 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
       ["silent-b"],
       "a visible tool-only latest turn is acknowledged through joined historical membership",
     );
-    console.log(
-      "PASS visible silent latest turn in merged history acknowledges read state",
-    );
 
     await page.evaluate(() => localStorage.clear());
     await page.reload();
@@ -555,9 +540,10 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
       window.foreground = true;
       window.setOffset(0);
     });
+    await page.waitForFunction(() => !window.transientFailure);
+    await page.clock.fastForward(1000);
     await page.waitForFunction(() => window.state?.read === true);
     assert.equal(await page.evaluate(() => window.calls.length), 1);
-    console.log("PASS transient read failure recovers without changing chats");
 
     await page.evaluate(() => localStorage.clear());
     await page.reload();
@@ -569,7 +555,6 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
       window.setOffset(0);
     });
     await page.waitForFunction(() => window.state?.read === true);
-    console.log("PASS empty final uses the visible completed turn");
 
     await page.evaluate(() => localStorage.clear());
     await page.reload();
@@ -587,7 +572,6 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
       document.querySelector("[data-turn]").dataset.outcome = "completed";
     });
     await page.waitForFunction(() => window.state?.read === true);
-    console.log("PASS delayed terminal attribute attaches the observer");
 
     await page.evaluate(() => localStorage.clear());
     await page.reload();
@@ -595,6 +579,7 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     await page.evaluate(() => {
       const fetch = window.fetch;
       window.lostWrites = [];
+      window.lostReplies = 0;
       window.releaseLost = null;
       window.fetch = async (input, options) => {
         const request =
@@ -608,11 +593,22 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
         if (window.lostWrites.length === 1) await fetch(input, options);
         if (window.lostWrites.length === 3)
           await new Promise((resolve) => (window.releaseLost = resolve));
+        window.lostReplies++;
         throw new TypeError("Response lost");
       };
       window.foreground = true;
       window.setOffset(0);
     });
+    for (const [replies, backoff] of [
+      [1, 1000],
+      [2, 2000],
+    ]) {
+      await page.waitForFunction(
+        (count) => window.lostReplies === count,
+        replies,
+      );
+      await page.clock.fastForward(backoff);
+    }
     await page.waitForFunction(() => !!window.releaseLost);
     await page.evaluate(() => {
       void window.markUnread();
@@ -631,9 +627,6 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     assert.deepEqual(
       await page.evaluate(() => window.calls.map((v) => v.read_state.read)),
       [true, false],
-    );
-    console.log(
-      "PASS lost success reconciles before explicit Unread; retries preserve revision",
     );
     assert.deepEqual(errors, []);
   } finally {

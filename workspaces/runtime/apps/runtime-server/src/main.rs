@@ -1,11 +1,11 @@
 #[cfg(unix)]
-mod account_registry;
+use studio_runtime_server::account_registry;
 #[cfg(unix)]
 mod claude_login;
 #[cfg(unix)]
 mod history_runtime;
 #[cfg(unix)]
-mod host_runtime;
+use studio_runtime_server::host_runtime;
 #[cfg(unix)]
 mod io_runtime;
 mod monitor_port;
@@ -15,7 +15,7 @@ mod native_probe;
 mod operator_cli;
 #[cfg(unix)]
 mod peer_link;
-mod provider_ports;
+use studio_runtime_server::provider_ports;
 #[cfg(unix)]
 mod runtime_shutdown;
 mod web_assets;
@@ -365,6 +365,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         std::process::exit(if ok { 0 } else { 1 });
     }
     let port = parse_port(args.into_iter())?;
+    studio_runtime_schema::initialize()?;
     startup_trace("backend-identity-started");
     let backend_build = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-server/backend-identity",
@@ -1009,6 +1010,20 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Arc::clone(&registry_wake),
         monitor_shutdown.subscribe(),
     ));
+    #[cfg(unix)]
+    let idle_compaction_task = runtime.preparation_resources().map(|resources| {
+        let host = Arc::new(studio_runtime_http::routes::IdleCompactionHost {
+            state: state.clone(),
+            resources,
+            repair: Arc::new(NativeContextRepairAdapter),
+        });
+        tokio::spawn(studio_runtime_services::idle_compaction::run(
+            Arc::clone(&store),
+            Arc::clone(&account_session),
+            host,
+            monitor_shutdown.subscribe(),
+        ))
+    });
     let continuation_task = tokio::spawn(continuation_scheduler(
         Arc::clone(&store),
         continuation_scheduler_wake,
@@ -1290,6 +1305,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     history_cleanup.map_err(std::io::Error::other)??;
     shutdown_join("federation delivery task", federation_task).await??;
     shutdown_join("continuation scheduler task", continuation_task).await??;
+    #[cfg(unix)]
+    if let Some(task) = idle_compaction_task {
+        shutdown_join("idle compaction scheduler task", task).await??;
+    }
+
     shutdown_join("held turn release task", auth_release_task).await??;
     for task in browser_card_tasks {
         shutdown_join("browser card poll", task).await??;
@@ -1550,21 +1570,10 @@ async fn run_continuation_tick(
             let observation = if let Some(mut value) = fresh {
                 // A notification can commit between the read and this transaction.
                 // Prefer that newer snapshot, including a new rejection.
-                let raw: Option<String> = tx
-                    .query_row(
-                        "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if let Some(raw) = raw
-                    && let Ok(entity) = serde_json::from_str::<serde_json::Value>(&raw)
-                    && let Some(current) = entity
-                        .pointer("/value/rateLimitsByAccount")
-                        .and_then(|by_account| by_account.get(&account))
+                if let Some(current) = account_state::latest_limits_snapshot(tx, &account)?
                     && current["at"].as_f64().unwrap_or(0.0) >= value["at"].as_f64().unwrap_or(0.0)
                 {
-                    value = current.clone();
+                    value = current;
                 }
                 studio_runtime_services::usage_resume::LimitsObservation::from_record(value, None)
                     .ok()
@@ -2093,7 +2102,7 @@ mod exit_logging_tests {
                 }
                 if let Some(store) = &self.newer_rejection {
                     store.transaction_with(|tx| {
-                        studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"workspace","current",serde_json::json!({"rateLimitsByAccount":{"default":{"accountKey":"default","at":1001.0,"data":{"rateLimits":{"primary":{"usedPercent":100.0,"resetsAt":2000.0}}}}}}),false)
+                        studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"rateLimit","default",serde_json::json!({"accountKey":"default","at":1001.0,"data":{"rateLimits":{"primary":{"usedPercent":100.0,"resetsAt":2000.0}}}}),false)
                     }).await.expect("rate-limit fixture writes");
                 }
                 Ok(
@@ -2120,7 +2129,7 @@ mod exit_logging_tests {
                     tx.execute("INSERT INTO runtime_usage_resumes(id,agent,record) VALUES (?1,?1,?2)",[id,&resume.to_string()])?;
                 }
                 // A recent cache entry cannot replace the provider read at the due time.
-                studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"workspace","current",serde_json::json!({"rateLimitsByAccount":{"default":{"accountKey":"default","at":999.0,"data":{"rateLimits":{"primary":{"usedPercent":0.0}}}}}}),false)?;
+                studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"rateLimit","default",serde_json::json!({"accountKey":"default","at":999.0,"data":{"rateLimits":{"primary":{"usedPercent":0.0}}}}),false)?;
                 Ok::<_,studio_runtime_store::StoreError>(())
             }).await.expect("usage resume fixture writes");
             let port = TickLimits {

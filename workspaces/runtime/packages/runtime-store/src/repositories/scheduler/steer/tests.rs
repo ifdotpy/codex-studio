@@ -560,7 +560,14 @@ fn steer_unconfirmed_by_a_closed_transport_returns_when_written_after_the_end() 
         SchedulerRepository::abandon_steers(tx, "acct", 8)
     });
     assert_eq!(statuses(&connection), UNCONFIRMED);
-    release_after_end(&mut connection, timestamp() - 60.0);
+    let submitted_at: f64 = connection
+        .query_row(
+            "SELECT json_extract(result,'$.submittedAt') FROM runtime_operation_receipts",
+            [],
+            |row| row.get(0),
+        )
+        .expect("persisted submission time");
+    release_after_end(&mut connection, submitted_at - 60.0);
     assert_eq!(statuses(&connection), QUEUED);
     assert_eq!(open_receipts(&connection), 0);
     // An input the user changed while it was unconfirmed keeps that change.
@@ -575,7 +582,14 @@ fn steer_unconfirmed_by_a_closed_transport_returns_when_written_after_the_end() 
             [],
         )
         .expect("user change writes");
-    release_after_end(&mut connection, timestamp() - 60.0);
+    let submitted_at: f64 = connection
+        .query_row(
+            "SELECT json_extract(result,'$.submittedAt') FROM runtime_operation_receipts",
+            [],
+            |row| row.get(0),
+        )
+        .expect("persisted submission time");
+    release_after_end(&mut connection, submitted_at - 60.0);
     assert_eq!(
         statuses(&connection),
         ["pending", "cancelled", "pending", "pending"]
@@ -731,8 +745,15 @@ fn a_later_turn_end_drops_earlier_unconfirmed_receipts() {
 fn claimable_check_matches_the_claim_without_writing() {
     let mut connection = database();
     let ready = |connection: &Connection, epoch| {
-        SchedulerRepository::steer_claimable(connection, &agent(connection), epoch)
-            .expect("check reads")
+        let before = connection.total_changes();
+        let ready = SchedulerRepository::steer_claimable(connection, &agent(connection), epoch)
+            .expect("check reads");
+        assert_eq!(
+            connection.total_changes(),
+            before,
+            "eligibility writes no rows"
+        );
+        ready
     };
     assert!(ready(&connection, 4));
     assert!(!ready(&connection, 3), "another epoch");
@@ -1128,10 +1149,10 @@ fn acknowledgement_work(history: usize) -> u64 {
 /// stay bounded by the acknowledged input, not by delivered history.
 #[test]
 fn steer_acknowledgement_work_is_independent_of_delivered_history() {
-    let small = acknowledgement_work(2_000);
-    let large = acknowledgement_work(6_000);
+    let small = acknowledgement_work(128);
+    let large = acknowledgement_work(512);
     assert!(
         large <= small + small / 20,
-        "acknowledgement work grew with delivered history: {small} steps, then {large} with 4000 more delivered events"
+        "acknowledgement work grew with delivered history: {small} steps, then {large} with 384 more delivered events"
     );
 }

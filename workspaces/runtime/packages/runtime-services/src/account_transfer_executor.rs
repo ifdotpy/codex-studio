@@ -767,6 +767,16 @@ impl TransferExecutor for AccountTransferExecutor {
             let mut copied_history_path = None;
             let source_thread = member["sourceThreadId"].as_str();
             if let Some(thread_id) = source_thread {
+                // No other agent may use the source account any more, so its
+                // worker can be stopped. Start it before the source reads.
+                if self.session.current_scope(source_account).is_none() {
+                    self.session.ensure_session(source_account).await.map_err(
+                        |error| match error {
+                            AccountSessionError::Requires(name) => TransferError::Requires(name),
+                            _ => TransferError::Refused("The source account session did not start"),
+                        },
+                    )?;
+                }
                 let source_context = ProviderReadContext {
                     store: self.store.as_ref(),
                     session: &*self.session,
@@ -1175,7 +1185,13 @@ pub async fn before_start(
     agent_id: &str,
     now: f64,
 ) -> Result<Value, TransferError> {
-    let agent = transfer_member(&store, agent_id).await?;
+    let mut agent = transfer_member(&store, agent_id).await?;
+    if studio_runtime_store::truthy(agent.get("accountTransferId"))
+        && !studio_runtime_store::truthy(agent.get("lazyAccountTransfer"))
+        && driver::release_waiting(&store, agent_id, now).await?
+    {
+        agent = transfer_member(&store, agent_id).await?;
+    }
     let lazy = agent
         .get("lazyAccountTransfer")
         .filter(|value| !value.is_null());
@@ -1183,6 +1199,16 @@ pub async fn before_start(
         let operation = lazy["id"]
             .as_str()
             .ok_or(TransferError::Refused("Invalid lazy transfer identity"))?;
+        let owner = operation.to_owned();
+        let member = agent_id.to_owned();
+        let reading = store
+            .transaction_with_error(move |tx| driver::owns_reading_member(tx, &owner, &member))
+            .await?;
+        if reading {
+            // The executor already owns this read. Ordinary preparation keeps
+            // its snapshot's AccountTransfer hold and cannot repeat the move.
+            return Ok(agent);
+        }
         let session = session.ok_or(TransferError::Requires("provider-session/account-worker"))?;
         let executor = AccountTransferExecutor {
             store: Arc::clone(&store),
@@ -1450,6 +1476,8 @@ mod retained_executor_tests {
         requests: Mutex<Vec<String>>,
         queue_has_input: bool,
         native_path: Option<String>,
+        /// An account with no live session until `ensure_session` starts it.
+        dormant: Mutex<Option<String>>,
     }
 
     impl GuardSession {
@@ -1485,8 +1513,32 @@ mod retained_executor_tests {
     }
 
     impl AccountSessionPort for GuardSession {
+        fn ensure_session<'a>(
+            &'a self,
+            account: &'a str,
+        ) -> crate::account_session_runtime::AccountSessionFuture<'a, ConnectionScope> {
+            self.requests
+                .lock()
+                .expect("test fixture operation succeeds")
+                .push(format!("ensure:{account}"));
+            let mut dormant = self
+                .dormant
+                .lock()
+                .expect("test fixture operation succeeds");
+            if dormant.as_deref() == Some(account) {
+                *dormant = None;
+            }
+            Box::pin(async move { Ok(Self::scope(account)) })
+        }
+
         fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
-            Some(Self::scope(account))
+            (self
+                .dormant
+                .lock()
+                .expect("test fixture operation succeeds")
+                .as_deref()
+                != Some(account))
+            .then(|| Self::scope(account))
         }
 
         fn provider_request<'a>(
@@ -1675,6 +1727,101 @@ mod retained_executor_tests {
         assert_eq!(stored_lead(&store)["accountTransfer"]["id"], transfer_id);
     }
 
+    /// The source account of a moving chat often has no live worker: no other
+    /// agent uses it. The source reads start its session first.
+    #[tokio::test]
+    async fn source_reads_start_a_dormant_source_session() {
+        let root = tempfile::tempdir().expect("test fixture operation succeeds");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("test fixture operation succeeds"),
+        );
+        let lead = AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
+            "status":"idle","isLead":true,"accountKey":"source","provider":"codex",
+            "model":"gpt-6-astra","cwd":"/tmp/work","threadId":"source-thread"}))
+        .expect("test fixture operation succeeds");
+        store
+            .transaction_with_error(move |tx| {
+                AgentRepository::put(tx, &lead)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("test fixture operation succeeds");
+        let transfer_id = "5a300f72-4ea6-4d30-8a0e-9b2c13c4a201";
+        crate::account_transfer_driver::request(
+            &store,
+            transfer_id,
+            "lead",
+            "target",
+            "team",
+            "codex",
+            1.0,
+        )
+        .await
+        .expect("test fixture operation succeeds");
+        let session = Arc::new(GuardSession {
+            store: store.clone(),
+            transfer_id: transfer_id.into(),
+            requests: Mutex::new(Vec::new()),
+            queue_has_input: true,
+            native_path: None,
+            dormant: Mutex::new(Some("source".into())),
+        });
+        let catalog = ModelCatalogService::new();
+        catalog.retain_accounts(&[
+            json!({"id":"source","home":"/tmp/source","provider":"codex"}),
+            json!({"id":"target","home":"/tmp/target","provider":"codex"}),
+        ]);
+        let resources = crate::account_worker::preparation::PreparationResources {
+            instructions: String::new(),
+            thread_config: Default::default(),
+            tools: vec![],
+            legacy_tools: vec![],
+            skills_root: PathBuf::from("/tmp/skills"),
+            role_guidance: Default::default(),
+            model_catalog: catalog.clone(),
+            account_home: "/tmp/target".into(),
+            shared_home: String::new(),
+            filesystem_inputs: None,
+            claude_account_pin: serde_json::Value::Null,
+            account_driver: None,
+            account_session: Some(session.clone()),
+            guest_rpc: None,
+            vm_provider_launch: None,
+        };
+
+        let result = before_start(
+            Arc::clone(&store),
+            Some(session.clone()),
+            &catalog,
+            &resources,
+            "lead",
+            2.0,
+        )
+        .await;
+
+        // The queued source input refuses the move only after the source reads ran.
+        assert!(matches!(
+            result,
+            Err(TransferError::Refused(
+                "Source native thread has queued input; saved input remains queued"
+            ))
+        ));
+        assert_eq!(
+            *session
+                .requests
+                .lock()
+                .expect("test fixture operation succeeds"),
+            [
+                "model/list",
+                "ensure:source",
+                "thread/read",
+                "thread/queue/list"
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn before_start_executor_checks_and_durably_authorizes_source_queue() {
         let root = tempfile::tempdir().expect("test fixture operation succeeds");
@@ -1712,6 +1859,7 @@ mod retained_executor_tests {
             requests: Mutex::new(Vec::new()),
             queue_has_input: true,
             native_path: None,
+            dormant: Mutex::new(None),
         });
         let catalog = ModelCatalogService::new();
         catalog.retain_accounts(&[
@@ -1855,6 +2003,7 @@ mod retained_executor_tests {
             requests: Mutex::new(Vec::new()),
             queue_has_input: false,
             native_path: Some(native_path.to_string_lossy().into_owned()),
+            dormant: Mutex::new(None),
         });
         let resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
@@ -2056,6 +2205,7 @@ mod retained_executor_tests {
             requests: Mutex::new(Vec::new()),
             queue_has_input: false,
             native_path: Some(native_path.to_string_lossy().into_owned()),
+            dormant: Mutex::new(None),
         });
         let recovered_resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),

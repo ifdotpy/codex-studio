@@ -8,9 +8,9 @@ import {
   ephemeralSessionOptions,
 } from "./session-store.mjs";
 
-const faultSessionId = "11111111-1111-4111-8111-111111111111";
-const makeFaultSession = () => ({
-  id: faultSessionId,
+const sessionId = "11111111-1111-4111-8111-111111111111";
+const makeSession = () => ({
+  id: sessionId,
   cwd: "/tmp/work",
   turns: [
     {
@@ -31,44 +31,21 @@ const withTemporaryRoot = async (run) => {
   }
 };
 
-test("session store persists, restores and coordinates cached writes", async () => {
-  const id = "11111111-1111-4111-8111-111111111111";
-  const makeSession = () => ({
-    id,
-    cwd: "/tmp/work",
-    turns: [
-      {
-        id: "turn-1",
-        status: "completed",
-        items: [{ id: "user-1", content: [{ type: "text", text: "hello" }] }],
-      },
-    ],
-  });
-  const temporary = async (run) => {
-    const root = await fs.mkdtemp(
-      path.join(os.tmpdir(), "claude-session-store-"),
-    );
-    try {
-      await run(root);
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  };
-
-  await temporary(async (root) => {
+test("session history and metadata restore after cache eviction", async () =>
+  withTemporaryRoot(async (root) => {
     const store = createSessionStore(root);
     const original = makeSession();
-    store.sessions.set(id, original);
+    store.sessions.set(sessionId, original);
     await store.persist(original);
     original.turns[0].items.push({ id: "answer-1", text: "saved" });
     await store.persist(original);
-    await store.evict(id);
+    await store.evict(sessionId);
     assert.equal(
-      store.sessions.has(id),
+      store.sessions.has(sessionId),
       false,
       "settled idle session leaves the cache",
     );
-    const restored = await store.get(id);
+    const restored = await store.get(sessionId);
     assert.deepEqual(
       restored,
       original,
@@ -79,8 +56,8 @@ test("session store persists, restores and coordinates cached writes", async () 
       0,
       "settled write promise is removed",
     );
-    const firstMetadata = await store.metadata(id);
-    assert.equal(firstMetadata.id, id);
+    const firstMetadata = await store.metadata(sessionId);
+    assert.equal(firstMetadata.id, sessionId);
     assert.equal(typeof firstMetadata.revision, "string");
     assert.equal(
       "turns" in firstMetadata,
@@ -91,37 +68,39 @@ test("session store persists, restores and coordinates cached writes", async () 
       data: [firstMetadata],
       nextCursor: null,
     });
-  });
+  }));
 
-  await temporary(async (root) => {
+test("metadata revision changes only when persisted history changes", async () =>
+  withTemporaryRoot(async (root) => {
     const store = createSessionStore(root);
     const original = makeSession();
-    store.sessions.set(id, original);
+    store.sessions.set(sessionId, original);
     await store.persist(original);
-    const before = await store.metadata(id);
+    const before = await store.metadata(sessionId);
     original.turns[0].items.push({ id: "changed", text: "history changed" });
     await store.persist(original);
-    const after = await store.metadata(id);
+    const after = await store.metadata(sessionId);
     assert.notEqual(
       after.revision,
       before.revision,
       "persist updates the stored history revision",
     );
     assert.equal(
-      (await store.metadata(id)).revision,
+      (await store.metadata(sessionId)).revision,
       after.revision,
       "metadata reads reuse the stored revision without serializing turns",
     );
-  });
+  }));
 
-  await temporary(async (root) => {
+test("held session identity survives concurrent load and persist", async () =>
+  withTemporaryRoot(async (root) => {
     const store = createSessionStore(root);
     const original = makeSession();
-    store.sessions.set(id, original);
+    store.sessions.set(sessionId, original);
     await store.persist(original);
-    const heldByHandler = await store.get(id);
-    await store.evict(id);
-    const loading = store.get(id);
+    const heldByHandler = await store.get(sessionId);
+    await store.evict(sessionId);
+    const loading = store.get(sessionId);
     heldByHandler.turns[0].items.push({
       id: "during-load",
       text: "written by the held object",
@@ -145,7 +124,7 @@ test("session store persists, restores and coordinates cached writes", async () 
       "incremental cache bytes track the live session and shadow",
     );
     assert.deepEqual(
-      (await createSessionStore(root).readAll(id)).session,
+      (await createSessionStore(root).readAll(sessionId)).session,
       heldByHandler,
       "persist does not journal a stale copy over concurrent state",
     );
@@ -154,9 +133,10 @@ test("session store persists, restores and coordinates cached writes", async () 
       /not the cached identity/,
       "a different object with the same session id cannot replace a live cached object",
     );
-  });
+  }));
 
-  await temporary(async (root) => {
+test("journal appends compact and recover torn records", async () =>
+  withTemporaryRoot(async (root) => {
     const store = createSessionStore(root, {
       compactRecords: 3,
       compactBytes: 1024 * 1024,
@@ -166,10 +146,10 @@ test("session store persists, restores and coordinates cached writes", async () 
       id: "prior-history",
       result: { content: "h".repeat(4096) },
     });
-    store.sessions.set(id, original);
+    store.sessions.set(sessionId, original);
     await store.persist(original);
-    const snapshotPath = path.join(root, "sessions", id + ".json");
-    const journalPath = path.join(root, "sessions", id + ".jsonl");
+    const snapshotPath = path.join(root, "sessions", sessionId + ".json");
+    const journalPath = path.join(root, "sessions", sessionId + ".jsonl");
     const firstSnapshot = await fs.readFile(snapshotPath, "utf8");
     original.turns[0].items.push({ id: "frame-1", text: "small update" });
     await store.persist(original);
@@ -205,14 +185,14 @@ test("session store persists, restores and coordinates cached writes", async () 
     // Model a crash after snapshot rename and before journal truncation.
     await fs.writeFile(journalPath, journalBeforeCompaction);
     await fs.appendFile(journalPath, '{"sequence":4');
-    const recovered = await createSessionStore(root).get(id);
+    const recovered = await createSessionStore(root).get(sessionId);
     assert.deepEqual(
       recovered,
       original,
       "snapshot sequence skips already-compacted records and ignores a torn tail",
     );
     const resumedStore = createSessionStore(root);
-    const resumed = await resumedStore.get(id);
+    const resumed = await resumedStore.get(sessionId);
     resumed.turns[0].items.push({
       id: "after-recovery",
       text: "append remains valid",
@@ -220,32 +200,36 @@ test("session store persists, restores and coordinates cached writes", async () 
     await resumedStore.persist(resumed);
     assert.deepEqual(
       await createSessionStore(root)
-        .readAll(id)
+        .readAll(sessionId)
         .then((value) => value.session),
       resumed,
     );
-  });
+    await resumedStore.evict(sessionId);
+    assert.equal(resumedStore.stats().retainedBytes, 0);
+  }));
 
-  await temporary(async (root) => {
+test("legacy plain JSON session files remain readable", async () =>
+  withTemporaryRoot(async (root) => {
     const old = makeSession();
     await fs.mkdir(path.join(root, "sessions"), { recursive: true });
     await fs.writeFile(
-      path.join(root, "sessions", id + ".json"),
+      path.join(root, "sessions", sessionId + ".json"),
       JSON.stringify(old),
     );
-    const loaded = await createSessionStore(root).get(id);
+    const loaded = await createSessionStore(root).get(sessionId);
     assert.deepEqual(
       loaded,
       old,
       "legacy plain JSON session files remain readable",
     );
-  });
+  }));
 
-  await temporary(async (root) => {
+test("cache byte limit evicts an oversized idle session", async () =>
+  withTemporaryRoot(async (root) => {
     const store = createSessionStore(root, { maxCacheBytes: 1 });
     const large = makeSession();
     large.turns[0].items.push({ id: "payload", text: "p".repeat(1024) });
-    store.sessions.set(id, large);
+    store.sessions.set(sessionId, large);
     await store.persist(large);
     assert.equal(
       store.sessions.size,
@@ -253,83 +237,10 @@ test("session store persists, restores and coordinates cached writes", async () 
       "cache byte limit evicts an oversized idle entry",
     );
     assert.equal(store.stats().retainedBytes, 0);
-  });
+  }));
 
-  // Report append cost, CPU time, and resident memory for both review sizes.
-  await temporary(async (root) => {
-    for (const scenario of [
-      { name: "263KB", historyBytes: 256 * 1024, frames: 20 },
-      { name: "5MB", historyBytes: 5 * 1024 * 1024, frames: 200 },
-    ]) {
-      global.gc?.();
-      const rssBefore = process.memoryUsage().rss;
-      const scenarioRoot = path.join(root, scenario.name);
-      const store = createSessionStore(scenarioRoot, {
-        compactRecords: 10000,
-        compactBytes: 64 * 1024 * 1024,
-      });
-      let large = makeSession();
-      large.turns[0].items.push({
-        id: "history",
-        type: "toolResult",
-        result: { content: "h".repeat(scenario.historyBytes) },
-      });
-      store.sessions.set(id, large);
-      await store.persist(large);
-      const initialSessionBytes = Buffer.byteLength(JSON.stringify(large));
-      const journal = path.join(scenarioRoot, "sessions", id + ".jsonl");
-      let appendedBytes = 0,
-        legacyBytes = 0,
-        frameCpuMs = 0,
-        frameWallMs = 0;
-      let peakRss = process.memoryUsage().rss;
-      for (let frame = 0; frame < scenario.frames; frame++) {
-        large.turns[0].items.push({
-          id: `frame-${frame}`,
-          type: "agentMessage",
-          text: `frame ${frame}`,
-        });
-        const before = frame === 0 ? 0 : (await fs.stat(journal)).size;
-        const cpuStart = process.cpuUsage();
-        const started = performance.now();
-        await store.persist(large);
-        const cpuDelta = process.cpuUsage(cpuStart);
-        frameCpuMs += (cpuDelta.user + cpuDelta.system) / 1000;
-        frameWallMs += performance.now() - started;
-        const after = (await fs.stat(journal)).size;
-        appendedBytes += after - before;
-        legacyBytes += Buffer.byteLength(JSON.stringify(large));
-        peakRss = Math.max(peakRss, process.memoryUsage().rss);
-      }
-      const rssBeforeEviction = process.memoryUsage().rss;
-      const retainedCacheBeforeEviction = store.stats().retainedBytes;
-      await store.evict(id);
-      large = null;
-      global.gc?.();
-      const rssAfterEviction = process.memoryUsage().rss;
-      assert.equal(store.stats().retainedBytes, 0);
-      console.log(
-        JSON.stringify({
-          syntheticHistoryBytes: scenario.historyBytes,
-          initialSessionJsonBytes: initialSessionBytes,
-          frames: scenario.frames,
-          appendBytes: appendedBytes,
-          appendBytesPerFrame: Math.round(appendedBytes / scenario.frames),
-          legacyRewriteBytes: legacyBytes,
-          cpuMsPerFrame: Number((frameCpuMs / scenario.frames).toFixed(3)),
-          wallMsPerFrame: Number((frameWallMs / scenario.frames).toFixed(3)),
-          rssBeforeSession: rssBefore,
-          rssPeak: peakRss,
-          rssBeforeEviction,
-          rssAfterEviction,
-          retainedCacheBytesBeforeEviction: retainedCacheBeforeEviction,
-          retainedCacheBytesAfterEviction: store.stats().retainedBytes,
-        }),
-      );
-    }
-  });
-
-  await temporary(async (root) => {
+test("mutation during a save survives the following persist", async () =>
+  withTemporaryRoot(async (root) => {
     const store = createSessionStore(root, { compactRecords: 1000 });
     const session = makeSession();
     await store.persist(session);
@@ -360,11 +271,10 @@ test("session store persists, restores and coordinates cached writes", async () 
     session.turns[1].status = "failed";
     session.turns[1].error.message = "not submitted";
     await store.persist(session);
-    const restored = await createSessionStore(root).get(id);
+    const restored = await createSessionStore(root).get(sessionId);
     assert.equal(restored.turns[1].error.message, "not submitted");
     assert.equal(restored.turns[1].status, "failed");
-  });
-});
+  }));
 
 test("ephemeral title session stays live without writing durable session files", async () => {
   const id = "22222222-2222-4222-8222-222222222222";
@@ -408,11 +318,11 @@ test("ephemeral Claude title query matches Python's persistence and tool flags",
 test("metadata write failure retries without a new journal change", async () =>
   withTemporaryRoot(async (root) => {
     const store = createSessionStore(root, { compactRecords: 1000 });
-    const session = makeFaultSession();
+    const session = makeSession();
     session.preview = "old preview";
     session.updatedAt = 1;
     await store.persist(session);
-    const before = await store.metadata(faultSessionId);
+    const before = await store.metadata(sessionId);
     session.preview = "new preview";
     session.updatedAt = 2;
 
@@ -431,7 +341,7 @@ test("metadata write failure retries without a new journal change", async () =>
     }
 
     await store.persist(session);
-    const saved = await createSessionStore(root).metadata(faultSessionId);
+    const saved = await createSessionStore(root).metadata(sessionId);
     assert.equal(saved.preview, "new preview");
     assert.notEqual(saved.revision, before.revision);
   }));
@@ -439,9 +349,9 @@ test("metadata write failure retries without a new journal change", async () =>
 test("partial append failure preserves the next queued write", async () =>
   withTemporaryRoot(async (root) => {
     const store = createSessionStore(root, { compactRecords: 1000 });
-    const session = makeFaultSession();
+    const session = makeSession();
     await store.persist(session);
-    const journal = path.join(root, "sessions", faultSessionId + ".jsonl");
+    const journal = path.join(root, "sessions", sessionId + ".jsonl");
     const originalAppend = fs.appendFile;
     let failFirstAppend = true;
     let enterAppend, releaseAppend;
@@ -476,7 +386,7 @@ test("partial append failure preserves the next queued write", async () =>
       fs.appendFile = originalAppend;
     }
     assert.deepEqual(
-      (await createSessionStore(root).readAll(faultSessionId)).session,
+      (await createSessionStore(root).readAll(sessionId)).session,
       session,
     );
   }));
@@ -484,10 +394,10 @@ test("partial append failure preserves the next queued write", async () =>
 test("failed append rollback repairs journal before a no-op persist", async () =>
   withTemporaryRoot(async (root) => {
     const store = createSessionStore(root, { compactRecords: 1000 });
-    const session = makeFaultSession();
+    const session = makeSession();
     await store.persist(session);
     const originalSession = structuredClone(session);
-    const journal = path.join(root, "sessions", faultSessionId + ".jsonl");
+    const journal = path.join(root, "sessions", sessionId + ".jsonl");
     const originalAppend = fs.appendFile;
     const originalTruncate = fs.truncate;
     session.turns[0].items.push({ id: "rolled-back", text: "remove me" });
@@ -519,7 +429,7 @@ test("failed append rollback repairs journal before a no-op persist", async () =
     await store.persist(session);
     assert.equal((await fs.stat(journal)).size, 0);
     assert.deepEqual(
-      (await createSessionStore(root).readAll(faultSessionId)).session,
+      (await createSessionStore(root).readAll(sessionId)).session,
       originalSession,
     );
   }));
@@ -527,25 +437,25 @@ test("failed append rollback repairs journal before a no-op persist", async () =
 test("restart truncates a torn tail after a Unicode journal record", async () =>
   withTemporaryRoot(async (root) => {
     const store = createSessionStore(root, { compactRecords: 1000 });
-    const session = makeFaultSession();
+    const session = makeSession();
     await store.persist(session);
     session.turns[0].items.push({
       id: "unicode-record",
       text: "Привет 🌍",
     });
     await store.persist(session);
-    const journal = path.join(root, "sessions", faultSessionId + ".jsonl");
+    const journal = path.join(root, "sessions", sessionId + ".jsonl");
     const completeBytes = (await fs.stat(journal)).size;
     await fs.appendFile(journal, '{"sequence":2');
 
     const restarted = createSessionStore(root);
-    const recovered = await restarted.get(faultSessionId);
+    const recovered = await restarted.get(sessionId);
     assert.deepEqual(recovered, session);
     assert.equal((await fs.stat(journal)).size, completeBytes);
     recovered.turns[0].items.push({ id: "after-restart", text: "still valid" });
     await restarted.persist(recovered);
     assert.deepEqual(
-      (await createSessionStore(root).readAll(faultSessionId)).session,
+      (await createSessionStore(root).readAll(sessionId)).session,
       recovered,
     );
   }));
@@ -553,9 +463,9 @@ test("restart truncates a torn tail after a Unicode journal record", async () =>
 test("full append that reports failure rolls back before retry", async () =>
   withTemporaryRoot(async (root) => {
     const store = createSessionStore(root, { compactRecords: 1000 });
-    const session = makeFaultSession();
+    const session = makeSession();
     await store.persist(session);
-    const journal = path.join(root, "sessions", faultSessionId + ".jsonl");
+    const journal = path.join(root, "sessions", sessionId + ".jsonl");
     const originalAppend = fs.appendFile;
     session.turns[0].items.push({ id: "full-write", text: "retry me" });
     fs.appendFile = async (file, data, ...options) => {
@@ -575,7 +485,7 @@ test("full append that reports failure rolls back before retry", async () =>
     assert.equal((await fs.stat(journal)).size, 0);
     await store.persist(session);
     assert.deepEqual(
-      (await createSessionStore(root).readAll(faultSessionId)).session,
+      (await createSessionStore(root).readAll(sessionId)).session,
       session,
     );
   }));
@@ -583,9 +493,9 @@ test("full append that reports failure rolls back before retry", async () =>
 test("snapshot publish failure keeps journal replayable", async () =>
   withTemporaryRoot(async (root) => {
     const store = createSessionStore(root, { compactRecords: 1 });
-    const session = makeFaultSession();
+    const session = makeSession();
     await store.persist(session);
-    const snapshot = path.join(root, "sessions", faultSessionId + ".json");
+    const snapshot = path.join(root, "sessions", sessionId + ".json");
     const originalRename = fs.rename;
     session.turns[0].items.push({ id: "before-snapshot", text: "saved" });
     fs.rename = async (from, to) => {
@@ -601,7 +511,7 @@ test("snapshot publish failure keeps journal replayable", async () =>
       fs.rename = originalRename;
     }
     assert.deepEqual(
-      (await createSessionStore(root).readAll(faultSessionId)).session,
+      (await createSessionStore(root).readAll(sessionId)).session,
       session,
     );
   }));
@@ -609,9 +519,9 @@ test("snapshot publish failure keeps journal replayable", async () =>
 test("reported journal clear error refreshes length before later append retry", async () =>
   withTemporaryRoot(async (root) => {
     const store = createSessionStore(root, { compactRecords: 1 });
-    const session = makeFaultSession();
+    const session = makeSession();
     await store.persist(session);
-    const journal = path.join(root, "sessions", faultSessionId + ".jsonl");
+    const journal = path.join(root, "sessions", sessionId + ".jsonl");
     const originalWriteFile = fs.writeFile;
     session.turns[0].items.push({ id: "compacted", text: "saved" });
     fs.writeFile = async (file, data, ...options) => {
@@ -649,7 +559,7 @@ test("reported journal clear error refreshes length before later append retry", 
     assert.equal((await fs.stat(journal)).size, 0);
     const originalRename = fs.rename;
     fs.rename = async (from, to) => {
-      if (to === path.join(root, "sessions", faultSessionId + ".json"))
+      if (to === path.join(root, "sessions", sessionId + ".json"))
         throw Object.assign(new Error("injected snapshot publish failure"), {
           code: "EIO",
         });
@@ -664,7 +574,7 @@ test("reported journal clear error refreshes length before later append retry", 
       fs.rename = originalRename;
     }
     assert.deepEqual(
-      (await createSessionStore(root).readAll(faultSessionId)).session,
+      (await createSessionStore(root).readAll(sessionId)).session,
       session,
     );
   }));
@@ -672,9 +582,9 @@ test("reported journal clear error refreshes length before later append retry", 
 test("saves queued behind a running save join into one later save", async () =>
   withTemporaryRoot(async (root) => {
     const store = createSessionStore(root, { compactRecords: 1000 });
-    const session = makeFaultSession();
+    const session = makeSession();
     await store.persist(session);
-    const journal = path.join(root, "sessions", faultSessionId + ".jsonl");
+    const journal = path.join(root, "sessions", sessionId + ".jsonl");
     const originalAppend = fs.appendFile;
     let appends = 0;
     let enterAppend, releaseAppend;
@@ -710,7 +620,7 @@ test("saves queued behind a running save join into one later save", async () =>
     }
     assert.equal(appends, 2, "three waiting saves make one journal record");
     assert.deepEqual(
-      (await createSessionStore(root).readAll(faultSessionId)).session,
+      (await createSessionStore(root).readAll(sessionId)).session,
       session,
     );
   }));

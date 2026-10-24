@@ -47,8 +47,6 @@ elif mode == "quiet":
     sys.exit(3)
 elif mode == "garbage":
     print("not a summary")
-elif mode == "slow":
-    time.sleep(30)
 '''
 
 
@@ -111,10 +109,18 @@ class VaultAdminTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_new_configuration_waits_for_a_running_push(self):
         await self.configure()
         config = self.root / "state/vault/app/config.json"
-        lock = self.handlers.locks.setdefault("app", asyncio.Lock())
+        waiting = asyncio.Event()
+
+        class Lock(asyncio.Lock):
+            async def acquire(self):
+                if self.locked():
+                    waiting.set()
+                return await super().acquire()
+
+        lock = self.handlers.locks["app"] = Lock()
         await lock.acquire()  # A push with the old configuration runs.
         change = asyncio.ensure_future(self.configure(signingKey=SIGNING))
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(waiting.wait(), 5)
         self.assertFalse(change.done())
         self.assertNotIn("signingKey", json.loads(config.read_text()))
         lock.release()
@@ -171,10 +177,10 @@ class VaultAdminTests(unittest.IsolatedAsyncioTestCase):
                 await self.push()
             self.assertEqual((await self.status())["lastError"], cause)
             self.assertNotIn("lastPush", await self.status())
-        self.modes({"app": "slow"})
-        with mock.patch.object(vault_admin, "PUSH_TIMEOUT", 1), self.assertRaises(GuestError):
+        with mock.patch.object(vault_admin.subprocess, "run", side_effect=
+                               vault_admin.subprocess.TimeoutExpired("layr-desk", vault_admin.PUSH_TIMEOUT)), self.assertRaises(GuestError):
             await self.push()
-        self.assertEqual((await self.status())["lastError"], "layr-desk push ran longer than 1 seconds")
+        self.assertEqual((await self.status())["lastError"], f"layr-desk push ran longer than {vault_admin.PUSH_TIMEOUT} seconds")
         os.unlink(self.fake)
         with self.assertRaises(GuestError):
             await self.push()

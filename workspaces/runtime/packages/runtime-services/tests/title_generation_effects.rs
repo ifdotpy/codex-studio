@@ -2,7 +2,6 @@ use futures_util::FutureExt;
 use serde_json::{Value, json};
 use sha2::Digest;
 use std::{
-    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -425,27 +424,14 @@ enum TitleScenario {
     Refusal,
 }
 
-fn python_persisted_snapshot(root: &Path, scenario: TitleScenario) -> Value {
-    let (state, expected) = match scenario {
-        TitleScenario::Apply => (
-            include_str!("title_generation/apply-state.json"),
-            include_str!("title_generation/apply-expected.json"),
-        ),
-        TitleScenario::Manual => (
-            include_str!("title_generation/manual-state.json"),
-            include_str!("title_generation/manual-expected.json"),
-        ),
-        TitleScenario::Tool => (
-            include_str!("title_generation/tool-state.json"),
-            include_str!("title_generation/tool-expected.json"),
-        ),
-        TitleScenario::Refusal => (
-            include_str!("title_generation/refusal-state.json"),
-            include_str!("title_generation/refusal-expected.json"),
-        ),
-    };
-    crate::media_auth_fixtures::write_state(root, state);
-    serde_json::from_str(expected).expect("frozen title snapshot")
+fn expected_snapshot(scenario: TitleScenario) -> Value {
+    serde_json::from_str(match scenario {
+        TitleScenario::Apply => include_str!("title_generation/apply-expected.json"),
+        TitleScenario::Manual => include_str!("title_generation/manual-expected.json"),
+        TitleScenario::Tool => include_str!("title_generation/tool-expected.json"),
+        TitleScenario::Refusal => include_str!("title_generation/refusal-expected.json"),
+    })
+    .expect("frozen title snapshot")
 }
 
 async fn write_concurrent_title(store: &RuntimeStore, name: &str, manual: bool) {
@@ -541,10 +527,7 @@ async fn persisted_python_results_match_apply_late_writers_and_refusal() {
             .expect("title task joins")
             .expect("title service result");
         let rust = persisted_snapshot(&task_store);
-        drop(task_store);
-        let (python_root, python_store) = fixture().await;
-        drop(python_store);
-        let python = python_persisted_snapshot(python_root.path(), scenario);
+        let python = expected_snapshot(scenario);
         assert_eq!(rust["receipts"].as_array().map(Vec::len), Some(2));
         assert_eq!(python["receipts"].as_array().map(Vec::len), Some(1));
         let public_receipt = rust["receipts"]
@@ -664,7 +647,11 @@ async fn applied_request_replays_after_restart_and_rejects_changed_content_witho
 async fn completed_python_receipt_replays_without_request_or_persisted_writes() {
     let (root, store) = fixture().await;
     drop(store);
-    let python = python_persisted_snapshot(root.path(), TitleScenario::Apply);
+    crate::media_auth_fixtures::write_state(
+        root.path(),
+        include_str!("title_generation/apply-state.json"),
+    );
+    let python = expected_snapshot(TitleScenario::Apply);
     let reopened = RuntimeStore::open(Some(root.path()))
         .await
         .expect("open Python-completed receipt");
@@ -915,57 +902,16 @@ async fn committed_intent_is_held_after_restart_before_provider_call() {
 }
 
 #[tokio::test]
-async fn failpoints_before_and_after_intent_and_title_projection_writes_roll_back() {
-    for timing in ["BEFORE", "AFTER"] {
-        let (_root, store) = fixture().await;
-        store.transaction(move |tx| {
-            tx.execute_batch(&format!("CREATE TRIGGER title_intent_fail {timing} INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT,'title intent failpoint'); END"))?;
-            Ok(())
-        }).await.expect("intent failpoint");
-        let port = FixedPort::new(Vec::new());
-        assert!(
-            generate(
-                &store,
-                &port,
-                "title-agent",
-                &catalog(),
-                "intent-fail",
-                deadline()
-            )
-            .await
-            .is_err()
-        );
-        assert_eq!(port.calls.load(Ordering::SeqCst), 0);
-        let connection = store.test_reader().expect("state read");
-        let intents: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM runtime_operation_receipts",
-                [],
-                |row| row.get(0),
-            )
-            .expect("intent count");
-        assert_eq!(intents, 0, "{timing} intent write rolls back");
-    }
-    // The receipt update fails before the provider call; the title writes fail after it.
-    for (table, operation, expected_calls) in [
-        ("runtime_agents", "UPDATE", 1),
-        ("sync_entities", "INSERT", 1),
-        ("runtime_operation_receipts", "UPDATE", 0),
-    ] {
+async fn failpoints_before_provider_dispatch_roll_back() {
+    // Final title/projection failures are covered by the durable replay test below.
+    for operation in ["INSERT", "UPDATE"] {
         for timing in ["BEFORE", "AFTER"] {
             let (_root, store) = fixture().await;
             store.transaction(move |tx| {
-                tx.execute_batch(&format!("CREATE TRIGGER title_write_fail {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'title write failpoint'); END"))?;
+                tx.execute_batch(&format!("CREATE TRIGGER title_write_fail {timing} {operation} ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT,'title write failpoint'); END"))?;
                 Ok(())
             }).await.expect("title write failpoint");
-            let port = FixedPort::new(vec![TitleReceipt {
-                request_id: "title-write-fail".into(),
-                agent_id: "title-agent".into(),
-                epoch: 1,
-                account_key: "default".into(),
-                outcome: WriteOutcome::Written,
-                title: Some("Generated title".into()),
-            }]);
+            let port = FixedPort::new(Vec::new());
             assert!(
                 generate(
                     &store,
@@ -977,19 +923,26 @@ async fn failpoints_before_and_after_intent_and_title_projection_writes_roll_bac
                 )
                 .await
                 .is_err(),
-                "{table} {timing}"
+                "{operation} {timing}"
             );
-            assert_eq!(
-                port.calls.load(Ordering::SeqCst),
-                expected_calls,
-                "{table} {timing}"
-            );
+            assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+            if operation == "INSERT" {
+                let connection = store.test_reader().expect("state read");
+                let intents: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM runtime_operation_receipts",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("intent count");
+                assert_eq!(intents, 0, "{timing} intent write rolls back");
+            }
             let (record, projection) = agent_and_projection(&store);
             assert_eq!(
                 serde_json::from_str::<Value>(&record).expect("agent")["name"],
                 "Original conversation name"
             );
-            assert!(projection.is_empty(), "{table} {timing}");
+            assert!(projection.is_empty(), "{operation} {timing}");
         }
     }
 }
@@ -1078,15 +1031,4 @@ async fn durable_written_title_replays_after_failed_final_commit_without_provide
             assert_eq!(projection.len(), 1);
         }
     }
-}
-
-#[tokio::test]
-async fn python_writer_can_open_new_title_state_before_rust_service() {
-    let (_root, store) = fixture().await;
-    let (record, projection) = agent_and_projection(&store);
-    assert_eq!(
-        serde_json::from_str::<Value>(&record).expect("record")["name"],
-        "Original conversation name"
-    );
-    assert!(projection.is_empty());
 }

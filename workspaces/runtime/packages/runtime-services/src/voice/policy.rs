@@ -444,11 +444,14 @@ pub enum VoiceError {
 
 #[cfg(test)]
 mod tests {
+    use super::MAX_AUDIO_BYTES;
     use super::{
         AgentId, AudioChunkRequest, AudioDecision, SessionId, SessionSignal, StartDecision,
         StartRequest, VoiceError, VoiceSession, VoiceSessionRow, VoiceSessionState, decide_audio,
         decide_start, transition_session,
     };
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
 
     fn session(
         id: &str,
@@ -578,6 +581,22 @@ mod tests {
             base64: "AQID".to_owned(),
             mime: "audio/webm; codecs=opus".to_owned(),
         };
+        let mut boundary = request.clone();
+        boundary.base64 = STANDARD.encode(vec![0; MAX_AUDIO_BYTES]);
+        assert!(
+            matches!(decide_audio(boundary.clone(), true, None), Ok(AudioDecision::Store(chunk)) if chunk.bytes().len() == MAX_AUDIO_BYTES)
+        );
+        let encoded_len = boundary.base64.len();
+        boundary.base64 = STANDARD.encode(vec![0; MAX_AUDIO_BYTES + 1]);
+        assert_eq!(
+            boundary.base64.len(),
+            encoded_len,
+            "decoded bound is independent of encoded bound"
+        );
+        assert!(matches!(
+            decide_audio(boundary, true, None),
+            Err(VoiceError::AudioTooLarge)
+        ));
         let first = decide_audio(request.clone(), true, None).expect("audio is valid");
         let AudioDecision::Store(chunk) = first else {
             panic!("new chunks must produce a store intent")
@@ -610,6 +629,17 @@ mod tests {
         assert_eq!(
             decide_audio(request("!!", "audio/ogg"), true, None),
             Err(VoiceError::InvalidAudioEncoding)
+        );
+        assert_eq!(
+            decide_audio(
+                request(
+                    &"!".repeat(MAX_AUDIO_BYTES.div_ceil(3) * 4 + 1),
+                    "audio/ogg"
+                ),
+                true,
+                None
+            ),
+            Err(VoiceError::AudioTooLarge)
         );
         assert_eq!(
             decide_audio(request("AQID", "audio/wav"), true, None),

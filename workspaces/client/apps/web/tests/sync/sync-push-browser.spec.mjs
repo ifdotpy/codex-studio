@@ -1,3 +1,4 @@
+import { SYNC_PROTOCOL_VERSION } from "../../src/generated/api.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import {
@@ -11,15 +12,15 @@ import {
 test("Sync push", async ({ context: testContext }) => {
   test.setTimeout(180_000);
   // Real RxDB/Dexie reconciles a shared stream invalidation through HTTP pull.
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const workspaceId = "c".repeat(32);
   const streams = new Map();
   let revision = 1;
   let pulls = 0;
   const server = await createServer({
     configFile: false,
+    optimizeDeps: { noDiscovery: true },
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
   });
@@ -38,13 +39,16 @@ test("Sync push", async ({ context: testContext }) => {
       else if (url.pathname === "/api/sync/identity")
         json(syncIdentityFixture(workspaceId));
       else if (url.pathname === "/api/sync/stream") {
-        assert.equal(url.searchParams.get("protocol"), "3");
+        assert.equal(
+          url.searchParams.get("protocol"),
+          String(SYNC_PROTOCOL_VERSION),
+        );
         const resources = JSON.parse(url.searchParams.get("resources") || "[]");
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         res.write(
           apiSchemaHandshakeSse(
             protocol3SseEvent("resources", {
-              protocol: 3,
+              protocol: 4,
               workspaceId,
               epoch: "fixture-epoch",
               revision,
@@ -62,18 +66,15 @@ test("Sync push", async ({ context: testContext }) => {
       } else if (url.pathname === "/api/sync/pull") {
         pulls++;
         const row = {
-          id: "entity:agent:lead",
-          seq: revision,
-          _deleted: false,
-          payload: JSON.stringify({
-            collection: "agent",
+          op: "upsert",
+          collection: "agent",
+          id: "lead",
+          value: {
             id: "lead",
-            value: {
-              id: "lead",
-              name: revision === 1 ? "Initial lead" : "Pushed lead",
-              status: "running",
-            },
-          }),
+            name: revision === 1 ? "Initial lead" : "Pushed lead",
+            status: "running",
+          },
+          seq: revision,
         };
         json({
           workspaceId,
@@ -113,7 +114,7 @@ test("Sync push", async ({ context: testContext }) => {
     for (const [res, resources] of streams)
       res.write(
         protocol3SseEvent("resources", {
-          protocol: 3,
+          protocol: 4,
           workspaceId,
           epoch: "fixture-epoch",
           revision: 2,
@@ -134,9 +135,8 @@ test("Sync push", async ({ context: testContext }) => {
     assert.equal(
       await page.evaluate(async () => {
         const { db } = await client.syncDatabase();
-        return JSON.parse(
-          (await db.projections.findOne("entity:agent:lead").exec()).payload,
-        ).value.name;
+        return (await db.projections.findOne("entity:agent:lead").exec()).entity
+          .value.name;
       }),
       "Pushed lead",
     );

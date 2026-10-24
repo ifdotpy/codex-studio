@@ -27,6 +27,12 @@ pnpm run dev
 
 `dev` builds the web app and starts Electron. Use `pnpm run start` after a web build. Use `pnpm run start:hidden` for a check without a visible window.
 
+`pnpm run test:sync-brotli` verifies incremental Brotli delivery through headless
+Chromium EventSource and the signed fetch adapter in a hidden Electron main
+process. It uses a disposable HTTP fixture and profile, with each next event
+produced only after the client decodes the preceding one. It does not start a
+backend or request operating-system input.
+
 The app attaches to a compatible backend at `http://127.0.0.1:4620`. Otherwise, it starts the bundled Rust backend as a detached process. A backend identity endpoint checks the protocol and canonical state directory before the app loads the page. The runtime file lock prevents two servers from owning the same database. An incompatible service causes a visible error. The app does not stop that service or choose another database.
 
 The default state remains `~/.local/state/codex-agents`. Existing chats remain there. Browser local storage, including canvas positions, belongs to each browser profile. Electron uses its own profile; it does not copy Chrome local storage.

@@ -6,6 +6,11 @@ use studio_runtime_http::HttpState;
 use tokio::time::timeout;
 
 const SHUTDOWN_COMPONENT_WAIT: Duration = Duration::from_secs(5);
+// The supervisor detach must finish, and report, inside this bound.
+const _: () = assert!(
+    studio_runtime_process::provider_task::SUPERVISOR_DETACH_TIMEOUT.as_millis()
+        < SHUTDOWN_COMPONENT_WAIT.as_millis()
+);
 const SHUTDOWN_SERVICES_WAIT: Duration = Duration::from_secs(12);
 
 pub(crate) async fn close(

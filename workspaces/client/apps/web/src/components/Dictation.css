@@ -149,3 +149,11 @@
   border-radius: 6px;
   padding: 5px;
 }
+
+@media (pointer: coarse) {
+  .dictation-trigger {
+    min-width: var(--studio-touch-target);
+    min-height: var(--studio-touch-target);
+    justify-content: center;
+  }
+}

@@ -98,6 +98,7 @@ class RecoveryTest(unittest.TestCase):
         finally:
             process.terminate()
             process.wait(timeout=5)
+            process.stdout.close()
 
     def test_identity_refuses_the_removed_python_backend(self):
         body = json.dumps({"application": "codex-agents", "protocol": 1,
@@ -148,6 +149,14 @@ class RecoveryTest(unittest.TestCase):
                 recovery.desktop_tick(self.config, self.state)
             spawn.assert_not_called()
 
+        def withdraw_intent(*args, **kwargs):
+            filename.write_text(json.dumps({**intent, "desiredOpen": False}))
+            return "different process start"
+
+        with patch.object(recovery.subprocess, "check_output", side_effect=withdraw_intent), patch.object(recovery.subprocess, "Popen") as spawn:
+            self.assertEqual(recovery.desktop_tick(self.config, self.state), (None, "desktop intent changed"))
+            spawn.assert_not_called()
+
     def test_authoritative_absent_environment_stays_absent(self):
         with patch.dict(os.environ, {"CODEX_HOME": "/foreign-account"}):
             env = recovery.launch_environment({**self.config, "unsetEnvironment": ["CODEX_HOME"]}, self.state)
@@ -159,6 +168,28 @@ class RecoveryTest(unittest.TestCase):
         filename.write_text(json.dumps({**self.config, "stateDir": str(self.state / "other")}))
         with self.assertRaisesRegex(RuntimeError, "different state"):
             recovery.load_config(filename, self.state)
+
+
+class InterpreterCheckTest(unittest.TestCase):
+    """configureRecovery saves an interpreter only when it runs `--check-interpreter`."""
+
+    def run_check(self, helpers):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ["recover_backend.py", *helpers]:
+                (root / name).write_bytes((HERE / name).read_bytes())
+            return subprocess.run([sys.executable, "-B", str(root / "recover_backend.py"), "--check-interpreter"],
+                                  capture_output=True, text=True, timeout=30, check=False)
+
+    def test_the_check_passes_with_the_shipped_helpers(self):
+        result = self.run_check(["desktop_process.py", "desktop_updates.py", "desktop_vm.py"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["version"][:2], list(sys.version_info[:2]))
+
+    def test_the_check_fails_without_a_shipped_helper(self):
+        result = self.run_check(["desktop_process.py", "desktop_vm.py"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("desktop_updates", result.stderr)
 
 
 class RustSelectionTest(unittest.TestCase):

@@ -1,3 +1,7 @@
+import {
+  IdleCompactionSettings,
+  idleCompactionDefaults,
+} from "./IdleCompactionSettings";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useState } from "react";
 import { Button, NumberInput } from "@mantine/core";
@@ -15,7 +19,7 @@ type Settings = Configuration["settings"];
 
 /** One whole-number orchestration setting and its generated bounds. */
 export interface OrchestrationSettingSpec {
-  field: keyof Settings;
+  field: Exclude<keyof Settings, "idleCompaction">;
   label: string;
   help: string;
   ariaLabel: string;
@@ -131,6 +135,18 @@ export function OrchestrationSettings({ active }: { active: boolean }) {
               }
             />
           ))}
+          <IdleCompactionSettings
+            value={
+              configuration.settings.idleCompaction ?? idleCompactionDefaults
+            }
+            disabled={busy}
+            onChange={(value) =>
+              setConfiguration({
+                ...configuration,
+                settings: { ...configuration.settings, idleCompaction: value },
+              })
+            }
+          />
           <Button
             mt="md"
             loading={busy}

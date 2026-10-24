@@ -16,7 +16,7 @@ test("Background Current Browser", async ({
   browser: _testBrowser,
   context: _testContext,
   page: testPage,
-}) => {
+}, testInfo) => {
   const assert = {
     equal: (actual, expected, message) =>
       expect(actual, message).toBe(expected),
@@ -374,7 +374,7 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
         "No page overflow at " + width,
       );
       await page.screenshot({
-        path: join(tmpdir(), "studio-current-activity-" + width + ".png"),
+        path: testInfo.outputPath("studio-current-activity-" + width + ".png"),
       });
       data.runtime.tasks.find((task) => task.id === "child").status =
         "completed";

@@ -277,10 +277,9 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
 }
 
 /// `(collection, field)` pairs that a sync view publishes only when set: a
-/// team's token budget (null means none) and a monitor's output patterns
-/// (empty means none). The client reads a missing one as that default.
-const UNSET_DEFAULT_FIELDS: &[(&str, &str)] =
-    &[("agent", "tokenBudget"), ("monitor", "outputPatterns")];
+/// monitor's output patterns (empty means none). The client reads a missing
+/// one as that default.
+const UNSET_DEFAULT_FIELDS: &[(&str, &str)] = &[("monitor", "outputPatterns")];
 
 /// Whether a field value is its unset default: null or an empty list.
 fn unset(value: &Value) -> bool {
@@ -780,24 +779,29 @@ mod projection_plan_tests {
     };
     use serde_json::json;
 
-    /// The older view never published a null budget or an empty pattern list,
-    /// and the client reads a missing one as its default. Set values are
+    /// The agent view publishes no team budget, also when an older build
+    /// stored one. The older view never published an empty pattern list, and
+    /// the client reads a missing one as its default. Set patterns are
     /// published.
     #[test]
-    fn sync_views_publish_only_set_budgets_and_output_patterns() {
-        let unset = project_persisted_record(
-            "agent",
-            &json!({"id":"lead","rootId":"lead","isLead":true,"tokenBudget":null}),
-        )
-        .expect("agent view");
-        assert!(unset.get("tokenBudget").is_none(), "{unset}");
-
-        let set = project_persisted_record(
-            "agent",
-            &json!({"id":"lead","rootId":"lead","isLead":true,"tokenBudget":100}),
-        )
-        .expect("agent view");
-        assert_eq!(set["tokenBudget"], 100, "{set}");
+    fn sync_views_publish_no_budget_and_only_set_output_patterns() {
+        for budget in [json!(null), json!(100)] {
+            let view = project_persisted_record(
+                "agent",
+                &json!({"id":"lead","rootId":"lead","isLead":true,"tokenBudget":budget,
+                        "budgetBlocked":"usage accounting incomplete",
+                        "completedWorkerTurns":2,"terminalReason":"worker_max_turns"}),
+            )
+            .expect("agent view");
+            for field in [
+                "tokenBudget",
+                "budgetBlocked",
+                "completedWorkerTurns",
+                "terminalReason",
+            ] {
+                assert!(view.get(field).is_none(), "{field}: {view}");
+            }
+        }
 
         let monitor = |patterns| {
             project_persisted_record(

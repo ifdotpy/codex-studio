@@ -239,6 +239,10 @@ mod tests {
             }}}).to_string()],
         )
         .expect("fixture row uses declared columns");
+        db.execute_batch(
+            "CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,result TEXT)",
+        )
+        .expect("observation receipts fixture table");
         account_state::limits_snapshots(&db).expect("account limits read uses only declared table");
         assert!(
             account_state::authentication_recovery_account_keys(&db, 2_000.0)

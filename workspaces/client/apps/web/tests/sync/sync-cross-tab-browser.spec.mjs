@@ -54,7 +54,7 @@ const runSyncCrossTabScenario = async (
     });
     response.write(
       `event: resources\ndata: ${JSON.stringify({
-        protocol: 3,
+        protocol: 4,
         workspaceId: currentWorkspace,
         epoch: "tab-epoch",
         revision,
@@ -73,7 +73,7 @@ const runSyncCrossTabScenario = async (
     const known = resourceRevisions.get(currentWorkspace) || new Map();
     response.write(
       `event: resources\ndata: ${JSON.stringify({
-        protocol: 3,
+        protocol: 4,
         workspaceId: currentWorkspace,
         epoch: "tab-epoch",
         revision: revisions.get(currentWorkspace) || 0,
@@ -330,7 +330,7 @@ const runSyncCrossTabScenario = async (
         tabId: "foreign-schema-tab",
         apiSchemaHash: `${API_SCHEMA_HASH}-stale`,
         event: {
-          protocol: 3,
+          protocol: 4,
           workspaceId: currentWorkspace,
           epoch: "foreign-schema-epoch",
           revision: 9000,

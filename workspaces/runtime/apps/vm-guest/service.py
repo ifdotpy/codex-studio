@@ -54,7 +54,10 @@ CLIENT_IDLE_SECONDS = 60
 
 class Service:
     def __init__(self, state: Path, store: Path, projects: Path, home: Path, *,
-                 http_providers: frozenset[str] = frozenset()):
+                 http_providers: frozenset[str] = frozenset(), worker_command=None):
+        # Command factory for bounded helpers; production uses the installed scripts.
+        self.worker_command = worker_command or (lambda script: [sys.executable, str(Path(__file__).with_name(script))])
+        self.reapers = set()
         self.state, self.store, self.projects, self.home = map(Path.resolve, (state, store, projects, home))
         for path in (self.state, self.store, self.projects):
             private_dir(path)
@@ -148,7 +151,7 @@ class Service:
 
     async def worker(self, script, params, timeout, *, arguments=()):
         process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("deadline.py")), str(timeout),
-            sys.executable, str(Path(__file__).with_name(script)), *arguments,
+            *self.worker_command(script), *arguments,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             env=self.environment, start_new_session=True)
         try:
@@ -221,7 +224,9 @@ class Service:
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True, close_fds=True)
         self.processes.add(process)
-        asyncio.create_task(self.reap(process))
+        reaper = asyncio.create_task(self.reap(process))
+        self.reapers.add(reaper)
+        reaper.add_done_callback(self.reapers.discard)
         deadline = asyncio.get_running_loop().time() + 8
         while asyncio.get_running_loop().time() < deadline:
             if (directory / "status.json").exists():
@@ -695,6 +700,7 @@ class Service:
                 await asyncio.gather(read_task, return_exceptions=True)
             # Do not cancel operations. They finish and save their receipts after disconnect.
             writer.close()
+            await writer.wait_closed()
 
 
 async def serve(args):

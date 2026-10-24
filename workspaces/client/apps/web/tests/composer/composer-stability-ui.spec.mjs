@@ -18,6 +18,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
   const evidence = await mkdtemp(join(tmpdir(), "studio-composer-stability-"));
   const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
     stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
   let browser,
     pages = new Set(),
@@ -36,10 +37,10 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       (agent) => agent.name === "Other project",
     );
     const emptyWorker = initial.threads.find(
-      (agent) => agent.role === "reviewer",
+      (agent) => !agent.isLead && agent.parentId,
     );
     assert.ok(lead, "fixture provides an empty managed lead chat");
-    assert.ok(emptyWorker, "fixture provides an empty managed reviewer chat");
+    assert.ok(emptyWorker, "fixture provides a persistent managed worker chat");
     browser = fixtureBrowser;
     const measurements = [];
     for (const width of [1440, 900, 390]) {
@@ -91,6 +92,10 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         }),
         pendingSend,
         pendingStop,
+        resolveStopCapture,
+        stopCaptured = new Promise((resolve) => {
+          resolveStopCapture = resolve;
+        }),
         resolveSendCapture,
         sendCaptured = new Promise((resolve) => {
           resolveSendCapture = resolve;
@@ -126,9 +131,17 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       });
       await page.route("**/api/stop", (route) => {
         pendingStop = route;
+        resolveStopCapture();
       });
       await page.setViewportSize({ width, height: 960 });
       await page.goto(origin);
+      // Phones intentionally start at the fresh board; choose the fixture chat.
+      if (width <= 760)
+        await page
+          .locator("[data-chat]")
+          .filter({ hasText: openedChat.name })
+          .first()
+          .click();
       await page.locator("#composer").waitFor();
       if (width > 760) await page.locator(".terminal-dock").waitFor();
       const chatStorageKey =
@@ -236,9 +249,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         "#conversation-header-tools .prompt-history-toggle",
       );
       const hadPromptHistoryToggle = (await promptHistoryToggle.count()) > 0;
-      // 81bc27a5 introduced the phone layout swap: the empty-chat settings
-      // panel below the composer gives way to the context row inside it after
-      // the first message, so only this one position transition is expected.
+      // The inline role summary stays in the composer before and after the
+      // first message. Sending must preserve position and textarea focus.
       if (emptyPhoneStart)
         assert.equal(
           transcript.items.length,
@@ -301,7 +313,6 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
               : !!document.querySelector("#stop:not(:disabled)"),
           next === "completed",
         );
-        await page.waitForTimeout(80);
       };
       const waitForSendingUI = () =>
         page.waitForFunction(() => {
@@ -357,8 +368,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         ];
         assert.equal(
           positions.length,
-          2,
-          "390px first-send transition has exactly one layout change and no intermediate composer position",
+          1,
+          "390px first send keeps the inline composer at one position",
         );
         assert.equal(
           positions[0],
@@ -366,7 +377,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           "390px transition starts at the empty-chat composer position",
         );
         assert.equal(
-          positions[1],
+          positions[0],
           Math.round(current["#composer"].y),
           "390px transition ends at the non-empty composer position",
         );
@@ -476,6 +487,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         resolveQueueResponse = resolve;
       });
       await page.reload();
+      if (width <= 760)
+        await page.locator(`[data-chat="${openedChat.id}"]`).first().click();
       await page.locator("#composer").waitFor();
       await expect(page.locator("#conversation-title")).toContainText(
         openedChat.name,
@@ -499,7 +512,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         .waitFor();
       await stable("queue appears");
       await page.locator("#stop").click();
-      await page.waitForTimeout(80);
+      await stopCaptured;
       assert.ok(pendingStop, "stop reaches API");
       await stable("stopping request");
       await pendingStop.fulfill({ json: {} });

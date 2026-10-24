@@ -91,11 +91,7 @@ export default function AccountAddDialog({
             <Button variant="default" onClick={close}>
               Cancel
             </Button>
-            <Button
-              color="indigo"
-              disabled={!provider}
-              onClick={() => setFlow(true)}
-            >
+            <Button disabled={!provider} onClick={() => setFlow(true)}>
               Continue
             </Button>
           </div>

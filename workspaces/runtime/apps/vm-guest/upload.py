@@ -93,7 +93,7 @@ def validate_destination(staging, root):
 FOLDER_MODES = "folder-modes.json"
 
 
-def extract_tree(archive: Path, destination: Path, *, exact_modes=False):
+def extract_tree(archive: Path, destination: Path, *, exact_modes=False, sync_tree=None):
     """Treat link targets as text. Create links after all files and directories.
 
     An ordinary upload gives each file owner read and write and each folder owner rwx. A seed
@@ -152,11 +152,11 @@ def extract_tree(archive: Path, destination: Path, *, exact_modes=False):
         (destination.parent / FOLDER_MODES).write_text(json.dumps(folder_modes))
     # One sync for the whole tree: a sync for each file made a project of 200,000 files
     # pass the worker deadline. The tree is durable before the apply marker is written.
-    os.sync()
+    (os.sync if sync_tree is None else sync_tree)()
     return expanded
 
 
-def prepare_tree(archive, destination, expected, *, exact_modes=False):
+def prepare_tree(archive, destination, expected, *, exact_modes=False, sync_tree=None):
     """Restart extraction only after taking the surviving worker's file lease."""
     require(destination == archive.parent / "expanded", "The extraction destination differs from the upload directory")
     with (archive.parent / "extract.lock").open("a+") as lease:
@@ -175,7 +175,7 @@ def prepare_tree(archive, destination, expected, *, exact_modes=False):
         destination.mkdir(mode=0o700)
         (destination.parent / FOLDER_MODES).unlink(missing_ok=True)
         try:
-            return extract_tree(archive, destination, exact_modes=exact_modes)
+            return extract_tree(archive, destination, exact_modes=exact_modes, sync_tree=sync_tree)
         except BaseException:
             shutil.rmtree(destination, ignore_errors=True)
             raise
@@ -282,7 +282,7 @@ class Uploads:
             raise GuestError("invalid_params", "Unknown upload method")
 
 
-if __name__ == "__main__":
+def main(*, sync_tree=None):
     import sys
     arguments = sys.argv[1:]
     # Only a seed passes --exact-modes (service.py seed_layer).
@@ -293,7 +293,7 @@ if __name__ == "__main__":
     try:
         archive = Path(archive)
         destination = Path(destination)
-        expanded = prepare_tree(archive, destination, expected, exact_modes=exact)
+        expanded = prepare_tree(archive, destination, expected, exact_modes=exact, sync_tree=sync_tree)
         if len(arguments) == 4:
             validate_destination(destination, Path(arguments[3]))
         print(json.dumps({"bytes": expanded}))
@@ -303,3 +303,7 @@ if __name__ == "__main__":
     except (OSError, tarfile.TarError):
         print(json.dumps({"error": {"code": "invalid_params", "message": "The archive cannot be extracted"}}))
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -74,11 +74,18 @@ mod tests {
     #[test]
     fn excludes_rules_with_deleted_agents_and_keeps_python_order() {
         let result = visible_rules(
-            vec![rule("first", "live"), rule("second", "deleted")],
+            vec![
+                rule("z-first", "live"),
+                rule("deleted", "deleted"),
+                rule("a-last", "live"),
+            ],
             vec![agent("live", None), agent("deleted", Some(json!(1)))],
         )
         .expect("valid stored records filter");
-        assert_eq!(result, vec![rule("first", "live")]);
+        assert_eq!(
+            result,
+            vec![rule("z-first", "live"), rule("a-last", "live")]
+        );
     }
 
     #[test]

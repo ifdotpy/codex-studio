@@ -41,14 +41,11 @@ async function createFixture(page, options = {}) {
     resolveFirstConnectedStream = resolve;
   });
   const entityDocument = () => ({
-    id: "entity:agent:lead",
-    payload: JSON.stringify({
-      collection: "agent",
-      id: "lead",
-      value: { id: "lead", name: `Fixture ${revision}` },
-    }),
+    op: "upsert",
+    collection: "agent",
+    id: "lead",
+    value: { id: "lead", name: `Fixture ${revision}` },
     seq: revision,
-    _deleted: false,
   });
   const json = (res, status, value) => {
     res.writeHead(status, { "Content-Type": "application/json" });
@@ -93,7 +90,7 @@ async function createFixture(page, options = {}) {
             res.write(
               apiSchemaHandshakeSse(
                 protocol3SseEvent("resources", {
-                  protocol: 3,
+                  protocol: 4,
                   workspaceId,
                   epoch: "fixture-epoch",
                   revision,
@@ -201,7 +198,7 @@ async function createFixture(page, options = {}) {
     publish() {
       revision++;
       const frame = protocol3SseEvent("resources", {
-        protocol: 3,
+        protocol: 4,
         workspaceId,
         epoch: "fixture-epoch",
         revision,

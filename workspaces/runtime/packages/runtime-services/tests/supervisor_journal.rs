@@ -268,6 +268,7 @@ fn supervisor_journal_sql_failpoints_roll_back_before_restart() {
                 .append("fixture", 1, 1, "stdout", &json!({"id":1,"result":"done"}))
                 .unwrap();
         }
+        let before = durable_rows(root.path());
         let db = rusqlite::Connection::open(root.path().join("supervisor.sqlite3")).unwrap();
         db.execute_batch(&format!("CREATE TRIGGER stop BEFORE {event} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END;")).unwrap();
         let failed = match action {
@@ -290,13 +291,7 @@ fn supervisor_journal_sql_failpoints_roll_back_before_restart() {
         db.execute_batch("DROP TRIGGER stop").unwrap();
         drop(db);
         let journal = SupervisorJournal::open(root.path()).unwrap();
-        let row = journal.handle("fixture").unwrap().unwrap();
-        assert_eq!(row.snapshot.acknowledged(), 0, "{action}/{table}");
-        assert_eq!(
-            row.snapshot.sequence(),
-            u64::from(action == "ack"),
-            "{action}/{table}"
-        );
+        assert_eq!(durable_rows(root.path()), before, "{action}/{table}");
         if action == "accept" {
             assert!(matches!(
                 journal

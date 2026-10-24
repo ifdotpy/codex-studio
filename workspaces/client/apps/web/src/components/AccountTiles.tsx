@@ -1,6 +1,6 @@
-import { SegmentedControl, Tooltip } from "@mantine/core";
-import { Check } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { Badge, Radio, SegmentedControl, Tooltip } from "@mantine/core";
+import { Check, Sparkles } from "lucide-react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { ActionButton } from "./ui/primitives";
 import { useAccountLimits } from "../usage/useAccountLimits";
 import {
@@ -11,6 +11,7 @@ import { accountDisplayName, accountTooltip } from "../accountName";
 import { formatPercent, readBuckets } from "./Usage";
 import type { Account } from "./Accounts";
 import "./account-tiles.css";
+import { remainingLimitColor } from "./accountLimitColor";
 export function setupAccountName(account?: Account) {
   return account ? accountDisplayName(account) : "";
 }
@@ -96,14 +97,7 @@ export function AccountRemainingBar({
       <span
         style={{
           width: `${remaining ?? 0}%`,
-          background:
-            remaining === null
-              ? undefined
-              : remaining > 50
-                ? "var(--mantine-color-green-6)"
-                : remaining >= 15
-                  ? "var(--mantine-color-yellow-6)"
-                  : "var(--mantine-color-red-6)",
+          background: remainingLimitColor(remaining),
         }}
       />
     </span>
@@ -203,14 +197,32 @@ function AccountTile({
   disabled,
   onSelect,
   multiple = false,
+  readOnly = false,
 }: {
   account: Account;
   selected: boolean;
   disabled: boolean;
   onSelect: () => void;
   multiple?: boolean;
+  readOnly?: boolean;
 }) {
   const { remaining } = useAccountLimitView(account, { signedInOnly: false });
+  if (readOnly)
+    return (
+      <Tooltip label={accountTooltip(account)}>
+        <div
+          className="setup-account setup-account-status"
+          data-account-key={account.id}
+          data-selected={selected || undefined}
+        >
+          <AccountTileLabel
+            name={setupAccountName(account)}
+            remaining={remaining}
+          />
+          {remaining !== null && <AccountRemainingBar remaining={remaining} />}
+        </div>
+      </Tooltip>
+    );
   return (
     <Tooltip label={accountTooltip(account)}>
       <ActionButton
@@ -254,6 +266,7 @@ type AccountTilesProps = {
   | { multiple: true; value: string[]; onChange: (value: string[]) => void }
 );
 export function AccountTiles(p: AccountTilesProps) {
+  const automaticName = useId();
   const selected = p.multiple ? p.value[0] : p.value;
   const selectedProvider =
     p.accounts.find((account) => account.id === selected)?.provider || "codex";
@@ -312,14 +325,25 @@ export function AccountTiles(p: AccountTilesProps) {
       )}
       <div className="setup-accounts">
         {p.automatic && (
-          <ActionButton
-            aria-pressed={!selected}
+          <Radio
+            className="setup-account setup-account-automatic"
+            name={automaticName}
+            aria-label="Automatic"
+            label={
+              <span className="setup-automatic-label">
+                <Sparkles aria-hidden="true" />
+                <span>Automatic</span>
+                <Badge size="xs" variant="light">
+                  Recommended
+                </Badge>
+              </span>
+            }
+            description="Prefers a free slot, project order, then fewer active agents."
+            checked={!selected}
             data-selected={!selected || undefined}
             disabled={p.disabled}
-            onClick={() => select("")}
-          >
-            Automatic
-          </ActionButton>
+            onChange={() => select("")}
+          />
         )}
         {p.accounts
           .filter((account) => (account.provider || "codex") === provider)
@@ -333,6 +357,14 @@ export function AccountTiles(p: AccountTilesProps) {
                   : p.value === account.id
               }
               multiple={p.multiple}
+              readOnly={
+                !p.multiple &&
+                p.value === account.id &&
+                !p.automatic &&
+                p.accounts.filter(
+                  (item) => (item.provider || "codex") === provider,
+                ).length === 1
+              }
               disabled={!!p.disabled || !!p.accountDisabled?.(account)}
               onSelect={() => select(account.id)}
             />

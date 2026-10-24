@@ -407,7 +407,7 @@ export function createOutbox(options: {
       id?: unknown;
       seq?: unknown;
       _deleted?: unknown;
-      payload?: unknown;
+      entity?: { collection?: unknown; id?: unknown; value?: unknown };
     };
     if (
       document.id !== `${AGENT_ENTITY_ID_PREFIX}${room}` ||
@@ -415,29 +415,19 @@ export function createOutbox(options: {
       (document.seq as number) <= 0
     )
       return false;
-    if (typeof document.payload !== "string") return false;
-    try {
-      const entity: unknown = JSON.parse(document.payload);
-      if (!entity || typeof entity !== "object") return false;
-      const record = entity as {
-        collection?: unknown;
-        id?: unknown;
-        value?: unknown;
-      };
-      if (
-        record.collection !== "agent" ||
-        record.id !== room ||
-        !record.value ||
-        typeof record.value !== "object"
-      )
-        return false;
-      if (document._deleted === true) return true;
-      const agent = record.value as { id?: unknown; deletedAt?: unknown };
-      return agent.id === room && Boolean(agent.deletedAt);
-    } catch {
+    if (document._deleted === true) return true;
+    const record = document.entity;
+    if (
+      record?.collection !== "agent" ||
+      record.id !== room ||
+      !record.value ||
+      typeof record.value !== "object"
+    )
       return false;
-    }
+    const agent = record.value as { id?: unknown; deletedAt?: unknown };
+    return agent.id === room && Boolean(agent.deletedAt);
   }
+
   async function recoverAcknowledgedOutbox() {
     const { db, workspaceId, verifyWorkspace } = await syncDatabase();
     await verifyWorkspace();

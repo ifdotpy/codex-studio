@@ -536,6 +536,7 @@ mod tests {
             "#!/bin/sh\ntest \"$HOME\" = \"$CODEX_HOME\" || exit 7\ntest -z \"${OPENAI_API_KEY:-}\" || exit 8\nprintf 'codex-cli 1.2.3\\n'\n",
         );
         let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
             .expect("probe runtime");
@@ -617,6 +618,7 @@ if (process.argv.includes('--help')) {
 "##,
         );
         let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
             .expect("probe runtime");

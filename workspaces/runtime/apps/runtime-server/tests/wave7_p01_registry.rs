@@ -1,7 +1,6 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used)]
-#[path = "../src/account_registry.rs"]
-pub(crate) mod account_registry;
+use studio_runtime_server::{account_registry, host_runtime};
 
 use account_registry::{
     AccountLaunch, AccountLauncher, AccountRegistry, AccountRegistryConfig, AccountSessionBroker,
@@ -1464,15 +1463,121 @@ async fn shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_r
     assert!(writes.try_recv().is_err());
 }
 
-#[path = "../src/host_runtime.rs"]
-#[allow(dead_code)]
-pub(crate) mod host_runtime;
-#[path = "../src/provider_ports.rs"]
-#[allow(dead_code)]
-pub(crate) mod provider_ports;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "../src/runtime_shutdown.rs"]
 mod runtime_shutdown;
+
+/// Keep the ordinary account-worker setup, replacing only its provider port
+/// with the real supervisor adapter connected to a deterministic Unix peer.
+struct SupervisorDetachLauncher {
+    scripted: Arc<Scripted>,
+    root: PathBuf,
+}
+
+impl AccountLauncher for SupervisorDetachLauncher {
+    fn launch(&self, account: String) -> LaunchFuture<'_> {
+        Box::pin(async move {
+            let mut launch = self.scripted.launch(account).await?;
+            launch.options.expected_generation = None;
+            launch.factory = Arc::new(
+                studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(
+                    studio_runtime_process::BackendIdentity {
+                        backend_id: studio_runtime_process::BackendId("detach-budget".into()),
+                        state_dir: self.root.clone(),
+                    },
+                ),
+            );
+            Ok(launch)
+        })
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn backend_shutdown_reports_both_supervisor_detach_timeouts() {
+    use tokio::io::{AsyncReadExt, BufReader};
+
+    tokio::time::timeout(TEST_HANG_GUARD, async {
+        let fixture = Fixture::new().await;
+        fixture.enqueue(0, "detach-timeout").await;
+        let listener =
+            tokio::net::UnixListener::bind(fixture._root.path().join("supervisor.sock")).unwrap();
+        let (scripted, _writes) = scripted_with_unknown_writes(false);
+        let runtime = host_runtime::HostRuntime::with_launcher(
+            fixture.store.clone(),
+            Arc::new(SupervisorDetachLauncher {
+                scripted,
+                root: fixture._root.path().into(),
+            }),
+            Arc::new(Notify::new()),
+            test_registry_config(),
+        )
+        .await
+        .unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut control = BufReader::new(socket);
+        wire_read(&mut control).await;
+        wire_send(&mut control, json!({"ok":true,"protocol":2})).await;
+        let status = wire_read(&mut control).await;
+        assert_eq!(status["action"], "status");
+        wire_send(
+            &mut control,
+            json!({"requestId":status["requestId"],"error":"Unknown supervisor handle"}),
+        )
+        .await;
+        let open = wire_read(&mut control).await;
+        assert_eq!(open["action"], "open");
+        wire_send(
+            &mut control,
+            json!({"requestId":open["requestId"],"result":{"pid":1,"generation":7,"resumed":false,"sequence":0,"acknowledged":0}}),
+        )
+        .await;
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut events = BufReader::new(socket);
+        wire_read(&mut events).await;
+        wire_send(&mut events, json!({"ok":true,"protocol":2})).await;
+        assert_eq!(wire_read(&mut events).await["action"], "nextBatch");
+        let state = studio_runtime_http::HttpState::new(
+            "token".into(),
+            "fixture".into(),
+            fixture._root.path().display().to_string(),
+            4620,
+            None,
+            Some(fixture.store.clone()),
+            None,
+        );
+        let closing = tokio::spawn(async move {
+            runtime_shutdown::close(runtime, &state)
+                .await
+                .map_err(|error| error.to_string())
+        });
+        assert_eq!(events.read(&mut [0]).await.unwrap(), 0);
+        // Neither peer confirms ownership release. Advance past the intended
+        // detach budget, then resume the clock for real SQLite worker cleanup.
+        tokio::time::pause();
+        tokio::time::advance(
+            studio_runtime_process::provider_task::SUPERVISOR_DETACH_TIMEOUT * 2,
+        )
+        .await;
+        tokio::time::resume();
+        let error = closing.await.unwrap().unwrap_err();
+        assert!(
+            error.contains("supervisor detach was not confirmed"),
+            "backend lost the adapter cleanup receipt: {error}"
+        );
+        assert_eq!(
+            error.matches(&AdapterError::Timeout.to_string()).count(),
+            2,
+            "both socket detach timeouts must reach the backend: {error}"
+        );
+        // A command already in flight may precede the control FIN.
+        tokio::io::copy(&mut control, &mut tokio::io::sink())
+            .await
+            .unwrap();
+    })
+    .await
+    .expect("backend detach timeout regression hang guard");
+}
 
 #[tokio::test]
 async fn recovery_selection_matches_frozen_scheduler_roster_without_changing_stored_records() {
@@ -1611,11 +1716,8 @@ async fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Ve
             ), source(record) AS (
                 SELECT record FROM runtime_agents WHERE id = ?2
             )";
-        // Clones copy the whole agent, volatile fields included, and then move
-        // those fields like an older state's (format 2026-10-20).
-        let whole = studio_runtime_store::agent_volatile::merged_record(tx, &source)?
-            .expect("source agent")
-            .to_string();
+        // Seed the current split storage format; migration is not under test.
+        let record: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [&source], |row| row.get(0))?;
         tx.execute(
             &format!("{sequence}
                 INSERT INTO runtime_agents(id, record)
@@ -1625,9 +1727,16 @@ async fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Ve
                                 '$.executionSettingsAccountKey', CASE WHEN ?3 THEN printf('page-%06d', seq.i) ELSE 'default' END,
                                 '$.contextRepairWait', 'blocked')
                 FROM seq CROSS JOIN source"),
-            (count as i64, source.as_str(), each_account, whole),
+            (count as i64, source.as_str(), each_account, record),
         )?;
-        studio_runtime_store::agent_volatile::migrate_2026_10_20(tx)?;
+        let columns = studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
+            .map(|field| format!("\"{field}\"")).join(",");
+        tx.execute(
+            &format!("{sequence} INSERT INTO runtime_agent_volatile(id,{columns})
+                SELECT printf('00000000-0000-4000-8000-%012d', seq.i), {columns}
+                FROM seq CROSS JOIN runtime_agent_volatile WHERE id=?2"),
+            (count as i64, source.as_str()),
+        )?;
         tx.execute(
             &format!("{sequence}
                 INSERT INTO runtime_events(id, agent, kind, text, status, created, epoch)
@@ -1644,18 +1753,14 @@ async fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Ve
 }
 
 #[tokio::test]
-async fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
+async fn pending_backlog_pages_traverse_and_wrap() {
     let fixture = Fixture::new().await;
-    let expected = seed_backlog(&fixture, 4100, false).await;
+    let expected = seed_backlog(&fixture, 65, false).await;
+    let db = fixture.store.test_reader().expect("reader");
     let mut after = BTreeMap::new();
     let mut actual = Vec::new();
     while actual.len() < expected.len() {
-        let page = account_registry::target_page(
-            &fixture.store.test_reader().expect("reader"),
-            "",
-            &after,
-        )
-        .unwrap();
+        let page = account_registry::target_page(&db, "", &after).unwrap();
         let rows = &page["default"];
         assert!(rows.len() <= 32);
         actual.extend(rows.iter().map(|(id, _, _)| id.clone()));
@@ -1663,7 +1768,7 @@ async fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
     }
     assert_eq!(actual, expected);
     let wrapped_agents = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
+        &db,
         "",
         &BTreeMap::from([("default".into(), actual.last().unwrap().clone())]),
     )
@@ -1675,35 +1780,52 @@ async fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
             .collect::<Vec<_>>(),
         actual.iter().take(32).collect::<Vec<_>>()
     );
+}
+
+#[tokio::test]
+async fn pending_backlog_tail_beyond_the_historical_total_limit_is_reachable() {
+    let fixture = Fixture::new().await;
+    let expected = seed_backlog(&fixture, 4100, false).await;
+    let db = fixture.store.test_reader().expect("reader");
+    let page = account_registry::target_page(
+        &db,
+        "",
+        &BTreeMap::from([("default".into(), expected[4095].clone())]),
+    )
+    .unwrap();
+    assert_eq!(
+        page["default"]
+            .iter()
+            .map(|(id, _, _)| id)
+            .collect::<Vec<_>>(),
+        expected[4096..].iter().collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn account_backlog_pages_traverse_and_wrap() {
     let fixture = Fixture::new().await;
     seed_backlog(&fixture, 130, true).await;
-    let first = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
-        "",
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let db = fixture.store.test_reader().expect("reader");
+    let first = account_registry::target_page(&db, "", &BTreeMap::new()).unwrap();
     assert_eq!(first.len(), 128);
-    let second = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
-        first.last_key_value().unwrap().0,
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let second =
+        account_registry::target_page(&db, first.last_key_value().unwrap().0, &BTreeMap::new())
+            .unwrap();
     assert_eq!(second.len(), 2);
     assert!(second.keys().all(|account| !first.contains_key(account)));
-    let wrapped_accounts = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
-        second.last_key_value().unwrap().0,
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let wrapped_accounts =
+        account_registry::target_page(&db, second.last_key_value().unwrap().0, &BTreeMap::new())
+            .unwrap();
     assert_eq!(wrapped_accounts.len(), 128);
     assert_eq!(
         wrapped_accounts.first_key_value().unwrap().0,
         first.first_key_value().unwrap().0
     );
+}
 
+#[tokio::test]
+async fn account_backlog_rejects_invalid_stored_account() {
     let fixture = Fixture::new().await;
     let source = fixture.agents[0]["id"].as_str().unwrap();
     let source = source.to_owned();
@@ -3272,9 +3394,13 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
                 )
                 .unwrap();
             let record: Value = serde_json::from_str(&raw).unwrap();
-            let held = record["status"] == "interrupted"
-                && record["autoWake"] == false
-                && record["restartRecovery"]["stage"] == "held";
+            let held = record["status"] == "queued"
+                && record["autoWake"] == true
+                && record["inFlight"] != true
+                && record["restartRecovery"]["stage"] == "held"
+                && record["contextRepairWait"]["scope"] == "native"
+                && record["contextRepairWait"]["events"]
+                    == json!(["a19e61c8-6156-4874-b8d8-9111b0a49fc4"]);
             let continued = record["restartRecovery"]["stage"] == "continued"
                 && record["status"] == "completed"
                 && record["inFlight"] != true;
@@ -3790,10 +3916,14 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
                 )
                 .unwrap();
             let record: Value = serde_json::from_str(&raw).unwrap();
-            // A provider crash while the backend runs is a disconnect, not a restart.
-            if record["disconnectRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
-                && record["error"] == "Codex disconnected. Review the transcript before resuming."
-                && record["restartRecovery"].is_null()
+            // Unknown starts use the native-history hold introduced in 1987a373:
+            // queued is a reconciliation state, not permission to resend input.
+            if record["restartRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
+                && record["restartRecovery"]["stage"] == "held"
+                && record["status"] == "queued"
+                && record["error"].as_str().is_some_and(|error| {
+                    error.starts_with("Context repair waits for a confirmed input receipt")
+                })
             {
                 break record;
             }
@@ -3807,7 +3937,9 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
             direct_agent_debug(&fixture.store, agent_id)
         )
     });
-    assert_eq!(held["autoWake"], false);
+    assert_eq!(held["autoWake"], true);
+    assert_eq!(held["inFlight"], false);
+    assert_eq!(held["contextRepairWait"]["events"], json!([body["id"]]));
     assert_eq!(
         fixture
             .store

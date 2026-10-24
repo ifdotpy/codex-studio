@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import uuid
+from unittest.mock import patch
 
 import layr_agents
 
@@ -18,7 +19,10 @@ class LineSave(unittest.TestCase):
             state, root = folder / "state", folder / "layr"
             project, agent = "a" * 64, str(uuid.uuid4())
             (root / "projects" / project / "lines" / "main").mkdir(parents=True)
-            handlers = layr_agents.AgentHandlers(state, root)
+            with patch("layr_agents.subprocess.run") as system, patch.object(
+                    layr_agents.AgentHandlers, "join_project_groups"):
+                handlers = layr_agents.AgentHandlers(state, root)
+            system.assert_not_called()
             (handlers.associations / (agent + ".json")).write_text(json.dumps(
                 {"agentId": agent, "projectId": project, "line": "main", "subpath": ".",
                  "readOnly": False, "owner": "studio-p-x", "uid": 2000, "gid": 2000, "home": "/home/x"}))

@@ -37,6 +37,11 @@ export type Work = WorkEntityDto;
 export type Edge = EdgeEntityDto;
 
 type SnapshotRuntime = WorkspaceEntityDto & {
+  rateLimitsByAccount?: Record<
+    string,
+    components["schemas"]["AccountRateLimitsDto"]
+  >;
+  rateLimits?: components["schemas"]["AccountRateLimitsDto"] | null;
   agents: Agent[];
   rooms: Room[];
   tasks: BackgroundTask[];

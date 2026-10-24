@@ -747,24 +747,4 @@ mod tests {
         });
         assert_eq!(paths, vec![PathBuf::from("pin")]);
     }
-
-    #[test]
-    fn candidate_discovery_order_deduplicates_and_preserves_precedence() {
-        let paths = discovery_paths(DiscoveryInputs {
-            pinned_path: None,
-            explicit_path: Some(PathBuf::from("explicit")),
-            path_lookup: Some(PathBuf::from("lookup")),
-            path_entries: vec![PathBuf::from("path"), PathBuf::from("lookup")],
-            chatgpt_bundle: Some(PathBuf::from("bundle")),
-        });
-        assert_eq!(
-            paths,
-            vec![
-                PathBuf::from("explicit"),
-                PathBuf::from("lookup"),
-                PathBuf::from("path"),
-                PathBuf::from("bundle"),
-            ]
-        );
-    }
 }

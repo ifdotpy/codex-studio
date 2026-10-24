@@ -1505,7 +1505,7 @@ mod managed_work_port_tests {
     }
 
     #[tokio::test]
-    async fn acceptance_gate_tool_caller_cannot_submit_another_owners_task() {
+    async fn authenticated_task_caller_cannot_submit_another_owners_task() {
         let (state, store, directory) = state().await;
         let cwd = directory.path().to_string_lossy().into_owned();
         store
@@ -1520,79 +1520,54 @@ mod managed_work_port_tests {
             .await
             .expect("lead fixture updates");
         let port = managed_work_port(state, None);
-        let created = written(
-            port.act(
-                "lead",
-                &json!({"action":"create","title":"Lead task","owner":"lead","gate":"true"}),
-                "owned-create",
-            )
-            .await,
-        );
-        let task = created["id"]
-            .as_str()
-            .expect("created task identity is text");
-        let outcome=port.act("worker",&json!({"action":"submit","task_id":task,"result":"spoofed","checks":"none","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),"spoof-submit").await;
-        assert!(
-            matches!(outcome, WorkActionOutcome::Refused(message) if message.contains("Only the assigned worker"))
-        );
-        let task = task.to_owned();
-        let unchanged = store
-            .read_async("gate-test/owner", move |tx| {
-                studio_runtime_store::WorkItemsRepository::work_record(tx, &task)
-            })
-            .await
-            .expect("task query succeeds")
-            .expect("created task exists");
-        assert!(
-            unchanged["results"]
-                .as_array()
-                .expect("task results are an array")
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn authenticated_task_caller_cannot_submit_another_owners_task() {
-        let (state, store, _directory) = state().await;
-        let port = managed_work_port(state, None);
-        let created = written(
-            port.act(
-                "lead",
-                &json!({
-                    "action":"create", "title":"Lead task", "owner":"lead"
-                }),
-                "auth-create-owned",
-            )
-            .await,
-        );
-        let task = created["id"]
-            .as_str()
-            .expect("created task identity is text")
-            .to_owned();
-        let submit = json!({"action":"submit", "task_id":task,
-            "result":"done", "checks":"checked", "revision":"abc1234"});
-        let outcome = port.act("worker", &submit, "auth-spoof-submit").await;
-        assert!(
-            matches!(&outcome, WorkActionOutcome::Refused(message)
-            if message.contains("Only the assigned worker")),
-            "{outcome:?}"
-        );
-        let task_id = task.clone();
-        let unchanged = store
-            .read_async("auth-test/owner", move |tx| {
-                studio_runtime_store::WorkItemsRepository::work_record(tx, &task_id)
-            })
-            .await
-            .expect("task query succeeds")
-            .expect("created task exists");
-        assert!(
-            unchanged["results"]
-                .as_array()
-                .expect("task results are an array")
-                .is_empty()
-        );
-        let submitted = written(port.act("lead", &submit, "auth-owner-submit").await);
-        assert_eq!(submitted["results"][0]["agent"], "lead");
+        for (name, gate) in [("ungated", None), ("gated", Some("true"))] {
+            let created = written(
+                port.act(
+                    "lead",
+                    &json!({
+                        "action":"create", "title":"Lead task", "owner":"lead", "gate":gate
+                    }),
+                    &format!("{name}-create"),
+                )
+                .await,
+            );
+            let task = created["id"]
+                .as_str()
+                .expect("created task identity")
+                .to_owned();
+            let submit = json!({"action":"submit", "task_id":task,
+                "result":"done", "checks":"checked", "revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"});
+            let outcome = port
+                .act("worker", &submit, &format!("{name}-spoof-submit"))
+                .await;
+            assert!(
+                matches!(&outcome, WorkActionOutcome::Refused(message)
+                if message.contains("Only the assigned worker")),
+                "{name}: {outcome:?}"
+            );
+            let unchanged = store
+                .read_async("auth-test/owner", move |tx| {
+                    let monitors: i64 =
+                        tx.query_row("SELECT COUNT(*) FROM runtime_monitors", [], |row| {
+                            row.get(0)
+                        })?;
+                    assert_eq!(monitors, 0, "refusal must not admit a gate monitor");
+                    studio_runtime_store::WorkItemsRepository::work_record(tx, &task)
+                })
+                .await
+                .expect("task query succeeds")
+                .expect("created task exists");
+            assert!(
+                unchanged["results"]
+                    .as_array()
+                    .expect("task results")
+                    .is_empty()
+            );
+            if gate.is_none() {
+                let submitted = written(port.act("lead", &submit, "auth-owner-submit").await);
+                assert_eq!(submitted["results"][0]["agent"], "lead");
+            }
+        }
     }
 
     #[tokio::test]

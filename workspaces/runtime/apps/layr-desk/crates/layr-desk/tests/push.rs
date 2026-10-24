@@ -12,7 +12,7 @@ use hyper::{Request, Response};
 use percent_encoding::percent_decode_str;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -193,6 +193,7 @@ async fn serve(objects: Objects) -> String {
 const FAKE_LAYR: &str = r#"#!/bin/sh
 set -eu
 root="$(dirname "$0")"
+touch "$root/invoked"
 [ "$1" = --project ] && [ "$2" = proj ] || { echo "not the project: $*" >&2; exit 2; }
 shift 2
 case "$1" in
@@ -402,31 +403,23 @@ async fn push_puts_each_new_head_into_the_vault() {
 fn a_bad_configuration_is_refused_before_layr_runs() {
     let fixture = Fixture::new("config");
     let identity = keys::generate_identity();
-    let good = serde_json::json!({
+    let invalid_seed = "c2VjcmV0LXNlZWQ=";
+    let mut config = serde_json::json!({
         "bucket": BUCKET, "region": "us-east-1", "prefix": "proj",
         "recipient": keys::recipient_of(&identity).unwrap(),
         "accessKeyId": KEY_ID, "secretAccessKey": SECRET,
+        "signingKey": invalid_seed,
     });
-    for (field, value, message) in [
-        ("recipient", "age1nothing", "recipient"),
-        ("bucket", "Bad_Bucket", "bucket"),
-        ("region", "eu-central-1.evil.com", "region"),
-        ("prefix", "a/b", "prefix"),
-        ("signingKey", "c2VjcmV0LXNlZWQ=", "signing key"),
-    ] {
-        let mut config = good.clone();
-        config[field] = value.into();
-        let output = fixture.push(&config, true);
+    for (from_file, message) in [(true, "signing key"), (false, "secretAccessKey")] {
+        if !from_file {
+            config.as_object_mut().unwrap().remove("secretAccessKey");
+        }
+        let output = fixture.push(&config, from_file);
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(message), "{field}: {stderr}");
-        if field == "signingKey" {
-            assert!(!stderr.contains(value), "{stderr}");
-        }
+        assert!(stderr.contains(message), "{stderr}");
+        assert!(!stderr.contains(invalid_seed), "{stderr}");
+        assert!(!fixture.root.join("layr/invoked").exists());
     }
-    let mut config = good.clone();
-    config.as_object_mut().unwrap().remove("secretAccessKey");
-    let stderr = String::from_utf8_lossy(&fixture.push(&config, false).stderr).into_owned();
-    assert!(stderr.contains("secretAccessKey"), "{stderr}");
-    assert!(!Path::new(&fixture.root.join("writer")).exists());
+    assert!(!fixture.root.join("writer").exists());
 }

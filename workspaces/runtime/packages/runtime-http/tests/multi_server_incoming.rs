@@ -45,7 +45,7 @@ struct FixtureCredentials {
 }
 
 /// Refresh valid frozen signatures without repairing deliberately forged requests.
-fn fresh_headers(request: &common::FixtureRequest) -> Vec<(String, String)> {
+fn fresh_headers(request: &common::FixtureRequest, nonce: Option<&str>) -> Vec<(String, String)> {
     use std::collections::BTreeMap;
     use studio_runtime_services::remote_transport::{
         MultiServerSigningInput, multi_server_signing_bytes, verify_signature,
@@ -57,14 +57,14 @@ fn fresh_headers(request: &common::FixtureRequest) -> Vec<(String, String)> {
     let mut credentials: FixtureCredentials =
         serde_json::from_value(serde_json::to_value(headers).expect("credential map"))
             .expect("typed fixture credentials");
-    let wire = |timestamp: &str| {
+    let wire = |timestamp: &str, nonce: &str| {
         multi_server_signing_bytes(MultiServerSigningInput {
             method: &request.method,
             target: &request.target,
             server_id: &credentials.server,
             client_id: &credentials.client,
             timestamp,
-            nonce: &credentials.nonce,
+            nonce,
             request_id: &credentials.request,
             body: request.raw.as_bytes(),
         })
@@ -72,7 +72,7 @@ fn fresh_headers(request: &common::FixtureRequest) -> Vec<(String, String)> {
     let identity = common::signing_identity();
     let valid = verify_signature(
         identity.public_key_pem(),
-        &wire(&credentials.timestamp),
+        &wire(&credentials.timestamp, &credentials.nonce),
         &credentials.signature,
     )
     .is_ok();
@@ -82,7 +82,11 @@ fn fresh_headers(request: &common::FixtureRequest) -> Vec<(String, String)> {
         .as_secs()
         .to_string();
     if valid {
-        credentials.signature = identity.sign(&wire(&timestamp));
+        credentials.signature =
+            identity.sign(&wire(&timestamp, nonce.unwrap_or(&credentials.nonce)));
+    }
+    if let Some(nonce) = nonce {
+        credentials.nonce = nonce.to_owned();
     }
     credentials.timestamp = timestamp;
     let headers: BTreeMap<String, String> =
@@ -92,6 +96,10 @@ fn fresh_headers(request: &common::FixtureRequest) -> Vec<(String, String)> {
 }
 
 fn incoming(case: &Value) -> Request<Body> {
+    incoming_with_nonce(case, None)
+}
+
+fn incoming_with_nonce(case: &Value, nonce: Option<&str>) -> Request<Body> {
     let case: common::FixtureRequest =
         serde_json::from_value(case.clone()).expect("fixture request");
     let raw = &case.raw;
@@ -104,7 +112,7 @@ fn incoming(case: &Value) -> Request<Body> {
         .header("x-forwarded-for", "100.64.0.2")
         .header("content-type", "application/json")
         .header("content-length", raw.len().to_string());
-    for (name, value) in fresh_headers(&case) {
+    for (name, value) in fresh_headers(&case, nonce) {
         request = request.header(name, value);
     }
     let mut request = request.body(Body::from(raw.to_owned())).expect("request");
@@ -848,28 +856,6 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
         .await
         .expect("link and owner rows");
     let data = &common::fixture().data["eventRequest"];
-    let raw = data["raw"].as_str().unwrap();
-    let mut request = Request::builder()
-        .method(data["method"].as_str().unwrap())
-        .uri(data["target"].as_str().unwrap())
-        .header("host", "127.0.0.1:4000")
-        .header("x-forwarded-host", "local.fixture.ts.net")
-        .header("x-forwarded-proto", "https")
-        .header("x-forwarded-for", data["address"].as_str().unwrap())
-        .header("content-type", "application/json")
-        .header("content-length", raw.len().to_string());
-    let signed: common::FixtureRequest =
-        serde_json::from_value(data.clone()).expect("event request");
-    for (name, value) in fresh_headers(&signed) {
-        request = request.header(name, value);
-    }
-    for login in data["logins"].as_array().unwrap() {
-        request = request.header("tailscale-user-login", login.as_str().unwrap());
-    }
-    let mut request = request.body(Body::from(raw.to_owned())).unwrap();
-    request.extensions_mut().insert(ConnectInfo(
-        "127.0.0.1:4321".parse::<std::net::SocketAddr>().unwrap(),
-    ));
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
@@ -880,20 +866,40 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
         None,
     )
     .with_multi_server_boundary(Arc::new(common::boundary()));
-    let response = router(state)
-        .expect("router")
-        .oneshot(request)
-        .await
-        .expect("signed event response");
-    assert_eq!(response.status(), StatusCode::OK);
-    let receipt: Value = serde_json::from_slice(
-        &to_bytes(response.into_body(), 4096)
+    let app = router(state).expect("router");
+    let mut receipt = None;
+    for nonce in [
+        "abcdefghijklmnopqrstuvwxyz012345",
+        "bcdefghijklmnopqrstuvwxyz0123456",
+    ] {
+        let response = app
+            .clone()
+            .oneshot({
+                let mut request = incoming_with_nonce(data, Some(nonce));
+                for login in data["logins"].as_array().unwrap() {
+                    request.headers_mut().append(
+                        "tailscale-user-login",
+                        login.as_str().unwrap().parse().unwrap(),
+                    );
+                }
+                request
+            })
             .await
-            .expect("receipt body"),
-    )
-    .expect("receipt JSON");
-    assert_eq!(receipt["outcome"], "applied");
-    assert_eq!(receipt["value"]["eventId"], "python-event-http");
+            .expect("signed event response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let replay: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 4096)
+                .await
+                .expect("receipt body"),
+        )
+        .expect("receipt JSON");
+        assert_eq!(replay["outcome"], "applied");
+        assert_eq!(replay["value"]["eventId"], "python-event-http");
+        if let Some(first) = &receipt {
+            assert_eq!(&replay, first);
+        }
+        receipt = Some(replay);
+    }
     let db = store.test_reader().expect("test store reader");
     let count: i64 = db
         .query_row(

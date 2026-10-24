@@ -1193,7 +1193,15 @@ async fn restart_history_case(outcome: &str) {
                     assert_eq!(publications[0].1, "item/completed");
                     assert_eq!(publications[1].1, "turn/completed");
                 } else {
-                    assert_eq!(state.record().await["turnId"], "old-turn");
+                    let record = state.record().await;
+                    assert_eq!(record["restartRecovery"]["stage"], "held");
+                    assert_eq!(
+                        record["contextRepairWait"]["events"],
+                        json!(["annotation:input"])
+                    );
+                    assert_ne!(record["inFlight"], true);
+                    assert!(record["turnId"].is_null());
+                    assert_eq!(state.event_status("input").await, "uncertain");
                 }
             }
             assert!(
@@ -1239,17 +1247,25 @@ async fn restart_history_case(outcome: &str) {
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test]
-async fn startup_first_pass_reconciles_exact_history_without_replaying_unknown_input() {
-    for outcome in [
-        "delivered",
-        "terminal",
-        "terminal_failure",
-        "not_applied",
-        "unavailable",
-    ] {
-        restart_history_case(outcome).await;
-    }
+macro_rules! recovery_cases {
+    ($($name:ident => $case:expr),* $(,)?) => {$(
+        #[tokio::test]
+        async fn $name() { $case.await; }
+    )*};
+}
+
+recovery_cases! {
+    startup_first_pass_reconciles_exact_history_without_replaying_unknown_input_delivered => restart_history_case("delivered"),
+    startup_first_pass_reconciles_exact_history_without_replaying_unknown_input_terminal => restart_history_case("terminal"),
+    startup_first_pass_reconciles_exact_history_without_replaying_unknown_input_terminal_failure => restart_history_case("terminal_failure"),
+    startup_first_pass_reconciles_exact_history_without_replaying_unknown_input_not_applied => restart_history_case("not_applied"),
+    startup_first_pass_reconciles_exact_history_without_replaying_unknown_input_unavailable => restart_history_case("unavailable"),
+    automatic_recovery_continues_leads_and_workers_once_after_provider_loss_or_restart_provider_lead => automatic_recovery_case(false, false, false),
+    automatic_recovery_continues_leads_and_workers_once_after_provider_loss_or_restart_provider_child => automatic_recovery_case(false, true, false),
+    automatic_recovery_continues_leads_and_workers_once_after_provider_loss_or_restart_restart_lead => automatic_recovery_case(true, false, false),
+    automatic_recovery_continues_leads_and_workers_once_after_provider_loss_or_restart_restart_child => automatic_recovery_case(true, true, false),
+    automatic_recovery_preserves_explicitly_stopped_workers_after_provider_loss_or_restart_provider => automatic_recovery_case(false, true, true),
+    automatic_recovery_preserves_explicitly_stopped_workers_after_provider_loss_or_restart_restart => automatic_recovery_case(true, true, true),
 }
 
 /// A turn that ran when the backend and its providers were replaced, as in the
@@ -1452,22 +1468,6 @@ async fn automatic_recovery_case(restart: bool, child: bool, stopped: bool) {
         assert_eq!(state.event_status("input").await, "delivered");
     }
     worker.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn automatic_recovery_continues_leads_and_workers_once_after_provider_loss_or_restart() {
-    for restart in [false, true] {
-        for child in [false, true] {
-            automatic_recovery_case(restart, child, false).await;
-        }
-    }
-}
-
-#[tokio::test]
-async fn automatic_recovery_preserves_explicitly_stopped_workers_after_provider_loss_or_restart() {
-    for restart in [false, true] {
-        automatic_recovery_case(restart, true, true).await;
-    }
 }
 
 /// Idle agents of the same account whose ids sort before the test agent. They
@@ -2875,8 +2875,7 @@ async fn retained_deadline_during_intent_never_writes_after_expiry() {
     let port = worker.retained_session();
     *state.bridge.faults.pause_operation.lock().unwrap() = Some("retained_submitted".into());
     let mut call = request(&state, &port, "expires-in-queue");
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-    call.deadline = deadline.into_std();
+    let deadline = tokio::time::Instant::from_std(call.deadline);
     let sender = port.clone();
     let first = call.clone();
     let waiter = tokio::spawn(async move { sender.request(first).await });
@@ -2932,26 +2931,31 @@ async fn retained_response_before_write_receipt_stays_positive() {
     let first = call.clone();
     let waiter = tokio::spawn(async move { sender.request(first).await });
     let wire = peer.next_write().await;
+    *state.bridge.faults.pause_after_operation.lock().unwrap() = Some("retained_result".into());
     let cursor = peer
         .frame(json!({"id":wire.value["id"],"result":{"thread":{"id":"fake-thread-0"}}}))
         .await;
-    assert!(
-        wire.receipt
-            .send(CommandReceipt::Written {
-                remote_id: None,
-                duplicate: false
-            })
-            .is_ok()
-    );
+    tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        state.bridge.faults.paused_after.notified(),
+    )
+    .await
+    .expect("response result committed before write receipt");
+    wire.receipt
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        })
+        .ok()
+        .unwrap();
+    *state.bridge.faults.pause_after_operation.lock().unwrap() = None;
+    state.bridge.faults.release_after.notify_one();
     peer.acknowledged(cursor).await;
-    assert!(matches!(
-        waiter.await.unwrap().unwrap().result,
-        RequestResult::Reply(_)
-    ));
-    assert!(matches!(
-        port.request(call).await.unwrap().result,
-        RequestResult::Reply(_)
-    ));
+    let expected = RequestResult::Reply(json!({"thread":{"id":"fake-thread-0"}}));
+    assert_eq!(waiter.await.unwrap().unwrap().result, expected);
+    worker_barrier(&worker).await;
+    assert_eq!(port.request(call).await.unwrap().result, expected);
+    assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
 }
 
@@ -3041,56 +3045,4 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
         }
         worker.shutdown().await.unwrap();
     }
-}
-
-#[tokio::test]
-async fn capability_config_read_checks_actor_profile_and_directory() {
-    let state = State::new().await;
-    let id = state.agent.clone();
-    state
-        .bridge
-        .run(move |store| async move {
-            store
-                .transaction(move |tx| {
-                    let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
-                    row.extra
-                        .insert("capabilityProfile".into(), json!({"mcpServers":["docs"]}));
-                    AgentRepository::put(tx, &row)
-                })
-                .await?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    let cwd = state.record().await["cwd"].clone();
-    let mut peer = Peer::new();
-    let mut worker = peer.worker(state.bridge.clone()).await;
-    let port = worker.retained_session();
-    let make = |suffix: &str, directory: Value| {
-        monitor_request(
-            &state,
-            &port,
-            format!("capability-config:{}:{suffix}", state.agent),
-            Method::ConfigRead,
-            json!({"cwd":directory,"includeLayers":false}),
-        )
-    };
-    assert_eq!(
-        port.request(make("foreign", json!("/other")))
-            .await
-            .unwrap_err(),
-        PortError::Identity
-    );
-    assert!(peer.writes.try_recv().is_err());
-    let request = make("valid", cwd);
-    let sender = port.clone();
-    let mut task = tokio::spawn(async move { sender.request(request).await });
-    let wire = monitor_write(&mut peer, &mut task, "config/read").await;
-    let config = json!({"config":{"mcp_servers":{"docs":{"command":"docs"},"project":{"command":"project"}}}});
-    peer.reply(&wire, config.clone()).await;
-    assert_eq!(
-        task.await.unwrap().unwrap().result,
-        RequestResult::Reply(config)
-    );
-    worker.shutdown().await.unwrap();
 }

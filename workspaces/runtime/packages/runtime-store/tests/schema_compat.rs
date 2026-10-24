@@ -607,51 +607,18 @@ fn replaced_derived_objects(
 
 fn sync_seed_rows(path: &Path) -> Vec<String> {
     let db = Connection::open(path).expect("fixture DB opens");
-    let identity: (i64, Option<i64>) = db
-        .query_row(
-            "SELECT COUNT(*),MIN(length(id)) FROM sync_identity",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("identity seed reads");
-    let mut rows = vec![format!(
-        "identity:{}:{}",
-        identity.0,
-        identity.1.unwrap_or_default()
-    )];
-    let mut statement = db
-        .prepare("SELECT id,value FROM sync_generation ORDER BY id")
-        .expect("generation query prepares");
-    rows.extend(
-        statement
-            .query_map([], |row| {
-                Ok(format!(
-                    "generation:{}:{}",
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?
-                ))
-            })
-            .expect("generation query executes")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("generation seeds read"),
-    );
-    let mut statement = db
-        .prepare("SELECT key,value FROM sync_entity_meta ORDER BY key")
-        .expect("entity meta query prepares");
-    rows.extend(
-        statement
-            .query_map([], |row| {
-                Ok(format!(
-                    "meta:{}:{}",
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?
-                ))
-            })
-            .expect("entity meta query executes")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("entity meta seed reads"),
-    );
-    rows
+    db.prepare(
+        "SELECT json_array('identity',id) FROM sync_identity
+         UNION ALL SELECT json_array('generation',id,value) FROM sync_generation
+         UNION ALL SELECT json_array('meta',key,value) FROM sync_entity_meta
+         UNION ALL SELECT json_array('document',seq,scope,id,payload,deleted) FROM sync_documents
+         UNION ALL SELECT json_array('entity',collection,id,seq,hash,payload,deleted) FROM sync_entities
+         UNION ALL SELECT json_array('version',seq,scope,hash,deleted,updated) FROM sync_versions
+         UNION ALL SELECT json_array('event',id,agent,kind,text,status,created,epoch,turn_id,error) FROM runtime_events
+         ORDER BY 1",
+    ).expect("sync snapshot prepares")
+        .query_map([], |row| row.get(0)).expect("sync snapshot reads")
+        .collect::<Result<Vec<_>, _>>().expect("sync snapshot rows")
 }
 
 #[tokio::test]
@@ -714,15 +681,7 @@ async fn current_event_windows_remain_atomic_when_reopened_by_rust() {
         })
         .await
         .expect("Rust event writes need only its existing portable projection functions");
-    let reader = store.test_reader().expect("committed reader opens");
-    let before: i64 = reader
-        .query_row(
-            "SELECT MAX(seq) FROM sync_entities WHERE collection='event'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("committed event sequence reads");
-    drop(reader);
+    let before = sync_seed_rows(&state.join("canvas.sqlite3"));
     let rollback: Result<(), StoreError> = store
         .transaction(move |tx| {
             tx.execute("DELETE FROM runtime_events WHERE id='portable-0002'", [])?;
@@ -733,15 +692,9 @@ async fn current_event_windows_remain_atomic_when_reopened_by_rust() {
         .await;
     assert!(rollback.is_err());
     let reader = store.test_reader().expect("reader opens after rollback");
-    let after: i64 = reader
-        .query_row(
-            "SELECT MAX(seq) FROM sync_entities WHERE collection='event'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("rolled-back event sequence reads");
     assert_eq!(
-        before, after,
+        before,
+        sync_seed_rows(&state.join("canvas.sqlite3")),
         "rollback preserves source, window, and checkpoint together"
     );
     let obsolete: i64 = reader
@@ -970,7 +923,7 @@ async fn sync_bootstrap_failure_rolls_back_earlier_ddl_and_seed_rows() {
 fn create_from_live_schema(root: &Path) {
     let schema: Value = serde_json::from_str(LIVE_SCHEMA).expect("schema-only fixture parses");
     for database in ["canvas.sqlite3", "analytics.sqlite3"] {
-        let connection = Connection::open(root.join(database)).expect("database file opens");
+        let mut connection = Connection::open(root.join(database)).expect("database file opens");
         connection
             .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
             .expect("WAL and FULL are enabled");
@@ -1004,14 +957,16 @@ fn create_from_live_schema(root: &Path) {
                 .cmp(&object_order(&right.0))
                 .then(left.1.cmp(&right.1))
         });
+        let transaction = connection.transaction().expect("fixture DDL transaction");
         for (_, _, sql) in objects {
-            connection.execute_batch(&sql).unwrap_or_else(|error| {
+            transaction.execute_batch(&sql).unwrap_or_else(|error| {
                 panic!("live fixture DDL failed for {database}: {error}; SQL={sql}")
             });
         }
-        connection
+        transaction
             .pragma_update(None, "user_version", 0)
             .expect("version matches supplied state");
+        transaction.commit().expect("fixture catalog commits");
     }
 }
 

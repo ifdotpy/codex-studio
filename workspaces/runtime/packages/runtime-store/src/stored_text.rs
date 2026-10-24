@@ -284,6 +284,17 @@ mod tests {
         frame.insert(0, STORED_TEXT_FORMAT_ZSTD);
         assert_eq!(decode_blob(&frame), Err(StoredTextError::NoChecksum));
 
+        plain
+            .set_parameter(CParameter::ChecksumFlag(true))
+            .expect("checksum parameter");
+        plain
+            .set_parameter(CParameter::ContentSizeFlag(false))
+            .expect("content size parameter");
+        let mut frame = Vec::with_capacity(256);
+        plain.compress2(&mut frame, b"unknown size").expect("frame");
+        frame.insert(0, STORED_TEXT_FORMAT_ZSTD);
+        assert_eq!(decode_blob(&frame), Err(StoredTextError::UnknownSize));
+
         // Hand-made frames (RFC 8878 section 3.1.1): magic, header descriptor,
         // optional fields, one empty last raw block, and a 4-byte checksum.
         const MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];

@@ -15,21 +15,34 @@ model request or a real reset-credit redemption.
 
 ## Fast, comprehensive, and manual checks
 
-`just test-fast` runs selected deterministic Rust safety witnesses, desktop
+`just test-fast` runs the [`fast` nextest profile](../.config/nextest.toml), desktop
 recovery and retained-helper boundaries, web API/type witnesses, tooling tests,
-and generated-contract and dependency guards, and the VM guest Python suite through its
-[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mjs). It generates web WASM before web
-checks. The [WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.mjs)
-requires the exact binding generator version pinned by the client-wasm crate;
-its missing-tool error gives the installation command. Cold builds are outside
-the warm short-tier target. The short tier starts no browser or model provider.
+generated-contract and dependency guards, and the VM guest Python suite through its
+[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mjs). The facade uses three
+fixed concurrent lanes: Rust preparation and tests, JavaScript checks, and the guest
+suite. Cargo compilation stays in the Rust lane with four build jobs. WASM is
+generated once; the renderer is built once before the native crate embeds it.
+Type checks wait for WASM; web tests wait for the workspace build's debug
+`examples/draft-server`, and the guest waits for its debug supervisor. The gate
+passes both binary paths explicitly. These checks overlap the Rust build or test run. The
+[WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.mjs) requires
+the exact binding generator version pinned by the client-wasm crate; its error
+gives the installation command. Cold builds are outside the warm short-tier
+target. The short tier starts no browser or model provider.
 
 `just test-comprehensive` runs the provider bridge, workspace Clippy, workspace
-Rust nextest, web type and unit checks, tooling tests, and browser smoke. It builds
-the Rust HTTP fixture and the renderer embedded by the native client. Run it on
-the exact commit before every push to `main` and before packaging for installation.
-Run `just test-fast` before every PR and merge and state its result in the PR.
-Workers run focused witnesses; the lead runs these gates on the integrated batch.
+Rust nextest with the `ci` profile, web type and unit checks, tooling tests, the
+shared desktop/helper and guest witnesses, and browser smoke. Both local tiers use
+the same full workspace, Cargo features, development/test profiles and target
+directory, including native coverage. A workspace `cargo build --tests --bins`
+prepares the supervisor, contracts tool and HTTP fixture without package-only or
+release builds; one workspace nextest invocation selects the tests. Consumers get
+explicit debug binary paths. Browser smoke uses the prepared renderer and fixture,
+without repeating WASM generation, main TypeScript checking or the renderer build.
+Run it on the exact commit before every push to `main` and before packaging for
+installation. Run `just test-fast` before every PR and merge and state its result
+in the PR. Workers run focused witnesses; the lead runs these gates on the
+integrated batch.
 
 Both tiers use Cargo contracts and Rust-owned fixture data. The Python backend,
 its pseudo-package, native operations extension, mypy gate, runner categories,
@@ -96,14 +109,34 @@ or unowned-file changes and prints the reason per selected package.
 `just check-affected <base> --dry-run` prints that selection without running
 checks.
 
-Package names and directories come from pnpm and Cargo manifests, with `server`
-representing the current Python app. Native manifests and runners remain the
+Package names and directories come from pnpm and Cargo manifests. Native manifests and runners remain the
 owners of test discovery and selection. All facade commands work from a
 repository subdirectory and save complete test logs outside the checkout in
 `$XDG_CACHE_HOME/codex-studio/checks` (or `~/.cache/codex-studio/checks`). Set
 `CODEX_STUDIO_CHECKS_CACHE` to choose another location. The facade removes run
 directories older than 14 days at the start of each run; recent logs are kept
-for reproductions.
+for future reproductions. Gates save one log per step and an aggregate `full.log`
+and `summary.json` in declaration order, including per-step wall times and every
+independent failure. A failed preparation skips its consumers; the first declared
+failure is `failedStep`. Interrupts stop and reap only the run's owned process groups.
+Gate test children and bridge Vitest workers discard ambient `CLAUDE*`, `STUDIO_*`
+and `AI_AGENT` settings using `scrubAgentEnvironment` in `gate-config.mjs`;
+fixtures and the gate supply their explicit binary paths afterward.
+
+`just test-fast-rest` runs the comprehensive remainder without browser smoke.
+`just test-fast-rest-non-rust` consumes prebuilt WASM, a debug supervisor and draft-server and
+runs only the JavaScript and guest lanes: no Clippy, WASM builder or Rust
+compilation. Hosted CI restores commit- and SHA-256-verified artifacts from the
+workspace build job for this remainder and browser smoke. Standalone browser
+smoke prepares itself; `just test-browser-smoke --prepared` consumes those inputs.
+
+Fast Vitest witnesses live in each package's `vitest.fast.config.*`; each package
+runs once with `--project fast`. File isolation and the existing worker bounds
+remain enabled. The selected resource-event file includes the draft ordering
+witness, so it needs no second `-t` invocation. Main, API-contract and client-helper
+TypeScript programs remain separate. Their `--incremental` build information is
+stored outside the checkout, with a separate cache file per program and a
+checkout-specific gate cache directory.
 
 For Vitest packages, the positional case is always a substring of the test
 file path, so `just test codex-agents-web errorPresentation` loads the matching
@@ -186,9 +219,19 @@ build without the 10 s alert grace.
 ## Add or move a test
 
 Keep Rust tests in the owning crate. Register integration modules in its
-`tests/integration.rs` entry point. Add each short-tier witness as its own line
-in the facade's matching `nextestAnyOf` list, preserving existing selectors.
-Package manifests own `codexStudioChecks` mappings. Do not add another suite list.
+`tests/integration.rs` entry point. Add each short-tier witness as its own clause
+in the `fast` profile's scoped union in [nextest.toml](../.config/nextest.toml),
+preserving its package and binary-kind scope and adding a purpose comment. The
+old facade `nextestAnyOf` lists are removed. Use nextest's native `list --profile
+fast` to inspect selection; `ci` is the comprehensive superset. The migration's
+[recorded parity evidence](../workspaces/tooling/apps/repository-checks/fixtures/gate-selection-parity.json)
+preserves the original 484-ID migration evidence and compares the 526 witnesses
+on the integration baseline, with the explicitly added schema-preparation witness
+bringing the current selection to 527. Every Linux clause matches tests, and the
+selection is a subset of comprehensive.
+Fast Vitest includes belong in the package's `vitest.fast.config.*`, never a
+second facade or package-script file list. Package manifests own
+`codexStudioChecks` mappings.
 
 ## Mutation testing
 

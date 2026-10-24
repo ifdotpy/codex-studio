@@ -4,7 +4,9 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, future::Future, task::Poll};
 use studio_runtime_process::{
     BackendId, BackendIdentity, Generation, ProviderHandle, ProviderLaunchSpec,
-    provider_seam::{JournalPayload, OpenOptions, ProviderTaskFactory, SessionClock, Shutdown},
+    provider_seam::{
+        AdapterError, JournalPayload, OpenOptions, ProviderTaskFactory, SessionClock, Shutdown,
+    },
     provider_task::SupervisorProviderTaskFactory,
 };
 use studio_runtime_providers::{Frame, RequestId};
@@ -153,13 +155,85 @@ async fn cancelled_prepare_never_returns_a_usable_generation() {
     );
 }
 
+async fn rejected_prepare(confirm_detach: bool) -> AdapterError {
+    use tokio::io::AsyncReadExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let listener = UnixListener::bind(root.path().join("supervisor.sock")).unwrap();
+    let factory = SupervisorProviderTaskFactory::new(BackendIdentity {
+        backend_id: BackendId("rejected-prepare".into()),
+        state_dir: root.path().into(),
+    });
+    let prepare = tokio::spawn(async move {
+        factory
+            .prepare(
+                ProviderHandle::for_account("fixture"),
+                options(),
+                Shutdown::default(),
+            )
+            .await
+    });
+    let (socket, _) = listener.accept().await.unwrap();
+    let mut stream = BufReader::new(socket);
+    request(&mut stream).await;
+    respond(
+        &mut stream,
+        json!({"ok":false,"protocol":2,"error":"fixture handshake rejected"}),
+    )
+    .await;
+    assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
+    if confirm_detach {
+        stream.get_mut().shutdown().await.unwrap();
+    } else {
+        // Withhold the supervisor EOF after observing the adapter's FIN.
+        tokio::time::pause();
+    }
+    prepare.await.unwrap().err().expect("prepare must fail")
+}
+
+#[tokio::test]
+async fn prepare_reports_handshake_error_and_unconfirmed_detach() {
+    let error = rejected_prepare(false).await;
+    let report = error.to_string();
+    assert!(report.contains("fixture handshake rejected"), "{report}");
+    assert!(
+        report.contains("supervisor detach was not confirmed"),
+        "prepare lost its cleanup failure: {report}"
+    );
+    assert!(
+        report.contains(&AdapterError::Timeout.to_string()),
+        "{report}"
+    );
+    let source = std::error::Error::source(&error).expect("original preparation error");
+    assert!(source.to_string().contains("fixture handshake rejected"));
+    let AdapterError::PreparationCleanupUnconfirmed { cause, .. } = error else {
+        panic!("preparation must retain its typed cause and cleanup failure");
+    };
+    assert!(matches!(
+        *cause,
+        AdapterError::Supervisor(studio_runtime_process::SupervisorError::ProtocolMismatch {
+            detail, ..
+        }) if detail == "fixture handshake rejected"
+    ));
+}
+
+#[tokio::test]
+async fn prepare_preserves_handshake_error_after_confirmed_detach() {
+    assert!(matches!(
+        rejected_prepare(true).await,
+        AdapterError::Supervisor(studio_runtime_process::SupervisorError::ProtocolMismatch {
+            detail, ..
+        }) if detail == "fixture handshake rejected"
+    ));
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::process_support as support;
 
 // Retained child environment verification is implemented only on Linux.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() {
+async fn shutdown_detaches_and_another_backend_reattaches_at_same_generation() {
     let (state, mut supervisor) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-process/tests/wave7_p01_factory",
         || {
@@ -175,7 +249,7 @@ async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() 
     let launch = || OpenOptions {
         clock: SessionClock::default(),
         launch: ProviderLaunchSpec::new(
-            support::shell_command("while IFS= read -r line; do :; done"),
+            support::shell_command("printf 'ready\\n' >&2; while IFS= read -r line; do :; done"),
             support::child_environment(&state.0),
             state.0.clone(),
         ),
@@ -194,12 +268,18 @@ async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() 
         .unwrap();
     let pid = attachment.status.borrow().info.as_ref().unwrap().pid;
     supervisor.own_child(pid);
-    let _exit = attachment.shutdown().await;
+    // Receiving an entry proves the event connection was attached as well.
+    let replay_cursor = attachment.journal.recv().await.unwrap().cursor;
+    let exit = attachment.shutdown().await;
+    assert!(exit.cleanup_error.is_none(), "{:?}", exit.cleanup_error);
     assert!(
         support::pid_exists(pid),
         "supervised child must survive backend attachment shutdown"
     );
-    let prepared = factory
+    let mut identity = state.identity();
+    identity.backend_id.0.push_str("-restarted");
+    let restarted_factory = SupervisorProviderTaskFactory::new(identity);
+    let prepared = restarted_factory
         .prepare(handle.clone(), launch(), Shutdown::default())
         .await
         .unwrap();
@@ -213,7 +293,13 @@ async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() 
     let info = attachment.status.borrow().info.clone().unwrap();
     assert!(info.resumed);
     assert_eq!(info.pid, pid);
-    let _exit = attachment.shutdown().await;
+    assert_eq!(info.generation, generation);
+    assert_eq!(
+        attachment.journal.recv().await.unwrap().cursor,
+        replay_cursor
+    );
+    let exit = attachment.shutdown().await;
+    assert!(exit.cleanup_error.is_none(), "{:?}", exit.cleanup_error);
     // Fixture teardown owns the supervisor and its surviving child.
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-process/tests/wave7_p01_factory",
@@ -379,6 +465,114 @@ async fn running_child_started_with_a_previous_command_reattaches() {
     assert_eq!(
         running_signature().await.unwrap(),
         Some((Some(restarted.pid), signature(&current)))
+    );
+    // Fixture teardown owns the supervisor and its surviving child.
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-process/tests/wave7_p01_factory",
+        move || drop(supervisor),
+    )
+    .await
+    .unwrap();
+}
+
+/// A running child started before a launch variable existed lacks it. The
+/// Claude bridges of 69637aa6e were started without
+/// `STUDIO_CLAUDE_CREDENTIAL_IDENTITY`, which a later launch adds. Such a child
+/// is still the provider of this launch: it reattaches with its own
+/// environment and is not restarted. A child whose environment differs in any
+/// other way stays unverifiable.
+#[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture; `which` exits at once"
+)]
+async fn running_child_started_before_a_launch_variable_existed_reattaches() {
+    use studio_runtime_process::HealthRequest;
+    use studio_runtime_store::supervisor_journal::launch_signature;
+    let (state, mut supervisor) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-process/tests/wave7_p01_factory",
+        || {
+            let state = support::DisposableState::new();
+            let supervisor = support::SupervisorProcess::start(&state);
+            (state, supervisor)
+        },
+    )
+    .await
+    .unwrap();
+    let state = std::sync::Arc::new(state);
+    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let handle = ProviderHandle::for_account("retained");
+    let node = std::process::Command::new("which")
+        .arg("node")
+        .output()
+        .unwrap();
+    assert!(node.status.success());
+    let node = String::from_utf8(node.stdout).unwrap().trim().to_owned();
+    let command = vec![node, "-e".to_owned(), "process.stdin.resume()".to_owned()];
+    let previous = support::child_environment(&state.0);
+    let with = |name: &str, value: &str| {
+        let mut environment = previous.clone();
+        environment.insert(name.to_owned(), value.to_owned());
+        environment
+    };
+    let launch = |environment: BTreeMap<String, String>| OpenOptions {
+        clock: SessionClock::default(),
+        launch: ProviderLaunchSpec::new(command.clone(), environment, state.0.clone()),
+        expected_generation: None,
+    };
+    let attach = |environment: BTreeMap<String, String>| {
+        let factory = &factory;
+        let handle = handle.clone();
+        let options = launch(environment.clone());
+        let mut reopened = launch(environment);
+        async move {
+            let prepared = factory
+                .prepare(handle.clone(), options, Shutdown::default())
+                .await?;
+            reopened.expected_generation = Some(prepared.generation());
+            prepared.open(handle, reopened, Shutdown::default()).await
+        }
+    };
+    let mut attachment = attach(previous.clone()).await.unwrap();
+    let started = attachment.status.borrow().info.clone().unwrap();
+    supervisor.own_child(started.pid);
+    let _exit = attachment.shutdown().await;
+
+    let mut attachment = attach(with(
+        "STUDIO_CLAUDE_CREDENTIAL_IDENTITY",
+        "claude:a@example.test",
+    ))
+    .await
+    .unwrap();
+    let info = attachment.status.borrow().info.clone().unwrap();
+    assert!(info.resumed);
+    assert_eq!(info.pid, started.pid);
+    assert_eq!(info.generation, started.generation);
+    let _exit = attachment.shutdown().await;
+    let running = {
+        let state = state.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-process/tests/wave7_p01_factory",
+            move || {
+                support::connect_client(&state)
+                    .health(HealthRequest::default())
+                    .unwrap()
+                    .handles
+                    .into_iter()
+                    .find(|handle| handle.id == "account:retained")
+                    .map(|handle| (handle.pid, handle.signature))
+            },
+        )
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        running,
+        Some((
+            Some(started.pid),
+            launch_signature(&command, &previous, state.0.to_str())
+        )),
+        "the reattached child keeps its own environment"
     );
     // Fixture teardown owns the supervisor and its surviving child.
     studio_runtime_process::blocking_pool::spawn_blocking(

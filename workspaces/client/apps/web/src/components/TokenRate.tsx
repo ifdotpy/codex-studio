@@ -60,7 +60,11 @@ export default function TokenRate({
   useEffect(() => {
     if (!visualActive) return;
     const stopRate = subscribeTokenRate(scope, (value) =>
-      setSample({ id: scope, value }),
+      setSample((previous) =>
+        previous.id === scope && previous.value === value
+          ? previous
+          : { id: scope, value },
+      ),
     );
     const stopInterest =
       variant === "footer" ? watchTokenRateInterest() : undefined;

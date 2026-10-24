@@ -83,7 +83,7 @@ test("Model Catalog Pending Browser", async ({
             }
             if (path === "/api/test/models-revision") {
               const event = {
-                protocol: 3,
+                protocol: 4,
                 workspaceId: syncIdentity.workspaceId,
                 epoch: "fixture",
                 revision: 2,
@@ -108,7 +108,7 @@ test("Model Catalog Pending Browser", async ({
                 ) || "[]",
               );
               const event = {
-                protocol: 3,
+                protocol: 4,
                 workspaceId: syncIdentity.workspaceId,
                 epoch: "fixture",
                 revision: 1,
@@ -153,7 +153,8 @@ test("Model Catalog Pending Browser", async ({
           import {flushSync} from "react-dom";
           import {ModelCatalogReader, useWorkerModels} from "/src/components/agents/WorkerModelPicker.tsx";
           import {get} from "/src/api.ts";
-          const reader = {scope: "fixture", read: options => get("/api/models", options)};
+          import {watchResourceReads} from "/src/components/watchResourceReads.ts";
+          const reader = {watchResourceReads, scope: "fixture", read: options => get("/api/models", options)};
           function Fixture({account, workers, enabled}) {
             const result = useWorkerModels(account, enabled, workers);
             window.catalogRenderCount = (window.catalogRenderCount || 0) + 1;

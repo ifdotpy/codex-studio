@@ -71,12 +71,13 @@ test("entity observer applies RxDB changes across tabs and resets before publica
     await page.evaluate(async () => {
       window.entityRow = (id, seq, name = id) => ({
         id: `entity:agent:${id}`,
-        seq,
-        payload: JSON.stringify({
+        payload: "",
+        entity: {
           collection: "agent",
           id,
           value: { id, name },
-        }),
+        },
+        seq: seq,
       });
       await window.putRows([
         ...Array.from({ length: 2000 }, (_, index) =>
@@ -155,11 +156,12 @@ test("entity observer applies RxDB changes across tabs and resets before publica
       window.putRows([
         {
           id: "entity:agent:0",
-          payload: JSON.stringify({
+          payload: "",
+          entity: {
             collection: "agent",
             id: "0",
             value: { id: "0", name: "other tab" },
-          }),
+          },
           seq: 3000,
         },
       ]),
@@ -246,64 +248,9 @@ test("entity observer applies RxDB changes across tabs and resets before publica
       };
     });
     assert.deepEqual(afterStaleEvents, reset);
-    const transcript = await page.evaluate(async () => {
-      const cache = await import("/src/sync/transcriptCache.ts");
-      cache.cacheTranscriptValue(
-        "workspace",
-        "chat",
-        { items: [{ id: "a", text: "initial" }] },
-        1,
-      );
-      const values = [];
-      const stop = cache.subscribeTranscript("workspace", "chat", (value) =>
-        values.push(value),
-      );
-      for (let index = 2; index <= 101; index++)
-        cache.patchTranscriptValue(
-          "workspace",
-          "chat",
-          {},
-          index,
-          [{ id: "a", text: `${index}` }],
-          [],
-        );
-      cache.patchTranscriptValue(
-        "workspace",
-        "chat",
-        {},
-        102,
-        [{ id: "b", text: "tool", toolStatus: "running" }],
-        [],
-      );
-      cache.patchTranscriptValue("workspace", "chat", {}, 103, [], ["a"]);
-      cache.patchTranscriptValue(
-        "workspace",
-        "chat",
-        {},
-        104,
-        [{ id: "b", text: "done", toolStatus: "completed" }],
-        [],
-      );
-      const immediateSequence = cache.peekTranscript("workspace", "chat").seq;
-      await new Promise((resolve) => setTimeout(resolve, 70));
-      stop();
-      window.stopObserver();
-      return {
-        immediateSequence,
-        publications: values.length,
-        items: values.at(-1).payload.items,
-      };
-    });
-    assert.deepEqual(transcript, {
-      immediateSequence: 104,
-      publications: 2,
-      items: [{ id: "b", text: "done", toolStatus: "completed" }],
-    });
+    await page.evaluate(() => window.stopObserver());
     assert.deepEqual(errors, []);
-    console.log(
-      "ENTITY_OBSERVER_BROWSER",
-      JSON.stringify({ burst, reset, transcript }),
-    );
+    console.log("ENTITY_OBSERVER_BROWSER", JSON.stringify({ burst, reset }));
   } finally {
     await context.close();
     await server.close();

@@ -102,32 +102,39 @@ pub async fn release_waiting(
 ) -> Result<bool, TransferError> {
     let agent_id = agent_id.to_owned();
     store
-        .transaction_with_error(move |tx| {
-            if !Repository::available(tx)? {
-                return Ok(false);
-            }
-            let Some(raw) = Repository::agent(tx, &agent_id)? else {
-                return Ok(false);
-            };
-            let agent: Value =
-                serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-            let Some(operation) = agent
-                .get("accountTransferId")
-                .and_then(Value::as_str)
-                .filter(|_| !studio_runtime_store::truthy(agent.get("lazyAccountTransfer")))
-            else {
-                return Ok(false);
-            };
-            if Repository::get(tx, operation)?.is_none() {
-                return Ok(false);
-            }
-            let Some(decision) = load(tx, operation)?.release_waiting(&agent_id)? else {
-                return Ok(false);
-            };
-            persist(tx, decision, now)?;
-            Ok(true)
-        })
+        .transaction_with_error(move |tx| release_waiting_in(tx, &agent_id, now))
         .await
+}
+
+/// Release in the terminal transaction, after source-account continuation policy.
+pub(crate) fn release_waiting_in(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    now: f64,
+) -> Result<bool, TransferError> {
+    if !Repository::available(tx)? {
+        return Ok(false);
+    }
+    let Some(raw) = Repository::agent(tx, agent_id)? else {
+        return Ok(false);
+    };
+    let agent: Value =
+        serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
+    let Some(operation) = agent
+        .get("accountTransferId")
+        .and_then(Value::as_str)
+        .filter(|_| !studio_runtime_store::truthy(agent.get("lazyAccountTransfer")))
+    else {
+        return Ok(false);
+    };
+    if Repository::get(tx, operation)?.is_none() {
+        return Ok(false);
+    }
+    let Some(decision) = load(tx, operation)?.release_waiting(agent_id)? else {
+        return Ok(false);
+    };
+    persist(tx, decision, now)?;
+    Ok(true)
 }
 
 /// A transfer may bypass only its own native-start admission marker, and only
@@ -1045,15 +1052,7 @@ mod request_tests {
         assert_eq!(first["id"], id);
         assert_eq!(first["targetAccountKey"], "target");
         assert_eq!(first["members"]["child"]["phase"], "lazy");
-        let child = AgentRepository::get(
-            &store
-                .test_reader()
-                .expect("test fixture operation succeeds"),
-            &AgentId::from("child"),
-        )
-        .expect("test fixture operation succeeds")
-        .expect("test fixture operation succeeds")
-        .value();
+        let child = stored(&store, "child");
         assert_eq!(child["accountKey"], "target");
         assert_eq!(child["lazyAccountTransfer"]["sourceAccountKey"], "source");
         let replay = request(&store, id, "lead", "target", "team", "codex", 11.0)
@@ -1148,15 +1147,7 @@ mod request_tests {
         )
         .expect("test fixture operation succeeds");
         assert_eq!(result["members"]["late"]["phase"], "lazy");
-        let late = AgentRepository::get(
-            &store
-                .test_reader()
-                .expect("test fixture operation succeeds"),
-            &AgentId::from("late"),
-        )
-        .expect("test fixture operation succeeds")
-        .expect("test fixture operation succeeds")
-        .value();
+        let late = stored(&store, "late");
         assert_eq!(late["accountKey"], "target");
         assert_eq!(late["lazyAccountTransfer"]["sourceAccountKey"], "source");
         run_async(store.transaction_with_error(|tx| {
@@ -1238,15 +1229,21 @@ mod request_tests {
     #[test]
     fn invalid_scope_and_excluded_account_refuse_without_writes() {
         let (_root, store) = store_with_agents();
-        let before = AgentRepository::get(
-            &store
-                .test_reader()
-                .expect("test fixture operation succeeds"),
-            &AgentId::from("lead"),
-        )
-        .expect("test fixture operation succeeds")
-        .expect("test fixture operation succeeds")
-        .value();
+        let snapshot = || {
+            let db = store.test_reader().expect("reader");
+            let agents = ["lead", "child"].map(|id| stored(&store, id));
+            let transfers = db
+                .prepare("SELECT id, record FROM runtime_account_transfers ORDER BY id")
+                .expect("prepare transfers")
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .expect("query transfers")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("decode transfers");
+            (agents, transfers)
+        };
+        let before = snapshot();
         assert!(
             request(
                 &store,
@@ -1259,6 +1256,7 @@ mod request_tests {
             )
             .is_err()
         );
+        assert_eq!(snapshot(), before, "invalid scope wrote durable state");
         run_async(store.transaction_with_error(|tx| {
             let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?
                 .expect("test fixture operation succeeds");
@@ -1268,15 +1266,7 @@ mod request_tests {
             Ok::<_, studio_runtime_store::StoreError>(())
         }))
         .expect("test fixture operation succeeds");
-        let before_blocked = AgentRepository::get(
-            &store
-                .test_reader()
-                .expect("test fixture operation succeeds"),
-            &AgentId::from("lead"),
-        )
-        .expect("test fixture operation succeeds")
-        .expect("test fixture operation succeeds")
-        .value();
+        let before_blocked = snapshot();
         assert!(
             request(
                 &store,
@@ -1289,16 +1279,10 @@ mod request_tests {
             )
             .is_err()
         );
-        let after = AgentRepository::get(
-            &store
-                .test_reader()
-                .expect("test fixture operation succeeds"),
-            &AgentId::from("lead"),
-        )
-        .expect("test fixture operation succeeds")
-        .expect("test fixture operation succeeds")
-        .value();
-        assert_eq!(after, before_blocked);
-        assert_eq!(before["accountKey"], "source");
+        assert_eq!(
+            snapshot(),
+            before_blocked,
+            "excluded account wrote durable state"
+        );
     }
 }

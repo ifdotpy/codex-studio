@@ -225,7 +225,13 @@ createRoot(document.getElementById("root")).render(<Harness/>);`;
     await page.evaluate(() => window.jump("a500"));
     await expect(page.locator("#message")).toHaveValue("Preserve this draft");
     const savedOffset = await offset("a500");
-    await page.waitForTimeout(150);
+    // HistoryWindow publishes its visible range, then persists the anchor.
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
     await page.reload();
     await expect(page.locator('[data-message="a500"]')).toBeVisible();
     await expect

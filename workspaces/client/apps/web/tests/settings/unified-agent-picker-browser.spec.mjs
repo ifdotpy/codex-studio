@@ -63,7 +63,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         },
         load(id) {
           if (id !== entry) return;
-          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {theme} from '/src/theme.ts';import '/src/style.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';import {SettingsRow} from '/src/components/ui/primitives.tsx';import '/src/appearance.css';import {AccountTiles} from '/src/components/AccountTiles.tsx';import ProjectAccount from '/src/components/ProjectAccount.tsx';import SharedChatCreate from '/src/components/SharedChatCreate.tsx';
+          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {theme} from '/src/theme.ts';import '/src/style.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';import {SettingsRow} from '/src/components/ui/primitives.tsx';import '/src/appearance.css';import {AccountTiles} from '/src/components/AccountTiles.tsx';import ProjectAccount from '/src/components/ProjectAccount.tsx';import SharedChatCreate from '/src/components/SharedChatCreate.tsx';import {writeModelWhitelist} from '/src/components/models/modelWhitelist.ts';window.whitelist=value=>writeModelWhitelist(value,'local');
       const accounts=Array.from({length:7},(_,i)=>({id:'account-'+i,home:'/fixture/'+i,label:i<3?'Work '+(i+1):'Personal '+(i-2),email:'fixture'+i+'@example.com',source:'fixture',provider:i<4?'codex':'claude',status:i===6?'signedOut':'ready'}));
       const codex=['gpt-6-astra','gpt-6-luna'].map((model,i)=>({model,displayName:i?'Luna':'Astra',isDefault:!i,provider:'codex',defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:i?[]:[{id:'priority'}],availableAccessPrograms:{cyber:i?['standard']:['standard','daybreakBlue']}}));
       const claudeRow=(model,displayName,extra)=>({model,displayName,provider:'claude',defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[],...extra});const claude=[claudeRow('default','Claude · Default (recommended)',{isDefault:true,resolvedModel:'claude-opus-5-5'}),claudeRow('opus','Claude · Opus 5.5',{resolvedModel:'claude-opus-5-5'}),claudeRow('claude-sonnet-5-5','Claude Sonnet 5.5',{})];
@@ -105,7 +105,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         return route.fulfill({
           contentType: "text/event-stream",
           body: apiSchemaHandshakeSse(
-            `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "fixture", revision: 1, reason: "initial", resources })}\n\n`,
+            `event: resources\ndata: ${JSON.stringify({ protocol: 4, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "fixture", revision: 1, reason: "initial", resources })}\n\n`,
           ),
         });
       });
@@ -129,7 +129,9 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         name: "Main agent settings",
         exact: true,
       });
-      await expect(trigger).toContainText("Astra 6 · Medium · Work 1");
+      await expect(trigger.locator(".execution-model")).toHaveText("Astra 6");
+      await expect(trigger.locator(".execution-effort")).toHaveText("Medium");
+      await expect(trigger.locator(".execution-account")).toHaveText("Work 1");
       assert.equal(
         await trigger
           .locator(".execution-selected")
@@ -168,12 +170,12 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         window.calls.some((call) => call.effort === "high"),
       );
       await page
-        .getByRole("button", { name: "Fast mode", exact: true })
+        .getByRole("switch", { name: "Fast mode", exact: true })
         .click();
       await page.waitForFunction(() =>
         window.calls.some((call) => call.fast_mode === true),
       );
-      await page.getByRole("button", { name: "Worker", exact: true }).click();
+      await page.getByText("Worker", { exact: true }).click();
       await expect(
         page.getByRole("listbox", { name: "Default subagent model" }),
       ).toBeVisible();
@@ -208,13 +210,13 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       await capture("worker-claude");
       assert.equal(
         await page
-          .getByRole("button", { name: "Daybreak", exact: true })
+          .getByRole("switch", { name: "Daybreak", exact: true })
           .count(),
         0,
       );
       assert.equal(
         await page
-          .getByRole("button", { name: "Fast mode", exact: true })
+          .getByRole("switch", { name: "Fast mode", exact: true })
           .count(),
         0,
       );
@@ -254,9 +256,9 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         0,
       );
       await expect(luna).toHaveAttribute("aria-selected", "true");
-      await page.getByRole("button", { name: "Review", exact: true }).click();
+      await page.getByText("Review", { exact: true }).click();
       await expect(
-        page.getByText("Uses the caller account", { exact: true }),
+        page.getByText("Uses the caller account.", { exact: true }),
       ).toBeVisible();
       assert.equal(
         await page.getByLabel("Subagent account", { exact: true }).count(),
@@ -289,9 +291,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         ),
       );
       await capture("review-codex");
-      await page
-        .getByRole("button", { name: "Orchestrator", exact: true })
-        .click();
+      await page.getByText("Orchestrator", { exact: true }).click();
       await chooseSetupValue(
         page.getByLabel("Main agent account", { exact: true }),
         "account-5",
@@ -329,9 +329,21 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         name: "Review settings",
         exact: true,
       });
-      await expect(mainRow).toContainText("Astra 6 · Medium · Work 1");
-      await expect(workersRow).toContainText("Luna 6 · High · Work 1");
-      await expect(reviewRow).toContainText("Astra 6 · Medium");
+      await expect(mainRow.locator(".execution-model")).toHaveText("Astra 6");
+      await expect(mainRow.locator(".execution-effort")).toHaveText("Medium");
+      await expect(mainRow.locator(".execution-account")).toHaveText("Work 1");
+      await expect(workersRow.locator(".execution-model")).toHaveText("Luna 6");
+      await expect(workersRow.locator(".execution-effort")).toHaveText("High");
+      await expect(workersRow.locator(".execution-account")).toHaveText(
+        "Work 1",
+      );
+      await expect(reviewRow.locator(".execution-model")).toHaveText(
+        "Same as caller",
+      );
+      await expect(reviewRow.locator(".execution-effort")).toHaveCount(0);
+      await expect(reviewRow.locator(".execution-selected > svg")).toHaveCount(
+        0,
+      );
       await expect(reviewRow).not.toContainText("Work 1");
       await expect(reviewRow.locator(".execution-selected")).toHaveAttribute(
         "data-inherited",
@@ -344,8 +356,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       ]) {
         await row.click();
         await expect(
-          page.getByRole("button", { name: role, exact: true }),
-        ).toHaveAttribute("aria-pressed", "true");
+          page.getByRole("radio", { name: role, exact: true }),
+        ).toBeChecked();
         await page.keyboard.press("Escape");
         await expect(page.locator(".execution-dropdown:visible")).toHaveCount(
           0,
@@ -361,7 +373,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         "high",
       );
       await page.keyboard.press("Escape");
-      await expect(reviewRow).toContainText("Luna 6 · High");
+      await expect(reviewRow.locator(".execution-model")).toHaveText("Luna 6");
+      await expect(reviewRow.locator(".execution-effort")).toHaveText("High");
       await expect(
         reviewRow.locator(".execution-selected"),
       ).not.toHaveAttribute("data-inherited");
@@ -410,7 +423,9 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         } else if (scene === "shared") {
           await group.locator('[data-account-key="account-5"]').click();
           await expect(
-            page.getByLabel("Model for agent 1", { exact: true }),
+            page
+              .getByLabel("Model for agent 1", { exact: true })
+              .getByRole("option", { selected: true }),
           ).toHaveAttribute("data-value", "default");
           await chooseSetupValue(
             page.getByLabel("Reasoning for agent 1", { exact: true }),
@@ -438,6 +453,23 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           );
         }
       }
+      await page.evaluate(() => {
+        window.reset();
+        window.whitelist(["codex:gpt-6-astra", "claude:claude-sonnet-5-5"]);
+      });
+      await page
+        .getByRole("button", { name: "Main agent settings", exact: true })
+        .click();
+      await page.getByText("Worker", { exact: true }).click();
+      await chooseSetupValue(
+        page.getByLabel("Subagent account", { exact: true }),
+        "account-4",
+      );
+      await expect
+        .poll(() => page.evaluate(() => window.agent.workerDefaults.model))
+        .toBe("claude-sonnet-5-5");
+      await expect(page.getByRole("option", { name: /Opus/ })).toHaveCount(0);
+      await page.evaluate(() => window.whitelist(null));
       assert.deepEqual(errors, []);
     }
     await writeFile(

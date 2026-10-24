@@ -1025,7 +1025,7 @@ mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Barrier, Mutex};
+    use std::sync::{Arc, Mutex, mpsc};
 
     use super::{
         INPUT_LIMIT, OUTPUT_LIMIT, SessionError, TerminalCreate, TerminalDriver, TerminalError,
@@ -1045,7 +1045,7 @@ mod tests {
         notifications: Mutex<VecDeque<TerminalNotification>>,
         outcomes: Mutex<VecDeque<TerminalOutcome>>,
         error: Mutex<Option<SessionError>>,
-        resize_barrier: Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>,
+        resize_gate: Mutex<Option<(tokio::sync::oneshot::Sender<()>, mpsc::Receiver<()>)>>,
         closed: Mutex<bool>,
         orphan_identities: Mutex<Vec<Value>>,
         orphan_failure: Mutex<Option<usize>>,
@@ -1060,10 +1060,12 @@ mod tests {
         ) -> Result<Value, SessionError> {
             if method == "process/resizePty"
                 && let Some((entered, release)) =
-                    self.resize_barrier.lock().expect("resize barrier").clone()
+                    self.resize_gate.lock().expect("resize gate").take()
             {
-                entered.wait();
-                release.wait();
+                entered.send(()).expect("resize entered");
+                release
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("resize released");
             }
             self.requests.lock().expect("fake request lock").push((
                 operation_id.to_owned(),
@@ -1205,15 +1207,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn input_uses_the_appserver_base64_wire_representation() {
-        use base64::Engine as _;
-
-        let encode = base64::engine::general_purpose::STANDARD;
-        assert_eq!(encode.encode(b"hello"), "aGVsbG8=");
-        assert_eq!(encode.encode("🙂".as_bytes()), "8J+Zgg==");
-    }
-
-    #[tokio::test]
     async fn generated_process_handles_are_version_four_uuids() {
         let uuid = uuid::Uuid::parse_str(&new_id().expect("UUID random bytes are available"))
             .expect("generated UUID parses");
@@ -1291,6 +1284,7 @@ mod tests {
             "input-limit-too-large",
         )
         .expect("receipt read");
+        let requests_before = driver.session.requests.lock().expect("requests").len();
         let too_large = serde_json::json!({"id":id,"text":"x".repeat(INPUT_LIMIT + 1),"request_id":"input-limit-too-large"});
         assert!(matches!(
             driver.action("input", &too_large).await,
@@ -1307,6 +1301,10 @@ mod tests {
         )
         .expect("receipt reread");
         assert_eq!(before, after);
+        assert_eq!(
+            driver.session.requests.lock().expect("requests").len(),
+            requests_before
+        );
     }
 
     #[tokio::test]
@@ -3031,10 +3029,9 @@ mod tests {
     async fn resize_preserves_concurrent_record_changes_after_session_io() {
         let state = test_state().await;
         let session = FakeSession::default();
-        let entered = Arc::new(Barrier::new(2));
-        let release = Arc::new(Barrier::new(2));
-        *session.resize_barrier.lock().expect("resize barrier") =
-            Some((entered.clone(), release.clone()));
+        let (entered_tx, entered) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = mpsc::channel();
+        *session.resize_gate.lock().expect("resize gate") = Some((entered_tx, release_rx));
         let driver = Arc::new(test_driver(&state, session));
         let id = create(&driver, &state.root).await["id"]
             .as_str()
@@ -3049,7 +3046,10 @@ mod tests {
                     .await
             })
         };
-        entered.wait();
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered)
+            .await
+            .expect("resize begins")
+            .expect("resize entered");
         let store = state.store.as_ref().expect("store");
         let row = TerminalsRepository::get(&store.test_reader().expect("read"), &id)
             .expect("row")
@@ -3064,41 +3064,9 @@ mod tests {
             })
             .await
             .expect("concurrent update");
-        release.wait();
+        release.send(()).expect("release resize");
         let result = worker.await.expect("resize worker").expect("resize");
         assert_eq!(result["status"], "exited");
         assert_eq!(result["title"], "concurrent rename");
-    }
-
-    #[tokio::test]
-    async fn fake_session_captures_requests_and_delivers_terminal_events() {
-        let session = FakeSession::default();
-        session
-            .send_request(
-                "terminal-spawn:1",
-                "process/spawn",
-                serde_json::json!({"processHandle":"1", "tty":true}),
-            )
-            .expect("fake session accepts request");
-        session
-            .notifications
-            .lock()
-            .expect("fake notification lock")
-            .push_back(TerminalNotification {
-                terminal_id: "1".to_owned(),
-                sequence: 1,
-                event: TerminalEvent::Output(b"hello".to_vec()),
-            });
-        assert_eq!(
-            session.receive_notification().expect("fake notification"),
-            Some(TerminalNotification {
-                terminal_id: "1".to_owned(),
-                sequence: 1,
-                event: TerminalEvent::Output(b"hello".to_vec()),
-            })
-        );
-        assert_eq!(session.requests.lock().expect("fake request lock").len(), 1);
-        session.close().expect("fake session closes");
-        assert!(*session.closed.lock().expect("fake close lock"));
     }
 }

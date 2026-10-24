@@ -136,13 +136,6 @@ impl PricingCatalog {
             })
     }
 
-    /// Published input/output dollars per million tokens, used only for the
-    /// worker model-choice ceiling.
-    pub fn worker_choice_rates(&self, provider: &str, model: &str) -> Option<(f64, f64)> {
-        let rates = self.rates(provider, model)?;
-        Some((rates.input, rates.output))
-    }
-
     fn latest_claude_family(&self, alias: &str) -> Option<String> {
         if alias.is_empty() || !alias.bytes().all(|byte| byte.is_ascii_lowercase()) {
             return None;

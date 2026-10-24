@@ -24,7 +24,7 @@ test("an open transcript streams text without pulls and recovers incomplete inte
     "utf8",
   );
   const maxBytes = Number(
-    sharedValues.match(/SYNC_TRANSCRIPT_STREAM_MAX_BYTES = (\d+)/)?.[1],
+    sharedValues.match(/SYNC_STREAM_EVENT_MAX_BYTES = (\d+)/)?.[1],
   );
   assert.ok(Number.isSafeInteger(maxBytes) && maxBytes > 0);
   const workspaceId = "b".repeat(32);
@@ -37,7 +37,7 @@ test("an open transcript streams text without pulls and recovers incomplete inte
   let text = "Before streaming";
   const item = () => ({ id: "answer", role: "assistant", text });
   const frame = (reason, after, delta) => ({
-    protocol: 3,
+    protocol: 4,
     workspaceId,
     epoch,
     revision: ++revision,

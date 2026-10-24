@@ -23,6 +23,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       ready = resolve;
     });
     const events = [];
+    const intervals = new Set();
     let backendBuild = "installed";
     class Window extends EventEmitter {
       constructor() {
@@ -157,8 +158,11 @@ test("desktop native settings, notification and speech boundaries work with fixt
       URL,
       setTimeout,
       clearTimeout,
-      setInterval,
-      clearInterval,
+      setInterval: (callback) => {
+        intervals.add(callback);
+        return callback;
+      },
+      clearInterval: (callback) => intervals.delete(callback),
       console: { log: ready, error: console.error },
     });
     await started;
@@ -171,6 +175,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       handler,
       event,
       events,
+      intervals,
       notification: () => notification,
       setBackendBuild: (value) => {
         backendBuild = value;
@@ -590,13 +595,17 @@ test("desktop native settings, notification and speech boundaries work with fixt
         f.event.sender.listenerCount("did-start-navigation"),
         listenerBaseline + 1,
       );
+      assert.equal(f.intervals.size, 1);
       if (action === "release") await f.invoke("releaseServerView", "remote");
       if (action === "navigate")
         f.event.sender.emit("did-start-navigation", {
           isMainFrame: false,
           frame: remoteFrame,
         });
-      if (action === "destroy") remoteFrame.destroyed = true;
+      if (action === "destroy") {
+        remoteFrame.destroyed = true;
+        for (const callback of f.intervals) callback();
+      }
       let deadline;
       try {
         await Promise.race([
@@ -622,6 +631,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
         await aborted;
       }
       assert.equal(f.event.sender.listenerCount("destroyed"), 0);
+      assert.equal(f.intervals.size, 0);
     }
     const controller = new AbortController();
     await assert.rejects(

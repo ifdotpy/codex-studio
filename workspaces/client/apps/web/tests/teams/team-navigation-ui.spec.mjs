@@ -7,21 +7,36 @@ import {
 } from "../playwright.mjs";
 // Production client and an isolated fixture. No model calls or user state.
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test.use({ apiSchemaFixtureHeaders: false });
+test.use({ apiSchemaFixtureHeaders: false, hasTouch: true });
 
 test("team-navigation-ui", async ({ page: fixturePage }) => {
   test.setTimeout(60_000);
   const root = await mkdtemp(join(tmpdir(), "codex-team-navigation-"));
+  const evidence = process.env.TEAM_NAVIGATION_EVIDENCE || root;
+  await mkdir(evidence, { recursive: true });
   const proc = spawn(process.execPath, [rustUiFixture, root], {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...process.env,
       CODEX_BOARD_STATE_DIR: join(root, "board"),
       FIXTURE_WORKER_COUNT: "40",
+      FIXTURE_AGENT_STEPS: JSON.stringify({
+        "Worker 02": [
+          {
+            say: "Which scope should I review?",
+            item: "team-navigation-answer",
+            extra: {
+              questions: [
+                { title: "Which scope?", options: ["One file", "All files"] },
+              ],
+            },
+          },
+        ],
+      }),
     },
   });
   let page,
@@ -48,6 +63,14 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     const workers = initial.threads.filter(
       (agent) => agent.rootId === lead.id && !agent.isLead,
     );
+    assert.equal(workers.length, 40);
+    assert.equal(
+      initial.runtime.agents.some(
+        (agent) => agent.parentId === lead.id && agent.role === "reviewer",
+      ),
+      false,
+      "navigation workers must persist after result delivery; reviewers auto-archive",
+    );
     const worker = (n) =>
       workers.find(
         (agent) => agent.name === `Worker ${String(n).padStart(2, "0")}`,
@@ -58,15 +81,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     await fixturePage.setViewportSize({ width: 1440, height: 980 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.route("**/api/sync/pull?*", async (route) => {
-      const url = new URL(route.request().url());
-      if (url.searchParams.get("scope") !== "state:entities:v1")
-        return route.fallback();
-      const response = await route.fetch();
-      const data = await response.json();
-      if (data.reset || !data.documents?.length)
-        return route.fulfill({ response, json: data });
-      let sequence = data.maxSeq || data.checkpoint?.seq || 0;
+    const scriptWorkerStates = (documents) => {
       // The server seeds idle workers; the roster's mix of states is scripted here.
       const desiredStatus = new Map(
         workers.map((agent, index) => [
@@ -75,58 +90,37 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
             (index < 8 ? "running" : index < 26 ? "queued" : "completed"),
         ]),
       );
-      let answerRequestPresent = false;
-      for (const document of data.documents) {
-        if (document._deleted) continue;
-        const payload = JSON.parse(document.payload);
-        if (payload.collection === "agent" && payload.id === worker(2).id) {
-          payload.value.name = longName;
-          payload.value.status = "approval";
-          payload.value.inFlight = false;
-          document.payload = JSON.stringify(payload);
-          document.seq = ++sequence;
-        } else if (
-          payload.collection === "agent" &&
-          desiredStatus.has(payload.id)
-        ) {
-          payload.value.status = desiredStatus.get(payload.id);
-          payload.value.inFlight = payload.value.status === "running";
-          document.payload = JSON.stringify(payload);
-          document.seq = ++sequence;
-        } else if (
-          payload.collection === "request" &&
-          payload.value.agent === worker(2).id
-        ) {
-          answerRequestPresent = true;
+      for (const change of documents ?? []) {
+        if (change.op !== "upsert" || change.collection !== "agent") continue;
+        if (change.id === worker(2).id) {
+          change.value.name = longName;
+          change.value.status = "approval";
+          change.value.inFlight = false;
+        } else if (desiredStatus.has(change.id)) {
+          change.value.status = desiredStatus.get(change.id);
+          change.value.inFlight = change.value.status === "running";
         }
       }
-      if (!answerRequestPresent) {
-        data.documents.push({
-          id: "entity:request:team-navigation-answer",
-          seq: ++sequence,
-          _deleted: false,
-          payload: JSON.stringify({
-            collection: "request",
-            id: "team-navigation-answer",
-            value: {
-              id: "team-navigation-answer",
-              method: "agent/asyncQuestion",
-              agent: worker(2).id,
-              epoch: initial.runtime.agents.find(
-                (agent) => agent.id === worker(2).id,
-              ).epoch,
-              status: "pending",
-              params: {
-                questions: [{ id: "scope", question: "Which scope?" }],
-              },
-            },
-          }),
-        });
-      }
-      data.documents.sort((left, right) => left.seq - right.seq);
-      data.checkpoint = { ...data.checkpoint, seq: sequence };
-      data.maxSeq = sequence;
-      data.initialHigh = sequence;
+    };
+    await page.route("**/api/sync/pull?*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("scope") !== "state:entities:v1")
+        return route.fallback();
+      const response = await route.fetch();
+      const data = await response.json();
+      if (data.reset || !data.documents?.length)
+        return route.fulfill({ response, json: data });
+      scriptWorkerStates(data.documents);
+      // Only presentation values change. The real pending question is seeded
+      // through the provider; server-owned sequences and checkpoints stay intact.
+      await route.fulfill({ response, json: data });
+    });
+    // Mark-read mutations also deliver entity documents. Keep the same scripted
+    // presentation in both transports without changing receipts or checkpoints.
+    await page.route("**/api/organization", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      scriptWorkerStates(data._syncEntities);
       await route.fulfill({ response, json: data });
     });
     await page.goto(origin);
@@ -136,7 +130,8 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         exact: true,
       }),
     ).toHaveCount(0, { timeout: 2000 });
-    const selectLead = () => page.locator(`[data-chat="${lead.id}"]`).click();
+    const selectLead = () =>
+      page.locator(`.project-chats [data-chat="${lead.id}"]`).click();
     await selectLead();
     assert.equal(
       await page.locator("#team-toggle").getAttribute("aria-expanded"),
@@ -259,21 +254,41 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         .getByRole("region", { name, exact: true })
         .locator("[data-worker]")
         .evaluateAll((nodes) => nodes.map((node) => node.dataset.worker));
-    await expect.poll(() => groupIds("Need you")).toEqual([worker(2).id]);
+    await expect.poll(() => groupIds("Needs you")).toEqual([worker(2).id]);
     assert.deepEqual(
       (await groupIds("Failed")).sort(),
       [worker(3).id, worker(7).id].sort(),
     );
     assert.deepEqual(
       (await groupIds("Working")).sort(),
-      [0, 1, 5, 6].map((n) => worker(n).id).sort(),
+      [0, 1, 5, 6, ...Array.from({ length: 18 }, (_, index) => index + 8)]
+        .map((n) => worker(n).id)
+        .sort(),
       JSON.stringify(
         (await groupIds("Working")).map(
           (id) => workers.find((agent) => agent.id === id)?.name,
         ),
       ),
     );
-    assert.equal((await groupIds("Waiting")).length, 18);
+    assert.equal(
+      await team.getByRole("region", { name: "Waiting", exact: true }).count(),
+      0,
+    );
+    await expect
+      .poll(() =>
+        team
+          .locator("#workers > .team-status-group")
+          .evaluateAll((nodes) =>
+            nodes.map((node) => node.getAttribute("aria-label")),
+          ),
+      )
+      .toEqual(["Needs you", "Failed", "Working", "Stopped"]);
+    assert.equal(
+      await row(2).evaluate((node) =>
+        node.closest(".worker-entry")?.getAttribute("data-studio-state"),
+      ),
+      "answer",
+    );
     assert.equal(
       await team.locator(".worker-group").getAttribute("open"),
       null,
@@ -284,7 +299,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       "completed workers start collapsed",
     );
     await team.getByRole("button", { name: "Failed", exact: true }).click();
-    assert.equal(await team.locator("[data-worker]").count(), 2);
+    await expect(team.locator("[data-worker]")).toHaveCount(2);
     await search.fill("Worker 39");
     await row(39).waitFor({ state: "visible" });
     assert.equal(
@@ -309,7 +324,17 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       "true",
     );
     await team.getByRole("button", { name: "Active", exact: true }).click();
-    assert.equal(await team.locator("[data-worker]").count(), 5);
+    assert.deepEqual(
+      (
+        await team
+          .locator("[data-worker]")
+          .evaluateAll((nodes) => nodes.map((node) => node.dataset.worker))
+      ).sort(),
+      [0, 1, 5, 6, ...Array.from({ length: 18 }, (_, index) => index + 8)]
+        .map((n) => worker(n).id)
+        .sort(),
+      "Active filters the same canonical Working lane counted by the summary",
+    );
     assert.equal(await row(3).count(), 0, "interrupted workers are not active");
     await team.getByRole("button", { name: "All", exact: true }).click();
     await row(2).click();
@@ -322,12 +347,14 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       2,
       "the header and Team use the same return label",
     );
-    assert.equal(
-      await page
-        .getByRole("button", { name: "Chat settings", exact: true })
-        .count(),
-      1,
-    );
+    // Wider navigation can move header settings into the existing actions menu.
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await expect(
+      page.getByRole("menuitem", { name: "Chat settings", exact: true }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
     const title = row(2).locator("strong");
     const titleLayout = await title.evaluate((node) => ({
       text: node.textContent,
@@ -336,10 +363,19 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       lineHeight: parseFloat(getComputedStyle(node).lineHeight),
     }));
     assert.equal(titleLayout.text, longName);
-    assert.equal(titleLayout.clipped, false);
+    assert.equal(
+      titleLayout.clipped,
+      true,
+      "the strip keeps long names on one line",
+    );
+    assert.equal(
+      await title.getAttribute("title"),
+      longName,
+      "the full name remains available",
+    );
     assert.ok(
-      titleLayout.height > titleLayout.lineHeight * 2,
-      "the full worker name wraps",
+      titleLayout.height <= titleLayout.lineHeight * 1.5,
+      "long names preserve dispatch density",
     );
     await team.locator("#workers").evaluate((node) => {
       node.scrollTop = node.scrollHeight;
@@ -355,7 +391,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })
       .click();
-    assert.equal(await team.count(), 0, "another chat cannot show this team");
+    await expect(team).toHaveCount(0);
     await selectLead();
     assert.equal(
       await search.inputValue(),
@@ -401,7 +437,8 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       });
       const sidebarToggle = page.locator("#sidebar-toggle");
       if ((await sidebarToggle.getAttribute("aria-expanded")) === "true") {
-        await sidebarToggle.click();
+        // Phone entry starts at the board; explicitly select the lead before typing.
+        await selectLead();
         await page.waitForFunction(
           () =>
             document
@@ -453,10 +490,37 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       );
       await row(39).click();
       await team.waitFor({ state: "hidden" });
-      assert.equal(
-        await page.locator("#conversation-title").innerText(),
-        "Worker 39",
-      );
+      await expect(page.locator("#conversation-title")).toHaveText("Worker 39");
+      await expect(page.locator("#conversation-title")).toBeVisible();
+      expect(
+        await page
+          .locator("#conversation-title")
+          .evaluate((node) => node.getBoundingClientRect().width),
+      ).toBeGreaterThanOrEqual(64);
+      expect(
+        await page.locator(".workspace-header").evaluate((header) => {
+          const title = header
+            .querySelector("#conversation-title")
+            .getBoundingClientRect();
+          return [...header.querySelectorAll("button, summary")].every(
+            (control) => {
+              const rect = control.getBoundingClientRect();
+              return (
+                rect.width === 0 ||
+                rect.height === 0 ||
+                rect.right <= title.left ||
+                rect.left >= title.right ||
+                rect.bottom <= title.top ||
+                rect.top >= title.bottom
+              );
+            },
+          );
+        }),
+        "the title does not overlap header controls",
+      ).toBe(true);
+      await page.screenshot({
+        path: join(evidence, `worker-header-${width}.png`),
+      });
       assert.ok(
         await page.locator("#back-lead").evaluate((n) => {
           const r = n.getBoundingClientRect();
@@ -467,6 +531,13 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       );
       await page.locator("#message").fill(`Worker draft ${width}`);
       await page.reload();
+      // Reload deliberately returns phones to the board; reopen the worker explicitly.
+      await expect(page.locator("#sidebar")).toBeVisible();
+      await selectLead();
+      await openTeamFromHeader();
+      await search.fill("Worker 39");
+      await row(39).click();
+      await team.waitFor({ state: "hidden" });
       await page
         .locator("#conversation-title")
         .filter({ hasText: "Worker 39" })
@@ -480,32 +551,26 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         name: "Chat settings",
         exact: true,
       });
-      await chatSettings
-        .getByRole("button", { name: "Subagent settings", exact: true })
-        .click();
-      const subagentSettings = page.getByRole("dialog").filter({
-        has: page.getByRole("heading", {
-          name: "Subagent settings",
+      await expect(chatSettings.getByRole("tablist")).toHaveCount(0);
+      await expect(
+        chatSettings.getByRole("textbox", {
+          name: "Subagent parallelism",
           exact: true,
         }),
-      });
-      const accountOptions = subagentSettings.getByRole("button", {
-        name: /^Select account /,
-      });
-      await accountOptions.first().waitFor({ state: "visible" });
-      assert.ok(await accountOptions.count(), "saved accounts are visible");
-      for (const account of await accountOptions.all())
-        assert.equal(
-          await account.isDisabled(),
-          true,
-          "a subagent cannot change accounts",
-        );
-      await subagentSettings.getByRole("button").first().click();
-      await subagentSettings.waitFor({ state: "hidden" });
-      await chatSettings
-        .getByRole("button", { name: "Close", exact: true })
-        .click();
+      ).toBeVisible();
+      await page.keyboard.press("Escape");
       await chatSettings.waitFor({ state: "hidden" });
+      await page.locator("#composer .execution-summary-trigger").click();
+      const picker = page.locator(".execution-dropdown");
+      const account = picker.getByRole("group", {
+        name: "Subagent account",
+        exact: true,
+      });
+      await expect(account).toBeVisible();
+      await expect(account).toHaveAttribute("aria-disabled", "true");
+      await expect(account).not.toBeEmpty();
+      await page.keyboard.press("Escape");
+      await picker.waitFor({ state: "hidden" });
       await page.locator("#back-lead").click();
       assert.equal(
         await page.locator("#message").inputValue(),
@@ -528,12 +593,12 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         chatIsolation: true,
         narrowDesktop: true,
         mobile: [320, 390],
-        screenshots: root,
+        screenshots: evidence,
       }),
     );
   } catch (error) {
     try {
-      await page?.screenshot({ path: join(root, "failure.png") });
+      await page?.screenshot({ path: join(evidence, "failure.png") });
     } catch {
       // Preserve the original test failure if Playwright already closed the page.
     }

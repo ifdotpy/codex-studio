@@ -535,15 +535,27 @@ async fn common_git_directory_serialization_defers_without_starting_another_effe
     let plan = fixture.plan();
     let lock = repository_lock(&plan.identity.common_dir).expect("lock");
     let _guard = lock.lock().await;
+    let queue = Duration::from_millis(200);
+    let preparation = tokio::spawn(prepare_with_budget(
+        std::sync::Arc::clone(&fixture.store),
+        fixture.id.clone(),
+        GIT_TIMEOUT,
+        queue,
+    ));
+    let started = std::time::Instant::now();
+    while std::sync::Arc::strong_count(&lock) < 2 && !preparation.is_finished() {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "preparation queues"
+        );
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(std::sync::Arc::strong_count(&lock), 2);
+    tokio::time::pause();
+    tokio::time::advance(queue + Duration::from_millis(1)).await;
+    tokio::time::resume();
     assert!(matches!(
-        prepare_with_budget(
-            std::sync::Arc::clone(&fixture.store),
-            fixture.id.clone(),
-            GIT_TIMEOUT,
-            Duration::from_millis(200),
-        )
-        .await
-        .expect("defer"),
+        preparation.await.expect("preparation task").expect("defer"),
         WorkspaceDecision::Defer { .. }
     ));
     assert!(!plan.identity.destination.exists());
@@ -903,6 +915,7 @@ async fn ready_token_requires_current_generation_and_no_conflicting_reservation(
             .expect("validate after thread start")
             .is_ok()
     );
+    let actor = fixture.actor();
     fixture.patch("accountKey", json!("changed account")).await;
     let changed_token = token.clone();
     assert!(
@@ -913,21 +926,29 @@ async fn ready_token_requires_current_generation_and_no_conflicting_reservation(
             .expect("reject changed source")
             .is_ok()
     );
-    let actor = fixture.actor();
     fixture
         .store
         .transaction(move |tx| AgentRepository::put(tx, &AgentRecord::from_value(actor)?))
         .await
         .expect("restore source");
+    let restored_token = token.clone();
+    assert!(
+        fixture
+            .store
+            .transaction(move |tx| restored_token.validate(tx))
+            .await
+            .expect("validate restored source")
+            .is_ok()
+    );
     reserve_other(&fixture, cwd.parent().expect("root")).await;
     let reserved_token = token.clone();
-    assert!(
-        !fixture
+    assert_eq!(
+        fixture
             .store
             .transaction(move |tx| reserved_token.validate(tx))
             .await
-            .expect("reject late reservation")
-            .is_ok()
+            .expect("reject late reservation"),
+        Err(studio_runtime_store::workspace_ready::ReadyRefusal)
     );
 }
 
@@ -1086,7 +1107,7 @@ async fn running_git_deadline_kills_child_and_keeps_durable_identity() {
             }
             std::thread::park_timeout(Duration::from_millis(1));
         }
-        Instant::now()
+        std::time::Instant::now()
     })));
     let result = Git {
         deadline: Instant::now() + Duration::from_secs(120),
@@ -1135,6 +1156,7 @@ async fn isolated_child_rejects_all_ambient_git_overrides() {
         .args([
             "--exact",
             "workspace_ready_git::tests::ambient_git_child",
+            "--ignored",
             "--nocapture",
         ])
         .env("WORKSPACE_ENV_CHILD", "1")
@@ -1158,10 +1180,9 @@ async fn isolated_child_rejects_all_ambient_git_overrides() {
 }
 
 #[tokio::test]
+#[ignore = "child helper invoked by isolated_child_rejects_all_ambient_git_overrides"]
 async fn ambient_git_child() {
-    if std::env::var_os("WORKSPACE_ENV_CHILD").is_none() {
-        return;
-    }
+    assert!(std::env::var_os("WORKSPACE_ENV_CHILD").is_some());
     let fixture = Fixture::new().await;
     let cwd = admitted(
         &fixture,
@@ -1392,14 +1413,15 @@ async fn public_probe(fixture: Fixture, action: &str, expectation: &str) -> Fixt
     } = fixture;
     let bin = root.path().join("bin");
     std::fs::create_dir(&bin).expect("wrapper directory");
-    let node = Command::new("node")
-        .args(["-p", "process.execPath"])
-        .output()
-        .expect("resolve Node for the isolated Git probe");
-    assert!(node.status.success());
-    let node = String::from_utf8(node.stdout).expect("Node path");
-    let script = format!(
-        r#"#!{}
+    if !action.is_empty() {
+        let node = Command::new("node")
+            .args(["-p", "process.execPath"])
+            .output()
+            .expect("resolve Node for the isolated Git probe");
+        assert!(node.status.success());
+        let node = String::from_utf8(node.stdout).expect("Node path");
+        let script = format!(
+            r#"#!{}
 const fs = require('node:fs');
 const path = require('node:path');
 const {{spawnSync}} = require('node:child_process');
@@ -1418,16 +1440,33 @@ process.stdout.write(result.stdout);
 process.stderr.write(result.stderr);
 process.exitCode = result.status;
 "#,
-        node.trim()
-    );
-    std::fs::write(bin.join("git"), script).expect("wrapper");
-    std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755))
+            node.trim()
+        );
+        std::fs::write(bin.join("git.probe"), script).expect("wrapper");
+        std::fs::set_permissions(
+            bin.join("git.probe"),
+            std::fs::Permissions::from_mode(0o755),
+        )
         .expect("executable");
+        std::fs::write(
+            bin.join("git"),
+            r#"#!/bin/sh
+case " $* " in
+  *" diff --cached "*|*" for-each-ref "*) exec "$0.probe" "$@" ;;
+  *) exec /usr/bin/git "$@" ;;
+esac
+"#,
+        )
+        .expect("targeted Git wrapper");
+        std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755))
+            .expect("executable wrapper");
+    }
     drop(store); // The child is the single owner of this disposable state root.
     let output = Command::new(std::env::current_exe().expect("test binary"))
         .args([
             "--exact",
             "workspace_ready_git::tests::public_probe_child",
+            "--ignored",
             "--nocapture",
         ])
         .env("WORKSPACE_PROBE_ROOT", root.path())
@@ -1458,10 +1497,9 @@ process.exitCode = result.status;
 
 #[cfg(unix)]
 #[tokio::test]
+#[ignore = "child helper invoked by public_probe"]
 async fn public_probe_child() {
-    let Some(root) = std::env::var_os("WORKSPACE_PROBE_ROOT") else {
-        return;
-    };
+    let root = std::env::var_os("WORKSPACE_PROBE_ROOT").expect("parent probe root");
     let root = PathBuf::from(root);
     assert!(root.starts_with(fixture_parent()));
     let store = std::sync::Arc::new(
@@ -1714,41 +1752,62 @@ async fn ready_linked_worktree(fixture: &Fixture) -> PathBuf {
     linked
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(clippy::disallowed_methods)]
+#[tokio::test]
+async fn git_phase_budget_expires_on_the_owning_clock() {
+    let git = git();
+    tokio::time::pause();
+    tokio::time::advance(GIT_TIMEOUT).await;
+    assert!(matches!(
+        git.run(Path::new("unused-after-deadline"), &["rev-parse", "HEAD"]),
+        Err(WorkspaceError::Deadline(_))
+    ));
+}
+
+#[tokio::test]
 async fn ready_worktree_git_budget_excludes_waiting_for_a_store_reader() {
     let fixture = Fixture::new().await;
     let linked = ready_linked_worktree(&fixture).await;
-    // Every reader stays busy for longer than the whole Git budget, as on a
-    // backend that has just started on a large state. The budget still leaves
-    // the four Git commands ample time on a loaded test host.
     let budget = Duration::from_secs(2);
-    let held = std::sync::Arc::new(std::sync::Barrier::new(
-        studio_runtime_store::READ_CONNECTION_POOL_CAPACITY + 1,
-    ));
+    let (entered, mut held) = tokio::sync::mpsc::unbounded_channel();
     let readers = (0..studio_runtime_store::READ_CONNECTION_POOL_CAPACITY)
         .map(|_| {
             let store = std::sync::Arc::clone(&fixture.store);
-            let held = std::sync::Arc::clone(&held);
-            std::thread::spawn(move || {
-                let reader = store.test_reader().expect("reader");
-                held.wait();
-                std::thread::sleep(budget + Duration::from_millis(500));
-                drop(reader);
-            })
+            let entered = entered.clone();
+            let (release, released) = std::sync::mpsc::channel();
+            let task = tokio::spawn(async move {
+                store
+                    .read_async("workspace_ready/tests/held_reader", move |_| {
+                        entered.send(()).expect("reader entered");
+                        released
+                            .recv_timeout(Duration::from_secs(60))
+                            .expect("release reader");
+                        Ok::<_, studio_runtime_store::StoreError>(())
+                    })
+                    .await
+                    .expect("held read");
+            });
+            (release, task)
         })
         .collect::<Vec<_>>();
-    held.wait();
-    let decision = prepare_with_timeout(
+    for _ in &readers {
+        held.recv().await.expect("reader holds pool permit");
+    }
+    let preparation = prepare_with_timeout(
         std::sync::Arc::clone(&fixture.store),
         fixture.id.clone(),
         budget,
-    )
-    .await
-    .expect("prepare");
-    for reader in readers {
-        reader.join().expect("reader thread");
+    );
+    tokio::pin!(preparation);
+    // Exhausted readers make the initial snapshot wait before any Git phase.
+    assert!(futures_util::poll!(&mut preparation).is_pending());
+    tokio::time::pause();
+    tokio::time::advance(budget + Duration::from_millis(500)).await;
+    tokio::time::resume();
+    for (release, reader) in readers {
+        release.send(()).expect("release reader");
+        reader.await.expect("reader task");
     }
+    let decision = preparation.await.expect("prepare");
     assert_eq!(admitted(&fixture, decision).await, linked.join("project"));
 }
 
@@ -2075,7 +2134,7 @@ async fn reserve_provision(store: &std::sync::Arc<RuntimeStore>, id: &str) -> Pr
     plan.identity
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test]
 async fn worktree_children_spawned_together_in_one_repository_all_start() {
     const CHILDREN: usize = 4;
     // The Git budget of one phase. The test holds the repository lock longer
@@ -2109,10 +2168,13 @@ async fn worktree_children_spawned_together_in_one_repository_all_start() {
         && !tasks.iter().any(tokio::task::JoinHandle::is_finished)
     {
         assert!(Instant::now() < guard, "children never queued");
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::task::yield_now().await;
     }
-    tokio::time::sleep(budget + Duration::from_millis(500)).await;
+    assert_eq!(std::sync::Arc::strong_count(&lock), ids.len() + 1);
+    tokio::time::pause();
+    tokio::time::advance(budget + Duration::from_millis(500)).await;
     drop(held);
+    tokio::time::resume();
     let mut tokens = Vec::new();
     for (id, task) in ids.iter().zip(tasks) {
         match task.await.expect("preparation task") {

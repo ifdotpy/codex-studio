@@ -664,7 +664,6 @@ async fn create(
             &id,
             &request.intent,
             &intent,
-            profile.as_ref(),
             std::sync::Arc::clone(&validate),
         )
         .await;
@@ -915,28 +914,6 @@ async fn create(
     record["fastMode"] = json!(settings.fast_mode);
     record["daybreakEnabled"] = json!(settings.daybreak_enabled);
     record["cyberAccessProgram"] = json!(settings.cyber_access_program);
-    let profile_caps = profile
-        .as_ref()
-        .map(crate::worker_capabilities::from_value)
-        .transpose()
-        .map_err(OperationError::Invalid)?
-        .unwrap_or_default();
-    let overrides =
-        crate::worker_capabilities::from_value(&intent).map_err(OperationError::Invalid)?;
-    let caps = crate::worker_capabilities::narrow(&profile_caps, &overrides)
-        .map_err(OperationError::Invalid)?;
-    if caps.max_turns.is_some() {
-        return Err(OperationError::Invalid(
-            "maxTurns requires a managed child worker",
-        ));
-    }
-    crate::worker_capabilities::for_provider(&caps, &provider).map_err(OperationError::Invalid)?;
-    if provider == "codex" && workspace == "layr" && caps.mcp_servers.is_some() {
-        return Err(OperationError::Invalid(
-            "Codex mcpServers profiles are not supported for VM workers",
-        ));
-    }
-    record["capabilityProfile"] = json!(caps);
     record["profileId"] = json!(request.profile);
     if let Some(profile) = profile {
         record["profileInstructions"] = profile["instructions"].clone();
@@ -1094,7 +1071,6 @@ async fn create_child(
     id: &str,
     execution_intent: &Value,
     creation_intent: &Value,
-    profile: Option<&Value>,
     validate: PersistedRecordValidator,
 ) -> Result<Value, OperationError> {
     let parent_id = request.parent.as_deref().ok_or(OperationError::Internal)?;
@@ -1309,31 +1285,6 @@ async fn create_child(
     if workspace == "image" {
         set_image_workspace_fields(&mut record, cwd);
     }
-    let parent_caps =
-        crate::worker_capabilities::from_record(&parent).map_err(OperationError::Invalid)?;
-    let profile_caps = profile
-        .map(crate::worker_capabilities::from_value)
-        .transpose()
-        .map_err(OperationError::Invalid)?
-        .unwrap_or_default();
-    let base_caps = crate::worker_capabilities::narrow(&parent_caps, &profile_caps)
-        .map_err(OperationError::Invalid)?;
-    let overrides =
-        crate::worker_capabilities::from_value(creation_intent).map_err(OperationError::Invalid)?;
-    let caps = crate::worker_capabilities::narrow(&base_caps, &overrides)
-        .map_err(OperationError::Invalid)?;
-    crate::worker_capabilities::for_provider(&caps, &provider).map_err(OperationError::Invalid)?;
-    if provider == "codex" && workspace == "layr" && caps.mcp_servers.is_some() {
-        return Err(OperationError::Invalid(
-            "Codex mcpServers profiles are not supported for VM workers",
-        ));
-    }
-    record["capabilityProfile"] = json!(caps);
-    record["completedWorkerTurns"] = json!(0);
-    record["profileId"] = json!(request.profile);
-    record["profileInstructions"] = profile
-        .map(|p| p["instructions"].clone())
-        .unwrap_or(json!(""));
     record["creationIntent"] = creation_intent.clone();
     record["provider"] = json!(provider);
     record["yoloMode"] = root_yolo;
@@ -3380,27 +3331,6 @@ mod tests {
             ))
         }
 
-        fn validate_worker_choice<'a>(
-            &'a self,
-            _store: &'a RuntimeStore,
-            _account_key: &'a str,
-            _account: &'a AccountIdentity,
-            _requested: &'a str,
-            _default: &'a str,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = Result<
-                            (),
-                            crate::managed_child_create::ManagedCreationEnvironmentError,
-                        >,
-                    > + Send
-                    + 'a,
-            >,
-        > {
-            Box::pin(async move { Ok(()) })
-        }
-
         fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {
             &self.catalog
         }
@@ -4269,7 +4199,7 @@ mod tests {
         );
     }
 
-    fn snapshot(store: &RuntimeStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+    fn snapshot(store: &RuntimeStore) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
         // The controlled interleaving validator runs while the operation's
         // pooled read lease is live. Observe its committed writer transaction
         // through an independent test connection instead of checking out a
@@ -4283,14 +4213,22 @@ mod tests {
             .query_map([], |row| row.get::<_, String>(0))
             .expect("table rows")
             .map(|name| {
+                let name = name.expect("table");
                 let mut rows = connection
-                    .prepare(&format!("SELECT * FROM \"{}\"", name.expect("table")))
+                    .prepare(&format!("SELECT * FROM \"{}\"", name))
                     .expect("read table");
                 let columns = rows.column_count();
-                rows.query_map([], |row| (0..columns).map(|index| row.get(index)).collect())
+                let mut values = rows
+                    .query_map([], |row| {
+                        (0..columns)
+                            .map(|index| row.get(index))
+                            .collect::<Result<Vec<_>, _>>()
+                    })
                     .expect("rows")
                     .collect::<Result<Vec<_>, _>>()
-                    .expect("snapshot")
+                    .expect("snapshot");
+                values.sort_by_cached_key(|row| format!("{row:?}"));
+                (name, values)
             })
             .collect()
     }
@@ -4439,7 +4377,7 @@ mod tests {
                     "lead" => changed["quickCreateRequest"] = json!("{}"),
                     _ => changed["deletedAt"] = json!(1),
                 }
-                let result = writer_store
+                writer_store
                     .transaction(move |tx| {
                         tx.execute(
                             "UPDATE runtime_agents SET record=?1 WHERE id=?2",
@@ -4447,9 +4385,11 @@ mod tests {
                         )?;
                         Ok(())
                     })
-                    .await;
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let committed = snapshot(&writer_store);
                 drop(release_on_drop);
-                result.map_err(|error| error.to_string())
+                Ok::<_, String>(committed)
             });
             let request = Creation {
                 id: Some(
@@ -4474,12 +4414,11 @@ mod tests {
             } else {
                 lead(&context, request).await
             };
-            tokio::time::timeout(INTERLEAVING_DEADLINE * 2, writer)
+            let after_interleaving = tokio::time::timeout(INTERLEAVING_DEADLINE * 2, writer)
                 .await
                 .expect("controlled writer completes before the test deadline")
                 .expect("controlled writer task joins")
                 .expect("interleaved writer commits");
-            let after_interleaving = snapshot(&store);
             assert!(
                 matches!(
                     result,
@@ -4490,8 +4429,8 @@ mod tests {
                 "{scenario}: {result:?}"
             );
             assert_eq!(
-                Some(snapshot(&store)),
-                Some(after_interleaving),
+                snapshot(&store),
+                after_interleaving,
                 "refusal writes nothing after {scenario} interleaving"
             );
         }

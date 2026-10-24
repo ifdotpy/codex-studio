@@ -2,27 +2,21 @@
 // Isolated component browser checks. No server state or live model requests.
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import { createRequire } from "node:module";
-import { writeFile, rm, mkdtemp } from "node:fs/promises";
+import { rm, mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.mjs";
 
 test("rendering ux ui", async ({ page: runnerPage }) => {
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(root, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const name = `.rendering-check-${process.pid}`;
   const entry = join(root, "workspaces/client/apps/web", `${name}.tsx`);
-  const html = join(root, "workspaces/client/apps/web", `${name}.html`);
   const artifacts = await mkdtemp(join(tmpdir(), "studio-rendering-theme-"));
   let server;
   try {
-    await writeFile(
-      entry,
-      `
+    const fixture = `
   import { useState } from "react";
   import { createRoot } from "react-dom/client";
   import { MantineProvider } from "@mantine/core";
@@ -42,16 +36,30 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
    return <MantineProvider forceColorScheme={theme}><main><div id="text"><StreamingText text={text} streaming={streaming} agentId="fixture" /></div><div id="activity"><Activity items={items}/></div><div id="turn"><TurnHistory items={items} currentTurn="turn" enabled storageKey="test-rendering" renderMessage={()=>null} onJump={()=>{}} /></div><ComposerAttachments notify={()=>{}} assets={[asset]} uploading={false} disabled={false} add={()=>{}} remove={()=>{}}/><MessageAttachments assets={[asset]} notify={()=>{}}/></main></MantineProvider>;
   }
   createRoot(document.getElementById("root")!).render(<Harness/>);
-  `,
-    );
-    await writeFile(
-      html,
-      `<html><body><div id="root"></div><script type="module" src="/${name}.tsx"></script></body></html>`,
-    );
+  `;
     server = await createServer({
       root: join(root, "workspaces/client/apps/web"),
       configFile: false,
       server: { host: "127.0.0.1", port: 0 },
+      plugins: [
+        {
+          name: "rendering-check",
+          configureServer(vite) {
+            vite.middlewares.use(`/${name}.html`, (_request, response) => {
+              response.setHeader("Content-Type", "text/html");
+              response.end(
+                `<div id="root"></div><script type="module" src="/${name}.tsx"></script>`,
+              );
+            });
+          },
+          resolveId(id) {
+            if (id === `/${name}.tsx`) return entry;
+          },
+          load(id) {
+            if (id === entry) return fixture;
+          },
+        },
+      ],
     });
     await server.listen();
     const page = runnerPage;
@@ -259,7 +267,6 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
     );
   } finally {
     await server?.close();
-    await rm(entry, { force: true });
-    await rm(html, { force: true });
+    await rm(artifacts, { recursive: true, force: true });
   }
 });

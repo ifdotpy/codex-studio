@@ -251,7 +251,6 @@ pub fn mime_type(path: &Path) -> String {
 mod tests {
     use std::fs;
     use std::path::Path;
-    use std::path::PathBuf;
 
     use serde_json::json;
 
@@ -262,7 +261,8 @@ mod tests {
 
     #[test]
     fn local_file_metadata_and_content_follow_symlinks() {
-        let root = tempfile_dir();
+        let directory = tempfile_dir();
+        let root = directory.path();
         let target = root.join("outside.md");
         fs::write(&target, "content").expect("target writes");
         let workspace = root.join("workspace");
@@ -296,12 +296,12 @@ mod tests {
             file_info(&target.to_string_lossy(), Some(&context.cwd)).expect("absolute path reads"),
             info
         );
-        fs::remove_dir_all(root).expect("temporary directory removes");
     }
 
     #[test]
     fn file_content_is_bounded_and_metadata_is_not_limited() {
-        let root = tempfile_dir();
+        let directory = tempfile_dir();
+        let root = directory.path();
         let file = root.join("large.bin");
         let content = fs::File::create(&file).expect("file creates");
         content
@@ -318,7 +318,6 @@ mod tests {
                 limit_label: WORKSPACE_PREVIEW_LIMIT_LABEL,
             })
         );
-        fs::remove_dir_all(root).expect("temporary directory removes");
     }
 
     #[test]
@@ -338,7 +337,8 @@ mod tests {
 
     #[test]
     fn image_file_helpers_read_host_visible_mount_with_the_same_bounds() {
-        let root = tempfile_dir();
+        let directory = tempfile_dir();
+        let root = directory.path();
         let file = root.join("mounted.txt");
         fs::write(&file, b"mounted content").expect("fixture writes");
         let path = file.to_string_lossy();
@@ -362,21 +362,10 @@ mod tests {
                 limit_label: WORKSPACE_PREVIEW_LIMIT_LABEL,
             })
         );
-        fs::remove_file(file).expect("fixture removes");
-        fs::remove_dir_all(root).expect("temporary directory removes");
     }
 
-    fn tempfile_dir() -> std::path::PathBuf {
-        let root = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        let path = root.join("workspace-files-tests").join(format!(
-            "studio-workspace-files-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
-        fs::create_dir_all(&path).expect("temporary directory creates");
-        path
+    fn tempfile_dir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("temporary directory creates")
     }
 
     #[test]

@@ -6,7 +6,7 @@
     "contracts:generate": "cargo run --quiet --locked -p studio-runtime-schema --bin studio-contracts -- --write",
     "contracts:check": "cargo run --quiet --locked -p studio-runtime-schema --bin studio-contracts -- --check",
     "test:client": "pnpm run typecheck:client-helper && pnpm --filter codex-agents-web test",
-    "typecheck:client-helper": "pnpm --filter codex-agents-web exec tsc --project tests/tsconfig.json",
+    "typecheck:client-helper": "pnpm --filter codex-agents-web exec tsc --project tests/tsconfig.json --incremental --tsBuildInfoFile \"${STUDIO_TSC_CACHE:-${TMPDIR:-/tmp}}/codex-studio-client-helper.tsbuildinfo\"",
     "test:client:unit": "pnpm --filter codex-agents-web run test:unit",
     "test:client:browser": "pnpm --filter codex-agents-web run test:browser",
     "test:server:bridge": "pnpm --filter studio-claude-bridge run test",
@@ -21,7 +21,7 @@
     "check:staged": "node workspaces/tooling/apps/repository-checks/check-code.mjs staged",
     "test:pre-commit": "node workspaces/tooling/apps/repository-checks/tests/pre-commit-hook.mjs",
     "check:tooling": "pnpm run test:tooling",
-    "test:tooling": "node --test workspaces/tooling/apps/repository-checks/tests/facade.test.mjs workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.mjs workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.mjs workspaces/tooling/apps/installed-smoke/tests/smoke.test.mjs"
+    "test:tooling": "node --test workspaces/tooling/apps/repository-checks/tests/gates.test.mjs workspaces/tooling/apps/repository-checks/tests/facade.test.mjs workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.mjs workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.mjs workspaces/tooling/apps/installed-smoke/tests/smoke.test.mjs"
   },
   "devDependencies": {
     "openapi-typescript": "7.13.0",

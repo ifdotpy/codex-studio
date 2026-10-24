@@ -20,13 +20,19 @@ it.each([
   async (src) => {
     let receive!: (event: unknown) => Promise<void>, removed!: () => void;
     let signal!: AbortSignal;
+    let reply!: () => void;
+    const firstReply = new Promise<void>((resolve) => {
+      reply = resolve;
+    });
     const replies: Record<string, unknown>[] = [];
     const frame = {
       src,
       isConnected: true,
       contentWindow: {
-        postMessage: (value: unknown) =>
-          replies.push(value as Record<string, unknown>),
+        postMessage: (value: unknown) => {
+          replies.push(value as Record<string, unknown>);
+          reply();
+        },
       },
     };
     vi.stubGlobal("window", {
@@ -74,15 +80,22 @@ it.each([
       },
     };
     const original = receive(event);
-    await vi.waitFor(() => expect(replies).toHaveLength(1));
-    await receive({ ...event, data: { ...event.data, correlation: "replay" } });
-    expect(replies[1].error).toBe("Invalid server transport action.");
-    expect(signal.aborted).toBe(false);
-    frame.isConnected = false;
-    removed();
-    expect(signal.aborted).toBe(true);
-    await original;
-    stop();
+    try {
+      await firstReply;
+      expect(replies).toHaveLength(1);
+      await receive({
+        ...event,
+        data: { ...event.data, correlation: "replay" },
+      });
+      expect(replies[1].error).toBe("Invalid server transport action.");
+      expect(signal.aborted).toBe(false);
+      frame.isConnected = false;
+      removed();
+      expect(signal.aborted).toBe(true);
+    } finally {
+      stop();
+      await original;
+    }
   },
 );
 

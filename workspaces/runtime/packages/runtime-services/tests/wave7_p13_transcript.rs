@@ -43,11 +43,35 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
         let name = case["path"].as_str().expect("snapshot name");
         let state = root.path().join(name);
         restore_snapshot(&fixtures.join(name), &state, root.path());
+        let fixture_sync_high = {
+            let db = rusqlite::Connection::open(state.join("canvas.sqlite3"))
+                .expect("restored snapshot reader");
+            db.query_row(
+                "SELECT MAX(seq) FROM (SELECT seq FROM sync_entities UNION ALL SELECT seq FROM sync_documents UNION ALL SELECT seq FROM sync_versions)",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("frozen global sync sequence")
+        };
         let mut store = Arc::new(
             RuntimeStore::open(Some(&state))
                 .await
                 .expect("Python store"),
         );
+        let db = store.test_reader().expect("migrated snapshot reader");
+        let workspace_sequence: i64 = db
+            .query_row(
+                "SELECT seq FROM sync_entities WHERE collection='workspace' AND id='current'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migrated workspace sequence");
+        assert_eq!(
+            workspace_sequence,
+            fixture_sync_high + 1,
+            "v4 startup migrates the legacy workspace limits exactly once"
+        );
+        drop(db);
         if let Some(expected) = case["pageError"].as_str() {
             let before = sync_snapshot(&store);
             let error = transcript_runtime::page_at(
@@ -330,7 +354,7 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
                 transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", after)
                     .await
                     .expect("pull");
-            assert_pull(&got, expected);
+            assert_pull(&got, expected, fixture_sync_high);
             let committed = sync_snapshot(&store);
             let replay =
                 transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", after)
@@ -354,7 +378,7 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
     }
     eprintln!("P13 injected write/commit boundaries: {fault_count}");
 }
-fn assert_pull(got: &Value, expected: &Value) {
+fn assert_pull(got: &Value, expected: &Value, fixture_sync_high: i64) {
     let decode = |v: &Value| {
         let mut v = v.clone();
         for doc in v["documents"].as_array_mut().expect("documents") {
@@ -363,7 +387,23 @@ fn assert_pull(got: &Value, expected: &Value) {
         }
         v
     };
-    assert_eq!(decode(got), decode(expected));
+    let mut expected = decode(expected);
+    // The frozen Python snapshots predate the v4 workspace limits migration.
+    // Its one startup write uses the shared allocator. Shift only newly
+    // allocated transcript sequences; persisted cursors and pruning stay exact.
+    for document in expected["documents"].as_array_mut().expect("documents") {
+        let sequence = document["seq"].as_i64().expect("document sequence");
+        if sequence > fixture_sync_high {
+            document["seq"] = json!(sequence + 1);
+        }
+    }
+    let checkpoint = expected["checkpoint"]["seq"]
+        .as_i64()
+        .expect("checkpoint sequence");
+    if checkpoint > fixture_sync_high {
+        expected["checkpoint"]["seq"] = json!(checkpoint + 1);
+    }
+    assert_eq!(decode(got), expected);
 }
 
 fn sync_snapshot(store: &RuntimeStore) -> Value {

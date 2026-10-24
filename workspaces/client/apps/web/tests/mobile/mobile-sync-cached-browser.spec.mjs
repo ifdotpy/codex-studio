@@ -76,18 +76,16 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
             scope === "state:entities:v1" && after < 2
               ? [
                   {
-                    id: "entity:agent:lead",
-                    seq: 2,
-                    payload: JSON.stringify({
-                      collection: "agent",
+                    op: "upsert",
+                    collection: "agent",
+                    id: "lead",
+                    value: {
                       id: "lead",
-                      value: {
-                        id: "lead",
-                        name: "Fresh",
-                        status: "running",
-                        source: "managed",
-                      },
-                    }),
+                      name: "Fresh",
+                      status: "running",
+                      source: "managed",
+                    },
+                    seq: 2,
                   },
                 ]
               : [],
@@ -107,18 +105,16 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       await db.projections.insert({
-        id: "entity:agent:lead",
-        seq: 1,
-        payload: JSON.stringify({
-          collection: "agent",
+        op: "upsert",
+        collection: "agent",
+        id: "lead",
+        value: {
           id: "lead",
-          value: {
-            id: "lead",
-            name: "Cached",
-            status: "running",
-            source: "managed",
-          },
-        }),
+          name: "Cached",
+          status: "running",
+          source: "managed",
+        },
+        seq: 1,
       });
       await db.projections.insert({
         id: "state:entities:ready",

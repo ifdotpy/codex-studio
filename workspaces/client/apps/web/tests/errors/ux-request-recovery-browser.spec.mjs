@@ -141,7 +141,7 @@ test("Ux request recovery browser", async ({
             url.searchParams.get("resources") || "[]",
           );
           const baseline = {
-            protocol: 3,
+            protocol: 4,
             workspaceId: syncIdentity.workspaceId,
             epoch: "fixture",
             revision: 1,

@@ -454,21 +454,22 @@ async fn journal_batch_persists_streams_only_when_they_change() {
     store
         .transaction_with(|tx| -> Result<(), WorkerError> {
             tx.execute(
-                "UPDATE runtime_operation_receipts SET result='\"unchanged\"' WHERE id='account-worker:streams:default:metadata'",
+                "UPDATE runtime_operation_receipts SET result=json_set(result,'$.testMarker',1) WHERE id='account-worker:streams:default:metadata'",
                 [],
             )?;
             Ok(())
         })
         .await
         .expect("mark the stored snapshot");
+    let marked = stream_metadata(&store).expect("marked snapshot");
     let rate_limits = entry(
         2,
         json!({"method":"account/rateLimits/updated","params":{"rateLimits":{}}}),
     );
     let streams = journal(&store, streams, vec![rate_limits]).await;
-    assert_eq!(stream_metadata(&store).as_deref(), Some("\"unchanged\""));
+    assert_eq!(stream_metadata(&store).as_deref(), Some(marked.as_str()));
     let streams = journal(&store, streams, vec![delta(3)]).await;
-    assert_ne!(stream_metadata(&store).as_deref(), Some("\"unchanged\""));
+    assert_ne!(stream_metadata(&store).as_deref(), Some(marked.as_str()));
     let restored = store
         .transaction_with(|tx| store::load_streams(tx, "default"))
         .await

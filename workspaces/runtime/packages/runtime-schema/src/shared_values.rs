@@ -71,16 +71,12 @@ pub const SYNC_BATCH_LIMIT: i64 = 100;
 pub const SYNC_ENTITY_PAGE_LIMIT: i64 = 500;
 /// Maximum records in a complete state stream interval, in documents.
 pub const SYNC_ENTITY_STREAM_MAX_DOCUMENTS: i64 = 512;
-/// Maximum encoded state batch (including envelopes), in UTF-8 bytes.
-pub const SYNC_ENTITY_STREAM_MAX_BYTES: usize = 262144;
+/// Maximum complete resources SSE event, including event/id/data lines, in UTF-8 bytes.
+pub const SYNC_STREAM_EVENT_MAX_BYTES: usize = 262144;
 /// Maximum changed and removed transcript records in a complete stream interval, in items.
 pub const SYNC_TRANSCRIPT_STREAM_MAX_ITEMS: usize = 512;
-/// Maximum encoded transcript stream interval, in UTF-8 bytes.
-pub const SYNC_TRANSCRIPT_STREAM_MAX_BYTES: usize = 262144;
 /// Maximum records in a complete draft stream interval, in documents.
 pub const SYNC_DRAFT_STREAM_MAX_DOCUMENTS: i64 = 512;
-/// Maximum encoded draft batch (including envelopes), in UTF-8 bytes.
-pub const SYNC_DRAFT_STREAM_MAX_BYTES: usize = 262144;
 /// Seconds between sync resource heartbeats.
 pub const SYNC_RESOURCE_HEARTBEAT_SECONDS: u64 = 15;
 
@@ -311,6 +307,18 @@ pub const SIGN_IN_ALERT_GRACE_SECONDS: u64 = 10;
 /// The one reminder of an open sign-in card comes this long before the card closes, in
 /// seconds. The desktop alerts and the phone pushes use it.
 pub const SIGN_IN_REMINDER_SECONDS: u64 = 300;
+
+// Claude Code 2.1.302 idle compaction policy. Counts are context tokens.
+pub const IDLE_COMPACTION_DEFAULT_MIN_TOKENS: u64 = 200000;
+pub const IDLE_COMPACTION_MIN_TOKENS: u64 = 100000;
+/// Fraction of the observed cache lifetime before the idle timer fires.
+pub const IDLE_COMPACTION_FIRE_FRACTION: f64 = 0.9;
+pub const IDLE_COMPACTION_MIN_FIRE_FRACTION: f64 = 0.5;
+pub const IDLE_COMPACTION_MAX_FIRE_FRACTION: f64 = 0.95;
+/// Maximum permitted timer lateness, in seconds.
+pub const IDLE_COMPACTION_MAX_LATE_SECONDS: f64 = 60.0;
+/// One-hour prompt cache lifetime, in seconds.
+pub const IDLE_COMPACTION_CACHE_SECONDS: f64 = 3600.0;
 
 #[cfg(test)]
 mod tests {

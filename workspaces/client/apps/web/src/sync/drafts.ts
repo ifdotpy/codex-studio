@@ -25,6 +25,7 @@ import {
   type PendingDraft,
 } from "./draftJournal";
 import { onResume } from "./resume";
+import { createFrameBatch } from "./frameBatch";
 import { draftVersionId } from "./draftIdentity";
 import { activeDraftVersions } from "./draftVersions";
 import {
@@ -529,6 +530,12 @@ export function createBrowserDrafts(options: {
       let stopped = false,
         unsubscribe = () => {},
         cancel = () => {};
+      let pendingDocuments: any[] | undefined;
+      const publication = createFrameBatch(() => {
+        const docs = pendingDocuments;
+        pendingDocuments = undefined;
+        if (!stopped && docs) reconcile(decodeDrafts(docs));
+      });
       let retry: ReturnType<typeof setTimeout> | undefined;
       const bootstrapRetryDelays = [1_000, 3_000, 10_000];
       let bootstrapRetryCount = 0;
@@ -586,9 +593,14 @@ export function createBrowserDrafts(options: {
             }
             if (stopped) return;
             const sub = db.drafts.find().$.subscribe((docs: any[]) => {
-              reconcile(decodeDrafts(docs));
+              pendingDocuments = docs;
+              publication.schedule();
             });
-            unsubscribe = () => sub.unsubscribe();
+            unsubscribe = () => {
+              sub.unsubscribe();
+              publication.cancel();
+              pendingDocuments = undefined;
+            };
             started = true;
             bootstrapRetryCount = 0;
             setBootstrapPaused(false);

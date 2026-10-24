@@ -742,30 +742,36 @@ fn provider_frames_are_passed_to_dispatch_in_order_without_method_filtering() {
             .push(&[line, vec![b'\n']].concat())
             .expect("scripted test operation")
             .remove(0);
-        assert!(matches!(
+        assert_eq!(
             session
-                .receive(frame)
-                .expect("scripted test operation")
-                .as_slice(),
-            [Action::Dispatch(_)]
-        ));
+                .receive(frame.clone())
+                .expect("scripted test operation"),
+            vec![Action::Dispatch(frame)]
+        );
     }
 }
 
 #[test]
 fn all_recorded_replay_fixture_frames_parse_through_the_session() {
-    const FIXTURES: &[&str] = &[
-        include_str!("fixtures/provider-replay/background-output-after-completion.json"),
-        include_str!("fixtures/provider-replay/codex-rpc-replies.json"),
-        include_str!("fixtures/provider-replay/child-completion-before-parent.json"),
-        include_str!("fixtures/provider-replay/claude-first-turn.json"),
-        include_str!("fixtures/provider-replay/lost-turn-start-reply.json"),
-        include_str!("fixtures/provider-replay/restart-mid-turn-supervisor-replay.json"),
-        include_str!("fixtures/provider-replay/token-usage-reasoning.json"),
-        include_str!("fixtures/provider-replay/tool-request-http.json"),
-    ];
-    for fixture in FIXTURES {
-        let value: Value = serde_json::from_str(fixture).expect("scripted test operation");
+    let root = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/provider-replay"
+    );
+    for entry in std::fs::read_dir(root).expect("fixtures directory") {
+        let path = entry.expect("fixture entry").path();
+        if !path.extension().is_some_and(|ext| ext == "json") {
+            continue;
+        }
+        let value: Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("fixture")).expect("JSON");
+        // RPC-only and raw SDK fixtures are exercised by their own callers below
+        // and by codec.rs; this witness admits protocol event fixtures only.
+        if path.file_name().expect("name") == "codex-rpc-replies.json"
+            || value["boundaryOnly"] == true && value.get("events").is_none()
+            || value.get("sdkEvents").is_some()
+        {
+            continue;
+        }
         let mut session = state(value["provider"] == "claude");
         let mut expected = Vec::new();
         for key in ["events", "childEvents", "parentEvents"] {
@@ -773,6 +779,11 @@ fn all_recorded_replay_fixture_frames_parse_through_the_session() {
                 expected.extend(events.iter().cloned());
             }
         }
+        assert!(
+            !expected.is_empty(),
+            "{}: event fixture is empty",
+            path.display()
+        );
         for expected_frame in expected {
             let mut bytes = serde_json::to_vec(&expected_frame).expect("scripted test operation");
             bytes.push(b'\n');

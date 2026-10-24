@@ -38,14 +38,13 @@ describe("entity sequence checkpoint", () => {
     ).toBe(true);
   });
 
-  it("keeps S14 and S14b at zero pulls when a foreign commit is already held", async () => {
+  it("covers invalidations during and after advancing a foreign commit", async () => {
     for (const frameOrder of ["during-response", "after-response"] as const) {
       const checkpoint = new EntitySequenceCheckpoint();
       checkpoint.assign(100);
       const resetVersion = checkpoint.resetVersion;
       const coverage = checkpoint.beginInFlightCoverage(100, 102)!;
       checkpoint.assignWithinEpoch(101);
-      let pulls = 0;
 
       if (frameOrder === "during-response") {
         expect(checkpoint.coversWithInFlight(102)).toBe(true);
@@ -69,15 +68,13 @@ describe("entity sequence checkpoint", () => {
         ),
         frameOrder,
       ).toBe(true);
-      expect(pulls, frameOrder).toBe(0);
     }
   });
 
-  it("does not register a gap and pulls for its invalidation", async () => {
+  it("refuses in-flight coverage across a gap", async () => {
     const checkpoint = new EntitySequenceCheckpoint();
     checkpoint.assign(100);
     expect(checkpoint.beginInFlightCoverage(101, 110)).toBeUndefined();
-    let pulls = 0;
     expect(
       entitySequenceInvalidationCovered(
         checkpoint.effectiveCoverage(),
@@ -85,24 +82,19 @@ describe("entity sequence checkpoint", () => {
         false,
       ),
     ).toBe(false);
-    pulls++;
-    expect(pulls).toBe(1);
   });
 
-  it.each(["reject", "250ms timeout"])(
-    "falls back once after a held persister %s",
-    (failure) => {
-      const checkpoint = new EntitySequenceCheckpoint();
-      checkpoint.assign(100);
-      const token = checkpoint.beginInFlightCoverage(100, 110)!;
-      const fallback = vi.fn();
-      checkpoint.onInFlightCoverageInvalidated(fallback);
-      checkpoint.markInFlightCoverageUsed(105);
-      checkpoint.settleInFlightCoverage(token);
-      expect(fallback, failure).toHaveBeenCalledOnce();
-      expect(checkpoint.effectiveCoverage()).toBe(100);
-    },
-  );
+  it("invalidates used in-flight coverage once when settled without advancement", () => {
+    const checkpoint = new EntitySequenceCheckpoint();
+    checkpoint.assign(100);
+    const token = checkpoint.beginInFlightCoverage(100, 110)!;
+    const fallback = vi.fn();
+    checkpoint.onInFlightCoverageInvalidated(fallback);
+    checkpoint.markInFlightCoverageUsed(105);
+    checkpoint.settleInFlightCoverage(token);
+    expect(fallback).toHaveBeenCalledOnce();
+    expect(checkpoint.effectiveCoverage()).toBe(100);
+  });
 
   it("invalidates later contiguous coverage when an earlier response fails", () => {
     const checkpoint = new EntitySequenceCheckpoint();

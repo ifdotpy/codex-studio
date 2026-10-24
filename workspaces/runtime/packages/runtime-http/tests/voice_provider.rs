@@ -20,8 +20,6 @@ use crate::monitor_runtime_fixtures as monitor_fixtures;
 #[allow(dead_code)]
 use crate::monitor_runtime_support as monitor_support;
 #[allow(dead_code)]
-use crate::multi_server_fixtures as common;
-#[allow(dead_code)]
 #[derive(Default)]
 struct RecordingPort {
     calls: Mutex<Vec<(String, Method, Value)>>,
@@ -95,7 +93,12 @@ impl VoiceRequestPort for RecordingPort {
 }
 
 async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>) {
-    let (root, store) = common::store().await;
+    let root = tempfile::tempdir().expect("isolated voice state");
+    let store = Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("voice store"),
+    );
     let actor = json!({
         "id":"voice-http-agent", "rootId":"voice-http-agent", "epoch":7,
         "status":"idle", "isLead":true, "autoWake":true,
@@ -491,6 +494,7 @@ async fn providerless_routes_admit_start_and_refuse_other_actions_without_writes
     );
     let app = router(state).expect("router");
     let before = voice_row_counts(&store);
+    let snapshot = database_snapshot(&store);
     for (path, body) in [
         (
             "/api/voice/speech",
@@ -506,6 +510,7 @@ async fn providerless_routes_admit_start_and_refuse_other_actions_without_writes
         ),
     ] {
         let (status, value) = post(&app, path, body).await;
+        assert_eq!(database_snapshot(&store), snapshot, "{path} must not write");
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{path}: {value}");
         assert!(
             value.to_string().contains("provider-session/voice"),

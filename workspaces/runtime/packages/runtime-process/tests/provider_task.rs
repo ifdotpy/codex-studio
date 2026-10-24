@@ -7,7 +7,7 @@ use studio_runtime_process::{provider_seam::*, provider_task::SupervisorProvider
 use studio_runtime_providers::{DecodedJournalPayload, Frame, RequestId, decode_journal_entry};
 use support::*;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
 };
 
@@ -105,6 +105,38 @@ impl Peer {
         )
         .await;
     }
+    /// Model the supervisor releasing ownership before closing each socket.
+    /// Drive teardown alongside completion so the fixture can reply with EOF.
+    async fn finish(
+        &mut self,
+        completion: impl std::future::Future<Output = TaskExit>,
+    ) -> TaskExit {
+        let commands = &mut self.commands;
+        let events = &mut self.events;
+        let (result, (), ()) = tokio::join!(
+            completion,
+            async {
+                let mut remaining = Vec::new();
+                commands.read_to_end(&mut remaining).await.unwrap();
+                assert!(
+                    remaining.is_empty(),
+                    "unexpected provider control write during teardown"
+                );
+                commands.get_mut().shutdown().await.unwrap();
+            },
+            async {
+                if let Some(events) = events {
+                    tokio::io::copy(events, &mut tokio::io::sink())
+                        .await
+                        .unwrap();
+                    events.get_mut().shutdown().await.unwrap();
+                }
+            },
+        );
+        assert!(result.cleanup_error.is_none(), "{:?}", result.cleanup_error);
+        result
+    }
+
     async fn accept_events(&mut self, listener: &UnixListener, identity: &BackendIdentity) {
         let (socket, _) = listener.accept().await.unwrap();
         let mut events = BufReader::new(socket);
@@ -227,7 +259,7 @@ async fn shutdown_interrupts_handshake_and_closes_socket() {
         let mut peer = Peer::command(socket);
         peer.read().await.unwrap(); // Actual handshake bytes reached the peer.
         assert!(matches!(
-            attachment.shutdown().await.result,
+            peer.finish(attachment.shutdown()).await.result,
             Err(AdapterError::Cancelled)
         ));
         assert!(peer.read().await.is_none());
@@ -271,7 +303,7 @@ async fn full_replay_lane_still_accepts_control_ack_and_shutdown() {
         );
         let following = peer.request("nextBatch").await;
         assert_eq!(following["cursor"], LANE_CAPACITY as u64 + 1);
-        let exit = attachment.shutdown().await;
+        let exit = peer.finish(attachment.shutdown()).await;
         assert!(exit.recovery_needed.is_some());
         assert!(peer.read().await.is_none());
     })
@@ -306,7 +338,7 @@ async fn stdout_stderr_exit_raw_keep_cursors_and_never_auto_ack() {
     }
     // The next batch carries only events; ACK remains an explicit caller action.
     peer.request("nextBatch").await;
-    attachment.shutdown().await;
+    peer.finish(attachment.shutdown()).await;
     assert!(peer.read().await.is_none());
     }).await;
 }
@@ -342,7 +374,7 @@ async fn one_next_batch_delivers_events_in_journal_order_without_auto_ack() {
                 .acknowledged,
             EventCursor(0)
         );
-        attachment.shutdown().await;
+        peer.finish(attachment.shutdown()).await;
         assert!(peer.read().await.is_none());
     })
     .await;
@@ -361,7 +393,7 @@ async fn duplicate_cursor_is_not_delivered_twice() {
         );
         peer.next_event(1, 1, "stdout", json!({"method":"notice"}))
             .await;
-        assert!(attachment.completion().await.result.is_err());
+        assert!(peer.finish(attachment.completion()).await.result.is_err());
         assert!(attachment.journal.recv().await.is_none());
     })
     .await;
@@ -474,7 +506,7 @@ async fn readiness_requires_real_initialized_receipt_and_stable_identity() {
             .initialization_recovery()
             .is_none()
     );
-    assert!(attachment.shutdown().await.recovery_needed.is_none());
+    assert!(peer.finish(attachment.shutdown()).await.recovery_needed.is_none());
     }).await;
 }
 
@@ -498,7 +530,7 @@ async fn failed_status_probe_is_not_absence_and_never_opens_child() {
         peer.send(json!({"ok":true,"protocol":2})).await;
         let status = peer.request("status").await;
         peer.error(&status, "status probe failed").await;
-        assert!(attachment.completion().await.result.is_err());
+        assert!(peer.finish(attachment.completion()).await.result.is_err());
         assert!(peer.read().await.is_none());
     })
     .await;
@@ -524,8 +556,10 @@ async fn unverifiable_retained_child_refused_before_open() {
     peer.send(json!({"ok":true,"protocol":2})).await;
     let status = peer.request("status").await;
     peer.result(&status, json!({"pid":u32::MAX,"sequence":0,"acknowledged":0,"returnCode":null,"backpressure":false})).await;
+    // Socket setup is real; only the retained-record retry deadline is virtual.
+    tokio::time::pause();
     assert!(matches!(
-        attachment.completion().await.result,
+        peer.finish(attachment.completion()).await.result,
         Err(AdapterError::UnverifiableChild)
     ));
     assert!(peer.read().await.is_none());
@@ -564,7 +598,7 @@ async fn shutdown_completes_with_full_commands_and_outstanding_sender_permit() {
             receipts.push(receipt);
         }
         assert_eq!(attachment.commands.capacity(), 0);
-        attachment.shutdown().await;
+        peer.finish(attachment.shutdown()).await;
         assert!(matches!(
             in_flight_receipt.receive().await,
             CommandReceipt::Unknown
@@ -593,7 +627,7 @@ async fn cancelling_shutdown_future_keeps_owned_join_handle() {
             .await
         );
         drop(completion);
-        let exit = attachment.shutdown().await;
+        let exit = peer.finish(attachment.shutdown()).await;
         assert!(
             matches!(&exit.result, Err(AdapterError::Cancelled)),
             "shutdown must preserve cancellation after the pending event RPC: {:?}",
@@ -1014,7 +1048,7 @@ async fn caller_losing_write_receipt_closes_attachment() {
             json!({"accepted":true,"duplicate":false,"remoteId":null,"durableMs":0}),
         )
         .await;
-        assert!(attachment.completion().await.result.is_err());
+        assert!(peer.finish(attachment.completion()).await.result.is_err());
         assert!(peer.read().await.is_none());
     })
     .await;
@@ -1049,7 +1083,7 @@ async fn shutdown_after_initialize_reply_before_initialized_receipt_reports_reco
             .await
             .unwrap_or_else(|_| panic!("closed"));
         peer.request("write").await; // Receipt deliberately held.
-        let exit = attachment.shutdown().await;
+        let exit = peer.finish(attachment.shutdown()).await;
         assert!(matches!(receipt.receive().await, CommandReceipt::Unknown));
         assert_eq!(
             exit.recovery_needed.unwrap().phase,
@@ -1119,7 +1153,7 @@ async fn non_linux_reattach_refuses_even_an_exited_child_before_open() {
         )
         .await;
         assert!(matches!(
-            attachment.completion().await.result,
+            peer.finish(attachment.completion()).await.result,
             Err(AdapterError::UnverifiableChild)
         ));
         assert!(peer.read().await.is_none());
@@ -1150,7 +1184,7 @@ async fn v1_handshake_is_rejected_without_provider_command_fallback() {
         peer.send(json!({"ok":true})).await;
 
         assert!(matches!(
-            attachment.completion().await.result,
+            peer.finish(attachment.completion()).await.result,
             Err(AdapterError::Supervisor(
                 SupervisorError::ProtocolMismatch {
                     expected: SUPERVISOR_PROTOCOL_V2,
@@ -1441,7 +1475,7 @@ async fn terminal_eof_serves_already_queued_final_ack_before_completion() {
         receipt.receive().await,
         CommandReceipt::Acknowledged(EventCursor(1))
     ));
-    let exit = attachment.completion().await;
+    let exit = peer.finish(attachment.completion()).await;
     assert!(exit.result.is_ok());
     // The attachment saw the child end: no provider outlives it.
     assert!(!exit.provider_retained);
@@ -1461,7 +1495,7 @@ async fn a_cancelled_attachment_leaves_its_supervised_child_retained() {
             .await;
         attachment.journal.recv().await.unwrap();
         peer.request("nextBatch").await;
-        let exit = attachment.shutdown().await;
+        let exit = peer.finish(attachment.shutdown()).await;
         assert!(exit.provider_retained);
         assert!(peer.read().await.is_none());
     })

@@ -79,7 +79,7 @@ pub(crate) async fn protocol(
         "maxEntityPage": sync_policy::ENTITY_PAGE_LIMIT,
         "maxOtherPage": sync_policy::OTHER_PAGE_LIMIT,
         "maxStreamDocuments": studio_runtime_schema::shared_values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
-        "maxStreamBytes": studio_runtime_schema::shared_values::SYNC_ENTITY_STREAM_MAX_BYTES,
+        "maxStreamBytes": studio_runtime_schema::shared_values::SYNC_STREAM_EVENT_MAX_BYTES,
     });
     Ok(Json(super::generated_json::<
         crate::generated::SyncProtocolResponse,
@@ -177,7 +177,7 @@ pub(crate) async fn pull(
                         checkpoint: crate::generated::SyncCheckpoint { seq: checkpoint },
                         documents: documents
                             .into_iter()
-                            .map(draft_document)
+                            .map(|document| draft_document(document).map(crate::generated::SyncPullResponseDocumentsItemUnion::SyncDocument))
                             .collect::<Result<Vec<_>, _>>()?,
                         floor: None,
                         generation,
@@ -755,12 +755,8 @@ fn pull_entities(
             let Some(document) = entity_document(row) else {
                 continue;
             };
-            documents.push(crate::generated::SyncDocument {
-                id: document.id,
-                payload: document.payload,
-                seq: document.seq,
-                deleted: document.deleted,
-            });
+            documents
+                .push(crate::generated::SyncPullResponseDocumentsItemUnion::SyncEntity(document));
             if documents.len() == page_limit {
                 reached_limit = true;
                 break;
@@ -817,23 +813,28 @@ fn pull_entities(
 pub(super) fn entity_document(
     row: &studio_runtime_store::EntityRow,
 ) -> Option<crate::generated::SyncEntity> {
-    let mut payload: Value = serde_json::from_str(row.payload.as_deref()?).ok()?;
-    if !matches!(
-        studio_runtime_schema::normalize_sync_entity_payload(
-            &row.collection,
-            &row.id,
-            row.deleted,
-            &mut payload
-        ),
-        Ok(None)
-    ) {
+    let mut payload = sync_documents::entity_payload(row)?;
+    let object = payload.as_object_mut()?;
+    let Value::String(collection) = object.remove("collection")? else {
         return None;
-    }
+    };
+    let Value::String(id) = object.remove("id")? else {
+        return None;
+    };
     Some(crate::generated::SyncEntity {
-        id: format!("entity:{}:{}", row.collection, row.id),
+        collection,
+        id,
+        op: if row.deleted {
+            crate::generated::SyncEntityOp::Delete
+        } else {
+            crate::generated::SyncEntityOp::Upsert
+        },
         seq: row.sequence,
-        payload: serde_json::to_string(&payload).ok()?,
-        deleted: row.deleted,
+        value: if row.deleted {
+            None
+        } else {
+            object.remove("value")
+        },
     })
 }
 
@@ -1128,12 +1129,16 @@ mod vault_maintenance_tests {
             sync_entities: None,
             sync_entities_after: None,
             checkpoint: crate::generated::SyncCheckpoint { seq: 8 },
-            documents: vec![crate::generated::SyncDocument {
-                id: "entity:agent:a".to_owned(),
-                payload: "{}".to_owned(),
-                seq: 8,
-                deleted: false,
-            }],
+            documents: vec![
+                crate::generated::SyncPullResponseDocumentsItemUnion::SyncDocument(
+                    crate::generated::SyncDocument {
+                        id: "entity:agent:a".to_owned(),
+                        payload: "{}".to_owned(),
+                        seq: 8,
+                        deleted: false,
+                    },
+                ),
+            ],
             floor: None,
             generation: 7,
             initial_high: Some(Some(9)),

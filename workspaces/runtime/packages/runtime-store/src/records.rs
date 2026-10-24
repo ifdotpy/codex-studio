@@ -1443,7 +1443,7 @@ mod tests {
         let table = Table::<AgentRecord>::new(&connection);
         connection
             .execute(
-                "INSERT INTO runtime_agents(id,record) VALUES ('invalid-epoch','{\"id\":\"invalid-epoch\",\"rootId\":23,\"epoch\":0,\"status\":\"idle\"}')",
+                "INSERT INTO runtime_agents(id,record) VALUES ('invalid-epoch','{\"id\":\"invalid-epoch\",\"rootId\":[\"private user text\"],\"epoch\":0,\"status\":\"idle\"}')",
                 [],
             )
             .expect("invalid record fixture inserts");
@@ -1455,10 +1455,26 @@ mod tests {
             if scope == "runtime_agents" && id == "invalid-epoch" && pointer == "/rootId")
         );
         let diagnostic = error.to_string();
-        assert!(diagnostic.contains("value type number"));
-        assert!(diagnostic.contains("length not applicable"));
+        assert!(diagnostic.contains("value type array"));
+        assert!(diagnostic.contains("length 1 items"));
         assert!(!diagnostic.contains("private user text"));
-        assert!(!diagnostic.contains("\"rootId\":23"));
+        let mut invalid = agent(json!({"id":"write","rootId":"write","epoch":0,"status":"idle"}));
+        invalid
+            .extra
+            .insert("autoWake".into(), json!("private user text"));
+        let before = connection.total_changes();
+        let error = table
+            .put(&invalid)
+            .expect_err("invalid typed write is rejected");
+        assert!(
+            matches!(error, StoreError::InvalidStoredObject { table: "runtime_agents", ref id } if id == "write")
+        );
+        assert!(!error.to_string().contains("private user text"));
+        assert_eq!(
+            connection.total_changes(),
+            before,
+            "invalid write changes no rows"
+        );
     }
 
     #[test]

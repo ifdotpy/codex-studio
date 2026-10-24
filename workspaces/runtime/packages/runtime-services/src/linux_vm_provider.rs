@@ -377,7 +377,7 @@ async fn run_guest_attachment(
                         Err(GuestProviderError::Unknown) => CommandReceipt::Unknown,
                         Err(_) => CommandReceipt::NotSent,
                     };
-                    let observe = matches!(receipt, CommandReceipt::Written { .. } | CommandReceipt::CachedInitialize(_));
+                    let observe = receipt.requires_observation();
                     let _sent = reply.send(receipt);
                     if observe && let Err(error) = observed_or_stopped(observed, &mut stop).await {
                         result = Err(error);
@@ -1563,7 +1563,9 @@ mod tests {
                 uncertain: true,
             },
         ];
+        tokio::time::pause();
         let event = session.next().await.unwrap().unwrap();
+        tokio::time::resume();
         assert_eq!(event.sequence, 1);
         assert_eq!(*guest.next_attempts.lock().unwrap(), 3);
         assert_eq!(*guest.writes.lock().unwrap(), 0);

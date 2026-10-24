@@ -188,7 +188,7 @@ points. It cannot produce an acknowledged receipt through the injected API.
 The agreed effect implementation is:
 
 - Usage: `budget_service::capture(tx, agent, params, at,
-budget::CaptureSource::Live, at)`; map its result to `()` and its located error
+  budget::CaptureSource::Live, at)`; map its result to `()` and its located error
   into the worker error. This is the single budget accounting authority.
 - Move: `agent_move::capture_cache(tx, agent_id, params, at)`; use its result in
   the same receipt transaction when an active move requires cache capture.

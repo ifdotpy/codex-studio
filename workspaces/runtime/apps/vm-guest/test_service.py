@@ -22,8 +22,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 from common import GuestError, MAX_LINE, process_identity
-from service import Service
+from service import CLIENT_IDLE_SECONDS, Service
 from native_identity import process_start_time
+from guest_test_worker import worker_command
 
 
 def encoded(data):
@@ -78,7 +79,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         self.home.mkdir()
         self.old_floor = os.environ.get("CODEX_WORKSPACE_MIN_FREE_BYTES")
         os.environ["CODEX_WORKSPACE_MIN_FREE_BYTES"] = "0"
-        self.service = Service(self.root / "state", self.root / "workspaces", self.root / "projects", self.home)
+        self.service = Service(self.root / "state", self.root / "workspaces", self.root / "projects", self.home, worker_command=worker_command)
         self.instances = [self.service]
         self.events = []
         self.next_id = 0
@@ -119,8 +120,13 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
                     process.kill()
                     await asyncio.to_thread(process.wait, timeout=5)
                     lingering.append(process.args)
+        # Children have been waited above; cancel and join their polling reapers explicitly.
+        reapers = [task for instance in self.instances for task in instance.reapers]
+        for task in reapers:
+            task.cancel()
+        await asyncio.gather(*reapers, return_exceptions=True)
+        await asyncio.gather(*(task for instance in self.instances for task in instance.operations))
         self.service.close()
-        await asyncio.sleep(0.1)
         self.temp.cleanup()
         if self.old_floor is None:
             os.environ.pop("CODEX_WORKSPACE_MIN_FREE_BYTES", None)
@@ -170,7 +176,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         again = await self.call("provider.write", {"handle": handle, "data": encoded(b"once\n")}, "input-1")
         self.assertEqual(again["written"], 5)
         self.service.close()
-        self.service = Service(self.root / "state", self.root / "workspaces", self.root / "projects", self.home)
+        self.service = Service(self.root / "state", self.root / "workspaces", self.root / "projects", self.home, worker_command=worker_command)
         self.instances.append(self.service)
         self.assertEqual(self.service.status(handle)["state"], "running")
         deadline = asyncio.get_running_loop().time() + 5
@@ -194,7 +200,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         self.servers.append(server)
         reader, writer = await asyncio.open_unix_connection(str(socket_path))
         marker = self.home / "proof"
-        params = self.command(f"import time; time.sleep(.2); open({str(marker)!r},'w').write('one')")
+        params = self.command(f"open({str(marker)!r},'w').write('one')")
         writer.write(json.dumps({"id": "lost-exec", "method": "exec", "params": params}).encode() + b"\n")
         await writer.drain()
         writer.close()
@@ -203,7 +209,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         while not marker.exists() and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.025)
         self.assertEqual(marker.read_text(), "one")
-        await asyncio.sleep(0.2)
+        await asyncio.gather(*self.service.operations)
         result = await self.call("exec", params, "lost-exec")
         self.assertEqual(result["exitCode"], 0)
         self.assertEqual(len(self.service.list_providers()), 1)
@@ -214,21 +220,47 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         self.servers.append(server)
         reader, writer = await asyncio.open_unix_connection(str(socket_path))
         marker = self.home / "long-exec"
-        params = self.command(f"import time; time.sleep(.25); open({str(marker)!r},'a').write('once'); print('done')")
+        params = self.command(f"open({str(marker)!r},'a').write('once'); print('done')")
         request = {"id": "long-exec", "method": "exec", "params": params}
         received = []
-        with patch("service.CLIENT_IDLE_SECONDS", 0.05):
-            writer.write(json.dumps(request).encode() + b"\n")
-            await writer.drain()
-            while True:
-                line = await asyncio.wait_for(reader.readline(), 5)
-                self.assertTrue(line, "The idle timeout closed a connection with an active operation")
-                response = json.loads(line)
-                received.append(response)
-                if "result" in response:
-                    self.assertEqual(response["result"]["exitCode"], 0)
-                    break
-            self.assertEqual(await asyncio.wait_for(reader.readline(), 2), b"")
+        active, idle, expire, release = (asyncio.Event() for _ in range(4))
+        actual_wait, actual_request = asyncio.wait, self.service.request
+
+        async def operation(request, emit):
+            await release.wait()
+            return await actual_request(request, emit)
+
+        async def wait(tasks, *, timeout, return_when):
+            if timeout is None:
+                active.set()
+            elif active.is_set():
+                self.assertEqual(timeout, CLIENT_IDLE_SECONDS)
+                idle.set()
+                await expire.wait()  # A manually expired idle deadline.
+                return set(), set(tasks)
+            return await actual_wait(tasks, return_when=return_when)
+
+        try:
+            with patch("service.asyncio.wait", side_effect=wait), patch.object(self.service, "request", side_effect=operation):
+                writer.write(json.dumps(request).encode() + b"\n")
+                await writer.drain()
+                await asyncio.wait_for(active.wait(), 5)
+                self.assertFalse(idle.is_set(), "an active operation has no idle timer")
+                release.set()
+                while True:
+                    line = await asyncio.wait_for(reader.readline(), 5)
+                    self.assertTrue(line, "The idle timeout closed a connection with an active operation")
+                    response = json.loads(line)
+                    received.append(response)
+                    if "result" in response:
+                        self.assertEqual(response["result"]["exitCode"], 0)
+                        break
+                await asyncio.wait_for(idle.wait(), 5)
+                expire.set()
+                self.assertEqual(await asyncio.wait_for(reader.readline(), 2), b"")
+        finally:
+            release.set()
+            expire.set()
         writer.close()
         await writer.wait_closed()
         # The same durable request ID retrieves the complete result after idle close.
@@ -250,6 +282,22 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         # Upload workers check the data disk floor (`upload.tree_space`) in their own process,
         # so they must enforce the floor that the service was started with.
         self.assertEqual(self.service.environment.get("CODEX_WORKSPACE_MIN_FREE_BYTES"), "0")
+        with patch.dict(os.environ, {"PYTHONPATH": "/untrusted", "PYTHONSTARTUP": "/untrusted"}):
+            production = Service(self.root / "production", self.root / "workspaces", self.service.projects, self.home)
+        try:
+            self.assertNotIn("PYTHONPATH", production.environment)
+            self.assertNotIn("PYTHONSTARTUP", production.environment)
+            self.assertEqual(production.worker_command("upload.py"),
+                             [sys.executable, str(Path(__file__).with_name("upload.py"))])
+            source = self.root / "boundary.tar"
+            source.write_bytes(archive({"file": b"data"}))
+            # A tiny real installed CLI/deadline witness; checksum rejection precedes sync.
+            code, output = await production.worker("upload.py", {}, 5,
+                arguments=(str(source), str(source.parent / "expanded"), "0" * 64))
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(output)["error"]["code"], "invalid_params")
+        finally:
+            production.close()
 
     @unittest.skipUnless(sys.platform.startswith("linux"), LINUX_IDENTITY)
     async def test_native_recovers_dead_supervisor_socket(self):
@@ -329,7 +377,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
                 return b"0" * count
 
         data = io.BytesIO()
-        size = 256 * 1024 * 1024
+        size = 2 * 1024 * 1024
         with tarfile.open(fileobj=data, mode="w:gz") as output:
             item = tarfile.TarInfo("large")
             item.size = size
@@ -338,16 +386,13 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         root = await self.stage_upload("interrupted", data)
         directory = self.service.uploads.path / "interrupted"
         staging = directory / "expanded"
-        process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("upload.py")),
-            str(directory / "tree.tar"), str(staging), hashlib.sha256(data).hexdigest(),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL, env=self.service.environment)
+        process = await asyncio.create_subprocess_exec(*worker_command("upload.py"),
+            str(directory / "tree.tar"), str(staging), hashlib.sha256(data).hexdigest(), "--pause-after-chunk",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL, env=self.service.environment)
         try:
-            deadline = asyncio.get_running_loop().time() + 10
             partial = staging / "large"
-            while not partial.exists() or not partial.stat().st_size:
-                self.assertIsNone(process.returncode)
-                self.assertLess(asyncio.get_running_loop().time(), deadline)
-                await asyncio.sleep(0.001)
+            self.assertEqual(await asyncio.wait_for(process.stdout.readline(), 5), b"chunk-written\n")
             process.kill()
             await asyncio.wait_for(process.wait(), 5)
             self.assertGreater(partial.stat().st_size, 0)
@@ -382,7 +427,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_compressed_upload_reserves_expanded_space_before_apply(self):
         data = io.BytesIO()
-        size = 32 * 1024 * 1024
+        size = 128 * 1024
         with tarfile.open(fileobj=data, mode="w:gz") as output:
             item = tarfile.TarInfo("large")
             item.size = size
@@ -579,6 +624,31 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((each.call_count, once.call_count), (0, 1))
         self.assertEqual((destination / "folder/file49").read_bytes(), b"data")
 
+    async def test_durability_can_be_injected_without_touching_os_sync(self):
+        from upload import extract_tree
+        from unittest.mock import Mock
+        destination = self.root / "injected"
+        destination.mkdir()
+        source = self.root / "injected.tar"
+        source.write_bytes(archive({"file": b"data"}))
+        sync_tree = Mock()
+        with patch("os.sync", side_effect=AssertionError("host sync escaped")):
+            self.assertEqual(extract_tree(source, destination, sync_tree=sync_tree), 4)
+        sync_tree.assert_called_once_with()
+        from upload_apply import apply_tree
+        root = self.root / "applied"
+        root.mkdir()
+        with patch("upload_apply.subprocess.Popen") as process:
+            process.return_value.wait.return_value = 0
+            process.return_value.poll.return_value = 0
+            with patch("os.sync", side_effect=AssertionError("host sync escaped")):
+                apply_tree(destination, root, 4, "delta", sync_tree=sync_tree)
+            self.assertEqual(sync_tree.call_count, 2)
+            destination.mkdir()
+            with patch("os.sync") as default_sync:
+                apply_tree(destination, root, 0, "delta")
+            default_sync.assert_called_once_with()
+
     async def test_an_ordinary_upload_and_a_seed_extract_modes_differently(self):
         from upload import FOLDER_MODES, extract_tree
         source = self.root / "modes.tar"
@@ -588,7 +658,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         for label, exact in (("ordinary", False), ("seed", True)):
             target = self.root / label / "expanded"
             target.mkdir(parents=True)
-            extract_tree(source, target, exact_modes=exact)
+            extract_tree(source, target, exact_modes=exact, sync_tree=lambda: None)
             modes[label] = [oct(stat.S_IMODE((target / name).stat().st_mode)) for name in ("src", "src/pack", "src/tool", "src/read")]
         # An ordinary upload keeps owner rw on files and owner rwx on folders, as before.
         self.assertEqual(modes["ordinary"], ["0o755", "0o600", "0o755", "0o644"])
@@ -650,7 +720,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("upload_apply.subprocess.Popen", return_value=Rsync()):
             with self.assertRaises(GuestError):
-                apply_tree(staging, root, 0, "delta")
+                apply_tree(staging, root, 0, "delta", sync_tree=lambda: None)
         self.assertEqual(list(outside.iterdir()), [])
 
     async def test_chunk_conflict_and_resume(self):
@@ -660,7 +730,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         await self.call("upload.begin", params)
         await self.call("upload.chunk", {"uploadId": "resume", "seq": 0, "data": encoded(data[:4096])})
         self.service.close()
-        self.service = Service(self.root / "state", self.root / "workspaces", self.root / "projects", self.home)
+        self.service = Service(self.root / "state", self.root / "workspaces", self.root / "projects", self.home, worker_command=worker_command)
         self.instances.append(self.service)
         result = await self.call("upload.begin", params)
         self.assertEqual(result["receivedBytes"], 4096)
@@ -686,12 +756,15 @@ for line in sys.stdin:
         self.assertEqual(written["remoteId"], 1)
         again = await self.call("provider.rpc", {**rpc, "nativeId": 19, "message": {**rpc["message"], "id": 19}})
         self.assertTrue(again["duplicate"])
-        await asyncio.sleep(0.1)
+        # The real supervisor has a nonblocking poll API; await its observable result.
+        async with asyncio.timeout(5):
+            while (await self.call("provider.rpc", {"handle": handle, "action": "next", "cursor": 0}))["event"] is None:
+                pass
         events = await self.call("provider.rpc", {"handle": handle, "action": "replay", "cursor": 0, "limit": 128})
         self.assertEqual(len(events["events"]), 1)
         self.assertEqual(json.loads(events["events"][0]["payload"])["id"], 1)
         self.service.close()
-        self.service = Service(self.root / "state", self.root / "workspaces", self.root / "projects", self.home)
+        self.service = Service(self.root / "state", self.root / "workspaces", self.root / "projects", self.home, worker_command=worker_command)
         self.instances.append(self.service)
         attached = await self.call("provider.start", params, "native-reattach")
         self.assertTrue(attached["resumed"])
@@ -717,10 +790,9 @@ for line in sys.stdin:
         params = {**self.command(source), "transport": "native", "handle": "linux-worker:large"}
         opened = await self.call("provider.start", params)
         handle = opened["handle"]
-        deadline = asyncio.get_running_loop().time() + 5
-        while self.service.native.info(handle)["sequence"] == 0:
-            self.assertLess(asyncio.get_running_loop().time(), deadline)
-            await asyncio.sleep(0.025)
+        async with asyncio.timeout(5):
+            while (await self.call("provider.rpc", {"handle": handle, "action": "next", "cursor": 0}))["event"] is None:
+                pass
         socket_path = self.root / "guest.sock"
 
         async def listen():
@@ -756,7 +828,7 @@ for line in sys.stdin:
         await server.wait_closed()
         socket_path.unlink(missing_ok=True)
         self.service.close()
-        self.service = Service(self.root / "state", self.root / "workspaces", self.root / "projects", self.home)
+        self.service = Service(self.root / "state", self.root / "workspaces", self.root / "projects", self.home, worker_command=worker_command)
         self.instances.append(self.service)
         attached = await self.call("provider.start", params)
         self.assertTrue(attached["resumed"])
@@ -795,46 +867,79 @@ for line in sys.stdin:
 
     async def test_file_chunks_and_change_detection(self):
         path = self.home / "bundle"
-        path.write_bytes(b"one" * 700000)
+        data = bytes(range(41))
+        path.write_bytes(data)
         info = await self.call("file.stat", {"path": str(path)})
-        self.assertEqual(info["bytes"], 2100000)
+        self.assertEqual(info["bytes"], len(data))
         output = bytearray()
         while len(output) < info["bytes"]:
             chunk = await self.call("file.read", {"path": str(path), "token": info["token"],
-                                                  "offset": len(output), "maxBytes": 1024 * 1024})
-            data = base64.b64decode(chunk["data"])
-            self.assertEqual(hashlib.sha256(data).hexdigest(), chunk["sha256"])
-            output.extend(data)
+                                                  "offset": len(output), "maxBytes": 16})
+            block = base64.b64decode(chunk["data"])
+            self.assertEqual(chunk["offset"], len(output))
+            self.assertEqual(chunk["nextOffset"], len(output) + len(block))
+            self.assertEqual(len(block), min(16, len(data) - len(output)))
+            self.assertEqual(hashlib.sha256(block).hexdigest(), chunk["sha256"])
+            output.extend(block)
+        self.assertEqual(bytes(output), data)
         self.assertEqual(hashlib.sha256(output).hexdigest(), info["sha256"])
         path.write_bytes(b"changed")
         with self.assertRaises(GuestError):
             await self.call("file.read", {"path": str(path), "token": info["token"]})
 
     async def test_live_exec_retry_replays_to_second_client(self):
-        params = self.command("import time; print('first'); time.sleep(.3); print('second')")
+        params = self.command("print('first'); print('second')")
         first_events = []
         second_events = []
+        emitting, resume = asyncio.Event(), asyncio.Event()
         request = {"id": "concurrent", "method": "exec", "params": params}
 
         async def first(event, data):
             first_events.append((event, data))
+            emitting.set()
+            await resume.wait()
 
         async def second(event, data):
             second_events.append((event, data))
 
         started = asyncio.create_task(self.service.request(request, first))
-        await asyncio.sleep(0.1)
-        attached = await self.service.request(request, second)
-        self.assertEqual(await started, attached)
+        await asyncio.wait_for(emitting.wait(), 5)
+        attached = asyncio.create_task(self.service.request(request, second))
+        # The second request enters the active operation before its output is released.
+        await asyncio.sleep(0)
+        resume.set()
+        self.assertEqual(await started, await attached)
         self.assertEqual(first_events, second_events)
 
     async def test_helper_deadline_terminates_process_group(self):
-        source = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); time.sleep(60)"
-        process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("deadline.py")),
-            "0.1", sys.executable, "-c", source, stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE)
+        marker = self.home / "deadline-child"
+        helper = str(Path(__file__).with_name("deadline.py"))
+        source = (f"import subprocess,sys,signal,json; sys.path.insert(0,{str(Path(__file__).parent)!r}); "
+                  "from common import process_identity; "
+                  "p=subprocess.Popen([sys.executable,'-c','import signal; signal.pause()']); "
+                  f"open({str(marker)!r},'w').write(json.dumps({{'pid':p.pid,'start':process_identity(p.pid)}})); "
+                  "print('ready',flush=True); signal.pause()")
+        # Advance the helper's monotonic clock only after a real descendant exists. This
+        # checks deadline/group cleanup without racing interpreter startup against 100 ms.
+        wrapper = f"""import pathlib,runpy,subprocess,sys
+from unittest.mock import Mock,patch
+marker=pathlib.Path({str(marker)!r})
+clock=Mock(side_effect=lambda: int(clock.call_count > 1 and marker.exists()))
+sys.argv=[{helper!r}, '0.1', sys.executable, '-c', {source!r}]
+with patch('time.monotonic',clock):
+    runpy.run_path({helper!r},run_name='__main__')
+"""
+        process = await asyncio.create_subprocess_exec(sys.executable, "-c", wrapper,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
         await asyncio.wait_for(process.communicate(b"{}"), 5)
         self.assertEqual(process.returncode, 124)
+        child = json.loads(marker.read_text())
+        self.assertIsNotNone(child["start"])
+        try:
+            self.assertIsNone(process_identity(child["pid"]))
+        finally:
+            if process_identity(child["pid"]) == child["start"]:
+                os.kill(child["pid"], signal.SIGKILL)
 
     async def test_helper_keeps_the_error_output_of_a_failed_command(self):
         # A failed layr command reports its reason on stderr; without it the guest error is empty.

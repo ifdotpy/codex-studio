@@ -13,7 +13,7 @@ from common import GuestError, require
 from upload import MAX_TREE, real_directory, tree_space, validate_destination
 
 
-def apply_tree(staging, root, expanded, mode):
+def apply_tree(staging, root, expanded, mode, *, sync_tree=None):
     require(type(expanded) is int and 0 <= expanded <= MAX_TREE, "The expanded size is invalid")
     require(mode in {"full", "delta"}, "The upload mode is invalid")
     temporary = staging.parent / "rsync-temp"
@@ -38,7 +38,7 @@ def apply_tree(staging, root, expanded, mode):
                 continue
         # Make btrfs account dirty file extents before the final floor check, with one sync
         # for the tree (rsync --fsync syncs each file).
-        os.sync()
+        (os.sync if sync_tree is None else sync_tree)()
         tree_space(root)
         if code:
             raise GuestError("outcome_unknown", "The project sync failed after application started")
@@ -73,10 +73,10 @@ def apply_tree(staging, root, expanded, mode):
         shutil.rmtree(staging, ignore_errors=True)
 
 
-if __name__ == "__main__":
+def main(*, sync_tree=None):
     try:
         params = json.loads(sys.stdin.buffer.read(2 * 1024 * 1024 + 1))
-        apply_tree(Path(params["staging"]), Path(params["root"]), params["bytes"], params["mode"])
+        apply_tree(Path(params["staging"]), Path(params["root"]), params["bytes"], params["mode"], sync_tree=sync_tree)
         print(json.dumps({"applied": True}))
     except GuestError as exc:
         print(json.dumps({"error": exc.object()}))
@@ -84,3 +84,7 @@ if __name__ == "__main__":
     except (OSError, ValueError, KeyError, TypeError):
         print(json.dumps({"error": {"code": "outcome_unknown", "message": "The project sync worker failed; inspect the project root"}}))
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

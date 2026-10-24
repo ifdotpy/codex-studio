@@ -284,7 +284,6 @@ function AnswerForm({
           type="submit"
           aria-label="Send answer"
           variant="filled"
-          color="indigo"
           disabled={sending || !ready}
           loading={sending}
         >
@@ -606,7 +605,7 @@ function RequestCard({
                 ref={trigger}
                 data-answer={r.id}
                 variant={open ? "subtle" : "filled"}
-                color={open ? "gray" : "indigo"}
+                color={open ? "gray" : undefined}
                 disabled={sending}
                 aria-expanded={open}
                 aria-controls={`answer-${r.id}`}
@@ -628,7 +627,6 @@ function RequestCard({
               </Button>
               <Button
                 variant="filled"
-                color="indigo"
                 disabled={sending}
                 onClick={() => void post({ decision: "accept" })}
               >

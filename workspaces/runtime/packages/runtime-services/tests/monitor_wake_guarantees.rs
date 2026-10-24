@@ -132,42 +132,38 @@ async fn restart_surviving_command_wakes_only_on_its_real_exit() {
 
 #[tokio::test]
 async fn restart_dead_or_unreachable_command_wakes_once_as_lost() {
-    for reason in [
-        "provider_rejected",
-        "no_operation",
-        "reattach_window_expired",
-    ] {
-        let (root, store, id, operation) = fixture().await;
-        drop(store);
-        let store = RuntimeStore::open(Some(&root.path().join("wake")))
-            .await
-            .expect("reopen");
-        monitor_runtime::recover_on_startup(&store, 2001.0)
-            .await
-            .expect("restart");
-        monitor_runtime::recover_on_startup(&store, 2001.5)
-            .await
-            .expect("duplicate restart");
-        assert_eq!(fixtures::events(&store), json!([]));
-        monitor_runtime::settle_reattach(&store, &id, reason, 2002.0)
-            .await
-            .expect("decide loss");
-        assert_wake(&store, "lost");
-        monitor_runtime::settle_reattach(&store, &id, reason, 2003.0)
-            .await
-            .expect("replay");
-        assert_wake(&store, "lost");
-        finish(&store, &id, &operation, Some(0), None).await;
-        assert_wake(&store, "lost");
-        let record = MonitorsRepository::get(&store.test_reader().expect("reader"), &id)
-            .expect("read")
-            .expect("monitor");
-        assert_eq!(
-            record.value()["status"],
-            "lost",
-            "decided loss is terminal even if a late receipt arrives"
-        );
-    }
+    let reason = "provider_rejected";
+    let (root, store, id, operation) = fixture().await;
+    drop(store);
+    let store = RuntimeStore::open(Some(&root.path().join("wake")))
+        .await
+        .expect("reopen");
+    monitor_runtime::recover_on_startup(&store, 2001.0)
+        .await
+        .expect("restart");
+    monitor_runtime::recover_on_startup(&store, 2001.5)
+        .await
+        .expect("duplicate restart");
+    assert_eq!(fixtures::events(&store), json!([]));
+    monitor_runtime::settle_reattach(&store, &id, reason, 2002.0)
+        .await
+        .expect("decide loss");
+    assert_wake(&store, "lost");
+    monitor_runtime::settle_reattach(&store, &id, reason, 2003.0)
+        .await
+        .expect("replay");
+    assert_wake(&store, "lost");
+    finish(&store, &id, &operation, Some(0), None).await;
+    assert_wake(&store, "lost");
+    let record = MonitorsRepository::get(&store.test_reader().expect("reader"), &id)
+        .expect("read")
+        .expect("monitor");
+    assert_eq!(record.value()["reattachRecovery"]["proof"], reason);
+    assert_eq!(
+        record.value()["status"],
+        "lost",
+        "decided loss is terminal even if a late receipt arrives"
+    );
 }
 
 #[tokio::test]

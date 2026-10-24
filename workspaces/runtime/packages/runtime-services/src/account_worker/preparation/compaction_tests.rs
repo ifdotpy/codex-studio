@@ -15,17 +15,17 @@ fn input_text(prepared: &turn::PreparedSubmission) -> String {
 /// compiler used by both providers, including parent and monitor-only workers.
 #[tokio::test]
 async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
-    for provider in ["codex", "claude"] {
-        let directory = tempfile::tempdir().expect("temporary state directory creates");
-        let store = RuntimeStore::open(Some(directory.path()))
-            .await
-            .expect("runtime store opens");
-        let resources = PreparationResources::bundled(
-            directory.path().display().to_string(),
-            crate::model_catalog::ModelCatalogService::new(),
-        )
-        .expect("bundled resources load");
-        store.transaction_with_error(move |tx| -> Result<(), WorkerError> {
+    let provider = "codex";
+    let directory = tempfile::tempdir().expect("temporary state directory creates");
+    let store = RuntimeStore::open(Some(directory.path()))
+        .await
+        .expect("runtime store opens");
+    let resources = PreparationResources::bundled(
+        directory.path().display().to_string(),
+        crate::model_catalog::ModelCatalogService::new(),
+    )
+    .expect("bundled resources load");
+    store.transaction_with_error(move |tx| -> Result<(), WorkerError> {
             for (id, root, parent, lead) in [
                 ("lead","lead",None,true), ("parent","lead",Some("lead"),false),
                 ("nested","lead",Some("parent"),false), ("monitor-owner","lead",Some("lead"),false),
@@ -81,6 +81,13 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
                 assert_eq!(record["compactions"], 1);
                 let (snapshot, events) = submission_snapshot(tx, &resources, &record, &intent)?;
                 let restored = turn::compile(&snapshot, &events).expect("restored turn compiles");
+                let mut claude_snapshot = snapshot.clone();
+                claude_snapshot.provider = Some(studio_runtime_providers::ProviderKind::Claude);
+                let claude = turn::compile(&claude_snapshot, &events).expect("Claude turn compiles");
+                assert_eq!(input_text(&claude), input_text(&restored));
+                assert!(restored.provider_inputs.iter().all(|input| matches!(input, turn::ProviderInput::Text { origin: None, .. })));
+                assert!(claude.provider_inputs.iter().all(|input| matches!(input, turn::ProviderInput::Text { origin: Some(_), .. })));
+
                 let text = input_text(&restored);
                 assert_eq!(text.matches("[Studio team state after compaction]").count(), 1, "{actor}");
                 assert!(!text.contains("watch-other"));
@@ -107,7 +114,6 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
             }
             Ok(())
         }).await.expect("compaction fixture transaction succeeds");
-    }
 }
 
 /// The real preparation adapter publishes the immutable blob before metadata

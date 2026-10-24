@@ -31,11 +31,11 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("sync reset browser", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
     configFile: false,
+    optimizeDeps: { noDiscovery: true },
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
   });
@@ -99,14 +99,11 @@ test("sync reset browser", async ({ browser: _browser }) => {
         const documents = Array.from({ length: 500 }, (_, index) => {
           const id = `agent-${index}`;
           return {
-            id: `entity:agent:${id}`,
-            payload: JSON.stringify({
-              collection: "agent",
-              id,
-              value: { id, name: `new-${index}`, status: "running" },
-            }),
+            op: "upsert",
+            collection: "agent",
+            id,
+            value: { id, name: `new-${index}`, status: "running" },
             seq: index + 1,
-            _deleted: false,
           };
         });
         return fulfill(route, {
@@ -128,14 +125,11 @@ test("sync reset browser", async ({ browser: _browser }) => {
             workspaceId,
             documents: [
               {
-                id: `entity:agent:${id}`,
-                payload: JSON.stringify({
-                  collection: "agent",
-                  id,
-                  value: { id, name: "new-500", status: "running" },
-                }),
+                op: "upsert",
+                collection: "agent",
+                id,
+                value: { id, name: "new-500", status: "running" },
                 seq: 501,
-                _deleted: false,
               },
             ],
             checkpoint: { seq: 1000 },
@@ -162,12 +156,13 @@ test("sync reset browser", async ({ browser: _browser }) => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       await db.projections.insert({
         id: "entity:agent:stale",
-        payload: JSON.stringify({
+        seq: 950,
+        payload: "",
+        entity: {
           collection: "agent",
           id: "stale",
           value: { id: "stale", name: "stale" },
-        }),
-        seq: 950,
+        },
       });
       await db.projections.insert({
         id: "state:entities:checkpoint",

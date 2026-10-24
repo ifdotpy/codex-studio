@@ -181,7 +181,25 @@ pub enum CommandReceipt {
     /// Reserved control result: never sits behind the replay channel.
     CachedInitialize(Value),
     NotSent,
+    /// The stdio writer was interrupted while its adapter finishes draining.
+    /// Counts bytes accepted by the OS stdin pipe, not bytes the child read.
+    /// Zero proves NotSent; a positive count is Unknown and must never be replayed.
+    WriteInterrupted {
+        bytes_written: usize,
+    },
     Unknown,
+}
+
+impl CommandReceipt {
+    pub fn requires_observation(&self) -> bool {
+        match self {
+            Self::Written { .. } | Self::CachedInitialize(_) => true,
+            Self::Acknowledged(_)
+            | Self::NotSent
+            | Self::WriteInterrupted { .. }
+            | Self::Unknown => false,
+        }
+    }
 }
 
 /// Sticky and independent of both bounded lanes. Clones can only set shutdown.
@@ -275,6 +293,14 @@ pub enum AdapterError {
     ConsumerClosed,
     #[error("provider task failed")]
     TaskFailed,
+    /// Preparation failed and supervisor ownership release was not confirmed.
+    /// Preserve the original typed cause as well as the cleanup report.
+    #[error("{cause}; provider preparation cleanup failed: {cleanup_error}")]
+    PreparationCleanupUnconfirmed {
+        #[source]
+        cause: Box<AdapterError>,
+        cleanup_error: String,
+    },
     #[error("provider stdout exceeded its {limit}-byte bound")]
     OutputLimit { limit: usize },
     #[error(transparent)]

@@ -43,13 +43,22 @@ it("permits only the exact read-only summary path for the owning server", () => 
 });
 
 it("tells another Studio version from a server that does not answer", async () => {
-  const answer = (hash: string) => {
+  const answer = (hash: string, status = 200) => {
     (globalThis as { window?: unknown }).window = {
       codexDesktop: {
         serverCredentialAction: async () => ({
-          status: 200,
+          status,
           headers: [["x-studio-api-schema", hash]],
-          body: "{}",
+          body: JSON.stringify({
+            chats: [],
+            projects: [],
+            alerts: [],
+            accounts: [],
+            ready: true,
+            busy: false,
+            system: "fixture",
+            agentsRunning: 0,
+          }),
         }),
       },
     };
@@ -63,12 +72,16 @@ it("tells another Studio version from a server that does not answer", async () =
     expect(other).toBeInstanceOf(SchemaMismatchError);
     expect(summaryFailure(other)).toBe("schema-mismatch");
     answer(API_SCHEMA_HASH);
-    const same = await fetchServerSummary(
+    await expect(
+      fetchServerSummary(server, new AbortController().signal),
+    ).resolves.toMatchObject({ ready: true, system: "fixture", accounts: [] });
+    answer(API_SCHEMA_HASH, 503);
+    const unavailable = await fetchServerSummary(
       server,
       new AbortController().signal,
     ).catch((error: unknown) => error);
-    expect(same).not.toBeInstanceOf(SchemaMismatchError);
-    expect(summaryFailure(new Error("timeout"))).toBe("offline");
+    expect(unavailable).toBeInstanceOf(Error);
+    expect(summaryFailure(unavailable)).toBe("offline");
   } finally {
     delete (globalThis as { window?: unknown }).window;
   }

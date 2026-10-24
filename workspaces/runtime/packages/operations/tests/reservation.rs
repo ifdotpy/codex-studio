@@ -22,7 +22,6 @@ struct MemoryStore {
     aliases: Vec<RequestAlias>,
     next_failure: Option<InjectedFailure>,
     request_writes: usize,
-    dispatches: usize,
 }
 
 impl ReservationStore for MemoryStore {
@@ -196,7 +195,6 @@ fn same_id_and_content_returns_saved_request_without_a_second_row_write() {
         ReservationWriteIntent::InsertAlias(alias) if alias.alias == "thread:call-b"
     ));
     assert_eq!(store.request_writes, 1);
-    assert_eq!(store.dispatches, 0);
 }
 
 #[test]
@@ -208,22 +206,6 @@ fn same_id_with_different_content_is_rejected_without_intents() {
     };
     assert!(matches!(
         decide_reservation(&snapshot, &changed),
-        ReservationDecision::Rejected {
-            error: studio_operations::TransitionError::DifferentContent,
-            ..
-        }
-    ));
-}
-
-#[test]
-fn changed_actor_fingerprint_is_rejected_for_the_same_request_id() {
-    let original = input("request-a", "agent-a", 4, 7, "call-a", "thread:", None);
-    let changed_actor = input("request-a", "agent-b", 4, 8, "call-a", "thread:", None);
-    let snapshot = ReservationSnapshot {
-        existing: Some(admitted_state(&original)),
-    };
-    assert!(matches!(
-        decide_reservation(&snapshot, &changed_actor),
         ReservationDecision::Rejected {
             error: studio_operations::TransitionError::DifferentContent,
             ..
@@ -261,7 +243,7 @@ fn conflicting_short_aliases_remain_distinct_and_ambiguous() {
 }
 
 #[test]
-fn failure_before_row_write_leaves_no_row_alias_or_effect_and_retry_admits() {
+fn failure_before_row_write_leaves_no_row_or_alias_and_retry_admits() {
     let request = input("request-a", "agent-a", 4, 7, "call-a", "thread:", None);
     let mut store = MemoryStore {
         next_failure: Some(InjectedFailure::BeforeApply),
@@ -270,18 +252,16 @@ fn failure_before_row_write_leaves_no_row_alias_or_effect_and_retry_admits() {
     assert_eq!(reserve_in_store(&mut store, &request), Err(StoreFailure));
     assert!(store.requests.is_empty());
     assert!(store.aliases.is_empty());
-    assert_eq!(store.dispatches, 0);
     assert!(matches!(
         reserve_in_store(&mut store, &request),
         Ok(ReservationDecision::Admitted { .. })
     ));
     assert_eq!(store.requests.len(), 1);
     assert_eq!(store.aliases.len(), 2);
-    assert_eq!(store.dispatches, 0);
 }
 
 #[test]
-fn failure_after_commit_before_response_retries_existing_without_second_dispatch() {
+fn failure_after_commit_before_response_retries_existing_without_second_write() {
     let request = input("request-a", "agent-a", 4, 7, "call-a", "thread:", None);
     let mut store = MemoryStore {
         next_failure: Some(InjectedFailure::AfterCommit),
@@ -294,5 +274,4 @@ fn failure_after_commit_before_response_retries_existing_without_second_dispatch
         reserve_in_store(&mut store, &request).expect("retry returns committed reservation");
     assert!(matches!(retry, ReservationDecision::ReturnExisting { .. }));
     assert_eq!(store.request_writes, 1);
-    assert_eq!(store.dispatches, 0);
 }

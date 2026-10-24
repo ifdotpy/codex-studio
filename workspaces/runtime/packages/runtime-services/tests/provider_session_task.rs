@@ -97,10 +97,7 @@ fn fake_with_stop_barrier(
             {
                 initialized = true;
             }
-            let needs_observation = matches!(
-                result,
-                CommandReceipt::Written { .. } | CommandReceipt::CachedInitialize(_)
-            );
+            let needs_observation = result.requires_observation();
             let _ignored = original.send(result);
             if needs_observation && let Some(observation) = observation {
                 tokio::select! { biased; _ = stopped(&mut stop) => break, result = observation => if result.is_err() { break; } }
@@ -236,6 +233,203 @@ async fn pending<F: std::future::Future>(future: F) {
         std::future::poll_fn(|cx| std::task::Poll::Ready(future.as_mut().poll(cx).is_pending()))
             .await
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn exited_stdio_provider_drains_beyond_journal_capacity_through_session_settlement() {
+    assert_exited_stdio_session_tail(false);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn partial_stdio_write_at_exit_preserves_unknown_outcome_and_final_session_frames() {
+    assert_exited_stdio_session_tail(true);
+}
+
+#[cfg(unix)]
+fn assert_exited_stdio_session_tail(partial_write: bool) {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    use studio_runtime_process::provider_stdio::StdioProviderTaskFactory;
+
+    const HANG_GUARD: Duration = Duration::from_secs(10);
+    // Exceed both the adapter lane and the session's unsettled horizon. Lost
+    // ACK service cannot be hidden by buffering the whole tail before closing.
+    const FINAL_FRAMES: usize = MAX_UNSETTLED + 2 * LANE_CAPACITY + 1;
+    const BLOCKED_REQUEST_BYTES: usize = 512 * 1024;
+    let root = tempfile::tempdir().unwrap();
+    let release = root.path().join("release");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &release,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        0,
+    )
+    .unwrap();
+    let read_one_byte = if partial_write {
+        r#"dd bs=1 count=1 of=/dev/null 2>/dev/null
+printf '{"method":"fixture/write-progress"}\n'"#
+    } else {
+        ""
+    };
+    let script = format!(
+        r#"IFS= read -r initialize
+printf '{{"id":"attachment-1:1","result":{{}}}}\n'
+IFS= read -r initialized
+{read_one_byte}
+IFS= read -r release < release
+index=0
+while [ "$index" -lt {FINAL_FRAMES} ]; do
+    printf '{{"method":"fixture/final","index":%s}}\n' "$index"
+    index=$((index + 1))
+done"#
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (mut session, interrupted_ticket) = runtime.block_on(async {
+        tokio::time::timeout(HANG_GUARD, async {
+            let factory = Arc::new(StdioProviderTaskFactory {
+                deadline: Some(tokio::time::Instant::now() + HANG_GUARD),
+                max_frame_bytes: 1024,
+                max_output_bytes: None,
+                stderr_log: None,
+            });
+            let mut opts = options();
+            opts.launch = ProviderLaunchSpec::new(
+                vec!["/bin/sh".into(), "-c".into(), script],
+                BTreeMap::new(),
+                root.path().to_path_buf(),
+            );
+            let mut cfg = config();
+            cfg.timeout_ms = HANG_GUARD.as_millis() as u64;
+            let mut session = SessionHandle::open(
+                factory,
+                ProviderHandle::for_account("stdio-session-tail"),
+                opts,
+                cfg,
+            )
+            .await
+            .unwrap();
+            status(&mut session, InitializationStatus::Ready).await;
+            let initial = session.events.recv().await.unwrap().journal.unwrap();
+            assert_eq!(initial.cursor, EventCursor(1));
+            session.control.settled(initial.cursor).await.unwrap();
+            let ticket = if partial_write {
+                let mut request = spec(2, HANG_GUARD.as_millis() as u64);
+                request.params = json!({"padding": "x".repeat(BLOCKED_REQUEST_BYTES)});
+                let ticket = session
+                    .control
+                    .submit(session.control.prepare(request).await.unwrap())
+                    .await
+                    .unwrap();
+                let progress = session.events.recv().await.unwrap().journal.unwrap();
+                assert_eq!(progress.cursor, EventCursor(2));
+                session.control.settled(progress.cursor).await.unwrap();
+                Some(ticket)
+            } else {
+                None
+            };
+            (session, ticket)
+        })
+        .await
+        .expect("stdio session handshake hang guard")
+    });
+    let pid = session
+        .status
+        .borrow()
+        .attachment
+        .info
+        .as_ref()
+        .unwrap()
+        .pid;
+    let pid = Pid::from_raw(pid as i32).unwrap();
+    // No task runs while the real child writes its bounded tail and exits.
+    // The next owner poll must select leader exit, with stdout still to drain.
+    std::fs::write(&release, b"exit\n").unwrap();
+    waitid(
+        WaitId::Pid(pid),
+        WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+    )
+    .unwrap();
+
+    runtime.block_on(async {
+        tokio::time::timeout(HANG_GUARD, async {
+            let mut retained = vec![];
+            let mut outcomes = vec![];
+            while let Some(event) = session.events.recv().await {
+                outcomes.extend(event.outcomes);
+                if let Some(entry) = event.journal {
+                    let cursor = entry.cursor;
+                    retained.push(entry);
+                    // A terminal close can race the final settlement. Completion
+                    // owns its remaining journal evidence, as in the account caller.
+                    match session.control.settled(cursor).await {
+                        Ok(()) | Err(SessionTaskError::Closed) => {}
+                        Err(error) => panic!("settlement failed: {error}"),
+                    }
+                }
+            }
+            let exit = session.completion().await;
+            outcomes.extend(exit.outcomes);
+            for event in exit.undelivered {
+                outcomes.extend(event.outcomes);
+                retained.extend(event.journal);
+            }
+            assert_eq!(
+                retained.len(),
+                FINAL_FRAMES,
+                "every final frame is retained"
+            );
+            for (index, entry) in retained.into_iter().enumerate() {
+                let initial_entries = if partial_write { 3 } else { 2 };
+                assert_eq!(entry.cursor, EventCursor(index as u64 + initial_entries));
+                assert_eq!(entry.generation, Generation(1));
+                let JournalPayload::Frame(Frame::UnknownMethod(frame)) = entry.payload else {
+                    panic!("expected final fixture notification");
+                };
+                assert_eq!(frame.fields.get("index"), Some(&json!(index)));
+            }
+            if let Some(ticket) = interrupted_ticket {
+                let writes: Vec<_> = outcomes
+                    .iter()
+                    .filter_map(|outcome| match outcome {
+                        SessionOutcome::Write {
+                            ticket: Some(seen),
+                            outcome,
+                            ..
+                        } if *seen == ticket => Some(*outcome),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    writes,
+                    vec![WriteOutcome::Unknown],
+                    "accepted stdin bytes must never be reported NotSent or replayed"
+                );
+            }
+            let adapter = exit.adapter.expect("real stdio adapter completion");
+            assert!(adapter.cleanup_error.is_none());
+            assert!(matches!(
+                adapter.result,
+                Err(AdapterError::Supervisor(
+                    studio_runtime_process::SupervisorError::ConnectionLost
+                ))
+            ));
+            assert_eq!(
+                waitid(
+                    WaitId::Pid(pid),
+                    WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+                )
+                .expect_err("the owned child was reaped"),
+                rustix::io::Errno::CHILD,
+            );
+        })
+        .await
+        .expect("stdio session final drain hang guard");
+    });
 }
 
 #[tokio::test(start_paused = true)]
@@ -495,6 +689,81 @@ async fn bounded_startup_replay_can_initialize_and_stop_with_full_consumer() {
         EventCursor(17)
     );
     assert!(exit.adapter.unwrap().recovery_needed.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn interrupted_initialization_keeps_journal_and_ack_service_alive() {
+    for initialized in [false, true] {
+        for bytes_written in [0, 1] {
+            let (mut session, mut peer) = open().await;
+            let mut receipt = write(&mut peer).await;
+            if initialized {
+                receipt
+                    .send(CommandReceipt::CachedInitialize(json!({})))
+                    .ok()
+                    .unwrap();
+                receipt = write(&mut peer).await;
+            }
+            receipt
+                .send(CommandReceipt::WriteInterrupted { bytes_written })
+                .ok()
+                .unwrap();
+            peer.events
+                .send(entry(1, 0, JournalPayload::Stderr(json!({"tail":true}))))
+                .await
+                .unwrap();
+            let event = session.events.recv().await.unwrap();
+            assert_eq!(event.journal.unwrap().cursor, EventCursor(1));
+            session.control.settled(EventCursor(1)).await.unwrap();
+            let Observed::Ack(cursor, reply) = peer.commands.recv().await.unwrap() else {
+                panic!("interrupted initialization must not replay");
+            };
+            reply
+                .send(CommandReceipt::Acknowledged(cursor))
+                .ok()
+                .unwrap();
+            session.checked_shutdown().await;
+            assert!(peer.commands.recv().await.is_none());
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn interrupted_write_receipts_keep_session_settlement_alive_without_replay() {
+    for (bytes_written, expected) in [(0, WriteOutcome::NotSent), (1, WriteOutcome::Unknown)] {
+        let (mut session, mut peer) = open().await;
+        ready(&mut session, &mut peer).await;
+        let ticket = session
+            .control
+            .submit(session.control.prepare(spec(2, 100)).await.unwrap())
+            .await
+            .unwrap();
+        write(&mut peer)
+            .await
+            .send(CommandReceipt::WriteInterrupted { bytes_written })
+            .ok()
+            .unwrap();
+        let event = session.events.recv().await.unwrap();
+        assert_eq!(event.outcomes.iter().filter(|outcome| matches!(outcome,
+            SessionOutcome::Write { ticket: Some(seen), outcome, .. } if *seen == ticket && *outcome == expected
+        )).count(), 1);
+        peer.events
+            .send(entry(1, 0, JournalPayload::Stderr(json!({"tail":true}))))
+            .await
+            .unwrap();
+        let event = session.events.recv().await.unwrap();
+        assert_eq!(event.journal.unwrap().cursor, EventCursor(1));
+        session.control.settled(EventCursor(1)).await.unwrap();
+        let Observed::Ack(cursor, reply) = peer.commands.recv().await.unwrap() else {
+            panic!("interrupted writes must not be replayed");
+        };
+        reply
+            .send(CommandReceipt::Acknowledged(cursor))
+            .ok()
+            .unwrap();
+        session.checked_shutdown().await;
+        assert!(peer.commands.recv().await.is_none());
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -1612,7 +1881,27 @@ async fn recovery_restores_every_request_without_holding_back_preparation() {
             .expect("every recovered request is restored");
     ready(&mut session, &mut peer).await;
     session.control.prepare(spec(1000, 1000)).await.unwrap();
-    session.checked_shutdown().await;
+    let exit = session.checked_shutdown().await;
+    let mut restored = exit
+        .outcomes
+        .iter()
+        .chain(exit.undelivered.iter().flat_map(|event| &event.outcomes))
+        .filter_map(|outcome| match outcome {
+            SessionOutcome::Resolved {
+                ticket,
+                outcome: RequestOutcome::Unknown,
+            } => Some(ticket.id.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    restored.sort_by_key(|id| match id {
+        RequestId::Number(id) => *id,
+        _ => panic!("numeric recovered identity"),
+    });
+    assert_eq!(
+        restored,
+        (2..602).map(RequestId::Number).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test(start_paused = true)]

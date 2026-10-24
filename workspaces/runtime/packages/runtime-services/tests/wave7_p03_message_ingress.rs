@@ -527,7 +527,7 @@ async fn ingress_crash_child() {
         })
         .await
         .expect("commit");
-    if point == "after_commit" || point == "before_wake" {
+    if point == "committed_before_wake" {
         std::process::exit(73);
     }
     // The host wake carries no provider input. The durable event is the only
@@ -620,7 +620,7 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(fixtu
             assert_eq!(snapshot(&store), committed);
         }
     }
-    for point in ["before_commit", "after_commit", "before_wake", "after_wake"] {
+    for point in ["before_commit", "committed_before_wake", "after_wake"] {
         let root = fixture.seed(point);
         let store = RuntimeStore::open(Some(&root))
             .await

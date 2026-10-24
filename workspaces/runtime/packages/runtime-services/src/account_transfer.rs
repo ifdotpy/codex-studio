@@ -12,6 +12,8 @@ use studio_runtime_schema::agent_limits::MAX_TRANSFER_AGENT_RECORDS;
 pub use studio_runtime_store::MAX_TRANSFER_RECORD_BYTES as MAX_RECORD_BYTES;
 pub const EXECUTOR_REQUIRED: &str = "account-transfer/provider-history-executor";
 pub const SETTINGS_REQUIRED: &str = "account-transfer/destination-settings";
+/// Internal receipt-hold identity mapped to native admission by preparation.
+pub(crate) const RECEIPT_HOLD: &str = "account-transfer/receipt-hold";
 
 #[derive(Debug, Error)]
 pub enum TransferError {
@@ -333,9 +335,19 @@ impl Snapshot {
                 for id in &self.order {
                     let m = &op["members"][id];
                     let phase = self.phase(id)?;
+                    // Only a native thread request moves history. Source and
+                    // catalog reads do not, so a member without one may return.
+                    let native_request =
+                        matches!(
+                            phase,
+                            Phase::Reading | Phase::Submitted | Phase::LazySubmitted | Phase::Ready
+                        ) || ["providerIntent", "transportTicket", "submittedAt", "result"]
+                            .iter()
+                            .any(|key| studio_runtime_store::truthy(m.get(*key)));
                     if flag(m, "lazy")
                         && !phase.terminal()
                         && phase != Phase::Lazy
+                        && native_request
                         && !(phase == Phase::Blocked
                             && flag(m, "archiveInvalidated")
                             && (!studio_runtime_store::truthy(m.get("submittedAt"))
@@ -381,13 +393,24 @@ impl Snapshot {
                             ));
                         }
                         a["accountKey"] = lazy["sourceAccountKey"].clone();
-                        for field in RESTORED_SETTINGS {
-                            if let Some(value) = lazy["sourceState"].get(*field) {
-                                if value.is_null() {
-                                    remove(a, &[*field])?;
-                                } else {
-                                    a[*field] = value.clone();
+                        let exact = match lazy.get("sourceStateExact") {
+                            None => false,
+                            Some(Value::Bool(exact)) => *exact,
+                            Some(_) => {
+                                return Err(invalid(
+                                    "transfer agent",
+                                    "/lazyAccountTransfer/sourceStateExact",
+                                ));
+                            }
+                        };
+                        for field in SOURCE_STATE_FIELDS {
+                            match lazy["sourceState"].get(*field) {
+                                Some(value) if exact || !value.is_null() => {
+                                    a[*field] = value.clone()
                                 }
+                                Some(_) => remove(a, &[*field])?,
+                                None if exact => remove(a, &[*field])?,
+                                None => {}
                             }
                         }
                         remove(a, &["lazyAccountTransfer"])?;
@@ -1158,33 +1181,17 @@ pub(crate) fn enroll(
     if !lazy {
         return Ok(member);
     }
-    let source_state = [
-        "provider",
-        "model",
-        "effort",
-        "nativeEffort",
-        "fastMode",
-        "daybreakEnabled",
-        "cyberAccessProgram",
-        "workerDefaults",
-        "pendingSettings",
-        "pendingSettingsAccountKey",
-        "claudeOptions",
-        "executionSettingsAccountKey",
-        "status",
-        "error",
-        "nativeFailureHold",
-    ]
-    .into_iter()
-    .map(|key| {
-        (
-            key.to_owned(),
-            value.get(key).cloned().unwrap_or(Value::Null),
-        )
-    })
-    .collect::<serde_json::Map<_, _>>();
+    let source_state = SOURCE_STATE_FIELDS
+        .iter()
+        .filter_map(|key| {
+            value
+                .get(*key)
+                .cloned()
+                .map(|value| ((*key).to_owned(), value))
+        })
+        .collect::<serde_json::Map<_, _>>();
     value["lazyAccountTransfer"] = json!({"id":operation_id,"sourceAccountKey":source_account,
-        "sourceThreadId":source_thread,"sourceState":source_state});
+        "sourceThreadId":source_thread,"sourceState":source_state,"sourceStateExact":true});
     value["accountKey"] = json!(target);
     if provider != target_provider {
         value["provider"] = json!(target_provider);
@@ -1241,7 +1248,7 @@ pub fn before_start(agent: &Value) -> Result<(), TransferError> {
             .get("emptyTransferRecovery")
             .is_some_and(|r| !r.is_null() && r["phase"] != "completed")
     {
-        return Err(TransferError::Requires("account-transfer/receipt-hold"));
+        return Err(TransferError::Requires(RECEIPT_HOLD));
     }
     Ok(())
 }
@@ -1257,7 +1264,10 @@ pub(crate) fn remove(value: &mut Value, keys: &[&str]) -> Result<(), TransferErr
     }
     Ok(())
 }
-const RESTORED_SETTINGS: &[&str] = &[
+/// Fields the lazy move owns, including source failure state. Sparse exact
+/// snapshots preserve null and absence; legacy snapshots used null for both.
+const SOURCE_STATE_FIELDS: &[&str] = &[
+    "accountKey",
     "provider",
     "model",
     "effort",
@@ -1270,6 +1280,9 @@ const RESTORED_SETTINGS: &[&str] = &[
     "pendingSettingsAccountKey",
     "claudeOptions",
     "executionSettingsAccountKey",
+    "status",
+    "error",
+    "nativeFailureHold",
 ];
 const CANCEL_FOLLOWUP: &str = "The account transfer was cancelled after this turn was interrupted. Continue the existing task on this account from saved context. Preserve completed work and check existing receipts before any command with an unknown outcome.";
 
@@ -1653,6 +1666,83 @@ mod provider_receipt_tests {
         .expect("test fixture operation succeeds")
     }
 
+    /// The live record shape of a lazy move refused during its source reads:
+    /// written destination catalog and source reads, one source read with an
+    /// intent and no receipt, and no native thread request.
+    fn refused_during_source_reads(native_intent: bool) -> Snapshot {
+        let read = |operation: &str, account: &str, method: &str| {
+            json!({"operation":operation,"account":account,"method":method,
+                "params":{"threadId":"source-thread"},
+                "scope":{"account":account,"connection":format!("{account}-connection"),"generation":1}})
+        };
+        let written = |operation: &str, account: &str| {
+            json!({"certainty":"written","result":{"kind":"reply","value":{"data":[]}},
+                "receipt":{"certainty":"written","notSentReason":null,"operation":operation,
+                    "scope":{"account":account,"connection":format!("{account}-connection"),"generation":1},
+                    "ticket":{"generation":1,"id":"request","method":"thread/read"}}})
+        };
+        let mut member = json!({
+            "phase":"blocked", "lazy":true, "sourceAccountKey":"source",
+            "sourceThreadId":"source-thread", "provider":"claude", "nextCheck":0,
+            "error":"Transfer preparation failed before native submission",
+            "source":{"accountKey":"target","threadId":"source-thread","epoch":7,"cwd":"/work"},
+            "providerReadIntents":{
+                "model-list":read("model-list","target","model/list"),
+                "thread-read":read("thread-read","source","thread/read"),
+                "transfer:transfer:agent:queue-before":read("transfer:transfer:agent:queue-before","source","thread/queue/list"),
+                "transfer:transfer:agent:background-before":read("transfer:transfer:agent:background-before","source","thread/backgroundTerminals/list")
+            },
+            "providerReadReceipts":{
+                "model-list":written("model-list","target"),
+                "thread-read":written("thread-read","source"),
+                "transfer:transfer:agent:queue-before":written("transfer:transfer:agent:queue-before","source")
+            }
+        });
+        if native_intent {
+            member["providerIntent"] = json!({"operation":"transfer:agent:thread-start",
+                "scope":{"account":"target"},"method":"thread/start","params":{}});
+        }
+        let operation = json!({
+            "id":"transfer", "leadId":"agent", "targetAccountKey":"target",
+            "targetProvider":"claude", "status":"pending", "created":1.0, "scope":"team",
+            "members":{"agent":member}
+        });
+        let agent = json!({
+            "id":"agent", "rootId":"agent", "epoch":7, "status":"queued", "provider":"claude",
+            "accountKey":"target", "accountTransferId":"transfer", "threadId":"source-thread",
+            "executionSettingsAccountKey":"source", "model":"model-a",
+            "lazyAccountTransfer":{"id":"transfer","sourceAccountKey":"source",
+                "sourceThreadId":"source-thread",
+                "sourceState":{"executionSettingsAccountKey":"source","model":"model-a",
+                    "provider":"claude","status":"queued","error":null}}
+        });
+        Snapshot::read(
+            &operation.to_string(),
+            [("agent".into(), agent.to_string())],
+        )
+        .expect("test fixture operation succeeds")
+    }
+
+    #[test]
+    fn cancel_returns_a_lazy_member_whose_move_sent_no_thread_request() {
+        let cancelled = refused_during_source_reads(false)
+            .decide(Command::Action(Action::Cancel))
+            .expect("nothing native was sent, so cancel is safe");
+        assert_eq!(cancelled.operation["status"], "cancelled");
+        let agent = &cancelled.agents["agent"];
+        assert_eq!(agent["accountKey"], "source");
+        assert_eq!(agent["executionSettingsAccountKey"], "source");
+        assert!(agent.get("lazyAccountTransfer").is_none());
+        assert!(agent.get("accountTransferId").is_none());
+
+        assert!(matches!(
+            refused_during_source_reads(true).decide(Command::Action(Action::Cancel)),
+            Err(TransferError::Refused(
+                "A native history move has started. Resolve its receipt before cancelling."
+            ))
+        ));
+    }
+
     #[test]
     fn provider_intent_precedes_receipt_and_exact_replay_is_idempotent() {
         let submitted = after(intent(&snapshot()));
@@ -1716,11 +1806,37 @@ mod provider_receipt_tests {
                 )
                 .expect("test fixture operation succeeds"),
         );
-        let ready = after(submitted.provider_receipt(
+        let mut ready = after(submitted.provider_receipt(
             "agent", "transfer:agent:thread-start",
             json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"written", "ticket":{"id":11}}),
             Some(json!({"thread":{"id":"target-thread"}})), RequestCertainty::Written,
         ).expect("test fixture operation succeeds"));
+        for (path, invalid) in [
+            ("/targetSettings", Value::Null),
+            ("/result", Value::Null),
+            ("/providerReceipts", json!([])),
+            ("/providerReceipts/0/certainty", json!("unknown")),
+            ("/providerReceipts/0/operation", json!("other-operation")),
+            (
+                "/providerReceipts/0/scope/connection",
+                json!("other-connection"),
+            ),
+            ("/providerReceipts/0/ticket", Value::Null),
+            ("/source/epoch", json!(99)),
+            ("/source/threadId", json!("other-thread")),
+            ("/source/cwd", json!("/other-workspace")),
+        ] {
+            let member = &mut ready.operation["members"]["agent"];
+            let original =
+                std::mem::replace(member.pointer_mut(path).expect("fixture field"), invalid);
+            assert!(
+                ready.adopt_receipt("agent").is_err(),
+                "adopted invalid {path}"
+            );
+            *ready.operation["members"]["agent"]
+                .pointer_mut(path)
+                .expect("member field") = original;
+        }
         let adopted = after(
             ready
                 .adopt_receipt("agent")

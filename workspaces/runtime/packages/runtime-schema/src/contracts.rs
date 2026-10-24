@@ -56,32 +56,20 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
-                "WORKER_TURN_LIMIT_REASON",
-                json_string(crate::worker_capabilities::TURN_LIMIT_REASON),
-            ),
-            (
                 "SYNC_TRANSCRIPT_STREAM_MAX_ITEMS",
                 values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS.to_string(),
             ),
             (
-                "SYNC_TRANSCRIPT_STREAM_MAX_BYTES",
-                values::SYNC_TRANSCRIPT_STREAM_MAX_BYTES.to_string(),
+                "SYNC_STREAM_EVENT_MAX_BYTES",
+                values::SYNC_STREAM_EVENT_MAX_BYTES.to_string(),
             ),
             (
                 "SYNC_ENTITY_STREAM_MAX_DOCUMENTS",
                 values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS.to_string(),
             ),
             (
-                "SYNC_ENTITY_STREAM_MAX_BYTES",
-                values::SYNC_ENTITY_STREAM_MAX_BYTES.to_string(),
-            ),
-            (
                 "SYNC_DRAFT_STREAM_MAX_DOCUMENTS",
                 values::SYNC_DRAFT_STREAM_MAX_DOCUMENTS.to_string(),
-            ),
-            (
-                "SYNC_DRAFT_STREAM_MAX_BYTES",
-                values::SYNC_DRAFT_STREAM_MAX_BYTES.to_string(),
             ),
             (
                 "MAX_USER_ATTACHMENT_BYTES",
@@ -130,6 +118,14 @@ fn shared_values_ts() -> String {
             (
                 "CHILD_RESULT_COALESCE_MAX_SECONDS",
                 values::CHILD_RESULT_COALESCE_MAX_SECONDS.to_string(),
+            ),
+            (
+                "IDLE_COMPACTION_DEFAULT_MIN_TOKENS",
+                values::IDLE_COMPACTION_DEFAULT_MIN_TOKENS.to_string(),
+            ),
+            (
+                "IDLE_COMPACTION_MIN_TOKENS",
+                values::IDLE_COMPACTION_MIN_TOKENS.to_string(),
             ),
             (
                 "IDLE_SESSION_UNLOAD_DEFAULT_MINUTES",
@@ -433,11 +429,36 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
     crate::task_gate::check_api_contract(openapi)?;
+    for (suffix, value) in [
+        ("minimum", values::IDLE_COMPACTION_MIN_TOKENS),
+        ("default", values::IDLE_COMPACTION_DEFAULT_MIN_TOKENS),
+        ("maximum", values::MAX_SAFE_INTEGER as u64),
+    ] {
+        expect_number(
+            openapi,
+            &format!("/components/schemas/IdleCompactionSettings/properties/minTokens/{suffix}"),
+            value as i64,
+        )?;
+    }
+
     expect_number(
         openapi,
         "/components/schemas/ClaudeRepairReport/properties/skippedRows/maximum",
         values::MAX_SAFE_INTEGER,
     )?;
+    let modes = serde_json::to_value([
+        crate::idle_compaction::Mode::Off,
+        crate::idle_compaction::Mode::Log,
+        crate::idle_compaction::Mode::Compact,
+    ])
+    .map_err(|error| error.to_string())?;
+    if openapi.pointer("/components/schemas/IdleCompactionSettings/properties/mode/enum")
+        != Some(&modes)
+    {
+        return Err(
+            "IdleCompactionSettings.mode must match runtime-schema/src/idle_compaction.rs".into(),
+        );
+    }
     let expected = serde_json::to_value(crate::agent_progress::StartWaitReason::ALL)
         .map_err(|error| error.to_string())?;
     for pointer in [
@@ -496,6 +517,19 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         &format!("{protocol}/supportedVersions/items/const"),
         version,
     )?;
+    for owner in [
+        "ResourceChangeEvent",
+        "ResourceHeartbeatEvent",
+        "ResourceTokenRatesEvent",
+    ] {
+        for bound in ["const", "minimum", "maximum"] {
+            expect_number(
+                openapi,
+                &format!("/components/schemas/{owner}/properties/protocol/{bound}"),
+                version,
+            )?;
+        }
+    }
     for owner in ["TokenRateSnapshot", "ResourceTokenRatesEvent"] {
         expect_number(
             openapi,
@@ -503,6 +537,18 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
             crate::TOKEN_RATE_MAX_ENTRIES as i64,
         )?;
     }
+    let removed = "/components/schemas/ResourceTokenRatesEvent/properties/removed";
+    expect_number(
+        openapi,
+        &format!("{removed}/maxItems"),
+        crate::TOKEN_RATE_MAX_ENTRIES as i64,
+    )?;
+    expect_number(openapi, &format!("{removed}/items/minLength"), 1)?;
+    expect_number(
+        openapi,
+        &format!("{removed}/items/maxLength"),
+        crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS as i64,
+    )?;
     for field in ["agentId", "rootId", "turnId"] {
         let path = format!("/components/schemas/TokenRateRecord/properties/{field}");
         expect_number(openapi, &format!("{path}/minLength"), 1)?;
@@ -791,8 +837,9 @@ mod tests {
     }
 
     #[test]
-    fn generated_contracts_do_not_recreate_the_removed_backend() {
-        let rendered = render(&repository_root(), false).expect("contracts render");
+    fn committed_contract_copies_match_the_rust_owners() {
+        let root = repository_root();
+        let rendered = render(&root, false).expect("contracts render");
         assert!(
             rendered
                 .iter()
@@ -804,12 +851,6 @@ mod tests {
                 .any(|file| file.path
                     == "workspaces/runtime/apps/vm-guest/shared_values_generated.py")
         );
-    }
-
-    #[test]
-    fn committed_contract_copies_match_the_rust_owners() {
-        let root = repository_root();
-        let rendered = render(&root, false).expect("contracts render");
         assert_eq!(
             stale(&root, &rendered),
             Vec::<String>::new(),

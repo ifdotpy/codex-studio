@@ -323,9 +323,8 @@ async function readEntities(origin, collection) {
       )
     ).json();
     for (const document of page.documents) {
-      const entity = JSON.parse(document.payload);
-      if (entity.collection === collection && !document._deleted)
-        values.push(entity.value);
+      if (document.collection === collection && document.op === "upsert")
+        values.push(document.value);
     }
     const next = page.checkpoint.seq;
     if (next <= after || next >= (page.maxSeq ?? next)) return values;
@@ -441,7 +440,7 @@ async function main() {
     modelsFile = join(scratch, "fake-models.json");
     writeFileSync(modelsFile, process.env.EXECUTION_SETTINGS_CATALOG);
   }
-  // A custom catalog may lack the reviewer role's preferred model.
+  // A custom catalog may lack the worker role's preferred model.
   const catalog = JSON.parse(process.env.EXECUTION_SETTINGS_CATALOG ?? "[]");
   const workerModel = catalog.find(
     (row) => row.model === WORKER_CATALOG_MODEL,
@@ -519,7 +518,10 @@ async function main() {
       backend.post("/api/agents", {
         name: workerName(index),
         prompt: promptOf(workerName(index), WORKER_PROMPT),
-        role: "reviewer",
+        // Completed reviewers auto-archive after their result reaches the lead.
+        // UI rosters need persistent workers, with no isolated workspace setup.
+        role: "implementer",
+        workspaceMode: "shared",
         ...(workerModel ? { model: workerModel } : {}),
         parent: leadId,
         cwd,

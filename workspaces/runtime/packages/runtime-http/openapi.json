@@ -4176,16 +4176,6 @@
             ],
             "title": "Autowake"
           },
-          "budgetBlocked": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "canSend": {
             "anyOf": [
               {
@@ -4196,16 +4186,6 @@
               }
             ],
             "title": "Cansend"
-          },
-          "capabilityProfile": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/WorkerCapabilitiesDto"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "capacityRetry": {
             "anyOf": [
@@ -4261,18 +4241,6 @@
               }
             ],
             "title": "Compactions"
-          },
-          "completedWorkerTurns": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "concurrency": {
             "anyOf": [
@@ -5353,16 +5321,6 @@
             ],
             "title": "Tail"
           },
-          "terminalReason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "threadId": {
             "anyOf": [
               {
@@ -5373,28 +5331,6 @@
               }
             ],
             "title": "Threadid"
-          },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "tokenUsageAccounting": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "tokensUsed": {
             "anyOf": [
@@ -23577,21 +23513,6 @@
             "title": "Account Key",
             "type": "string"
           },
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "concurrency": {
             "default": 32,
             "maximum": 2048,
@@ -23615,21 +23536,6 @@
             ],
             "default": null,
             "title": "Daybreak Enabled"
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "effort": {
             "anyOf": [
@@ -23678,33 +23584,6 @@
             "minimum": 1,
             "title": "Maxagents",
             "type": "integer"
-          },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "model": {
             "anyOf": [
@@ -23777,21 +23656,6 @@
           "role": {
             "$ref": "#/components/schemas/AgentRole-Input",
             "default": "orchestrator"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "tokenBudget": {
             "anyOf": [
@@ -28676,6 +28540,31 @@
           "detail"
         ],
         "title": "IdentityAlert",
+        "type": "object"
+      },
+      "IdleCompactionSettings": {
+        "additionalProperties": false,
+        "properties": {
+          "minTokens": {
+            "default": 200000,
+            "maximum": 9007199254740991,
+            "minimum": 100000,
+            "type": "integer"
+          },
+          "mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "log",
+              "compact"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "minTokens"
+        ],
         "type": "object"
       },
       "ImageMountDiagnostics": {
@@ -35153,6 +35042,9 @@
             "title": "Childresultcoalesceseconds",
             "type": "integer"
           },
+          "idleCompaction": {
+            "$ref": "#/components/schemas/IdleCompactionSettings"
+          },
           "idleSessionUnloadMinutes": {
             "description": "Minutes a lead's or ordinary chat's idle Codex thread or Claude session stays loaded, and an account's provider process keeps running after its last thread unloaded. A managed worker without a running turn, pending input, or active monitor unloads at once. The next message resumes a thread. 0 never unloads.",
             "maximum": 1440,
@@ -38250,36 +38142,6 @@
             "title": "Action",
             "type": "string"
           },
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "effort": {
             "anyOf": [
               {
@@ -38330,33 +38192,6 @@
             "default": null,
             "title": "Isnew"
           },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "anyOf": [
               {
@@ -38391,21 +38226,6 @@
             ],
             "title": "Role",
             "type": "string"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "title": "ProfileBody",
@@ -38489,21 +38309,6 @@
             "default": null,
             "title": "Syncentitiesafter"
           },
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "deleted": {
             "anyOf": [
               {
@@ -38515,21 +38320,6 @@
             ],
             "default": null,
             "title": "Deleted"
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "effort": {
             "anyOf": [
@@ -38575,33 +38365,6 @@
             "default": null,
             "title": "Instructions"
           },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "anyOf": [
               {
@@ -38641,21 +38404,6 @@
             ],
             "default": null,
             "title": "Role"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "title": "ProfileMutation",
@@ -38664,36 +38412,6 @@
       "ProfileRecord": {
         "additionalProperties": false,
         "properties": {
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "effort": {
             "anyOf": [
               {
@@ -38721,33 +38439,6 @@
             "title": "Instructions",
             "type": "string"
           },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "title": "Model",
             "type": "string"
@@ -38763,21 +38454,6 @@
             ],
             "title": "Role",
             "type": "string"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [
@@ -44446,9 +44122,9 @@
             "type": "string"
           },
           "protocol": {
-            "const": 3,
-            "maximum": 3,
-            "minimum": 3,
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
             "title": "Protocol",
             "type": "integer"
           },
@@ -44511,9 +44187,9 @@
             "type": "string"
           },
           "protocol": {
-            "const": 3,
-            "maximum": 3,
-            "minimum": 3,
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
             "title": "Protocol",
             "type": "integer"
           },
@@ -44765,7 +44441,7 @@
       },
       "ResourceTokenRatesEvent": {
         "additionalProperties": false,
-        "description": "Named token-rates SSE payload; one complete record per agent with authoritative root membership.",
+        "description": "Named token-rates SSE payload. The first frame is a full snapshot; later frames contain changed records and removed agent ids.",
         "properties": {
           "epoch": {
             "minLength": 1,
@@ -44773,9 +44449,9 @@
             "type": "string"
           },
           "protocol": {
-            "const": 3,
-            "maximum": 3,
-            "minimum": 3,
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
             "title": "Protocol",
             "type": "integer"
           },
@@ -44787,11 +44463,26 @@
             "title": "Records",
             "type": "array"
           },
+          "removed": {
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 4096,
+            "title": "Removed",
+            "type": "array",
+            "uniqueItems": true
+          },
           "revision": {
             "maximum": 9007199254740991,
             "minimum": 0,
             "title": "Revision",
             "type": "integer"
+          },
+          "snapshot": {
+            "title": "Snapshot",
+            "type": "boolean"
           },
           "workspaceId": {
             "minLength": 1,
@@ -44804,7 +44495,9 @@
           "workspaceId",
           "epoch",
           "revision",
-          "records"
+          "records",
+          "snapshot",
+          "removed"
         ],
         "title": "ResourceTokenRatesEvent",
         "type": "object"
@@ -44942,6 +44635,48 @@
           }
         },
         "title": "RestartRecoveryRecordResponse",
+        "type": "object"
+      },
+      "RetainedWorktreesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "retainedWorktrees": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "cleanup": {
+                  "$ref": "#/components/schemas/WorkspaceCleanupSummaryDto"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "cleanup"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rootId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rootId",
+          "retainedWorktrees"
+        ],
         "type": "object"
       },
       "RetryAction": {
@@ -52439,19 +52174,396 @@
         "type": "object"
       },
       "SyncEntity": {
-        "additionalProperties": false,
-        "description": "One durable sync entity change attached to a successful response.",
-        "properties": {
-          "_deleted": {
-            "title": "Deleted",
-            "type": "boolean"
+        "description": "One v4 entity change. The collection DTO is structured; deletes omit value.",
+        "oneOf": [
+          {
+            "properties": {
+              "collection": {
+                "const": "agent",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/AgentEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
           },
-          "id": {
-            "title": "Id",
+          {
+            "properties": {
+              "collection": {
+                "const": "chat",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/ChatEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "complaint",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/ComplaintEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "edge",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/EdgeEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "event",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/EventEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "monitor",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/MonitorEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "peerTeam",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/PeerTeamEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "project",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/ProjectEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "request",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/RequestEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "room",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/RoomEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "rule",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/RuleEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "task",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/TaskEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "uiPreferences",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/UiPreferencesDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "work",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "workspace",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkspaceEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "rateLimit",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/AccountRateLimitsDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "not": {
+              "required": [
+                "value"
+              ]
+            },
+            "properties": {
+              "collection": {
+                "enum": [
+                  "agent",
+                  "chat",
+                  "complaint",
+                  "edge",
+                  "event",
+                  "monitor",
+                  "peerTeam",
+                  "project",
+                  "request",
+                  "room",
+                  "rule",
+                  "task",
+                  "uiPreferences",
+                  "work",
+                  "workspace",
+                  "rateLimit"
+                ],
+                "type": "string"
+              },
+              "op": {
+                "const": "delete",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "collection"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "collection": {
             "type": "string"
           },
-          "payload": {
-            "title": "Payload",
+          "id": {
+            "type": "string"
+          },
+          "op": {
+            "enum": [
+              "upsert",
+              "delete"
+            ],
             "type": "string"
           },
           "seq": {
@@ -52462,13 +52574,14 @@
           }
         },
         "required": [
+          "op",
+          "collection",
           "id",
-          "seq",
-          "payload",
-          "_deleted"
+          "seq"
         ],
         "title": "SyncEntity",
-        "type": "object"
+        "type": "object",
+        "unevaluatedProperties": false
       },
       "SyncEntityPayload": {
         "discriminator": {
@@ -52481,6 +52594,7 @@
             "monitor": "#/components/schemas/SyncMonitorEntityPayload",
             "peerTeam": "#/components/schemas/SyncPeerTeamEntityPayload",
             "project": "#/components/schemas/SyncProjectEntityPayload",
+            "rateLimit": "#/components/schemas/SyncRateLimitEntityPayload",
             "request": "#/components/schemas/SyncRequestEntityPayload",
             "room": "#/components/schemas/SyncRoomEntityPayload",
             "rule": "#/components/schemas/SyncRuleEntityPayload",
@@ -52536,6 +52650,9 @@
           },
           {
             "$ref": "#/components/schemas/SyncWorkspaceEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncRateLimitEntityPayload"
           }
         ]
       },
@@ -52750,9 +52867,9 @@
             "type": "integer"
           },
           "protocolVersion": {
-            "const": 3,
-            "maximum": 3,
-            "minimum": 3,
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
             "title": "Protocolversion",
             "type": "integer"
           },
@@ -52775,9 +52892,9 @@
           },
           "supportedVersions": {
             "items": {
-              "const": 3,
-              "maximum": 3,
-              "minimum": 3,
+              "const": 4,
+              "maximum": 4,
+              "minimum": 4,
               "type": "integer"
             },
             "title": "Supportedversions",
@@ -52906,7 +53023,14 @@
           },
           "documents": {
             "items": {
-              "$ref": "#/components/schemas/SyncDocument"
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/SyncDocument"
+                },
+                {
+                  "$ref": "#/components/schemas/SyncEntity"
+                }
+              ]
             },
             "title": "Documents",
             "type": "array"
@@ -52986,6 +53110,30 @@
         "title": "SyncPullResponse",
         "type": "object"
       },
+      "SyncRateLimitEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "rateLimit",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/AccountRateLimitsDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncRateLimitEntityPayload",
+        "type": "object"
+      },
       "SyncRequestEntityPayload": {
         "additionalProperties": false,
         "properties": {
@@ -53056,6 +53204,74 @@
           "value"
         ],
         "title": "SyncRuleEntityPayload",
+        "type": "object"
+      },
+      "SyncSessionEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "sessionId": {
+            "maxLength": 36,
+            "minLength": 36,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "title": "SyncSessionEvent",
+        "type": "object"
+      },
+      "SyncSubscriptionAck": {
+        "additionalProperties": false,
+        "properties": {
+          "gen": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "gen"
+        ],
+        "title": "SyncSubscriptionAck",
+        "type": "object"
+      },
+      "SyncSubscriptionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "add": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceRef"
+            },
+            "type": "array"
+          },
+          "gen": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "remove": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceRef"
+            },
+            "type": "array"
+          },
+          "sessionId": {
+            "maxLength": 36,
+            "minLength": 36,
+            "type": "string"
+          },
+          "tokenRates": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sessionId",
+          "gen",
+          "add",
+          "remove"
+        ],
+        "title": "SyncSubscriptionRequest",
         "type": "object"
       },
       "SyncTaskEntityPayload": {
@@ -54157,89 +54373,6 @@
           "agentId"
         ],
         "title": "TasksResource",
-        "type": "object"
-      },
-      "TeamBudgetSummary": {
-        "additionalProperties": false,
-        "properties": {
-          "incomplete": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "agentId": {
-                  "type": "string"
-                },
-                "reason": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "agentId",
-                "reason"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "reached": {
-            "type": "boolean"
-          },
-          "retainedWorktrees": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "cleanup": {
-                  "$ref": "#/components/schemas/WorkspaceCleanupSummaryDto"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "name": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "id",
-                "cleanup"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "rootId": {
-            "type": "string"
-          },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "tokensUsed": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "rootId",
-          "tokenBudget",
-          "reached",
-          "incomplete"
-        ],
         "type": "object"
       },
       "TerminalClose": {
@@ -56368,6 +56501,10 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "idleCompaction": {
+            "description": "The notice confirms a completed idle compaction of a Claude session.",
+            "type": "boolean"
           },
           "inputs": {
             "anyOf": [
@@ -62596,104 +62733,6 @@
         "title": "WorkViewRecordResponse",
         "type": "object"
       },
-      "WorkerCapabilitiesDto": {
-        "additionalProperties": false,
-        "properties": {
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "WorkerContinueRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "type": "string"
-          },
-          "request_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "request_id"
-        ],
-        "type": "object"
-      },
       "WorkerDefaults": {
         "additionalProperties": false,
         "properties": {
@@ -63042,30 +63081,6 @@
               }
             ],
             "title": "Projectorganizationversion"
-          },
-          "rateLimits": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AccountRateLimitsDto"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rateLimitsByAccount": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "$ref": "#/components/schemas/AccountRateLimitsDto"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ratelimitsbyaccount"
           },
           "sidebarOrder": {
             "anyOf": [
@@ -67214,127 +67229,6 @@
           }
         },
         "summary": "Account Transfer"
-      }
-    },
-    "/api/agents/continue": {
-      "post": {
-        "operationId": "continue_worker_api_agents_continue_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WorkerContinueRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/studio_api__work__models__MessageReceipt"
-                }
-              }
-            },
-            "description": "Successful Response",
-            "headers": {
-              "Access-Control-Allow-Origin": {
-                "$ref": "#/components/headers/AccessControlAllowOrigin"
-              },
-              "Access-Control-Expose-Headers": {
-                "$ref": "#/components/headers/AccessControlExposeHeaders"
-              },
-              "Cache-Control": {
-                "$ref": "#/components/headers/CacheControl"
-              },
-              "Content-Encoding": {
-                "$ref": "#/components/headers/ContentEncoding"
-              },
-              "Content-Length": {
-                "$ref": "#/components/headers/ContentLength"
-              },
-              "Content-Security-Policy": {
-                "$ref": "#/components/headers/ContentSecurityPolicy"
-              },
-              "Content-Type": {
-                "$ref": "#/components/headers/ContentType"
-              },
-              "Referrer-Policy": {
-                "$ref": "#/components/headers/ReferrerPolicy"
-              },
-              "Server-Timing": {
-                "$ref": "#/components/headers/ServerTiming"
-              },
-              "Vary": {
-                "$ref": "#/components/headers/Vary"
-              },
-              "X-Content-Type-Options": {
-                "$ref": "#/components/headers/XContentTypeOptions"
-              },
-              "X-Studio-API-Schema": {
-                "$ref": "#/components/headers/StudioApiSchema"
-              },
-              "X-Studio-Server": {
-                "$ref": "#/components/headers/StudioServer"
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ApiError400",
-            "description": "Bad Request"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "408": {
-            "$ref": "#/components/responses/ApiError408",
-            "description": "Request Timeout"
-          },
-          "409": {
-            "$ref": "#/components/responses/ApiError409",
-            "description": "Conflict"
-          },
-          "410": {
-            "$ref": "#/components/responses/ApiError410",
-            "description": "Gone"
-          },
-          "413": {
-            "$ref": "#/components/responses/ApiError413",
-            "description": "Content Too Large"
-          },
-          "415": {
-            "$ref": "#/components/responses/ApiError415",
-            "description": "Unsupported Media Type"
-          },
-          "426": {
-            "$ref": "#/components/responses/ApiError426",
-            "description": "Upgrade Required"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "502": {
-            "$ref": "#/components/responses/ApiError502",
-            "description": "Bad Gateway"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "Post Message"
       }
     },
     "/api/agents/finder-view": {
@@ -78054,6 +77948,102 @@
         "summary": "Rename"
       }
     },
+    "/api/retained-worktrees": {
+      "get": {
+        "operationId": "retained_worktrees_api_retained_worktrees_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Agent",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetainedWorktreesResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Retained Worktrees"
+      }
+    },
     "/api/room/delete": {
       "post": {
         "operationId": "delete_room_api_room_delete_post",
@@ -80041,12 +80031,20 @@
                     },
                     {
                       "$ref": "#/components/schemas/ResourceTokenRatesEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SyncSessionEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SyncSubscriptionAck"
                     }
                   ],
                   "x-sse-events": {
                     "api-schema": "ApiSchemaEvent",
                     "heartbeat": "ResourceHeartbeatEvent",
                     "resources": "ResourceChangeEvent",
+                    "session": "SyncSessionEvent",
+                    "subscriptions": "SyncSubscriptionAck",
                     "token-rates": "ResourceTokenRatesEvent"
                   }
                 }
@@ -80099,6 +80097,57 @@
           }
         },
         "summary": "Sync Stream"
+      }
+    },
+    "/api/sync/subscriptions": {
+      "post": {
+        "description": "Changes one open stream. HTTP 410 means the stream session expired; reopen with the full resource set and cursors. A lost response must recover by reopening, never retrying the diff. Resource bounds use MAX_SYNC_RESOURCE_COUNT and MAX_SYNC_RESOURCE_QUERY_BYTES from runtime-schema/src/shared_values.rs, as for the stream selector.",
+        "operationId": "sync_subscriptions_api_sync_subscriptions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncSubscriptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncSubscriptionAck"
+                }
+              }
+            },
+            "description": "Subscription change accepted; the SSE acknowledgement precedes added-resource initial data."
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or expired stream session"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500"
+          }
+        },
+        "summary": "Change live sync subscriptions"
       }
     },
     "/api/task": {
@@ -80298,102 +80347,6 @@
           }
         },
         "summary": "Read bounded task output within its owner workspace"
-      }
-    },
-    "/api/team-budget": {
-      "get": {
-        "operationId": "team_budget_api_team_budget_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "agent",
-            "required": true,
-            "schema": {
-              "maxLength": 200,
-              "minLength": 1,
-              "title": "Agent",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TeamBudgetSummary"
-                }
-              }
-            },
-            "description": "Successful Response",
-            "headers": {
-              "Access-Control-Allow-Origin": {
-                "$ref": "#/components/headers/AccessControlAllowOrigin"
-              },
-              "Access-Control-Expose-Headers": {
-                "$ref": "#/components/headers/AccessControlExposeHeaders"
-              },
-              "Cache-Control": {
-                "$ref": "#/components/headers/CacheControl"
-              },
-              "Content-Encoding": {
-                "$ref": "#/components/headers/ContentEncoding"
-              },
-              "Content-Length": {
-                "$ref": "#/components/headers/ContentLength"
-              },
-              "Content-Security-Policy": {
-                "$ref": "#/components/headers/ContentSecurityPolicy"
-              },
-              "Content-Type": {
-                "$ref": "#/components/headers/ContentType"
-              },
-              "Referrer-Policy": {
-                "$ref": "#/components/headers/ReferrerPolicy"
-              },
-              "Server-Timing": {
-                "$ref": "#/components/headers/ServerTiming"
-              },
-              "Vary": {
-                "$ref": "#/components/headers/Vary"
-              },
-              "X-Content-Type-Options": {
-                "$ref": "#/components/headers/XContentTypeOptions"
-              },
-              "X-Studio-API-Schema": {
-                "$ref": "#/components/headers/StudioApiSchema"
-              },
-              "X-Studio-Server": {
-                "$ref": "#/components/headers/StudioServer"
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ApiError400",
-            "description": "Bad Request"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "Processes"
       }
     },
     "/api/terminals": {

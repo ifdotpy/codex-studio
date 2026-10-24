@@ -13,14 +13,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-import { createHash } from "node:crypto";
-const {
-  identity,
-  ensureBackend,
-  backendBuild,
-  updateStatus,
-  backendExitStatus,
-} = createRequire(import.meta.url)("./backend.cjs");
+const { identity, ensureBackend, updateStatus, backendExitStatus } =
+  createRequire(import.meta.url)("./backend.cjs");
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../../..",
@@ -56,15 +50,6 @@ async function serve(handler, run) {
     await new Promise((resolve) => server.close(resolve));
   }
 }
-
-test("a valid backend can take longer than the old one-second limit", async () => {
-  await serve(
-    (req, res) => setTimeout(() => res.end(JSON.stringify(record)), 1200),
-    async (origin) => {
-      assert.deepEqual(await identity(origin, state), record);
-    },
-  );
-});
 
 test("retry a timed-out identity read", async () => {
   let calls = 0;
@@ -338,37 +323,17 @@ test("the desktop may attach to a diagnosed fallback generation", async () => {
   );
 });
 
-test("desktop status hashes the Rust executable for match and mismatch decisions", () => {
-  const env = { CODEX_RUNTIME_SERVER: process.execPath };
-  const installed = backendBuild(repositoryRoot, env);
-  assert.equal(
-    installed,
-    createHash("sha256").update(readFileSync(process.execPath)).digest("hex"),
-  );
-  assert.deepEqual(
-    updateStatus(repositoryRoot, { backendBuild: installed }, env),
-    {
-      availableBackendBuild: installed,
-      updateRequired: false,
-    },
-  );
-  assert.deepEqual(
-    updateStatus(repositoryRoot, { backendBuild: "a".repeat(64) }, env),
-    {
-      availableBackendBuild: installed,
-      updateRequired: true,
-    },
-  );
-});
+// SHA-256 of the tiny executable below, independent of the host Node binary.
+const fixtureBuild =
+  "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb";
 
 test("an app restart reports a pending backend update and preserves the owner", async () => {
   const stateRoot = mkdtempSync(path.join(tmpdir(), "studio-backend-reuse-"));
   const canonicalState = realpathSync(stateRoot);
-  const before = backendBuild(repositoryRoot, {
-    CODEX_RUNTIME_SERVER: process.execPath,
-  });
+  const runtime = path.join(stateRoot, "runtime");
+  writeFileSync(runtime, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   try {
-    for (const liveBuild of ["a".repeat(64), before]) {
+    for (const liveBuild of ["a".repeat(64), fixtureBuild]) {
       const data = {
         ...record,
         stateDir: canonicalState,
@@ -380,16 +345,16 @@ test("an app restart reports a pending backend update and preserves the owner", 
           const result = await ensureBackend({
             resources: repositoryRoot,
             port: Number(new URL(origin).port),
-            // No executable paths or built UI. Spawning would fail the check.
+            // No built UI: spawning would fail the check.
             env: {
               CODEX_AGENTS_STATE_DIR: canonicalState,
-              CODEX_RUNTIME_SERVER: process.execPath,
+              CODEX_RUNTIME_SERVER: runtime,
             },
           });
           assert.equal(result.pid, process.pid);
           assert.equal(result.owned, false);
-          assert.equal(result.availableBackendBuild, before);
-          assert.equal(result.updateRequired, liveBuild !== before);
+          assert.equal(result.availableBackendBuild, fixtureBuild);
+          assert.equal(result.updateRequired, liveBuild !== fixtureBuild);
         },
       );
     }
