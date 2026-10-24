@@ -298,7 +298,7 @@ fn seed_python_lazy_markers(
     Ok(())
 }
 
-fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreResult<()> {
+fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreResult<Connection> {
     let mut connection = Connection::open(path)?;
     crate::sqlite_durability::configure_writer(&connection)?;
     let transaction = connection.transaction()?;
@@ -348,7 +348,25 @@ fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreRes
         ))?;
     transaction.pragma_update(None, "user_version", version)?;
     transaction.commit()?;
-    Ok(())
+    Ok(connection)
+}
+
+/// Repository witnesses use the production catalog without files, fsyncs or writer actors.
+#[cfg(test)]
+pub(crate) fn test_canvas() -> Connection {
+    let snapshot = serde_json::from_str(SNAPSHOT).expect("fresh schema snapshot");
+    let mut connection = create_database(Path::new(":memory:"), &snapshot, "canvas.sqlite3")
+        .expect("in-memory canvas");
+    crate::schema::register_python_trigger_functions(&connection).expect("projection functions");
+    let tx = connection.transaction().expect("fixture transaction");
+    crate::agent_columns::prepare(&tx).expect("agent columns");
+    crate::bootstrap::prepare_sync_schema(&tx).expect("sync schema");
+    crate::AgentRepository::prepare_change_journal(&tx).expect("change journal");
+    crate::agent_volatile::prepare(&tx).expect("volatile fields");
+    crate::feature_schema::prepare(&tx).expect("feature schema");
+    crate::AgentIndexedReads::prepare_index(&tx).expect("agent indexes");
+    tx.commit().expect("fixture commits");
+    connection
 }
 
 fn is_virtual_table_shadow(name: &str) -> bool {
