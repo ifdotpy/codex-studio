@@ -2346,7 +2346,7 @@ mod limits_runtime_tests {
 
     #[tokio::test]
     async fn timestamp_only_limits_keep_sync_sequence_and_refresh_observation() {
-        let (f, _) = fixture([], false).await;
+        let (f, _, _) = fixture([], false).await;
         let first = update(&f, 1, 50);
         let mut repeated = first.clone();
         repeated.cursor = 2;
