@@ -25,9 +25,17 @@ pub(crate) fn window_snapshot(
         .unwrap_or(SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS as i64)
         .clamp(1, SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64) as usize;
     if page.items.len() > tail {
-        page.items.drain(..page.items.len() - tail);
+        let start = page.items.len() - tail;
+        let before = if page.items[start].role == "reasoning" {
+            page.items[..start].iter().rev().find(|item| item.role != "reasoning").map(|item|
+                format!("{}{}", studio_runtime_schema::shared_values::TRANSCRIPT_BEFORE_INCLUSIVE_CURSOR_PREFIX, item.id))
+                .or_else(|| page.next_cursor.clone().flatten())
+        } else {
+            Some(page.items[start].id.clone())
+        };
+        page.items.drain(..start);
         page.truncated = true;
-        page.next_cursor = Some(page.items.first().map(|item| item.id.clone()));
+        page.next_cursor = Some(before);
     }
     page
 }
@@ -264,6 +272,26 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transcript_window_reasoning_boundary_retains_a_resolvable_older_cursor() {
+        let page = serde_json::from_value(serde_json::json!({"items":[
+            {"id":"parent","role":"assistant","text":"Earlier"},
+            {"id":"reasoning:synthetic","role":"reasoning","text":""},
+            {"id":"newest","role":"assistant","text":"Latest"}
+        ],"truncated":false}))
+        .expect("page");
+        let window = window_snapshot(page, Some(2));
+        assert_eq!(window.items.len(), 2);
+        assert_eq!(window.items[0].id, "reasoning:synthetic");
+        assert_eq!(
+            window.next_cursor.flatten(),
+            Some(format!(
+                "{}parent",
+                studio_runtime_schema::shared_values::TRANSCRIPT_BEFORE_INCLUSIVE_CURSOR_PREFIX
+            ))
+        );
+    }
+
     #[test]
     fn transcript_route_is_implemented_with_only_a_conditional_workspace_refusal() {
         let operations =

@@ -3033,7 +3033,7 @@ mod tests {
                     .clone()
                     .oneshot(
                         Request::builder()
-                            .uri("/api/transcript/page?id=small&before=small%3A080&limit=40")
+                            .uri("/api/transcript/page?id=small&before=%40transcript-before-inclusive%3Asmall%3A079&limit=40")
                             .header("host", "127.0.0.1:4321")
                             .header("x-canvas-token", "token")
                             .extension(ConnectInfo(std::net::SocketAddr::from((

@@ -1210,7 +1210,10 @@ export function createSyncClient(options: SyncClientOptions) {
           : { ...previousMetadata, ...transcriptMetadata(incoming) };
       if (windowTruncated) {
         metadata.truncated = true;
-        metadata.nextCursor = order[0] ?? base?.metadata.nextCursor ?? null;
+        metadata.nextCursor =
+          order[0] === oldOrder[0]
+            ? (base?.metadata.nextCursor ?? order[0] ?? null)
+            : (order[0] ?? base?.metadata.nextCursor ?? null);
       }
       const itemRevisions =
         incoming === null
