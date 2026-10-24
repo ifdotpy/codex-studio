@@ -77,17 +77,17 @@ for (const flow of ["vault", "auth"]) {
           .getByRole("button", { name: "Show the paper key in Terminal" })
           .click();
       }
-      const kind = flow === "vault" ? "vault-readiness" : "auth-progress";
-      await page.waitForFunction(
-        (kind) => window.selectors.some((resource) => resource.kind === kind),
-        kind,
-      );
       const before = await page.evaluate(() => ({ ...window.reads }));
       await page.clock.fastForward(10_000);
       assert.deepEqual(await page.evaluate(() => window.reads), before);
       assert.deepEqual(
         before,
         flow === "vault" ? { facts: 1, auth: 0 } : { facts: 0, auth: 0 },
+      );
+      const kind = flow === "vault" ? "vault-readiness" : "auth-progress";
+      await page.waitForFunction(
+        (kind) => window.selectors.some((resource) => resource.kind === kind),
+        kind,
       );
       await page.evaluate((flow) => {
         if (flow === "vault")
