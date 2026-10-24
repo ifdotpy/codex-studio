@@ -451,6 +451,9 @@ impl WorkspaceReadyRepository {
         actor["cwd"] = json!(plan.cwd);
         actor["branch"] = json!(plan.branch);
         actor["worktreeReady"] = json!(true);
+        // Cleanup proves ownership against the repository that provisioned the
+        // worktree, never one discovered through a replaceable path.
+        actor["worktreeRepository"] = json!(plan.repository);
         actor["workspaceOperation"] = Value::Null;
         if let Some(object) = actor.as_object_mut() {
             object.remove("worktreePreparation");
