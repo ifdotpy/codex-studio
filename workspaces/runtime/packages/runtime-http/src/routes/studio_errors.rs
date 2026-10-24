@@ -39,16 +39,18 @@ async fn read(
 
 async fn dismiss(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<generated::IdRequest>,
-) -> Result<Json<generated::StudioErrorsResponse>, ApiError> {
+    ApiJson(body): ApiJson<generated::StudioErrorsDismissRequest>,
+) -> Result<Json<generated::StudioErrorsDismissResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let now = now()?;
-    let id = body.id;
+    let ids = body.ids.unwrap_or_else(|| body.id.into_iter().collect());
+    if ids.is_empty()
+        || ids.len() > studio_runtime_schema::shared_values::STUDIO_ERRORS_DISMISS_MAX_IDS
+    {
+        return Err(ApiError::validation(vec!["body".into(), "ids".into()]));
+    }
     let value = store
-        .transaction(move |tx| {
-            studio_runtime_services::studio_errors::dismiss(tx, &id, now)?;
-            studio_runtime_services::studio_errors::list(tx, now)
-        })
+        .transaction(move |tx| studio_runtime_services::studio_errors::dismiss_many(tx, &ids, now))
         .await
         .map_err(|_| ApiError::internal())?;
     Ok(Json(super::generated_json(value)?))

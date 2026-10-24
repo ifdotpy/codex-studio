@@ -236,7 +236,7 @@ async fn missing_limits_observation_aborts_without_a_partial_write() {
     let store = RuntimeStore::open(Some(root.path()))
         .await
         .expect("Python state opens");
-    let before = usage_rows(&store);
+    let before = complete_continuation_rows(&store);
     let error = store
         .transaction_with(move |tx| {
             continuation_runtime::stage(
@@ -255,7 +255,7 @@ async fn missing_limits_observation_aborts_without_a_partial_write() {
         error,
         ContinuationError::Unavailable("usage-policy/limits-snapshot")
     ));
-    assert_eq!(usage_rows(&store), before);
+    assert_eq!(complete_continuation_rows(&store), before);
 }
 
 #[tokio::test]
@@ -265,7 +265,7 @@ async fn unknown_or_malformed_completion_does_not_create_continuation_state() {
     let store = RuntimeStore::open(Some(root.path()))
         .await
         .expect("Python state opens");
-    let before = usage_rows(&store);
+    let before = complete_continuation_rows(&store);
     let unknown = store
         .transaction_with(|tx| {
             continuation_runtime::stage(
@@ -281,28 +281,39 @@ async fn unknown_or_malformed_completion_does_not_create_continuation_state() {
         }).await
         .expect("unknown outcome does not continue");
     assert!(!unknown.changed());
-    assert_eq!(usage_rows(&store), before);
+    assert_eq!(complete_continuation_rows(&store), before);
 
-    let missing_agent = store
-        .transaction_with(|tx| {
-            continuation_runtime::stage(
-                tx,
-                Completion::TerminalTurn {
-                    agent_id: "missing",
-                    turn: &Value::Null,
-                    known: true,
-                    now: 1000.0,
-                    limits: None,
-                },
-            )
-        })
-        .await;
-    assert!(matches!(
-        missing_agent,
-        Err(ContinuationError::Store(
-            StoreError::InvalidStoredObject { .. }
-        ))
-    ));
+    for agent_id in ["missing", "a"] {
+        let result = store
+            .transaction_with(move |tx| {
+                continuation_runtime::stage(
+                    tx,
+                    Completion::TerminalTurn {
+                        agent_id,
+                        turn: &Value::Null,
+                        known: true,
+                        now: 1000.0,
+                        limits: None,
+                    },
+                )
+            })
+            .await;
+        if agent_id == "missing" {
+            assert!(matches!(
+                result,
+                Err(ContinuationError::Store(
+                    StoreError::InvalidStoredObject { .. }
+                ))
+            ));
+        } else {
+            assert!(
+                !result
+                    .expect("a completion without a turn ID is ignored")
+                    .changed()
+            );
+        }
+        assert_eq!(complete_continuation_rows(&store), before);
+    }
 }
 
 #[tokio::test]

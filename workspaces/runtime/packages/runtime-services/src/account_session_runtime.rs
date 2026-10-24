@@ -2053,7 +2053,14 @@ mod persistence_tests {
                     tx,
                     "workspace",
                     "current",
-                    json!({"rateLimitsByAccount":{"other":{"accountKey":"other"}}}),
+                    json!({"stateDir":"fixture"}),
+                    false,
+                )?;
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "rateLimit",
+                    "other",
+                    json!({"accountKey":"other","at":1.0,"data":{"accountId":"other"}}),
                     false,
                 )?;
                 Ok(())
@@ -2074,13 +2081,22 @@ mod persistence_tests {
         .unwrap();
 
         let entity = stored_workspace(&store);
-        assert_eq!(entity["value"]["rateLimits"], value);
-        assert_eq!(entity["value"]["rateLimitsByAccount"]["default"], value);
-        assert_eq!(
-            entity["value"]["rateLimitsByAccount"]["other"]["accountKey"],
-            "other"
-        );
+        assert_eq!(entity["value"], json!({"stateDir":"fixture"}));
+        let raw: String = store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='rateLimit' AND id='default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&raw).unwrap()["value"], value);
         assert_eq!(cache.lock().unwrap().get("default"), Some(&value));
+        let restored =
+            studio_runtime_store::account_state::limits_snapshots(&store.test_reader().unwrap())
+                .unwrap();
+        assert!(restored.snapshots.iter().any(|(account,value)| account=="other" && value["data"]["accountId"]=="other"));
     }
 
     #[tokio::test]
@@ -2093,13 +2109,17 @@ mod persistence_tests {
                     tx,
                     "workspace",
                     "current",
-                    json!({"rateLimitsByAccount":"invalid-shape","untouched":true}),
+                    json!({"stateDir":"fixture"}),
                     false,
                 )?;
                 Ok(())
             })
             .await
             .unwrap();
+        store.transaction(|tx| {
+            tx.execute_batch("CREATE TRIGGER reject_limits BEFORE INSERT ON sync_entities WHEN NEW.collection='rateLimit' BEGIN SELECT RAISE(ABORT,'injected failure'); END;")?;
+            Ok(())
+        }).await.unwrap();
         let before = stored_workspace(&store);
         let cache = Arc::new(Mutex::new(BTreeMap::new()));
         let value = json!({"accountKey":"default","data":{"accountId":"fixture"},"at":1.0,"readAt":1.0,"error":null});
@@ -2118,6 +2138,9 @@ mod persistence_tests {
 
         assert_eq!(stored_workspace(&store), before);
         assert!(cache.lock().unwrap().is_empty());
+        assert_eq!(store.test_reader().unwrap().query_row(
+            "SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='limits-observation'", [], |row| row.get::<_, i64>(0),
+        ).unwrap(), 0, "failed publication rolls back the private observation too");
     }
 }
 
@@ -2137,89 +2160,26 @@ mod limits_runtime_tests {
         collections::VecDeque,
         fs,
         sync::{
-            Arc, Condvar, Mutex,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
-            mpsc,
         },
         time::Duration,
     };
-    use studio_runtime_providers::{RequestId, RequestTicket};
+    use studio_runtime_providers::{Method, RequestId, RequestTicket};
     use studio_runtime_store::RuntimeStore;
+    use tokio::sync::oneshot;
 
     enum Reply {
         Data(Value),
+        Login(Value),
         Rejected,
-    }
-
-    struct FirstReadGate {
-        released: Mutex<bool>,
-        wake: Condvar,
-        entered: mpsc::Sender<()>,
-    }
-
-    impl FirstReadGate {
-        fn release(&self) {
-            *self.released.lock().unwrap() = true;
-            self.wake.notify_all();
-        }
-    }
-
-    struct ReleaseFirstReadGate(Arc<FirstReadGate>);
-
-    impl Drop for ReleaseFirstReadGate {
-        fn drop(&mut self) {
-            self.0.release();
-        }
     }
 
     struct FakeLimitsSession {
         calls: AtomicUsize,
         replies: Mutex<VecDeque<Reply>>,
         scope: Mutex<ConnectionScope>,
-        first_read_gate: Option<Arc<FirstReadGate>>,
-    }
-
-    impl FakeLimitsSession {
-        fn response(&self, request: ProviderRequest, call: usize) -> SessionFuture {
-            let scope = self.scope.lock().unwrap().clone();
-            let operation = request.operation.clone();
-            let method = request.method;
-            let reply = self
-                .replies
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_else(|| Reply::Data(json!({"accountId":"fixture-account"})));
-            let gate = (call == 1).then(|| self.first_read_gate.clone()).flatten();
-            Box::pin(async move {
-                if let Some(gate) = gate {
-                    gate.entered
-                        .send(())
-                        .expect("the cold-read test receiver remains alive until entry");
-                    let mut released = gate.released.lock().unwrap();
-                    while !*released {
-                        released = gate.wake.wait(released).unwrap();
-                    }
-                }
-                let result = match reply {
-                    Reply::Data(data) => ProviderResponse::Reply(data),
-                    Reply::Rejected => ProviderResponse::Rejected(json!({"message":"fixture"})),
-                };
-                Ok(SessionReceipt {
-                    ticket: Some(RequestTicket {
-                        generation: scope.generation,
-                        id: RequestId::String(operation.clone()),
-                        method,
-                    }),
-                    scope,
-                    operation,
-                    certainty: RequestCertainty::Written,
-                    result: Some(result),
-                    not_sent_reason: None,
-                    replayed: false,
-                })
-            })
-        }
+        first_read_gate: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
     }
 
     impl RetainedAccountSession for FakeLimitsSession {
@@ -2240,7 +2200,51 @@ mod limits_runtime_tests {
 
         fn request(&self, request: ProviderRequest) -> SessionFuture {
             let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-            self.response(request, call)
+            let scope = self.scope.lock().unwrap().clone();
+            let operation = request.operation.clone();
+            let method = request.method;
+            let reply = self
+                .replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("every provider call has a scripted reply");
+            let (expected_method, expected_params) = match &reply {
+                Reply::Login(_) => (
+                    Method::AccountLoginStart,
+                    json!({"type":"chatgptDeviceCode"}),
+                ),
+                _ => (Method::AccountRateLimitsRead, json!({})),
+            };
+            assert_eq!(method, expected_method);
+            assert_eq!(request.params, expected_params);
+            let gate = (call == 1)
+                .then(|| self.first_read_gate.lock().unwrap().take())
+                .flatten();
+            Box::pin(async move {
+                if let Some((entered, released)) = gate {
+                    entered.send(()).unwrap();
+                    // Dropping the release sender also opens the gate on panic.
+                    let _released = released.await;
+                }
+                let result = match reply {
+                    Reply::Data(data) | Reply::Login(data) => ProviderResponse::Reply(data),
+                    Reply::Rejected => ProviderResponse::Rejected(json!({"message":"fixture"})),
+                };
+                Ok(SessionReceipt {
+                    ticket: Some(RequestTicket {
+                        generation: scope.generation,
+                        id: RequestId::String(operation.clone()),
+                        method,
+                    }),
+                    scope,
+                    operation,
+                    certainty: RequestCertainty::Written,
+                    result: Some(result),
+                    not_sent_reason: None,
+                    replayed: false,
+                })
+            })
         }
     }
 
@@ -2253,7 +2257,7 @@ mod limits_runtime_tests {
     async fn fixture(
         replies: impl IntoIterator<Item = Reply>,
         gate: bool,
-    ) -> (Fixture, mpsc::Receiver<()>) {
+    ) -> (Fixture, oneshot::Receiver<()>, oneshot::Sender<()>) {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("codex-home");
         fs::create_dir_all(&home).unwrap();
@@ -2276,14 +2280,9 @@ mod limits_runtime_tests {
             connection: "fixture-connection".into(),
             generation: 1,
         };
-        let (entered, entered_rx) = mpsc::channel();
-        let first_read_gate = gate.then(|| {
-            Arc::new(FirstReadGate {
-                released: Mutex::new(false),
-                wake: Condvar::new(),
-                entered,
-            })
-        });
+        let (entered, entered_rx) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        let first_read_gate = Mutex::new(gate.then_some((entered, released)));
         let provider = Arc::new(FakeLimitsSession {
             calls: AtomicUsize::new(0),
             replies: Mutex::new(replies.into_iter().collect()),
@@ -2312,44 +2311,29 @@ mod limits_runtime_tests {
                 provider,
             },
             entered_rx,
+            release,
         )
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn concurrent_stale_cold_reads_share_one_native_request() {
-        let (fixture, entered) =
+        let (fixture, entered, release) =
             fixture([Reply::Data(json!({"accountId":"fixture-account"}))], true).await;
-        let gate = Arc::clone(fixture.provider.first_read_gate.as_ref().unwrap());
-        let _release_on_exit = ReleaseFirstReadGate(Arc::clone(&gate));
         let runtime = Arc::clone(&fixture.runtime);
         let first = tokio::spawn(async move {
             AccountSessionPort::read_limits_if_stale(runtime.as_ref(), "default").await
         });
-        let entered_result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/account_session_runtime",
-            move || entered.recv_timeout(Duration::from_secs(2)),
-        )
-        .await;
-
-        let (started, started_rx) = mpsc::channel();
+        tokio::time::timeout(Duration::from_secs(2), entered)
+            .await
+            .unwrap()
+            .unwrap();
         let runtime = Arc::clone(&fixture.runtime);
         let second = tokio::spawn(async move {
-            started
-                .send(())
-                .expect("the concurrency test receiver remains alive until the second read starts");
             AccountSessionPort::read_limits_if_stale(runtime.as_ref(), "default").await
         });
-        let second_started = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/account_session_runtime",
-            move || started_rx.recv_timeout(Duration::from_secs(2)),
-        )
-        .await;
-        gate.release();
-
+        release.send(()).unwrap();
         let first_result = first.await.unwrap();
         let second_result = second.await.unwrap();
-        assert!(entered_result.unwrap().is_ok());
-        assert!(second_started.unwrap().is_ok());
         first_result.unwrap();
         second_result.unwrap();
         assert_eq!(fixture.provider.calls.load(Ordering::SeqCst), 1);
@@ -2366,7 +2350,7 @@ mod limits_runtime_tests {
 
     #[tokio::test]
     async fn live_limits_ingestion_persists_and_wakes_once() {
-        let (mut f, _) = fixture([], false).await;
+        let (mut f, _, _) = fixture([], false).await;
         let wake = Arc::new(tokio::sync::Notify::new());
         Arc::get_mut(&mut f.runtime).unwrap().continuation_wake = Some(wake.clone());
         let event = update(&f, 2, 100);
@@ -2385,21 +2369,88 @@ mod limits_runtime_tests {
             .test_reader()
             .unwrap()
             .query_row(
-                "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'",
+                "SELECT payload FROM sync_entities WHERE collection='rateLimit' AND id='default'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(
-            serde_json::from_str::<Value>(&raw).unwrap()["value"]["rateLimits"]["data"]["rateLimits"]
-                ["primary"]["usedPercent"],
+            serde_json::from_str::<Value>(&raw).unwrap()["value"]["data"]["rateLimits"]["primary"]
+                ["usedPercent"],
             100
         );
     }
 
     #[tokio::test]
+    async fn timestamp_only_limits_keep_sync_sequence_and_refresh_observation() {
+        let (f, _, _) = fixture([], false).await;
+        let first = update(&f, 1, 50);
+        let mut repeated = first.clone();
+        repeated.cursor = 2;
+        repeated.observed_at += 1.0;
+        assert!(f.runtime.ingest_limits(first).await.unwrap());
+        let store = f.runtime.store.as_ref().unwrap();
+        let before = studio_runtime_store::SyncDocumentsRepository::entity_sequence(
+            &store.test_reader().unwrap(),
+        )
+        .unwrap();
+        assert!(!f.runtime.ingest_limits(repeated.clone()).await.unwrap());
+        let after = studio_runtime_store::SyncDocumentsRepository::entity_sequence(
+            &store.test_reader().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            after, before,
+            "timestamp-only observations must not publish sync changes"
+        );
+        assert_eq!(
+            f.runtime.limits_snapshot("default").unwrap()["at"],
+            repeated.observed_at
+        );
+        let restored =
+            studio_runtime_store::account_state::limits_snapshots(&store.test_reader().unwrap())
+                .unwrap();
+        assert_eq!(
+            restored.snapshots[0].1["at"], repeated.observed_at,
+            "startup restoration retains timestamp-only freshness"
+        );
+        let raw: String = store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                [studio_runtime_store::account_state::limits_observation_key(
+                    "default",
+                )],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let receipt: Value = serde_json::from_str(&raw).unwrap();
+        assert!(
+            receipt.get("snapshot").is_none(),
+            "observation receipts must not duplicate provider data serialization"
+        );
+        assert_eq!(receipt["at"], repeated.observed_at);
+        let mut changed = update(&f, 3, 60);
+        changed.observed_at = repeated.observed_at + 1.0;
+        assert!(
+            !f.runtime.ingest_limits(repeated).await.unwrap(),
+            "durable cursor replay remains a no-op"
+        );
+        assert!(f.runtime.ingest_limits(changed).await.unwrap());
+        assert!(
+            studio_runtime_store::SyncDocumentsRepository::entity_sequence(
+                &store.test_reader().unwrap(),
+            )
+            .unwrap()
+                > after,
+            "changed provider content still publishes"
+        );
+    }
+
+    #[tokio::test]
     async fn live_limits_reject_old_cursor_generation_and_wrong_account() {
-        let (f, _) = fixture([], false).await;
+        let (f, _, _) = fixture([], false).await;
         assert!(f.runtime.ingest_limits(update(&f, 4, 100)).await.unwrap());
         assert!(!f.runtime.ingest_limits(update(&f, 3, 0)).await.unwrap());
         let mut stale = update(&f, 5, 0);
@@ -2416,7 +2467,7 @@ mod limits_runtime_tests {
 
     #[tokio::test]
     async fn live_limits_new_generation_survives_late_events_and_cache_reload() {
-        let (f, _) = fixture([], false).await;
+        let (f, _, _) = fixture([], false).await;
         let old = update(&f, 20, 0);
         assert!(f.runtime.ingest_limits(old.clone()).await.unwrap());
         f.provider.scope.lock().unwrap().generation += 1;
@@ -2431,31 +2482,26 @@ mod limits_runtime_tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn live_limits_event_during_read_retains_overage_permission() {
-        let (f, entered) = fixture(
+        let (f, entered, release) = fixture(
             [Reply::Data(
                 json!({"rateLimits":{"primary":{"usedPercent":0.0}}}),
             )],
             true,
         )
         .await;
-        let gate = f.provider.first_read_gate.as_ref().unwrap().clone();
-        let _release = ReleaseFirstReadGate(gate.clone());
         let runtime = f.runtime.clone();
         let read = tokio::spawn(async move { runtime.read_limits("default").await });
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "limits-test/read-entered",
-            move || entered.recv_timeout(Duration::from_secs(2)),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), entered)
+            .await
+            .unwrap()
+            .unwrap();
         let mut event = update(&f, 1, 100);
         event.data["claudeRateLimit"] =
             json!({"rateLimitType":"five_hour","status":"rejected","overageStatus":"allowed"});
         assert!(f.runtime.ingest_limits(event).await.unwrap());
-        gate.release();
+        release.send(()).unwrap();
         let result = read.await.unwrap().unwrap();
         assert_eq!(
             result["data"]["claudeRateLimit"]["overageStatus"],
@@ -2466,7 +2512,7 @@ mod limits_runtime_tests {
 
     #[tokio::test]
     async fn live_limits_reconcile_wait_and_create_one_followup() {
-        let (mut f, _) = fixture([], false).await;
+        let (mut f, _, _) = fixture([], false).await;
         let wake = Arc::new(tokio::sync::Notify::new());
         Arc::get_mut(&mut f.runtime).unwrap().continuation_wake = Some(wake.clone());
         let store = f.runtime.store.as_ref().unwrap().clone();
@@ -2513,7 +2559,7 @@ mod limits_runtime_tests {
 
     #[tokio::test]
     async fn live_limits_invalid_payload_leaves_snapshot_unchanged() {
-        let (f, _) = fixture([], false).await;
+        let (f, _, _) = fixture([], false).await;
         f.runtime.ingest_limits(update(&f, 1, 100)).await.unwrap();
         let before = f.runtime.limits_snapshot("default").unwrap();
         let mut invalid = update(&f, 2, 0);
@@ -2524,7 +2570,7 @@ mod limits_runtime_tests {
 
     #[tokio::test]
     async fn live_limits_resume_preserves_new_overage_and_refreshes_consumed_observations() {
-        let (f, _) = fixture(
+        let (f, _, _) = fixture(
             [Reply::Data(
                 json!({"rateLimits":{"primary":{"usedPercent":0.0}}}),
             )],
@@ -2554,6 +2600,11 @@ mod limits_runtime_tests {
         assert_eq!(fresh["data"]["rateLimits"]["primary"]["usedPercent"], 0.0);
         assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
         // Recent data from a retired generation cannot satisfy a new timer read.
+        f.provider
+            .replies
+            .lock()
+            .unwrap()
+            .push_back(Reply::Data(json!({"accountId":"fixture-account"})));
         f.provider.scope.lock().unwrap().generation += 1;
         f.runtime
             .read_limits_for_resume("default", at - 1.0)
@@ -2564,7 +2615,7 @@ mod limits_runtime_tests {
 
     #[tokio::test]
     async fn failed_provider_read_is_persisted_and_cooled_down_but_forced_read_runs() {
-        let (fixture, _) = fixture(
+        let (fixture, _, _) = fixture(
             [
                 Reply::Rejected,
                 Reply::Data(json!({"accountId":"fixture-account"})),
@@ -2595,10 +2646,10 @@ mod limits_runtime_tests {
         assert_eq!(fixture.provider.calls.load(Ordering::SeqCst), 2);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn caller_cancellation_does_not_abandon_reserved_login_or_resend_it() {
-        let (fixture, entered) = fixture(
-            [Reply::Data(json!({
+        let (fixture, entered, release) = fixture(
+            [Reply::Login(json!({
                 "type":"chatgptDeviceCode",
                 "loginId":"provider-login",
                 "verificationUrl":"https://auth.openai.com/codex/device",
@@ -2616,16 +2667,10 @@ mod limits_runtime_tests {
         let runtime = Arc::clone(&fixture.runtime);
         let caller =
             tokio::spawn(async move { AccountSessionPort::login(runtime.as_ref(), request).await });
-        let entered = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/account_session_runtime",
-            move || entered.recv_timeout(Duration::from_secs(2)),
-        )
-        .await
-        .unwrap();
-        assert!(
-            entered.is_ok(),
-            "login reached its retained provider request"
-        );
+        tokio::time::timeout(Duration::from_secs(2), entered)
+            .await
+            .unwrap()
+            .unwrap();
 
         caller.abort();
         assert!(
@@ -2634,12 +2679,7 @@ mod limits_runtime_tests {
                 .expect_err("caller task was aborted")
                 .is_cancelled()
         );
-        fixture
-            .provider
-            .first_read_gate
-            .as_ref()
-            .expect("test holds the login provider response")
-            .release();
+        release.send(()).unwrap();
 
         // Join the retained operation before replaying its receipt. The provider
         // gate only controls the response handoff; it does not imply that the

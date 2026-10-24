@@ -239,6 +239,7 @@ class ShareBridgeTests(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
         self.assertEqual(await reader.readexactly(len(payload)), payload)
         writer.close()
+        await writer.wait_closed()
 
     async def test_connections_over_the_limit_are_closed(self):
         from share_bridge import Bridge
@@ -249,15 +250,20 @@ class ShareBridgeTests(unittest.IsolatedAsyncioTestCase):
         second = await asyncio.open_connection("127.0.0.1", port)
         self.assertEqual(await asyncio.wait_for(second[0].read(), 5), b"")
         first[1].close()
+        await first[1].wait_closed()
+        second[1].close()
+        await second[1].wait_closed()
 
     async def test_an_unavailable_samba_closes_the_client(self):
         from share_bridge import Bridge
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             closed = probe.getsockname()[:2]
-        port = await self.bridge_port(Bridge(closed))
-        reader, _writer = await asyncio.open_connection("127.0.0.1", port)
-        self.assertEqual(await asyncio.wait_for(reader.read(), 15), b"")
+            port = await self.bridge_port(Bridge(closed))
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            self.assertEqual(await asyncio.wait_for(reader.read(), 15), b"")
+            writer.close()
+            await writer.wait_closed()
 
 
 class PolicyTests(unittest.IsolatedAsyncioTestCase):

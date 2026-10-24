@@ -1,8 +1,9 @@
-//! HTTP adapter for the protocol-3 sync event stream.
+//! HTTP adapter for the versioned sync event stream.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::generated::{
@@ -11,19 +12,19 @@ use crate::generated::{
     TranscriptSyncPage,
 };
 use axum::Json;
+use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::sse::{Event, Sse};
+use axum::response::sse::{Event, EventDataWriter, Sse};
 use axum::response::{IntoResponse, Response};
-use futures_util::Stream;
 use futures_util::stream;
+use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{
-    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_DRAFT_STREAM_MAX_BYTES,
-    SYNC_DRAFT_STREAM_MAX_DOCUMENTS, SYNC_ENTITY_STREAM_MAX_BYTES,
-    SYNC_ENTITY_STREAM_MAX_DOCUMENTS, SYNC_RESOURCE_HEARTBEAT_SECONDS,
-    SYNC_TRANSCRIPT_STREAM_MAX_BYTES, SYNC_TRANSCRIPT_STREAM_MAX_ITEMS,
+    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_DRAFT_STREAM_MAX_DOCUMENTS,
+    SYNC_ENTITY_STREAM_MAX_DOCUMENTS, SYNC_RESOURCE_HEARTBEAT_SECONDS, SYNC_STREAM_EVENT_MAX_BYTES,
+    SYNC_TRANSCRIPT_STREAM_MAX_ITEMS,
 };
 use studio_runtime_schema::{SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 use studio_runtime_services::change_notifications::{
@@ -38,8 +39,8 @@ use studio_runtime_services::token_rate::TokenRateSnapshot as TokenRates;
 use studio_runtime_store::{Connection, RuntimeStore, SyncDocumentsRepository};
 use tokio::time::{Instant, Interval, interval_at};
 
-use super::extractors::{ApiHeaders, QueryParams};
-use super::manifest::{OperationStatus, RouteGroup, get};
+use super::extractors::{ApiHeaders, ApiJson, QueryParams};
+use super::manifest::{OperationStatus, RouteGroup, get, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
@@ -71,12 +72,136 @@ pub(crate) async fn notify_resources(
     )?))
 }
 
+/// Sessions share the same authenticated HTTP boundary as their streams. The
+/// stream records no per-user identity: local and browser callers share HttpState.
+#[derive(Default)]
+pub(crate) struct SyncSessions(Mutex<BTreeMap<String, SyncSession>>);
+
+struct SyncSession {
+    resources: Vec<Value>,
+    generation: i64,
+    sender: tokio::sync::mpsc::Sender<SubscriptionChange>,
+}
+
+struct SubscriptionChange {
+    generation: i64,
+    resources: Vec<Value>,
+    added: Vec<Value>,
+    token_rates: Option<bool>,
+}
+
+struct LiveSubscription {
+    id: String,
+    sessions: Arc<SyncSessions>,
+    receiver: tokio::sync::mpsc::Receiver<SubscriptionChange>,
+}
+
+impl Drop for LiveSubscription {
+    fn drop(&mut self) {
+        self.sessions
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.id);
+    }
+}
+
 pub(crate) fn routes() -> RouteGroup {
-    RouteGroup::new(vec![get(
-        "/api/sync/stream",
-        OperationStatus::Implemented,
-        sync_stream,
-    )])
+    RouteGroup::new(vec![
+        get(
+            "/api/sync/stream",
+            OperationStatus::Implemented,
+            sync_stream,
+        ),
+        post(
+            "/api/sync/subscriptions",
+            OperationStatus::Implemented,
+            sync_subscriptions,
+        ),
+    ])
+}
+
+async fn sync_subscriptions(
+    State(state): State<HttpState>,
+    ApiJson(request): ApiJson<crate::generated::SyncSubscriptionRequest>,
+) -> Result<Json<crate::generated::SyncSubscriptionAck>, ApiError> {
+    for resources in [&request.add, &request.remove] {
+        if resources.len() > MAX_SYNC_RESOURCE_COUNT
+            || serde_json::to_vec(resources)
+                .map_err(|_| ApiError::internal())?
+                .len()
+                > MAX_SYNC_RESOURCE_QUERY_BYTES
+        {
+            return Err(ApiError::validation(vec![json!("body")]));
+        }
+    }
+    let mut sessions = state
+        .sync_sessions
+        .0
+        .lock()
+        .map_err(|_| ApiError::internal())?;
+    let session = sessions.get_mut(&request.session_id).ok_or_else(|| {
+        ApiError::new(StatusCode::GONE, "Unknown sync session; reopen the stream")
+    })?;
+    if session.sender.is_closed() {
+        return Err(ApiError::new(
+            StatusCode::GONE,
+            "Expired sync session; reopen the stream",
+        ));
+    }
+    if request.r#gen <= session.generation {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "Stale subscription generation; reopen the stream",
+        ));
+    }
+    let remove = request
+        .remove
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ApiError::internal())?;
+    let mut resources = session
+        .resources
+        .iter()
+        .filter(|resource| !remove.contains(resource))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut added = Vec::new();
+    for resource in request.add {
+        let value = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
+        if !resources.contains(&value) {
+            added.push(value.clone());
+            resources.push(value);
+        }
+    }
+    if resources.len() > MAX_SYNC_RESOURCE_COUNT
+        || serde_json::to_vec(&resources)
+            .map_err(|_| ApiError::internal())?
+            .len()
+            > MAX_SYNC_RESOURCE_QUERY_BYTES
+    {
+        return Err(ApiError::validation(vec![json!("body"), json!("add")]));
+    }
+    session
+        .sender
+        .try_send(SubscriptionChange {
+            generation: request.r#gen,
+            resources: resources.clone(),
+            added,
+            token_rates: request.token_rates,
+        })
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "Subscription update pending; reopen the stream",
+            )
+        })?;
+    session.resources = resources;
+    session.generation = request.r#gen;
+    Ok(Json(crate::generated::SyncSubscriptionAck {
+        r#gen: request.r#gen,
+    }))
 }
 
 async fn sync_stream(
@@ -112,11 +237,14 @@ async fn sync_stream(
                 .and_then(Value::as_str)
         });
     if renderer_hash.is_some_and(|value| value != server_hash) {
-        return event_response(stream::iter([Ok(sse_event(
-            "api-schema",
-            None,
-            json!({"hash": server_hash, (crate::schema::API_SCHEMA_MISMATCH_FIELD): true}),
-        ))]));
+        return encoded_event_response(
+            stream::iter([Ok(sse_event(
+                "api-schema",
+                None,
+                json!({"hash": server_hash, (crate::schema::API_SCHEMA_MISMATCH_FIELD): true}),
+            ))]),
+            &request_headers,
+        );
     }
 
     let resources = match parse_resources(&query, &state) {
@@ -178,12 +306,36 @@ async fn sync_stream(
     };
     attach_transcript_changes(&mut initial_event, transcript_updates);
     let mut initial = VecDeque::new();
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    match state.sync_sessions.0.lock() {
+        Ok(mut sessions) => {
+            sessions.insert(
+                session_id.clone(),
+                SyncSession {
+                    resources: resources.clone(),
+                    generation: 0,
+                    sender,
+                },
+            );
+        }
+        Err(_) => return ApiError::internal().into_response(),
+    }
+    let subscription = LiveSubscription {
+        id: session_id.clone(),
+        sessions: Arc::clone(&state.sync_sessions),
+        receiver,
+    };
+    initial.push_back(sse_event(
+        "session",
+        None,
+        crate::generated::SyncSessionEvent { session_id },
+    ));
     if renderer_hash.is_some() {
         initial.push_back(sse_event("api-schema", None, json!({"hash": server_hash})));
     }
-    initial.push_back(sse_event(
-        "resources",
-        Some(subscription_snapshot.revision),
+    initial.push_back(resource_sse_event(
+        subscription_snapshot.revision,
         initial_event,
     ));
     // OpenAPI owns the omitted-selector compatibility default; the HTTP witness
@@ -197,13 +349,16 @@ async fn sync_stream(
         Err(_) => return ApiError::internal().into_response(),
     };
     let mut token_rates = token_interest.then(|| state.token_rates.subscribe());
+    let mut last_token_rates = None;
     if let Some(receiver) = &mut token_rates {
         let (rates, cursor) = token_snapshot(receiver, || changes.borrow().clone());
         initial.push_back(token_rate_event(&state.workspace_id, &cursor, &rates));
+        last_token_rates = Some(rates);
     }
 
     let stream_state = ResourceStream {
         http_state: Some(state.clone()),
+        subscription: Some(subscription),
         initial,
         workspace_id: state.workspace_id,
         epoch: subscription_snapshot.epoch,
@@ -216,6 +371,7 @@ async fn sync_stream(
         changes,
         notifications: state.resource_notifications,
         token_rates,
+        last_token_rates,
         consecutive_token_frames: 0,
         next_token_frame_at: None,
         next_resources_frame_at: None,
@@ -224,7 +380,7 @@ async fn sync_stream(
             Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
         ),
     };
-    event_response(stream::unfold(stream_state, next_frame))
+    encoded_event_response(stream::unfold(stream_state, next_frame), &request_headers)
 }
 
 /// Read the same projections as the resource endpoints. Unsupported resources
@@ -278,11 +434,19 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
             serde_json::to_vec(&(accounts, publication)).ok()
         }
         ResourceRef::LimitsResource(resource) => {
-            let snapshot = if let Some(port) = &state.account_session {
+            let mut snapshot = if let Some(port) = &state.account_session {
                 port.limits_snapshot(&resource.account_key).ok()?
             } else {
                 state.account_policy.as_ref()?.limits(&resource.account_key)
             };
+            // Observation receipts advance privately without changing rateLimit entities.
+            // Fingerprint the same semantic content so unrelated commits cannot
+            // turn a timestamp refresh into another provider read by the client.
+            if let Some(fields) = snapshot.as_object_mut() {
+                for field in studio_runtime_store::account_state::LIMITS_OBSERVATION_TIME_FIELDS {
+                    fields.remove(*field);
+                }
+            }
             let snapshot: crate::generated::UsageLimitsResponse =
                 serde_json::from_value(snapshot).ok()?;
             serde_json::to_vec(&snapshot).ok()
@@ -386,8 +550,7 @@ fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>,
     }
     let parsed: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
     let values = parsed.as_array().ok_or_else(invalid)?;
-    if values.is_empty()
-        || values.len() > MAX_SYNC_RESOURCE_COUNT
+    if values.len() > MAX_SYNC_RESOURCE_COUNT
         || values
             .iter()
             .any(|resource| !state.validators.validate_component("ResourceRef", resource))
@@ -445,7 +608,7 @@ async fn read_entity_changes(
         .await
 }
 
-/// Keep conversion and size checks outside the asynchronous SQLite read closure.
+/// Convert the complete record interval; final SSE serialization owns the byte limit.
 fn entity_change_batch(
     connection: &Connection,
     after: Option<i64>,
@@ -477,10 +640,6 @@ fn entity_change_batch(
         through,
         documents,
     };
-    let bytes = serde_json::to_vec(&batch).ok()?;
-    if bytes.len() > SYNC_ENTITY_STREAM_MAX_BYTES {
-        return None;
-    }
     Some(batch)
 }
 
@@ -500,7 +659,8 @@ async fn read_transcript_changes(
     sequences: &mut BTreeMap<String, i64>,
     complete: bool,
 ) -> BTreeMap<String, TranscriptStreamUpdate> {
-    let mut updates = BTreeMap::new();
+    let mut updates: BTreeMap<String, TranscriptStreamUpdate> = BTreeMap::new();
+    let mut inline_bytes = Some(SYNC_STREAM_EVENT_MAX_BYTES);
     let Some(store) = store else {
         return updates;
     };
@@ -541,7 +701,27 @@ async fn read_transcript_changes(
         }
         let batch = after
             .filter(|after| complete && *after < through)
-            .and_then(|after| transcript_change_batch(response, &scope, after))
+            .and_then(|after| {
+                // The pull payload is already serialized. Its byte length bounds
+                // retained inline data without serializing each batch again. The
+                // final SSE writer accounts for the exact envelope and metadata.
+                let remaining = inline_bytes?;
+                let bytes = response
+                    .documents
+                    .iter()
+                    .map(|document| document.payload.len())
+                    .sum();
+                inline_bytes = remaining.checked_sub(bytes);
+                if inline_bytes.is_none() {
+                    for update in updates.values_mut() {
+                        if let TranscriptStreamUpdate::Changed { batch, .. } = update {
+                            *batch = None;
+                        }
+                    }
+                    return None;
+                }
+                transcript_change_batch(response, &scope, after)
+            })
             .map(Box::new);
         sequences.insert(agent.clone(), through);
         updates.insert(
@@ -584,9 +764,6 @@ fn transcript_change_batch(
         through,
         delta,
     };
-    if serde_json::to_vec(&batch).ok()?.len() > SYNC_TRANSCRIPT_STREAM_MAX_BYTES {
-        return None;
-    }
     Some(batch)
 }
 
@@ -654,9 +831,6 @@ fn draft_change_batch(
         through,
         documents,
     };
-    if serde_json::to_vec(&batch).ok()?.len() > SYNC_DRAFT_STREAM_MAX_BYTES {
-        return None;
-    }
     Some(batch)
 }
 
@@ -683,6 +857,7 @@ fn attach_transcript_changes(
 }
 
 struct ResourceStream {
+    subscription: Option<LiveSubscription>,
     http_state: Option<HttpState>,
     initial: VecDeque<Event>,
     workspace_id: String,
@@ -696,12 +871,106 @@ struct ResourceStream {
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
     notifications: Arc<ResourceNotifications>,
     token_rates: Option<tokio::sync::watch::Receiver<Arc<TokenRates>>>,
+    /// Last snapshot sent by this stream; clearing it makes the next frame a full snapshot.
+    last_token_rates: Option<Arc<TokenRates>>,
     consecutive_token_frames: usize,
     /// Earliest instant of the next token-rate frame, from `SYNC_FRAME_MIN_INTERVAL`.
     next_token_frame_at: Option<Instant>,
     /// Earliest instant of the next resources frame, from `SYNC_FRAME_MIN_INTERVAL`.
     next_resources_frame_at: Option<Instant>,
     heartbeat: Interval,
+}
+
+async fn next_subscription_change(
+    subscription: Option<&mut LiveSubscription>,
+) -> Option<SubscriptionChange> {
+    match subscription {
+        Some(subscription) => subscription.receiver.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChange) -> Option<()> {
+    state.resources = update.resources;
+    state.transcript_sequences.retain(|id, _| {
+        state
+            .resources
+            .iter()
+            .any(|resource| resource["kind"] == "transcript" && resource["agentId"] == *id)
+    });
+    state.initial.push_back(sse_event(
+        "subscriptions",
+        None,
+        crate::generated::SyncSubscriptionAck {
+            r#gen: update.generation,
+        },
+    ));
+    if !update.added.is_empty() {
+        let http_state = state.http_state.as_ref()?;
+        let view = state
+            .notifications
+            .changes_since_with_content(&update.added, None, |resource| {
+                resource_content(http_state.clone(), resource)
+            })
+            .await
+            .ok()?;
+        if view.cursor.closed {
+            return None;
+        }
+        if update
+            .added
+            .iter()
+            .any(|resource| resource["kind"] == "state")
+        {
+            state.entity_sequence = read_entity_sequence(state.store.clone(), &update.added)
+                .await
+                .ok()?;
+        }
+        if update
+            .added
+            .iter()
+            .any(|resource| resource["kind"] == "drafts")
+        {
+            state.draft_sequence = read_draft_changes(state.store.clone(), &update.added, None)
+                .await
+                .ok()?
+                .0;
+        }
+        let updates = read_transcript_changes(
+            state.store.clone(),
+            &view.resources,
+            &mut state.transcript_sequences,
+            false,
+        )
+        .await;
+        let mut event = resource_changes_event(
+            &state.workspace_id,
+            &view,
+            ResourceChangeEventReason::Initial,
+            state.entity_sequence,
+            None,
+            state.draft_sequence,
+            None,
+        )
+        .ok()?;
+        attach_transcript_changes(&mut event, updates);
+        state
+            .initial
+            .push_back(resource_sse_event(view.cursor.revision, event));
+    }
+    if let Some(interest) = update.token_rates {
+        if interest && state.token_rates.is_none() {
+            state.token_rates = Some(state.http_state.as_ref()?.token_rates.subscribe());
+            // A new interest starts from a full snapshot, not a delta of an older baseline.
+            state.last_token_rates = None;
+            let frame = token_rate_sse_frame(state)?;
+            state.initial.push_back(frame);
+        } else if !interest {
+            state.token_rates = None;
+            state.last_token_rates = None;
+        }
+    }
+    Some(())
 }
 
 async fn next_frame(
@@ -718,6 +987,10 @@ async fn next_frame(
         let heartbeat = if prefer_resource {
             tokio::select! {
                 biased;
+                update = next_subscription_change(state.subscription.as_mut()) => {
+                    subscription_frame(&mut state, update?).await?;
+                    return Some((Ok(state.initial.pop_front()?), state));
+                },
                 changed = changed_not_before(Some(&mut state.changes), state.next_resources_frame_at) => {
                     if changed.is_err() { return None; }
                     state.changes.borrow_and_update();
@@ -735,6 +1008,10 @@ async fn next_frame(
         } else {
             tokio::select! {
                 biased;
+                update = next_subscription_change(state.subscription.as_mut()) => {
+                    subscription_frame(&mut state, update?).await?;
+                    return Some((Ok(state.initial.pop_front()?), state));
+                },
                 changed = changed_not_before(state.token_rates.as_mut(), state.next_token_frame_at) => {
                     if changed.is_err() { return None; }
                     state.consecutive_token_frames = state.consecutive_token_frames.saturating_add(1);
@@ -813,10 +1090,7 @@ async fn next_frame(
                 continue;
             }
             state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
-            return Some((
-                Ok(sse_event("resources", Some(view.cursor.revision), event)),
-                state,
-            ));
+            return Some((Ok(resource_sse_event(view.cursor.revision, event)), state));
         }
         if heartbeat {
             let event = json!({
@@ -857,7 +1131,36 @@ fn token_rate_sse_frame(state: &mut ResourceStream) -> Option<Event> {
     if cursor.closed {
         return None;
     }
-    Some(token_rate_event(&state.workspace_id, &cursor, &rates))
+    let event = match &state.last_token_rates {
+        Some(previous) => {
+            #[derive(Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct DeltaFrame<'a> {
+                protocol: u32,
+                workspace_id: &'a str,
+                epoch: &'a str,
+                revision: i64,
+                snapshot: bool,
+                #[serde(flatten)]
+                delta: studio_runtime_services::token_rate::TokenRateDelta<'a>,
+            }
+            sse_event(
+                "token-rates",
+                Some(cursor.revision),
+                DeltaFrame {
+                    protocol: SYNC_PROTOCOL_VERSION,
+                    workspace_id: &state.workspace_id,
+                    epoch: &cursor.epoch,
+                    revision: cursor.revision,
+                    snapshot: false,
+                    delta: rates.delta_since(previous),
+                },
+            )
+        }
+        None => token_rate_event(&state.workspace_id, &cursor, &rates),
+    };
+    state.last_token_rates = Some(rates);
+    Some(event)
 }
 
 // Keep the rate read guard until its cursor is captured: publishers take these locks in this order.
@@ -874,9 +1177,9 @@ fn resource_changes_event(
     view: &ResourceChanges,
     reason: ResourceChangeEventReason,
     sequence: i64,
-    changes: Option<EntityChangeBatch>,
+    mut changes: Option<EntityChangeBatch>,
     draft_sequence: i64,
-    draft_changes: Option<DraftChangeBatch>,
+    mut draft_changes: Option<DraftChangeBatch>,
 ) -> Result<ResourceChangeEvent, ApiError> {
     let resources = view
         .resources
@@ -899,8 +1202,8 @@ fn resource_changes_event(
                 } else {
                     *revision
                 },
-                draft_changes: drafts.then(|| draft_changes.clone()).flatten().map(Some),
-                entity_changes: state.then(|| changes.clone()).flatten().map(Some),
+                draft_changes: drafts.then(|| draft_changes.take()).flatten().map(Some),
+                entity_changes: state.then(|| changes.take()).flatten().map(Some),
                 entity_sequence_reset: state.then_some(Some(view.entity_reset)),
                 entity_sequences: None,
                 transcript_changes: None,
@@ -925,7 +1228,7 @@ fn token_rate_event(workspace_id: &str, snapshot: &ChangeSnapshot, rates: &Token
     let wire = rates.wire();
     let text = |value: &str| serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned());
     let data = format!(
-        r#"{{"protocol":{},"workspaceId":{},"epoch":{},"revision":{},"records":{}}}"#,
+        r#"{{"protocol":{},"workspaceId":{},"epoch":{},"revision":{},"snapshot":true,"removed":[],"records":{}}}"#,
         SYNC_PROTOCOL_VERSION,
         text(workspace_id),
         text(&snapshot.epoch),
@@ -986,6 +1289,140 @@ fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Even
     }
 }
 
+/// Write JSON once into Axum's event buffer, counting the complete UTF-8 envelope.
+/// Only an oversized interval is serialized again, after dropping its inline data.
+fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event {
+    let id = revision.to_string();
+    // Axum adds a space after each colon and a final blank line. The byte-boundary
+    // witness compares this accounting with the actual HTTP body at T-1/T/T+1.
+    let envelope_bytes = b"event: resources\nid: \ndata: \n\n".len() + id.len();
+    let mut writer = Event::default()
+        .event("resources")
+        .id(&id)
+        .into_data_writer();
+    let mut bounded = BoundedEventWriter {
+        writer: &mut writer,
+        remaining: SYNC_STREAM_EVENT_MAX_BYTES - envelope_bytes,
+        exceeded: false,
+    };
+    let result = serde_json::to_writer(&mut bounded, &payload);
+    if !bounded.exceeded {
+        // The generated DTO has only JSON-compatible fields and string map keys.
+        result.expect("resource stream DTO serializes");
+        return writer.into_event();
+    }
+    for entry in &mut payload.resource_versions {
+        entry.entity_changes = None;
+        entry.transcript_changes = None;
+        entry.draft_changes = None;
+    }
+    sse_event("resources", Some(revision), payload)
+}
+
+struct BoundedEventWriter<'a> {
+    writer: &'a mut EventDataWriter,
+    remaining: usize,
+    exceeded: bool,
+}
+
+impl Write for BoundedEventWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.remaining {
+            self.exceeded = true;
+            return Err(io::Error::other("resource event exceeds stream byte limit"));
+        }
+        // serde_json emits complete UTF-8 string fragments (and ASCII syntax).
+        let text = std::str::from_utf8(bytes).map_err(io::Error::other)?;
+        std::fmt::Write::write_str(self.writer, text).map_err(io::Error::other)?;
+        self.remaining -= bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Compression has its own CPU/window contract, independent of the HTTP JSON
+/// threshold. One encoder retains its dictionary until the response is dropped.
+const STREAM_BROTLI_QUALITY: u32 = 3;
+/// Base-2 logarithm of the Brotli history window size in bytes.
+const STREAM_BROTLI_LGWIN: u32 = 20;
+/// Scratch buffer size, in bytes, used by the Brotli streaming writer.
+const STREAM_BROTLI_BUFFER_BYTES: usize = 4096;
+
+fn accepts_brotli(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .any(|header| {
+            header.to_str().is_ok_and(|header| {
+                header.split(',').any(|coding| {
+                    let mut parts = coding.trim().split(';');
+                    if !parts
+                        .next()
+                        .is_some_and(|name| name.trim().eq_ignore_ascii_case("br"))
+                    {
+                        return false;
+                    }
+                    parts.all(|parameter| {
+                        let Some((key, value)) = parameter.trim().split_once('=') else {
+                            return false;
+                        };
+                        key.trim().eq_ignore_ascii_case("q")
+                            && value
+                                .trim()
+                                .parse::<f32>()
+                                .is_ok_and(|q| q > 0.0 && q <= 1.0)
+                    })
+                })
+            })
+        })
+}
+
+fn encoded_event_response<S>(stream: S, headers: &HeaderMap) -> Response
+where
+    S: Stream<Item = Result<Event, Infallible>> + Send + 'static,
+{
+    let mut response = event_response(stream);
+    response
+        .headers_mut()
+        .append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    if !accepts_brotli(headers) {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    parts
+        .headers
+        .insert(header::CONTENT_ENCODING, HeaderValue::from_static("br"));
+    let encoder = brotli::CompressorWriter::new(
+        Vec::new(),
+        STREAM_BROTLI_BUFFER_BYTES,
+        STREAM_BROTLI_QUALITY,
+        STREAM_BROTLI_LGWIN,
+    );
+    let compressed = stream::try_unfold(
+        (body.into_data_stream(), Some(encoder)),
+        |(mut input, encoder)| async move {
+            let Some(mut encoder) = encoder else {
+                return Ok::<_, io::Error>(None);
+            };
+            let bytes = match input.next().await {
+                Some(chunk) => {
+                    encoder.write_all(&chunk.map_err(io::Error::other)?)?;
+                    // Sse emits one body chunk per event, including heartbeats.
+                    // FLUSH emits all pending bytes without ending the dictionary.
+                    encoder.flush()?;
+                    Bytes::from(std::mem::take(encoder.get_mut()))
+                }
+                None => return Ok(Some((Bytes::from(encoder.into_inner()), (input, None)))),
+            };
+            Ok(Some((bytes, (input, Some(encoder)))))
+        },
+    );
+    Response::from_parts(parts, Body::from_stream(compressed))
+}
+
 fn event_response<S>(stream: S) -> Response
 where
     S: Stream<Item = Result<Event, Infallible>> + Send + 'static,
@@ -1005,6 +1442,475 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[test]
+    fn state_stream_moves_owned_batch_allocations() {
+        let changes: EntityChangeBatch = serde_json::from_value(json!({
+            "after": 1, "through": 2,
+            "documents": [{"op":"delete", "collection":"agent", "id":"agent", "seq":2}]
+        }))
+        .expect("entity batch");
+        let drafts: DraftChangeBatch = serde_json::from_value(json!({
+            "after": 1, "through": 2,
+            "documents": [{"id":"draft", "payload":"{}", "seq":2, "_deleted":true}]
+        }))
+        .expect("draft batch");
+        let entities_ptr = changes.documents.as_ptr();
+        let drafts_ptr = drafts.documents.as_ptr();
+        let view = ResourceChanges {
+            cursor: ChangeSnapshot {
+                epoch: "epoch".into(),
+                revision: 2,
+                resource_revision: 2,
+                closed: false,
+            },
+            resources: vec![json!({"kind":"state"}), json!({"kind":"drafts"})],
+            versions: vec![2, 2],
+            entity_reset: false,
+            overflow: false,
+        };
+        let event = resource_changes_event(
+            "workspace",
+            &view,
+            ResourceChangeEventReason::Change,
+            2,
+            Some(changes),
+            2,
+            Some(drafts),
+        )
+        .expect("event");
+        let entities = event.resource_versions[0]
+            .entity_changes
+            .as_ref()
+            .and_then(Option::as_ref)
+            .expect("entity batch");
+        let drafts = event.resource_versions[1]
+            .draft_changes
+            .as_ref()
+            .and_then(Option::as_ref)
+            .expect("draft batch");
+        assert_eq!(entities.documents.as_ptr(), entities_ptr);
+        assert_eq!(drafts.documents.as_ptr(), drafts_ptr);
+    }
+
+    async fn frame_bytes(event: Event) -> axum::body::Bytes {
+        axum::body::to_bytes(
+            Sse::new(stream::iter([Ok::<_, Infallible>(event)]))
+                .into_response()
+                .into_body(),
+            usize::MAX,
+        )
+        .await
+        .expect("SSE bytes")
+    }
+
+    fn combined_transcript_event() -> ResourceChangeEvent {
+        let mut value = resource_event(
+            "workspace",
+            "epoch",
+            99999,
+            "change",
+            &[
+                json!({"kind":"transcript","agentId":"a"}),
+                json!({"kind":"transcript","agentId":"b"}),
+            ],
+            0,
+            false,
+        );
+        for entry in value["resourceVersions"].as_array_mut().expect("versions") {
+            entry["transcriptChanges"] = json!({"after":1,"through":99999,"delta":{
+                "delta":true,"items":[{"id":"answer","role":"assistant","text":""}],
+                "removed":[],"itemRevisions":{},"truncated":false
+            }});
+        }
+        serde_json::from_value(value).expect("combined fixture")
+    }
+
+    #[tokio::test]
+    async fn brotli_resource_event_limit_counts_utf8_envelope_and_combined_resources() {
+        let limit = SYNC_STREAM_EVENT_MAX_BYTES;
+        let empty = combined_transcript_event();
+        let overhead = frame_bytes(sse_event("resources", Some(99999), &empty))
+            .await
+            .len();
+        for target in [limit - 1, limit, limit + 1] {
+            let mut value = serde_json::to_value(&empty).expect("fixture");
+            let added = target - overhead;
+            for (index, entry) in value["resourceVersions"]
+                .as_array_mut()
+                .expect("versions")
+                .iter_mut()
+                .enumerate()
+            {
+                let count = if index == 0 {
+                    added / 2
+                } else {
+                    added - added / 2
+                };
+                entry["transcriptChanges"]["delta"]["items"][0]["text"] = json!(format!(
+                    "{}{}",
+                    "é".repeat(count / 2),
+                    "x".repeat(count % 2)
+                ));
+            }
+            let payload: ResourceChangeEvent = serde_json::from_value(value).expect("typed event");
+            assert_eq!(
+                frame_bytes(sse_event("resources", Some(99999), &payload))
+                    .await
+                    .len(),
+                target
+            );
+            let bytes = frame_bytes(resource_sse_event(99999, payload)).await;
+            assert!(
+                bytes.len() <= limit,
+                "complete SSE event is {} bytes; limit {limit}",
+                bytes.len()
+            );
+            let wire = String::from_utf8(bytes.to_vec()).expect("UTF8");
+            let body: Value = serde_json::from_str(
+                wire.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON");
+            assert_eq!(body["revision"], 99999);
+            assert_eq!(
+                body["resourceVersions"].as_array().expect("versions").len(),
+                2
+            );
+            for entry in body["resourceVersions"].as_array().expect("versions") {
+                assert_eq!(entry["revision"], 99999);
+                assert_eq!(entry.get("transcriptChanges").is_some(), target <= limit);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn brotli_resource_event_fallback_drops_all_inline_batches_and_preserves_revisions() {
+        let mut event = combined_transcript_event();
+        let entry = &mut event.resource_versions[0];
+        entry.entity_changes = Some(Some(EntityChangeBatch {
+            after: 1,
+            through: 99999,
+            documents: Vec::new(),
+        }));
+        entry.draft_changes = Some(Some(DraftChangeBatch {
+            after: 1,
+            through: 99999,
+            documents: Vec::new(),
+        }));
+        entry.entity_sequence_reset = Some(Some(true));
+        let mut value = serde_json::to_value(event).expect("event");
+        value["resourceVersions"][0]["transcriptChanges"]["delta"]["items"][0]["text"] =
+            json!("x".repeat(SYNC_STREAM_EVENT_MAX_BYTES));
+        let event = serde_json::from_value(value).expect("event");
+        let document = event_document(Ok(resource_sse_event(99999, event))).await;
+        let entry = &document["resourceVersions"][0];
+        assert_eq!(entry["revision"], 99999);
+        assert_eq!(entry["entitySequenceReset"], true);
+        for field in ["entityChanges", "transcriptChanges", "draftChanges"] {
+            assert!(entry.get(field).is_none(), "{field} must use pull recovery");
+        }
+    }
+
+    #[tokio::test]
+    async fn brotli_stream_route_negotiates_encoding_and_flushes_the_initial_event() {
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router(state).expect("router");
+        for (accept, compressed) in [
+            ("br", true),
+            ("gzip, BR;q=0.5", true),
+            ("gzip", false),
+            ("br;q=0", false),
+        ] {
+            let response = app.clone().oneshot(Request::builder()
+                .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D&tokenRates=false"))
+                .header("host", "127.0.0.1:4321").header("x-canvas-token", "token")
+                .header(header::ACCEPT_ENCODING, accept)
+                .extension(ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],12345))))
+                .body(Body::empty()).expect("request")).await.expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers().contains_key(header::CONTENT_ENCODING),
+                compressed,
+                "{accept}"
+            );
+            assert!(
+                response
+                    .headers()
+                    .get_all(header::VARY)
+                    .iter()
+                    .any(|value| value
+                        .to_str()
+                        .is_ok_and(|value| value.contains("Accept-Encoding")))
+            );
+            let mut body = response.into_body().into_data_stream();
+            let chunk = tokio::time::timeout(Duration::from_secs(2), body.next())
+                .await
+                .expect("initial flush")
+                .expect("chunk")
+                .expect("body");
+            let bytes = if compressed {
+                let mut decoder = brotli::DecompressorWriter::new(Vec::new(), 4096);
+                decoder
+                    .write_all(&chunk)
+                    .expect("decode initial event without EOF");
+                decoder.get_ref().clone()
+            } else {
+                chunk.to_vec()
+            };
+            let text = std::str::from_utf8(&bytes).expect("UTF8");
+            assert!(text.starts_with("event: session\n"), "{text}");
+            assert!(text.ends_with("\n\n"));
+        }
+    }
+
+    #[tokio::test]
+    async fn brotli_stream_flushes_each_event_and_heartbeat_and_cancels_on_drop() {
+        use futures_util::StreamExt;
+        use std::io::Write;
+        let (send, recv) = tokio::sync::mpsc::channel::<Event>(1);
+        let source = stream::unfold(recv, |mut recv| async move {
+            recv.recv().await.map(|event| (Ok(event), recv))
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, br"),
+        );
+        let response = encoded_event_response(source, &headers);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("br")
+        );
+        let mut body = response.into_body().into_data_stream();
+        let mut decoder = brotli::DecompressorWriter::new(Vec::new(), 4096);
+        for (name, revision) in [("resources", 1), ("heartbeat", 2), ("resources", 3)] {
+            let event = sse_event(name, Some(revision), json!({"revision":revision}));
+            let expected = frame_bytes(event.clone()).await;
+            send.send(event).await.expect("produce only this event");
+            let start = decoder.get_ref().len();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while decoder.get_ref().len() - start < expected.len() {
+                    let chunk = body.next().await.expect("compressed chunk").expect("body");
+                    decoder.write_all(&chunk).expect("incremental decode");
+                }
+            })
+            .await
+            .expect("event must arrive before next event is produced");
+            assert_eq!(&decoder.get_ref()[start..], expected.as_ref());
+        }
+        drop(body);
+        tokio::time::timeout(Duration::from_secs(2), send.closed())
+            .await
+            .expect("disconnect drops upstream");
+    }
+
+    #[tokio::test]
+    async fn brotli_stream_stays_plain_without_negotiation() {
+        for accept in [
+            None,
+            Some("gzip"),
+            Some("br;q=0"),
+            Some("br;q=0, gzip"),
+            Some("xbr"),
+            Some("br;q=invalid"),
+        ] {
+            let mut headers = HeaderMap::new();
+            if let Some(accept) = accept {
+                headers.insert(
+                    header::ACCEPT_ENCODING,
+                    HeaderValue::from_str(accept).expect("header"),
+                );
+            }
+            let event = sse_event("heartbeat", Some(1), json!({"revision":1}));
+            let expected = frame_bytes(event.clone()).await;
+            let response = encoded_event_response(stream::iter([Ok(event)]), &headers);
+            assert!(
+                response.headers().get(header::CONTENT_ENCODING).is_none(),
+                "{accept:?}"
+            );
+            let actual = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("plain body");
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn state_stream_live_subscriptions_ack_before_initial_and_expire_on_drop() {
+        use axum::body::{Body, to_bytes};
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router(state).expect("router");
+        let request = |method: &str, uri: &str, body: Body| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("host", "127.0.0.1:4321")
+                .header("x-canvas-token", "token")
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(std::net::SocketAddr::from((
+                    [127, 0, 0, 1],
+                    12345,
+                ))))
+                .body(body)
+                .expect("request")
+        };
+        let token_only = app.clone().oneshot(request("GET", &format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%5D&tokenRates=true"), Body::empty())).await.expect("token-only recovery");
+        assert_eq!(
+            token_only.status(),
+            StatusCode::OK,
+            "a full reconnect can retain token interest after removing the last resource"
+        );
+        let mut token_only = token_only.into_body().into_data_stream();
+        token_only.next().await.expect("session").expect("bytes");
+        token_only
+            .next()
+            .await
+            .expect("empty baseline")
+            .expect("bytes");
+        let token = token_only
+            .next()
+            .await
+            .expect("token baseline")
+            .expect("bytes");
+        assert!(String::from_utf8_lossy(&token).contains("event: token-rates"));
+        drop(token_only);
+        let response = app.clone().oneshot(request("GET", &format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D&tokenRates=false"), Body::empty())).await.expect("stream");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut stream = response.into_body().into_data_stream();
+        let frame = stream.next().await.expect("session").expect("bytes");
+        let frame = String::from_utf8_lossy(&frame);
+        assert!(frame.starts_with("event: session\n"), "{frame}");
+        let session: Value = serde_json::from_str(
+            frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("session JSON"),
+        )
+        .expect("session DTO");
+        assert_eq!(session["sessionId"].as_str().expect("id").len(), 36);
+        let initial = stream.next().await.expect("initial").expect("bytes");
+        assert!(String::from_utf8_lossy(&initial).contains("event: resources"));
+        let update = json!({"sessionId":session["sessionId"],"gen":1,"add":[{"kind":"queue","agentId":"chat"}],"remove":[{"kind":"drafts"}]});
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/api/sync/subscriptions",
+                Body::from(update.to_string()),
+            ))
+            .await
+            .expect("post");
+        assert_eq!(response.status(), StatusCode::OK);
+        let replay = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/api/sync/subscriptions",
+                Body::from(update.to_string()),
+            ))
+            .await
+            .expect("replay");
+        assert_eq!(replay.status(), StatusCode::CONFLICT);
+        let mut invalid = update.clone();
+        invalid["gen"] = json!(2);
+        invalid["add"] = json!([{"kind":"transcript","agentId":""}]);
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/api/sync/subscriptions",
+                Body::from(invalid.to_string()),
+            ))
+            .await
+            .expect("invalid selector");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let mut oversized = update.clone();
+        oversized["gen"] = json!(2);
+        oversized["add"] = json!(
+            (0..=MAX_SYNC_RESOURCE_COUNT)
+                .map(|index| json!({"kind":"queue","agentId":index.to_string()}))
+                .collect::<Vec<_>>()
+        );
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/api/sync/subscriptions",
+                Body::from(oversized.to_string()),
+            ))
+            .await
+            .expect("oversized selector");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let ack = stream.next().await.expect("ack").expect("bytes");
+        assert!(String::from_utf8_lossy(&ack).contains("event: subscriptions"));
+        let frame = stream.next().await.expect("added initial").expect("bytes");
+        let frame = String::from_utf8_lossy(&frame);
+        assert!(
+            frame.contains("event: resources")
+                && frame.contains("\"reason\":\"initial\"")
+                && frame.contains("chat")
+                && !frame.contains("drafts"),
+            "{frame}"
+        );
+        let bad_auth = Request::builder()
+            .method("POST")
+            .uri("/api/sync/subscriptions")
+            .header("host", "127.0.0.1:4321")
+            .header("content-type", "application/json")
+            .body(Body::from(update.to_string()))
+            .expect("unauthenticated");
+        assert_eq!(
+            app.clone().oneshot(bad_auth).await.expect("auth").status(),
+            StatusCode::FORBIDDEN
+        );
+        drop(stream);
+        let response = app
+            .oneshot(request(
+                "POST",
+                "/api/sync/subscriptions",
+                Body::from(update.to_string()),
+            ))
+            .await
+            .expect("expired");
+        assert_eq!(response.status(), StatusCode::GONE);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("error");
+        assert!(String::from_utf8_lossy(&body).contains("session"));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn state_stream_token_interest_suppresses_tokens_but_preserves_resources_and_heartbeats()
@@ -1042,6 +1948,7 @@ mod tests {
             .expect("response");
         assert_eq!(response.status(), StatusCode::OK);
         let mut body = response.into_body().into_data_stream();
+        body.next().await.expect("session").expect("bytes");
         let first = body.next().await.expect("initial").expect("bytes");
         assert!(String::from_utf8_lossy(&first).contains("event: resources"));
         state
@@ -1123,6 +2030,7 @@ mod tests {
                 .expect("response");
             assert_eq!(response.status(), StatusCode::OK);
             let mut body = response.into_body().into_data_stream();
+            body.next().await.expect("session").expect("bytes");
             body.next().await.expect("initial").expect("bytes");
             let frame = body.next().await.expect("current snapshot").expect("bytes");
             let frame = String::from_utf8_lossy(&frame);
@@ -1144,6 +2052,206 @@ mod tests {
                 .await
                 .expect("response");
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{selector}");
+        }
+    }
+
+    #[tokio::test]
+    async fn state_stream_subscription_post_token_interest_reenable_starts_full() {
+        fn document_bytes(bytes: &[u8]) -> Value {
+            let text = std::str::from_utf8(bytes).expect("UTF8");
+            serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON")
+        }
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let quiet = json!({"agentId":"quiet","rootId":"root","turnId":"turn","active":false,"estimated":false,"rate":0.0,"outputTokens":50.0});
+        let mut rates = floating_test_rates(1);
+        rates["records"]
+            .as_array_mut()
+            .expect("records")
+            .push(quiet.clone());
+        http.token_rates
+            .publish(rates.clone())
+            .expect("initial rates");
+        let app = crate::router(http.clone()).expect("router");
+        let request = |method: &str, uri: &str, body: Body| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("host", "127.0.0.1:4321")
+                .header("x-canvas-token", "token")
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(std::net::SocketAddr::from((
+                    [127, 0, 0, 1],
+                    12345,
+                ))))
+                .body(body)
+                .expect("request")
+        };
+        let response = app.clone().oneshot(request("GET", &format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%5D&tokenRates=true"), Body::empty())).await.expect("stream");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let session = document_bytes(&body.next().await.expect("session").expect("bytes"));
+        body.next().await.expect("resources").expect("bytes");
+        let initial = document_bytes(&body.next().await.expect("tokens").expect("bytes"));
+        assert_eq!(initial["snapshot"], true);
+        assert_eq!(initial["records"], rates["records"]);
+        for (generation, interest) in [(1, false), (2, true)] {
+            let update = json!({"sessionId":session["sessionId"],"gen":generation,"add":[],"remove":[],"tokenRates":interest});
+            let response = app
+                .clone()
+                .oneshot(request(
+                    "POST",
+                    "/api/sync/subscriptions",
+                    Body::from(update.to_string()),
+                ))
+                .await
+                .expect("subscription POST");
+            assert_eq!(response.status(), StatusCode::OK);
+            let ack = body.next().await.expect("ack").expect("bytes");
+            assert!(String::from_utf8_lossy(&ack).starts_with("event: subscriptions\n"));
+            assert_eq!(document_bytes(&ack)["gen"], generation);
+            if !interest {
+                rates = floating_test_rates(2);
+                rates["records"]
+                    .as_array_mut()
+                    .expect("records")
+                    .push(quiet.clone());
+                http.token_rates
+                    .publish(rates.clone())
+                    .expect("rates change while disabled");
+            }
+        }
+        let restored = tokio::time::timeout(Duration::from_secs(2), body.next())
+            .await
+            .expect("reenabled token frame")
+            .expect("tokens")
+            .expect("bytes");
+        let restored = document_bytes(&restored);
+        assert_eq!(restored["snapshot"], true);
+        assert_eq!(restored["removed"], json!([]));
+        assert_eq!(
+            restored["records"], rates["records"],
+            "full replay includes quiet agents"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_stream_subscription_added_oversized_initial_data_stays_revisions_only() {
+        fn document_bytes(bytes: &[u8]) -> Value {
+            let text = std::str::from_utf8(bytes).expect("UTF8");
+            serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON")
+        }
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('large',?1)", [json!({"id":"large","rootId":"large","epoch":0,"status":"running","threadId":"large","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            for (id, text) in [("large:large", "x".repeat(SYNC_STREAM_EVENT_MAX_BYTES + 1)), ("large:small", "before".to_owned())] {
+                tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'large',?2,1)", rusqlite::params![id, json!({"id":id,"role":"assistant","text":text}).to_string()])?;
+            }
+            Ok(())
+        }).await.expect("large conversation");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(http).expect("router");
+        let request = |method: &str, uri: &str, body: Body| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("host", "127.0.0.1:4321")
+                .header("x-canvas-token", "token")
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(std::net::SocketAddr::from((
+                    [127, 0, 0, 1],
+                    12345,
+                ))))
+                .body(body)
+                .expect("request")
+        };
+        let response = app.clone().oneshot(request("GET", &format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22transcript%22%2C%22agentId%22%3A%22large%22%7D%5D&tokenRates=false"), Body::empty())).await.expect("stream");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let session = document_bytes(&body.next().await.expect("session").expect("bytes"));
+        body.next().await.expect("initial").expect("bytes");
+        let full = studio_runtime_services::transcript::pull_scope(
+            store.clone(),
+            "transcript:large",
+            "large",
+            0,
+        )
+        .await
+        .expect("source data");
+        assert!(
+            serde_json::to_vec(&full).expect("source JSON").len() > SYNC_STREAM_EVENT_MAX_BYTES
+        );
+        let before = full["checkpoint"]["seq"].as_i64().expect("baseline cursor");
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','after') WHERE id='large:small'", [])?;
+            Ok(())
+        }).await.expect("small change inside large transcript");
+        // Removing and adding in one POST requires a new baseline even when the
+        // final resource set retains the selector and its previous stream cursor.
+        let resource = json!({"kind":"transcript","agentId":"large"});
+        let update =
+            json!({"sessionId":session["sessionId"],"gen":1,"add":[resource],"remove":[resource]});
+        let response = app
+            .oneshot(request(
+                "POST",
+                "/api/sync/subscriptions",
+                Body::from(update.to_string()),
+            ))
+            .await
+            .expect("subscription POST");
+        assert_eq!(response.status(), StatusCode::OK);
+        let ack = body.next().await.expect("ack").expect("bytes");
+        assert!(String::from_utf8_lossy(&ack).starts_with("event: subscriptions\n"));
+        let frame = body
+            .next()
+            .await
+            .expect("added resource initial")
+            .expect("bytes");
+        assert!(frame.len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+        let event = document_bytes(&frame);
+        assert_eq!(event["reason"], "initial");
+        assert_eq!(event["resources"], json!([resource]));
+        let entry = &event["resourceVersions"][0];
+        assert!(entry["revision"].as_i64().expect("revision") > before);
+        for field in ["transcriptChanges", "entityChanges", "draftChanges"] {
+            assert!(
+                entry.get(field).is_none(),
+                "initial data must use pull recovery: {field}"
+            );
         }
     }
 
@@ -1177,7 +2285,7 @@ mod tests {
         state.http_state = Some(http.clone());
         state.store = Some(store.clone());
         http.sync_changes.notify_one();
-        let (_, state) = next_frame(state).await.expect("baseline hint");
+        let (_, mut state) = next_frame(state).await.expect("baseline hint");
         let baseline = studio_runtime_services::transcript::pull_scope(
             store.clone(),
             "transcript:open",
@@ -1215,6 +2323,8 @@ mod tests {
             })
             .await
             .expect("provider flush commits runtime_items and publishes the store change");
+        // Throttle spacing is covered by the paused stream scheduling tests.
+        state.next_resources_frame_at = None;
         let (event, mut state) = next_frame(state).await.expect("transcript frame");
         let event = event_document(event).await;
         let batch = &event["resourceVersions"][0]["transcriptChanges"];
@@ -1244,6 +2354,51 @@ mod tests {
                 [0]["text"],
             "flushed after hint"
         );
+    }
+
+    #[tokio::test]
+    async fn state_stream_transcript_accumulation_drops_inline_data_at_shared_budget() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            for agent in ["first", "second", "last"] {
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", rusqlite::params![agent, json!({"id":agent,"rootId":agent,"epoch":0,"status":"running","threadId":agent,"accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+                tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,1)", rusqlite::params![format!("{agent}:answer"), agent, json!({"id":format!("{agent}:answer"),"role":"assistant","text":"before"}).to_string()])?;
+            }
+            Ok(())
+        }).await.expect("conversations");
+        let resources: Vec<_> = ["first", "second", "last"]
+            .into_iter()
+            .map(|agent| json!({"kind":"transcript","agentId":agent}))
+            .collect();
+        let mut sequences = BTreeMap::new();
+        read_transcript_changes(Some(store.clone()), &resources, &mut sequences, false).await;
+        let before = sequences.clone();
+        store.transaction(|tx| {
+            for agent in ["first", "second", "last"] {
+                let text = if agent == "last" { "small".to_owned() } else { "x".repeat(SYNC_STREAM_EVENT_MAX_BYTES / 2 + 1) };
+                tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text',?1) WHERE agent=?2", rusqlite::params![text, agent])?;
+            }
+            Ok(())
+        }).await.expect("changed transcripts");
+        // Prove the first candidate fits by itself; crossing the aggregate budget
+        // must discard it and prevent the later small candidate from being retained.
+        let mut single = before.clone();
+        let first =
+            read_transcript_changes(Some(store.clone()), &resources[..1], &mut single, true).await;
+        assert!(matches!(
+            first["first"],
+            TranscriptStreamUpdate::Changed { batch: Some(_), .. }
+        ));
+        let updates = read_transcript_changes(Some(store), &resources, &mut sequences, true).await;
+        assert_eq!(updates.len(), 3);
+        for agent in ["first", "second", "last"] {
+            assert!(sequences[agent] > before[agent]);
+            assert!(
+                matches!(updates[agent], TranscriptStreamUpdate::Changed { revision, batch: None } if revision == sequences[agent]),
+                "{agent}: only revisions may remain after the budget is crossed"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1387,7 +2542,7 @@ mod tests {
         let delta = json!({"delta":true,"items":[{"id":"answer","role":"assistant","text":"after"}],
             "removed":[],"itemRevisions":{"answer":studio_runtime_store::sha256_hex(b"after")},"truncated":false});
         for scenario in [
-            "complete", "items", "bytes", "snapshot", "deleted", "cursor", "unknown",
+            "complete", "items", "snapshot", "deleted", "cursor", "unknown",
         ] {
             let mut payload = delta.clone();
             match scenario {
@@ -1397,10 +2552,6 @@ mod tests {
                         .map(|index| json!({"id":index.to_string(),"role":"assistant","text":"x"}))
                         .collect::<Vec<_>>()
                 )
-                }
-                "bytes" => {
-                    payload["items"][0]["text"] =
-                        json!("é".repeat(SYNC_TRANSCRIPT_STREAM_MAX_BYTES))
                 }
                 "snapshot" => {
                     payload.as_object_mut().expect("object").remove("delta");
@@ -1425,7 +2576,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_stream_draft_batches_keep_limits_and_recovery() {
-        for scenario in ["maximum", "documents", "bytes", "payload"] {
+        for scenario in ["maximum", "documents", "payload"] {
             let root = tempfile::tempdir().expect("isolated state");
             let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
             store.transaction(move |tx| {
@@ -1437,7 +2588,7 @@ mod tests {
                 for index in 0..count {
                     let session = format!("chat-{index}");
                     let payload = if scenario == "payload" { "broken".to_owned() } else {
-                        json!({"device":"phone", "session":session, "text": if scenario == "bytes" { "é".repeat(SYNC_DRAFT_STREAM_MAX_BYTES) } else { "draft".into() }, "updated":1}).to_string()
+                        json!({"device":"phone", "session":session, "text": "draft", "updated":1}).to_string()
                     };
                     SyncDocumentsRepository::put_draft(tx, &format!("phone:{session}"), &payload, false)?;
                 }
@@ -1624,6 +2775,13 @@ mod tests {
                     tx,
                     "agent",
                     "first",
+                    json!({"id":"first","name":"superseded","status":"idle","source":"managed"}),
+                    false,
+                )?;
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "agent",
+                    "first",
                     json!({"id":"first","name":"First","status":"idle","source":"managed"}),
                     false,
                 )?;
@@ -1642,12 +2800,13 @@ mod tests {
         );
         let batch = &event["resourceVersions"][0]["entityChanges"];
         assert_eq!(batch["after"], baseline);
-        assert_eq!(batch["through"], baseline + 2);
+        assert_eq!(batch["through"], baseline + 3);
+        assert_eq!(batch["documents"][0]["value"]["name"], "First");
         assert_eq!(
             batch["documents"].as_array().expect("full records").len(),
             2
         );
-        assert_eq!(batch["documents"][1]["_deleted"], true);
+        assert_eq!(batch["documents"][1]["op"], "delete");
         assert!(event["resourceVersions"][0]["revision"] == batch["through"]);
     }
 
@@ -2038,6 +3197,31 @@ mod tests {
             .expect("changed cached snapshot");
         assert_eq!(changed.resources, vec![resources[0].clone()]);
         assert_eq!(changed.versions, vec![changed.cursor.revision]);
+
+        *port.0.lock().expect("snapshot") = json!({
+            "accountKey":"first", "data":{"accountId":"native-first"},
+            "at":1.0, "readAt":1.0, "checkedAt":1.0, "processedAt":1.0
+        });
+        let before = resource_content(state.clone(), resources[0].clone())
+            .await
+            .expect("semantic limits");
+        for field in studio_runtime_store::account_state::LIMITS_OBSERVATION_TIME_FIELDS {
+            port.0.lock().expect("snapshot")[*field] = json!(120.0);
+        }
+        assert_eq!(
+            before,
+            resource_content(state.clone(), resources[0].clone())
+                .await
+                .expect("reobserved limits"),
+            "private observation times must not invalidate streamed limits"
+        );
+        port.0.lock().expect("snapshot")["data"]["accountId"] = json!("replacement");
+        assert_ne!(
+            before,
+            resource_content(state, resources[0].clone())
+                .await
+                .expect("changed account limits")
+        );
     }
 
     #[tokio::test]
@@ -2124,14 +3308,13 @@ mod tests {
             AccountPolicyState::from_startup(Some(registry.as_bytes()), []).expect("policy")
         }
         let root = tempfile::tempdir().expect("isolated state");
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let mut state = HttpState::new(
             "token".into(),
             "workspace".into(),
             root.path().display().to_string(),
             4321,
             None,
-            Some(store),
+            None,
             Some(Arc::new(policy(["first", "second"], root.path()))),
         );
         let before = resource_content(state.clone(), json!({"kind":"costs"}))
@@ -2148,7 +3331,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn unrelated_commits_do_not_reread_five_unchanged_resources() {
+    async fn unrelated_commits_do_not_emit_frames_for_five_unchanged_resources() {
         use axum::body::Body;
         use axum::extract::ConnectInfo;
         use axum::http::Request;
@@ -2213,6 +3396,7 @@ mod tests {
             .expect("response");
         assert_eq!(response.status(), StatusCode::OK);
         let mut body = response.into_body().into_data_stream();
+        body.next().await.expect("session").expect("bytes");
         assert!(
             String::from_utf8_lossy(&body.next().await.expect("initial").expect("bytes"))
                 .contains("event: resources")
@@ -2221,7 +3405,7 @@ mod tests {
             String::from_utf8_lossy(&body.next().await.expect("rates").expect("bytes"))
                 .contains("event: token-rates")
         );
-        for index in 0..42 {
+        for index in 0..2 {
             store.transaction(move |tx| {
                 tx.execute("INSERT INTO runtime_items(id,agent,created,record) VALUES(?1,'other',1,'{}')", [format!("item-{index}")])?;
                 Ok(())
@@ -2230,7 +3414,7 @@ mod tests {
         let frame = body.next().await.expect("heartbeat").expect("bytes");
         assert!(
             String::from_utf8_lossy(&frame).contains("event: heartbeat"),
-            "42 unrelated commits must cause zero resource re-reads: {}",
+            "unrelated commits must emit no resource frames: {}",
             String::from_utf8_lossy(&frame)
         );
         store.transaction(|tx| {
@@ -2318,6 +3502,7 @@ mod tests {
         let baseline = changes.borrow_and_update().clone();
         let state = ResourceStream {
             http_state: None,
+            subscription: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
@@ -2330,6 +3515,7 @@ mod tests {
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: Some(tokens.subscribe()),
+            last_token_rates: None,
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -2363,6 +3549,7 @@ mod tests {
         let baseline = changes.borrow().clone();
         let state = ResourceStream {
             http_state: None,
+            subscription: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
@@ -2375,6 +3562,7 @@ mod tests {
             changes,
             notifications: notifications.clone(),
             token_rates: Some(token_hub.subscribe()),
+            last_token_rates: None,
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -2383,7 +3571,8 @@ mod tests {
                 Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
             ),
         };
-        for index in 0..=MAX_SYNC_RESOURCE_COUNT {
+        const BURST_PUBLICATIONS: usize = 3;
+        for index in 0..BURST_PUBLICATIONS {
             token_hub.publish(json!({
                 "records": [{"agentId":"agent","rootId":"agent","turnId":"turn", "active":true, "estimated":false, "rate":index, "outputTokens":index}]
             })).expect("publish");
@@ -2398,8 +3587,14 @@ mod tests {
         .expect("frame");
         let frame = String::from_utf8(body.to_vec()).expect("UTF8");
         assert!(frame.contains("event: token-rates"), "{frame}");
-        assert!(frame.contains("id: 257"), "{frame}");
-        assert!(frame.contains("\"rate\":256"), "{frame}");
+        assert!(
+            frame.contains(&format!("id: {BURST_PUBLICATIONS}")),
+            "{frame}"
+        );
+        assert!(
+            frame.contains(&format!("\"rate\":{}", BURST_PUBLICATIONS - 1)),
+            "{frame}"
+        );
         drop(state); // Disconnect drops the only receiver; later publications remain bounded.
         assert!(
             token_hub
@@ -2478,6 +3673,7 @@ mod tests {
         let baseline = changes.borrow().clone();
         ResourceStream {
             http_state: None,
+            subscription: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".into(),
             epoch: baseline.epoch,
@@ -2490,6 +3686,7 @@ mod tests {
             changes,
             notifications,
             token_rates: Some(tokens.subscribe()),
+            last_token_rates: None,
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -2692,6 +3889,7 @@ mod tests {
         let baseline = changes.borrow().clone();
         let state = ResourceStream {
             http_state: None,
+            subscription: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
@@ -2704,6 +3902,7 @@ mod tests {
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: Some(TokenRateHub::new().subscribe()),
+            last_token_rates: None,
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -2715,6 +3914,178 @@ mod tests {
         let pending = next_frame(state);
         hub.close();
         assert!(pending.await.is_none());
+    }
+
+    #[tokio::test]
+    async fn state_stream_token_delta_tracks_changes_removals_roots_and_reconnect() {
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let tokens = TokenRateHub::with_change_hub(hub.clone());
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let mut state = test_stream(&hub, &tokens, notifications.clone(), vec![]);
+        let record = |id: &str, root: &str, rate: f64| {
+            json!({
+                "agentId":id,"rootId":root,"turnId":"turn","active":true,
+                "estimated":false,"rate":rate,"outputTokens":100.0
+            })
+        };
+        let idle = record("idle", "root", 0.0);
+        tokens
+            .publish(json!({"records":[record("active", "root", 1.0), idle.clone()]}))
+            .expect("publish");
+        let first = event_document(Ok(token_rate_sse_frame(&mut state).expect("initial"))).await;
+        assert_eq!(first["snapshot"], true);
+        assert_eq!(first["records"].as_array().expect("records").len(), 2);
+        assert_eq!(first["removed"], json!([]));
+
+        // A slow stream skips an intermediate publication, diffing from its own last send.
+        tokens
+            .publish(json!({"records":[record("active", "root", 2.0), idle]}))
+            .expect("publish");
+        let moved = record("active", "other-root", 3.0);
+        tokens
+            .publish(json!({"records":[moved.clone()]}))
+            .expect("publish");
+        let delta = event_document(Ok(token_rate_sse_frame(&mut state).expect("delta"))).await;
+        assert_eq!(delta["snapshot"], false);
+        assert_eq!(delta["records"], json!([moved.clone()]));
+        assert_eq!(delta["removed"], json!(["idle"]));
+        let unchanged =
+            event_document(Ok(token_rate_sse_frame(&mut state).expect("unchanged"))).await;
+        assert_eq!(unchanged["records"], json!([]));
+        assert_eq!(unchanged["removed"], json!([]));
+
+        let mut reconnect = test_stream(&hub, &tokens, notifications, vec![]);
+        let full =
+            event_document(Ok(token_rate_sse_frame(&mut reconnect).expect("reconnect"))).await;
+        assert_eq!(full["snapshot"], true);
+        assert_eq!(full["records"], json!([moved]));
+        tokens.publish(json!({"records":[]})).expect("remove last");
+        let removed = event_document(Ok(token_rate_sse_frame(&mut state).expect("removed"))).await;
+        assert_eq!(removed["records"], json!([]));
+        assert_eq!(removed["removed"], json!(["active"]));
+        // The borrowed frame must remain aligned with the generated OpenAPI DTO.
+        for frame in [first, delta, unchanged, full, removed] {
+            serde_json::from_value::<crate::generated::ResourceTokenRatesEvent>(frame)
+                .expect("generated token-rate frame contract");
+        }
+    }
+
+    #[tokio::test]
+    async fn state_stream_token_delta_bytes_for_fifty_agents_with_two_active() {
+        async fn bytes(event: Event) -> Vec<u8> {
+            axum::body::to_bytes(
+                Sse::new(stream::iter([Ok::<_, Infallible>(event)]))
+                    .into_response()
+                    .into_body(),
+                262144,
+            )
+            .await
+            .expect("frame")
+            .to_vec()
+        }
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let tokens = TokenRateHub::with_change_hub(hub.clone());
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let mut state = test_stream(&hub, &tokens, notifications, vec![]);
+        let mut records: Vec<Value> = (0..50).map(|id| json!({
+            "agentId":format!("agent-{id:02}"),"rootId":"root","turnId":"turn",
+            "active":id < 2,"estimated":false,"rate":if id < 2 {10.0} else {0.0},"outputTokens":100.0
+        })).collect();
+        tokens
+            .publish(json!({"records":records}))
+            .expect("initial publication");
+        let initial = bytes(token_rate_sse_frame(&mut state).expect("initial")).await;
+        for record in &mut records[..2] {
+            record["rate"] = json!(20.0);
+            record["outputTokens"] = json!(120.0);
+        }
+        tokens
+            .publish(json!({"records":records}))
+            .expect("changed publication");
+        let rates = tokens.snapshot();
+        let cursor = hub.subscribe().borrow().clone();
+        // The previous wire protocol sent this complete once-serialized list every time.
+        let old = Event::default().event("token-rates").id(cursor.revision.to_string()).data(format!(
+            r#"{{"protocol":{},"workspaceId":"workspace","epoch":{},"revision":{},"records":{}}}"#,
+            SYNC_PROTOCOL_VERSION, serde_json::to_string(&cursor.epoch).expect("epoch"), cursor.revision, rates.wire().records));
+        let old = bytes(old).await;
+        let delta = bytes(token_rate_sse_frame(&mut state).expect("delta")).await;
+        assert!(delta.len() * 10 < old.len());
+        println!(
+            "token-rate SSE bytes: v3_full={}, v4_initial={}, v4_delta={}, reduction={:.2}%",
+            old.len(),
+            initial.len(),
+            delta.len(),
+            100.0 * (1.0 - delta.len() as f64 / old.len() as f64)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_stream_token_delta_http_starts_full_and_reconnects() {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        fn document(bytes: &[u8]) -> Value {
+            let text = std::str::from_utf8(bytes).expect("UTF8");
+            serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON")
+        }
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        state
+            .token_rates
+            .publish(floating_test_rates(1))
+            .expect("initial rates");
+        let app = crate::router(state.clone()).expect("router");
+        let request = || {
+            Request::builder()
+            .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D&tokenRates=true"))
+            .header("host", "127.0.0.1:4321").header("x-canvas-token", "token")
+            .extension(ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],12345))))
+            .body(Body::empty()).expect("request")
+        };
+        let response = app.clone().oneshot(request()).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let session = document(&body.next().await.expect("session").expect("bytes"));
+        assert!(session["sessionId"].is_string());
+        let resources = document(&body.next().await.expect("resources").expect("bytes"));
+        assert_eq!(resources["reason"], "initial");
+        let initial = document(&body.next().await.expect("initial rates").expect("bytes"));
+        assert_eq!(initial["snapshot"], true);
+        assert_eq!(initial["records"], floating_test_rates(1)["records"]);
+        state
+            .token_rates
+            .publish(floating_test_rates(2))
+            .expect("changed rates");
+        let delta = document(&body.next().await.expect("delta").expect("bytes"));
+        assert_eq!(delta["snapshot"], false);
+        assert_eq!(delta["records"], floating_test_rates(2)["records"]);
+        drop(body);
+        let response = app.oneshot(request()).await.expect("reconnect");
+        let mut body = response.into_body().into_data_stream();
+        let session = document(&body.next().await.expect("session").expect("bytes"));
+        assert!(session["sessionId"].is_string());
+        let resources = document(&body.next().await.expect("resources").expect("bytes"));
+        assert_eq!(resources["reason"], "initial");
+        let reconnect = document(&body.next().await.expect("reconnect rates").expect("bytes"));
+        assert_eq!(reconnect["snapshot"], true);
+        assert_eq!(reconnect["records"], floating_test_rates(2)["records"]);
     }
 }
 

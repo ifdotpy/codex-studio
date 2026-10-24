@@ -1,3 +1,4 @@
+import { SYNC_PROTOCOL_VERSION } from "../../src/generated/api.ts";
 import {
   apiSchemaHandshakeSse,
   protocol3SseEvent,
@@ -30,11 +31,11 @@ test("Sync Browser", async ({
     },
   };
 
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
     configFile: false,
+    optimizeDeps: { noDiscovery: true },
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
   });
@@ -67,14 +68,14 @@ test("Sync Browser", async ({
         headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
       }),
     );
-    await page.addInitScript(() => {
+    await page.addInitScript((protocol) => {
       window.entityStreams = [];
       const Native = window.EventSource;
       window.EventSource = class extends Native {
         constructor(url, options) {
           super(url, options);
           const parsed = new URL(url, location.href);
-          if (parsed.searchParams.get("protocol") === "3")
+          if (parsed.searchParams.get("protocol") === String(protocol))
             window.entityStreams.push({
               source: this,
               resources: JSON.parse(
@@ -83,7 +84,7 @@ test("Sync Browser", async ({
             });
         }
       };
-    });
+    }, SYNC_PROTOCOL_VERSION);
     await page.route("**/api/sync/stream**", (route) => {
       const resources = JSON.parse(
         new URL(route.request().url()).searchParams.get("resources") || "[]",
@@ -92,7 +93,7 @@ test("Sync Browser", async ({
         contentType: "text/event-stream",
         body: apiSchemaHandshakeSse(
           protocol3SseEvent("resources", {
-            protocol: 3,
+            protocol: 4,
             workspaceId: "a".repeat(32),
             epoch: "fixture-epoch",
             revision,
@@ -125,19 +126,16 @@ test("Sync Browser", async ({
               after < revision
                 ? [
                     {
-                      id: "entity:agent:lead",
-                      payload: JSON.stringify({
-                        collection: "agent",
+                      op: "upsert",
+                      collection: "agent",
+                      id: "lead",
+                      value: {
                         id: "lead",
-                        value: {
-                          id: "lead",
-                          name: content,
-                          status: "running",
-                          source: "managed",
-                        },
-                      }),
+                        name: content,
+                        status: "running",
+                        source: "managed",
+                      },
                       seq: revision,
-                      _deleted: false,
                     },
                   ]
                 : [],
@@ -188,7 +186,7 @@ test("Sync Browser", async ({
       stream.source.dispatchEvent(
         new MessageEvent("resources", {
           data: JSON.stringify({
-            protocol: 3,
+            protocol: 4,
             workspaceId: "a".repeat(32),
             epoch: "fixture-epoch",
             revision: seq,

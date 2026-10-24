@@ -1,7 +1,7 @@
 #![cfg(unix)]
 use std::{collections::BTreeMap, time::Duration};
 use studio_runtime_process::{
-    Generation, ProviderHandle, ProviderLaunchSpec, provider_seam::*,
+    EventCursor, Generation, ProviderHandle, ProviderLaunchSpec, provider_seam::*,
     provider_stdio::StdioProviderTaskFactory,
 };
 use tokio::time::Instant;
@@ -10,6 +10,229 @@ const PROVIDER_STDERR_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bounds real-process progress in the independent exit witness; unit: wall time.
 #[cfg(target_os = "linux")]
 const PROVIDER_EXIT_HANG_GUARD: Duration = Duration::from_secs(10);
+
+#[tokio::test]
+async fn a_reserved_write_arriving_after_completion_is_rejected_without_delaying_reap() {
+    use studio_runtime_process::OperationId;
+    use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
+
+    let mut attachment = child("exit 0").await;
+    let child_pid = pid(&attachment);
+    let sender = attachment.commands.clone();
+    let permit = sender.reserve().await.expect("admission before closure");
+    tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, sender.closed())
+        .await
+        .expect("command admission closes");
+    let exit = tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, attachment.completion())
+        .await
+        .expect("a held permit must not delay completion");
+    assert!(exit.cleanup_error.is_none());
+    assert_reaped(child_pid);
+
+    let frame = Frame::Request(RequestFrame {
+        id: RequestId::Number(42),
+        method: Method::ModelList,
+        params: None,
+        fields: Default::default(),
+    });
+    let (command, receipt) = AdapterCommand::write(
+        PreparedWrite::new(OperationId("late-permit".into()), &frame).expect("write"),
+    );
+    permit.send(command);
+    assert!(matches!(
+        tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, receipt.receive())
+            .await
+            .expect("late command receipt"),
+        CommandReceipt::NotSent
+    ));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn stdin_epipe_before_leader_exit_still_drains_final_stdout() {
+    use studio_runtime_process::OperationId;
+    use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
+
+    const FINAL_FRAMES: usize = 6 * LANE_CAPACITY + 1;
+    let root = tempfile::tempdir().expect("isolated EPIPE fixture");
+    let ready = root.path().join("ready");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &ready,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        0,
+    )
+    .expect("independent pipe-closed witness");
+    let script = format!(
+        r#"exec 0<&-
+index=0
+while [ "$index" -lt {FINAL_FRAMES} ]; do
+    printf '{{"method":"fixture/final","index":%s}}\n' "$index"
+    index=$((index + 1))
+done
+printf done > ready
+exec sleep infinity"#
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("fixture runtime");
+    let attachment = runtime.block_on(
+        StdioProviderTaskFactory {
+            deadline: None,
+            max_frame_bytes: 1024,
+            max_output_bytes: None,
+            stderr_log: None,
+        }
+        .open(
+            ProviderHandle::for_account("epipe-before-exit"),
+            OpenOptions {
+                clock: SessionClock::default(),
+                expected_generation: None,
+                launch: ProviderLaunchSpec::new(
+                    vec!["/bin/sh".into(), "-c".into(), script],
+                    BTreeMap::new(),
+                    root.path().to_path_buf(),
+                ),
+            },
+            Shutdown::default(),
+        ),
+    );
+    let mut attachment = attachment.expect("fixture starts");
+    let child_pid = pid(&attachment);
+    // The owner cannot read stdout yet. The child closed stdin and wrote its
+    // finite tail, but remains alive; the first write must fail with EPIPE.
+    assert_eq!(std::fs::read(ready).expect("closed stdin witness"), b"done");
+    assert!(
+        !studio_runtime_process::owned_process_group::exited_unreaped_now(child_pid)
+            .expect("owned leader")
+    );
+    let frame = Frame::Request(RequestFrame {
+        id: RequestId::Number(7),
+        method: Method::ModelList,
+        params: None,
+        fields: Default::default(),
+    });
+    let (command, receipt) = AdapterCommand::write(
+        PreparedWrite::new(OperationId("write-to-closed-stdin".into()), &frame).expect("write"),
+    );
+    attachment
+        .commands
+        .try_send(command)
+        .expect("admitted write");
+    runtime.block_on(async {
+        tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, async {
+            assert!(matches!(receipt.receive().await, CommandReceipt::WriteInterrupted { bytes_written: 0 }));
+            let mut entries = vec![];
+            while let Some(entry) = attachment.journal.recv().await { entries.push(entry); }
+            let exit = attachment.completion().await;
+            assert_eq!(entries.len(), FINAL_FRAMES, "EPIPE must not discard the final stdout tail");
+            assert!(matches!(exit.result, Err(AdapterError::Supervisor(studio_runtime_process::SupervisorError::Io(error))) if error.kind() == std::io::ErrorKind::BrokenPipe));
+            assert!(exit.cleanup_error.is_none());
+            assert_reaped(child_pid);
+        }).await.expect("EPIPE drain hang guard");
+    });
+}
+
+#[test]
+fn final_stdout_is_journaled_when_the_child_exits_before_the_owner_is_polled() {
+    assert_final_stdout_is_journaled(false);
+}
+
+#[test]
+fn writes_after_confirmed_exit_are_not_sent_and_do_not_block_ack_or_stdout() {
+    assert_final_stdout_is_journaled(true);
+}
+
+fn assert_final_stdout_is_journaled(write_after_exit: bool) {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    use studio_runtime_process::OperationId;
+    use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread provider runtime");
+    let replies = if write_after_exit {
+        LANE_CAPACITY + 1
+    } else {
+        2
+    };
+    let script = format!(
+        r#"index=1; while [ "$index" -le {replies} ]; do printf '{{"id":%s,"result":{{}}}}\n' "$index"; index=$((index + 1)); done; printf 'final diagnostic\n' >&2"#
+    );
+    let mut attachment = runtime.block_on(child(&script));
+    let child_pid = pid(&attachment);
+    // Opening only spawns the owner task. With its runtime stopped, wait for
+    // the fixture's exit without reaping, before any stdout readiness is polled.
+    let owned_pid = Pid::from_raw(child_pid as i32).expect("owned pid");
+    waitid(
+        WaitId::Pid(owned_pid),
+        WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+    )
+    .expect("fixture exited without reaping");
+
+    let receipts = write_after_exit.then(|| {
+        let frame = Frame::Request(RequestFrame {
+            id: RequestId::Number(100),
+            method: Method::ModelList,
+            params: None,
+            fields: Default::default(),
+        });
+        let write = PreparedWrite::new(OperationId("after-exit".into()), &frame).expect("write");
+        let (command, written) = AdapterCommand::write(write);
+        attachment.commands.try_send(command).expect("queued write");
+        let (command, acknowledged) = AdapterCommand::ack(EventCursor(0));
+        attachment.commands.try_send(command).expect("queued ACK");
+        (written, acknowledged)
+    });
+    runtime.block_on(async {
+        tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, async {
+            if let Some((written, acknowledged)) = receipts {
+                // The write receipt is deliberately unobserved until ACK arrives.
+                // The full journal holds the reader while both commands settle.
+                assert!(matches!(
+                    acknowledged.receive().await,
+                    CommandReceipt::Acknowledged(EventCursor(0))
+                ));
+                assert!(matches!(
+                    written.receive().await,
+                    CommandReceipt::NotSent | CommandReceipt::WriteInterrupted { bytes_written: 0 }
+                ));
+            }
+            for id in 1..=replies as u64 {
+                let entry = attachment
+                    .journal
+                    .recv()
+                    .await
+                    .expect("final reply retained");
+                assert_eq!(entry.cursor, EventCursor(id));
+                assert_eq!(entry.generation, Generation(1));
+                assert!(matches!(
+                    entry.payload,
+                    JournalPayload::Frame(Frame::Response {
+                        id: RequestId::Number(actual),
+                        body: ResponseBody::Result(_),
+                        ..
+                    }) if actual == id
+                ));
+            }
+            assert!(attachment.journal.recv().await.is_none());
+            let exit = attachment.completion().await;
+            assert!(matches!(
+                exit.result,
+                Err(AdapterError::Supervisor(
+                    studio_runtime_process::SupervisorError::ConnectionLost
+                ))
+            ));
+            assert!(exit.cleanup_error.is_none());
+            assert_reaped(child_pid);
+        })
+        .await
+        .expect("final stdout drain hang guard");
+    });
+}
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
@@ -311,7 +534,9 @@ async fn stalled_stdin_is_interrupted_by_the_exchange_deadline() {
         attachment.completion().await.result,
         Err(AdapterError::Timeout)
     ));
-    assert!(matches!(receipt.receive().await, CommandReceipt::Unknown));
+    assert!(matches!(receipt.receive().await,
+        CommandReceipt::WriteInterrupted { bytes_written } if bytes_written > 0
+    ));
     assert_reaped(pid);
 }
 

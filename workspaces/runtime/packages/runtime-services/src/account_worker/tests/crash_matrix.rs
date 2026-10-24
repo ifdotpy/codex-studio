@@ -15,6 +15,7 @@ pub(super) struct Context {
     pub inputs: std::sync::Mutex<Vec<String>>,
     committed: std::sync::Mutex<Vec<(String, usize, Option<String>)>>,
     pub agent_seed: std::sync::Mutex<Option<studio_runtime_store::AgentRecord>>,
+    pub provider_write: tokio::sync::Notify,
 }
 tokio::task_local! { pub(super) static MATRIX: Arc<Context>; }
 
@@ -528,6 +529,7 @@ async fn prove_ready_for_new_turn(
     peer: &mut Peer,
     worker: &AccountHandle,
 ) {
+    finish_replacement_recovery(peer, worker, "replacement health").await;
     let mut seed = context
         .agent_seed
         .lock()
@@ -581,6 +583,41 @@ async fn prove_ready_for_new_turn(
         "completed",
         "replacement executes a new turn"
     );
+}
+
+#[tokio::test]
+async fn health_turn_waits_for_pending_recovery_history() {
+    let context = Arc::new(Context::default());
+    MATRIX.scope(context.clone(), async {
+        let state = State::new().await;
+        let agent_id = state.agent.clone();
+        state.bridge.run(move |store| async move {
+            store.transaction_with(move |tx| {
+                let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
+                let event = "annotation:input";
+                let attempt = json!({"id":"restart-attempt","epoch":agent.epoch,"accountKey":"default",
+                    "threadId":"fake-thread-0","events":[event],"submitted":true,
+                    "executionOutcome":"unknown","created":1.0,"connectionGeneration":1});
+                agent.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":attempt}));
+                agent.extra.insert("contextRepairWait".into(), json!({"error":"unconfirmed input",
+                    "scope":"native","events":[event],"nextCheckAt":0,
+                    "source":{"id":agent_id,"epoch":agent.epoch,"accountKey":"default","threadId":"fake-thread-0","attemptId":null}}));
+                AgentRepository::put(tx, &agent)?;
+                tx.execute("UPDATE runtime_events SET status='uncertain' WHERE id=?1", [event])?;
+                Ok::<(), WorkerError>(())
+            }).await
+        }).await.unwrap();
+        let mut peer = Peer::new();
+        let mut worker = peer.worker(state.bridge.clone()).await;
+        // Force native history ahead of the health wake, without relying on
+        // scheduler speed or the channel being momentarily empty.
+        context.provider_write.notified().await;
+        assert_eq!(context.writes.lock().unwrap().last().unwrap()["method"], "thread/turns/list");
+        prove_ready_for_new_turn(&context, &state, &mut peer, &worker).await;
+        assert_eq!(state.event_status("input").await, "uncertain", "unknown input is never resent");
+        worker.shutdown().await.unwrap();
+        std::fs::remove_dir_all(&state.root).unwrap();
+    }).await;
 }
 
 // Expectations come from the delivered protocol, never the store under test.
@@ -647,6 +684,8 @@ async fn scenario_matrix(index: usize) -> (usize, f64, f64) {
         }
         let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
         let mut covered = std::collections::BTreeSet::new();
+        let mut skipped = std::collections::BTreeSet::new();
+        let mut attempted = 0;
         for (name, occurrence, identity) in &operations {
             for after in [false, true] {
                 if !full && !(after && (name == "finish" || (index == 0 && name == "claim"))) {
@@ -655,6 +694,7 @@ async fn scenario_matrix(index: usize) -> (usize, f64, f64) {
                 eprintln!(
                     "matrix scenario={index} operation={name} occurrence={occurrence} identity={identity:?} after={after}"
                 );
+                attempted += 1;
                 let started = std::time::Instant::now();
                 let Some(context) = execute(
                     index,
@@ -662,7 +702,14 @@ async fn scenario_matrix(index: usize) -> (usize, f64, f64) {
                 )
                 .await
                 else {
-                    covered.insert((name.clone(), *occurrence, identity.clone(), after));
+                    assert!(
+                        *occurrence > 0 || timing_dependent(name, identity.as_deref()),
+                        "missing required boundary"
+                    );
+                    skipped.insert((name.clone(), *occurrence, identity.clone(), after));
+                    eprintln!(
+                        "skipped unfired boundary scenario={index} operation={name} occurrence={occurrence} identity={identity:?} after={after}"
+                    );
                     continue;
                 };
                 scenario_seconds += started.elapsed().as_secs_f64();
@@ -681,11 +728,24 @@ async fn scenario_matrix(index: usize) -> (usize, f64, f64) {
                 cases += 1;
             }
         }
+        assert!(cases > 0, "scenario {index} fired no failpoints");
+        assert_eq!(attempted, covered.len() + skipped.len());
+        eprintln!(
+            "matrix coverage scenario={index} attempted={attempted} fired={} skipped={}",
+            covered.len(),
+            skipped.len()
+        );
         if full {
             for (name, occurrence, identity) in operations {
                 for after in [false, true] {
                     assert!(
-                        covered.contains(&(name.clone(), occurrence, identity.clone(), after)),
+                        covered.contains(&(name.clone(), occurrence, identity.clone(), after))
+                            || skipped.contains(&(
+                                name.clone(),
+                                occurrence,
+                                identity.clone(),
+                                after
+                            )),
                         "missing named boundary"
                     );
                 }

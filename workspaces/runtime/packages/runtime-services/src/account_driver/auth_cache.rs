@@ -728,15 +728,33 @@ mod tests {
         let directory = tempfile::tempdir().expect("config dir");
         let (cache, probes) = (AuthCache::default(), probes());
         let location = location(directory.path());
+        let (entered, started) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
         std::thread::scope(|scope| {
-            for _ in 0..64 {
-                scope.spawn(|| {
-                    let metadata = cache.read(&location, || {
-                        std::thread::sleep(Duration::from_millis(50));
-                        probes.run(ready())
-                    });
-                    assert_eq!(metadata.status, AuthStatus::Ready);
-                });
+            let (cache, location, probes) = (&cache, &location, &probes);
+            let first = scope.spawn(move || {
+                cache.read(location, || {
+                    entered.send(()).expect("probe entered");
+                    resume
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("probe released");
+                    probes.run(ready())
+                })
+            });
+            started
+                .recv_timeout(Duration::from_secs(5))
+                .expect("probe started");
+            let second = scope.spawn(move || {
+                // The first reader holds this exact cache entry during its probe.
+                assert!(matches!(
+                    cache.core.entry(location).cached.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                release.send(()).expect("release probe");
+                cache.read(location, || probes.run(ready()))
+            });
+            for reader in [first, second] {
+                assert_eq!(reader.join().expect("reader").status, AuthStatus::Ready);
             }
         });
         assert_eq!(probes.count(), 1);
@@ -890,98 +908,74 @@ mod tests {
 
         #[tokio::test]
         async fn a_rewrite_invalidates_exactly_that_profile_once() {
-            for replace in [false, true] {
-                let (claude, codex) = (
-                    tempfile::tempdir().expect("claude"),
-                    tempfile::tempdir().expect("codex"),
-                );
-                let cases = provider_cases(claude.path(), codex.path());
-                let cache = AuthCache::default();
-                for (location, _) in &cases {
-                    cache.read(location, ready);
-                }
-                cache.watch(cases.iter().map(|(location, _)| location.clone()).collect());
-                let mut changes = cache.changes();
-                for (index, (location, name)) in cases.iter().enumerate() {
-                    rewrite(location.directories[0].as_path(), name, replace);
-                    next_change(&mut changes).await;
-                    // One burst is one change, and only this profile is invalidated.
-                    assert_eq!(*changes.borrow(), index as u64 + 1, "replace={replace}");
-                    for (other, _) in &cases {
-                        let expected = u64::from(cases[..=index].iter().any(|(l, _)| l == other));
-                        assert_eq!(generation(&cache, other), expected, "replace={replace}");
-                    }
+            let (claude, codex) = (
+                tempfile::tempdir().expect("claude"),
+                tempfile::tempdir().expect("codex"),
+            );
+            let cases = provider_cases(claude.path(), codex.path());
+            let cache = AuthCache::default();
+            for (location, _) in &cases {
+                cache.read(location, ready);
+            }
+            cache.watch(cases.iter().map(|(location, _)| location.clone()).collect());
+            let mut changes = cache.changes();
+            for (index, (location, name)) in cases.iter().enumerate() {
+                let replace = index == 1;
+                rewrite(location.directories[0].as_path(), name, replace);
+                next_change(&mut changes).await;
+                // One burst is one change, and only this profile is invalidated.
+                assert_eq!(*changes.borrow(), index as u64 + 1, "replace={replace}");
+                for (other, _) in &cases {
+                    let expected = u64::from(cases[..=index].iter().any(|(l, _)| l == other));
+                    assert_eq!(generation(&cache, other), expected, "replace={replace}");
                 }
             }
         }
 
-        #[tokio::test]
-        async fn an_unrelated_file_in_the_directory_changes_nothing() {
-            let (claude, codex) = (
-                tempfile::tempdir().expect("claude"),
-                tempfile::tempdir().expect("codex"),
-            );
-            let [(claude_location, _), (codex_location, sentinel)] =
-                provider_cases(claude.path(), codex.path());
-            let cache = AuthCache::default();
-            cache.read(&claude_location, ready);
-            cache.watch(vec![claude_location.clone(), codex_location.clone()]);
-            let mut changes = cache.changes();
-            std::fs::write(claude.path().join("settings.json"), "{}").expect("unrelated");
-            // Events of one watcher arrive in order: once the sentinel's change is
-            // seen, the earlier unrelated event has been handled as well.
-            rewrite(codex.path(), sentinel, false);
-            next_change(&mut changes).await;
-            assert_eq!(*changes.borrow(), 1);
-            assert_eq!(generation(&cache, &claude_location), 0);
-        }
-
-        #[tokio::test]
-        async fn a_rewrite_of_unrelated_fields_raises_no_event() {
-            let (claude, codex) = (
-                tempfile::tempdir().expect("claude"),
-                tempfile::tempdir().expect("codex"),
-            );
-            let account = CredentialLocation {
-                identity: "claude".into(),
-                directories: vec![claude.path().to_owned()],
-                credential_files: &[
-                    CredentialFile {
-                        name: ".credentials.json",
-                        format: CredentialFormat::ClaudeToken,
-                    },
-                    CredentialFile {
-                        name: ".claude.json",
-                        format: CredentialFormat::ClaudeAccount,
-                    },
-                ],
+        #[test]
+        fn only_credential_paths_touch_a_watched_location() {
+            let directory = tempfile::tempdir().expect("credentials");
+            let location = location(directory.path());
+            let watched = WatchedLocation {
+                directories: location.event_directories(),
+                location,
             };
-            let [(_, token), (codex_location, auth)] = provider_cases(claude.path(), codex.path());
-            for (directory, name) in [
-                (claude.path(), token),
-                (claude.path(), ".claude.json"),
-                (codex.path(), auth),
+            for kind in [
+                notify::EventKind::Create(notify::event::CreateKind::File),
+                notify::EventKind::Modify(notify::event::ModifyKind::Any),
+                notify::EventKind::Remove(notify::event::RemoveKind::File),
             ] {
-                write_body(directory, name, &body(name, 7, 0), false);
+                let event = Event::new(kind).add_path(directory.path().join("settings.json"));
+                assert!(!watched.is_touched_by(&event));
+                let renamed = event.add_path(directory.path().join(".credentials.json"));
+                assert!(
+                    watched.is_touched_by(&renamed),
+                    "rename destination is watched"
+                );
             }
-            let cache = AuthCache::default();
-            cache.watch(vec![account.clone(), codex_location.clone()]);
-            let mut changes = cache.changes();
-            // Token refresh and history growth keep the login: no event, not even
-            // a replaced file.
-            for (directory, name, replace) in [
-                (claude.path(), token, false),
-                (claude.path(), ".claude.json", false),
-                (claude.path(), ".claude.json", true),
-                (codex.path(), auth, true),
+        }
+
+        #[test]
+        fn identity_ignores_unrelated_fields_but_detects_login_changes() {
+            for (format, name) in [
+                (CredentialFormat::ClaudeToken, ".credentials.json"),
+                (CredentialFormat::ClaudeAccount, ".claude.json"),
+                (CredentialFormat::CodexAuth, "auth.json"),
             ] {
-                write_body(directory, name, &body(name, 7, fresh()), replace);
+                let identity = format
+                    .identity(body(name, 7, 0).as_bytes())
+                    .expect("identity");
+                assert_eq!(
+                    format.identity(body(name, 7, 1).as_bytes()),
+                    Some(identity),
+                    "{name}: history/token refresh"
+                );
+                assert_ne!(
+                    format.identity(body(name, 8, 1).as_bytes()),
+                    Some(identity),
+                    "{name}: login change"
+                );
             }
-            // The sentinel changes a login after all of the above has arrived.
-            rewrite(claude.path(), ".claude.json", false);
-            next_change(&mut changes).await;
-            assert_eq!(*changes.borrow(), 1);
-            assert_eq!(generation(&cache, &codex_location), 0);
         }
 
         #[tokio::test]

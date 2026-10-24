@@ -73,10 +73,17 @@ impl IoRuntime {
         ));
         let notification_sender = persistence.clone();
         session.set_notification_callback(Arc::new(move |notification| {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "terminal persistence retries run on the dedicated PTY reader thread"
+            )]
+            let sleep = std::thread::sleep;
             let mut pending = Some(notification);
-            persist_notification_until_saved(&mut pending, |notification| {
-                persist_notification_on_owner(&notification_sender, notification)
-            })
+            persist_notification_until_saved(
+                &mut pending,
+                |notification| persist_notification_on_owner(&notification_sender, notification),
+                sleep,
+            )
             .map_err(|_| SessionError::Disconnected)
         }));
         let identity_sender = persistence.clone();
@@ -213,13 +220,10 @@ fn persist_identity_on_owner(
 }
 
 #[cfg(unix)]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "terminal persistence retries run on the dedicated PTY reader thread"
-)]
 fn persist_notification_until_saved(
     pending: &mut Option<TerminalNotification>,
     mut persist: impl FnMut(TerminalNotification) -> Result<(), TerminalError>,
+    mut sleep: impl FnMut(std::time::Duration),
 ) -> Result<(), TerminalError> {
     let mut delay = std::time::Duration::from_millis(10);
     for attempt in 0..MAX_NOTIFICATION_PERSIST_ATTEMPTS {
@@ -238,7 +242,7 @@ fn persist_notification_until_saved(
                     attempt + 1
                 );
                 if attempt + 1 < MAX_NOTIFICATION_PERSIST_ATTEMPTS {
-                    std::thread::sleep(delay);
+                    sleep(delay);
                     delay = (delay * 2).min(std::time::Duration::from_secs(1));
                 } else {
                     return Err(error);
@@ -252,12 +256,12 @@ fn persist_notification_until_saved(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use studio_runtime_store::{TerminalRecord, TerminalsRepository};
 
     #[test]
     fn terminal_notification_is_retained_until_persistence_succeeds() {
-        let attempts = AtomicUsize::new(0);
+        let mut attempts = 0;
+        let mut delays = Vec::new();
         let notification = TerminalNotification {
             terminal_id: "terminal".into(),
             sequence: 3,
@@ -272,14 +276,16 @@ mod tests {
             assert!(
                 matches!(retry.event, studio_runtime_services::terminal_driver::TerminalEvent::Output(bytes) if bytes == b"chunk")
             );
-            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            attempts += 1;
+            if attempts == 1 {
                 Err(TerminalError::InvalidRequest)
             } else {
                 Ok(())
             }
-        })
+        }, |delay| delays.push(delay.as_millis()))
         .expect("fail-once callback retry succeeds");
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(delays, [10]);
+        assert_eq!(attempts, 2);
         assert!(pending.is_none(), "persisted notification is retired");
     }
 
@@ -292,22 +298,25 @@ mod tests {
                 b"retained".to_vec(),
             ),
         });
-        let attempts = AtomicUsize::new(0);
-        let result = persist_notification_until_saved(&mut pending, |retry| {
-            assert_eq!(retry.terminal_id, "terminal");
-            assert_eq!(retry.sequence, 9);
-            assert!(
-                matches!(retry.event, studio_runtime_services::terminal_driver::TerminalEvent::Output(bytes) if bytes == b"retained")
-            );
-            attempts.fetch_add(1, Ordering::SeqCst);
-            Err(TerminalError::InvalidRequest)
-        });
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+        let result = persist_notification_until_saved(
+            &mut pending,
+            |retry| {
+                assert_eq!(retry.terminal_id, "terminal");
+                assert_eq!(retry.sequence, 9);
+                assert!(
+                    matches!(retry.event, studio_runtime_services::terminal_driver::TerminalEvent::Output(bytes) if bytes == b"retained")
+                );
+                attempts += 1;
+                Err(TerminalError::InvalidRequest)
+            },
+            |delay| delays.push(delay.as_millis()),
+        );
+        assert_eq!(delays, [10, 20, 40, 80]);
 
         assert!(result.is_err());
-        assert_eq!(
-            attempts.load(Ordering::SeqCst),
-            MAX_NOTIFICATION_PERSIST_ATTEMPTS
-        );
+        assert_eq!(attempts, MAX_NOTIFICATION_PERSIST_ATTEMPTS);
         assert_eq!(pending.as_ref().map(|event| event.sequence), Some(9));
     }
 

@@ -309,7 +309,9 @@ failure. Saved input and verified interrupted work recover automatically.
 See [restart recovery](restart-recovery.md) for the exact behavior and limits.
 Use `studio-runtime-server service install` to enable terminal-only backend
 startup without starting or restarting a service. On Linux, `just deliver-server`
-selects and restarts the server release. Preserve the existing state directory.
+selects and restarts the server release from a separate transient systemd user
+service, with durable delivery logs in its journal. Preserve the existing state
+directory.
 For systemd user services and Windows Subsystem for Linux, see
 [Linux and WSL server setup](linux-server-setup.md).
 
@@ -480,9 +482,14 @@ Author icons are hidden by default. Use the composer picker to select the conver
 
 Prompt history is in the chat header; open **Conversation tools** when space is
 limited. Context usage, session cost, and account limits sit below the composer.
-An orange **Warnings** icon appears in the
-header when the current account or chat has notices. It opens their full details
-in a dialog; errors that block work remain visible in the conversation.
+The **Warnings** icon beside Studio settings in the sidebar opens two tabs.
+**Notices** preserves provider version notices and current conversation warnings.
+**App errors** lists work interrupted by Studio, with safe Open or Resume actions.
+Select individual errors or **Select all**, then **Delete selected** to remove only
+those entries from the error list. This does not delete chats, commands, or history.
+The server applies the selected dismissals atomically. If the response is lost,
+the selection stays available while Studio reads the current list; it does not
+automatically repeat the request. Errors that block work remain visible in the conversation.
 On narrow screens, **Chat actions** also opens Chat settings and Team. The agent
 mode switch is inside Chat settings on mobile. Mobile input text stays at least
 16px; larger selected text sizes apply normally.

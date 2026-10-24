@@ -221,6 +221,7 @@ struct LoopActivity {
     wait_has_deadline: std::sync::atomic::AtomicBool,
     watch_events: AtomicUsize,
     waited: Notify,
+    observation_waited: Notify,
     tick_completed: Notify,
     watch_event: Notify,
     watch_updated: Notify,
@@ -320,6 +321,8 @@ impl MonitorRuntime {
                 record["outputEvents"] = serde_json::json!([]);
                 return Ok(record);
             }
+            #[cfg(test)]
+            self.loop_activity.observation_waited.notify_one();
             tokio::select! {
                 _ = changed => {},
                 _ = tokio::time::sleep_until(deadline) => {},
@@ -1763,8 +1766,7 @@ mod tests {
         orphan_checks: AtomicUsize,
         own_late_answers: AtomicBool,
         late_answers: Mutex<BTreeSet<String>>,
-        next_call_times: Mutex<Vec<tokio::time::Instant>>,
-        next_error_times: Mutex<Vec<tokio::time::Instant>>,
+        last_error_time: Mutex<Option<tokio::time::Instant>>,
         called: Notify,
         probe_called: Notify,
     }
@@ -1828,10 +1830,6 @@ mod tests {
         ) -> futures_util::future::BoxFuture<'a, Result<Option<Delivery>, MonitorError>> {
             Box::pin(async move {
                 self.next_calls.fetch_add(1, Ordering::SeqCst);
-                self.next_call_times
-                    .lock()
-                    .expect("record monitor port call time")
-                    .push(tokio::time::Instant::now());
                 self.called.notify_one();
                 let queued = self.queued_results.swap(0, Ordering::SeqCst);
                 self.drained_results.fetch_add(queued, Ordering::SeqCst);
@@ -1842,10 +1840,8 @@ mod tests {
                     })
                     .is_ok()
                 {
-                    self.next_error_times
-                        .lock()
-                        .expect("record monitor port error time")
-                        .push(tokio::time::Instant::now());
+                    *self.last_error_time.lock().expect("record error time") =
+                        Some(tokio::time::Instant::now());
                     return Err(MonitorError::Refused("test transient"));
                 }
                 Ok(None)
@@ -2236,6 +2232,24 @@ mod tests {
             port,
             Arc::new(Notify::new()),
         ));
+        store.transaction_with(|tx| {
+            tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.outputEventSequence',1) WHERE id='watch'",[])?;
+            Ok::<_,studio_runtime_store::StoreError>(())
+        }).await.unwrap();
+        // A commit before the first read returns immediately.
+        let early = runtime
+            .observe(
+                "owner",
+                0,
+                "default",
+                "watch",
+                Some(tokio::time::Instant::now() + Duration::from_secs(10)),
+                Some(0),
+            )
+            .await
+            .unwrap();
+        assert_eq!(early["outputEventSequence"], 1);
+        assert_eq!(early["waitExpired"], false);
         let waiter = Arc::clone(&runtime);
         let task = tokio::spawn(async move {
             waiter
@@ -2245,12 +2259,18 @@ mod tests {
                     "default",
                     "watch",
                     Some(tokio::time::Instant::now() + Duration::from_secs(10)),
-                    Some(0),
+                    Some(1),
                 )
                 .await
         });
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            runtime.loop_activity.observation_waited.notified(),
+        )
+        .await
+        .expect("observer read before commit");
         store.transaction_with(|tx| {
-            tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.outputEventSequence',1) WHERE id='watch'",[])?;
+            tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.outputEventSequence',2) WHERE id='watch'",[])?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.unwrap();
         let result = tokio::time::timeout(Duration::from_secs(2), task)
@@ -2258,7 +2278,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(result["outputEventSequence"], 1);
+        assert_eq!(result["outputEventSequence"], 2);
         assert_eq!(result["waitExpired"], false);
     }
 
@@ -2571,7 +2591,7 @@ mod tests {
     async fn monitor_scan_checks_each_unchanged_monitor_once_per_cycle() {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
-        const SCAN_PAGES: usize = 16;
+        const SCAN_PAGES: usize = 2;
         let monitor_count = crate::monitor_runtime::MONITOR_TICK_BATCH * SCAN_PAGES;
         store
             .transaction_with(move |tx| {
@@ -2708,23 +2728,31 @@ mod tests {
             Arc::new(Notify::new()),
         ));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        // Freeze time before the first error can schedule its retry deadline.
+        tokio::time::pause();
         let task = super::start(runtime.clone(), shutdown_rx);
         wait_for_calls(&port, 1).await;
         wait_for_cycles(&runtime, 1).await;
         assert_eq!(runtime.last_tick_error().as_deref(), Some("test transient"));
+        let retry_at = port
+            .last_error_time
+            .lock()
+            .expect("first error time")
+            .expect("error observed")
+            + ERROR_RETRY_MIN;
+        tokio::time::advance(
+            retry_at.duration_since(tokio::time::Instant::now()) - Duration::from_nanos(1),
+        )
+        .await;
+        tokio::task::yield_now().await;
+        assert_eq!(port.next_calls.load(Ordering::SeqCst), 1);
+        tokio::time::advance(Duration::from_nanos(1)).await;
+        tokio::time::resume();
         wait_for_calls(&port, 2).await;
-        let (second_call_time, first_error_time) = {
-            let call_times = port.next_call_times.lock().expect("read port call times");
-            let error_times = port.next_error_times.lock().expect("read port error times");
-            (call_times[1], error_times[0])
-        };
-        assert!(
-            second_call_time.duration_since(first_error_time) >= ERROR_RETRY_MIN,
-            "transient failures must honor the configured retry backoff"
-        );
         // A wake signal during the backoff adds an event wait without a
         // tick, so wait for the retry tick itself to complete.
         wait_for_completed_ticks(&runtime, 2).await;
+        assert_eq!(port.next_calls.load(Ordering::SeqCst), 2);
         assert_eq!(runtime.last_tick_error(), None);
         stop_task(&shutdown_tx, task).await;
 

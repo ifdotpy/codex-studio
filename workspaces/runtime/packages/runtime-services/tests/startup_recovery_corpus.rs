@@ -178,39 +178,6 @@ fn redact_registered_agent_differences(
     }
 }
 
-fn collect_differences(path: &str, left: &Value, right: &Value, out: &mut Vec<String>) {
-    if out.len() >= 40 || left == right {
-        return;
-    }
-    match (left, right) {
-        (Value::Object(left), Value::Object(right)) => {
-            let keys = left
-                .keys()
-                .chain(right.keys())
-                .collect::<std::collections::BTreeSet<_>>();
-            for key in keys {
-                collect_differences(
-                    &format!("{path}/{key}"),
-                    left.get(key).unwrap_or(&Value::Null),
-                    right.get(key).unwrap_or(&Value::Null),
-                    out,
-                );
-            }
-        }
-        (Value::Array(left), Value::Array(right)) => {
-            for index in 0..left.len().max(right.len()) {
-                collect_differences(
-                    &format!("{path}/{index}"),
-                    left.get(index).unwrap_or(&Value::Null),
-                    right.get(index).unwrap_or(&Value::Null),
-                    out,
-                );
-            }
-        }
-        _ => out.push(format!("{path}: {left} != {right}")),
-    }
-}
-
 #[tokio::test]
 async fn python_constructor_and_rust_startup_match_requests_monitors_events_and_projections() {
     let root = state_root();
@@ -297,11 +264,5 @@ async fn python_constructor_and_rust_startup_match_requests_monitors_events_and_
             "the frozen Python agent view contains its retired token count"
         );
     }
-    let mut differences = Vec::new();
-    collect_differences("", &rust, &python, &mut differences);
-    assert!(
-        differences.is_empty(),
-        "complete startup rows and projections differ:\n{}",
-        differences.join("\n")
-    );
+    assert_eq!(rust, python, "complete startup rows and projections differ");
 }

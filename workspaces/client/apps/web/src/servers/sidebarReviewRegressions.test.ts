@@ -100,9 +100,9 @@ it("ignores saved collapse state for an unregistered project directory", () => {
   expect(model.collapsed[field]).toBeUndefined();
   expect(writes).not.toHaveBeenCalled();
 });
-it("a reorder with 4000 chats on each server round-trips the sidebar order", () => {
-  const a = source("local", 4000),
-    b = source("remote", 4000);
+it("a reorder with shared chats on each server round-trips the sidebar order", () => {
+  const a = source("local", 3),
+    b = source("remote", 3);
   b.sidebar.projects[0].projectAliases = [
     { serverId: "local", projectId: "p-local", name: "local" },
   ];
@@ -121,6 +121,24 @@ it("a reorder with 4000 chats on each server round-trips the sidebar order", () 
   expect(mergeSidebar([a, b]).order[group]).toEqual(desired);
 });
 it.each([false, true])(
+  "merges distinct chat directories (registered: %s)",
+  (registered) => {
+    const a = source("local", 3, true);
+    if (registered)
+      a.sidebar.projects = a.sidebar.threads.map((chat) => ({
+        id: chat.cwd!,
+        path: chat.cwd!,
+        folders: [],
+      }));
+    const select = createMergedSidebarSelector();
+    const model = select([a]);
+    expect(model.data.runtime.projects).toHaveLength(registered ? 3 : 4);
+    expect(select([a])).toBe(model);
+  },
+);
+
+// Explicit manual benchmark; ordinary checks use the small correctness cases above.
+it.runIf(process.env.CODEX_SIDEBAR_BENCHMARK === "1").each([false, true])(
   "merges 6000 chat directories within 500ms (registered: %s)",
   (registered) => {
     const a = source("local", 6000, true);

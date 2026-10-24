@@ -11,6 +11,26 @@ are owned by this app's source and [`package.json`](package.json). Focused check
 `pnpm run test:server:bridge` from the repository root, as defined by the
 [root manifest](../../../../package.json).
 
+## Steer completion and Stop
+
+A successful result waits briefly for pending steer echoes. An echo during the
+grace keeps the continuation in the same turn. When the grace expires, the turn
+completes: unread input is withdrawn and reported for server redelivery with its
+original identity; input already handed to the SDK remains submitted with an
+unknown outcome and is never automatically resent. Before completing a turn
+with such input, the bridge closes the CLI and reconciles its final native
+history. A split input is delivered only if every part is recorded; no recorded
+parts proves it unapplied, while partial or unavailable evidence stays unknown.
+The next start resumes a fresh CLI, and retries reuse recorded user-message
+identities even for auto-steered input. Query-closing controls refuse unsettled
+unread input. [The lifecycle limits](stall-watch.mjs) own the echo grace and
+interrupt/exit deadlines in milliseconds.
+
+Stop finalizes an already deferred result as interrupted. If running Claude does
+not end its turn by the interrupt deadline, the existing stall recovery closes
+the CLI and reports a visible error. Only native history that proves input was
+unread permits redelivery after that close; unavailable history stays uncertain.
+
 ## Restart recovery
 
 Session load checks stale `inProgress` turns against the native transcript.

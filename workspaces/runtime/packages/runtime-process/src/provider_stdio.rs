@@ -193,6 +193,11 @@ pub struct StdioProviderTaskFactory {
     pub stderr_log: Option<OperationalLog>,
 }
 
+enum StdioIoCompletion {
+    Read(Result<(), AdapterError>),
+    Write(Result<(), AdapterError>),
+}
+
 impl ProviderTaskFactory for StdioProviderTaskFactory {
     fn open(
         &self,
@@ -248,7 +253,7 @@ impl StdioProviderTaskFactory {
             wrapped.wrap(ProcessGroup::leader());
             priority.apply_before_spawn(&mut wrapped);
             let mut child = wrapped.spawn().map_err(process_error)?;
-            let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
+            let (commands, mut inbox) = mpsc::channel(LANE_CAPACITY);
             let (entries, journal) = mpsc::channel(LANE_CAPACITY);
             let diagnostic_handle = handle.clone();
             let pending_replies = PendingReplies::default();
@@ -283,41 +288,49 @@ impl StdioProviderTaskFactory {
                     tokio::spawn(async move { drain_stderr(&mut stderr, log.as_ref()).await })
                 });
                 let stderr_available = stderr_drain.is_some();
-                // Pipes belong to the exchange, while this owner keeps the child
-                // available to wait independently of blocked writes or journal delivery.
+                // Keep the reader's buffered bytes, cursor, and pending journal send
+                // alive when exit cancels the exchange's writer.
                 let stdin = child.stdin().take();
                 let stdout = child.stdout().take();
-                let exchange = async {
-                    let stdin = stdin.ok_or(AdapterError::InvalidConfiguration)?;
+                let reader = async {
                     let stdout = stdout.ok_or(AdapterError::InvalidConfiguration)?;
+                    read_entries(
+                        stdout,
+                        entries,
+                        options.clock,
+                        generation,
+                        frame_limit,
+                        output_limit,
+                        reply_witness,
+                    )
+                    .await
+                };
+                tokio::pin!(reader);
+                let mut pending_write = None;
+                let exchange = async {
+                    let Some(stdin) = stdin else {
+                        return StdioIoCompletion::Read(Err(AdapterError::InvalidConfiguration));
+                    };
                     if !stderr_available {
-                        return Err(AdapterError::InvalidConfiguration);
+                        return StdioIoCompletion::Read(Err(AdapterError::InvalidConfiguration));
                     }
-                    tokio::try_join!(
-                        write_commands(
+                    tokio::select! {
+                        result = write_commands(
                             stdin,
-                            inbox,
+                            &mut inbox,
                             diagnostic_handle,
                             generation,
-                            pending_replies
-                        ),
-                        read_entries(
-                            stdout,
-                            entries,
-                            options.clock,
-                            generation,
-                            frame_limit,
-                            output_limit,
-                            reply_witness,
-                        )
-                    )?;
-                    Ok(())
+                            pending_replies,
+                            &mut pending_write,
+                        ) => StdioIoCompletion::Write(result),
+                        result = &mut reader => StdioIoCompletion::Read(result),
+                    }
                 };
                 let bounded = async {
                     match deadline {
                         Some(deadline) => tokio::time::timeout_at(deadline, exchange)
                             .await
-                            .unwrap_or(Err(AdapterError::Timeout)),
+                            .unwrap_or(StdioIoCompletion::Read(Err(AdapterError::Timeout))),
                         None => exchange.await,
                     }
                 };
@@ -333,14 +346,36 @@ impl StdioProviderTaskFactory {
                 let (result, exit_unobserved) = tokio::select! {
                     biased;
                     _ = Shutdown::cancelled(&mut stop) => (Ok(()), false),
-                    // First retain immediately readable replies in the bounded journal.
-                    // A full journal must never prevent observing and reaping the child.
-                    result = bounded => (result, false),
+                    // Observe exit before accepting another stdin write. The drain
+                    // retains stdout and serves ACKs without touching the dead stdin.
                     exited = leader_exit => match exited {
-                        Ok(()) => (Err(SupervisorError::ConnectionLost.into()), false),
+                        Ok(()) => {
+                            interrupt_stdin_write(&mut pending_write);
+                            (drain_stdout_before_cleanup(&mut reader, &mut inbox, &mut stop, deadline).await, false)
+                        },
                         Err(error) => (Err(process_error(error)), true),
                     },
+                    // A full journal must never prevent observing and reaping the child.
+                    result = bounded => match result {
+                        StdioIoCompletion::Write(Err(error)) if matches!(&error,
+                            AdapterError::Supervisor(SupervisorError::Io(cause))
+                            if cause.kind() == io::ErrorKind::BrokenPipe
+                        ) => {
+                            // A child can close stdin before exiting. EPIPE must
+                            // stop writes without dropping its final stdout.
+                            interrupt_stdin_write(&mut pending_write);
+                            let drained = drain_stdout_before_cleanup(&mut reader, &mut inbox, &mut stop, deadline).await;
+                            let result = match drained {
+                                Err(AdapterError::Supervisor(SupervisorError::ConnectionLost)) => Err(error),
+                                result => result,
+                            };
+                            (result, false)
+                        }
+                        StdioIoCompletion::Read(result) | StdioIoCompletion::Write(result) => (result, false),
+                    },
                 };
+                interrupt_stdin_write(&mut pending_write);
+                close_commands(&mut inbox);
                 // Signal the group before the leader is reaped. If its exit could not
                 // be observed, the leader may already be reaped: send nothing.
                 // Always wait, including when the group already exited (ESRCH).
@@ -371,6 +406,11 @@ impl StdioProviderTaskFactory {
                     })
                     .and(reaped.map(|_| ()))
                     .map_err(process_error);
+                // close() fences new admission but outstanding Tokio permits can
+                // still enqueue. After bounded reaping, this task owns only the
+                // closed channel and rejects late writes without holding cleanup.
+                // recv() ends when the remaining permits are sent or dropped.
+                drop(tokio::spawn(reject_late_commands(inbox)));
                 let stderr_result = match stderr_drain {
                     Some(mut stderr_drain) => {
                         match tokio::time::timeout(REAP_GRACE, &mut stderr_drain).await {
@@ -410,6 +450,101 @@ impl StdioProviderTaskFactory {
             ))
         })
     }
+}
+
+async fn drain_stdout_before_cleanup(
+    reader: impl std::future::Future<Output = Result<(), AdapterError>>,
+    commands: &mut mpsc::Receiver<AdapterCommand>,
+    stop: &mut watch::Receiver<bool>,
+    deadline: Option<Instant>,
+) -> Result<(), AdapterError> {
+    // A full journal or a descendant holding stdout open must not prevent
+    // signalling and reaping the still-owned group. Never extend the caller's
+    // deadline, and preserve shutdown's priority and successful result.
+    let grace_deadline = Instant::now() + REAP_GRACE;
+    let drain_deadline = deadline.map_or(grace_deadline, |end| end.min(grace_deadline));
+    let drain = async {
+        tokio::select! {
+            result = reader => result,
+            result = commands_after_exit(commands) => result,
+        }
+    };
+    let result = tokio::select! {
+        biased;
+        _ = Shutdown::cancelled(stop) => Ok(()),
+        result = tokio::time::timeout_at(drain_deadline, drain) => {
+            result.unwrap_or_else(|_| {
+                if deadline.is_some_and(|end| end <= grace_deadline) {
+                    Err(AdapterError::Timeout)
+                } else {
+                    Err(SupervisorError::ConnectionLost.into())
+                }
+            })
+        }
+    };
+    close_commands(commands);
+    result
+}
+
+fn close_commands(commands: &mut mpsc::Receiver<AdapterCommand>) {
+    commands.close();
+    while let Ok(command) = commands.try_recv() {
+        command.reject();
+    }
+}
+
+async fn reject_late_commands(mut commands: mpsc::Receiver<AdapterCommand>) {
+    while let Some(command) = commands.recv().await {
+        command.reject();
+    }
+}
+
+struct PendingStdinWrite {
+    reply: Option<tokio::sync::oneshot::Sender<CommandReceipt>>,
+    /// Bytes accepted by the OS pipe, independent of child reads.
+    bytes_written: usize,
+}
+
+impl PendingStdinWrite {
+    fn new(reply: tokio::sync::oneshot::Sender<CommandReceipt>) -> Self {
+        Self {
+            reply: Some(reply),
+            bytes_written: 0,
+        }
+    }
+}
+
+fn interrupt_stdin_write(pending: &mut Option<PendingStdinWrite>) {
+    if let Some(PendingStdinWrite {
+        reply: Some(reply),
+        bytes_written,
+    }) = pending.take()
+    {
+        // Delivery is best effort when the caller itself has gone. Losing an
+        // active caller must not turn accepted bytes into a NotSent claim.
+        let _ignored = reply.send(CommandReceipt::WriteInterrupted { bytes_written });
+    }
+}
+
+async fn commands_after_exit(
+    commands: &mut mpsc::Receiver<AdapterCommand>,
+) -> Result<(), AdapterError> {
+    while let Some(command) = commands.recv().await {
+        match command {
+            AdapterCommand::Ack { cursor, reply } => {
+                if reply.send(CommandReceipt::Acknowledged(cursor)).is_err() {
+                    return Err(AdapterError::ConsumerClosed);
+                }
+            }
+            // Zero accepted bytes proves NotSent. The explicit interruption
+            // receipt also tells initialization to keep consuming the tail.
+            // Never touch stdin or wait for receipt observation on this path.
+            AdapterCommand::Write { reply, .. } => {
+                let _ignored = reply.send(CommandReceipt::WriteInterrupted { bytes_written: 0 });
+            }
+        }
+    }
+    Err(AdapterError::ConsumerClosed)
 }
 
 pub(crate) async fn drain_stderr(
@@ -467,10 +602,11 @@ fn process_error(error: io::Error) -> AdapterError {
 
 async fn write_commands(
     mut stdin: impl AsyncWrite + Unpin,
-    mut commands: mpsc::Receiver<AdapterCommand>,
+    commands: &mut mpsc::Receiver<AdapterCommand>,
     handle: ProviderHandle,
     generation: Generation,
     pending_replies: PendingReplies,
+    pending_write: &mut Option<PendingStdinWrite>,
 ) -> Result<(), AdapterError> {
     while let Some(command) = commands.recv().await {
         match command {
@@ -479,10 +615,11 @@ async fn write_commands(
                 reply,
                 observed,
             } => {
+                let receipt = pending_write.insert(PendingStdinWrite::new(reply));
                 write_one_command(
                     &mut stdin,
                     write,
-                    reply,
+                    receipt,
                     observed,
                     WriterTimingDiagnostics {
                         handle: &handle,
@@ -494,6 +631,7 @@ async fn write_commands(
                     },
                 )
                 .await?;
+                *pending_write = None;
             }
             AdapterCommand::Ack { cursor, reply } => {
                 if reply.send(CommandReceipt::Acknowledged(cursor)).is_err() {
@@ -517,7 +655,7 @@ struct WriterTimingDiagnostics<'a, Sample, Emit> {
 async fn write_one_command<Sample, Emit>(
     stdin: &mut (impl AsyncWrite + Unpin),
     write: PreparedWrite,
-    reply: tokio::sync::oneshot::Sender<CommandReceipt>,
+    receipt: &mut PendingStdinWrite,
     observed: tokio::sync::oneshot::Receiver<()>,
     timing: WriterTimingDiagnostics<'_, Sample, Emit>,
 ) -> Result<(), AdapterError>
@@ -533,17 +671,30 @@ where
     let mut bytes =
         serde_json::to_vec(&write.message).map_err(|_| AdapterError::InvalidConfiguration)?;
     bytes.push(b'\n');
-    stdin.write_all(&bytes).await.map_err(process_error)?;
+    while receipt.bytes_written < bytes.len() {
+        let count = stdin
+            .write(&bytes[receipt.bytes_written..])
+            .await
+            .map_err(process_error)?;
+        if count == 0 {
+            return Err(process_error(io::Error::from(io::ErrorKind::WriteZero)));
+        }
+        receipt.bytes_written += count;
+    }
     stdin.flush().await.map_err(process_error)?;
     let stdin_flushed_at_ns = if witnessed.is_some() {
         Some((timing.sample_timestamp)())
     } else {
         None
     };
-    let receipt_sent = reply.send(CommandReceipt::Written {
-        remote_id: None,
-        duplicate: false,
-    });
+    let receipt_sent = receipt
+        .reply
+        .take()
+        .ok_or(AdapterError::InvalidConfiguration)?
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        });
     if let Some(stdin_flushed_at_ns) = stdin_flushed_at_ns
         && let Some(line) = stdin_timing_diagnostic_line(
             timing.handle,
@@ -668,6 +819,165 @@ async fn read_stdout_line<R: AsyncRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn interrupted_stdin_write_counts_accepted_bytes_and_never_reports_them_not_sent() {
+        for accepted_bytes in [0, 1] {
+            let (mut stdin, _child) = tokio::io::duplex(1);
+            if accepted_bytes == 0 {
+                stdin
+                    .write_all(b"x")
+                    .await
+                    .expect("fill stdin before this request");
+            }
+            let (reply, receipt) = tokio::sync::oneshot::channel();
+            let (_observation, observed) = tokio::sync::oneshot::channel();
+            let mut pending = Some(PendingStdinWrite::new(reply));
+            let handle = ProviderHandle::for_account("accepted-prefix");
+            let replies = PendingReplies::default();
+            let mut writer = Box::pin(write_one_command(
+                &mut stdin,
+                turn_start_write(),
+                pending.as_mut().expect("owned receipt"),
+                observed,
+                WriterTimingDiagnostics {
+                    handle: &handle,
+                    generation: Generation(1),
+                    enabled: false,
+                    pending_replies: &replies,
+                    sample_timestamp: || 0,
+                    emit_diagnostic: |_: &[u8]| {},
+                },
+            ));
+            assert!(
+                std::future::poll_fn(|cx| Poll::Ready(writer.as_mut().poll(cx).is_pending())).await
+            );
+            drop(writer);
+            interrupt_stdin_write(&mut pending);
+            assert!(
+                matches!(receipt.await.expect("explicit interrupted receipt"),
+                    CommandReceipt::WriteInterrupted { bytes_written } if bytes_written == accepted_bytes
+                )
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stdout_eof_rejects_queued_writes_and_closes_admission_before_cleanup() {
+        let (commands, mut inbox) = mpsc::channel(LANE_CAPACITY);
+        let (command, receipt) = AdapterCommand::write(turn_start_write());
+        let shutdown = Shutdown::default();
+        // Queue the command in the reader's terminal poll. If command service
+        // was polled first, it saw an empty inbox; either select order must now
+        // choose EOF with a ready, admitted write that has never reached stdin.
+        let reader = async {
+            commands.try_send(command).expect("admitted at EOF");
+            Err(SupervisorError::ConnectionLost.into())
+        };
+        let result =
+            drain_stdout_before_cleanup(reader, &mut inbox, &mut shutdown.subscribe(), None).await;
+        assert!(matches!(
+            result,
+            Err(AdapterError::Supervisor(SupervisorError::ConnectionLost))
+        ));
+        assert!(
+            inbox.is_closed(),
+            "drain must close admission before cleanup"
+        );
+        assert!(matches!(receipt.receive().await, CommandReceipt::NotSent));
+        assert!(matches!(
+            commands.try_send(AdapterCommand::ack(EventCursor(1)).0),
+            Err(mpsc::error::TrySendError::Closed(_))
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stdout_exit_drain_bounds_a_full_journal_and_preserves_the_exchange_deadline() {
+        for has_deadline in [false, true] {
+            let deadline = has_deadline.then(|| Instant::now() + REAP_GRACE / 2);
+            let (entries, mut journal) = mpsc::channel(1);
+            let shutdown = Shutdown::default();
+            let (_commands, mut inbox) = mpsc::channel(LANE_CAPACITY);
+            let started = Instant::now();
+            let result = drain_stdout_before_cleanup(
+                read_entries(
+                    &b"first\nsecond\n"[..],
+                    entries,
+                    SessionClock::default(),
+                    Generation(1),
+                    1024,
+                    None,
+                    None,
+                ),
+                &mut inbox,
+                &mut shutdown.subscribe(),
+                deadline,
+            )
+            .await;
+            if let Some(deadline) = deadline {
+                assert!(matches!(result, Err(AdapterError::Timeout)));
+                assert_eq!(Instant::now(), deadline);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(AdapterError::Supervisor(SupervisorError::ConnectionLost))
+                ));
+                assert_eq!(Instant::now() - started, REAP_GRACE);
+            }
+            let retained = journal.recv().await.expect("first entry retained");
+            assert_eq!(retained.cursor, EventCursor(1));
+            assert!(journal.recv().await.is_none());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stdout_exit_drain_bounds_an_inherited_pipe_and_honors_shutdown() {
+        for cancel in [false, true] {
+            let (mut writer, stdout) = tokio::io::duplex(1024);
+            writer.write_all(b"final\n").await.expect("final line");
+            // Keep the writer alive, like a descendant inheriting stdout.
+            let (entries, mut journal) = mpsc::channel(1);
+            let shutdown = Shutdown::default();
+            let (_commands, mut inbox) = mpsc::channel(LANE_CAPACITY);
+            let mut stop = shutdown.subscribe();
+            let started = Instant::now();
+            let (result, ()) = tokio::join!(
+                drain_stdout_before_cleanup(
+                    read_entries(
+                        stdout,
+                        entries,
+                        SessionClock::default(),
+                        Generation(1),
+                        1024,
+                        None,
+                        None,
+                    ),
+                    &mut inbox,
+                    &mut stop,
+                    None,
+                ),
+                async {
+                    let entry = journal.recv().await.expect("final line drained");
+                    assert_eq!(entry.cursor, EventCursor(1));
+                    if cancel {
+                        shutdown.cancel();
+                    }
+                },
+            );
+            if cancel {
+                assert!(result.is_ok());
+                assert_eq!(Instant::now(), started);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(AdapterError::Supervisor(SupervisorError::ConnectionLost))
+                ));
+                assert_eq!(Instant::now() - started, REAP_GRACE);
+            }
+            assert!(journal.recv().await.is_none());
+            drop(writer);
+        }
+    }
 
     /// A group signal after the leader is reaped could reach another group that
     /// reuses the ID. Here the leader exits while a descendant keeps stdout open,
@@ -826,7 +1136,7 @@ mod tests {
         write_one_command(
             &mut stdin,
             write,
-            reply,
+            &mut PendingStdinWrite::new(reply),
             observed,
             WriterTimingDiagnostics {
                 handle: &ProviderHandle::for_account("default"),
@@ -945,7 +1255,7 @@ mod tests {
         let result = write_one_command(
             &mut stdin,
             turn_start_write(),
-            reply,
+            &mut PendingStdinWrite::new(reply),
             observed,
             WriterTimingDiagnostics {
                 handle: &ProviderHandle::for_account("default"),
@@ -988,7 +1298,7 @@ mod tests {
         let result = write_one_command(
             &mut stdin,
             turn_start_write(),
-            reply,
+            &mut PendingStdinWrite::new(reply),
             observed,
             WriterTimingDiagnostics {
                 handle: &ProviderHandle::for_account("default"),
@@ -1041,7 +1351,7 @@ mod tests {
 
     #[tokio::test]
     async fn stdout_frame_limit_handles_lf_crlf_and_oversized_payloads() {
-        let frame_limit = studio_runtime_providers::MAX_FRAME_BYTES;
+        let frame_limit = 32;
         let mut lf_input = vec![b'x'; frame_limit];
         lf_input.push(b'\n');
         let mut lf_reader = BufReader::new(lf_input.as_slice());
@@ -1051,7 +1361,7 @@ mod tests {
         assert!(
             read_stdout_line(&mut lf_reader, &mut line, &mut total, frame_limit, None,)
                 .await
-                .expect("codec-sized LF frame")
+                .expect("limit-sized LF frame")
         );
         assert_eq!(
             studio_runtime_providers::frame_payload_bytes(&line),
@@ -1070,7 +1380,7 @@ mod tests {
         assert!(
             read_stdout_line(&mut crlf_reader, &mut line, &mut total, frame_limit, None,)
                 .await
-                .expect("codec-sized split CRLF frame")
+                .expect("limit-sized split CRLF frame")
         );
         assert_eq!(
             studio_runtime_providers::frame_payload_bytes(&line),
@@ -1089,6 +1399,8 @@ mod tests {
             Err(AdapterError::OutputLimit { limit }) if limit == frame_limit
         ));
 
+        assert_eq!(total, frame_limit + 2);
+
         let mut unterminated = vec![b'x'; frame_limit];
         unterminated.push(b'\r');
         let mut reader = BufReader::new(unterminated.as_slice());
@@ -1098,6 +1410,7 @@ mod tests {
             read_stdout_line(&mut reader, &mut line, &mut total, frame_limit, None).await,
             Err(AdapterError::OutputLimit { limit }) if limit == frame_limit
         ));
+        assert_eq!(total, frame_limit + 1);
     }
 
     #[tokio::test(start_paused = true)]

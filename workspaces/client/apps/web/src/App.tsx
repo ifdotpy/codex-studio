@@ -1,4 +1,9 @@
 import { randomUUID } from "./uuid";
+import {
+  StudioErrorsScope,
+  useStudioErrorsState,
+} from "./components/StudioErrors";
+import SidebarWarnings from "./components/SidebarWarnings";
 import { ModelWhitelistSettings } from "./components/models/ModelWhitelistSettings";
 import Disclosure from "./components/ui/Disclosure";
 import { ChatSettingsDialog } from "./components/agents/ChatSettingsDialog";
@@ -694,7 +699,12 @@ export default function App({ active = true }: { active?: boolean }) {
       ),
     };
   }, [data, pendingConversationDelete]);
-  const prepareChat = useChatPrefetch(prefetchData, opened, workspaceId);
+  const prepareChat = useChatPrefetch(
+    prefetchData,
+    opened,
+    workspaceId,
+    active,
+  );
   useEffect(() => {
     if (tasksOpen) setTasksRendered(true);
     if (workspaceOpen) setWorkspaceRendered(true);
@@ -1378,10 +1388,11 @@ export default function App({ active = true }: { active?: boolean }) {
   }, [data?.stateDir]);
   useEffect(() => {
     if (!data?.stateDir) return;
-    const keys = new Set([
-      accountKey,
-      ...usageAccountKeys.split("\n").filter(Boolean),
-    ]);
+    const keys = new Set(
+      active
+        ? [accountKey, ...usageAccountKeys.split("\n").filter(Boolean)]
+        : [],
+    );
     for (const [key, stop] of limitsWatchers.current) {
       if (keys.has(key)) continue;
       stop();
@@ -1426,7 +1437,13 @@ export default function App({ active = true }: { active?: boolean }) {
       };
       limitsWatchers.current.set(key, stop);
     }
-  }, [data?.stateDir, accountKey, usageAccountKeys, watchResourceReads]);
+  }, [
+    data?.stateDir,
+    accountKey,
+    usageAccountKeys,
+    watchResourceReads,
+    active,
+  ]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };
@@ -2441,6 +2458,7 @@ export default function App({ active = true }: { active?: boolean }) {
     publicAccounts,
     creating,
   );
+  const studioErrors = useStudioErrorsState(!!data);
   if (!active) return null;
   // A server contract gate must not cover navigation to other server owners.
   if (screen && schemaMismatch)
@@ -2507,7 +2525,17 @@ export default function App({ active = true }: { active?: boolean }) {
     }
   };
   return (
-    <>
+    <StudioErrorsScope value={studioErrors}>
+      {active && (
+        <SidebarWarnings
+          data={data}
+          agent={agent}
+          opened={opened}
+          accountKey={accountKey}
+          syncWorkspaceId={workspaceId}
+          open={open}
+        />
+      )}
       {(!isServerView || isClassicServerView) && (
         <Sidebar
           services={sidebarServices}
@@ -3766,6 +3794,6 @@ export default function App({ active = true }: { active?: boolean }) {
         </div>
       )}
       <FilePreview target={filePreview} onClose={() => setFilePreview(null)} />
-    </>
+    </StudioErrorsScope>
   );
 }

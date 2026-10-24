@@ -121,10 +121,16 @@ test("entity fixture contract matches the real sync backend", async () => {
     maxSeq: realPull.maxSeq,
   });
   const realById = new Map(
-    realPull.documents.map((doc) => [doc.id, JSON.parse(doc.payload)]),
+    realPull.documents.map((doc) => [
+      `entity:${doc.collection}:${doc.id}`,
+      { collection: doc.collection, id: doc.id, value: doc.value },
+    ]),
   );
   const stubById = new Map(
-    stubPull.documents.map((doc) => [doc.id, JSON.parse(doc.payload)]),
+    stubPull.documents.map((doc) => [
+      `entity:${doc.collection}:${doc.id}`,
+      { collection: doc.collection, id: doc.id, value: doc.value },
+    ]),
   );
   assert.deepEqual(
     [...stubById.keys()].sort(),
@@ -177,14 +183,18 @@ test("entity fixture contract matches the real sync backend", async () => {
       );
     }
     assert.equal(
-      typeof realPull.documents.find((doc) => doc.id === id)._deleted,
-      "boolean",
-      `${id} tombstone marker`,
+      typeof realPull.documents.find(
+        (doc) => `entity:${doc.collection}:${doc.id}` === id,
+      ).op,
+      "string",
+      `${id} operation`,
     );
     assert.equal(
-      typeof stubPull.documents.find((doc) => doc.id === id)._deleted,
-      "boolean",
-      `${id} stub tombstone marker`,
+      typeof stubPull.documents.find(
+        (doc) => `entity:${doc.collection}:${doc.id}` === id,
+      ).op,
+      "string",
+      `${id} stub operation`,
     );
   }
   assert.equal(stubPull.initialHigh, realPull.initialHigh, "fresh initialHigh");
@@ -194,8 +204,6 @@ test("entity fixture contract matches the real sync backend", async () => {
     "nativeNotices",
     "peerTeamsVersion",
     "projectOrganizationVersion",
-    "rateLimits",
-    "rateLimitsByAccount",
     "sidebarOrder",
     "stateDir",
     "tasksHistoryLimit",
@@ -232,7 +240,7 @@ test("entity fixture contract matches the real sync backend", async () => {
       limit: 1,
     });
     assert.equal(
-      priorityPage.documents[0].id,
+      `entity:${priorityPage.documents[0].collection}:${priorityPage.documents[0].id}`,
       `entity:agent:${priorityAgent.id}`,
       "priorityId places its agent first",
     );
@@ -240,7 +248,7 @@ test("entity fixture contract matches the real sync backend", async () => {
 
   const stream = await fetch(
     new URL(
-      `/api/sync/stream?protocol=3&resources=${encodeURIComponent(JSON.stringify([{ kind: "state" }]))}`,
+      `/api/sync/stream?protocol=4&resources=${encodeURIComponent(JSON.stringify([{ kind: "state" }]))}`,
       origin,
     ),
   );
@@ -294,7 +302,7 @@ test("entity fixture contract matches the real sync backend", async () => {
   });
   await new Promise((resolve) => streamServer.listen(0, "127.0.0.1", resolve));
   const stubStream = await fetch(
-    `http://127.0.0.1:${streamServer.address().port}/api/sync/stream?protocol=3&resources=%5B%5D`,
+    `http://127.0.0.1:${streamServer.address().port}/api/sync/stream?protocol=4&resources=%5B%5D`,
   );
   assert.equal(stubStream.status, 200);
   const stubOrigin = `http://127.0.0.1:${streamServer.address().port}`;
@@ -313,7 +321,8 @@ test("entity fixture contract matches the real sync backend", async () => {
   assert.ok(
     nodeChanged.documents.some(
       (document) =>
-        document.id === "entity:workspace:current" &&
+        document.collection === "workspace" &&
+        document.id === "current" &&
         document.seq > nodeInitial.maxSeq,
     ),
     "Node fixture assigns a new sequence to an in-place entity change",
@@ -321,11 +330,46 @@ test("entity fixture contract matches the real sync backend", async () => {
   assert.ok(
     nodeChanged.documents.some(
       (document) =>
-        document.id === `entity:project:${removedNodeProject.id}` &&
-        document._deleted === true &&
+        document.collection === "project" &&
+        document.id === removedNodeProject.id &&
+        document.op === "delete" &&
         document.seq > nodeInitial.maxSeq,
     ),
     "Node fixture emits a sequenced tombstone for an in-place removal",
+  );
+  // Detach stored entity values from live fixture objects, including nested DTOs.
+  const nodeAgent = nodeSnapshot.runtime.agents[0];
+  nodeAgent.activity = { phase: "writing", at: 1 };
+  const nestedBaseline = await fetch(
+    new URL(
+      `/api/sync/pull?scope=state%3Aentities%3Av1&after=${nodeChanged.maxSeq}`,
+      stubOrigin,
+    ),
+  ).then((response) => response.json());
+  const writing = nestedBaseline.documents.find(
+    (document) =>
+      document.collection === "agent" && document.id === nodeAgent.id,
+  );
+  nodeAgent.activity.phase = "thinking";
+  const nestedChange = await fetch(
+    new URL(
+      `/api/sync/pull?scope=state%3Aentities%3Av1&after=${nestedBaseline.maxSeq}`,
+      stubOrigin,
+    ),
+  ).then((response) => response.json());
+  const thinking = nestedChange.documents.find(
+    (document) =>
+      document.collection === "agent" && document.id === nodeAgent.id,
+  );
+  assert.equal(
+    writing.value.activity.phase,
+    "writing",
+    "an in-place nested edit does not rewrite its previous fixture document",
+  );
+  assert.equal(thinking.value.activity.phase, "thinking");
+  assert.ok(
+    thinking.seq > writing.seq,
+    "an in-place nested edit receives a new sequence",
   );
   for (const path of [
     "/api/sync/pull?after=-1",
@@ -448,12 +492,15 @@ test("shared entity stub converges on one matching stream", async ({
   const pullScopes = [];
   const streamStatuses = [];
   const streamUrls = [];
+  const subscriptionUpdates = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.pathname.startsWith("/api/sync/")) requests.push(url.pathname);
     if (url.pathname === "/api/sync/pull")
       pullScopes.push(url.searchParams.get("scope"));
     if (url.pathname === "/api/sync/stream") streamUrls.push(url.href);
+    if (url.pathname === "/api/sync/subscriptions")
+      subscriptionUpdates.push(request.postDataJSON());
     if (legacySnapshotRoute.test(url.href)) requests.push(url.pathname);
   });
   page.on("response", (response) => {
@@ -463,29 +510,52 @@ test("shared entity stub converges on one matching stream", async ({
   try {
     const stub = await stubEntityState(page, snapshot, syncContract);
     await page.addInitScript(() => {
-      const NativeEventSource = window.EventSource;
+      const nativeFetch = window.fetch.bind(window);
       window.__entityFixtureResourceEvents = [];
       window.__entityFixtureStreams = [];
-      window.EventSource = new Proxy(NativeEventSource, {
-        construct(Target, args) {
-          const stream = new Target(...args);
-          const record = {
-            url: String(args[0]),
-            closeCalls: 0,
-            stream,
-          };
-          window.__entityFixtureStreams.push(record);
-          const close = stream.close.bind(stream);
-          stream.close = () => {
-            record.closeCalls++;
-            close();
-          };
-          stream.addEventListener("resources", (event) => {
-            window.__entityFixtureResourceEvents.push(JSON.parse(event.data));
-          });
-          return stream;
-        },
-      });
+      window.__entityFixtureSubscriptionAcks = [];
+      window.fetch = async (input, init) => {
+        const request = new Request(input, init);
+        if (new URL(request.url).pathname !== "/api/sync/stream")
+          return nativeFetch(request);
+        const record = { url: request.url, open: false, closeCalls: 0 };
+        window.__entityFixtureStreams.push(record);
+        request.signal.addEventListener("abort", () => {
+          record.open = false;
+          record.closeCalls++;
+        });
+        const response = await nativeFetch(request);
+        record.open = response.ok && !request.signal.aborted;
+        const decoder = new TextDecoder();
+        let pending = "";
+        const observed = response.body.pipeThrough(
+          new TransformStream({
+            transform(chunk, controller) {
+              controller.enqueue(chunk);
+              pending += decoder.decode(chunk, { stream: true });
+              let end;
+              while ((end = pending.indexOf("\n\n")) >= 0) {
+                const frame = pending.slice(0, end);
+                pending = pending.slice(end + 2);
+                const name = frame.match(/^event: (.+)$/m)?.[1];
+                const data = frame.match(/^data: (.+)$/m)?.[1];
+                if (!data) continue;
+                if (name === "resources")
+                  window.__entityFixtureResourceEvents.push(JSON.parse(data));
+                if (name === "subscriptions")
+                  window.__entityFixtureSubscriptionAcks.push(JSON.parse(data));
+              }
+            },
+            flush() {
+              record.open = false;
+            },
+          }),
+        );
+        return new Response(observed, {
+          status: response.status,
+          headers: response.headers,
+        });
+      };
     });
     await page.goto(origin);
     const routeParity = await page.evaluate(async () => {
@@ -528,13 +598,8 @@ test("shared entity stub converges on one matching stream", async ({
     const repeatedStreamUrls = settledStreamUrls.filter(
       (url, index) => settledStreamUrls.indexOf(url) !== index,
     );
-    const streamLifecycle = await page.evaluate(() =>
-      window.__entityFixtureStreams.map(({ url, closeCalls, stream }) => ({
-        url,
-        closeCalls,
-        readyState: stream.readyState,
-        open: stream.readyState === EventSource.OPEN,
-      })),
+    const streamLifecycle = await page.evaluate(
+      () => window.__entityFixtureStreams,
     );
     const openStreams = streamLifecycle.filter(({ open }) => open);
     const entityPulls = pullScopes.filter(
@@ -551,13 +616,11 @@ test("shared entity stub converges on one matching stream", async ({
         initialStreamConnections,
         streamConnections,
         repeatedStreamUrls,
-        streamLifecycle: streamLifecycle.map(
-          ({ url, closeCalls, readyState }) => ({
-            resources: new URL(url, origin).searchParams.get("resources"),
-            closeCalls,
-            readyState,
-          }),
-        ),
+        streamLifecycle: streamLifecycle.map(({ url, closeCalls, open }) => ({
+          resources: new URL(url, origin).searchParams.get("resources"),
+          closeCalls,
+          open,
+        })),
         openStreamCount: openStreams.length,
         streamStatuses,
         snapshotReads,
@@ -571,9 +634,26 @@ test("shared entity stub converges on one matching stream", async ({
       "resource union changes leave exactly one stream open",
     );
     assert.equal(
-      streamLifecycle.filter(({ closeCalls }) => closeCalls > 0).length,
-      streamLifecycle.length - 1,
-      "replaced resource-union streams are closed",
+      initialStreamConnections,
+      1,
+      "resource union changes reuse the original v4 stream",
+    );
+    assert.equal(
+      streamLifecycle[0].closeCalls,
+      0,
+      "live subscription updates do not close the stream",
+    );
+    assert.ok(
+      subscriptionUpdates.length > 0,
+      "mounted views update the live resource union",
+    );
+    const acknowledgements = await page.evaluate(
+      () => window.__entityFixtureSubscriptionAcks,
+    );
+    assert.deepEqual(
+      acknowledgements.map(({ gen }) => gen),
+      subscriptionUpdates.map(({ gen }) => gen),
+      "every resource update is acknowledged on the original stream",
     );
     assert.deepEqual(repeatedStreamUrls, [], "stream queries do not reconnect");
     assert.ok(streamStatuses.every((status) => status === 200));
@@ -618,16 +698,18 @@ test("shared entity stub converges on one matching stream", async ({
       initial.maxSeq,
     );
     const changedWorkspace = changed.documents.find(
-      (document) => document.id === "entity:workspace:current",
+      (document) =>
+        document.collection === "workspace" && document.id === "current",
     );
     const removedDocument = changed.documents.find(
-      (document) => document.id === `entity:project:${removedProject.id}`,
+      (document) =>
+        document.collection === "project" && document.id === removedProject.id,
     );
     assert.ok(changedWorkspace, "changed workspace receives a new sequence");
     assert.ok(changedWorkspace.seq > initial.maxSeq);
     assert.equal(
-      removedDocument?._deleted,
-      true,
+      removedDocument?.op,
+      "delete",
       "removed work gets a tombstone",
     );
     assert.ok(removedDocument.seq > initial.maxSeq);

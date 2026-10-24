@@ -20,6 +20,14 @@ export class ResourceEntityDelivery {
     private readonly dispatch: (event: ResourceChangeEvent) => void,
   ) {}
 
+  /** Cancel reads from an earlier subscription set and retain active pull hints. */
+  invalidate() {
+    this.generation++;
+    if (this.current) this.dispatch(this.current);
+    for (const pending of this.pending) this.dispatch(pending);
+    this.pending = [];
+  }
+
   receive(event: ResourceChangeEvent) {
     const hasChanges = event.resourceVersions?.some(
       (entry) => entry.entityChanges || entry.transcriptChanges,

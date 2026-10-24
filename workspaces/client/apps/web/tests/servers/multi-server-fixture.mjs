@@ -70,6 +70,7 @@ export async function fixture(
   let staleSettingsReceipts = false;
   const pairs = [];
   const streams = new Set();
+  const subscriptions = new Map();
   const nonces = new Set();
   const notify = [];
   const preferences = { user: {}, server: {} };
@@ -219,7 +220,14 @@ export async function fixture(
     }
     if (url.pathname === "/api/sync/stream") {
       streams.add(response);
-      response.on("close", () => streams.delete(response));
+      subscriptions.set(
+        response,
+        JSON.parse(url.searchParams.get("resources") || "[]"),
+      );
+      response.on("close", () => {
+        streams.delete(response);
+        subscriptions.delete(response);
+      });
     }
     if (url.pathname === "/api/sync/drafts") {
       json([]);
@@ -237,10 +245,12 @@ export async function fixture(
       handleEntitySyncFixtureRequest(request, response, {
         snapshot,
         workspaceId,
+        subscriptionUpdate: body,
         initialResources: options.resourceBaseline
           ? JSON.parse(url.searchParams.get("resources") || "[]")
           : undefined,
-        onStreamReady: (send) => {
+        onStreamReady: (send, resources) => {
+          subscriptions.set(response, resources);
           notify.push(send);
         },
       })
@@ -512,6 +522,10 @@ export async function fixture(
       });
       return;
     }
+    if (url.pathname === "/api/retained-worktrees") {
+      json({ retainedWorktrees: [] });
+      return;
+    }
     if (url.pathname === "/api/models") {
       json({
         data: [
@@ -591,6 +605,7 @@ export async function fixture(
     origin: `http://127.0.0.1:${server.address().port}`,
     invitation,
     snapshot,
+    subscriptions,
     writes,
     accountWrites,
     accounts() {

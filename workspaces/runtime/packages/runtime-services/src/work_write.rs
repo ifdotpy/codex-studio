@@ -4370,6 +4370,10 @@ mod actor_tests {
         );
         task["gate"] = json!({"command":"false"});
         insert_work(&connection, &task);
+        let mut dependent = work("dependent", Some("worker"), "blocked", json!([]));
+        dependent["dependencies"] = json!(["gated"]);
+        insert_work(&connection, &dependent);
+        let before_events = events(&connection);
         let tx = connection.transaction().expect("transaction");
         let result = write_action_as_agent(
             &tx,
@@ -4385,6 +4389,13 @@ mod actor_tests {
                 merged_result_id: None,
             }),
         );
+        assert_eq!(
+            WorkItemsRepository::work_record(&tx, "dependent")
+                .expect("dependent reads")
+                .expect("dependent exists"),
+            dependent
+        );
+        assert_eq!(events(&tx), before_events);
         assert!(
             result.is_err(),
             "a failed required gate must refuse acceptance"
@@ -4602,9 +4613,7 @@ mod actor_tests {
             result: "done".into(),
             checks: "checked".into(),
             revision: "abc1234".into(),
-            files: (0..studio_runtime_schema::shared_values::TASK_SUBMISSION_MAX_FILES)
-                .map(|index| format!("src/file-{index}.rs"))
-                .collect(),
+            files: vec!["src/first.rs".into(), "src/second.rs".into()],
             prepared_files: None,
             state_dir: state.path().into(),
             vm_evidence: None,

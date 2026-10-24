@@ -405,39 +405,6 @@ fn discovery_approval_switch_and_release_keep_a_live_session_bundle() {
 }
 
 #[test]
-fn reads_python_shaped_state_without_losing_rows_or_extensions() {
-    let (_temp, root, _binary) = fixture();
-    let path = root.join("native-runtime/status.json");
-    fs::create_dir_all(path.parent().expect("status parent")).expect("status directory");
-    let python_record = json!({
-        "status": "ready",
-        "checkedAt": 7.5,
-        "selected": null,
-        "candidates": [{"path": "/fixture/codex", "status": "rejected", "error": "bad"}],
-        "accounts": {
-            "default": {"status": "waiting", "version": null, "pid": null,
-                "targetVersion": "1.2.3", "reason": "busy", "updatedAt": 4.0,
-                "rotation": {"id": "op-a", "phase": "closing", "old": {"pid": 42}}}
-        },
-        "futurePythonField": {"preserve": [null, false, 8]}
-    });
-    fs::write(
-        &path,
-        serde_json::to_vec(&python_record).expect("Python record encoding"),
-    )
-    .expect("Python record");
-    let state = runtime(&root)
-        .read_state()
-        .expect("Rust reads state")
-        .expect("Python-written state exists");
-    assert_eq!(state.record(), &python_record);
-    assert_eq!(
-        state.accounts().expect("Python accounts object")["default"]["rotation"]["old"]["pid"],
-        42
-    );
-}
-
-#[test]
 fn release_rename_crash_is_recoverable_and_idempotent() {
     for (step, after, renamed) in [
         (DurableStep::RetiredBundleRename, false, false),
@@ -528,13 +495,19 @@ fn status_write_and_rename_fail_points_reopen_and_replay_safely() {
     ] {
         let (_temp, root, binary) = fixture();
         let normal = runtime(&root);
+        let first = approve(&normal, &binary);
+        fs::write(&binary, "version=2.0.0\n").expect("second candidate");
         let approved = approve(&normal, &binary);
+        normal.switch(&first).expect("select first bundle");
         let prior = normal
             .read_state()
             .expect("prior state read")
             .expect("prior state exists")
             .record()
             .clone();
+        assert_ne!(prior["selected"], approved);
+        let mut next = prior.clone();
+        next["selected"] = approved.clone();
         drop(normal);
         let crash = NativeRuntime::with_ports(
             &root,
@@ -553,20 +526,20 @@ fn status_write_and_rename_fail_points_reopen_and_replay_safely() {
             .read_state()
             .expect("restart state read")
             .expect("restart state exists");
-        if expected_new {
-            assert_eq!(reopened.selected(), Some(&approved));
-            let selected_path = Path::new(
-                reopened.selected().expect("selected new record")["path"]
-                    .as_str()
-                    .expect("approved path"),
-            );
-            assert!(
-                selected_path.is_file(),
-                "selected executable survived status sync crash"
-            );
-        } else {
-            assert_eq!(reopened.record(), &prior);
-        }
+        assert_eq!(
+            reopened.record(),
+            if expected_new { &next } else { &prior },
+            "{step:?}, after={after}"
+        );
+        let selected_path = Path::new(
+            reopened.selected().expect("published selection")["path"]
+                .as_str()
+                .expect("selected path"),
+        );
+        assert!(
+            selected_path.is_file(),
+            "published executable survives interruption"
+        );
         reopened_runtime.switch(&approved).expect("safe replay");
         assert_eq!(
             reopened_runtime

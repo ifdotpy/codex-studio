@@ -499,6 +499,36 @@ pub fn dismiss(tx: &Transaction<'_>, id: &str, now: f64) -> Result<(), StoreErro
     Ok(())
 }
 
+/// Dismiss only currently listed errors. The caller owns the encompassing transaction.
+/// Unknown and already dismissed ids have no effect, and duplicate ids are reported once.
+pub fn dismiss_many(tx: &Transaction<'_>, ids: &[String], now: f64) -> Result<Value, StoreError> {
+    let before = list(tx, now)?;
+    let known: std::collections::BTreeSet<_> = before["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut dismissed_ids = Vec::new();
+    let mut unknown_ids = Vec::new();
+    for id in ids {
+        if !seen.insert(id) {
+            continue;
+        }
+        if known.contains(id.as_str()) {
+            dismiss(tx, id, now)?;
+            dismissed_ids.push(id);
+        } else {
+            unknown_ids.push(id);
+        }
+    }
+    let mut result = list(tx, now)?;
+    result["dismissedIds"] = json!(dismissed_ids);
+    result["unknownIds"] = json!(unknown_ids);
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

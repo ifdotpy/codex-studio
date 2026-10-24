@@ -2,7 +2,7 @@
   [
     null,
     {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 2,
@@ -16,10 +16,12 @@
           "rate": 1,
           "outputTokens": 1
         }
-      ]
+      ],
+      "snapshot": true,
+      "removed": []
     },
     {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 3,
@@ -36,7 +38,7 @@
       ]
     },
     {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 5,
@@ -50,10 +52,12 @@
           "rate": 2,
           "outputTokens": 2
         }
-      ]
+      ],
+      "snapshot": false,
+      "removed": []
     },
     {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 5,
@@ -74,7 +78,7 @@
   ],
   [
     {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 4,
@@ -88,10 +92,12 @@
           "rate": 3,
           "outputTokens": 3
         }
-      ]
+      ],
+      "snapshot": true,
+      "removed": []
     },
     {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 4,

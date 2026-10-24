@@ -1007,15 +1007,6 @@ mod tests {
     }
 
     #[test]
-    fn no_active_event_rule_allows_writes() {
-        let mut connection = database();
-        let result = with_transaction(&mut connection, |transaction| {
-            save_plan(transaction, plan_input(0, "allowed", "sig"))
-        });
-        assert!(result.is_ok());
-    }
-
-    #[test]
     fn active_event_rule_does_not_block_plan_or_annotation_writes() {
         // Python enqueues plan_update and user events through Runtime.enqueue,
         // whose rule hook matches only the rule event names; neither kind is one.

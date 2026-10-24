@@ -7,11 +7,19 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
     configFile: false,
+    optimizeDeps: {
+      noDiscovery: true,
+      include: [
+        "rxdb",
+        "rxdb/plugins/storage-dexie",
+        "rxdb/plugins/leader-election",
+        "rxdb/plugins/replication",
+      ],
+    },
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
   });

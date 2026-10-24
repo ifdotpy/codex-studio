@@ -189,11 +189,12 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
         assert_eq!(response["cancelRequested"], true);
         if attempt == 0 {
             let entities = response["_syncEntities"].as_array().expect("sync deltas");
-            let entity_id = format!(
-                "entity:monitor:{}",
-                case["before"]["id"].as_str().expect("monitor id")
+            let entity_id = case["before"]["id"].as_str().expect("monitor id");
+            assert!(
+                entities
+                    .iter()
+                    .any(|entity| entity["collection"] == "monitor" && entity["id"] == entity_id)
             );
-            assert!(entities.iter().any(|entity| entity["id"] == entity_id));
             assert!(response["_syncEntitiesAfter"].is_number());
         }
     }
@@ -255,7 +256,13 @@ async fn acknowledged_monitor_input_is_persisted_through_http() {
     );
     let ids = entities
         .iter()
-        .map(|entity| entity["id"].as_str().expect("entity id"))
+        .map(|entity| {
+            format!(
+                "entity:{}:{}",
+                entity["collection"].as_str().expect("collection"),
+                entity["id"].as_str().expect("entity id")
+            )
+        })
         .collect::<std::collections::BTreeSet<_>>();
     let owner = case["before"]["agent"].as_str().expect("monitor owner");
     assert_eq!(
@@ -264,8 +271,7 @@ async fn acknowledged_monitor_input_is_persisted_through_http() {
             format!("entity:monitor:{id}"),
             format!("entity:agent:{owner}")
         ]
-        .iter()
-        .map(String::as_str)
+        .into_iter()
         .collect()
     );
     assert!(response["_syncEntitiesAfter"].is_number());

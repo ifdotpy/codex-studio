@@ -66,10 +66,12 @@ test("team and footer interests share snapshots and replay on reopen", () => {
     assert.equal(callbacks.size, 2);
     const publish = (record) => {
       const event = {
-        protocol: 3,
+        protocol: 4,
         workspaceId: "workspace",
         epoch: "epoch",
         revision: 1,
+        snapshot: true,
+        removed: [],
         records: [record],
       };
       assert.equal(cache.receiveResourceTokenRates(event), true);

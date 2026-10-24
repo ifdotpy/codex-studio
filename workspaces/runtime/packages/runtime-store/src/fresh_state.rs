@@ -381,8 +381,6 @@ fn seed_workspace(transaction: &rusqlite::Transaction<'_>, state_dir: &Path) -> 
         "nativeNotices": [],
         "peerTeamsVersion": 1,
         "projectOrganizationVersion": 1,
-        "rateLimits": {"accountKey": "default", "data": null, "at": null, "error": null},
-        "rateLimitsByAccount": {},
         "sidebarOrder": {"groups": null, "revision": 0},
         "stateDir": state_dir.to_string_lossy(),
         "tasksHistoryLimit": 100,

@@ -2713,14 +2713,11 @@ mod team_progress_delivery_tests {
     use super::*;
     use studio_runtime_store::AgentRecord;
 
-    fn result(child: &str) -> String {
-        json!({"child":child,"agent":child,"name":child,"status":"completed","result":"done"})
-            .to_string()
-    }
-
     /// The shared preparation path appends the stored child counts to a batch of
     /// child results for a parent of either provider, never a count of events.
-    async fn delivered_text(provider: &'static str) -> String {
+    #[tokio::test]
+    async fn codex_and_claude_parents_receive_the_stored_child_counts() {
+        let provider = "codex";
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = RuntimeStore::open(Some(directory.path()))
             .await
@@ -2747,7 +2744,7 @@ mod team_progress_delivery_tests {
                     tx.execute(
                         "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
                          VALUES(?1,'lead','child_result',?2,'pending',?3,1)",
-                        rusqlite::params![format!("result-{id}"), result(id), index as f64],
+                        rusqlite::params![format!("result-{id}"), json!({"child":id,"agent":id,"name":id,"status":"completed","result":"done"}).to_string(), index as f64],
                     )?;
                 }
                 Ok(())
@@ -2765,41 +2762,44 @@ mod team_progress_delivery_tests {
             crate::model_catalog::ModelCatalogService::new(),
         )
         .expect("bundled resources");
-        store
+        let (mut snapshot, events) = store
             .transaction_with(move |tx| {
                 let record = AgentRepository::get(tx, &"lead".into())?
                     .expect("lead exists")
                     .value();
                 let (snapshot, events) = submission_snapshot(tx, &resources, &record, &intent)
                     .map_err(|error| StoreError::SchemaMismatch(format!("{error:?}")))?;
-                let prepared = turn::compile(&snapshot, &events)
-                    .map_err(|error| StoreError::SchemaMismatch(format!("{error:?}")))?;
-                Ok::<String, StoreError>(
-                    prepared
-                        .provider_inputs
-                        .iter()
-                        .filter_map(|input| match input {
-                            turn::ProviderInput::Text { text, .. } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect(),
-                )
+                Ok::<_, StoreError>((snapshot, events))
             })
             .await
-            .expect("batch compiles")
-    }
-
-    #[tokio::test]
-    async fn codex_and_claude_parents_receive_the_stored_child_counts() {
-        for provider in ["codex", "claude"] {
-            let text = delivered_text(provider).await;
+            .expect("batch snapshot");
+        for provider in studio_runtime_providers::ProviderKind::ALL {
+            snapshot.provider = Some(provider);
+            let prepared = turn::compile(&snapshot, &events).expect("provider projection");
+            let text: String = prepared
+                .provider_inputs
+                .iter()
+                .filter_map(|input| match input {
+                    turn::ProviderInput::Text { text, origin } => {
+                        assert_eq!(
+                            origin.is_some(),
+                            provider == studio_runtime_providers::ProviderKind::Claude
+                        );
+                        Some(text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
             assert!(
                 text.contains(
                     "[Team progress]\nChildren: 4 total, 2 finished (1 completed, 1 failed, 0 interrupted), 1 running, 1 queued."
                 ),
-                "{provider}: {text}"
+                "{provider:?}: {text}"
             );
-            assert!(!text.contains("All children have finished."), "{provider}");
+            assert!(
+                !text.contains("All children have finished."),
+                "{provider:?}"
+            );
         }
     }
 }

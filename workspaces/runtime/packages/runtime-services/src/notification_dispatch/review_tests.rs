@@ -117,7 +117,7 @@ fn failed_notification_transaction_discards_staged_stream_changes() {
     let original_params =
         json!({"threadId":"thread","turnId":"turn","itemId":"answer","delta":"old"});
     assert!(matches!(
-        streams.enqueue_delta(key, "old", &original_params),
+        streams.enqueue_delta(key.clone(), "old", &original_params),
         EnqueueResult::Buffered
     ));
     let frame = super::tests::frame(&json!({
@@ -125,6 +125,8 @@ fn failed_notification_transaction_discards_staged_stream_changes() {
         "params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"new"}
     }));
 
+    let before_streams = serde_json::to_value(&streams).expect("serialize original buffer");
+    let before_agent = NotificationDispatchRepository::agent_record(&tx, "agent").unwrap();
     assert!(
         dispatch_notification(
             &tx,
@@ -141,10 +143,22 @@ fn failed_notification_transaction_discards_staged_stream_changes() {
         )
         .is_err()
     );
-    tx.rollback()
-        .expect("failed notification transaction rolls back");
-
-    assert_eq!(streams.pending_bytes(), "old".len());
+    assert_eq!(serde_json::to_value(&streams).unwrap(), before_streams);
+    assert_eq!(streams.clone().flush(&key, "").unwrap().0, "old");
+    assert_eq!(
+        NotificationDispatchRepository::agent_record(&tx, "agent").unwrap(),
+        before_agent
+    );
+    for table in ["runtime_items", "runtime_operation_receipts"] {
+        assert_eq!(
+            tx.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "{table} before caller rollback"
+        );
+    }
+    tx.rollback().expect("caller can still roll back");
 }
 
 #[test]

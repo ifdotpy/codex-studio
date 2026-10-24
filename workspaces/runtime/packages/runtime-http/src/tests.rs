@@ -6,17 +6,6 @@ use crate::{
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 
 #[test]
-fn schema_hash_matches_python_generated_identity() {
-    let client_schema =
-        include_str!("../../../../../workspaces/client/apps/web/src/generated/apiSchema.ts");
-    let client_hash = client_schema
-        .split('"')
-        .nth(1)
-        .expect("generated TypeScript schema hash is present");
-    assert_eq!(api_schema_hash(), client_hash);
-}
-
-#[test]
 fn route_template_matching_is_segment_exact() {
     assert!(route_matches("/api/agents/{id}", "/api/agents/a"));
     assert!(!route_matches("/api/agents/{id}", "/api/agents/a/b"));

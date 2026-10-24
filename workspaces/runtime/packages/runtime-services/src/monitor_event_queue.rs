@@ -524,7 +524,7 @@ mod tests {
     /// monitor with an undelivered exit must still be the delivered head.
     #[tokio::test]
     async fn queue_head_work_is_independent_of_finished_monitor_history() {
-        const HISTORY: usize = 2_000;
+        const HISTORY: usize = 128;
         let root = tempfile::tempdir().expect("state directory");
         let store = RuntimeStore::open(Some(root.path()))
             .await

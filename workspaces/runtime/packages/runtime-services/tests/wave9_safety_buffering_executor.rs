@@ -1199,6 +1199,34 @@ async fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent()
             .await
             .expect("open state"),
     );
+    let snapshots = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&snapshots);
+    let weak_store = Arc::downgrade(&store);
+    store.add_commit_observer(move || {
+        use rusqlite::OptionalExtension;
+        let reader = weak_store
+            .upgrade()
+            .expect("store alive")
+            .test_reader()
+            .expect("commit reader");
+        let raw: Option<String> = reader
+            .query_row(
+                "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("committed retry reads");
+        if let Some(raw) = raw {
+            let operation: Value = serde_json::from_str(&raw).expect("committed retry JSON");
+            if operation["receipts"]["turns"][0]["certainty"] == "unknown" {
+                observed
+                    .lock()
+                    .expect("snapshots")
+                    .push((operation["stage"].clone(), operation["dispatch"].clone()));
+            }
+        }
+    });
     let session = Session {
         store: &store,
         scope: ConnectionScope {
@@ -1232,19 +1260,19 @@ async fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent()
     .await
     .expect("Unknown provider receipt is retained");
     assert_eq!(result["stage"], "unknown");
-    let raw: String = store
-        .test_reader()
-        .expect("read state")
-        .query_row(
-            "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("terminal unknown operation");
-    let operation: Value = serde_json::from_str(&raw).expect("operation JSON");
-    assert_eq!(operation["stage"], "unknown");
-    assert_eq!(operation["dispatch"], "unknown");
-    assert_eq!(operation["receipts"]["turns"][0]["certainty"], "unknown");
+    {
+        let snapshots = snapshots.lock().expect("snapshots");
+        assert!(
+            !snapshots.is_empty(),
+            "observed a committed Unknown receipt"
+        );
+        assert!(
+            snapshots
+                .iter()
+                .all(|snapshot| snapshot == &(json!("unknown"), json!("unknown"))),
+            "nonterminal Unknown receipt committed: {snapshots:?}"
+        );
+    }
     drop(session);
     drop(store);
 

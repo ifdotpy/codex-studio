@@ -12,6 +12,8 @@ import {
   type operations,
 } from "../generated/api";
 
+import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
+
 import { API_SCHEMA_HASH, API_SCHEMA_HASH_PARAM } from "../generated/apiSchema";
 
 import {
@@ -22,6 +24,7 @@ import {
   matchingApiSchemaResponseGeneration,
   markApiSchemaMismatch,
   onApiSchemaMismatch,
+  post,
 } from "../api";
 
 import { persistResourceEntityChanges, syncDatabase } from "./client";
@@ -35,6 +38,7 @@ import { retryableReadError } from "./readRetry";
 import {
   configureTokenRateStream,
   receiveResourceTokenRates,
+  getWorkspaceTokenRates,
 } from "../usage/tokenRate";
 
 export type ResourceRef = components["schemas"]["ResourceRef"];
@@ -149,6 +153,7 @@ export type ResourceEventsOptions = {
     import("../api").ServerApi,
     | "clearSchemaUpdateAttemptAfterMatch"
     | "get"
+    | "post"
     | "isApiSchemaMismatch"
     | "matchingApiSchemaResponseGeneration"
     | "markApiSchemaMismatch"
@@ -160,7 +165,9 @@ export type ResourceEventsOptions = {
   >;
   tokenRates: Pick<
     ReturnType<typeof import("../usage/tokenRate").createTokenRateCache>,
-    "configureTokenRateStream" | "receiveResourceTokenRates"
+    | "configureTokenRateStream"
+    | "receiveResourceTokenRates"
+    | "getWorkspaceTokenRates"
   >;
   openEvents: typeof openServerEvents;
   storageName: typeof serverStorageName;
@@ -173,10 +180,14 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     matchingApiSchemaResponseGeneration,
     markApiSchemaMismatch,
     onApiSchemaMismatch,
+    post,
   } = options.api;
   const { persistResourceEntityChanges, syncDatabase } = options.sync;
-  const { configureTokenRateStream, receiveResourceTokenRates } =
-    options.tokenRates;
+  const {
+    configureTokenRateStream,
+    receiveResourceTokenRates,
+    getWorkspaceTokenRates,
+  } = options.tokenRates;
   const openServerEvents = options.openEvents;
   const serverStorageName = options.storageName;
 
@@ -197,6 +208,10 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   const COORDINATOR_IDLE_STOP_MS = 1_000;
 
   const RESOURCE_FLUSH_MS = 20;
+
+  const SUBSCRIPTION_DEBOUNCE_MS = 30;
+
+  const SUBSCRIPTION_ACK_TIMEOUT_MS = 10_000;
 
   const MAX_INACTIVE_RESOURCE_VERSIONS = 128;
 
@@ -234,6 +249,20 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   let source: ServerEventSource | undefined;
 
   let sourceOpened = false;
+  let sessionId: string | undefined;
+  let subscriptionGen = 0;
+  let subscriptionGeneration = 0;
+  let wireResources: ResourceRef[] = [];
+  let wireTokenRates = false;
+  let acceptedResources = new Set<string>();
+  const blockedResources = new Map<string, ResourceRef>();
+  let blockedSelectors: ResourceRef[] = [];
+  let pendingSubscription:
+    | { gen: number; resources: ResourceRef[]; tokenRates: boolean }
+    | undefined;
+  let subscriptionTimer: ReturnType<typeof setTimeout> | undefined;
+  let subscriptionAckTimer: ReturnType<typeof setTimeout> | undefined;
+  let subscriptionRequest: AbortController | undefined;
 
   let coordinatorActive = false;
 
@@ -289,11 +318,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   let lastLeaderHeartbeatAt = 0;
 
-  let activeQueryKey = "";
-
   let streamUpdateGeneration = 0;
-
-  let keepLiveOnReconfigure = false;
 
   let pendingResources = new Set<string>();
 
@@ -481,7 +506,44 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       baselineReconciliations.add(resourceKey(resource));
   }
 
-  function dispatchEvent(event: ResourceChangeEvent) {
+  function sameResource(left: ResourceRef, right: ResourceRef) {
+    if (left.kind !== right.kind) return false;
+    // ResourceRef selectors have only scalar fields, owned by OpenAPI.
+    for (const field in left) {
+      const key = field as keyof ResourceRef;
+      if (left[key] !== right[key]) return false;
+    }
+    return true;
+  }
+
+  function currentResourceEvent(event: ResourceChangeEvent) {
+    if (!blockedSelectors.length) return event;
+    // The transport owns this parsed frame. Compact rejected selectors in place:
+    // no key serialization, cloning, or extra arrays on the event hot path.
+    let kept = 0;
+    const entries = event.resourceVersions;
+    const entryCount = entries?.length ?? 0;
+    for (let index = 0; index < event.resources.length; index++) {
+      const resource = event.resources[index]!;
+      let blocked = false;
+      for (let removed = 0; removed < blockedSelectors.length; removed++) {
+        if (sameResource(resource, blockedSelectors[removed]!)) {
+          blocked = true;
+          break;
+        }
+      }
+      if (blocked) continue;
+      event.resources[kept] = resource;
+      if (entries && index < entryCount) entries[kept] = entries[index]!;
+      kept++;
+    }
+    event.resources.length = kept;
+    if (entries) entries.length = Math.min(kept, entryCount);
+    return event;
+  }
+
+  function dispatchEvent(received: ResourceChangeEvent) {
+    const event = currentResourceEvent(received);
     if (!workspaceId || event.workspaceId !== workspaceId) {
       setStatus("degraded");
       return;
@@ -600,6 +662,16 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     scheduleFlush();
   }
 
+  function tokenRateReplay(): ResourceTokenRatesEvent | undefined {
+    if (!lastTokenEvent) return;
+    return {
+      ...lastTokenEvent,
+      snapshot: true,
+      removed: [],
+      ...getWorkspaceTokenRates(),
+    };
+  }
+
   function receiveTokenRateEvent(value: unknown, fromPeer = false) {
     if (!hasRevisionFrame(value))
       throw new TypeError("Invalid token-rate frame");
@@ -611,6 +683,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     if (fromPeer && (owner || independent)) return;
     if (!fromPeer) refreshHeartbeatTimeout();
+    // A late follower can hear a delta before the owner answers its replay request.
+    if (!event.snapshot && (lastTokenEpoch !== event.epoch || !lastTokenEvent))
+      return;
     if (
       lastTokenEpoch === event.epoch &&
       lastTokenRevision !== undefined &&
@@ -671,14 +746,16 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }, RESOURCE_FLUSH_MS);
   }
 
-  const entityDelivery = new ResourceEntityDelivery(
-    (event, isCurrent) =>
-      persistResourceEntityChanges(
-        event,
-        () => isCurrent() && event.workspaceId === workspaceId,
-      ),
-    dispatchEvent,
-  );
+  const entityDelivery = new ResourceEntityDelivery((event, isCurrent) => {
+    const generation = subscriptionGeneration;
+    return persistResourceEntityChanges(
+      event,
+      () =>
+        isCurrent() &&
+        event.workspaceId === workspaceId &&
+        generation === subscriptionGeneration,
+    );
+  }, dispatchEvent);
 
   function receiveResourceEvent(value: unknown, fromPeer = false) {
     if (!hasRevisionFrame(value) || !Array.isArray(value.resources))
@@ -690,7 +767,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       if (!fromPeer) reconnectNow();
       return;
     }
-    entityDelivery.receive(event);
+    entityDelivery.receive(currentResourceEvent(event));
   }
 
   function acceptHeartbeat(value: unknown, fromPeer = false) {
@@ -781,7 +858,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           (!previous?.tokenRates || reset) &&
           lastTokenEvent
         )
-          broadcast({ kind: "token-rates", event: lastTokenEvent });
+          broadcast({ kind: "token-rates", event: tokenRateReplay()! });
         scheduleCoordinatorIdleStop();
       }
     } else if (record.kind === "tab-heartbeat") {
@@ -883,9 +960,31 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   }
 
   function scheduleOwnerStreamUpdate() {
+    const active = new Set(aggregateResources().map(resourceKey));
+    let removed = false;
+    for (const resource of pendingSubscription?.resources ?? wireResources) {
+      const key = resourceKey(resource);
+      if (!active.has(key) && !blockedResources.has(key)) {
+        acceptedResources.delete(key);
+        blockedResources.set(key, resource);
+        resourceValues.delete(key);
+        subscriptionGeneration++;
+        removed = true;
+      }
+    }
+    if (removed) {
+      blockedSelectors = [...blockedResources.values()];
+      entityDelivery.invalidate();
+    }
     const generation = ++streamUpdateGeneration;
     queueMicrotask(() => {
-      if (generation === streamUpdateGeneration) updateOwnerStream();
+      if (generation !== streamUpdateGeneration) return;
+      if (!source) updateOwnerStream();
+      else if (subscriptionTimer === undefined)
+        subscriptionTimer = setTimeout(() => {
+          subscriptionTimer = undefined;
+          updateOwnerStream();
+        }, SUBSCRIPTION_DEBOUNCE_MS);
     });
   }
 
@@ -909,6 +1008,20 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   }
 
   function closeSource() {
+    clearTimeout(subscriptionTimer);
+    subscriptionTimer = undefined;
+    clearTimeout(subscriptionAckTimer);
+    subscriptionAckTimer = undefined;
+    subscriptionRequest?.abort();
+    subscriptionRequest = undefined;
+    sessionId = undefined;
+    pendingSubscription = undefined;
+    subscriptionGen = 0;
+    subscriptionGeneration++;
+    acceptedResources.clear();
+    entityDelivery.invalidate();
+    blockedResources.clear();
+    blockedSelectors = [];
     clearTimeout(heartbeatTimeout);
     heartbeatTimeout = undefined;
     clearTimeout(schemaHandshakeTimeout);
@@ -916,7 +1029,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     source?.close();
     source = undefined;
     sourceOpened = false;
-    activeQueryKey = "";
   }
 
   function cancelIdentityProbe() {
@@ -971,14 +1083,15 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       closeSource();
       return;
     }
-    const queryKey = JSON.stringify([resources.map(resourceKey), tokenRates]);
-    if (source && activeQueryKey === queryKey) return;
-    if (source && currentStatus === "live") keepLiveOnReconfigure = true;
+    if (source) {
+      updateSubscriptions(resources, tokenRates);
+      return;
+    }
     closeSource();
-    activeQueryKey = queryKey;
-    if (!keepLiveOnReconfigure || currentStatus !== "live")
-      setStatus("connecting");
-    keepLiveOnReconfigure = false;
+    wireResources = resources;
+    wireTokenRates = tokenRates;
+    acceptedResources = new Set(resources.map(resourceKey));
+    setStatus("connecting");
     try {
       const subscription: NonNullable<
         operations["sync_stream_api_sync_stream_get"]["parameters"]["query"]
@@ -1033,6 +1146,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         message: Event,
         apply: (parsed: unknown) => void,
         resetRetryOnSuccess = true,
+        maxBytes?: number,
       ) => {
         if (source !== connected) return;
         if (!schemaHandshakeReceived) {
@@ -1040,12 +1154,67 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           return;
         }
         try {
-          apply(JSON.parse((message as MessageEvent<string>).data) as unknown);
+          const data = (message as MessageEvent<string>).data;
+          // Check received UTF-8 once, before parsing or publishing inline batches.
+          if (
+            maxBytes !== undefined &&
+            new TextEncoder().encode(data).length > maxBytes
+          )
+            throw new TypeError("Resource frame exceeds the size limit");
+          apply(JSON.parse(data) as unknown);
           if (resetRetryOnSuccess) retryCount = 0;
         } catch (error) {
           frameFailed(error);
         }
       };
+      connected.addEventListener("session", (message: Event) => {
+        if (source !== connected) return;
+        try {
+          const event = JSON.parse(
+            (message as MessageEvent<string>).data,
+          ) as components["schemas"]["SyncSessionEvent"];
+          if (
+            typeof event.sessionId !== "string" ||
+            !event.sessionId ||
+            sessionId
+          )
+            throw new TypeError("Invalid sync session");
+          sessionId = event.sessionId;
+          scheduleOwnerStreamUpdate();
+        } catch (error) {
+          frameFailed(error);
+        }
+      });
+      connected.addEventListener("subscriptions", (message: Event) => {
+        applyFrame(message, (value) => {
+          const ack = value as components["schemas"]["SyncSubscriptionAck"];
+          const pending = pendingSubscription;
+          if (!pending || ack.gen !== pending.gen)
+            throw new TypeError("Unexpected subscription acknowledgement");
+          clearTimeout(subscriptionAckTimer);
+          subscriptionAckTimer = undefined;
+          pendingSubscription = undefined;
+          wireResources = pending.resources;
+          wireTokenRates = pending.tokenRates;
+          const active = new Set(aggregateResources().map(resourceKey));
+          acceptedResources = new Set(
+            wireResources.map(resourceKey).filter((key) => active.has(key)),
+          );
+          const acknowledged = new Set(wireResources.map(resourceKey));
+          for (const key of blockedResources.keys()) {
+            // SSE order makes pre-removal data impossible after this ack. A
+            // re-added selector stays blocked until its own addition is acked.
+            if (
+              acceptedResources.has(key) ||
+              (!active.has(key) && !acknowledged.has(key))
+            )
+              blockedResources.delete(key);
+          }
+          blockedSelectors = [...blockedResources.values()];
+          refreshHeartbeatTimeout();
+          scheduleOwnerStreamUpdate();
+        });
+      });
       connected.addEventListener("api-schema", (message: Event) => {
         if (source !== connected) return;
         try {
@@ -1076,6 +1245,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             receiveResourceEvent(parsed);
           },
           false,
+          SYNC_STREAM_EVENT_MAX_BYTES,
         );
       });
       connected.addEventListener("heartbeat", (message: Event) => {
@@ -1121,21 +1291,52 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
   }
 
+  function updateSubscriptions(resources: ResourceRef[], tokenRates: boolean) {
+    if (!source || pendingSubscription || subscriptionRequest) return;
+    const desired = new Set(resources.map(resourceKey));
+    const previous = new Set(wireResources.map(resourceKey));
+    const add = resources.filter(
+      (resource) =>
+        !previous.has(resourceKey(resource)) ||
+        !acceptedResources.has(resourceKey(resource)),
+    );
+    const remove = wireResources.filter(
+      (resource) =>
+        !desired.has(resourceKey(resource)) ||
+        !acceptedResources.has(resourceKey(resource)),
+    );
+    if (!add.length && !remove.length && tokenRates === wireTokenRates) return;
+    if (!sessionId) {
+      // A stream without its session cannot acknowledge a diff. Recover with
+      // the complete desired set rather than stranding newly added resources.
+      reconnectNow();
+      return;
+    }
+    const connected = source;
+    const gen = ++subscriptionGen;
+    pendingSubscription = { gen, resources, tokenRates };
+    const controller = new AbortController();
+    subscriptionRequest = controller;
+    subscriptionAckTimer = setTimeout(() => {
+      if (source === connected) reconnectNow();
+    }, SUBSCRIPTION_ACK_TIMEOUT_MS);
+    void post(
+      "/api/sync/subscriptions",
+      { sessionId, gen, add, remove, tokenRates },
+      { signal: controller.signal, timeoutMs: SUBSCRIPTION_ACK_TIMEOUT_MS },
+    )
+      .catch(() => {
+        // A lost response has an unknown outcome. Reopen instead of retrying a diff.
+        if (source === connected) reconnectNow();
+      })
+      .finally(() => {
+        if (subscriptionRequest !== controller) return;
+        subscriptionRequest = undefined;
+        if (source === connected) scheduleOwnerStreamUpdate();
+      });
+  }
+
   function updateOwnerStream() {
-    const resources = aggregateResources();
-    const tokenRates = hasTokenRateInterest();
-    const key = JSON.stringify([resources.map(resourceKey), tokenRates]);
-    if (!resources.length && !tokenRates) {
-      cancelIdentityProbe();
-      closeSource();
-      return;
-    }
-    if (source && activeQueryKey !== key) {
-      keepLiveOnReconfigure = currentStatus === "live";
-      closeSource();
-      openSource();
-      return;
-    }
     openSource();
   }
 
@@ -1434,6 +1635,10 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         subscribers.delete(key);
         resourceRefs.delete(key);
         baselineReconciliations.delete(key);
+        if (!owner && !independent) {
+          subscriptionGeneration++;
+          entityDelivery.invalidate();
+        }
       }
       announceSubscriptions();
       if (!subscribers.size && !tokenRateListeners.size) {
@@ -1462,7 +1667,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     coordinatorIdleStopTimer = undefined;
     tokenRateListeners.add(listener);
     if (lastTokenEvent && lastTokenEvent.workspaceId === workspaceId)
-      listener(lastTokenEvent);
+      listener(tokenRateReplay()!);
     startCoordinator();
     announceSubscriptions();
     let stopped = false;
@@ -1498,6 +1703,7 @@ const defaultResourceEvents = createResourceEvents({
     matchingApiSchemaResponseGeneration,
     markApiSchemaMismatch,
     onApiSchemaMismatch,
+    post,
   },
   sync: {
     persistResourceEntityChanges: (
@@ -1506,7 +1712,11 @@ const defaultResourceEvents = createResourceEvents({
     syncDatabase: (...args: Parameters<typeof syncDatabase>) =>
       syncDatabase(...args),
   },
-  tokenRates: { configureTokenRateStream, receiveResourceTokenRates },
+  tokenRates: {
+    configureTokenRateStream,
+    receiveResourceTokenRates,
+    getWorkspaceTokenRates,
+  },
   openEvents: openServerEvents,
   storageName: serverStorageName,
 });

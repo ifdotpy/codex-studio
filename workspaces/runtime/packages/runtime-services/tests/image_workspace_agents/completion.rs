@@ -14,7 +14,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
         let connection =
             rusqlite::Connection::open(directory.path().join(name)).expect("fixture DB opens");
         connection
-            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN;")
             .expect("fixture pragmas apply");
         let mut statements = schema[name]["sqlite_master"]
             .as_array()
@@ -47,6 +47,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
                 connection.execute_batch(sql).expect("schema installs");
             }
         }
+        connection.execute_batch("COMMIT;").expect("schema commits");
     }
     let store = RuntimeStore::open(Some(directory.path()))
         .await

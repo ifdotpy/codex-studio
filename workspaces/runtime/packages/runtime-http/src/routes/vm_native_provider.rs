@@ -637,7 +637,7 @@ mod tests {
             order: order.clone(),
         });
         let (sink, deliveries) = notification_sink(order.clone());
-        let provider = VmNativeProvider::new(guest, sink, "acct", "vm-agent", 4);
+        let provider = VmNativeProvider::new(guest.clone(), sink, "acct", "vm-agent", 4);
         let receipt = provider
             .provider_request(ProviderRequest {
                 account: "acct".into(),
@@ -651,6 +651,16 @@ mod tests {
             })
             .await
             .unwrap();
+        let calls = guest.calls.lock().unwrap();
+        let write = calls
+            .iter()
+            .find(|(_, params)| params["action"] == "write")
+            .unwrap();
+        assert_eq!(write.1["message"]["method"], "review/start");
+        assert_eq!(
+            write.1["message"]["params"],
+            json!({"threadId":"guest-thread"})
+        );
         assert_eq!(receipt.certainty, RequestCertainty::Written);
         assert_eq!(deliveries.lock().unwrap().len(), 1);
         assert_eq!(*order.lock().unwrap(), ["notification", "ack", "ack"]);

@@ -279,17 +279,16 @@ pub(super) async fn lifecycle_completion(
     at: f64,
 ) -> Result<Arc<std::sync::Mutex<Box<dyn crate::recovery_store::CompletionWriter>>>, RecoveryError>
 {
-    let streams = super::store::restore_streams(store, account)
+    // This is only a cache: each message validates it under its transaction.
+    let mut cached = super::store::restore_streams(store, account)
         .await
         .map_err(|_| RecoveryError::CommitFailed)?;
-    let streams = Arc::new(std::sync::Mutex::new(streams));
     let message_recovery_id = recovery_id;
     let write_message: Box<crate::recovery_store::RecoveryMessageWriter> = Box::new(
         move |tx, agent, account, generation, turn, item, timestamp| {
-            let mut streams = streams.lock().map_err(|_| {
-                crate::notification_dispatch::NotificationDispatchError::InvalidNotification
-            })?;
-            let Some(next) = streams
+            let streams = super::store::current_streams(tx, account, Some(&cached))
+                .map_err(stream_store_error)?;
+            let Some(mut next) = streams
                 .recover_agent_message_in_transaction(
                     tx, agent, account, generation, turn, item, timestamp,
                 )
@@ -299,14 +298,13 @@ pub(super) async fn lifecycle_completion(
             else {
                 return Ok(None);
             };
-            *streams = next;
             let item_id = item["id"].as_str().ok_or(
                 crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
             )?;
             let turn_id = turn["id"].as_str().ok_or(
                 crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
             )?;
-            streams.stage_recovered_notification(
+            next.stage_recovered_notification(
                 format!("connection-recovery:{message_recovery_id}:{turn_id}:item:{item_id}"),
                 crate::notification_dispatch::RecoveredNotificationObservation {
                     agent: agent.clone(),
@@ -315,7 +313,11 @@ pub(super) async fn lifecycle_completion(
                     observed_at: timestamp,
                 },
             );
-            Ok(Some((*streams).clone()))
+            // Keep multiple recovered items staged in this same transaction.
+            // Its revision changes atomically; rollback invalidates the cache.
+            super::store::persist_streams(tx, account, &mut next).map_err(stream_store_error)?;
+            cached = next.clone();
+            Ok(Some(next))
         },
     );
     Ok(Arc::new(std::sync::Mutex::new(Box::new(
@@ -325,6 +327,15 @@ pub(super) async fn lifecycle_completion(
             write_message,
         },
     ))))
+}
+
+fn stream_store_error(
+    error: super::WorkerError,
+) -> crate::notification_dispatch::NotificationDispatchError {
+    match error {
+        super::WorkerError::Store(error) => error.into(),
+        _ => crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
+    }
 }
 
 pub(super) async fn begin_request(

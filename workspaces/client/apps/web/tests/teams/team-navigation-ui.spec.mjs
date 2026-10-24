@@ -90,21 +90,15 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
             (index < 8 ? "running" : index < 26 ? "queued" : "completed"),
         ]),
       );
-      for (const document of documents ?? []) {
-        if (document._deleted) continue;
-        const payload = JSON.parse(document.payload);
-        if (payload.collection === "agent" && payload.id === worker(2).id) {
-          payload.value.name = longName;
-          payload.value.status = "approval";
-          payload.value.inFlight = false;
-          document.payload = JSON.stringify(payload);
-        } else if (
-          payload.collection === "agent" &&
-          desiredStatus.has(payload.id)
-        ) {
-          payload.value.status = desiredStatus.get(payload.id);
-          payload.value.inFlight = payload.value.status === "running";
-          document.payload = JSON.stringify(payload);
+      for (const change of documents ?? []) {
+        if (change.op !== "upsert" || change.collection !== "agent") continue;
+        if (change.id === worker(2).id) {
+          change.value.name = longName;
+          change.value.status = "approval";
+          change.value.inFlight = false;
+        } else if (desiredStatus.has(change.id)) {
+          change.value.status = desiredStatus.get(change.id);
+          change.value.inFlight = change.value.status === "running";
         }
       }
     };

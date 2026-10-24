@@ -55,8 +55,9 @@ it("applies every delta immediately and publishes the latest transcript once", a
   expect(accept).toHaveBeenCalledOnce();
   vi.advanceTimersByTime(50);
   expect(accept).toHaveBeenCalledTimes(2);
-  expect(accept.mock.calls[1][0].seq).toBe(4);
-  expect(accept.mock.calls[1][0].payload.items[0].text).toBe("finished");
+  expect(accept.mock.calls[1][0]).toEqual(
+    cache.peekTranscript("workspace", "a"),
+  );
   stop();
 });
 

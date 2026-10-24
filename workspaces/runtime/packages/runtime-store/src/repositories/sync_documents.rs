@@ -651,6 +651,95 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
+    fn entity_replay_and_patch_preserve_sequence_until_value_or_deletion_changes() {
+        let mut connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection.execute_batch(
+            "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
+             CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
+             CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
+        ).expect("sync fixture creates");
+        let transaction = connection.transaction().expect("transaction begins");
+        let value = serde_json::json!({"b":2,"a":1});
+        assert!(
+            SyncDocumentsRepository::put_entity(&transaction, "workspace", "current", value, false)
+                .expect("initial entity")
+        );
+        let before =
+            SyncDocumentsRepository::entity_sequence(&transaction).expect("initial sequence");
+        assert!(
+            !SyncDocumentsRepository::put_entity(
+                &transaction,
+                "workspace",
+                "current",
+                serde_json::json!({"a":1,"b":2}),
+                false
+            )
+            .expect("normalized replay")
+        );
+        SyncDocumentsRepository::patch_entity(
+            &transaction,
+            "workspace",
+            "current",
+            serde_json::json!({"a":1}),
+        )
+        .expect("equal patch");
+        assert_eq!(
+            SyncDocumentsRepository::entity_sequence(&transaction).expect("unchanged sequence"),
+            before
+        );
+        assert!(
+            SyncDocumentsRepository::put_entity(
+                &transaction,
+                "workspace",
+                "current",
+                serde_json::json!({"a":2}),
+                false
+            )
+            .expect("content change")
+        );
+        assert!(
+            SyncDocumentsRepository::entity_sequence(&transaction).expect("changed sequence")
+                > before
+        );
+        assert!(
+            SyncDocumentsRepository::put_entity(
+                &transaction,
+                "workspace",
+                "current",
+                serde_json::json!({}),
+                true
+            )
+            .expect("delete")
+        );
+        let deleted =
+            SyncDocumentsRepository::entity_sequence(&transaction).expect("deleted sequence");
+        assert!(
+            !SyncDocumentsRepository::put_entity(
+                &transaction,
+                "workspace",
+                "current",
+                serde_json::json!({"ignored":true}),
+                true
+            )
+            .expect("repeated delete")
+        );
+        assert_eq!(
+            SyncDocumentsRepository::entity_sequence(&transaction).expect("delete replay sequence"),
+            deleted
+        );
+        assert!(
+            SyncDocumentsRepository::put_entity(
+                &transaction,
+                "workspace",
+                "current",
+                serde_json::json!({}),
+                false
+            )
+            .expect("revive")
+        );
+    }
+
+    #[test]
     fn hash_only_entity_uses_shared_sequence_and_replay_is_a_noop() {
         let mut connection = Connection::open_in_memory().expect("memory SQLite opens");
         connection

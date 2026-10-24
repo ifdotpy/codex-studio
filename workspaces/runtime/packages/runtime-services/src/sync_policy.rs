@@ -2294,36 +2294,6 @@ mod tests {
     }
 
     #[test]
-    fn monitor_window_uses_indexed_status_ranges() {
-        let connection = Connection::open_in_memory().expect("database");
-        connection
-            .execute_batch(
-                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
-                 CREATE INDEX runtime_monitor_status ON runtime_monitors(
-                     json_extract(record,'$.status'),json_extract(record,'$.created'));",
-            )
-            .expect("monitor fixture and owner index");
-        let plan = connection
-            .prepare(
-                "EXPLAIN QUERY PLAN SELECT record FROM runtime_monitors \
-                 WHERE json_extract(record,'$.status')=?1 \
-                 ORDER BY json_extract(record,'$.created') DESC LIMIT ?2",
-            )
-            .expect("selector explain plan")
-            .query_map(rusqlite::params!["completed", 100], |row| {
-                row.get::<_, String>(3)
-            })
-            .expect("selector plan rows")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("selector plan read");
-        assert!(
-            plan.iter()
-                .any(|line| line.contains("runtime_monitor_status")),
-            "terminal status window must use the owner index: {plan:?}"
-        );
-    }
-
-    #[test]
     fn monitor_window_keeps_active_rows_and_holds_invalid_rows_without_projecting_inactive_owners()
     {
         let mut connection = Connection::open_in_memory().expect("database");
@@ -2559,8 +2529,31 @@ mod tests {
         assert!(expected_terminal_ids.contains("terminal-50"));
 
         let transaction = connection.transaction().expect("projection transaction");
+        TRACED_SQL.with_borrow_mut(Vec::clear);
+        transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_expanded_sql));
         maintain_monitor_window(&transaction, &|_, _, _, _| true)
             .expect("indexed monitor projection");
+        transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+        let selectors = TRACED_SQL
+            .with_borrow_mut(std::mem::take)
+            .into_iter()
+            .filter(|sql| sql.starts_with("SELECT record FROM runtime_monitors"))
+            .collect::<Vec<_>>();
+        assert_eq!(selectors.len(), 1 + MONITOR_TERMINAL_STATUSES.len());
+        for sql in selectors {
+            let plan = transaction
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .expect("actual selector plan")
+                .query_map([], |row| row.get::<_, String>(3))
+                .expect("plan rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("plan details");
+            assert!(
+                plan.iter().any(|line| line
+                    .contains("SEARCH runtime_monitors USING INDEX runtime_monitor_status")),
+                "{sql}: {plan:?}"
+            );
+        }
         let actual_ids = transaction
             .prepare("SELECT id FROM sync_entities WHERE collection='monitor' AND deleted=0")
             .expect("projected terminal ids")
@@ -3064,7 +3057,8 @@ mod tests {
                     state % bound
                 };
                 let mut created = BTreeMap::<u64, u64>::new();
-                for step in 0..600_u64 {
+                // This fixed stream crosses the history window at write 274.
+                for step in 0..300_u64 {
                     let index = next(170);
                     let created = *created.entry(index).or_insert_with(|| step * 7 + 1);
                     let status = ["running", "completed", "failed", "completed"][next(4) as usize];

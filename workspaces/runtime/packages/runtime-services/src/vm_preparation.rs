@@ -1979,6 +1979,7 @@ mod tests {
     #[test]
     fn excluded_download_tree_skips_a_stale_git_pointer() {
         let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("project.txt"), "included").unwrap();
         let dependency = root.path().join("data/downloads/stale-dependency");
         fs::create_dir_all(&dependency).unwrap();
         fs::write(
@@ -1990,7 +1991,9 @@ mod tests {
         let archive = vm_project_archive(root.path())
             .expect("the excluded download pointer is never resolved");
 
-        assert!(archive.bytes > 0);
+        let paths = archive_paths(archive.file.path());
+        assert!(paths.iter().any(|path| path == "project.txt"));
+        assert!(paths.iter().all(|path| !path.starts_with("data/downloads")));
     }
 
     #[test]

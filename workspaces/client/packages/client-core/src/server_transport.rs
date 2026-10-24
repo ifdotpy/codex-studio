@@ -525,13 +525,9 @@ mod tests {
     }
     #[tokio::test]
     async fn one_server_cannot_hold_the_slots_of_another_server() {
-        // A closed local port: an admitted request fails to connect, and a
-        // rejected request is never sent.
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let port = listener.local_addr().expect("address").port();
         let pair = |server: &str| {
             let invitation = json!({"protocol":1,"origin":format!("https://{server}.tailnet.ts.net:{port}"),"serverId":server,"inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
             server_keys::new_pair(&invitation, "pair").unwrap()
@@ -574,11 +570,24 @@ mod tests {
             .unwrap_err();
         assert!(refused.contains("The request was not sent"), "{refused}");
         assert!(refused.contains("server=16/16"), "{refused}");
+        assert_eq!(
+            listener.accept().expect_err("no refused connection").kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
+        let server = tokio::spawn(async move {
+            // Accept exactly the admitted connection, then refuse its TLS handshake.
+            drop(listener.accept().await.expect("admitted connection"));
+        });
         let admitted = client
             .dispatch("servers.request", &request("other", &other))
             .await
             .unwrap_err();
         assert!(!admitted.contains("The request was not sent"), "{admitted}");
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("accepted connection")
+            .expect("server");
         assert_eq!(
             client.response_slots.available_permits(),
             MAX_OPEN_SERVER_RESPONSES - MAX_OPEN_RESPONSES_PER_SERVER

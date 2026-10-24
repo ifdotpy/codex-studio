@@ -1509,13 +1509,36 @@ mod tests {
     async fn file_rule_save_pause_and_post_commit_cancellations() {
         let (_directory, store) = fixture().await;
 
-        let save = json!({
-            "id":"rule-fixed",
-            "kind":"file",
-            "name":"watch",
-            "path":"watch.txt",
-            "intervalSeconds":30,
-        });
+        let generated =
+            json!({"kind":"file","name":"watch","path":"notes.txt","intervalSeconds":30});
+        let first = rules(
+            &store,
+            "lead",
+            3,
+            Some(&generated),
+            "generated-rule",
+            100.0,
+            &Files,
+        )
+        .await
+        .expect("save generated rule");
+        let replay = rules(
+            &store,
+            "lead",
+            3,
+            Some(&generated),
+            "generated-rule",
+            101.0,
+            &Files,
+        )
+        .await
+        .expect("replay generated rule");
+        assert_eq!(first.value, replay.value);
+        assert!(first.value["id"].is_string());
+        assert_eq!(first.value["fingerprint"], json!([123, 4, 5]));
+
+        let mut save = generated;
+        save["id"] = json!("rule-fixed");
         let saved = rules(
             &store,
             "lead",
@@ -1527,25 +1550,8 @@ mod tests {
         )
         .await
         .expect("save file rule");
-        let replayed = rules(
-            &store,
-            "lead",
-            3,
-            Some(&save),
-            "rule-save-request",
-            101.0,
-            &LocalRuleWatchFiles,
-        )
-        .await
-        .expect("replay exact rule request");
-        assert_eq!(replayed, saved, "exact request returns saved result");
-        let mismatched = json!({
-            "id":"rule-fixed",
-            "kind":"file",
-            "name":"different",
-            "path":"watch.txt",
-            "intervalSeconds":30,
-        });
+        let mut mismatched = save.clone();
+        mismatched["name"] = json!("different");
         assert!(
             rules(
                 &store,
@@ -1595,6 +1601,13 @@ mod tests {
         .expect("pause file rule");
 
         assert_eq!(paused.cancel_monitor_ids, ["watch-monitor"]);
+        let stored = RulesRepository::get(
+            &store.test_reader().expect("read paused rule"),
+            "rule-fixed",
+        )
+        .expect("read rule")
+        .expect("rule exists");
+        assert_eq!(stored.get("status"), Some(&json!("paused")));
         store
             .test_reader()
             .expect("read rule sync projection")
@@ -1699,51 +1712,6 @@ mod tests {
         fn fingerprint(&self, _: &str) -> Result<Option<Value>, RulesServiceError> {
             Ok(Some(json!([123, 4, 5])))
         }
-    }
-
-    #[tokio::test]
-    async fn rules_save_replays_by_request_identity_and_pause_returns_committed_cancellations() {
-        let (_directory, store) = fixture().await;
-        let save = json!({"kind":"file","name":"watch","path":"notes.txt","intervalSeconds":30});
-        let first = rules(&store, "lead", 3, Some(&save), "request-1", 100.0, &Files)
-            .await
-            .expect("save rule");
-        let repeated = rules(&store, "lead", 3, Some(&save), "request-1", 101.0, &Files)
-            .await
-            .expect("retry same rule identity");
-        assert_eq!(first.value["id"], repeated.value["id"]);
-        let id = first.value["id"].as_str().expect("rule id").to_owned();
-        let monitor_rule_id = id.clone();
-        store
-            .transaction_with(move |tx| {
-                tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES('watch-monitor',?1)",
-                    [
-                        json!({"id":"watch-monitor","agent":"lead","ruleId":monitor_rule_id,"status":"running"})
-                            .to_string(),
-                    ],
-                )?;
-                Ok::<_, studio_runtime_store::StoreError>(())
-            })
-            .await
-            .expect("seed monitor");
-        let pause = rules(
-            &store,
-            "lead",
-            3,
-            Some(&json!({"action":"pause","id":id})),
-            "request-pause",
-            102.0,
-            &Files,
-        )
-        .await
-        .expect("pause rule");
-        assert_eq!(pause.value["status"], "paused");
-        assert_eq!(pause.cancel_monitor_ids, ["watch-monitor"]);
-        let stored = RulesRepository::get(&store.test_reader().expect("read state"), &id)
-            .expect("read rule")
-            .expect("rule exists");
-        assert_eq!(stored.get("status"), Some(&json!("paused")));
     }
 
     #[derive(Clone, Copy)]

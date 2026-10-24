@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const { test, expect } = playwright;
+test.describe.configure({ mode: "parallel" });
 
 // A headless fixture mounts the production Workspace Tools caller. The API
 // fixture controls delayed replies, response loss and inventory pagination.

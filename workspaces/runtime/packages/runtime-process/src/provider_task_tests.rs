@@ -306,6 +306,7 @@ fn actor(
         cached_initialize: None,
         open_attempted: false,
         provider_exited: false,
+        cleanup_error: None,
     };
     (actor, commands, journal)
 }
@@ -315,6 +316,154 @@ async fn read_request<S: AsyncRead + Unpin>(server: &mut BufReader<S>) -> Value 
     assert_ne!(server.read_line(&mut line).await.unwrap(), 0);
     serde_json::from_str(&line).unwrap()
 }
+
+async fn attachment_with_supervisor_peers() -> (
+    tempfile::TempDir,
+    ProviderAttachment,
+    BufReader<UnixStream>,
+    BufReader<UnixStream>,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let listener = tokio::net::UnixListener::bind(root.path().join("supervisor.sock")).unwrap();
+    let factory = SupervisorProviderTaskFactory::new(BackendIdentity {
+        backend_id: BackendId("detach-barrier".into()),
+        state_dir: root.path().into(),
+    });
+    let attachment = factory
+        .open(
+            ProviderHandle::for_account("unit"),
+            OpenOptions {
+                launch: ProviderLaunchSpec::new(
+                    vec!["fixture".into()],
+                    Default::default(),
+                    root.path().into(),
+                ),
+                clock: SessionClock::default(),
+                expected_generation: None,
+            },
+            Shutdown::default(),
+        )
+        .await
+        .unwrap();
+    let (socket, _) = listener.accept().await.unwrap();
+    let mut control = BufReader::new(socket);
+    let _handshake = read_request(&mut control).await;
+    control
+        .get_mut()
+        .write_all(b"{\"ok\":true,\"protocol\":2}\n")
+        .await
+        .unwrap();
+    let status = read_request(&mut control).await;
+    control.get_mut().write_all(format!("{}\n", serde_json::json!({"requestId":status["requestId"],"error":"Unknown supervisor handle"})).as_bytes()).await.unwrap();
+    let open = read_request(&mut control).await;
+    control.get_mut().write_all(format!("{}\n", serde_json::json!({"requestId":open["requestId"],"result":{"pid":1,"generation":1,"resumed":false,"sequence":0,"acknowledged":0}})).as_bytes()).await.unwrap();
+    let (socket, _) = listener.accept().await.unwrap();
+    let mut events = BufReader::new(socket);
+    let _handshake = read_request(&mut events).await;
+    events
+        .get_mut()
+        .write_all(b"{\"ok\":true,\"protocol\":2}\n")
+        .await
+        .unwrap();
+    assert_eq!(read_request(&mut events).await["action"], "nextBatch");
+    (root, attachment, control, events)
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_supervisor_detach_on_both_connections() {
+    tokio::time::timeout(RPC_TIMEOUT, async {
+        let (_root, mut attachment, mut control, mut events) =
+            attachment_with_supervisor_peers().await;
+        let mut shutdown = Box::pin(attachment.shutdown());
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(shutdown.as_mut().poll(cx).is_pending())).await
+        );
+        // The fake supervisor observes each FIN but withholds its EOF until
+        // ownership release. Neither local socket drop nor one EOF is enough.
+        assert_eq!(events.read(&mut [0]).await.unwrap(), 0);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(shutdown.as_mut().poll(cx).is_pending())).await,
+            "shutdown completed before the supervisor released the event connection"
+        );
+        events.get_mut().shutdown().await.unwrap();
+        assert_eq!(control.read(&mut [0]).await.unwrap(), 0);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(shutdown.as_mut().poll(cx).is_pending())).await,
+            "shutdown completed before the supervisor released the control connection"
+        );
+        control.get_mut().shutdown().await.unwrap();
+        let exit = shutdown.await;
+        assert!(matches!(exit.result, Err(AdapterError::Cancelled)));
+        assert!(exit.cleanup_error.is_none(), "{:?}", exit.cleanup_error);
+        assert!(exit.provider_retained);
+    })
+    .await
+    .expect("supervisor detach barrier hang guard");
+}
+#[tokio::test]
+async fn shutdown_reports_control_detach_timeout() {
+    let (_root, mut attachment, mut control, mut events) = attachment_with_supervisor_peers().await;
+    let task = tokio::spawn(async move { attachment.shutdown().await });
+    assert_eq!(events.read(&mut [0]).await.unwrap(), 0);
+    events.get_mut().shutdown().await.unwrap();
+    assert_eq!(control.read(&mut [0]).await.unwrap(), 0);
+    tokio::time::pause();
+    let exit = tokio::time::timeout(RPC_TIMEOUT * 2, task)
+        .await
+        .expect("supervisor detach must remain bounded")
+        .unwrap();
+    assert!(matches!(exit.result, Err(AdapterError::Cancelled)));
+    assert!(
+        exit.cleanup_error
+            .unwrap()
+            .contains(&AdapterError::Timeout.to_string())
+    );
+    assert!(exit.provider_retained);
+}
+
+#[tokio::test]
+async fn shutdown_reports_both_detach_timeouts_within_one_budget() {
+    let (_root, mut attachment, mut control, mut events) = attachment_with_supervisor_peers().await;
+    let started = Instant::now();
+    let task = tokio::spawn(async move { attachment.shutdown().await });
+    assert_eq!(events.read(&mut [0]).await.unwrap(), 0);
+    // Both FINs must arrive before either peer sends EOF or a timer fires.
+    assert_eq!(control.read(&mut [0]).await.unwrap(), 0);
+    tokio::time::pause();
+    let exit = task.await.unwrap();
+    assert!(Instant::now() - started < SUPERVISOR_DETACH_TIMEOUT * 2);
+    assert!(matches!(exit.result, Err(AdapterError::Cancelled)));
+    assert_eq!(
+        exit.cleanup_error
+            .unwrap()
+            .matches(&AdapterError::Timeout.to_string())
+            .count(),
+        2
+    );
+    assert!(exit.provider_retained);
+}
+
+#[tokio::test]
+async fn shutdown_reports_event_detach_timeout() {
+    let (_root, mut attachment, mut control, mut events) = attachment_with_supervisor_peers().await;
+    // The control peer will confirm detach; only the event peer withholds EOF.
+    control.get_mut().shutdown().await.unwrap();
+    let task = tokio::spawn(async move { attachment.shutdown().await });
+    assert_eq!(events.read(&mut [0]).await.unwrap(), 0);
+    tokio::time::pause();
+    let exit = tokio::time::timeout(RPC_TIMEOUT * 2, task)
+        .await
+        .expect("supervisor detach must remain bounded")
+        .unwrap();
+    assert!(matches!(exit.result, Err(AdapterError::Cancelled)));
+    assert!(
+        exit.cleanup_error
+            .unwrap()
+            .contains(&AdapterError::Timeout.to_string())
+    );
+    assert!(exit.provider_retained);
+}
+
 #[tokio::test(start_paused = true)]
 async fn idle_attachment_waits_for_events_without_periodic_next_requests() {
     let shutdown = Shutdown::default();
@@ -322,7 +471,6 @@ async fn idle_attachment_waits_for_events_without_periodic_next_requests() {
     let (socket, server) = tokio::io::duplex(4096);
     let mut server = BufReader::new(server);
     let (_pump_sender, pump) = mpsc::channel(1);
-    let event_pump = tokio::spawn(std::future::pending::<Result<(), AdapterError>>());
     let task = tokio::spawn(async move {
         let mut rpc = Rpc {
             stream: BufReader::new(socket),
@@ -330,9 +478,7 @@ async fn idle_attachment_waits_for_events_without_periodic_next_requests() {
             started: false,
             received_at: Instant::now(),
         };
-        actor
-            .serve(&mut rpc, pump, event_pump, EventCursor(0))
-            .await
+        actor.serve(&mut rpc, pump, EventCursor(0)).await
     });
     let (ack, barrier) = AdapterCommand::ack(EventCursor(0));
     commands
@@ -418,12 +564,7 @@ async fn full_journal_lane_keeps_ack_commands_live_while_next_event_waits() {
             received_at: Instant::now(),
         };
         actor
-            .serve(
-                &mut rpc,
-                pump,
-                event_pump,
-                EventCursor(LANE_CAPACITY as u64),
-            )
+            .serve(&mut rpc, pump, EventCursor(LANE_CAPACITY as u64))
             .await
     });
 
@@ -464,6 +605,7 @@ async fn full_journal_lane_keeps_ack_commands_live_while_next_event_waits() {
     );
     shutdown.cancel();
     assert!(matches!(task.await.unwrap(), Err(AdapterError::Cancelled)));
+    let _pump_result = event_pump.await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -967,7 +1109,7 @@ fn scripted_records(
 /// strings before libSystem startup. A reattach reads again until the record
 /// equals the accepted launch, instead of refusing a correct child.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retained_environment_settles_after_a_transient_launch_record() {
     use std::sync::atomic::Ordering;
     let clean = launch_environment();
@@ -987,7 +1129,7 @@ async fn retained_environment_settles_after_a_transient_launch_record() {
         &slots,
         &clean,
         &RetainedLaunchValues::default(),
-        Duration::from_secs(5),
+        RETAINED_ENVIRONMENT_SETTLE,
         read,
     )
     .await
@@ -999,7 +1141,7 @@ async fn retained_environment_settles_after_a_transient_launch_record() {
 
 /// A child whose launch record keeps differing is still refused.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retained_environment_refuses_a_record_that_never_matches() {
     use std::sync::atomic::Ordering;
     let clean = launch_environment();
@@ -1009,15 +1151,17 @@ async fn retained_environment_refuses_a_record_that_never_matches() {
     let shutdown = Shutdown::default();
     let mut stop = shutdown.subscribe();
     let slots = Arc::new(Semaphore::new(1));
+    let started = Instant::now();
     let result = settled_environment(
         &mut stop,
         &slots,
         &clean,
         &RetainedLaunchValues::default(),
-        Duration::from_millis(50),
+        RETAINED_ENVIRONMENT_SETTLE,
         read,
     )
     .await;
+    assert_eq!(started.elapsed(), RETAINED_ENVIRONMENT_SETTLE);
     assert!(matches!(result, Err(AdapterError::UnverifiableChild)));
     assert!(reads.load(Ordering::SeqCst) >= 2);
     assert_eq!(slots.available_permits(), 1);
@@ -1025,7 +1169,7 @@ async fn retained_environment_refuses_a_record_that_never_matches() {
 
 /// Shutdown ends the wait between two reads.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retained_environment_wait_ends_on_shutdown() {
     let clean = launch_environment();
     let (read, _reads) = scripted_records(vec![Err(io::ErrorKind::InvalidData.into())]);

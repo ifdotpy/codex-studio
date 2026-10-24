@@ -67,6 +67,10 @@ pub fn read_agents(connection: &Connection, ids: &BTreeSet<String>) -> StoreResu
     Ok(rows.into_iter().map(|(_, record)| record).collect())
 }
 
+fn owner_records_sql(table: &str, owner_field: &str) -> String {
+    format!("SELECT rowid,id,record FROM {table} WHERE json_extract(record,'$.{owner_field}')=?1")
+}
+
 /// Read lifecycle-owned history for the supplied owners (the caller loads their
 /// agent rows with `read_agents`). Lifecycle actions pass their target's descendant tree;
 /// their decisions never inspect unrelated task/monitor/event/voice history.
@@ -95,10 +99,8 @@ pub fn read_for_agents(
         if let (Some(owners), Some(owner_field)) = (owners, owner_field) {
             let mut ordered = Vec::new();
             for owner in owners {
-                let mut statement = connection.prepare_cached(&format!(
-                    "SELECT rowid,id,record FROM {table} \
-                     WHERE json_extract(record,'$.{owner_field}')=?1"
-                ))?;
+                let mut statement =
+                    connection.prepare_cached(&owner_records_sql(table, owner_field))?;
                 let rows = statement.query_map([owner], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
@@ -476,10 +478,10 @@ mod tests {
         assert_eq!(scoped["runtime_events"].len(), 1);
 
         let plan = connection
-            .prepare(
-                "EXPLAIN QUERY PLAN SELECT rowid,id,record FROM runtime_tasks \
-                 WHERE json_extract(record,'$.agent')=?1",
-            )
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                super::owner_records_sql("runtime_tasks", "agent")
+            ))
             .expect("explain scoped task lookup")
             .query_map(["child"], |row| row.get::<_, String>(3))
             .expect("query plan")

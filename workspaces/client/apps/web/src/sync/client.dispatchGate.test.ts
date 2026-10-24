@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SYNC_ENTITY_STREAM_MAX_BYTES } from "../generated/sharedValues";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -232,7 +231,7 @@ describe("entity pull dispatch gate", () => {
     });
     await client.persistResourceEntityChanges(
       {
-        protocol: 3,
+        protocol: 4,
         workspaceId,
         epoch: "validity",
         revision: 2,
@@ -246,19 +245,16 @@ describe("entity pull dispatch gate", () => {
               through: 101,
               documents: [
                 {
-                  id: "entity:agent:streamed",
-                  seq: 101,
-                  payload: JSON.stringify({
-                    collection: "agent",
+                  op: "upsert",
+                  collection: "agent",
+                  id: "streamed",
+                  value: {
                     id: "streamed",
-                    value: {
-                      id: "streamed",
-                      name: "Streamed",
-                      status: "idle",
-                      source: "managed",
-                    },
-                  }),
-                  _deleted: false,
+                    name: "Streamed",
+                    status: "idle",
+                    source: "managed",
+                  },
+                  seq: 101,
                 },
               ],
             },
@@ -275,7 +271,7 @@ describe("entity pull dispatch gate", () => {
     stop();
   });
 
-  it("rejects a stream batch above the UTF-8 byte cap before storing or advancing", async () => {
+  it("does not re-serialize a decoded inline entity batch", async () => {
     const { client, rows, workspaceId, stop, entitySequence } = await setup();
     vi.stubGlobal("navigator", {
       onLine: true,
@@ -287,51 +283,49 @@ describe("entity pull dispatch gate", () => {
     entitySequence
       .getEntitySequenceCheckpoint("state:entities:v1", API_SCHEMA_HASH)
       .observeEpoch("validity");
-    await expect(
-      client.persistResourceEntityChanges(
+    const stringify = vi.spyOn(JSON, "stringify");
+    const event: Parameters<typeof client.persistResourceEntityChanges>[0] = {
+      protocol: 4,
+      workspaceId,
+      epoch: "validity",
+      revision: 2,
+      reason: "change",
+      resources: [{ kind: "state" }],
+      resourceVersions: [
         {
-          protocol: 3,
-          workspaceId,
-          epoch: "validity",
-          revision: 2,
-          reason: "change",
-          resources: [{ kind: "state" }],
-          resourceVersions: [
-            {
-              revision: 101,
-              entityChanges: {
-                after: 100,
-                through: 101,
-                documents: [
-                  {
-                    id: "entity:agent:oversize",
-                    seq: 101,
-                    payload: JSON.stringify({
-                      collection: "agent",
-                      id: "oversize",
-                      value: {
-                        id: "oversize",
-                        name: "é".repeat(SYNC_ENTITY_STREAM_MAX_BYTES / 2),
-                        status: "idle",
-                        source: "managed",
-                      },
-                    }),
-                    _deleted: false,
-                  },
-                ],
+          revision: 101,
+          entityChanges: {
+            after: 100,
+            through: 101,
+            documents: [
+              {
+                op: "upsert",
+                collection: "agent",
+                id: "inline",
+                value: {
+                  id: "inline",
+                  name: "Streamed",
+                  status: "idle",
+                  source: "managed",
+                },
+                seq: 101,
               },
-            },
-          ],
+            ],
+          },
         },
-        () => true,
-      ),
-    ).rejects.toThrow("Invalid stream entity batch");
-    expect(rows.has("entity:agent:oversize")).toBe(false);
-    expect(rows.get("state:entities:checkpoint")?.seq).toBe(100);
+      ],
+    };
+    await client.persistResourceEntityChanges(event, () => true);
+    expect(stringify).not.toHaveBeenCalledWith(
+      event.resourceVersions?.[0].entityChanges,
+    );
+    expect(rows.has("entity:agent:inline")).toBe(true);
+    expect(rows.get("state:entities:checkpoint")?.seq).toBe(101);
     stop();
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.resetModules();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -348,10 +342,11 @@ describe("entity pull dispatch gate", () => {
   const installMutationResponse = () => {
     const documents = [
       {
-        id: "entity:agent:created",
-        payload: JSON.stringify({ id: "created", value: { name: "new" } }),
+        op: "upsert",
+        collection: "agent",
+        id: "created",
+        value: { id: "created", name: "new" },
         seq: 101,
-        _deleted: false,
       },
     ];
     mocks.mutationResponse = {
@@ -557,7 +552,13 @@ describe("entity pull dispatch gate", () => {
       entered = resolve;
     });
     storageInstance.bulkWrite.mockImplementation(async (writes) => {
-      if (writes.some(({ document }) => document.id === documents[0]?.id)) {
+      if (
+        writes.some(
+          ({ document }) =>
+            document.id ===
+            `entity:${documents[0]?.collection}:${documents[0]?.id}`,
+        )
+      ) {
         entered();
         await hold;
       }
@@ -580,7 +581,9 @@ describe("entity pull dispatch gate", () => {
     release();
     await post;
     expect(pulls).toEqual([]);
-    expect(rows.get(documents[0]!.id)).toMatchObject({ seq: 101 });
+    expect(
+      rows.get(`entity:${documents[0]!.collection}:${documents[0]!.id}`),
+    ).toMatchObject({ seq: 101 });
     expect(checkpoint.value).toBe(101);
     stop();
   });
@@ -589,6 +592,7 @@ describe("entity pull dispatch gate", () => {
     "dispatches exactly one fallback pull when a real held persister %s",
     async (mode) => {
       const { api, rows, storageInstance, stop, workspaceId } = await setup();
+      vi.useFakeTimers();
       const documents = installMutationResponse();
       const pulls: number[] = [];
       configurePulls(workspaceId, pulls, documents);
@@ -602,8 +606,17 @@ describe("entity pull dispatch gate", () => {
       const persisterEntered = new Promise<void>((resolve) => {
         entered = resolve;
       });
+      let held = false;
       storageInstance.bulkWrite.mockImplementation(async (writes) => {
-        if (writes.some(({ document }) => document.id === documents[0]?.id)) {
+        if (
+          !held &&
+          writes.some(
+            ({ document }) =>
+              document.id ===
+              `entity:${documents[0]?.collection}:${documents[0]?.id}`,
+          )
+        ) {
+          held = true;
           entered();
           await hold;
         }
@@ -616,19 +629,23 @@ describe("entity pull dispatch gate", () => {
       const readsBeforeFrame =
         storageInstance.findDocumentsById.mock.calls.length;
       mocks.invalidate?.({ epoch: "held", entitySequence: 101 });
-      await vi.waitFor(() =>
-        expect(
-          storageInstance.findDocumentsById.mock.calls.length,
-        ).toBeGreaterThan(readsBeforeFrame),
-      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        storageInstance.findDocumentsById.mock.calls.length,
+      ).toBeGreaterThan(readsBeforeFrame);
       expect(pulls).toEqual([]);
       if (mode === "reject") rejectWrite(new Error("test persistence failure"));
-      else await new Promise((resolve) => setTimeout(resolve, 300));
+      else {
+        await vi.advanceTimersByTimeAsync(249);
+        expect(pulls).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+      }
       await post;
-      await vi.waitFor(() => expect(pulls).toHaveLength(1));
+      await vi.advanceTimersByTimeAsync(0);
       expect(pulls).toHaveLength(1);
       release();
-      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pulls).toHaveLength(1);
       stop();
     },
   );
@@ -648,7 +665,13 @@ describe("entity pull dispatch gate", () => {
       entered = resolve;
     });
     storageInstance.bulkWrite.mockImplementation(async (writes) => {
-      if (writes.some(({ document }) => document.id === documents[0]?.id)) {
+      if (
+        writes.some(
+          ({ document }) =>
+            document.id ===
+            `entity:${documents[0]?.collection}:${documents[0]?.id}`,
+        )
+      ) {
         entered();
         await hold;
       }
@@ -737,11 +760,21 @@ describe("entity pull dispatch gate", () => {
       const documents =
         after === 100
           ? Array.from({ length: 500 }, (_, index) => ({
-              id: `entity:agent:${index}`,
-              payload: "{}",
+              op: "upsert",
+              collection: "agent",
+              id: String(index),
+              value: { id: String(index) },
               seq: 101 + index,
             }))
-          : [{ id: "entity:agent:last", payload: "{}", seq: 601 }];
+          : [
+              {
+                op: "upsert",
+                collection: "agent",
+                id: "last",
+                value: { id: "last" },
+                seq: 601,
+              },
+            ];
       const checkpoint = after === 100 ? 600 : 601;
       return {
         workspaceId: "e".repeat(32),

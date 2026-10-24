@@ -73,6 +73,7 @@ test("Scroll restart", async () => {
         browserType === chromium ? browserExecutablePath : undefined,
     });
     const page = await browser.newPage();
+    await page.clock.install();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/check", (route) =>
@@ -124,9 +125,8 @@ test("Scroll restart", async () => {
     await page.waitForFunction(
       () => document.getElementById("scroll").scrollTop === 900,
     );
-    // Let native scroll delivery and the hook's 600 ms user-input window settle
-    // before counting layout reads caused by unrelated React renders.
-    await page.waitForTimeout(650);
+    // Expire the hook's recent-input window, including performance.now().
+    await page.clock.fastForward(650);
     await page.evaluate(() => {
       window.messageMeasurements = 0;
       const original = Element.prototype.getBoundingClientRect;

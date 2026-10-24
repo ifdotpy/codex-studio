@@ -633,7 +633,7 @@ pub async fn execute_provider_prepared(
         if scope.account != account {
             return Err(NativeError::Changed);
         }
-        if should_repair_before_reserve(resume_reserved) {
+        if !resume_reserved {
             preparation
                 .before_reserve(store, port, request, &scope)
                 .await?;
@@ -761,17 +761,10 @@ pub fn fail_pending(tx: &Transaction<'_>, id: &str, error: &str) -> Result<()> {
     )
 }
 
-fn should_repair_before_reserve(resume_reserved: bool) -> bool {
-    !resume_reserved
-}
-
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod native_action_retry_tests {
-    use super::{
-        NativeRequest, RequestCertainty, SessionReceipt, should_repair_before_reserve,
-        validate_provider_receipt,
-    };
+    use super::{NativeRequest, RequestCertainty, SessionReceipt, validate_provider_receipt};
     use crate::{
         account_session_runtime::{ConnectionScope, NotSentReason},
         workspace_operations::ProviderTicket,
@@ -809,12 +802,6 @@ mod native_action_retry_tests {
             not_sent_reason: Some(NotSentReason::WorkerNotSent),
             replayed: false,
         }
-    }
-
-    #[test]
-    fn preflight_repair_runs_only_for_new_admission() {
-        assert!(should_repair_before_reserve(false));
-        assert!(!should_repair_before_reserve(true));
     }
 
     #[test]

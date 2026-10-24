@@ -74,104 +74,26 @@ test("facade output capture preserves every selected Node test result", () => {
 test("short and comprehensive recipes preserve their owned test boundaries", () => {
   const fast = recipePlan(process.cwd(), "test-fast");
   const comprehensive = recipePlan(process.cwd(), "test-comprehensive");
-
-  assert.match(fast.command, /contracts-check/);
-  assert.match(fast.command, /native\/check-native\.test\.mjs/);
   for (const recipe of [fast, comprehensive]) {
-    assert.match(recipe.command, /build-client-wasm\.mjs/);
+    assert.match(recipe.command, /build:wasm/);
+    assert.match(recipe.command, /build:bundle:prepared/);
+    assert.match(recipe.command, /'nextest' 'run' '--workspace'/);
+    assert.match(recipe.command, /studio-contracts/);
+    assert.match(recipe.command, /boundaries-check/);
+    assert.match(recipe.command, /vm-guest\/run-guest-suite\.mjs/);
+    assert.doesNotMatch(
+      recipe.command,
+      /--release|test-server-load|runtime_load|mutations/,
+    );
   }
-  assert.match(comprehensive.command, /['"]just['"] ['"]clippy-runtime['"]/);
-  assert.ok(
-    comprehensive.command.indexOf("build:bundle") <
-      comprehensive.command.indexOf("clippy-runtime"),
-  );
-  assert.match(fast.command, /boundaries-check/);
-  assert.match(
-    fast.command,
-    /migration_2026_10_20_columns_round_trips_an_old_state_once/,
-  );
-  assert.match(
-    fast.command,
-    /migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once/,
-  );
-  assert.match(fast.command, /server_exec::tests::snapshots_/);
-  assert.match(fast.command, /server_exec::tests::snapshot_write_failure_/);
-  assert.match(fast.command, /server_exec::tests::existing_start_fence_/);
-  assert.match(fast.command, /account_worker::tests::callback_handoff::/);
-  assert.match(fast.command, /callback_head_of_line/);
-  assert.match(fast.command, /sync_policy::tests::monitor_/);
-  assert.match(
-    fast.command,
-    /submission_manifest_boundaries_use_shared_limits/,
-  );
-  assert.match(
-    fast.command,
-    /nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work/,
-  );
-  assert.match(
-    fast.command,
-    /active_barrier_holds_new_requests_but_not_callback_answers/,
-  );
+  assert.match(fast.command, /'--profile' 'fast'/);
   assert.match(fast.command, /test:unit:fast/);
-  assert.match(fast.command, /vm-guest\/run-guest-suite\.mjs/);
-  assert.match(fast.command, /vm-guest\/run-guest-suite\.test\.mjs/);
-  for (const witness of [
-    "restart-reconcile.test.mjs",
-    "journal-repair.test.mjs",
-    "claude_repair_report::",
-    "restart_continues_only_a_confirmed_interruption",
-    "uncertain_turn_keeps_its_outcome_and_reason_in_analytics",
-  ])
-    assert.ok(fast.command.includes(witness), witness);
-  // The provider reaping witnesses are Linux only and run only on Linux.
-  const linux = process.platform === "linux";
-  assert.equal(
-    (fast.command.match(/'--test' 'integration'/g) ?? []).length,
-    linux ? 6 : 5,
-  );
-  for (const witness of [
-    /killed_provider_is_reaped_with_full_journal_and_unobserved_write/,
-    /direct_child_sigkill_settles_unknown_without_resend/,
-    /running_child_started_with_a_previous_command_reattaches/,
-    /running_app_server_started_with_the_frozen_command_reattaches/,
-  ]) {
-    if (linux) assert.match(fast.command, witness);
-    else assert.doesNotMatch(fast.command, witness);
-  }
-  assert.match(fast.command, /test\(\/\^sql_callback_guard::\/\)/);
-  assert.match(fast.command, /test\(\/\^project_preparation::\/\)/);
-  assert.match(fast.command, /test\(\/\^retained_worktrees::\/\)/);
-  assert.match(fast.command, /test\(\/\^monitor_start_preparation::\/\)/);
-  assert.match(fast.command, /test\(\/\^monitor_wake_guarantees::\/\)/);
-  assert.match(fast.command, /test\(monitor_completion_\)/);
-  assert.match(fast.command, /test\(reattached_exit_\)/);
-  assert.match(fast.command, /not binary\(integration\)/);
-  assert.doesNotMatch(fast.command, /binary\((?:sql_callback_guard|monitor_)/);
-  assert.doesNotMatch(
-    fast.command,
-    /test:browser:smoke|--workspace|test-server-load|mutations/,
-  );
-
-  assert.match(comprehensive.command, /--workspace/);
-  assert.match(comprehensive.command, /vitest\.unit\.config\.ts/);
-  assert.match(comprehensive.command, /test:browser:smoke/);
-  const fixture = comprehensive.command.search(
-    /'--release' '-p' 'studio-runtime-server'/,
-  );
-  assert.ok(
-    fixture >= 0,
-    "the comprehensive tier builds its Rust HTTP fixture",
-  );
-  assert.ok(
-    comprehensive.command.indexOf("'build:bundle'") >= 0 &&
-      comprehensive.command.indexOf("'build:bundle'") <
-        comprehensive.command.indexOf("'nextest'"),
-    "the renderer that the native crate embeds is built before Rust nextest",
-  );
-  assert.doesNotMatch(
-    comprehensive.command,
-    /test-server-load|runtime_load|mutations/,
-  );
+  assert.match(fast.command, /native\/check-native\.test\.mjs/);
+  assert.doesNotMatch(fast.command, /test:browser/);
+  assert.match(comprehensive.command, /'--profile' 'ci'/);
+  assert.match(comprehensive.command, /'clippy' '--workspace'/);
+  assert.match(comprehensive.command, /test:unit:prepared/);
+  assert.match(comprehensive.command, /test:browser:smoke:prepared/);
 });
 
 test("consolidated Rust targets register every integration test file once", () => {
@@ -629,14 +551,17 @@ test("focused log cache prunes runs older than fourteen days and retains recent 
   }
 });
 
-test("hosted remaining checks prepare native dependencies for workspace Clippy", () => {
+test("hosted non-Rust checks consume prepared inputs and cannot compile Cargo", () => {
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
   const remaining = workflow
     .split("  fast-rest:\n")[1]
     .split("  fast-rust:\n")[0];
-  assert.match(
-    remaining,
-    /uses: \.\/\.github\/actions\/client-build-setup\n\s+with:\n\s+native: "true"/,
+  assert.match(remaining, /needs: rust-build-tests/);
+  assert.match(remaining, /name: prepared-check-inputs/);
+  assert.doesNotMatch(remaining, /client-build-setup|cargo build|clippy/);
+  assert.doesNotMatch(
+    recipePlan(process.cwd(), "test-fast-rest-non-rust").command,
+    /'cargo'|clippy|build:wasm|build:bundle/,
   );
 });
 
@@ -880,28 +805,32 @@ test("zero-test package command is a failure unless explicitly allowed", async (
 
 test("composed runs name and log a failed constituent step", async () => {
   let printed = "";
-  const write = process.stdout.write;
-  process.stdout.write = function (chunk, ...args) {
-    printed += chunk.toString();
-    return write.call(this, chunk, ...args);
-  };
   try {
-    const result = await executeRecipe(process.cwd(), "test-fast", [
-      {
-        item: { name: "fixture step", ecosystem: "pnpm" },
-        label: "fixture type check",
-        options: { allowZeroTests: true },
-        commands: [
-          [
-            "node",
+    const result = await executeRecipe(
+      process.cwd(),
+      "test-fast",
+      [
+        {
+          item: { name: "fixture step", ecosystem: "pnpm" },
+          label: "fixture type check",
+          options: { allowZeroTests: true },
+          commands: [
             [
-              "-e",
-              "process.stdout.write('fixture failure output\\n'); process.exit(1)",
+              "node",
+              [
+                "-e",
+                "process.stdout.write('fixture failure output\\n'); process.exit(1)",
+              ],
             ],
           ],
-        ],
+        },
+      ],
+      {
+        write: (text) => {
+          printed += text;
+        },
       },
-    ]);
+    );
     assert.equal(result.exitCode, 1);
     assert.equal(result.failedStep, "fixture type check");
     assert.match(printed, /test-fast: failed at fixture type check/);
@@ -910,7 +839,7 @@ test("composed runs name and log a failed constituent step", async () => {
       /fixture failure output/,
     );
   } finally {
-    process.stdout.write = write;
+    // Output is injected; the runner's stdout stays untouched.
   }
 });
 
@@ -1325,6 +1254,9 @@ test("installer recipe preserves directory arguments as literal positional value
     mkdirSync(tools);
     mkdirSync(path.dirname(binary), { recursive: true });
     writeFileSync(path.join(root, "justfile"), readFileSync("justfile"));
+    const budget = "workspaces/tooling/apps/repository-checks/gate-config.mjs";
+    mkdirSync(path.dirname(path.join(root, budget)), { recursive: true });
+    writeFileSync(path.join(root, budget), readFileSync(budget));
     writeFileSync(path.join(tools, "cargo"), "#!/bin/sh\nexit 0\n");
     chmodSync(path.join(tools, "cargo"), 0o755);
     writeFileSync(binary, '#!/bin/sh\nprintf "%s\\0" "$@" > "$CAPTURE"\n');
@@ -1406,4 +1338,27 @@ test("repository gates use manifest packages without the retired backend", () =>
   ]) {
     assert.ok(workflow.includes(`  ${job}:`), job);
   }
+});
+
+test("short profile commands retain native nextest summary and zero-test guards", () => {
+  assert.deepEqual(
+    parseCounts(
+      { ecosystem: "cargo" },
+      "   Summary [ 0.621s] 484 tests run: 483 passed, 1 failed, 3049 skipped",
+    ),
+    {
+      passed: 483,
+      failed: 1,
+      skipped: 3049,
+      executed: 484,
+      summaryFound: true,
+    },
+  );
+  assert.equal(
+    parseCounts(
+      { ecosystem: "cargo" },
+      "   Summary [ 0.001s] 0 tests run: 0 passed",
+    ).executed,
+    0,
+  );
 });

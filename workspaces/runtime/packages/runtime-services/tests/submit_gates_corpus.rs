@@ -144,10 +144,59 @@ fn rust(case: &Value, records: Option<&Value>) -> Value {
         _ => panic!("unknown gate"),
     }
 }
+// Frozen Python errors use public prose; Rust exposes typed denial codes.
+fn captured_denial(message: &str) -> &'static str {
+    match message
+        .strip_prefix("Agent communication is allowed only within one team")
+        .unwrap_or(message)
+    {
+        "" => "team-boundary",
+        ": the recipient team is unavailable" => "recipient-unavailable",
+        ": the message room is unavailable" => "room-unavailable",
+        ": global and foreign broadcasts are disabled" => "broadcast-disabled",
+        ": the message room crosses team boundaries" => "room-boundary",
+        ": the complaint is unavailable" => "complaint-unavailable",
+        ": the complaint recipient does not match" => "complaint-recipient",
+        ": the complaint responder is unavailable" => "complaint-responder-unavailable",
+        ": the complaint responder does not match" => "complaint-responder",
+        "Scheduled chat reviews have been removed" => "chat-review-removed",
+        "The shared turn has no active room receipt" => "radio-unsupported",
+        "This model is not available for this account"
+        | "Select an available model"
+        | "'model'" => "model-unavailable",
+        "This reasoning level is not supported by the selected model"
+        | "Reasoning effort must be a non-empty string or null" => "effort-unsupported",
+        "Fast mode is not supported by the selected model" => "fast-mode-unsupported",
+        "daybreak_enabled must be a boolean" => "daybreak-unsupported",
+        "The account changed. Save the next-turn settings again" => "account-changed",
+        "Conversation settings changed during account validation. Send again" => "settings-changed",
+        _ => panic!("unmapped captured denial: {message}"),
+    }
+}
 fn compare(oracle: &mut CapturedExpectations, name: &str, case: &Value, deviation: Option<&str>) {
+    // Rust checks catalog provenance before the legacy settings-race refusal.
+    let deviation = deviation
+        .or((name == "changed-during-read-account_key").then_some("catalog-identity-mismatch"));
     let mut python = oracle.call(case);
     let actual = rust(case, python.get("records"));
     python.as_object_mut().expect("result").remove("records");
+    if python["allowed"] == false && deviation.is_none() {
+        let location = match name {
+            "empty-agent-key-and-id" => Some("agents//id"),
+            "peer-key-record-id-mismatch" => Some("agents/sender/id"),
+            "invalid-room-members-None"
+            | "invalid-room-members-{}"
+            | "invalid-room-members-wrong" => Some("rooms/room/members"),
+            _ => None,
+        };
+        python = if let Some(location) = location {
+            json!({"allowed":false,"denial":"invalid-stored-input","location":location})
+        } else {
+            rejection(captured_denial(
+                python["message"].as_str().expect("captured denial"),
+            ))
+        };
+    }
     // This assertion is deliberately independent of the deviation list: no
     // Python denial can ever be transformed into a Rust allow.
     assert!(
@@ -174,8 +223,8 @@ fn compare(oracle: &mut CapturedExpectations, name: &str, case: &Value, deviatio
             deviation,
             "{name}: unapproved refusal: {case}\nPython={python}\nRust={actual}"
         );
-    } else if actual["allowed"] == true {
-        assert_eq!(actual, python, "{name}: selection/freeze differs: {case}");
+    } else if deviation.is_none() || actual["allowed"] == true {
+        assert_eq!(actual, python, "{name}: gate decision differs: {case}");
     }
 }
 fn patched(seed: &Value, witness: &Value) -> Value {

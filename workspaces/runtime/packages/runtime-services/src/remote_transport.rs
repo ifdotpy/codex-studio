@@ -1643,6 +1643,7 @@ fn set_no_follow(options: &mut OpenOptions) -> RemoteTransportResult<()> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use ring::signature::{Ed25519KeyPair, KeyPair};
     use std::sync::Arc;
 
     #[cfg(unix)]
@@ -1724,10 +1725,14 @@ pub(crate) mod tests {
     }
 
     fn spki_pem() -> String {
+        spki_pem_for(&PUBLIC)
+    }
+
+    fn spki_pem_for(public: &[u8]) -> String {
         let mut der = vec![
             0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
         ];
-        der.extend_from_slice(&PUBLIC);
+        der.extend_from_slice(public);
         format!(
             "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
             STANDARD.encode(der)
@@ -1759,7 +1764,7 @@ pub(crate) mod tests {
             let connection =
                 studio_runtime_store::Connection::open(path).expect("fixture database opens");
             connection
-                .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+                .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN;")
                 .expect("fixture pragmas apply");
             let mut statements = snapshot[name]["sqlite_master"]
                 .as_array()
@@ -1793,6 +1798,9 @@ pub(crate) mod tests {
                         .expect("schema object creates");
                 }
             }
+            connection
+                .execute_batch("COMMIT;")
+                .expect("fixture schema commits");
         }
         let store = RuntimeStore::open(Some(&root))
             .await
@@ -1912,6 +1920,16 @@ pub(crate) mod tests {
         )
         .expect("PKCS#8 v1 fixture loads after public-key consistency check");
         assert_eq!(identity.id(), "node-identity");
+        let other_key = Ed25519KeyPair::from_seed_unchecked(&[7; 32]).expect("distinct key");
+        assert!(matches!(
+            RemoteIdentity::from_key_fields(
+                "node-identity".into(),
+                "Fixture".into(),
+                &pkcs8_v1_pem(),
+                spki_pem_for(other_key.public_key().as_ref()),
+            ),
+            Err(RemoteTransportError::InvalidIdentity)
+        ));
         assert!(
             RemoteIdentity::from_key_fields(
                 "node-identity".to_owned(),
@@ -2374,6 +2392,14 @@ pub(crate) mod tests {
         )
         .await
         .expect("first invitation response is saved redacted");
+        let outbound: String = store.test_reader().expect("outbound reader")
+            .query_row("SELECT record FROM runtime_access_outbound WHERE server='server-peer' AND request_id='invite-request'", [], |row| row.get(0))
+            .expect("durable outbound receipt");
+        assert!(
+            !outbound.contains("fixture-secret"),
+            "invitation secret must not be persisted"
+        );
+
         drop(store);
 
         let store = RuntimeStore::open(Some(&root))
@@ -2423,9 +2449,22 @@ pub(crate) mod tests {
             response
         );
 
-        let mismatch = json!({"identity":{"serverId":"other-peer"}});
-        let body = serde_json::to_vec(&mismatch).expect("response serializes");
-        assert!(verify_multi_server_response(&body, "server-peer", &spki_pem()).is_err());
+        let other_key = Ed25519KeyPair::from_seed_unchecked(&[7; 32]).expect("distinct key");
+        for (field, wrong) in [
+            ("publicKey", spki_pem_for(other_key.public_key().as_ref())),
+            ("serverId", "other-peer".to_owned()),
+        ] {
+            let mut mismatch = response.clone();
+            mismatch["identity"][field] = json!(wrong);
+            let body = serde_json::to_vec(&mismatch).expect("response serializes");
+            assert!(
+                matches!(
+                    verify_multi_server_response(&body, "server-peer", &spki_pem()),
+                    Err(RemoteTransportError::InvalidSignature)
+                ),
+                "{field}"
+            );
+        }
     }
 
     #[test]

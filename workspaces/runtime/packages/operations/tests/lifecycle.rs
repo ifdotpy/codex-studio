@@ -741,14 +741,13 @@ fn property_r14_r15_r18_generated_event_sequences_preserve_invariants() {
     // no property-test runtime or external process.
     const ALPHABET: u64 = 9;
     const TRACE_LENGTH: u32 = 5;
-    let total = ALPHABET.pow(TRACE_LENGTH);
-    for mut encoded in 0..total {
-        let mut state = admitted(attempt(4, None));
-        let mut dispatch_count = 0;
-        for _ in 0..TRACE_LENGTH {
-            let old = state.clone();
-            let token = encoded % ALPHABET;
-            encoded /= ALPHABET;
+    fn visit(state: &State, dispatch_count: usize, depth: u32, trace: u64) -> u64 {
+        if depth == TRACE_LENGTH {
+            return 1;
+        }
+        let mut leaves = 0;
+        for token in 0..ALPHABET {
+            let trace = trace * ALPHABET + token;
             let kind = match token {
                 0 => EventKind::ClaimDispatch,
                 1 => EventKind::Cancel,
@@ -763,7 +762,7 @@ fn property_r14_r15_r18_generated_event_sequences_preserve_invariants() {
                 },
             };
             let decision = apply(
-                &state,
+                state,
                 identity("request-a"),
                 attempt(4, Some(8)),
                 kind.clone(),
@@ -773,20 +772,23 @@ fn property_r14_r15_r18_generated_event_sequences_preserve_invariants() {
                 .iter()
                 .filter(|intent| matches!(intent, studio_operations::EffectIntent::Dispatch { .. }))
                 .count();
-            dispatch_count += emitted_dispatch;
-            assert!(dispatch_count <= 1, "trace emitted multiple dispatches");
+            let dispatch_count = dispatch_count + emitted_dispatch;
+            assert!(
+                dispatch_count <= 1,
+                "trace {trace} depth {depth} emitted multiple dispatches"
+            );
 
             if matches!(
-                old.outcome(),
+                state.outcome(),
                 Some(studio_operations::Outcome::Applied | studio_operations::Outcome::NotApplied)
             ) {
                 assert_eq!(
                     decision.next_state.outcome(),
-                    old.outcome(),
-                    "settled outcome regressed"
+                    state.outcome(),
+                    "trace {trace} depth {depth}: settled outcome regressed"
                 );
             }
-            if old
+            if state
                 .operation
                 .as_ref()
                 .is_some_and(|op| op.state == OperationState::Unknown)
@@ -800,94 +802,14 @@ fn property_r14_r15_r18_generated_event_sequences_preserve_invariants() {
                         | EventKind::NonExecutionEvidence(_)
                 ));
             }
-            state = decision.next_state;
+            leaves += visit(&decision.next_state, dispatch_count, depth + 1, trace);
         }
+        leaves
     }
-}
-
-/// AC-05: replay Python's recorded scenarios from a language-neutral JSON file.
-#[test]
-fn ac05_python_contract_cases_are_data_driven() {
-    let fixtures: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/python-contract-cases.json"))
-            .expect("fixture JSON is valid");
-    let cases = fixtures.as_array().expect("fixture root is an array");
-    assert!(!cases.is_empty());
-    for case in cases {
-        let name = case["name"].as_str().expect("case has a name");
-        let source_test = case["source_test"]
-            .as_str()
-            .expect("case cites Python test");
-        assert!(!source_test.is_empty(), "{name} has source mapping");
-        let mut state = State::empty(StateRevision(0));
-        let operation_identity = OperationIdentity {
-            scope: IdentityScope::ToolRequest {
-                account: AccountId::from("account-a"),
-                thread: ThreadId::from("thread-a"),
-            },
-            request_id: RequestId::from(name),
-        };
-        for step in case["steps"].as_array().expect("steps are an array") {
-            let epoch = step["epoch"].as_u64().unwrap_or(4);
-            let generation = step["generation"].as_u64();
-            let kind = match step["kind"].as_str().expect("step has a kind") {
-                "admit" => EventKind::Admit {
-                    content: if step["content"] == "spawn-other" {
-                        content(2)
-                    } else {
-                        content(1)
-                    },
-                },
-                "dispatch" => EventKind::ClaimDispatch,
-                "cancel" => EventKind::Cancel,
-                "server_restart" => EventKind::ServerRestarted,
-                "applied_response" => EventKind::AppliedResponse,
-                "timeout" => EventKind::Failure(FailureKind::Timeout),
-                "connection_lost" => EventKind::Failure(FailureKind::ConnectionLost),
-                "invalid_response" => EventKind::Failure(FailureKind::InvalidPostExecutionResponse),
-                "process_lost" => EventKind::Failure(FailureKind::ProcessLost),
-                "committed_receipt" => EventKind::CommittedOperationReceipt,
-                "receipt_missing" => EventKind::ReceiptMissing,
-                other => panic!("unmatched fixture step {other} in {name}"),
-            };
-            let decision = apply(
-                &state,
-                operation_identity.clone(),
-                attempt(epoch, generation),
-                kind,
-            );
-            assert!(
-                !matches!(
-                    decision.kind,
-                    DecisionKind::Rejected(TransitionError::InvalidTransition)
-                ),
-                "unmatched fixture step in {name}"
-            );
-            state = decision.next_state;
-        }
-        let expected = case["rust_state"].as_str().expect("case has Rust state");
-        let actual = state
-            .operation
-            .as_ref()
-            .map_or("Absent", |operation| match operation.state {
-                OperationState::Reserved => "Reserved",
-                OperationState::Dispatched => "Dispatched",
-                OperationState::CancelRequested => "CancelRequested",
-                OperationState::CancelledBeforeDispatch => "CancelledBeforeDispatch",
-                OperationState::NotApplied => "NotApplied",
-                OperationState::Applied => "Applied",
-                OperationState::Unknown => "Unknown",
-            });
-        assert_eq!(actual, expected, "{name} from {source_test}");
-        assert!(
-            case["python_stage"].is_string(),
-            "{name} records Python stage"
-        );
-        assert!(
-            case["python_outcome"].is_string(),
-            "{name} records Python outcome"
-        );
-    }
+    assert_eq!(
+        visit(&admitted(attempt(4, None)), 0, 0, 0),
+        ALPHABET.pow(TRACE_LENGTH)
+    );
 }
 
 #[test]

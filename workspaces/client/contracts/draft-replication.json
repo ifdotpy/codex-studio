@@ -1,0 +1,40 @@
+{
+  "orders": [
+    "ack-first",
+    "late-echo",
+    "echo-first",
+    "lost-response",
+    "second-writer"
+  ],
+  "legacy": [
+    {
+      "id": "phone:writer:legacy-conflict",
+      "device": "phone",
+      "session": "legacy-conflict",
+      "text": "legacy remote",
+      "updated": 5,
+      "metadata": {
+        "kept": true
+      }
+    },
+    {
+      "id": "phone:writer:legacy-lost-response",
+      "device": "phone",
+      "session": "legacy-lost-response",
+      "text": "legacy remote",
+      "updated": 5,
+      "metadata": {
+        "kept": true
+      }
+    }
+  ],
+  "document": {
+    "id": "phone:writer:contract",
+    "device": "phone",
+    "session": "contract",
+    "text": "first",
+    "updated": 1,
+    "seen": {},
+    "alternatives": []
+  }
+}

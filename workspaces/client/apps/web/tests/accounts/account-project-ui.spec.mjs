@@ -1,5 +1,6 @@
 import {
   handleEntitySyncFixtureRequest,
+  entityMutationFixtureResponse,
   legacySnapshotRoute,
   syncIdentityFixture,
   API_SCHEMA_HASH_HEADER,
@@ -176,6 +177,7 @@ test("account project ui", async ({ browser: _browser }) => {
       rateLimitsByAccount: snapshotLimits,
     },
   };
+  const stateListeners = new Set();
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     let body = {};
@@ -188,12 +190,24 @@ test("account project ui", async ({ browser: _browser }) => {
     const json = (data) => {
       res.setHeader("Content-Type", "application/json");
       res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
-      res.end(JSON.stringify(data));
+      const reply =
+        req.method === "POST" && res.statusCode < 400 && !data._syncEntities
+          ? entityMutationFixtureResponse(stateForEntities, data)
+          : data;
+      res.end(JSON.stringify(reply));
+      if (reply._syncEntities?.length) {
+        for (const notify of stateListeners) notify([{ kind: "state" }]);
+      }
     };
     if (
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
+        subscriptionUpdate: body,
+        onStreamReady: (notify) => {
+          stateListeners.add(notify);
+          return () => stateListeners.delete(notify);
+        },
       })
     )
       return;
@@ -362,6 +376,11 @@ test("account project ui", async ({ browser: _browser }) => {
       res.writeHead(503);
       return res.end();
     }
+    if (url.pathname === "/api/retained-worktrees")
+      return json({
+        rootId: url.searchParams.get("agent") || "fixture",
+        retainedWorktrees: [],
+      });
     if (url.pathname.startsWith("/api/"))
       return json({ items: [], sessions: [] });
     try {
@@ -405,7 +424,7 @@ test("account project ui", async ({ browser: _browser }) => {
       const response = await route.fetch();
       const payload = await response.json();
       const entity = payload.documents
-        ?.map((document) => JSON.parse(document.payload))
+        ?.filter((document) => document.op === "upsert")
         .find(
           (entity) => entity.collection === "agent" && entity.id === "empty",
         );
@@ -528,13 +547,11 @@ test("account project ui", async ({ browser: _browser }) => {
         request: bodies
           .filter((request) => request.path === "/api/agents/account")
           .at(-1),
-        rows: accountMutationBody._syncEntities.map((document) =>
-          JSON.parse(document.payload),
-        ),
+        rows: accountMutationBody._syncEntities,
       }),
     );
     const changedAgentEntity = accountMutationBody._syncEntities
-      .map((document) => JSON.parse(document.payload))
+      .filter((document) => document.op === "upsert")
       .find((entity) => entity.collection === "agent" && entity.id === "empty");
     assert.equal(changedAgentEntity.value.accountKey, "work");
     assert.equal(agents.find((a) => a.id === "empty").accountKey, "work");
@@ -552,7 +569,7 @@ test("account project ui", async ({ browser: _browser }) => {
     await freshPage.goto(`http://127.0.0.1:${server.address().port}`);
     const initialEntityPullBody = await (await initialEntityPull).json();
     const pulledEmptyLead = initialEntityPullBody.documents
-      .map((document) => JSON.parse(document.payload))
+      .filter((document) => document.op === "upsert")
       .find((entity) => entity.collection === "agent" && entity.id === "empty");
     assert.equal(pulledEmptyLead.value.accountKey, "work");
     await freshPage.locator('[data-chat="empty"]').click();

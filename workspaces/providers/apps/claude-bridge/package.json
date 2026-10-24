@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "vitest run --config vitest.config.mjs",
-    "check:focused": "vitest run --config vitest.config.mjs"
+    "check:focused": "vitest run --config vitest.config.mjs",
+    "test:fast": "vitest run --config vitest.fast.config.mjs --project fast"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.308",

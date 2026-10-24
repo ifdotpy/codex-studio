@@ -1,5 +1,5 @@
 export const API_SCHEMA_HASH =
-  "9a248905cc822167a822fe53534a25efc51d8083e93c9c5488171eea92681fb4";
+  "16d0180e4c1faad1f21fcaff74d0f15029be5e5ff94251ac629238cae8a59ab3";
 export const API_SCHEMA_HASH_HEADER = "X-Studio-API-Schema";
 export const API_SCHEMA_HASH_PARAM = "apiSchema";
 export const API_SCHEMA_MISMATCH_HEADER = "X-Studio-API-Schema-Mismatch";

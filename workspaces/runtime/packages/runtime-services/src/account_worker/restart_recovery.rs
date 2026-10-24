@@ -470,7 +470,7 @@ impl CompletionWriter for RestartInputCompletion {
                 .map_err(|_| RecoveryError::CommitFailed)?;
             super::store::persist_publication_batch(tx, &scope.account, &batch)
                 .map_err(|_| RecoveryError::CommitFailed)?;
-            super::store::persist_streams(tx, &scope.account, &streams)
+            super::store::persist_streams(tx, &scope.account, &mut streams)
                 .map_err(|_| RecoveryError::CommitFailed)?;
             stream_update = Some(streams);
         }

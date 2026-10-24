@@ -1,6 +1,6 @@
 // A full disk (ENOSPC) at the session-store write boundary. Faults are
 // injected into node:fs/promises; no test fills a real disk.
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -108,9 +108,14 @@ test("a partial disk-full snapshot write removes its temporary file", async () =
 
 test("persistOrDefer saves again when space returns and rejects other errors", async () =>
   withRoot(async (root) => {
+    let onSaved;
+    const saved = new Promise((resolve) => {
+      onSaved = resolve;
+    });
     const store = createSessionStore(root, {
       compactRecords: 1000,
       diskFullRetryMs: 20,
+      onSaved,
     });
     const session = makeSession();
     await store.persist(session);
@@ -122,14 +127,15 @@ test("persistOrDefer saves again when space returns and rejects other errors", a
       return originalAppend(file, ...rest);
     };
     try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       assert.equal(await store.persistOrDefer(session), true);
       assert.equal(store.isUnsaved(sessionId), true);
       full = false;
-      const deadline = Date.now() + 5_000;
-      while (store.isUnsaved(sessionId) && Date.now() < deadline)
-        await new Promise((resolve) => setTimeout(resolve, 10));
+      await vi.advanceTimersByTimeAsync(20);
+      await saved;
     } finally {
       fs.appendFile = originalAppend;
+      vi.useRealTimers();
     }
     assert.equal(store.isUnsaved(sessionId), false);
     assert.deepEqual(

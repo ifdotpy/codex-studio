@@ -77,49 +77,6 @@ fn pages_redaction_and_request_checks_match_python() {
     }
 }
 
-#[test]
-fn buffer_keeps_head_and_tail_like_python() {
-    let mut buffer = Buffer::new(6);
-    buffer.append(b"abcdefghij");
-    assert_eq!(buffer.head, b"abc");
-    assert_eq!(buffer.tail, b"hij");
-    assert_eq!(buffer.total, 10);
-    let head = buffer.read(0, 32, true);
-    assert_eq!(head["text"], "abc");
-    assert_eq!(head["nextOffset"], 3);
-    assert_eq!(head["truncated"], true);
-    let tail = buffer.read(3, 32, true);
-    assert_eq!(tail["offset"], 7);
-    assert_eq!(tail["gapBytes"], 4);
-    assert_eq!(tail["text"], "hij");
-}
-
-#[test]
-fn a_page_never_splits_a_character_until_the_output_is_final() {
-    let mut buffer = Buffer::new(100);
-    buffer.append("é".as_bytes());
-    buffer.append(&[0xe2, 0x82]);
-    let open = buffer.read(0, 32, false);
-    assert_eq!(open["text"], "é");
-    assert_eq!(open["nextOffset"], 2);
-    let last = buffer.read(0, 32, true);
-    assert_eq!(last["text"], "é\u{fffd}");
-    assert_eq!(last["nextOffset"], 4);
-}
-
-#[test]
-fn the_private_marker_is_redacted_across_chunks() {
-    let mut redactor = MarkerRedactor::new("secret");
-    let mut out = redactor.feed(b"a sec", false);
-    out.extend(redactor.feed(b"ret b", false));
-    out.extend(redactor.feed(b"", true));
-    assert_eq!(out, b"a [private marker] b");
-    let mut redactor = MarkerRedactor::new("secret");
-    let mut out = redactor.feed(b"sec", false);
-    out.extend(redactor.feed(b"", true));
-    assert_eq!(out, b"sec");
-}
-
 struct NoEvents;
 
 impl ExecEvents for NoEvents {

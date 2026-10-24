@@ -82,8 +82,16 @@ mod tests {
                 json!({"agent":"selected","status":null,"type":"fallback"}),
             ),
             (
+                "duplicate-running",
+                json!({"agent":"selected","status":"running","name":"old"}),
+            ),
+            (
+                "duplicate-completed",
+                json!({"agent":"selected","status":"completed","name":"old"}),
+            ),
+            (
                 "d",
-                json!({"agent":"other","status":"completed","name":"foreign","large":"x".repeat(100_000)}),
+                json!({"agent":"other","status":"completed","name":"foreign","type":"foreign"}),
             ),
         ] {
             connection

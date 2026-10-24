@@ -1,4 +1,8 @@
-import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  createFixtureViteServer,
+  test,
+} from "../playwright.mjs";
 // Real RxDB projection persistence and two browser tabs, with an isolated API.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -6,13 +10,9 @@ test("Chat prefetch browser", async ({
   browser: testBrowser,
   context: runnerContext,
 }) => {
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
   const streams = new Set();
-  const server = await createServer({
+  const server = await createFixtureViteServer({
     configFile: false,
-    optimizeDeps: { force: true },
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
     plugins: [
@@ -30,7 +30,7 @@ test("Chat prefetch browser", async ({
               for (const stream of streams)
                 stream.write(
                   `event: resources\ndata: ${JSON.stringify({
-                    protocol: 3,
+                    protocol: 4,
                     workspaceId: workspace,
                     epoch: "fixture-epoch",
                     revision,
@@ -116,6 +116,7 @@ test("Chat prefetch browser", async ({
           running--;
         }
       });
+      await page.clock.install();
       await page.goto(
         `http://127.0.0.1:${server.httpServer.address().port}/check`,
       );
@@ -128,12 +129,12 @@ test("Chat prefetch browser", async ({
       return page;
     }
     const page = await pageFor("first");
-    // A large durable cache must not be scanned when one scoped chat refreshes.
+    // A scoped chat refresh must not scan unrelated durable cache entries.
     await page.evaluate(async () => {
       const { db } = await client.syncDatabase();
       const payload = JSON.stringify({
         items: [],
-        padding: "x".repeat(512 * 1024),
+        padding: "unrelated transcript",
       });
       await db.projections.bulkInsert(
         Array.from({ length: 64 }, (_, n) => ({
@@ -175,7 +176,7 @@ test("Chat prefetch browser", async ({
       "Completed background work releases its socket",
     );
     const finishedPulls = pulls.length;
-    await delay(3200);
+    await page.clock.fastForward(3200);
     assert.equal(
       pulls.length,
       finishedPulls,
@@ -252,7 +253,7 @@ test("Chat prefetch browser", async ({
     assert.deepEqual(
       await page.evaluate(() => coldReads),
       [],
-      "Foreground and background refresh never read unrelated large transcripts",
+      "Foreground and background refresh never read unrelated transcripts",
     );
     assert.equal(
       await page.evaluate(

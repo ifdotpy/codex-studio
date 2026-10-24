@@ -1,18 +1,15 @@
 // Real React and storage, simulated browser speech. No audio or service requests.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { test, expect } from "../playwright.mjs";
+import { createFixtureViteServer, test, expect } from "../playwright.mjs";
 
 test("browser dictation ux", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../");
-  const require = createRequire(root + "/package.json");
-  const { createServer } = await import(require.resolve("vite"));
   const entry = `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import{Dictation}from'/src/components/Dictation.tsx';import'/src/components/realtime-voice.css';
   window.calls=[];window.SpeechRecognition=class {constructor(){window.speech=this;}start(){window.calls.push('start');this.onstart?.();}stop(){window.calls.push('stop');this.onend?.();}abort(){window.calls.push('abort');this.onend?.();}};
   if(location.search.includes('unsupported')){window.SpeechRecognition=undefined;window.webkitSpeechRecognition=undefined;}
   function App(){const[draft,setDraft]=useState(''),[chat,setChat]=useState('a');return <MantineProvider><button onClick={()=>setChat(chat==='a'?'b':'a')}>Switch chat</button><textarea aria-label='Draft' value={draft} readOnly/><Dictation key={chat} chatId={chat} onInsert={setDraft}/></MantineProvider>}createRoot(document.getElementById('root')).render(<App/>);`;
-  const server = await createServer({
+  const server = await createFixtureViteServer({
     configFile: false,
     root,
     server: { host: "127.0.0.1", port: 0 },

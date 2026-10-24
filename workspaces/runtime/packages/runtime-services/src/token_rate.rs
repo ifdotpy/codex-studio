@@ -84,6 +84,66 @@ pub struct TokenRateWire {
     pub records: String,
 }
 
+/// Borrowed changes from the snapshot this stream last sent. No record lists are copied.
+#[derive(Serialize)]
+pub struct TokenRateDelta<'a> {
+    records: ChangedRecords<'a>,
+    removed: RemovedAgents<'a>,
+}
+
+struct ChangedRecords<'a> {
+    current: &'a [TokenRateRecord],
+    previous: &'a [TokenRateRecord],
+}
+
+impl Serialize for ChangedRecords<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut sequence = serializer.serialize_seq(None)?;
+        let mut previous = self.previous.iter().peekable();
+        for record in self.current {
+            while previous
+                .peek()
+                .is_some_and(|old| old.agent_id < record.agent_id)
+            {
+                previous.next();
+            }
+            if previous.peek().is_none_or(|old| *old != record) {
+                sequence.serialize_element(record)?;
+            }
+        }
+        sequence.end()
+    }
+}
+
+struct RemovedAgents<'a> {
+    current: &'a [TokenRateRecord],
+    previous: &'a [TokenRateRecord],
+}
+
+impl Serialize for RemovedAgents<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut sequence = serializer.serialize_seq(None)?;
+        let mut current = self.current.iter().peekable();
+        for record in self.previous {
+            while current
+                .peek()
+                .is_some_and(|new| new.agent_id < record.agent_id)
+            {
+                current.next();
+            }
+            if current
+                .peek()
+                .is_none_or(|new| new.agent_id != record.agent_id)
+            {
+                sequence.serialize_element(&record.agent_id)?;
+            }
+        }
+        sequence.end()
+    }
+}
+
 /// Lazily filled serialization of one immutable snapshot. It never takes part in equality.
 #[derive(Debug, Default)]
 struct WireCache(std::sync::OnceLock<Arc<TokenRateWire>>);
@@ -188,13 +248,17 @@ impl TokenRateSnapshot {
 
     /// The snapshot, when it respects the entry and value limits of the wire contract.
     fn validated(self) -> Result<Self, TokenRateError> {
-        let snapshot = self;
-        let mut agents = BTreeSet::new();
+        let mut snapshot = self;
+        // Projector snapshots already follow BTreeMap order; external producer snapshots
+        // are normalized once here so each stream can diff in linear time without an index.
+        snapshot
+            .records
+            .sort_unstable_by(|a, b| a.agent_id.cmp(&b.agent_id));
         if snapshot.records.len() > TOKEN_RATE_MAX_ENTRIES
             || snapshot
                 .records
-                .iter()
-                .any(|record| !agents.insert(&record.agent_id))
+                .windows(2)
+                .any(|pair| pair[0].agent_id == pair[1].agent_id)
         {
             return Err(TokenRateError::InvalidSnapshot);
         }
@@ -209,6 +273,20 @@ impl TokenRateSnapshot {
     #[must_use]
     pub fn to_value(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({"records":[]}))
+    }
+
+    #[must_use]
+    pub fn delta_since<'a>(&'a self, previous: &'a Self) -> TokenRateDelta<'a> {
+        TokenRateDelta {
+            records: ChangedRecords {
+                current: &self.records,
+                previous: &previous.records,
+            },
+            removed: RemovedAgents {
+                current: &self.records,
+                previous: &previous.records,
+            },
+        }
     }
 
     /// The serialized record list, written on first use and then shared.
@@ -844,6 +922,35 @@ mod tests {
         assert_eq!(expected["records"].as_array().expect("records").len(), 1);
     }
 
+    #[test]
+    fn delta_borrows_sorted_records_without_serializing_the_full_snapshot() {
+        let record = |id: &str, root: &str, rate: f64| {
+            json!({
+                "agentId":id,"rootId":root,"turnId":"turn","active":true,"estimated":false,"rate":rate,"outputTokens":10.0
+            })
+        };
+        let old = super::TokenRateSnapshot::from_value(json!({"records":[record("z", "root", 1.0), record("a", "root", 1.0), record("keep", "root", 1.0)]})).expect("old");
+        let moved = record("a", "new-root", 1.0);
+        let added = record("b", "root", 2.0);
+        let current = super::TokenRateSnapshot::from_value(
+            json!({"records":[record("keep", "root", 1.0), added.clone(), moved.clone()]}),
+        )
+        .expect("current");
+        assert_eq!(
+            serde_json::to_value(current.delta_since(&old)).expect("delta"),
+            json!({"records":[moved, added],"removed":["z"]})
+        );
+        assert_eq!(
+            serde_json::to_value(current.delta_since(&current)).expect("unchanged"),
+            json!({"records":[],"removed":[]})
+        );
+        assert!(
+            current.wire.0.get().is_none(),
+            "delta path must not allocate or serialize a whole snapshot"
+        );
+        assert!(old.wire.0.get().is_none());
+    }
+
     fn usage_effect(
         agent_id: &str,
         provider: &str,
@@ -1263,18 +1370,22 @@ mod tests {
         assert_eq!(hub.snapshot(), saved);
         let records = (0..TOKEN_RATE_MAX_ENTRIES)
             .map(|index| {
-                let mut next = record.clone();
-                next["agentId"] = json!(format!("a{index}"));
-                next
+                json!({"agentId":format!("a{index}"),"rootId":"root","turnId":"turn",
+                    "active":true,"estimated":false,"rate":0,"outputTokens":0})
             })
             .collect::<Vec<_>>();
         assert!(
             hub.publish(json!({"records":records}))
                 .expect("entry boundary")
         );
+        let saved = hub.snapshot();
         let mut overfull = records;
         overfull.push(record);
         assert!(hub.publish(json!({"records":overfull})).is_err());
+        assert!(
+            hub.snapshot() == saved,
+            "overfull rejection preserves the snapshot"
+        );
     }
 
     #[test]

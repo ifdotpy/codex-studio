@@ -12,6 +12,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from common import GuestError
+from unittest.mock import AsyncMock, Mock
 import guest_update
 from guest_update import ADMIN_UNIT, GUEST_UNIT, LAYR_UNIT, UpdateHandlers, signature
 
@@ -55,8 +56,10 @@ class GuestUpdateTests(unittest.TestCase):
         self.record.write_text(json.dumps(RECORD))
         self.busy = 0
         self.runner = Runner()
+        self.clock = Mock(return_value=0)
         self.handlers = UpdateHandlers(self.state, root / "layr", opt=self.opt, key_path=self.key,
-                                       record_path=self.record, busy=lambda: self.busy, runner=self.runner)
+                                       record_path=self.record, busy=lambda: self.busy, runner=self.runner,
+                                       monotonic=self.clock, wall_clock=self.clock, sleep=AsyncMock())
 
     def files(self, changes: dict[str, bytes] | None = None) -> tuple[dict[str, str], dict[str, bytes]]:
         content = {**OLD, **(changes or {})}
@@ -124,6 +127,15 @@ class GuestUpdateTests(unittest.TestCase):
         self.stage("op-2", content["vm/guest/service.py"])
         self.busy = 2  # this apply and one other broker request
 
+        waiting, resume = asyncio.Queue(), asyncio.Event()
+
+        async def sleep(seconds):
+            waiting.put_nowait(seconds)
+            await resume.wait()
+            resume.clear()
+
+        self.handlers.sleep = sleep
+
         async def run() -> dict:
             status = await self.handlers.dispatch("apply", "update.apply", {
                 "operationId": "op-2", "files": manifest,
@@ -133,9 +145,12 @@ class GuestUpdateTests(unittest.TestCase):
             install = self.runner.calls[-1]
             self.assertEqual((install[0][-1].endswith("install.sh"), install[1]),
                              (True, {"STUDIO_DEFER_RESTARTS": "1"}))
-            await asyncio.sleep(1.5)
+            await asyncio.wait_for(waiting.get(), 5)
+            resume.set()
+            await asyncio.wait_for(waiting.get(), 5)
             self.assertEqual(len(self.runner.calls), 1)  # still busy: no restart
             self.busy = 0
+            resume.set()
             await asyncio.wait_for(asyncio.gather(*self.handlers.tasks), 5)
             return status
 
@@ -148,6 +163,20 @@ class GuestUpdateTests(unittest.TestCase):
         self.handlers.finish_restarts(10 ** 10)  # the new broker process
         self.assertEqual(self.call("update.status", {"operationId": "op-2"})["stage"], "complete")
         self.assertEqual(self.plan(manifest)["path"], "current")
+
+    def test_a_busy_broker_restarts_only_after_the_drain_deadline(self):
+        directory = self.state / "updates" / "deadline"
+        directory.mkdir(parents=True)
+        status = {"operationId": "deadline", "stage": "restart_pending", "restarts": [GUEST_UNIT, ADMIN_UNIT]}
+        self.busy = 1
+
+        self.handlers.monotonic = Mock(side_effect=[0, 0, guest_update.DRAIN_SECONDS - 1,
+                                                     guest_update.DRAIN_SECONDS])
+        self.clock.return_value = guest_update.DRAIN_SECONDS
+        asyncio.run(self.handlers.restart_when_idle(directory, status))
+        self.assertEqual(self.handlers.sleep.await_count, 2)
+        self.assertEqual(len(self.runner.calls), 1)
+        self.assertEqual(status["scheduledAt"], guest_update.DRAIN_SECONDS)
 
     def test_a_share_bridge_restart_runs_at_once_and_completes(self) -> None:
         manifest, content = self.files({"vm/guest/share_bridge.py": b"new bridge\n"})

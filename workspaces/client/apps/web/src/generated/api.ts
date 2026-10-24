@@ -2057,6 +2057,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/sync/subscriptions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Change live sync subscriptions
+     * @description Changes one open stream. HTTP 410 means the stream session expired; reopen with the full resource set and cursors. A lost response must recover by reopening, never retrying the diff. Resource bounds use MAX_SYNC_RESOURCE_COUNT and MAX_SYNC_RESOURCE_QUERY_BYTES from runtime-schema/src/shared_values.rs, as for the stream selector.
+     */
+    post: operations["sync_subscriptions_api_sync_subscriptions_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/task": {
     parameters: {
       query?: never;
@@ -19819,7 +19839,7 @@ export interface components {
        * Protocol
        * @constant
        */
-      protocol: 3;
+      protocol: 4;
       /**
        * Reason
        * @enum {string}
@@ -19845,7 +19865,7 @@ export interface components {
        * Protocol
        * @constant
        */
-      protocol: 3;
+      protocol: 4;
       /** Revision */
       revision: number;
       /** Workspaceid */
@@ -19917,7 +19937,7 @@ export interface components {
     };
     /**
      * ResourceTokenRatesEvent
-     * @description Named token-rates SSE payload; one complete record per agent with authoritative root membership.
+     * @description Named token-rates SSE payload. The first frame is a full snapshot; later frames contain changed records and removed agent ids.
      */
     ResourceTokenRatesEvent: {
       /** Epoch */
@@ -19926,11 +19946,15 @@ export interface components {
        * Protocol
        * @constant
        */
-      protocol: 3;
+      protocol: 4;
       /** Records */
       records: components["schemas"]["TokenRateRecord"][];
+      /** Removed */
+      removed: string[];
       /** Revision */
       revision: number;
+      /** Snapshot */
+      snapshot: boolean;
       /** Workspaceid */
       workspaceId: string;
     };
@@ -22708,6 +22732,21 @@ export interface components {
        */
       subject: string;
     };
+    /** StudioErrorsDismissRequest */
+    StudioErrorsDismissRequest: {
+      /** @description Legacy single error id. Supply either id or ids. */
+      id?: string;
+      /** @description Error ids to dismiss atomically. Duplicate ids are reported once. */
+      ids?: string[];
+    };
+    /** StudioErrorsDismissResponse */
+    StudioErrorsDismissResponse: {
+      dismissedIds: string[];
+      /** Items */
+      items: components["schemas"]["StudioError"][];
+      /** @description Ids absent from the current error list, including already dismissed ids. */
+      unknownIds: string[];
+    };
     /** StudioErrorsResponse */
     StudioErrorsResponse: {
       /**
@@ -23057,18 +23096,151 @@ export interface components {
     };
     /**
      * SyncEntity
-     * @description One durable sync entity change attached to a successful response.
+     * @description One v4 entity change. The collection DTO is structured; deletes omit value.
      */
     SyncEntity: {
-      /** Deleted */
-      _deleted: boolean;
-      /** Id */
+      collection: string;
       id: string;
-      /** Payload */
-      payload: string;
+      /** @enum {string} */
+      op: "upsert" | "delete";
       /** Seq */
       seq: number;
-    };
+    } & (
+      | {
+          /** @constant */
+          collection: "agent";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["AgentEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "chat";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["ChatEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "complaint";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["ComplaintEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "edge";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["EdgeEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "event";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["EventEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "monitor";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["MonitorEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "peerTeam";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["PeerTeamEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "project";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["ProjectEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "request";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["RequestEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "room";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["RoomEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "rule";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["RuleEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "task";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["TaskEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "uiPreferences";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["UiPreferencesDto"];
+        }
+      | {
+          /** @constant */
+          collection: "work";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["WorkEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "workspace";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["WorkspaceEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "rateLimit";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["AccountRateLimitsDto"];
+        }
+      | {
+          /** @enum {string} */
+          collection:
+            | "agent"
+            | "chat"
+            | "complaint"
+            | "edge"
+            | "event"
+            | "monitor"
+            | "peerTeam"
+            | "project"
+            | "request"
+            | "room"
+            | "rule"
+            | "task"
+            | "uiPreferences"
+            | "work"
+            | "workspace"
+            | "rateLimit";
+          /** @constant */
+          op: "delete";
+        }
+    );
     SyncEntityPayload:
       | components["schemas"]["SyncAgentEntityPayload"]
       | components["schemas"]["SyncChatEntityPayload"]
@@ -23084,7 +23256,8 @@ export interface components {
       | components["schemas"]["SyncTaskEntityPayload"]
       | components["schemas"]["SyncUiPreferencesEntityPayload"]
       | components["schemas"]["SyncWorkEntityPayload"]
-      | components["schemas"]["SyncWorkspaceEntityPayload"];
+      | components["schemas"]["SyncWorkspaceEntityPayload"]
+      | components["schemas"]["SyncRateLimitEntityPayload"];
     /** SyncEventEntityPayload */
     SyncEventEntityPayload: {
       /**
@@ -23175,7 +23348,7 @@ export interface components {
        * Protocolversion
        * @constant
        */
-      protocolVersion: 3;
+      protocolVersion: 4;
       /**
        * Pullendpoint
        * @constant
@@ -23189,7 +23362,7 @@ export interface components {
        */
       streamEndpoint: "/api/sync/stream";
       /** Supportedversions */
-      supportedVersions: 3[];
+      supportedVersions: 4[];
     };
     /** SyncPullResetResponse */
     SyncPullResetResponse: {
@@ -23231,7 +23404,10 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       checkpoint: components["schemas"]["SyncCheckpoint"];
       /** Documents */
-      documents: components["schemas"]["SyncDocument"][];
+      documents: (
+        | components["schemas"]["SyncDocument"]
+        | components["schemas"]["SyncEntity"]
+      )[];
       /**
        * Floor
        * @default null
@@ -23256,6 +23432,17 @@ export interface components {
       reset?: false | null;
       /** Workspaceid */
       workspaceId: string;
+    };
+    /** SyncRateLimitEntityPayload */
+    SyncRateLimitEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "rateLimit";
+      /** Id */
+      id: string;
+      value: components["schemas"]["AccountRateLimitsDto"];
     };
     /** SyncRequestEntityPayload */
     SyncRequestEntityPayload: {
@@ -23289,6 +23476,22 @@ export interface components {
       /** Id */
       id: string;
       value: components["schemas"]["RuleEntityDto"];
+    };
+    /** SyncSessionEvent */
+    SyncSessionEvent: {
+      sessionId: string;
+    };
+    /** SyncSubscriptionAck */
+    SyncSubscriptionAck: {
+      gen: number;
+    };
+    /** SyncSubscriptionRequest */
+    SyncSubscriptionRequest: {
+      add: components["schemas"]["ResourceRef"][];
+      gen: number;
+      remove: components["schemas"]["ResourceRef"][];
+      sessionId: string;
+      tokenRates?: boolean;
     };
     /** SyncTaskEntityPayload */
     SyncTaskEntityPayload: {
@@ -27170,11 +27373,6 @@ export interface components {
       peerTeamsVersion?: number | null;
       /** Projectorganizationversion */
       projectOrganizationVersion?: number | null;
-      rateLimits?: components["schemas"]["AccountRateLimitsDto"] | null;
-      /** Ratelimitsbyaccount */
-      rateLimitsByAccount?: {
-        [key: string]: components["schemas"]["AccountRateLimitsDto"];
-      } | null;
       sidebarOrder?: components["schemas"]["SidebarOrderDto"] | null;
       /** Statedir */
       stateDir?: null | string;
@@ -35993,7 +36191,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["IdRequest"];
+        "application/json": components["schemas"]["StudioErrorsDismissRequest"];
       };
     };
     responses: {
@@ -36016,7 +36214,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["StudioErrorsResponse"];
+          "application/json": components["schemas"]["StudioErrorsDismissResponse"];
         };
       };
       /** @description Bad Request */
@@ -36383,7 +36581,9 @@ export interface operations {
             | components["schemas"]["ApiSchemaEvent"]
             | components["schemas"]["ResourceChangeEvent"]
             | components["schemas"]["ResourceHeartbeatEvent"]
-            | components["schemas"]["ResourceTokenRatesEvent"];
+            | components["schemas"]["ResourceTokenRatesEvent"]
+            | components["schemas"]["SyncSessionEvent"]
+            | components["schemas"]["SyncSubscriptionAck"];
         };
       };
       /** @description Bad Request */
@@ -36396,6 +36596,43 @@ export interface operations {
       500: components["responses"]["ApiError500"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
+    };
+  };
+  sync_subscriptions_api_sync_subscriptions_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SyncSubscriptionRequest"];
+      };
+    };
+    responses: {
+      /** @description Subscription change accepted; the SSE acknowledgement precedes added-resource initial data. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SyncSubscriptionAck"];
+        };
+      };
+      400: components["responses"]["ApiError400"];
+      403: components["responses"]["ApiError403"];
+      409: components["responses"]["ApiError409"];
+      /** @description Unknown or expired stream session */
+      410: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      500: components["responses"]["ApiError500"];
     };
   };
   task_detail_api_task_get: {
@@ -38791,7 +39028,7 @@ export type WorkEntityDto = components["schemas"]["WorkEntityDto"];
 export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
 
-export const SYNC_PROTOCOL_VERSION = 3 as const;
+export const SYNC_PROTOCOL_VERSION = 4 as const;
 export const SYNC_ENTITY_SCOPE = "state:entities:v1" as const;
 export const TOKEN_RATE_MAX_ENTRIES = 4096 as const;
 export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = 200 as const;

@@ -26,19 +26,16 @@ for (const writerTab of [0, 1]) {
     let revision = 0;
     let resetPending = false;
     const row = (id, name, seq) => ({
-      id: `entity:agent:${id}`,
-      seq,
-      payload: JSON.stringify({
-        collection: "agent",
-        id,
-        value: { id, name, status: "running", source: "managed" },
-      }),
-      _deleted: false,
+      op: "upsert",
+      collection: "agent",
+      id,
+      value: { id, name, status: "running", source: "managed" },
+      seq: seq,
     });
     rows.set("lead", row("lead", "Lead", 1));
     rows.set("existing", row("existing", "Existing", 2));
     const frame = (reason, changes, reset = false) => ({
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "projection-reset-race",
       revision: ++revision,

@@ -105,7 +105,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         return route.fulfill({
           contentType: "text/event-stream",
           body: apiSchemaHandshakeSse(
-            `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "fixture", revision: 1, reason: "initial", resources })}\n\n`,
+            `event: resources\ndata: ${JSON.stringify({ protocol: 4, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "fixture", revision: 1, reason: "initial", resources })}\n\n`,
           ),
         });
       });

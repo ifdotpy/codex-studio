@@ -48,7 +48,7 @@ static DIAGNOSTIC_OPERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Captures live provider diagnostics with bounded, read-only requests through
 /// the retained session. The HTTP route invokes this on its blocking pool.
-pub(crate) struct ProviderDiagnostics {
+pub struct ProviderDiagnostics {
     pub accounts: Arc<AccountDriver>,
     pub session: Arc<dyn AccountSessionPort>,
     pub store: Arc<RuntimeStore>,
@@ -57,7 +57,7 @@ pub(crate) struct ProviderDiagnostics {
 /// Runtime-server knows whether supervisor mode was requested and selected.
 /// The current host exposes no health feed or recovery notice, so those fields
 /// stay absent instead of implying a health check ran.
-pub(crate) struct SupervisorDiagnostics {
+pub struct SupervisorDiagnostics {
     pub mode: bool,
     pub fallback: bool,
     pub notice: Option<String>,
@@ -317,7 +317,7 @@ async fn provider_read(
 /// Builds provider-version inputs from registry metadata joined to the same
 /// retained live session broker used for provider requests. Registry-only and
 /// offline accounts are deliberately excluded.
-pub(crate) struct LiveProviderConnections {
+pub struct LiveProviderConnections {
     pub accounts: Arc<AccountDriver>,
     pub session: Arc<dyn AccountSessionPort>,
     pub session_binaries:
@@ -327,7 +327,7 @@ pub(crate) struct LiveProviderConnections {
 
 /// The provider executable a retained account session was launched with.
 #[derive(Clone, Debug)]
-pub(crate) struct SessionExecutables {
+pub struct SessionExecutables {
     pub generation: u64,
     pub kind: studio_runtime_providers::ProviderKind,
     pub executable: Option<String>,
@@ -398,12 +398,12 @@ fn leased_session_binary(
 
 /// Uses the account's already-retained provider session. It never launches a
 /// CLI or opens a second connection.
-pub(crate) struct ProviderTitleRequestPort {
+pub struct ProviderTitleRequestPort {
     session: Arc<dyn AccountSessionPort>,
 }
 
 impl ProviderTitleRequestPort {
-    pub(crate) fn new(session: Arc<dyn AccountSessionPort>) -> Self {
+    pub fn new(session: Arc<dyn AccountSessionPort>) -> Self {
         Self { session }
     }
 }

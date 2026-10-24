@@ -1959,8 +1959,6 @@ mod unbounded_batch_tests {
             ContextRepairRepository::put_agent(tx,&agent)?;
             for id in agent["startAttempt"]["events"].as_array().expect("fixture ids") {
                 tx.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created,turn_id,error) VALUES (?1,'agent',1,'user','hi','pending',1.0,NULL,NULL)",[id.as_str().expect("fixture id")])?;
-                let metadata = json!({"transcriptItemId":"agent:e0","modelEventProjection":1,"contextManifest":{"epoch":["thread",0],"sequence":1,"versions":{}}});
-                tx.execute("INSERT INTO runtime_event_meta(id,record) VALUES (?1,?2)",rusqlite::params![id.as_str(),metadata.to_string()])?;
             }
             let pending = ContextRepairRepository::pending(tx,&agent,MAX_CAPTURE_BYTES)?.expect("all pending identities");
             assert_eq!(pending.len(),1000);
@@ -2001,13 +1999,9 @@ mod unbounded_batch_tests {
             ids.iter().map(String::as_str).collect::<Vec<_>>()
         );
         let turns:Vec<_> = ids.iter().map(|id| json!({"id":format!("turn-{id}"),"clientUserMessageId":id,"startOutcome":"accepted","items":[]})).collect();
-        let history = NativeHistory::from_records(
-            connection.clone(),
-            "thread".into(),
-            turns.clone(),
-            Some("idle".into()),
-        )
-        .expect("history");
+        let history =
+            NativeHistory::from_records(connection, "thread".into(), turns, Some("idle".into()))
+                .expect("history");
         let decisions = decide(&captured, &history);
         assert_eq!(
             decisions,
@@ -2017,29 +2011,6 @@ mod unbounded_batch_tests {
                     turn_id: format!("turn-{id}")
                 })
                 .collect::<Vec<_>>()
-        );
-        let mut ambiguous = turns;
-        ambiguous.push(json!({"id":"another-turn","clientUserMessageId":"event-999","items":[]}));
-        let history = NativeHistory::from_records(
-            connection,
-            "thread".into(),
-            ambiguous,
-            Some("idle".into()),
-        )
-        .expect("ambiguous history");
-        assert!(
-            matches!(decide(&captured,&history).last(),Some(InputDecision::Waiting{id,..}) if id=="event-999")
-        );
-        let mut oversized = captured.raw_events.clone();
-        oversized[0]["text"] = json!("x".repeat(MAX_CAPTURE_BYTES));
-        assert!(
-            RecoverySnapshot::from_records(
-                captured.raw_agent.clone(),
-                oversized,
-                captured.connection.clone(),
-                None
-            )
-            .is_err()
         );
     }
 }

@@ -343,9 +343,7 @@ mod tests {
 
     #[test]
     fn cleanup_preserves_non_pending_inputs_and_counts_removed_rows() {
-        let directory = tempfile::tempdir().expect("temporary fixture directory");
-        let mut connection =
-            Connection::open(directory.path().join("rust.sqlite3")).expect("fixture opens");
+        let mut connection = Connection::open_in_memory().expect("fixture opens");
         seed(&connection);
         let before = snapshot(&connection);
         let transaction = connection
@@ -383,9 +381,25 @@ mod tests {
                 .unwrap_or_else(|| panic!("{id} input remains"))
                 .clone()
         };
-        for id in ["submitted", "uncertain"] {
+        for id in ["submitted", "uncertain", "other"] {
             assert_eq!(event(&after, id), event(&before, id));
         }
+        let mut cancelled = event(&before, "pending");
+        cancelled["status"] = json!("cancelled");
+        cancelled["error"] = json!("Scheduled chat reviews have been removed");
+        assert_eq!(event(&after, "pending"), cancelled);
+        let mut expected_agents = before["agents"].clone();
+        expected_agents[0]["record"]
+            .as_object_mut()
+            .expect("agent record object")
+            .remove("reviewSchedules");
+        assert_eq!(after["agents"], expected_agents);
+        let mut expected_rooms = before["rooms"].clone();
+        expected_rooms[0]["record"]
+            .as_object_mut()
+            .expect("room record object")
+            .remove("reviewTargets");
+        assert_eq!(after["rooms"], expected_rooms);
     }
 
     #[test]

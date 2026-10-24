@@ -527,6 +527,15 @@ mod tests {
             .expect("the close stays queued for the owner");
         assert!(close.bytes.is_empty() && close.close);
 
+        assert_eq!(
+            child.write(vec![0; INPUT_BYTES + 1], false).await,
+            Err(ChildError::InputTooLarge)
+        );
+        assert!(matches!(
+            queued.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
         // Real input keeps its unknown outcome when the owner does not acknowledge it.
         assert_eq!(
             child.write(b"words\n".to_vec(), true).await,
@@ -586,8 +595,9 @@ mod tests {
             .write(b"hello\n".to_vec(), true)
             .await
             .expect("child test fixture");
-        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        let (mut stdout, mut stderr, mut exit) = (Vec::new(), Vec::new(), None);
         while let Some(event) = child.next_event().await {
+            assert!(exit.is_none(), "no events after exit");
             match event {
                 ChildEvent::Output {
                     stream: OutputStream::Stdout,
@@ -598,13 +608,13 @@ mod tests {
                     bytes,
                 } => stderr.extend(bytes),
                 ChildEvent::Exited { code, reason } => {
-                    assert_eq!(code, Some(0));
-                    assert_eq!(reason, ExitReason::Completed);
-                    assert_eq!(stdout, b"hello:explicit");
-                    assert_eq!(stderr, b"stderr");
+                    exit = Some((code, reason));
                 }
             }
         }
+        assert_eq!(exit, Some((Some(0), ExitReason::Completed)));
+        assert_eq!(stdout, b"hello:explicit");
+        assert_eq!(stderr, b"stderr");
         child.close().await.expect("child test fixture");
     }
 
@@ -654,19 +664,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_oversized_input_before_admission() {
-        let root = tempfile::tempdir().expect("child test fixture");
-        let child = StreamChild::spawn(spec("read line", root.path()))
-            .await
-            .expect("child test fixture");
-        assert_eq!(
-            child.write(vec![0; INPUT_BYTES + 1], false).await,
-            Err(ChildError::InputTooLarge)
-        );
-        child.close().await.expect("child test fixture");
-    }
-
-    #[tokio::test]
     async fn environment_is_explicit_and_nonzero_exit_is_preserved() {
         let root = tempfile::tempdir().expect("child test fixture");
         let mut child = StreamChild::spawn(spec(
@@ -675,16 +672,17 @@ mod tests {
         ))
         .await
         .expect("child test fixture");
-        let mut output = Vec::new();
+        let (mut output, mut exit) = (Vec::new(), None);
         while let Some(event) = child.next_event().await {
+            assert!(exit.is_none(), "no events after exit");
             match event {
                 ChildEvent::Output { bytes, .. } => output.extend(bytes),
                 ChildEvent::Exited { code, reason } => {
-                    assert_eq!(code, Some(7));
-                    assert_eq!(reason, ExitReason::Completed);
+                    exit = Some((code, reason));
                 }
             }
         }
+        assert_eq!(exit, Some((Some(7), ExitReason::Completed)));
         assert_eq!(output, b"unset:explicit");
     }
 
@@ -750,9 +748,19 @@ mod tests {
             Some(ChildEvent::Output { .. })
         ));
         drop(runtime);
-        let drop_started = std::time::Instant::now();
-        drop(child);
-        assert!(drop_started.elapsed() < Duration::from_millis(100));
+        // The owner cannot publish completion until this borrow is released.
+        // Drop must return while cleanup is still held, regardless of host speed.
+        let held_completion = done.borrow();
+        assert!(held_completion.is_none());
+        let (dropped, received) = std::sync::mpsc::channel();
+        let dropper = std::thread::spawn(move || {
+            drop(child);
+            dropped.send(()).expect("drop observed");
+        });
+        let returned = received.recv_timeout(Duration::from_secs(5));
+        drop(held_completion);
+        dropper.join().expect("drop thread");
+        returned.expect("drop returns while owner completion is held");
         let wait_runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

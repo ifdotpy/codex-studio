@@ -1,6 +1,7 @@
 //! Ordered limits persistence. The journal identity and the snapshot commit together.
 use super::*;
 use rusqlite::OptionalExtension;
+use studio_runtime_store::account_state::limits_observation_key as watermark_key;
 use studio_runtime_store::{StoreError, SyncDocumentsRepository};
 
 pub(super) enum LimitsWrite {
@@ -29,9 +30,27 @@ impl LimitsWrite {
     }
 }
 
-// One receipt per account. Generations are ordered only within one connection.
-fn watermark_key(account: &str) -> String {
-    format!("account-limits-observation:{account}")
+// Fresh observations are durable even when their public content has not changed.
+#[derive(serde::Serialize)]
+struct ObservationReceipt<'a> {
+    scope: &'a Value,
+    cursor: u64,
+    #[serde(flatten)]
+    times: ObservationTimes<'a>,
+}
+
+struct ObservationTimes<'a>(&'a Value);
+impl serde::Serialize for ObservationTimes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        for field in studio_runtime_store::account_state::LIMITS_OBSERVATION_TIME_FIELDS {
+            if let Some(value) = self.0.get(*field) {
+                map.serialize_entry(*field, value)?;
+            }
+        }
+        map.end()
+    }
 }
 
 pub(super) async fn persist(
@@ -89,23 +108,6 @@ fn commit(
         }
         return Ok((None, false));
     }
-    let raw: Option<String> = tx.query_row(
-            "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",
-            [], |row| row.get(0),
-        ).optional()?;
-    let mut by_account = raw
-        .map(|raw| serde_json::from_str::<Value>(&raw))
-        .transpose()
-        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
-        .and_then(|entity| entity.pointer("/value/rateLimitsByAccount").cloned())
-        .unwrap_or_else(|| serde_json::json!({}));
-    let by_account = by_account
-        .as_object_mut()
-        .ok_or_else(|| StoreError::InvalidSyncObject {
-            scope: "workspace".into(),
-            id: "current".into(),
-        })?;
-    let old = by_account.get(account).cloned();
     let key = watermark_key(account);
     let raw_stamp: Option<String> = tx
         .query_row(
@@ -114,11 +116,14 @@ fn commit(
             |row| row.get(0),
         )
         .optional()?;
-    let stamp: Value = raw_stamp
+    let mut stamp: Value = raw_stamp
         .map(|raw| serde_json::from_str(&raw))
         .transpose()
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
         .unwrap_or(Value::Null);
+    let old = studio_runtime_store::account_state::limits_snapshot_with_observation(
+        tx, account, &mut stamp,
+    )?;
     let mut next_stamp = None;
     let value = match write {
         LimitsWrite::Snapshot(value) => value,
@@ -214,24 +219,29 @@ fn commit(
     let value = LimitsSnapshot::read(account, value)
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
         .into_value();
-    if let Some(stamp) = next_stamp {
-        tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'limits-observation',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result", rusqlite::params![key,stamp.to_string()])?;
-    }
-    if old.as_ref() == Some(&value) {
+    let identical = old.as_ref() == Some(&value);
+    if identical && next_stamp.is_none() {
         return Ok((Some(value), false));
     }
-    let content_changed = old.as_ref().is_none_or(|old| {
-        old["data"] != value["data"]
-            || old["error"] != value["error"]
-            || old["stale"] != value["stale"]
-    });
-    by_account.insert(account.to_owned(), value.clone());
-    let mut patch = serde_json::json!({"rateLimitsByAccount":by_account});
-    if account == "default" {
-        patch["rateLimits"] = value.clone();
+    let content_changed = !identical
+        && old.as_ref().is_none_or(|old| {
+            old["data"] != value["data"]
+                || old["error"] != value["error"]
+                || old["stale"] != value["stale"]
+        });
+    let stamp = next_stamp.as_ref().unwrap_or(&stamp);
+    let receipt = serde_json::to_string(&ObservationReceipt {
+        scope: &stamp["scope"],
+        cursor: stamp["cursor"].as_u64().unwrap_or(0),
+        times: ObservationTimes(&value),
+    })?;
+    tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'limits-observation',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result", rusqlite::params![key,receipt])?;
+    if identical {
+        return Ok((Some(value), false));
     }
-    SyncDocumentsRepository::patch_entity(tx, "workspace", "current", patch)
-        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+    if content_changed {
+        SyncDocumentsRepository::put_entity(tx, "rateLimit", account, value.clone(), false)?;
+    }
     let previous_due = earliest_due(tx, account)?;
     crate::continuation_runtime::stage_limits_changed_for_account(tx, account, &value, now)
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
@@ -255,16 +265,31 @@ pub(super) async fn read_for_resume(
     if let (Some(scope), Some(store)) = (runtime.current_scope(account), runtime.store.as_ref()) {
         let key = account.to_owned();
         let expected = scope.clone();
-        let candidate=store.read_async("account-session/resume-limits",move |db| {
-            let stamp:Option<String>=db.query_row("SELECT result FROM runtime_operation_receipts WHERE id=?1",[watermark_key(&key)],|row|row.get(0)).optional()?;
-            let Some(stamp)=stamp else {return Ok(None);};
-            let stamp:Value=serde_json::from_str(&stamp).map_err(|error|StoreError::SchemaMismatch(error.to_string()))?;
-            if stamp["scope"] != serde_json::json!(expected) {return Ok(None);}
-            let raw:Option<String>=db.query_row("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",[],|row|row.get(0)).optional()?;
-            let candidate=raw.map(|raw|serde_json::from_str::<Value>(&raw)).transpose().map_err(|error|StoreError::SchemaMismatch(error.to_string()))?
-                .and_then(|entity|entity.pointer("/value/rateLimitsByAccount").and_then(|accounts|accounts.get(&key)).cloned());
-            Ok::<_,StoreError>(candidate)
-        }).await.map_err(|_|AccountSessionError::Persistence)?;
+        let candidate = store
+            .read_async("account-session/resume-limits", move |db| {
+                let stamp: Option<String> = db
+                    .query_row(
+                        "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                        [watermark_key(&key)],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let Some(stamp) = stamp else {
+                    return Ok(None);
+                };
+                let mut stamp: Value = serde_json::from_str(&stamp)
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                if stamp["scope"] != serde_json::json!(expected) {
+                    return Ok(None);
+                }
+                let candidate =
+                    studio_runtime_store::account_state::limits_snapshot_with_observation(
+                        db, &key, &mut stamp,
+                    )?;
+                Ok::<_, StoreError>(candidate)
+            })
+            .await
+            .map_err(|_| AccountSessionError::Persistence)?;
         let now = timestamp()?;
         if let Some(value) = candidate
             && runtime.current_scope(account).as_ref() == Some(&scope)

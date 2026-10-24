@@ -67,6 +67,8 @@ export function StudioSettingsLayout({
       orientation="vertical"
       variant="pills"
       className="studio-settings-tabs"
+      // Hidden settings tabs unmount so they release their live subscriptions.
+      keepMounted={false}
       data-detail={detail || undefined}
     >
       <div className="studio-settings-navigation" ref={navigation}>

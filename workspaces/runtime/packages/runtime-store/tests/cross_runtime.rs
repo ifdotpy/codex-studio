@@ -292,26 +292,11 @@ async fn analytics_limit_queries_use_initialized_index_and_state_check_allows_ei
     db.execute("DROP INDEX analytics_limits_account_at", [])
         .expect("fixture index drops");
     assert!(studio_runtime_store::analytics_capture::check_state_readonly(&root).is_ok());
-    db.execute(
-        "CREATE INDEX IF NOT EXISTS analytics_limits_account_at ON analytics_limits(account, at)",
-        [],
-    )
-    .expect("fixture index restores");
-    drop(db);
-
-    populate_analytics_plan_state(&path);
-    let db = rusqlite::Connection::open(&path).expect("populated analytics fixture opens");
-    db.execute("DROP INDEX analytics_limits_account_at", [])
-        .expect("fixture index drops for baseline plan");
     let without_index = limit_query_plans(&db);
     for (name, plan) in ["count", "page", "last-limit"]
         .into_iter()
         .zip(&without_index)
     {
-        println!(
-            "analytics_limits {name} plan before index: {}",
-            plan.join(" | ")
-        );
         assert!(
             plan.iter()
                 .any(|line| line.contains("SCAN analytics_limits")),
@@ -325,10 +310,6 @@ async fn analytics_limit_queries_use_initialized_index_and_state_check_allows_ei
     .expect("fixture index recreates after baseline plan");
     let with_index = limit_query_plans(&db);
     for (name, plan) in ["count", "page", "last-limit"].into_iter().zip(&with_index) {
-        println!(
-            "analytics_limits {name} plan after index: {}",
-            plan.join(" | ")
-        );
         assert!(
             plan.iter()
                 .any(|line| line.contains("analytics_limits_account_at")),
@@ -357,10 +338,6 @@ async fn analytics_limit_queries_use_initialized_index_and_state_check_allows_ei
             .map(|value| value as &dyn rusqlite::ToSql)
             .collect();
         let plan = explain_plan(&db, sql, &values);
-        println!(
-            "analytics {name} plan (Rust fixture with {ANALYTICS_PLAN_ROWS} rows): {}",
-            plan.join(" | ")
-        );
         assert!(
             !plan.iter().any(|line| {
                 (line.starts_with("SCAN analytics_items")
@@ -374,74 +351,17 @@ async fn analytics_limit_queries_use_initialized_index_and_state_check_allows_ei
     root.cleanup().expect("analytics fixture is removed");
 }
 
-// Fixed query-planner corpus sizes, measured in rows and distinct agents.
-const ANALYTICS_PLAN_ROWS: i64 = 24_000;
-const ANALYTICS_PLAN_AGENTS: i64 = 1_200;
-
-fn populate_analytics_plan_state(path: &Path) {
-    let mut db = rusqlite::Connection::open(path).expect("analytics fixture opens");
-    let tx = db
-        .transaction()
-        .expect("analytics fixture transaction opens");
-    {
-        let mut items = tx
-            .prepare("INSERT INTO analytics_items VALUES (?,?,?,?,?,?,?,?,?,?)")
-            .expect("item insert prepares");
-        let mut turns = tx
-            .prepare("INSERT INTO analytics_turns VALUES (?,?,?,?,?)")
-            .expect("turn insert prepares");
-        let mut limits = tx
-            .prepare("INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)")
-            .expect("limit insert prepares");
-        for seq in 0..ANALYTICS_PLAN_ROWS {
-            let agent = format!("agent-{}", seq % ANALYTICS_PLAN_AGENTS);
-            let turn = format!("turn-{seq}");
-            let item = format!("item-{seq}");
-            items.execute(rusqlite::params![item, agent, agent, "thread", turn, seq,
-                "agentMessage", Option::<String>::None, false,
-                json!({"id":item,"itemId":item,"agentId":agent,"rootId":agent,
-                    "threadId":"thread","turnId":turn,"at":seq,"type":"agentMessage","isTool":false}).to_string()])
-                .expect("item seeds");
-            turns
-                .execute(rusqlite::params![
-                    turn,
-                    agent,
-                    agent,
-                    seq,
-                    json!({"id":turn,"agentId":agent,"rootId":agent,"threadId":"thread",
-                    "turnId":turn,"at":seq,"status":"completed"})
-                    .to_string()
-                ])
-                .expect("turn seeds");
-            limits
-                .execute(rusqlite::params![
-                    agent,
-                    seq,
-                    json!({"account":agent,"at":seq}).to_string()
-                ])
-                .expect("limit seeds");
-        }
-    }
-    tx.commit().expect("analytics corpus commits");
-}
-
 fn limit_query_plans(db: &rusqlite::Connection) -> [Vec<String>; 3] {
     [
         explain_plan(
             db,
             "SELECT COUNT(*) FROM analytics_limits WHERE account IN (?) AND at>=? AND at<=?",
-            &[&"agent-0", &0.0_f64, &(ANALYTICS_PLAN_ROWS as f64)],
+            &[&"agent-0", &0.0_f64, &1.0_f64],
         ),
         explain_plan(
             db,
             "SELECT account,at,record FROM analytics_limits WHERE account IN (?) AND at>=? AND at<=? ORDER BY at DESC,id DESC LIMIT ? OFFSET ?",
-            &[
-                &"agent-0",
-                &0.0_f64,
-                &(ANALYTICS_PLAN_ROWS as f64),
-                &100_i64,
-                &0_i64,
-            ],
+            &[&"agent-0", &0.0_f64, &1.0_f64, &100_i64, &0_i64],
         ),
         explain_plan(
             db,

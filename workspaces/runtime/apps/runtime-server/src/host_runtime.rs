@@ -40,6 +40,11 @@ use tokio::time::timeout;
 
 const REQUEST_TIMEOUT_MS: u64 = 60_000;
 const HOST_RUNTIME_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+// The supervisor detach must finish, and report, inside this bound.
+const _: () = assert!(
+    studio_runtime_process::provider_task::SUPERVISOR_DETACH_TIMEOUT.as_millis()
+        < HOST_RUNTIME_SHUTDOWN_WAIT.as_millis()
+);
 const CLAUDE_BRIDGE_RELATIVE: &str = "workspaces/providers/apps/claude-bridge";
 /// Where `native/linux-vm/build.mjs` writes the helper in a source checkout.
 const LINUX_VM_HELPER_RELATIVE: &str =
@@ -51,15 +56,15 @@ const FS_EVENTS_HELPER_RELATIVE: &str = "workspaces/client/apps/desktop/native/s
 
 /// Installed root shared by host-side runtime components.
 #[derive(Clone, Debug)]
-pub(crate) struct InstallRoot(PathBuf);
+pub struct InstallRoot(PathBuf);
 
 impl InstallRoot {
-    pub(crate) fn workspace_root(&self) -> &Path {
+    pub fn workspace_root(&self) -> &Path {
         &self.0
     }
     /// The native Linux VM helper: `CODEX_LINUX_VM_HELPER`, the packaged
     /// `Resources/studio-linux-vm`, or the build in a source checkout.
-    pub(crate) fn linux_vm_helper(&self) -> PathBuf {
+    pub fn linux_vm_helper(&self) -> PathBuf {
         if let Some(helper) =
             env::var_os("CODEX_LINUX_VM_HELPER").filter(|helper| !helper.is_empty())
         {
@@ -88,7 +93,7 @@ impl InstallRoot {
             _ => self.0.join(FS_EVENTS_HELPER_RELATIVE),
         }
     }
-    pub(crate) fn claude_bridge_dir(&self) -> PathBuf {
+    pub fn claude_bridge_dir(&self) -> PathBuf {
         let packaged = self.0.join("scripts/claude_bridge");
         if packaged.join("bridge.mjs").is_file() {
             packaged
@@ -99,7 +104,7 @@ impl InstallRoot {
 }
 
 /// Resolve the package root from the executable, or the source build in debug mode.
-pub(crate) fn resolve_install_root() -> Result<InstallRoot, WorkerError> {
+pub fn resolve_install_root() -> Result<InstallRoot, WorkerError> {
     resolve_install_root_from_executable(std::env::current_exe().ok().as_deref())
 }
 
@@ -142,7 +147,7 @@ fn resolve_install_root_from_executable(
     Err(located())
 }
 
-pub(crate) struct HostRuntime {
+pub struct HostRuntime {
     shutdown: Shutdown,
     task: JoinHandle<Result<(), WorkerError>>,
     preparation_resources: Option<Arc<PreparationResources>>,
@@ -187,8 +192,7 @@ struct ClaudeCredentialRequest<'a> {
 }
 
 impl HostRuntime {
-    #[cfg(test)]
-    #[allow(dead_code)] // Integration tests use these constructors from a separate crate.
+    #[doc(hidden)]
     pub async fn start(
         state: &mut HttpState,
         store: Arc<RuntimeStore>,
@@ -208,7 +212,7 @@ impl HostRuntime {
         .await
     }
 
-    #[cfg(test)]
+    #[doc(hidden)]
     pub async fn start_with_monitor_wake(
         state: &mut HttpState,
         store: Arc<RuntimeStore>,
@@ -453,8 +457,7 @@ impl HostRuntime {
         Ok(runtime)
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)] // Integration tests use these constructors from a separate crate.
+    #[doc(hidden)]
     pub async fn with_launcher(
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
@@ -471,7 +474,7 @@ impl HostRuntime {
         .await
     }
 
-    #[cfg(test)]
+    #[doc(hidden)]
     pub async fn with_launcher_and_monitor_wake(
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
@@ -2953,7 +2956,7 @@ async fn next_direct_generation(
 /// The home and isolation of a Codex account whose provider session may start:
 /// a ready account, or an account whose sign-in request is being dispatched
 /// (the sign-in runs in that session, before the account is ready).
-pub(crate) fn account_home<R: ProviderAuthReader>(
+pub fn account_home<R: ProviderAuthReader>(
     accounts: &AccountDriver<R>,
     key: &str,
 ) -> Result<(String, bool), WorkerError> {
@@ -3059,9 +3062,8 @@ fn selected_account(
     Ok((kind, home, false, profile))
 }
 
-#[cfg(test)]
-#[allow(dead_code)] // Integration tests compile this module in a separate crate.
-pub(crate) fn codex_launch(
+#[doc(hidden)]
+pub fn codex_launch(
     native_path: Option<&str>,
     environment: BTreeMap<String, String>,
     home: String,
@@ -3083,9 +3085,8 @@ pub(crate) fn codex_launch(
         .spec
 }
 
-#[cfg(test)]
-#[allow(dead_code)] // Integration tests compile this module in a separate crate.
-pub(crate) fn claude_launch(
+#[doc(hidden)]
+pub fn claude_launch(
     profile: serde_json::Value,
     bridge_dir: &Path,
     state_root: &Path,

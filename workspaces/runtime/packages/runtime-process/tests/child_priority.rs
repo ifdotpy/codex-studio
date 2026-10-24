@@ -94,6 +94,7 @@ fn missing_isolated_group_never_changes_parent_or_prevents_spawn() {
 }
 
 #[test]
+#[ignore = "child-only probe, invoked explicitly by the parent tests"]
 fn environment_child_probe() {
     if std::env::var("STUDIO_PRIORITY_PROBE").as_deref() == Ok("failures") {
         report(ChildPriority::Background, false);
@@ -119,6 +120,7 @@ fn environment_child_probe() {
 fn two_priority_failures_are_counted_without_emitting_io() {
     let output = Command::new(std::env::current_exe().expect("test executable"))
         .args([
+            "--ignored",
             "--exact",
             "child_priority::environment_child_probe",
             "--nocapture",
@@ -179,6 +181,7 @@ fn environment_selects_background_by_default_and_normal_disables_it() {
         let mut command = Command::new(std::env::current_exe().expect("test executable"));
         command
             .args([
+                "--ignored",
                 "--exact",
                 "child_priority::environment_child_probe",
                 "--nocapture",
@@ -204,6 +207,7 @@ fn stream_child_honors_default_background_and_normal_for_child_and_grandchild() 
         let mut command = Command::new(std::env::current_exe().expect("test executable"));
         command
             .args([
+                "--ignored",
                 "--exact",
                 "child_priority::environment_child_probe",
                 "--nocapture",

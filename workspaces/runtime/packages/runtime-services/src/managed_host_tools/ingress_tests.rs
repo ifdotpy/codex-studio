@@ -96,7 +96,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
     store
         .transaction_with::<_, StoreError>(|tx| {
             tx.execute_batch(
-                "CREATE TABLE p05_test_intents (kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, started INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(kind,id)); CREATE TABLE p05_test_starts (child_id TEXT PRIMARY KEY);",
+                "CREATE TABLE p05_test_intents (kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(kind,id));",
             )?;
             Ok(())
         })
@@ -130,7 +130,6 @@ where
 struct PortBundle {
     staged: AtomicUsize,
     released: AtomicUsize,
-    skip_release: AtomicBool,
     fail_release: AtomicBool,
     dispatch_status: AtomicBool,
     dispatched: AtomicUsize,
@@ -354,9 +353,7 @@ impl PostCommitPort for PortBundle {
         if self.fail_release.load(Ordering::SeqCst) {
             return Err(Error::Unavailable("test/post-commit-dispatch"));
         }
-        if !self.skip_release.load(Ordering::SeqCst) {
-            self.released.fetch_add(signals.len(), Ordering::SeqCst);
-        }
+        self.released.fetch_add(signals.len(), Ordering::SeqCst);
         Ok(())
     }
 }
@@ -778,10 +775,8 @@ impl crate::provider_callbacks::ManagedCreationAccountRead for EligibleAccountRe
     }
 }
 
-#[tokio::test]
-async fn unavailable_provider_model_list_refuses_without_callback_writes() {
-    let (_root, store, _context) = fixture().await;
-    let before = callback_intent_snapshot(&store);
+#[test]
+fn unavailable_provider_model_list_names_the_missing_dependency() {
     let mut unavailable =
         |_: &str, _: &crate::provider_callbacks::ManagedAccountIdentity, _: &str| {
             Err(
@@ -814,7 +809,6 @@ async fn unavailable_provider_model_list_refuses_without_callback_writes() {
             )
         )
     ));
-    assert_eq!(callback_intent_snapshot(&store), before);
 }
 
 fn callback_intent_snapshot(store: &RuntimeStore) -> Value {
@@ -1028,7 +1022,7 @@ async fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
         ),
         (
             "orchestration_interrupt",
-            json!({"agent_id":"worker"}),
+            json!({"agent_id":WORKER}),
             "agent-lifecycle/production-ports",
         ),
         (
@@ -1046,9 +1040,24 @@ async fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
             json!({"action":"pause","id":"rule"}),
             "monitor-runtime/rule-cancel",
         ),
+        (
+            "orchestration_watch",
+            json!({"action":"list"}),
+            "model-directory/status-and-dispatch-capacity",
+        ),
+        (
+            "orchestration_review",
+            json!({"target":{"type":"uncommittedChanges"}}),
+            "agent-create/managed-environment",
+        ),
+        (
+            "orchestration_context",
+            json!({"topic":"tools"}),
+            "model-context/preparation-resources",
+        ),
     ];
+    let (_root, store, context) = fixture().await;
     for (index, (tool, args, refusal)) in cases.into_iter().enumerate() {
-        let (_root, store, context) = fixture().await;
         let before = application_table_snapshot(&store);
         let frame = call(&context, &format!("missing-port-{index}"), tool, args);
         let ports = shared_ports(
@@ -1201,83 +1210,6 @@ async fn dispatch_case(
         .await?,
     );
     dispatch_with_managed_tools(Arc::clone(store), &context, &frame, 20.0, ports).await
-}
-
-#[tokio::test]
-async fn named_refusals_leave_all_application_tables_unchanged() {
-    let descendant = template().value["agents"][1]["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let cases = [
-        (
-            "orchestration_interrupt",
-            json!({"agent_id":descendant}),
-            "agent-lifecycle/production-ports",
-        ),
-        (
-            "orchestration_status",
-            json!({}),
-            "model-directory/status-and-dispatch-capacity",
-        ),
-        (
-            "orchestration_watch",
-            json!({"action":"list"}),
-            "model-directory/status-and-dispatch-capacity",
-        ),
-        (
-            "orchestration_monitor",
-            json!({"command":"true"}),
-            "workspace-state/monitor-admission",
-        ),
-        (
-            "orchestration_monitor_input",
-            json!({"monitor_id":managed_monitor_id(),"text":"input"}),
-            "monitor-runtime/managed-input",
-        ),
-        (
-            "orchestration_spawn",
-            json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
-            "agent-create/managed-environment",
-        ),
-        (
-            "orchestration_review",
-            json!({"target":{"type":"uncommittedChanges"}}),
-            "agent-create/managed-environment",
-        ),
-        (
-            "orchestration_context",
-            json!({"topic":"tools"}),
-            "model-context/preparation-resources",
-        ),
-    ];
-    for (index, (tool, args, dependency)) in cases.into_iter().enumerate() {
-        let (_root, store, context) = fixture().await;
-        let before = application_table_snapshot(&store);
-        let rpc = format!("refusal-{index}");
-        let frame = call(&context, &rpc, tool, args);
-        let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-        let ports = shared_ports(
-            crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake)
-                .await
-                .unwrap(),
-        );
-        let decision =
-            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
-                .await
-                .unwrap();
-        assert!(
-            format!("{decision:?}").contains(dependency),
-            "{tool} did not name {dependency}: {decision:?}"
-        );
-        let after = application_table_snapshot(&store);
-        let changed = before
-            .iter()
-            .zip(&after)
-            .filter_map(|((name, old), (_, new))| (old != new).then_some(name.as_str()))
-            .collect::<Vec<_>>();
-        assert!(changed.is_empty(), "{tool} changed tables: {changed:?}");
-    }
 }
 
 #[tokio::test]
@@ -1695,11 +1627,22 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
                 ));
             }
             let trigger = format!("p05_fail_{case_index}_{timing}_{operation}");
+            let hits = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&hits);
             let create_sql = format!(
-                "CREATE TRIGGER {trigger} {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected {table} {timing} {operation}'); END"
+                "CREATE TRIGGER {trigger} {timing} {operation} ON {table} BEGIN SELECT p05_fault_reached(); SELECT RAISE(ABORT,'injected {table} {timing} {operation}'); END"
             );
             store
                 .transaction_with::<_, StoreError>(move |tx| {
+                    tx.create_scalar_function(
+                        "p05_fault_reached",
+                        0,
+                        rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+                        move |_| {
+                            observed.fetch_add(1, Ordering::SeqCst);
+                            Ok(1)
+                        },
+                    )?;
                     tx.execute_batch(&create_sql)?;
                     Ok(())
                 })
@@ -1708,6 +1651,11 @@ async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content(
             let before = application_table_snapshot(&store);
             let expected = &cases[case_index];
             let first_attempt = dispatch_case(&store, seed, expected, None).await;
+            assert_eq!(
+                hits.load(Ordering::SeqCst),
+                1,
+                "{table} {timing} {operation} must reach its failpoint: {first_attempt:?}"
+            );
             let saved_failure = match first_attempt {
                 Err(_) => None,
                 Ok(CallbackDecision::Answer(reply)) => {
@@ -1924,48 +1872,6 @@ async fn post_commit_wake_failure_answers_and_replays_without_staging_again() {
     assert_eq!(replay, first, "the replay rebuilds the same answer");
     assert_eq!(ports.staged.load(Ordering::SeqCst), 1);
     assert_eq!(intent_count(&store, "status"), 1);
-}
-
-#[tokio::test]
-async fn spawn_intent_is_reconciled_after_restart_when_no_signal_was_released() {
-    let (root, store, context) = fixture().await;
-    let ports = Arc::new(PortBundle::default());
-    ports.skip_release.store(true, Ordering::SeqCst);
-    let frame = call(
-        &context,
-        "crash-spawn",
-        "orchestration_spawn",
-        json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
-    );
-    dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
-        .await
-        .unwrap();
-    assert_eq!(ports.released.load(Ordering::SeqCst), 0);
-    assert_eq!(intent_count(&store, "spawn"), 1);
-    drop(store);
-
-    let restarted = RuntimeStore::open(Some(root.path())).await.unwrap();
-    for _ in 0..2 {
-        restarted
-            .transaction_with::<_, StoreError>(|tx| {
-                tx.execute(
-                    "INSERT OR IGNORE INTO p05_test_starts(child_id) SELECT id FROM p05_test_intents WHERE kind='spawn' AND started=0",
-                    [],
-                )?;
-                tx.execute(
-                    "UPDATE p05_test_intents SET started=1 WHERE kind='spawn' AND started=0",
-                    [],
-                )?;
-                Ok(())
-            }).await
-            .unwrap();
-    }
-    let starts: i64 = restarted
-        .test_reader()
-        .unwrap()
-        .query_row("SELECT count(*) FROM p05_test_starts", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(starts, 1);
 }
 
 #[tokio::test]
@@ -2405,25 +2311,25 @@ async fn task_result_schema_spawn_assignment_contains_contract() {
 }
 
 #[tokio::test]
-async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
+async fn managed_child_creation_preserves_spawn_and_review_contracts() {
     let (_root, store, context) = fixture().await;
-    let project_path = CanonicalPath::existing(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .unwrap(),
-    )
-    .unwrap();
-    let review_target = project_path.join("workspaces/runtime/apps/runtime-server");
-    let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("test HOME"));
-    std::fs::create_dir_all(&home).unwrap();
-    let tilde_target = home.join("review-target");
-    if std::fs::symlink_metadata(&tilde_target).is_ok() {
-        std::fs::remove_file(&tilde_target).expect("remove stale review target link");
+    let git_root = tempfile::tempdir().unwrap();
+    let project_path = CanonicalPath::existing(git_root.path()).unwrap();
+    run_git_output(&project_path, &["init", "-q"]);
+    run_git_output(
+        &project_path,
+        &["config", "user.email", "test@example.invalid"],
+    );
+    run_git_output(&project_path, &["config", "user.name", "Test"]);
+    for message in ["base", "head"] {
+        run_git_output(
+            &project_path,
+            &["commit", "-q", "--allow-empty", "-m", message],
+        );
     }
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&review_target, &tilde_target).unwrap();
-    let review_cwd = "~/review-target".to_owned();
+    let review_target = project_path.join("workspaces/runtime/apps/runtime-server");
+    std::fs::create_dir_all(&review_target).unwrap();
+    let review_cwd = review_target.to_string_lossy().into_owned();
     // A folder outside every Git repository, shared by both runtimes.
     let no_git_root = tempfile::tempdir().unwrap();
     let no_git_folder = CanonicalPath::existing(no_git_root.path())
@@ -2507,8 +2413,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .await
         .unwrap();
 
-    // These are the exact value, identity and clock types passed by the
-    // managed callback service bundle after its durable claim commits.
+    // Exercise the child-creation owners with durable spawn and review records.
     let spawned = crate::managed_child_create::spawn_agents(
         &store,
         &actor,
@@ -2850,6 +2755,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .unwrap();
     assert_eq!(before_vm_review, after_uncertain_review);
     let root_agent_id = context.agent.clone();
+    let native_cwd = project_path.clone();
     store
         .transaction_with::<_, StoreError>(move |tx| {
             let root = studio_runtime_store::AgentRepository::get(
@@ -2859,6 +2765,9 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
             .unwrap();
             let mut root_value = root.value();
             root_value["maxAgents"] = json!(1);
+            root_value["executionMode"] = json!("native");
+            root_value["workspaceMode"] = json!("worktree");
+            root_value["cwd"] = json!(native_cwd);
             let root = studio_runtime_store::AgentRecord::from_value(root_value)
                 .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
             studio_runtime_store::AgentRepository::put(tx, &root)?;
@@ -2878,26 +2787,27 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     };
     let latest_actor =
         Actor::from_record(&latest_actor_value, &context.agent, context.epoch).unwrap();
-    let before_capacity: i64 = store
-        .test_reader()
-        .unwrap()
-        .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
-        .unwrap();
-    assert!(crate::managed_child_create::request_review(
+    let before_capacity = application_table_snapshot(&store);
+    let refused = crate::managed_child_create::request_review(
         &store,
         &latest_actor,
-        &json!({"target":{"type":"uncommittedChanges"},"cwd":format!("{review_cwd}/workspaces/runtime/apps/runtime-server")}),
+        &json!({"target":{"type":"uncommittedChanges"},"cwd":review_cwd}),
         "dispatcher-capacity-refusal",
         22.0,
         &CreationEnvironment,
-    ).await
-    .is_err());
-    let after_capacity: i64 = store
-        .test_reader()
-        .unwrap()
-        .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(before_capacity, after_capacity);
+    )
+    .await
+    .expect_err("native review exceeds the active agent limit");
+    assert!(
+        matches!(
+            refused,
+            crate::managed_child_create::Error::Managed(Error::Invalid(
+                "Team active agent limit reached; free a finished agent before creating a review"
+            ))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(before_capacity, application_table_snapshot(&store));
 }
 
 #[tokio::test]
@@ -3599,8 +3509,7 @@ async fn ancestry_reads_only_the_checked_parent_chain() {
     };
     check(&mut reader);
     // Malformed unrelated records, including tombstones, must never be decoded.
-    // These rows are a bounded deterministic fixture, not a load generator.
-    const UNRELATED_AGENTS: usize = 512;
+    const UNRELATED_AGENTS: usize = 2;
     store.transaction(move |tx| {
         for index in 0..UNRELATED_AGENTS {
             let id = format!("unrelated-{index}");

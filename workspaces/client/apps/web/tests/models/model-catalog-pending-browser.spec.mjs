@@ -83,7 +83,7 @@ test("Model Catalog Pending Browser", async ({
             }
             if (path === "/api/test/models-revision") {
               const event = {
-                protocol: 3,
+                protocol: 4,
                 workspaceId: syncIdentity.workspaceId,
                 epoch: "fixture",
                 revision: 2,
@@ -108,7 +108,7 @@ test("Model Catalog Pending Browser", async ({
                 ) || "[]",
               );
               const event = {
-                protocol: 3,
+                protocol: 4,
                 workspaceId: syncIdentity.workspaceId,
                 epoch: "fixture",
                 revision: 1,

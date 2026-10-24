@@ -323,9 +323,8 @@ async function readEntities(origin, collection) {
       )
     ).json();
     for (const document of page.documents) {
-      const entity = JSON.parse(document.payload);
-      if (entity.collection === collection && !document._deleted)
-        values.push(entity.value);
+      if (document.collection === collection && document.op === "upsert")
+        values.push(document.value);
     }
     const next = page.checkpoint.seq;
     if (next <= after || next >= (page.maxSeq ?? next)) return values;

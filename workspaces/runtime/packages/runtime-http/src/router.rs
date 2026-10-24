@@ -147,6 +147,7 @@ pub struct HttpState {
     pub(crate) capabilities_cache: Arc<studio_runtime_services::catalog_reads::CapabilitiesCache>,
     pub(crate) resource_notifications:
         Arc<studio_runtime_services::resource_notify::ResourceNotifications>,
+    pub(crate) sync_sessions: Arc<routes::SyncSessions>,
     pub(crate) sync_changes: Arc<ChangeNotificationHub>,
     pub(crate) token_rates: Arc<TokenRateHub>,
     pub(crate) event_wake: Arc<Notify>,
@@ -284,6 +285,7 @@ impl HttpState {
             model_catalog,
             capabilities_cache: Arc::new(Default::default()),
             resource_notifications,
+            sync_sessions: Arc::new(Default::default()),
             sync_changes: Arc::clone(&sync_changes),
             token_rates: Arc::new(TokenRateHub::with_change_hub(Arc::clone(&sync_changes))),
             event_wake: Arc::new(Notify::new()),
@@ -1219,7 +1221,7 @@ mod tests {
                     .expect("validator");
             let app = super::with_boundary(Router::new().route("/api/messages", post(move || async move {
                 store.transaction(|tx| {
-                    SyncDocumentsRepository::put_entity(tx, "agent", "agent", serde_json::json!({"id": "agent", "text": "entity content ".repeat(512)}), false)?;
+                    SyncDocumentsRepository::put_entity(tx, "agent", "agent", serde_json::json!({"id": "agent", "name":"Agent", "status":"idle", "source":"managed", "tail": "entity content ".repeat(512)}), false)?;
                     Ok(())
                 }).await.expect("entity mutation");
                 Json(serde_json::json!({"ok": true}))

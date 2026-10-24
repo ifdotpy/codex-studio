@@ -229,13 +229,18 @@ const sessions = sessionStore.sessions;
 // dialog (summary or full history) on their next turn is Studio's own resume,
 // not a user's return to a stale chat: it keeps the full history and never asks.
 const studioUnloaded = new Set();
+const queryHasInput = (active) =>
+  Boolean(
+    active.pendingSteers.size ||
+    active.reservingInput ||
+    active.input.values.length ||
+    active.input.pending.length,
+  );
 const queryBusy = (id, active) =>
   Boolean(
     active.turn ||
     active.tasks.size ||
-    active.pendingSteers.size ||
-    active.reservingInput ||
-    active.input.values.length ||
+    queryHasInput(active) ||
     operations.get(id),
   );
 // The one stdout writer. Lines of one event-loop turn leave in one write at
@@ -1016,18 +1021,71 @@ async function flags(s, p = {}, live = false) {
 // finishTurn persists, but it accepts no more input. The value settles when
 // finishTurn has cleared the turn, or when recording its end failed.
 const finishingTurns = new WeakMap();
+function clearDeferredResult(active) {
+  clearTimeout(active.resultTimer);
+  active.resultTimer = null;
+  active.deferredResult = null;
+}
+function clearTurnTimers(active) {
+  clearDeferredResult(active);
+  clearTimeout(active.stopTimer);
+  active.stopTimer = null;
+}
+function lifecycleFailure(s, active, error) {
+  active.persistFailure ??= error;
+  process.stderr.write(
+    "Claude turn finalization failed: " + error.message + "\n",
+  );
+  discardQuery(s, active);
+}
+function deferResult(s, active, result) {
+  active.deferredResult = result;
+  if (active.resultTimer) return;
+  const turn = active.turn;
+  active.resultTimer = setTimeout(() => {
+    if (active.turn !== turn || !active.deferredResult) return;
+    void finishTurn(s, active, active.deferredResult).catch((error) =>
+      lifecycleFailure(s, active, error),
+    );
+  }, limits.steerEchoGraceMs);
+  active.resultTimer.unref();
+}
 async function finishTurn(s, active, result, error) {
   const turn = active.turn;
   if (!turn) return;
-  const stall = active.stall?.turnId === turn.id ? active.stall : null;
-  // A closed CLI can write its history until it exits; read it only then.
-  if (stall?.closed) await stall.closed;
-  // One caller finishes a turn; the stall recovery can race the SDK stream.
-  if (active.turn !== turn || finishingTurns.has(turn)) return;
+  const finishing = finishingTurns.get(turn);
+  if (finishing) {
+    await finishing;
+    return;
+  }
   let finished;
   finishingTurns.set(turn, new Promise((resolve) => (finished = resolve)));
+  const stall = active.stall?.turnId === turn.id ? active.stall : null;
+  let closeError;
+  let closed = Boolean(stall?.closed);
+  if (closed) await stall.closed;
+  // A handed-off steer without an echo cannot coexist with a later turn on
+  // this CLI. Stop it before finishing; only its final native history can
+  // prove whether the server may redeliver that exact input.
+  const unknown = turn.items.some(
+    (item) =>
+      item.delivery === "steer" &&
+      item.deliveryStatus === "submitted" &&
+      !active.input.values.some(
+        (input) => input.studioInputIdentity === item.id,
+      ),
+  );
+  if (unknown && !closed) {
+    closed = true;
+    active.input.close();
+    closeError = closeQuery(active);
+    error ||= closeError;
+    await new Promise((resolve) => setTimeout(resolve, limits.exitWaitMs));
+  }
+  clearDeferredResult(active);
+  clearTimeout(active.stopTimer);
+  active.stopTimer = null;
   active.toolClocks.clear();
-  armStallWatch();
   if (
     (error?.preparationTimedOut === true ||
       error?.claudeAccountValidationFailed === true) &&
@@ -1053,6 +1111,7 @@ async function finishTurn(s, active, result, error) {
     : error || result?.is_error || result?.subtype !== "success"
       ? "failed"
       : "completed";
+  armStallWatch();
   const errorMessage =
     error?.message ||
     result?.errors?.join("\n") ||
@@ -1123,7 +1182,11 @@ async function finishTurn(s, active, result, error) {
     item.error = "Claude finished before reading this steer";
     unappliedSteers.push(item.id);
   }
-  if (stall?.closed) await reconcileClosedSteers(s, turn, unappliedSteers);
+  if (closed) {
+    active.input.withdraw();
+    // A failed close cannot prove that the SDK stopped applying input.
+    if (!closeError) await reconcileClosedSteers(s, turn, unappliedSteers);
+  }
   for (const response of active.responseUsages.values()) {
     const total =
       response.requestUsage.inputTokens +
@@ -1213,6 +1276,7 @@ async function finishTurn(s, active, result, error) {
   active.inputResultIds.clear();
   active.assistantBlocks.clear();
   active.responseUsages.clear();
+  if (closed) discardQuery(s, active);
   emit("turn/completed", {
     threadId: s.id,
     turn: {
@@ -1253,10 +1317,11 @@ async function reconcileClosedSteers(s, turn, unapplied) {
     return;
   }
   for (const item of open) {
-    if (recorded.has(item.nativeId)) {
+    const ids = item.nativeIds || [item.nativeId];
+    if (ids.every((id) => recorded.has(id))) {
       item.deliveryStatus = "delivered";
       turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
-    } else {
+    } else if (ids.every((id) => !recorded.has(id))) {
       item.deliveryStatus = "not_applied";
       item.error = "Claude stopped before reading this steer";
       unapplied.push(item.id);
@@ -1269,22 +1334,27 @@ async function reconcileClosedSteers(s, turn, unapplied) {
 async function recoverStall(s, active, found) {
   const turn = active.turn;
   const item = active.tools.get(found.id);
-  const message = stallMessage({ ...found, tool: item?.tool || found.tool });
+  if (!turn || active.stall || finishingTurns.has(turn)) return;
+  const message = found.stop
+    ? "Studio stopped this turn: Claude Code did not end the turn after Stop."
+    : stallMessage({ ...found, tool: item?.tool || found.tool });
   let ended;
   const finished = new Promise((resolve) => (ended = resolve));
   active.stall = { turnId: turn.id, ended, closed: null };
   turn.interrupted = true;
   turn.stallError = {
     message,
-    data: {
-      claudeToolStall: {
-        toolUseId: found.id,
-        tool: item?.tool || found.tool,
-        timeoutMs: found.timeoutMs,
-        elapsedMs: found.elapsedMs,
-        silentMs: found.silentMs,
-      },
-    },
+    data: found.stop
+      ? { claudeStopTimeout: true }
+      : {
+          claudeToolStall: {
+            toolUseId: found.id,
+            tool: item?.tool || found.tool,
+            timeoutMs: found.timeoutMs,
+            elapsedMs: found.elapsedMs,
+            silentMs: found.silentMs,
+          },
+        },
   };
   if (item)
     finishItem(s, turn, {
@@ -1314,16 +1384,18 @@ async function recoverStall(s, active, found) {
   }
   let timer;
   const deadline = new Promise(
-    (resolve) => (timer = setTimeout(resolve, limits.interruptWaitMs)),
+    (resolve) =>
+      (timer = setTimeout(resolve, found.stop ? 0 : limits.interruptWaitMs)),
   );
   // An interrupt keeps queued steers: Claude Code runs them next.
-  Promise.resolve()
-    .then(() => active.q?.interrupt())
-    .catch((error) =>
-      process.stderr.write(
-        "Claude stall: interrupt failed: " + error.message + "\n",
-      ),
-    );
+  if (!found.stop)
+    Promise.resolve()
+      .then(() => active.q?.interrupt())
+      .catch((error) =>
+        process.stderr.write(
+          "Claude stall: interrupt failed: " + error.message + "\n",
+        ),
+      );
   await Promise.race([finished, deadline]);
   clearTimeout(timer);
   if (
@@ -1527,9 +1599,14 @@ async function startSession(s, active, p) {
     admit();
     active.readyResolve();
     for await (const m of q) {
-      if (active.persistFailure) throw active.persistFailure;
       const room = stdoutRoom();
       if (room) await room;
+      // A grace timer can finish a turn during the backpressure wait. Process
+      // this message only after that turn's completion has been recorded.
+      if (active.turn && finishingTurns.has(active.turn))
+        await finishingTurns.get(active.turn);
+      if (active.persistFailure) throw active.persistFailure;
+      if (queries.get(s.id) !== active) break;
       active.lastEventAt = Date.now();
       armStallWatch();
       if (m.type === "system" && m.subtype === "init") {
@@ -1567,7 +1644,7 @@ async function startSession(s, active, p) {
             persistLater(s, active);
           }
           active.pendingSteers.delete(item.id);
-          active.deferredResult = null;
+          clearDeferredResult(active);
         }
         // Claude echoed this exact steer input: it is delivered. The echo can
         // follow the end of its turn, so earlier turns are searched as well.
@@ -1596,6 +1673,7 @@ async function startSession(s, active, p) {
           items: [],
           synthetic: true,
         };
+        active.idleRequestStartedAt = Date.now();
         active.reportedTurnOutput = 0;
         s.turns.push(active.turn);
         emit("turn/started", {
@@ -2064,7 +2142,7 @@ async function startSession(s, active, p) {
           !m.is_error &&
           !turn.interrupted
         ) {
-          active.deferredResult = m;
+          deferResult(s, active, m);
           continue;
         }
         await finishTurn(s, active, m);
@@ -2075,10 +2153,11 @@ async function startSession(s, active, p) {
     active.readyReject(error);
     if (active.turn) await finishTurn(s, active, null, error);
   } finally {
+    clearTurnTimers(active);
     allowed = false;
     admit();
     active.input.close();
-    active.q?.close();
+    closeQuery(active);
     if (queries.get(s.id) === active) {
       queries.delete(s.id);
       armStallWatch();
@@ -2093,9 +2172,18 @@ function deadQuery(error) {
     String(error?.message || error),
   );
 }
+function closeQuery(active) {
+  try {
+    active.q?.close();
+  } catch (error) {
+    process.stderr.write("Claude query close failed: " + error.message + "\n");
+    return error;
+  }
+}
 function discardQuery(s, active) {
+  clearTurnTimers(active);
   active.input.close();
-  active.q?.close();
+  closeQuery(active);
   if (queries.get(s.id) === active) {
     queries.delete(s.id);
     armStallWatch();
@@ -2319,7 +2407,7 @@ async function handle(method, p) {
       .metadata(p.session.id)
       .catch(() => null);
     const active = queries.get(p.session.id);
-    if (active?.turn || active?.tasks.size)
+    if (active && (active.turn || active.tasks.size || queryHasInput(active)))
       throw new Error("The destination Claude session is active");
     const owner = existing && (await session(p.session.id));
     if (
@@ -2403,7 +2491,7 @@ async function handle(method, p) {
   if (method === "claude/settings") {
     const s = await session(p.threadId),
       active = queries.get(s.id);
-    if (active?.turn || active?.tasks.size)
+    if (active && (active.turn || active.tasks.size || queryHasInput(active)))
       throw new Error("Pause Claude before changing these settings");
     active?.input.close();
     active?.q?.close();
@@ -2417,7 +2505,7 @@ async function handle(method, p) {
   if (method === "thread/rollback") {
     const s = await session(p.threadId),
       active = queries.get(s.id);
-    if (active?.turn || active?.tasks.size)
+    if (active && (active.turn || active.tasks.size || queryHasInput(active)))
       throw new Error("Pause Claude before rollback");
     active?.input.close();
     active?.q?.close();
@@ -2515,12 +2603,7 @@ async function handle(method, p) {
       const idle = () => {
         const query = queries.get(s.id);
         return (
-          !query ||
-          (!query.turn &&
-            !query.tasks.size &&
-            !query.pendingSteers.size &&
-            !query.reservingInput &&
-            !query.input.values.length)
+          !query || (!query.turn && !query.tasks.size && !queryHasInput(query))
         );
       };
       if (idle())
@@ -2532,7 +2615,11 @@ async function handle(method, p) {
         });
       // Reattach to a live query without changing its settings or background work.
       // turn/start already steers its current turn or queues the next input.
-      if (!active?.turn && !active?.tasks.size) {
+      if (
+        !active ||
+        (!active.turn && !active.tasks.size && !queryHasInput(active))
+      ) {
+        if (active) clearTurnTimers(active);
         active?.input.close();
         active?.q?.close();
         queries.delete(s.id);
@@ -2634,25 +2721,43 @@ async function handle(method, p) {
   }
   if (method === "turn/start") {
     const s = await session(p.threadId);
-    const matches = s.turns.filter(
-      (turn) =>
-        turn.clientUserMessageId &&
-        turn.clientUserMessageId === p.clientUserMessageId,
-    );
+    const matches = p.clientUserMessageId
+      ? s.turns.flatMap((turn) =>
+          turn.items
+            .filter(
+              (item, index) =>
+                item.type === "userMessage" &&
+                (item.id === p.clientUserMessageId ||
+                  (index === 0 &&
+                    turn.clientUserMessageId === p.clientUserMessageId)),
+            )
+            .map((item) => ({ turn, item })),
+        )
+      : [];
     if (
       matches.some(
-        (turn) =>
-          JSON.stringify(turn.items[0].content) !== JSON.stringify(p.input),
+        ({ item }) => JSON.stringify(item.content) !== JSON.stringify(p.input),
       )
     )
       throw new Error("This message identity has different content");
-    const prior = matches.find((turn) => turn.startOutcome !== "not_applied");
+    const prior = matches.find(({ turn, item }) =>
+      item.delivery === "steer"
+        ? item.deliveryStatus !== "not_applied"
+        : turn.startOutcome !== "not_applied",
+    );
     if (prior) {
-      if (prior.startOutcome === "preparing")
+      const steered = prior.item.delivery === "steer";
+      if (
+        (steered ? prior.item.deliveryStatus : prior.turn.startOutcome) ===
+        "preparing"
+      )
         throw Object.assign(new Error("Claude input receipt outcome unknown"), {
           data: { turnStartOutcome: "unknown" },
         });
-      return { turn: { id: prior.id, status: prior.status } };
+      return {
+        turn: { id: prior.turn.id, status: prior.turn.status },
+        ...(steered ? { steered: true } : {}),
+      };
     }
     const running = queries.get(s.id)?.turn;
     if (running) {
@@ -2897,6 +3002,7 @@ async function handle(method, p) {
       if (
         turn.interrupted ||
         active.turn !== turn ||
+        finishingTurns.has(turn) ||
         queries.get(s.id) !== active ||
         active.input.closed
       )
@@ -2921,6 +3027,7 @@ async function handle(method, p) {
       if (
         turn.interrupted ||
         active.turn !== turn ||
+        finishingTurns.has(turn) ||
         queries.get(s.id) !== active ||
         active.input.closed
       )
@@ -2957,7 +3064,8 @@ async function handle(method, p) {
     if (p.turnId && p.turnId !== active.turn.id)
       throw new Error("The interrupt belongs to a different Claude turn");
     const s = sessions.get(p.threadId);
-    active.turn.interrupted = true;
+    const turn = active.turn;
+    turn.interrupted = true;
     const reservingInput = active.reservingInput;
     if (reservingInput) {
       // An interrupt can race the durable pre-input receipt. Invalidate only
@@ -2970,6 +3078,19 @@ async function handle(method, p) {
     if (stopTasks && typeof active.q?.stopTask !== "function")
       throw new Error("Claude does not support stopping background tasks");
     let results = [];
+    if (!reservingInput && !finishingTurns.has(turn) && !active.stopTimer) {
+      const timer = setTimeout(() => {
+        if (active.stopTimer !== timer) return;
+        active.stopTimer = null;
+        if (active.turn !== turn) return;
+        void recoverStall(s, active, {
+          id: "stop:" + turn.id,
+          stop: true,
+        }).catch((error) => lifecycleFailure(s, active, error));
+      }, limits.interruptWaitMs);
+      active.stopTimer = timer;
+      timer.unref();
+    }
     const receipt = await interruptInputQueue(
       s,
       active,
@@ -2985,7 +3106,11 @@ async function handle(method, p) {
     );
     // The pending start owns the reservation's durable rejection. Do not
     // wait for its blocked save before the caller can observe the interrupt.
-    if (!reservingInput) await persistLive(s);
+    if (!reservingInput) {
+      if (active.turn === turn && active.deferredResult)
+        await finishTurn(s, active, active.deferredResult);
+      else await persistLive(s);
+    }
     const failure = results.find((result) => result.status === "rejected");
     if (failure?.status === "rejected")
       throw Object.assign(

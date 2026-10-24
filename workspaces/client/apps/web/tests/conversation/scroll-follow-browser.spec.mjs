@@ -15,7 +15,7 @@ import {
 // stream. The reader scrolls with wheel steps while the agent streams.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,23 +100,64 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
   page.on("pageerror", (e) => errors.push(e.message));
   // The transcript map owns both pulled baselines and sparse stream deltas.
   const syncStreams = new Map();
+  const sessions = new Map();
+  let subscriptionUpdates = 0;
   let streamRevision = 0;
   let transcriptPulls = 0;
   const streamFrame = (resources, reason, batch) => ({
-    protocol: 3,
+    protocol: 4,
     workspaceId: syncContract.identity.workspaceId,
     epoch: "scroll-follow-transcripts",
     revision: ++streamRevision,
     reason,
     resources,
     resourceVersions: resources.map((resource) => ({
+      resource,
       revision: resource.kind === "transcript" ? transcriptSeq : 0,
       ...(batch && resource.kind === "transcript"
         ? { transcriptChanges: batch }
         : {}),
     })),
   });
-  const streamServer = createServer((request, response) => {
+  const streamServer = createServer(async (request, response) => {
+    if (request.method === "POST") {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const update = JSON.parse(body);
+      const stream = sessions.get(update.sessionId);
+      if (!stream) {
+        response.writeHead(410).end();
+        return;
+      }
+      subscriptionUpdates++;
+      const resources = syncStreams.get(stream);
+      const removed = new Set(
+        update.remove.map((resource) => JSON.stringify(resource)),
+      );
+      const next = resources.filter(
+        (resource) => !removed.has(JSON.stringify(resource)),
+      );
+      for (const added of update.add) {
+        if (
+          !next.some(
+            (resource) => JSON.stringify(resource) === JSON.stringify(added),
+          )
+        )
+          next.push(added);
+      }
+      resources.splice(0, resources.length, ...next);
+      stream.write(protocol3SseEvent("subscriptions", { gen: update.gen }));
+      if (update.add.length)
+        stream.write(
+          protocol3SseEvent("resources", streamFrame(update.add, "initial")),
+        );
+      response.writeHead(200, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      });
+      response.end(JSON.stringify({ gen: update.gen }));
+      return;
+    }
     const resources = JSON.parse(
       new URL(request.url, "http://fixture").searchParams.get("resources") ||
         "[]",
@@ -126,12 +167,29 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       "Cache-Control": "no-cache",
       "Access-Control-Allow-Origin": "*",
     });
+    const sessionId = randomUUID();
+    sessions.set(sessionId, response);
+    response.write(protocol3SseEvent("session", { sessionId }));
     response.write(apiSchemaHandshakeSse());
     response.write(
       protocol3SseEvent("resources", streamFrame(resources, "initial")),
     );
+    response.write(
+      protocol3SseEvent("token-rates", {
+        protocol: 4,
+        workspaceId: syncContract.identity.workspaceId,
+        epoch: "scroll-follow-transcripts",
+        revision: streamRevision,
+        snapshot: true,
+        removed: [],
+        records: [],
+      }),
+    );
     syncStreams.set(response, resources);
-    response.on("close", () => syncStreams.delete(response));
+    response.on("close", () => {
+      syncStreams.delete(response);
+      sessions.delete(sessionId);
+    });
   });
   await new Promise((resolve) => streamServer.listen(0, "127.0.0.1", resolve));
   stopStreamFixture = async () => {
@@ -176,6 +234,11 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
     syncContract,
   );
   await page.route("**/api/sync/stream?*", (route) => {
+    const url = new URL(route.request().url());
+    url.port = String(streamServer.address().port);
+    return route.continue({ url: url.href });
+  });
+  await page.route("**/api/sync/subscriptions", (route) => {
     const url = new URL(route.request().url());
     url.port = String(streamServer.address().port);
     return route.continue({ url: url.href });
@@ -289,7 +352,6 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       transcripts.set(chat.id, reset());
     }
     await page.setViewportSize(viewport);
-    syncStreams.clear();
     await page.goto(origin);
     const chatRow = page.locator(`[data-chat="${chat.id}"]`);
     await expect(chatRow).toBeVisible();
@@ -311,6 +373,10 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
         { timeout: 15000, message: "The chat has an open transcript stream" },
       )
       .toBe(true);
+    assert.ok(
+      subscriptionUpdates > 0,
+      "The v4 stream acknowledges live transcript subscriptions",
+    );
     // Loading can take longer than a few stable frames on a busy machine.
     await root.evaluate(
       (element) =>

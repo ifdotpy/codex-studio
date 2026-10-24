@@ -47,7 +47,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
   const writeResources = (stream, reason, resources = stream.resources) => {
     if (reason !== "initial") revision++;
     const event = {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch,
       revision,
@@ -62,7 +62,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
   };
   const writeHeartbeat = (stream) => {
-    const event = { protocol: 3, workspaceId, epoch, revision };
+    const event = { protocol: 4, workspaceId, epoch, revision };
     assert.ok(Number.isFinite(event.revision));
     stream.response.write(
       `event: heartbeat\ndata: ${JSON.stringify(event)}\n\n`,
@@ -82,6 +82,11 @@ test("usage accounts ui", async ({ browser: _browser }) => {
   const own={id:'chat',rootId:'chat',accountKey:'own',source:'managed',model:'gpt-6-astra',status:'completed',isLead:true,created:1,contextUsage:{tokens:10,window:100}};
   const ownLimits={accountKey:'own',at:${now},data:{accountId:'own-account',rateLimits:{limitId:'codex',primary:{usedPercent:20,resetsAt:${now + 3600}}}}};
   const teamLimits={accountKey:'team',at:${now},data:{accountId:'team-account',rateLimits:{limitId:'codex',primary:{usedPercent:92,resetsAt:${now + 3600}}},rateLimitResetCredits:{availableCount:1,credits:[{id:'team-credit',title:'Team reset',status:'available',resetType:'codexRateLimits'}]}}};
+  window.heartbeats=0;
+  const NativeEventSource=window.EventSource;
+  window.EventSource=class extends NativeEventSource {
+    constructor(...args){super(...args);this.addEventListener('heartbeat',()=>window.heartbeats++);}
+  };
   window.reloadCalls=[];
   function Fixture(){
    const [multi,setMulti]=useState(location.search.includes('multi'));
@@ -130,11 +135,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
               res.write(apiSchemaHandshakeSse());
               streams.add(stream);
               writeResources(stream, "initial");
-              const heartbeat = setInterval(() => writeHeartbeat(stream), 1000);
-              res.on("close", () => {
-                clearInterval(heartbeat);
-                streams.delete(stream);
-              });
+              res.on("close", () => streams.delete(stream));
               return;
             }
             if (req.url?.startsWith("/api/")) {
@@ -192,6 +193,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     const page = await browser.newPage({
       viewport: { width: 1100, height: 900 },
     });
+    await page.clock.install();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(server.resolvedUrls.local[0]);
@@ -215,21 +217,26 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
     const costsBeforeChange = reads.costs;
     const sessionCostBeforeChange = reads.sessionCost;
+    const costsChanged = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/costs",
+    );
     for (const stream of streams) {
       const costs = stream.resources.filter(
         (resource) => resource.kind === "costs",
       );
       if (costs.length) writeResources(stream, "change", costs);
     }
-    const changeDeadline = Date.now() + 3000;
-    while (reads.costs === costsBeforeChange && Date.now() < changeDeadline)
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    await (await costsChanged).finished();
     assert.equal(
       reads.costs,
       costsBeforeChange + 1,
       "a typed costs notification performs exactly one targeted read",
     );
-    await new Promise((resolve) => setTimeout(resolve, 3200));
+    for (const count of [1, 2, 3]) {
+      for (const stream of streams) writeHeartbeat(stream);
+      await page.waitForFunction((count) => window.heartbeats >= count, count);
+      await page.clock.runFor(1100);
+    }
     assert.equal(
       reads.costs,
       costsBeforeChange + 1,

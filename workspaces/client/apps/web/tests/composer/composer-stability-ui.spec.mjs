@@ -18,6 +18,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
   const evidence = await mkdtemp(join(tmpdir(), "studio-composer-stability-"));
   const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
     stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
   let browser,
     pages = new Set(),
@@ -91,6 +92,10 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         }),
         pendingSend,
         pendingStop,
+        resolveStopCapture,
+        stopCaptured = new Promise((resolve) => {
+          resolveStopCapture = resolve;
+        }),
         resolveSendCapture,
         sendCaptured = new Promise((resolve) => {
           resolveSendCapture = resolve;
@@ -126,6 +131,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       });
       await page.route("**/api/stop", (route) => {
         pendingStop = route;
+        resolveStopCapture();
       });
       await page.setViewportSize({ width, height: 960 });
       await page.goto(origin);
@@ -307,7 +313,6 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
               : !!document.querySelector("#stop:not(:disabled)"),
           next === "completed",
         );
-        await page.waitForTimeout(80);
       };
       const waitForSendingUI = () =>
         page.waitForFunction(() => {
@@ -507,7 +512,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         .waitFor();
       await stable("queue appears");
       await page.locator("#stop").click();
-      await page.waitForTimeout(80);
+      await stopCaptured;
       assert.ok(pendingStop, "stop reaches API");
       await stable("stopping request");
       await pendingStop.fulfill({ json: {} });

@@ -1722,21 +1722,19 @@ mod lifecycle_scope_parity_tests {
         scoped: &ManagementSnapshot,
         action: &Action,
     ) {
-        let (full_decision, scoped_decision) = match (
-            decide_with_effects(full, action, 10.0),
-            decide_with_effects(scoped, action, 10.0),
-        ) {
-            (Ok(full), Ok(scoped)) => (full, scoped),
-            (Err(full), Err(scoped)) => {
-                assert_eq!(format!("{full:?}"), format!("{scoped:?}"));
-                return;
+        let full_decision =
+            decide_with_effects(full, action, 10.0).expect("valid full lifecycle decision");
+        let scoped_decision =
+            decide_with_effects(scoped, action, 10.0).expect("valid scoped lifecycle decision");
+        match action {
+            Action::Archive { .. } => assert_eq!(full_decision.result["status"], "blocked"),
+            Action::Restore { .. } => assert_eq!(full_decision.result["status"], "restored"),
+            Action::Inspect { .. } => assert!(full_decision.result["blockers"].is_array()),
+            Action::Delete { .. } | Action::Stop { .. } => {
+                assert!(!full_decision.writes.is_empty())
             }
-            (full, scoped) => panic!(
-                "scoped decision diverged: full ok={} scoped ok={}",
-                full.is_ok(),
-                scoped.is_ok()
-            ),
-        };
+            Action::RemoteStop { .. } => unreachable!("not a scoped lifecycle fixture"),
+        }
         assert_eq!(full_decision.result, scoped_decision.result);
         assert_eq!(
             serde_json::to_value(&full_decision.writes).expect("full writes"),
