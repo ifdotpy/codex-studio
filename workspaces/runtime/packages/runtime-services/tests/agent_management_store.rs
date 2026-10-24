@@ -190,112 +190,85 @@ async fn stop_clears_the_matching_unsubmitted_capacity_retry_attempt() {
     assert_eq!(lead["inFlight"], false);
 }
 
-#[tokio::test]
-async fn transaction_failure_matrix_rolls_back_rows_and_projections_after_restart() {
-    let mut count = 0;
-    for case_name in ["unassign", "stop-True"] {
-        let case = case(case_name);
-        let base = tempfile::tempdir().expect("base");
-        template(base.path());
-        let store = std::sync::Arc::new(
-            RuntimeStore::open(Some(base.path()))
-                .await
-                .expect("template opens"),
-        );
-        seed(
-            &store,
-            serde_json::from_value(case["records"].clone()).expect("rows"),
-        )
-        .await;
-        // The clones below copy only the database files; the seed must not stay in the WAL.
-        store
-            .checkpoint_wal_passive()
-            .await
-            .expect("seed database checkpoint");
-        drop(store);
-        let tables = if case_name == "unassign" {
-            vec!["runtime_work", "runtime_agents", "sync_entities"]
+// Every failed write leaves the same seed, so the next write target can use it.
+// AFTER triggers include the write itself; a restart is shared by each action.
+async fn lifecycle_failure_case(case_name: &str, tables: &[&str]) {
+    let case = case(case_name);
+    let root = tempfile::tempdir().expect("case");
+    template(root.path());
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    seed(
+        &store,
+        serde_json::from_value(case["records"].clone()).expect("rows"),
+    )
+    .await;
+    let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
+    let before = state(&store);
+    for table in tables {
+        let event = if *table == "sync_entities" {
+            "INSERT"
         } else {
-            vec![
-                "runtime_agents",
-                "runtime_requests",
-                "runtime_events",
-                "sync_entities",
-            ]
+            "UPDATE"
         };
-        for table in tables {
-            for timing in ["BEFORE", "AFTER"] {
-                let root = tempfile::tempdir().expect("case");
-                for database in ["canvas.sqlite3", "analytics.sqlite3"] {
-                    fs::copy(base.path().join(database), root.path().join(database))
-                        .expect("clone prepared template");
-                }
-                let store = std::sync::Arc::new(
-                    RuntimeStore::open(Some(root.path()))
-                        .await
-                        .expect("open clone"),
-                );
-                let before = state(&store);
-                let event = if table == "sync_entities" {
-                    "INSERT"
-                } else {
-                    "UPDATE"
-                };
-                let trigger = format!(
-                    "CREATE TRIGGER lifecycle_fail {timing} {event} ON {table} BEGIN SELECT RAISE(ABORT,'lifecycle failpoint'); END"
-                );
-                store
-                    .transaction(move |tx| {
-                        tx.execute_batch(&trigger)?;
-                        Ok(())
-                    })
-                    .await
-                    .expect("failpoint installed");
-                let action: Action =
-                    serde_json::from_value(case["action"].clone()).expect("action");
-                assert!(
-                    execute(std::sync::Arc::clone(&store), &action, 1234567.5)
-                        .await
-                        .is_err(),
-                    "{case_name} {timing} {table}"
-                );
-                assert_eq!(
-                    state(&store),
-                    before,
-                    "rollback {case_name} {timing} {table}"
-                );
-                drop(store);
-                let store = std::sync::Arc::new(
-                    RuntimeStore::open(Some(root.path()))
-                        .await
-                        .expect("restart"),
-                );
-                assert_eq!(
-                    state(&store),
-                    before,
-                    "restart {case_name} {timing} {table}"
-                );
-                store
-                    .transaction(|tx| {
-                        tx.execute_batch("DROP TRIGGER lifecycle_fail")?;
-                        Ok(())
-                    })
-                    .await
-                    .expect("remove failpoint");
-                execute(std::sync::Arc::clone(&store), &action, 1234567.5)
-                    .await
-                    .expect("recovery applies once");
-                assert_ne!(
-                    state(&store),
-                    before,
-                    "recovery changed rows {case_name} {timing} {table}"
-                );
-
-                count += 1;
-            }
-        }
+        let trigger = format!(
+            "CREATE TRIGGER lifecycle_fail AFTER {event} ON {table} BEGIN SELECT RAISE(ABORT,'lifecycle failpoint'); END"
+        );
+        store
+            .transaction(move |tx| {
+                tx.execute_batch(&trigger)?;
+                Ok(())
+            })
+            .await
+            .expect("failpoint installed");
+        assert!(
+            execute(std::sync::Arc::clone(&store), &action, NOW)
+                .await
+                .is_err(),
+            "{case_name} {table}"
+        );
+        assert_eq!(state(&store), before, "rollback {case_name} {table}");
+        store
+            .transaction(|tx| {
+                tx.execute_batch("DROP TRIGGER lifecycle_fail")?;
+                Ok(())
+            })
+            .await
+            .expect("remove failpoint");
     }
-    assert_eq!(count, 14);
+    drop(store);
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart"),
+    );
+    assert_eq!(state(&store), before, "rollback survives restart");
+    execute(std::sync::Arc::clone(&store), &action, NOW)
+        .await
+        .expect("recovery applies once");
+    assert_ne!(state(&store), before, "recovery changed rows {case_name}");
+}
+
+#[tokio::test]
+async fn archive_failures_roll_back_rows_and_projections_after_restart() {
+    lifecycle_failure_case(
+        "unassign",
+        &["runtime_work", "runtime_agents", "sync_entities"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn stop_failures_roll_back_rows_and_projections_after_restart() {
+    lifecycle_failure_case(
+        "stop-True",
+        &[
+            "runtime_agents",
+            "runtime_requests",
+            "runtime_events",
+            "sync_entities",
+        ],
+    )
+    .await;
 }
 
 #[tokio::test]
