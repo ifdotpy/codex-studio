@@ -1,26 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { recipePlan } from "../facade.mjs";
-
-test("fast gate has one workspace Rust run and prepares the native renderer once", () => {
-  const command = recipePlan(process.cwd(), "test-fast").command;
-  assert.equal((command.match(/'nextest' 'run'/g) ?? []).length, 1);
-  assert.match(command, /--workspace/);
-  assert.equal((command.match(/build:wasm/g) ?? []).length, 1);
-  assert.equal((command.match(/build:bundle:prepared/g) ?? []).length, 1);
-});
-
-test("non-Rust remainder has no compiler, WASM generator, Clippy, or nested cargo check", () => {
-  const command = recipePlan(process.cwd(), "test-fast-rest-non-rust").command;
-  assert.doesNotMatch(
-    command,
-    /'cargo'|clippy-runtime|build-client-wasm|contracts-check|build:bundle/,
-  );
-});
 
 import { executeRecipe, gateSteps } from "../facade.mjs";
 import { runLogged } from "../owned-process.mjs";
 import {
+  chmodSync,
   mkdtempSync,
   writeFileSync,
   readFileSync,
@@ -37,6 +21,38 @@ const fakeStep = (id, lane, extra = {}) => ({
   lane,
   item: { name: id, ecosystem: "pnpm" },
   ...extra,
+});
+
+test("worker isolation preserves PATH tools and discovers the selected Node", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "studio-worker-tools-"));
+  try {
+    const node = path.join(directory, "node");
+    writeFileSync(node, "#!/bin/sh\nexit 0\n");
+    chmodSync(node, 0o755);
+    const run = spawnSync(
+      "bash",
+      [
+        "-c",
+        `
+      mkdir() { :; }
+      CS_NAME=fixture
+      source workspaces/tooling/worker-env.sh
+      test "$CODEX_NODE" = "$EXPECTED_NODE"
+    `,
+      ],
+      {
+        env: {
+          ...process.env,
+          PATH: directory + path.delimiter + process.env.PATH,
+          EXPECTED_NODE: node,
+        },
+        encoding: "utf8",
+      },
+    );
+    assert.equal(run.status, 0, run.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("bridge config removes ambient agent settings before workers inherit them", () => {
@@ -111,6 +127,7 @@ test("fixed lanes overlap, gate the guest build, and summarize failures in decla
     fakeStep("rust-failure", "rust", { requires: "workspace" }),
     fakeStep("js-failure", "js"),
     fakeStep("js-independent", "js"),
+    fakeStep("types-independent", "types"),
     fakeStep("guest", "guest", { requires: "workspace" }),
   ];
   let printed = "";
@@ -138,6 +155,7 @@ test("fixed lanes overlap, gate the guest build, and summarize failures in decla
   assert.ok(trace.indexOf("js-failure") < trace.indexOf("rust-failure"));
   assert.ok(trace.indexOf("guest") > trace.indexOf("build"));
   assert.ok(trace.includes("js-independent"));
+  assert.ok(trace.includes("types-independent"));
   assert.deepEqual(
     result.steps.filter((x) => x.exitCode).map((x) => x.label),
     ["rust-failure", "js-failure"],
@@ -264,6 +282,11 @@ test(
 test("Cargo compilation is confined to the fixed Rust lane and both tiers use one universe", () => {
   for (const name of ["test-fast", "test-comprehensive", "test-fast-rest"]) {
     const steps = gateSteps(process.cwd(), name);
+    // Tools must start while type checks wait for WASM and web tests wait for Rust.
+    const lane = (id) => steps.find((step) => step.id === id).lane;
+    assert.notEqual(lane("tooling"), lane("web type check"));
+    assert.notEqual(lane("tooling"), lane("web unit tests"));
+    assert.notEqual(lane("web type check"), lane("web unit tests"));
     assert.ok(
       steps.filter((s) => s.requiresCargo).every((s) => s.lane === "rust"),
     );

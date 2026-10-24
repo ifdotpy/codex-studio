@@ -39,6 +39,12 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   for (const recipe of [fast, comprehensive]) {
     assert.match(recipe.command, /build:wasm/);
     assert.match(recipe.command, /build:bundle:prepared/);
+    for (const once of [
+      /build:wasm/g,
+      /build:bundle:prepared/g,
+      /'nextest' 'run'/g,
+    ])
+      assert.equal([...recipe.command.matchAll(once)].length, 1);
     assert.match(recipe.command, /'nextest' 'run' '--workspace'/);
     assert.match(recipe.command, /studio-contracts/);
     assert.match(recipe.command, /boundaries-check/);
