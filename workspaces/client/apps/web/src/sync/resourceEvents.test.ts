@@ -455,7 +455,9 @@ describe("shared resource event transport", () => {
     );
     await vi.advanceTimersByTimeAsync(30);
     expect(subscriptionPosts).toHaveLength(1);
-    expect(subscriptionPosts[0]?.add).toEqual([{ kind: "accounts" }]);
+    expect(subscriptionPosts[0]?.add).toEqual([
+      { resource: { kind: "accounts" }, since: undefined },
+    ]);
     expect(Source.instances.filter((source) => !source.closed)).toHaveLength(1);
     const latestUrl = Source.instances[0]!.url;
     expect(latestUrl).toBe(initialUrl);
@@ -2109,7 +2111,9 @@ describe("shared resource event transport", () => {
 
     await vi.advanceTimersByTimeAsync(30);
     expect(subscriptionPosts).toHaveLength(1);
-    expect(subscriptionPosts[0]?.add).toEqual([evictedRef]);
+    expect(subscriptionPosts[0]?.add).toEqual([
+      { resource: evictedRef, since: undefined },
+    ]);
     expect(Source.instances).toHaveLength(sourceCountBeforeLateSubscription);
     expect(
       ownerChannel.messages
