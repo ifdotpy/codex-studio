@@ -381,7 +381,8 @@ export const SharedGutter: Story = {
     for (const selector of [
       ".team-heading h2",
       ".team-summary-filters",
-      ".mantine-TextInput-root",
+      // Only the panel's own search; nested budget fields sit deeper.
+      ":scope > .mantine-TextInput-root",
       ".team-status-group h3",
       ".worker-group > .disclosure-control",
       ".worker-entry:not([data-has-parent])",
