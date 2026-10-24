@@ -1065,7 +1065,6 @@ async fn create_agent_with_import(
         yolo: body.yolo_mode,
         concurrency: body.concurrency,
         max_agents: body.max_agents,
-        token_budget: body.token_budget.flatten(),
         profile: body.profile_id.flatten(),
         parent: body.parent.flatten(),
         imported_from,
@@ -1402,7 +1401,6 @@ async fn configure(
         id: body.id,
         concurrency: body.concurrency,
         max_agents: body.max_agents,
-        token_budget: body.token_budget,
         expected_mode_revision: body.expected_mode_revision.flatten(),
         request_id: body.request_id.flatten(),
     };

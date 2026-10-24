@@ -929,24 +929,6 @@ pub fn select_execution(
     })
 }
 
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum BudgetDenial {
-    #[error("budget-policy/coverage-unavailable")]
-    CoverageUnavailable,
-    #[error("invalid stored gate input at agent/tokenBudget")]
-    InvalidBudget,
-}
-
-/// Missing/null is unlimited. Every valid present budget is held; every invalid
-/// present value is refused, never projected to the unlimited state.
-pub fn budget_admission(token_budget: Option<&Value>) -> Result<(), BudgetDenial> {
-    match token_budget {
-        None | Some(Value::Null) => Ok(()),
-        Some(value) if value.as_u64().is_some() => Err(BudgetDenial::CoverageUnavailable),
-        Some(_) => Err(BudgetDenial::InvalidBudget),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

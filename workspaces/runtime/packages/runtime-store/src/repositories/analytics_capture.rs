@@ -242,7 +242,7 @@ impl RuntimeStore {
 
     /// Keep the Canvas actor callback occupied for stable main-store reads through commit:
     /// analytics_capture::{capture,capture_batch}, analytics_history::HistoryBatch::commit,
-    /// and analytics_history_repair::{migrate_budget,repair_terminal_errors} rely on it.
+    /// and analytics_history_repair::repair_terminal_errors relies on it.
     /// Serialize analytics with canvas writes. The callback must do SQLite and
     /// bounded pure decisions only. Analytics commit is the durable receipt;
     /// a lost commit response is Unknown and must be reconciled by the caller.

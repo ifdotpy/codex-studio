@@ -779,8 +779,8 @@ mod projection_plan_tests {
     };
     use serde_json::json;
 
-    /// The agent view publishes no team budget, also when an older build
-    /// stored one. The older view never published an empty pattern list, and
+    /// The agent view publishes no team budget or token count, also when an
+    /// older build stored them. The older view never published an empty pattern list, and
     /// the client reads a missing one as its default. Set patterns are
     /// published.
     #[test]
@@ -789,13 +789,16 @@ mod projection_plan_tests {
             let view = project_persisted_record(
                 "agent",
                 &json!({"id":"lead","rootId":"lead","isLead":true,"tokenBudget":budget,
-                        "budgetBlocked":"usage accounting incomplete",
+                        "budgetBlocked":"usage accounting incomplete","tokensUsed":120,
+                        "tokenUsageAccounting":"total",
                         "completedWorkerTurns":2,"terminalReason":"worker_max_turns"}),
             )
             .expect("agent view");
             for field in [
                 "tokenBudget",
                 "budgetBlocked",
+                "tokensUsed",
+                "tokenUsageAccounting",
                 "completedWorkerTurns",
                 "terminalReason",
             ] {

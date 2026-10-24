@@ -27,8 +27,6 @@ pub enum CoordinationError {
     #[error("{0}")]
     AdmissionDenied(String),
     #[error(transparent)]
-    BudgetRuntime(#[from] crate::budget_runtime::BudgetRuntimeError),
-    #[error(transparent)]
     Store(#[from] StoreError),
 }
 
@@ -359,7 +357,6 @@ fn post_managed_message(
     }
     assert_native_thread_open(&agent)?;
     let blockers = admission.workspace(transaction, &agent)?;
-    admission.budget(transaction, &agent, &root)?;
 
     // A manual send wakes a stopped agent in the same transaction as the event.
     agent.extra.insert("autoWake".to_owned(), Value::Bool(true));
@@ -551,7 +548,6 @@ fn send_followup_inner(
     }
     assert_native_thread_open(&recipient)?;
     let blockers = admission.workspace(transaction, &recipient)?;
-    admission.budget(transaction, &recipient, &root)?;
 
     if let Some(event) = QueueEventRepository::get(transaction, &QueueEventId::from(id))? {
         let metadata =
@@ -1481,15 +1477,6 @@ mod tests {
             _agent: &studio_runtime_store::AgentRecord,
         ) -> Result<Vec<serde_json::Value>, CoordinationError> {
             Ok(Vec::new())
-        }
-
-        fn budget(
-            &self,
-            _tx: &studio_runtime_store::Transaction<'_>,
-            _agent: &studio_runtime_store::AgentRecord,
-            _root: &studio_runtime_store::AgentRecord,
-        ) -> Result<(), CoordinationError> {
-            Ok(())
         }
     }
 

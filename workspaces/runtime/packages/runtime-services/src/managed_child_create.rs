@@ -827,10 +827,6 @@ pub(crate) async fn spawn_agents(
             .get("maxAgents")
             .cloned()
             .unwrap_or(json!(DEFAULT_MAX_TEAM_AGENTS));
-        record["tokenBudget"] = root_value
-            .get("tokenBudget")
-            .cloned()
-            .unwrap_or(Value::Null);
         drafts.push(Draft {
             typed: draft,
             record,
@@ -1627,10 +1623,6 @@ pub(crate) async fn request_review(
         .get("maxAgents")
         .cloned()
         .unwrap_or(json!(DEFAULT_MAX_TEAM_AGENTS));
-    record["tokenBudget"] = root_value
-        .get("tokenBudget")
-        .cloned()
-        .unwrap_or(Value::Null);
     let review = ReviewDraft {
         typed: prepared,
         record,

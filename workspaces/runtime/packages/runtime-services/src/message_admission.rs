@@ -3,13 +3,11 @@
 //! transaction; they must not perform filesystem or provider work there.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use studio_runtime_store::path_identity::PathEvidence;
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentIndexedReads, AgentRecord, AgentRepository, Connection, RuntimeStore, StoreError,
-    Transaction,
+    AgentId, AgentIndexedReads, AgentRecord, AgentRepository, Connection, StoreError, Transaction,
 };
 
 use crate::coordination::CoordinationError;
@@ -22,19 +20,12 @@ pub trait MessageAdmission: Send + Sync {
         tx: &Transaction<'_>,
         agent: &AgentRecord,
     ) -> Result<Vec<Value>, CoordinationError>;
-
-    fn budget(
-        &self,
-        tx: &Transaction<'_>,
-        agent: &AgentRecord,
-        root: &AgentRecord,
-    ) -> Result<(), CoordinationError>;
 }
 
 /// Default host adapter. Resolve workspace paths before entering the writer
 /// transaction, including idle agents: they may start operations before admission.
 /// A newly encountered cwd is refused when its canonical relation cannot be
-/// determined from this snapshot. Budget history needs the host's P09 port.
+/// determined from this snapshot.
 #[derive(Clone, Default)]
 pub struct PreparedAdmission {
     paths: BTreeMap<String, PathEvidence>,
@@ -174,99 +165,35 @@ impl MessageAdmission for PreparedAdmission {
         }
         Ok(blockers)
     }
-
-    fn budget(
-        &self,
-        _tx: &Transaction<'_>,
-        _agent: &AgentRecord,
-        root: &AgentRecord,
-    ) -> Result<(), CoordinationError> {
-        if root
-            .extra
-            .get("tokenBudget")
-            .is_some_and(|budget| !budget.is_null())
-        {
-            return Err(CoordinationError::RequiresDependency(
-                "budget-policy/message-admission",
-            ));
-        }
-        Ok(())
-    }
 }
 
-/// Message ingress adapter that combines P03's workspace snapshot with P09's
-/// history-backed budget policy. Filesystem history is read before the caller's
-/// writer transaction; durable bindings are rechecked inside that transaction.
+/// The admission of message ingress: the workspace snapshot of P03. Paths are
+/// resolved before the caller's writer transaction.
 pub struct MessageIngressAdmission {
     workspace: PreparedAdmission,
-    store: Arc<RuntimeStore>,
-    histories: BTreeMap<String, crate::budget::HistoryObservation>,
-    now: f64,
 }
 
 impl MessageIngressAdmission {
     /// Capture SQL inputs only. Call `prepare` after the read returns.
     pub fn read(
-        store: Arc<RuntimeStore>,
         connection: &Connection,
         recipient: &str,
     ) -> Result<MessageIngressSnapshot, CoordinationError> {
-        let workspace = PreparedAdmission::read(connection, recipient)?;
-        let members = match AgentRepository::get(connection, &AgentId::from(recipient))? {
-            Some(agent) => {
-                let root = AgentRepository::get(connection, &agent.root_id)?;
-                if root.as_ref().is_some_and(|root| {
-                    root.extra
-                        .get("tokenBudget")
-                        .is_some_and(|budget| !budget.is_null())
-                        && root.extra.get("tokenBudget").and_then(Value::as_u64) != Some(0)
-                }) {
-                    Some(crate::budget_runtime::team_members(
-                        connection,
-                        &agent.root_id.0,
-                    )?)
-                } else {
-                    None
-                }
-            }
-            None => None,
-        };
         Ok(MessageIngressSnapshot {
-            workspace,
-            store,
-            members,
+            workspace: PreparedAdmission::read(connection, recipient)?,
         })
     }
 }
 
 pub struct MessageIngressSnapshot {
     workspace: AdmissionPaths,
-    store: Arc<RuntimeStore>,
-    members: Option<Vec<crate::budget_runtime::TeamMember>>,
 }
 
 impl MessageIngressSnapshot {
     pub async fn prepare(self) -> Result<MessageIngressAdmission, CoordinationError> {
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/message-admission/history",
-            move || {
-                let workspace = self.workspace.resolve()?;
-                let histories = match self.members {
-                    Some(members) => {
-                        crate::budget_runtime::observe_histories(self.store.root(), members)?
-                    }
-                    None => BTreeMap::new(),
-                };
-                Ok(MessageIngressAdmission {
-                    workspace,
-                    store: self.store,
-                    histories,
-                    now: unix_time(),
-                })
-            },
-        )
-        .await
-        .map_err(|_| StoreError::ReadTaskFailed)?
+        Ok(MessageIngressAdmission {
+            workspace: self.workspace.prepare().await?,
+        })
     }
 }
 
@@ -293,34 +220,6 @@ impl MessageAdmission for MessageIngressAdmission {
     ) -> Result<Vec<Value>, CoordinationError> {
         self.workspace.workspace(tx, agent)
     }
-
-    fn budget(
-        &self,
-        tx: &Transaction<'_>,
-        agent: &AgentRecord,
-        root: &AgentRecord,
-    ) -> Result<(), CoordinationError> {
-        let decision = crate::budget_runtime::admission(
-            &self.store,
-            tx,
-            &agent.value(),
-            &root.value(),
-            &self.histories,
-            self.now,
-        )
-        .map_err(|error| CoordinationError::BudgetRuntime(error.into()))?;
-        if let Some(denial) = decision.denial {
-            return Err(CoordinationError::AdmissionDenied(denial.message));
-        }
-        Ok(())
-    }
-}
-
-fn unix_time() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0.0, |duration| duration.as_secs_f64())
 }
 
 fn cwd(agent: &AgentRecord) -> Result<&str, CoordinationError> {
@@ -408,45 +307,8 @@ fn other_operation(
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[tokio::test]
-    async fn positive_budget_admission_releases_sql_snapshot_before_history_read() {
-        let directory = tempfile::tempdir().expect("temporary state directory");
-        let project_directory = tempfile::tempdir().expect("temporary project directory");
-        let project = project_directory.path().to_path_buf();
-        let store = Arc::new(
-            RuntimeStore::open(Some(directory.path()))
-                .await
-                .expect("open runtime store"),
-        );
-        let agent = AgentRecord::from_value(json!({
-            "id":"lead", "rootId":"lead", "epoch":1, "status":"idle",
-            "isLead":true, "autoWake":true, "accountKey":"default",
-            "provider":"codex", "model":"gpt-6-astra", "cwd":project,
-            "threadId":"thread-1", "tokenBudget":100
-        }))
-        .expect("valid lead record");
-        store
-            .transaction_with_error(move |tx| {
-                AgentRepository::put(tx, &agent)?;
-                Ok::<_, studio_runtime_store::StoreError>(())
-            })
-            .await
-            .expect("persist lead record");
-
-        let read_store = Arc::clone(&store);
-        let snapshot = store
-            .read_async("tests/message-admission", move |connection| {
-                MessageIngressAdmission::read(read_store, connection, "lead")
-            })
-            .await
-            .expect("SQL inputs");
-        let admission = snapshot
-            .prepare()
-            .await
-            .expect("positive token budget history loads after the SQL callback");
-        assert!(admission.histories.contains_key("lead"));
-    }
+    use std::sync::Arc;
+    use studio_runtime_store::RuntimeStore;
 
     #[tokio::test]
     async fn a_child_provision_reserves_only_its_destination() {

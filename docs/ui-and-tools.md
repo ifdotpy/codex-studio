@@ -17,8 +17,8 @@ Applied decisions:
 - The left sidebar lists explicit lead conversations. It does not infer the role from missing parent links.
 - The center contains one conversation and one composer. The first message is the task.
 - The right panel contains workers and command results. On narrow screens it opens with **Team**.
-- There is no lead creation form. There are no name, task, effort, capacity, or token-budget fields in the chat interface.
-- The server uses the configured defaults. Capacity and budgets remain available in the command-line controller.
+- There is no lead creation form. There are no name, task, effort, or capacity fields in the chat interface.
+- The server uses the configured defaults. Capacity remains available in the command-line controller.
 - Markdown uses Marked and DOMPurify. Raw HTML cannot add forms, scripts, event handlers, or remote tracking images.
 - Tool activity stays in expandable message groups. Queued user messages remain visible before the model starts its next turn.
 - The canvas has one control, **Fit**. Nodes support drag, keyboard activation, and a click to open the conversation.
