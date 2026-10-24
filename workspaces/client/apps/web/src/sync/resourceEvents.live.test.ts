@@ -138,6 +138,30 @@ async function fixture(follower = false, session = true) {
   return { transport, source, sources, urls, post, persist, stopState };
 }
 
+it("publishes each resource event without a listener flush timer", async () => {
+  const f = await fixture();
+  const listener = vi.fn();
+  f.transport.watchResourceChanges({ kind: "state" }, listener);
+  listener.mockClear();
+  for (const revision of [2, 3]) {
+    f.source.emit("resources", {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision,
+      reason: "change",
+      resources: [{ kind: "state" }],
+      resourceVersions: [{ revision }],
+    });
+    // Drain event persistence microtasks without advancing any timer.
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    expect(listener).toHaveBeenCalledTimes(revision - 1);
+    expect(listener).toHaveBeenLastCalledWith(
+      expect.objectContaining({ revision }),
+    );
+  }
+});
+
 it("coalesces chat switches into one POST without reopening the SSE stream", async () => {
   const f = await fixture();
   for (let i = 0; i < 10; i++) {
