@@ -205,7 +205,9 @@ fn apply_read_state(
         && previous.get("turnId").and_then(Value::as_str) == Some(turn)
         && previous.get("read").and_then(Value::as_bool) == Some(read_value);
     if same && (revision == current || current.checked_sub(1) == Some(revision)) {
-        return Ok(agent.value());
+        // A replay writes nothing, but the client that sends it may hold a view that a
+        // build without this publication left behind; publish the stored state again.
+        return publish(tx, agent);
     }
     if revision != current {
         return Err(EventWriteError::InvalidRequest(
@@ -312,5 +314,52 @@ mod tests {
             true,
             "a read state reaches the client"
         );
+    }
+
+    /// A read state stored by a build that did not publish it leaves the client one
+    /// revision behind. The client then repeats the read with its old revision, which
+    /// the server accepts as a replay; the replay must repair the client view.
+    #[tokio::test]
+    async fn a_read_replay_repairs_a_stale_client_view() {
+        let dir = tempfile::tempdir().expect("isolated state");
+        let store = RuntimeStore::open(Some(dir.path()))
+            .await
+            .expect("runtime store opens");
+        let stale = json!({
+            "id":CHAT,"rootId":CHAT,"epoch":1,"status":"completed","name":"Organized chat",
+            "provider":"codex","model":"gpt-6","prompt":"Start","cwd":"/fixture",
+            "accountKey":"default","isLead":true,"autoWake":true,"threadId":"thread-1",
+            "lastCompletedTurn":"turn-1","lastCompletedTurnStatus":"completed",
+            "readState":{"read":true,"revision":2,"threadId":"thread-1","turnId":"turn-1"}
+        });
+        let mut stored = stale.clone();
+        stored["lastCompletedTurn"] = json!("turn-2");
+        stored["readState"] =
+            json!({"read":true,"revision":3,"threadId":"thread-1","turnId":"turn-2"});
+        store
+            .transaction_with(move |tx| {
+                let published = AgentRecord::from_value(stale)?;
+                AgentRepository::put(tx, &published)?;
+                crate::agents_create::publish_agent(tx, &published.value())?;
+                // The read of turn-2 was stored without a publication.
+                AgentRepository::put(tx, &AgentRecord::from_value(stored)?)?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("the chat is seeded with a stale client view");
+        assert_eq!(client_view(&store)["readState"]["turnId"], "turn-1");
+
+        // The client sees turn-2 unread and marks it read with the revision it knows.
+        organize(
+            &store,
+            json!({"id":CHAT,"read_state":{"thread_id":"thread-1","turn_id":"turn-2","read":true,"expected_revision":2}}),
+        )
+        .await;
+        let read = &client_view(&store)["readState"];
+        assert_eq!(
+            read["turnId"], "turn-2",
+            "the replay repairs the client view"
+        );
+        assert_eq!(read["revision"], 3);
     }
 }

@@ -23513,21 +23513,6 @@
             "title": "Account Key",
             "type": "string"
           },
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "concurrency": {
             "default": 32,
             "maximum": 2048,
@@ -23551,21 +23536,6 @@
             ],
             "default": null,
             "title": "Daybreak Enabled"
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "effort": {
             "anyOf": [
@@ -23614,33 +23584,6 @@
             "minimum": 1,
             "title": "Maxagents",
             "type": "integer"
-          },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "model": {
             "anyOf": [
@@ -23713,21 +23656,6 @@
           "role": {
             "$ref": "#/components/schemas/AgentRole-Input",
             "default": "orchestrator"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "tokenBudget": {
             "anyOf": [
@@ -38214,36 +38142,6 @@
             "title": "Action",
             "type": "string"
           },
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "effort": {
             "anyOf": [
               {
@@ -38294,33 +38192,6 @@
             "default": null,
             "title": "Isnew"
           },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "anyOf": [
               {
@@ -38355,21 +38226,6 @@
             ],
             "title": "Role",
             "type": "string"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "title": "ProfileBody",
@@ -38453,21 +38309,6 @@
             "default": null,
             "title": "Syncentitiesafter"
           },
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "deleted": {
             "anyOf": [
               {
@@ -38479,21 +38320,6 @@
             ],
             "default": null,
             "title": "Deleted"
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "effort": {
             "anyOf": [
@@ -38539,33 +38365,6 @@
             "default": null,
             "title": "Instructions"
           },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "anyOf": [
               {
@@ -38605,21 +38404,6 @@
             ],
             "default": null,
             "title": "Role"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "title": "ProfileMutation",
@@ -38628,36 +38412,6 @@
       "ProfileRecord": {
         "additionalProperties": false,
         "properties": {
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "effort": {
             "anyOf": [
               {
@@ -38685,33 +38439,6 @@
             "title": "Instructions",
             "type": "string"
           },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "title": "Model",
             "type": "string"
@@ -38727,21 +38454,6 @@
             ],
             "title": "Role",
             "type": "string"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [

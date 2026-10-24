@@ -361,11 +361,6 @@ fn post_managed_message(
     let blockers = admission.workspace(transaction, &agent)?;
     admission.budget(transaction, &agent, &root)?;
 
-    if crate::worker_capabilities::exhausted(&agent.value()) {
-        return Err(CoordinationError::InvalidRequest(
-            crate::worker_capabilities::TURN_LIMIT_MESSAGE,
-        ));
-    }
     // A manual send wakes a stopped agent in the same transaction as the event.
     agent.extra.insert("autoWake".to_owned(), Value::Bool(true));
     agent.extra.insert("error".to_owned(), Value::Null);
@@ -579,14 +574,7 @@ fn send_followup_inner(
             event_inserted: false,
         });
     }
-    if let Some((sender_id, _)) = sender_identity {
-        if sender_id == recipient.root_id.0 {
-            crate::worker_capabilities::reset_on_lead_instruction(&mut recipient);
-        } else if crate::worker_capabilities::exhausted(&recipient.value()) {
-            return Err(CoordinationError::InvalidRequest(
-                crate::worker_capabilities::TURN_LIMIT_MESSAGE,
-            ));
-        }
+    if sender_identity.is_some() {
         recipient.extra.insert("autoWake".into(), Value::Bool(true));
         recipient.extra.insert("error".into(), Value::Null);
         recipient.extra.insert("complaintMisses".into(), json!(0));

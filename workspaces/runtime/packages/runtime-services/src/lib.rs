@@ -211,7 +211,6 @@ pub mod web_push;
 pub mod work_assignment_runtime;
 pub mod work_policy;
 pub mod work_write;
-mod worker_capabilities;
 pub mod workspace_cleanup_runtime;
 pub mod workspace_files;
 pub mod workspace_operations;
