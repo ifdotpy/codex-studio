@@ -12,12 +12,13 @@ use crate::routes::manifest::{OperationStatus, RouteGroup, get};
 use studio_runtime_services::account_policy::AccountsSnapshot;
 use studio_runtime_services::model_catalog::{CatalogRead, ModelCatalogService};
 
-// Display-read messages. Spawn admission owns its own "no workers were created"
-// wording; a catalog read for the UI creates nothing.
-const PENDING_MESSAGE: &str = "Model catalog is still loading from the provider; retry shortly";
+// Catalog-read messages shared with branch admission. Spawn admission owns its
+// own "no workers were created" wording.
+pub(super) const PENDING_MESSAGE: &str =
+    "Model catalog is still loading from the provider; retry shortly";
 const WORKER_PENDING_MESSAGE: &str =
     "Model catalog is pending; no worker model catalog is available yet";
-const UNAVAILABLE_MESSAGE: &str = "Model catalog is temporarily unavailable: the provider did not return its model list; retry shortly";
+pub(super) const UNAVAILABLE_MESSAGE: &str = "Model catalog is temporarily unavailable: the provider did not return its model list; retry shortly";
 /// A failed provider read is transient: the catalog retries it on a later read.
 const UNAVAILABLE_STATUS: StatusCode = StatusCode::SERVICE_UNAVAILABLE;
 const ACCOUNT_UNAVAILABLE_MESSAGE: &str = "Account is unavailable";
