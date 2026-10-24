@@ -13,9 +13,8 @@ test("draft pull waits for a real trigger without blocking push recovery", async
   page: fixturePage,
 }) => {
   test.setTimeout(45_000);
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const workspaceId = "c".repeat(32);
   const streams = new Set();
   let pulls = 0;
@@ -43,6 +42,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
   };
   const server = await createServer({
     configFile: false,
+    optimizeDeps: { noDiscovery: true },
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
   });
@@ -99,6 +99,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     const page = fixturePage;
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    await page.clock.install();
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
@@ -142,14 +143,10 @@ test("draft pull waits for a real trigger without blocking push recovery", async
         seq: 1,
       });
     });
-    for (let attempt = 0; attempt < 250 && pushes === 0; attempt++)
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    await expect.poll(() => pushes).toBeGreaterThan(0);
     assert.equal(pushes, 1, "A failed pull does not freeze the pending push");
-    await new Promise((resolve) =>
-      setTimeout(
-        resolve,
-        draftTiming.pushRetry + draftTiming.pushQuietWait + 100,
-      ),
+    await page.clock.runFor(
+      draftTiming.pushRetry + draftTiming.pushQuietWait + 100,
     );
     assert.equal(
       pulls,
@@ -171,13 +168,8 @@ test("draft pull waits for a real trigger without blocking push recovery", async
 
     const healthyBurstStart = pulls;
     for (let index = 0; index < 6; index++) notifyDrafts();
-    for (
-      let attempt = 0;
-      attempt < 100 && pulls === healthyBurstStart;
-      attempt++
-    )
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await expect.poll(() => pulls).toBeGreaterThan(healthyBurstStart);
+    await page.clock.runFor(250);
     assert.equal(
       pulls - healthyBurstStart,
       1,
@@ -187,14 +179,10 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     pullSucceeds = false;
     const outageStart = pulls;
     notifyDrafts();
-    for (let attempt = 0; attempt < 100 && pulls === outageStart; attempt++)
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    await expect.poll(() => pulls).toBeGreaterThan(outageStart);
     assert.equal(pulls, outageStart + 1, "The outage trigger starts one pull");
-    await new Promise((resolve) =>
-      setTimeout(
-        resolve,
-        draftTiming.pushRetry + draftTiming.pushQuietWait + 100,
-      ),
+    await page.clock.runFor(
+      draftTiming.pushRetry + draftTiming.pushQuietWait + 100,
     );
     assert.equal(
       pulls,
@@ -215,12 +203,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
         seq: 1,
       });
     });
-    for (
-      let attempt = 0;
-      attempt < 100 && pushes === pushBeforeRestart;
-      attempt++
-    )
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    await expect.poll(() => pushes).toBeGreaterThan(pushBeforeRestart);
     assert.ok(pushes > pushBeforeRestart, "A push failure is observed");
     await page.waitForFunction(
       (count) => window.replicationErrors.slice(count).some(Boolean),
@@ -231,12 +214,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
       window.rejectCancelOnce = true;
       window.dispatchEvent(new Event("online"));
     });
-    for (
-      let attempt = 0;
-      attempt < 100 && pulls === beforeRestartPull;
-      attempt++
-    )
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    await expect.poll(() => pulls).toBeGreaterThan(beforeRestartPull);
     assert.ok(
       pulls > beforeRestartPull,
       "A replacement starts after cancel rejects",
@@ -247,13 +225,8 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     );
     failPush = false;
     const postsBeforeRetry = pushes;
-    await new Promise((resolve) =>
-      setTimeout(resolve, draftTiming.pushRetry + draftTiming.pushQuietWait),
-    );
-    assert.ok(
-      pushes > postsBeforeRetry,
-      "The replacement retries its pending push",
-    );
+    await page.clock.runFor(draftTiming.pushRetry + draftTiming.pushQuietWait);
+    await expect.poll(() => pushes).toBeGreaterThan(postsBeforeRetry);
     await page.evaluate(async () => {
       window.rejectCancelOnce = true;
       await window.stopDrafts();

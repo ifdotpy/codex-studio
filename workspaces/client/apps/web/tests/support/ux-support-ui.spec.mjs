@@ -1,12 +1,8 @@
 // Isolated component fixture. All API requests use local test responses.
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, extname } from "node:path";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
+  createFixtureViteServer,
   expect,
   handleEntitySyncFixtureRequest,
   syncIdentityFixture,
@@ -14,84 +10,35 @@ import {
 } from "../playwright.mjs";
 
 test("ux support ui", async ({ page: runnerPage }) => {
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(repo, "workspaces/client/apps/web/package.json"),
-  );
-  const { build } = await import(require.resolve("vite"));
-  const temporary = await mkdtemp(join(tmpdir(), "studio-support-ux-"));
-  const entry = join(temporary, "index.html");
+  const server = await createFixtureViteServer({
+    configFile: false,
+    root: fileURLToPath(new URL("../../", import.meta.url)),
+    optimizeDeps: {
+      noDiscovery: true,
+      include: ["@xterm/xterm", "@xterm/addon-fit"],
+    },
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  const syncFixture = {
+    snapshot: { runtime: {}, stateDir: "fixture", chats: [], edges: [] },
+    workspaceId: syncIdentityFixture().workspaceId,
+  };
+  server.middlewares.stack.unshift({
+    route: "",
+    handle(request, response, next) {
+      if (handleEntitySyncFixtureRequest(request, response, syncFixture))
+        return;
+      if (new URL(request.url, "http://fixture").pathname !== "/")
+        return next();
+      response.setHeader("Content-Type", "text/html");
+      response.end(
+        '<html><div id="root"></div><script type="module" src="/tests/fixtures/ux-support.tsx"></script></html>',
+      );
+    },
+  });
   let page;
-  await writeFile(
-    entry,
-    `<html><div id="root"></div><script type="module" src="${join(repo, "workspaces/client/apps/web/tests/fixtures/ux-support.tsx")}"></script></html>`,
-  );
-  let server;
   try {
-    await build({
-      configFile: false,
-      root: temporary,
-      logLevel: "error",
-      resolve: {
-        alias: [
-          { find: /^react$/, replacement: require.resolve("react") },
-          {
-            find: /^react\/jsx-runtime$/,
-            replacement: require.resolve("react/jsx-runtime"),
-          },
-          {
-            find: /^react\/jsx-dev-runtime$/,
-            replacement: require.resolve("react/jsx-dev-runtime"),
-          },
-          {
-            find: /^react-dom\/client$/,
-            replacement: require.resolve("react-dom/client"),
-          },
-          {
-            find: /^@mantine\/core$/,
-            replacement: require.resolve("@mantine/core"),
-          },
-          {
-            find: /^@mantine\/core\/styles.css$/,
-            replacement: require.resolve("@mantine/core/styles.css"),
-          },
-        ],
-      },
-      build: {
-        outDir: join(temporary, "dist"),
-        emptyOutDir: true,
-        rollupOptions: { input: entry },
-      },
-    });
-    const syncFixture = {
-      snapshot: { runtime: {}, stateDir: "fixture", chats: [], edges: [] },
-      workspaceId: syncIdentityFixture().workspaceId,
-    };
-    server = createServer(async (request, response) => {
-      try {
-        if (handleEntitySyncFixtureRequest(request, response, syncFixture))
-          return;
-        const path = new URL(request.url, "http://fixture").pathname;
-        const file = join(
-          temporary,
-          "dist",
-          path === "/" ? "index.html" : path,
-        );
-        response.setHeader(
-          "Content-Type",
-          {
-            ".html": "text/html",
-            ".js": "text/javascript",
-            ".css": "text/css",
-          }[extname(file)] || "text/plain",
-        );
-        response.end(await readFile(file));
-      } catch {
-        response.statusCode = 404;
-        response.end();
-      }
-    });
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await server.listen();
     page = runnerPage;
     await page.setViewportSize({ width: 1100, height: 800 });
     const writes = [];
@@ -179,7 +126,8 @@ test("ux support ui", async ({ page: runnerPage }) => {
       if (path === "/api/terminals/close") shell.status = "closed";
       await route.fulfill({ json: result });
     });
-    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.clock.install();
+    await page.goto(`http://127.0.0.1:${server.httpServer.address().port}`);
     await page
       .getByRole("button", { name: "End session", exact: true })
       .waitFor();
@@ -194,7 +142,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
         color: getComputedStyle(element).color,
         background: getComputedStyle(element).backgroundColor,
       })),
-      { color: "rgb(34, 39, 55)", background: "rgb(255, 255, 255)" },
+      { color: "rgb(24, 32, 42)", background: "rgb(255, 255, 255)" },
     );
     await page.getByRole("button", { name: "Hide panel", exact: true }).click();
     assert.equal(
@@ -255,7 +203,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
     await support("newer");
     await page.locator('[data-task="new"]').waitFor();
     assert.equal(await page.locator('[data-task-detail="first"]').count(), 1);
-    await page.waitForTimeout(5200);
+    await page.clock.runFor(5200);
     assert.equal(await page.locator('[data-task-detail="first"]').count(), 1);
     await support("scope");
     await page.locator('[data-task-detail="other-task"]').waitFor();
@@ -293,7 +241,6 @@ test("ux support ui", async ({ page: runnerPage }) => {
     );
   } finally {
     await page?.close();
-    if (server) await new Promise((resolve) => server.close(resolve));
-    await rm(temporary, { recursive: true, force: true });
+    await server.close();
   }
 });

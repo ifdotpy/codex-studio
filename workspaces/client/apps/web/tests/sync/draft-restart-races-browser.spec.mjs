@@ -5,11 +5,11 @@ import { apiSchemaHeaders, syncIdentityFixture, test } from "../playwright.mjs";
 const workspaceId = "d".repeat(32);
 
 async function createFixture(page) {
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
     configFile: false,
+    optimizeDeps: { noDiscovery: true },
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
   });
@@ -92,6 +92,7 @@ async function createFixture(page) {
       },
     };
   }, workspaceId);
+  await page.clock.install();
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/check`);
   await page.evaluate(async () => {
     const client = await import("/src/sync/client.ts");
@@ -302,7 +303,7 @@ test("a later trigger in the outage is served at the restart interval", async ({
       `trigger B pull exceeded the restart interval plus 1,000 ms: A=${restartAAt}, B=${pullBAt}`,
     );
     assert.equal(await fx.localText("interval-b"), "remote B");
-    await page.waitForTimeout(3_300);
+    await page.clock.runFor(3_300);
     assert.equal(
       fx.pulls.length,
       pullStart + 2,
@@ -353,7 +354,7 @@ test("repeated triggers wait for a slow initial pull instead of restarting it", 
       "the deferred pull applies the newest remote row",
       12_000,
     );
-    await page.waitForTimeout(250);
+    await page.clock.runFor(250);
     assert.equal(fx.pulls.length, pullsAtStart + 1);
     assert.equal(await fx.countCreations(), creationsBefore + 2);
     assert.equal(await fx.localText("n3-remote"), "latest during slow pull");
@@ -405,7 +406,7 @@ async function assertOneTriggeredBatchPull(page, failPush) {
       "remote 250",
       "the final page is present in IndexedDB",
     );
-    await page.waitForTimeout(3_300);
+    await page.clock.runFor(3_300);
     assert.equal(
       fx.pulls.length - before,
       3,

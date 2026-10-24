@@ -77,22 +77,19 @@ test("sync required browser", async ({ page: runnerPage }) => {
           }),
         );
       });
+    await page.clock.install();
     await page.goto(url);
     await mount();
     await page.waitForFunction(() => window.state);
     await page.evaluate(() =>
       window.state.drafts.setDrafts({ lead: "Saved local draft" }),
     );
-    await page.waitForTimeout(250);
-    assert.ok(probes > 0);
-    assert.equal(
-      await page.evaluate(
-        () =>
-          JSON.parse(localStorage.getItem("codex-chat-draft:unassigned:lead"))
-            ?.text,
-      ),
-      "Saved local draft",
+    await page.waitForFunction(
+      () =>
+        JSON.parse(localStorage.getItem("codex-chat-draft:unassigned:lead"))
+          ?.text === "Saved local draft",
     );
+    await expect.poll(() => probes).toBeGreaterThan(0);
     assert.equal(
       await page.evaluate(() => localStorage.getItem("codex-drafts:legacy")),
       null,
@@ -160,7 +157,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
     await page.waitForFunction(() =>
       window.state.drafts.error.includes("could not be saved"),
     );
-    await page.waitForTimeout(3500);
+    await page.clock.runFor(3500);
     assert.match(
       await page.evaluate(() => window.state.drafts.error),
       /could not be saved/,

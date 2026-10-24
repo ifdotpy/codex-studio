@@ -30,9 +30,8 @@ test("Sync Push Lifecycle Browser", async ({
     },
   };
 
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const workspaceId = "d".repeat(32);
   const streams = new Set();
   let opened = 0;
@@ -40,6 +39,7 @@ test("Sync Push Lifecycle Browser", async ({
   let delayIdentity = true;
   const server = await createServer({
     configFile: false,
+    optimizeDeps: { noDiscovery: true },
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
   });
@@ -72,18 +72,11 @@ test("Sync Push Lifecycle Browser", async ({
   });
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  async function waitFor(predicate) {
-    for (let attempt = 0; attempt < 100; attempt++) {
-      if (predicate()) return;
-      await pause(20);
-    }
-    assert.fail("The stream lifecycle condition did not complete.");
-  }
   try {
     const page = testPage;
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    await page.clock.install();
     await page.goto(`${origin}/check`);
     await page.evaluate(async () => {
       window.client = await import("/src/sync/client.ts");
@@ -92,12 +85,12 @@ test("Sync Push Lifecycle Browser", async ({
         () => {},
       );
     });
-    await waitFor(() => identityResponse);
+    await expect.poll(() => Boolean(identityResponse)).toBe(true);
     await page.evaluate(() => window.stopPush());
     delayIdentity = false;
     identityResponse();
     await page.evaluate(() => window.client.syncDatabase());
-    await pause(250);
+    await page.clock.runFor(250);
     assert.equal(
       opened,
       0,
@@ -110,12 +103,12 @@ test("Sync Push Lifecycle Browser", async ({
         () => {},
       );
     });
-    await waitFor(() => streams.size === 1);
+    await expect.poll(() => streams.size).toBe(1);
     for (const response of streams) response.end();
-    await waitFor(() => streams.size === 0);
+    await expect.poll(() => streams.size).toBe(0);
     await page.evaluate(() => window.stopPush());
     const beforeRetry = opened;
-    await pause(1200);
+    await page.clock.runFor(1200);
     assert.equal(
       opened,
       beforeRetry,
@@ -128,8 +121,8 @@ test("Sync Push Lifecycle Browser", async ({
         window.client.watchSyncInvalidations("entities", () => {}),
       ];
     });
-    await waitFor(() => streams.size > 0);
-    await pause(250);
+    await expect.poll(() => streams.size).toBeGreaterThan(0);
+    await page.clock.runFor(250);
     assert.equal(
       streams.size,
       1,
@@ -138,7 +131,7 @@ test("Sync Push Lifecycle Browser", async ({
     await page.evaluate(() => window.stops[0]());
     assert.equal(streams.size, 1, "The remaining subscriber keeps its stream.");
     await page.evaluate(() => window.stops[1]());
-    await waitFor(() => streams.size === 0);
+    await expect.poll(() => streams.size).toBe(0);
     assert.deepEqual(errors, []);
     console.log("sync push lifecycle browser contract passed");
   } finally {

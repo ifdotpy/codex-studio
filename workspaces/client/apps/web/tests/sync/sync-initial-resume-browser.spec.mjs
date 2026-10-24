@@ -1,14 +1,14 @@
-// A partial first page keeps its original baseline across a browser restart.
+// A saved partial first-page marker reconstructs its original baseline.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
 
 test("sync initial resume browser", async ({ page }) => {
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
     configFile: false,
+    optimizeDeps: { noDiscovery: true },
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
   });
