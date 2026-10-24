@@ -212,6 +212,10 @@ pub struct NotificationStreamBuffer {
     analytics_overflow: u64,
     #[serde(default)]
     analytics_skipped: Vec<Shared<StreamKey>>,
+    /// Account and opaque metadata signature owned by account_worker::store.
+    /// Validates this cache against one committed snapshot; never serialized.
+    #[serde(skip)]
+    pub(crate) store_revision: Option<(String, String)>,
     #[serde(skip)]
     indexes: Arc<StreamIndexes>,
     #[serde(skip)]

@@ -323,8 +323,263 @@ async fn journal_uses_committed_streams_after_recovery_advances_publications() {
     .await;
     assert_eq!(
         replay,
-        store::restore_streams(&store, "default")
+        store
+            .transaction_with(|tx| store::load_streams(tx, "default"))
             .await
             .expect("durable streams")
     );
+}
+
+async fn recovery_preserves_interleaved_journal(drain: bool) {
+    use crate::recovery::{CompletionMode, RecoveryAction, RecoveryEffects, RecoveryOutcome};
+    use crate::recovery_history::ConnectionScope;
+    use crate::recovery_policy::RecoverySnapshot;
+    let store = fixture().await;
+    store.transaction(|tx| {
+        let mut a = AgentRepository::get(tx, &AgentId::from("agent"))?.expect("agent A").value();
+        a["startAttempt"]["events"] = json!(["recovery-input-a"]);
+        AgentRepository::put(tx, &AgentRecord::from_value(a)?)?;
+        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id) VALUES('recovery-input-a','agent','user','input A','delivered',1,4,'turn')", [])?;
+        Ok(())
+    }).await.expect("authorized running input for A");
+    journal(
+        &store,
+        NotificationStreamBuffer::default(),
+        vec![entry(
+            1,
+            json!({"method":"item/agentMessage/delta","params":{"threadId":"thread",
+            "turnId":"turn","itemId":"recovered-one","delta":"partial A"}}),
+        )],
+    )
+    .await;
+    let completion = super::super::connection_recovery::lifecycle_completion(
+        &store,
+        "default",
+        "interleaved-recovery".into(),
+        1000.0,
+    )
+    .await
+    .expect("recovery writer");
+    let expected = store
+        .transaction(|tx| {
+            Ok(AgentRepository::get(tx, &AgentId::from("agent"))?
+                .expect("agent A")
+                .value())
+        })
+        .await
+        .expect("snapshot A before history read");
+    let snapshot = RecoverySnapshot::from_record(expected).expect("recovery snapshot");
+    let streams = journal(
+        &store,
+        NotificationStreamBuffer::default(),
+        vec![entry(
+            2,
+            json!({"method":"item/agentMessage/delta","params":{"threadId":"second-thread",
+            "turnId":"turn","itemId":"answer-b","delta":"pending B"}}),
+        )],
+    )
+    .await;
+    let before: Value = serde_json::to_value(&streams).expect("stream JSON");
+    if drain {
+        store.transaction(|tx| {
+            tx.execute("DELETE FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:%'", [])?;
+            Ok(())
+        }).await.expect("receipt deletion after successful delivery");
+    }
+    let mut recovery = crate::recovery_store::RecoveryStore {
+        store: Arc::clone(&store),
+        connection_current: Arc::new(|_| true),
+        completion,
+        at: 1000.0,
+        observation_current: Arc::new(|_| None),
+    };
+    let scope = ConnectionScope {
+        account: "default".into(),
+        connection: "fixture-connection".into(),
+        generation: 7,
+    };
+    let action = RecoveryAction::Terminal {
+        turn: json!({"id":"turn","threadId":"thread","status":"completed","items":[
+            {"id":"recovered-one","type":"agentMessage","text":"recovered one"},
+            {"id":"recovered-two","type":"agentMessage","text":"recovered two"}]}),
+        native_state: "idle".into(),
+        mode: CompletionMode::ObservedTurn,
+    };
+    let result = recovery
+        .apply(&snapshot, &scope, action.clone())
+        .await
+        .expect("A recovery commits after B journal");
+    assert!(matches!(result.outcome, RecoveryOutcome::Applied(_)));
+    let committed = store
+        .transaction_with(|tx| store::load_streams(tx, "default"))
+        .await
+        .expect("committed streams");
+    let after = serde_json::to_value(&committed).expect("stream JSON");
+    assert!(
+        after["publication_sequence"].as_u64().expect("sequence")
+            > before["publication_sequence"].as_u64().expect("sequence")
+    );
+    assert_eq!(
+        committed.pending_bytes(),
+        "pending B".len(),
+        "A recovery preserves B pending text"
+    );
+    store::flush_streams(Arc::clone(&store), "default", Vec::new())
+        .await
+        .expect("flush B");
+    let item = store
+        .transaction(|tx| {
+            studio_runtime_store::NotificationDispatchRepository::transcript_item(
+                tx,
+                "second",
+                "second:answer-b",
+            )
+        })
+        .await
+        .expect("B transcript")
+        .expect("B answer")
+        .0;
+    assert_eq!(item["text"], "pending B");
+    // The exact successful recovery retry must not publish either recovered item twice.
+    let retried = recovery
+        .apply(&snapshot, &scope, action)
+        .await
+        .expect("stale recovery retry");
+    assert!(matches!(retried.outcome, RecoveryOutcome::Superseded));
+}
+
+#[tokio::test]
+async fn recovery_uses_committed_streams_with_pending_publications() {
+    recovery_preserves_interleaved_journal(false).await;
+}
+
+#[tokio::test]
+async fn recovery_uses_committed_streams_after_publications_are_delivered() {
+    recovery_preserves_interleaved_journal(true).await;
+}
+
+/// A fresh cache must require only one scalar lookup, independent of stream count.
+#[tokio::test]
+async fn stream_cache_revision_keeps_allocations_and_bounds_validation_work() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    const MAX_REVISION_LOOKUP_STEPS: u64 = 64;
+    for count in [32, 256] {
+        let (_directory, store) = running_store().await;
+        let base = journal(
+            &store,
+            NotificationStreamBuffer::default(),
+            vec![entry(
+                1,
+                json!({"method":"item/agentMessage/delta","params":{"threadId":"thread",
+                "turnId":"turn","itemId":"answer","delta":"pending"}}),
+            )],
+        )
+        .await;
+        let mut value = serde_json::to_value(base).expect("stream JSON");
+        let prototype = value["entries"][0].clone();
+        value["entries"] = Value::Array(
+            (0..count)
+                .map(|index| {
+                    let mut item = prototype.clone();
+                    item["key"]["item"] = json!(format!("item-{index}"));
+                    item
+                })
+                .collect(),
+        );
+        let mut cached: NotificationStreamBuffer =
+            serde_json::from_value(value).expect("many streams");
+        let ticks = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&ticks);
+        let elapsed = store
+            .transaction_with(move |tx| {
+                store::persist_streams(tx, "default", &mut cached)?;
+                tx.progress_handler(
+                    1,
+                    Some(move || {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                        false
+                    }),
+                )?;
+                let started = std::time::Instant::now();
+                let validated = store::current_streams(tx, "default", Some(&cached))?;
+                let elapsed = started.elapsed();
+                tx.progress_handler(1, None::<fn() -> bool>)?;
+                assert!(
+                    !validated.changed_from(&cached),
+                    "no JSON reconstruction or entry copies"
+                );
+                Ok::<_, WorkerError>(elapsed)
+            })
+            .await
+            .expect("validate cached streams");
+        let steps = ticks.load(Ordering::Relaxed);
+        eprintln!(
+            "stream revision validation: {count} streams, {steps} SQLite VM steps, {elapsed:?}"
+        );
+        assert!(
+            steps <= MAX_REVISION_LOOKUP_STEPS,
+            "revision lookup grew with streams: {steps}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn stream_cache_revision_handles_legacy_snapshots_and_rolled_back_handoffs() {
+    let (_directory, store) = running_store().await;
+    journal(
+        &store,
+        NotificationStreamBuffer::default(),
+        vec![entry(
+            1,
+            json!({"method":"item/agentMessage/delta","params":{"threadId":"thread",
+            "turnId":"turn","itemId":"answer","delta":"pending"}}),
+        )],
+    )
+    .await;
+    // An installed older server stored the phase as the metadata signature.
+    let canonical = store.transaction_with(|tx| {
+        tx.execute("UPDATE runtime_operation_receipts SET signature='metadata' WHERE id='account-worker:streams:default:metadata'", [])?;
+        store::load_streams(tx, "default")
+    }).await.expect("legacy snapshot");
+    let staged = Arc::new(std::sync::Mutex::new(None));
+    let capture = Arc::clone(&staged);
+    let original = canonical.clone();
+    let failed = store
+        .transaction_with(move |tx| {
+            let mut next = store::current_streams(tx, "default", Some(&original))?;
+            store::persist_streams(tx, "default", &mut next)?;
+            *capture.lock().expect("staged handoff") = Some(next);
+            Err::<(), _>(store::invalid("rollback-fixture"))
+        })
+        .await;
+    assert!(failed.is_err());
+    let rolled_back = staged
+        .lock()
+        .expect("staged handoff")
+        .take()
+        .expect("buffer");
+    let restored = store
+        .transaction_with(move |tx| store::current_streams(tx, "default", Some(&rolled_back)))
+        .await
+        .expect("rollback invalidates staged handoff");
+    assert_eq!(restored, canonical);
+    // A commit can change pending text without advancing publication_sequence.
+    let old = canonical.clone();
+    let mut value = serde_json::to_value(&canonical).expect("stream JSON");
+    value["entries"][0]["pending"] = json!("new pending text");
+    let mut replacement: NotificationStreamBuffer =
+        serde_json::from_value(value).expect("new buffer");
+    let current = store
+        .transaction_with(move |tx| {
+            store::persist_streams(tx, "default", &mut replacement)?;
+            let current = store::current_streams(tx, "default", Some(&old))?;
+            assert_eq!(
+                current, replacement,
+                "delayed handoff must reload even at the same publication sequence"
+            );
+            Ok::<_, WorkerError>(current)
+        })
+        .await
+        .expect("pending-only commit invalidates cache");
+    assert_eq!(current.pending_bytes(), "new pending text".len());
 }

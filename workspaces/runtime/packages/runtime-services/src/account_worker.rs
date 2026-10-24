@@ -1607,8 +1607,8 @@ impl Worker {
                 streams,
                 reply,
             } => {
-                if let Some(streams) = streams {
-                    self.streams = streams;
+                if streams.is_some() {
+                    self.refresh_streams().await?;
                     self.schedule_publication_drain()?;
                 }
                 let _sent = reply.send(result);
@@ -1632,13 +1632,28 @@ impl Worker {
                     self.bridge.faults.startup_recovery.notify_one();
                 }
             }
-            AccountCommand::RestartStreams(streams) => {
-                self.streams = *streams;
+            AccountCommand::RestartStreams(_) => {
+                self.refresh_streams().await?;
                 self.schedule_publication_drain()?;
             }
         }
         Ok(())
     }
+    /// A recovery handoff signals a commit; its snapshot may already be stale.
+    async fn refresh_streams(&mut self) -> Result<(), WorkerError> {
+        let account = self.account.clone();
+        let cached = self.streams.clone();
+        self.streams = self
+            .db("refresh_streams", move |store| async move {
+                store
+                    .transaction_with(move |tx| store::current_streams(tx, &account, Some(&cached)))
+                    .await
+            })
+            .await?;
+        self.arm_flush();
+        Ok(())
+    }
+
     async fn db<T, F, Fut>(&mut self, name: &'static str, operation: F) -> Result<T, WorkerError>
     where
         T: Send + 'static,
