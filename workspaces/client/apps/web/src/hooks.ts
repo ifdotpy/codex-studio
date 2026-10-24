@@ -1,3 +1,4 @@
+import { SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS } from "./generated/sharedValues";
 import {
   useServerApi,
   useServerSync,
@@ -1000,6 +1001,7 @@ export function useMessages(
       const result = await syncGet("/api/transcript/page", {
         query: {
           id,
+          limit: SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS,
           ...(query.before ? { before: query.before } : {}),
           ...(query.after ? { after: query.after } : {}),
           ...(query.around ? { around: query.around } : {}),

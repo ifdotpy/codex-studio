@@ -76,6 +76,8 @@ pub const SYNC_ENTITY_PAGE_LIMIT: i64 = 500;
 pub const SYNC_ENTITY_STREAM_MAX_DOCUMENTS: i64 = 512;
 /// Maximum complete resources SSE event, including event/id/data lines, in UTF-8 bytes.
 pub const SYNC_STREAM_EVENT_MAX_BYTES: usize = 262144;
+/// Default newest transcript records in a subscription baseline, in items.
+pub const SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS: usize = 40;
 /// Maximum changed and removed transcript records in a complete stream interval, in items.
 pub const SYNC_TRANSCRIPT_STREAM_MAX_ITEMS: usize = 512;
 /// Maximum voice records in a complete transient stream interval, in records.

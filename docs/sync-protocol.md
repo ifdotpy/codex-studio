@@ -68,6 +68,19 @@ diagnostic key. A parity witness requires exactly one handler and data contract
 for every generated resource kind. Business services publish domain changes
 without tracking sessions or subscribers.
 
+Transcript history uses a typed `transcript` reference with an optional `tail`
+window. Its [default item count](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs)
+is generated for the renderer and checked against OpenAPI. The subscription
+baseline contains the newest window and its older-history cursor; the server
+shrinks that window further to fit the complete SSE byte limit. Only a newest
+item that cannot fit by itself requires oversized-item recovery.
+
+Scrolling to older history uses the [explicit user action exception](#rule-no-polling-only-sse-events):
+one bounded `/api/transcript/page` read starts before the retained boundary.
+The renderer merges pages by item identity into the current conversation range,
+retaining the scroll anchor and both paging cursors. Live deltas preserve that
+boundary even when the shared transcript projection covers a larger range.
+
 ## Protocol 4: resource changes
 
 User actions, media transport, and recovery of an already accepted write retain

@@ -42517,7 +42517,7 @@
                 "type": "null"
               }
             ],
-            "description": "Bounded complete transcript baseline sent immediately after a subscription acknowledgement. Omission requires scoped recovery."
+            "description": "Newest transcript history window sent immediately after a subscription acknowledgement, with older-history cursors. The server shrinks it to fit the stream event byte limit; a single oversized newest item requires scoped recovery."
           },
           "voiceRecords": {
             "anyOf": [
@@ -55309,6 +55309,13 @@
             "const": "transcript",
             "title": "Kind",
             "type": "string"
+          },
+          "tail": {
+            "default": 40,
+            "description": "Newest records requested in the initial stream window, in items. Default and maximum are checked against runtime-schema shared_values; the server may shrink by encoded bytes.",
+            "maximum": 512,
+            "minimum": 1,
+            "type": "integer"
           }
         },
         "required": [

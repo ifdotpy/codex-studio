@@ -12,6 +12,26 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
+/// Retain a newest-items baseline while preserving the existing history route's
+/// exclusive before cursor. Rust owns the default item count; OpenAPI checks it.
+pub(crate) fn window_snapshot(
+    mut page: crate::generated::TranscriptPageResponse,
+    tail: Option<i64>,
+) -> crate::generated::TranscriptPageResponse {
+    use studio_runtime_schema::shared_values::{
+        SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS, SYNC_TRANSCRIPT_STREAM_MAX_ITEMS,
+    };
+    let tail = tail
+        .unwrap_or(SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS as i64)
+        .clamp(1, SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64) as usize;
+    if page.items.len() > tail {
+        page.items.drain(..page.items.len() - tail);
+        page.truncated = true;
+        page.next_cursor = Some(page.items.first().map(|item| item.id.clone()));
+    }
+    page
+}
+
 const CANVAS_DEPENDENCIES: &[Dependency] = &[Dependency::new("transcript/workspace-state")];
 
 pub(crate) fn routes() -> RouteGroup {

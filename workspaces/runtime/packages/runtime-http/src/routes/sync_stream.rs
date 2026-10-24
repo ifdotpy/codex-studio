@@ -842,23 +842,9 @@ async fn read_transcript_changes(
                         && document.seq == through
                 })
                 .and_then(|document| {
-                    let remaining = inline_bytes?;
-                    inline_bytes = remaining.checked_sub(document.payload.len());
-                    if inline_bytes.is_none() {
-                        for update in updates.values_mut() {
-                            match update {
-                                TranscriptStreamUpdate::Changed { batch, .. } => *batch = None,
-                                TranscriptStreamUpdate::Snapshot { snapshot, .. } => {
-                                    *snapshot = None
-                                }
-                                TranscriptStreamUpdate::Unchanged => {}
-                            }
-                        }
-                        return None;
-                    }
                     serde_json::from_str::<TranscriptPageResponse>(&document.payload)
                         .ok()
-                        .filter(|page| page.items.len() <= SYNC_TRANSCRIPT_STREAM_MAX_ITEMS)
+                        .map(|page| super::transcript::window_snapshot(page, resource.tail))
                 })
                 .map(Box::new);
             sequences.insert(agent.clone(), through);
@@ -1588,20 +1574,36 @@ fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event 
     // Axum adds a space after each colon and a final blank line. The byte-boundary
     // witness compares this accounting with the actual HTTP body at T-1/T/T+1.
     let envelope_bytes = b"event: resources\nid: \ndata: \n\n".len() + id.len();
-    let mut writer = Event::default()
-        .event("resources")
-        .id(&id)
-        .into_data_writer();
-    let mut bounded = BoundedEventWriter {
-        writer: &mut writer,
-        remaining: SYNC_STREAM_EVENT_MAX_BYTES - envelope_bytes,
-        exceeded: false,
-    };
-    let result = serde_json::to_writer(&mut bounded, &payload);
-    if !bounded.exceeded {
-        // The generated DTO has only JSON-compatible fields and string map keys.
-        result.expect("resource stream DTO serializes");
-        return writer.into_event();
+    loop {
+        let mut writer = Event::default()
+            .event("resources")
+            .id(&id)
+            .into_data_writer();
+        let mut bounded = BoundedEventWriter {
+            writer: &mut writer,
+            remaining: SYNC_STREAM_EVENT_MAX_BYTES - envelope_bytes,
+            exceeded: false,
+        };
+        let result = serde_json::to_writer(&mut bounded, &payload);
+        if !bounded.exceeded {
+            // The generated DTO has only JSON-compatible fields and string map keys.
+            result.expect("resource stream DTO serializes");
+            return writer.into_event();
+        }
+        // Measure the complete UTF-8 envelope, including metadata and cursors.
+        // Keep the newest item; a larger individual item retains scoped recovery.
+        let largest = payload
+            .resource_versions
+            .iter_mut()
+            .filter_map(|entry| entry.transcript_snapshot.as_mut().and_then(Option::as_mut))
+            .filter(|page| page.items.len() > 1)
+            .max_by_key(|page| page.items.len());
+        let Some(page) = largest else {
+            break;
+        };
+        let keep = page.items.len().div_ceil(2);
+        let replacement = super::transcript::window_snapshot(page.clone(), Some(keep as i64));
+        *page = replacement;
     }
     studio_runtime_services::diagnostics::record_sync_recovery(
         studio_runtime_services::diagnostics::SyncRecoveryKind::Oversize,
@@ -2896,7 +2898,10 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('small',?1)", [json!({"id":"small","rootId":"small","epoch":0,"status":"running","threadId":"small","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
-            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('small:answer','small',?1,1)", [json!({"id":"small:answer","role":"assistant","text":"Current answer"}).to_string()])?;
+            for index in 0..120 {
+                let id = format!("small:{index:03}");
+                tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'small',?2,?3)", rusqlite::params![id, json!({"id":id,"role":"assistant","text":"Current answer".repeat(200),"created":index}).to_string(), index])?;
+            }
             Ok(())
         }).await.expect("transcript");
         let http = HttpState::new(
@@ -2914,9 +2919,18 @@ mod tests {
             http.resource_notifications.clone(),
             vec![],
         );
+        let app = crate::router(http.clone()).expect("router");
+        let full = studio_runtime_services::transcript::pull_scope(
+            store.clone(),
+            "transcript:small",
+            "small",
+            0,
+        )
+        .await
+        .expect("full baseline");
         state.http_state = Some(http);
         state.store = Some(store);
-        let resource = json!({"kind":"transcript","agentId":"small"});
+        let resource = json!({"kind":"transcript","agentId":"small","tail":40});
         for generation in [1, 2] {
             subscription_frame(
                 &mut state,
@@ -2936,10 +2950,122 @@ mod tests {
             assert_eq!(frame["reason"], "initial");
             let snapshot = &frame["resourceVersions"][0]["transcriptSnapshot"];
             assert_eq!(
-                snapshot["items"][0]["text"], "Current answer",
-                "bounded initial data must not require a pull"
+                snapshot["items"].as_array().map(Vec::len),
+                Some(40),
+                "120-item history must stream its newest window without pull recovery"
             );
+            assert_eq!(snapshot["items"][0]["id"], "small:080");
+            assert_eq!(snapshot["items"][39]["id"], "small:119");
+            assert_eq!(snapshot["nextCursor"], "small:080");
+            assert_eq!(snapshot["truncated"], true);
+            assert!(frame.to_string().len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+            if generation == 1 {
+                fn compressed_after_ack(raw: &[u8]) -> usize {
+                    let mut encoder = brotli::CompressorWriter::new(
+                        Vec::new(),
+                        STREAM_BROTLI_BUFFER_BYTES,
+                        STREAM_BROTLI_QUALITY,
+                        STREAM_BROTLI_LGWIN,
+                    );
+                    encoder
+                        .write_all(b"event: subscriptions\ndata: {\"gen\":1}\n\n")
+                        .expect("ack");
+                    encoder.flush().expect("flush ack");
+                    encoder.get_mut().clear();
+                    encoder.write_all(raw).expect("snapshot");
+                    encoder.flush().expect("snapshot flush");
+                    encoder.get_ref().len()
+                }
+                let before = full["documents"][0]["payload"]
+                    .as_str()
+                    .expect("full payload");
+                let after = serde_json::to_vec(snapshot).expect("window JSON");
+                println!(
+                    "transcript window fixture bytes: full120_json={}, window40_json={}, full120_brotli_shared={}, window40_brotli_shared={}",
+                    before.len(),
+                    after.len(),
+                    compressed_after_ack(before.as_bytes()),
+                    compressed_after_ack(&after)
+                );
+                use axum::{body::Body, extract::ConnectInfo, http::Request};
+                use tower::ServiceExt;
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri("/api/transcript/page?id=small&before=small%3A080&limit=40")
+                            .header("host", "127.0.0.1:4321")
+                            .header("x-canvas-token", "token")
+                            .extension(ConnectInfo(std::net::SocketAddr::from((
+                                [127, 0, 0, 1],
+                                12345,
+                            ))))
+                            .body(Body::empty())
+                            .expect("page request"),
+                    )
+                    .await
+                    .expect("older page");
+                assert_eq!(response.status(), StatusCode::OK);
+                let page: Value = serde_json::from_slice(
+                    &axum::body::to_bytes(response.into_body(), SYNC_STREAM_EVENT_MAX_BYTES)
+                        .await
+                        .expect("bounded page"),
+                )
+                .expect("page JSON");
+                let mut ids = page["items"]
+                    .as_array()
+                    .expect("older items")
+                    .iter()
+                    .chain(snapshot["items"].as_array().expect("window"))
+                    .map(|item| item["id"].as_str().expect("id"))
+                    .collect::<Vec<_>>();
+                assert_eq!(ids.len(), 80);
+                ids.dedup();
+                assert_eq!(
+                    ids,
+                    (40..120)
+                        .map(|index| format!("small:{index:03}"))
+                        .collect::<Vec<_>>()
+                );
+            }
         }
+    }
+
+    #[tokio::test]
+    async fn state_stream_subscription_transcript_window_shrinks_by_complete_utf8_event_bytes() {
+        let page: TranscriptPageResponse = serde_json::from_value(json!({
+            "items": (0..40).map(|index| json!({"id":format!("item-{index:03}"),"role":"assistant","text":"🧑‍💻".repeat(2000)})).collect::<Vec<_>>(),
+            "truncated":false
+        })).expect("page");
+        let mut event: ResourceChangeEvent = serde_json::from_value(resource_event(
+            "workspace",
+            "epoch",
+            1,
+            "initial",
+            &[json!({"kind":"transcript","agentId":"open","tail":40})],
+            0,
+            false,
+        ))
+        .expect("event");
+        event.resource_versions[0].transcript_snapshot = Some(Some(page));
+        let bytes = frame_bytes(resource_sse_event(1, event)).await;
+        assert!(bytes.len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+        let frame = std::str::from_utf8(&bytes).expect("UTF8");
+        let value: Value = serde_json::from_str(
+            frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data"),
+        )
+        .expect("JSON");
+        let snapshot = &value["resourceVersions"][0]["transcriptSnapshot"];
+        let items = snapshot["items"]
+            .as_array()
+            .expect("inline window, no pull hint");
+        assert!(!items.is_empty() && items.len() < 40);
+        assert_eq!(items.last().expect("latest")["id"], "item-039");
+        assert_eq!(snapshot["nextCursor"], items[0]["id"]);
+        assert_eq!(snapshot["truncated"], true);
     }
 
     #[tokio::test]
@@ -2960,7 +3086,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('large',?1)", [json!({"id":"large","rootId":"large","epoch":0,"status":"running","threadId":"large","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
-            for (id, text) in [("large:large", "x".repeat(SYNC_STREAM_EVENT_MAX_BYTES + 1)), ("large:small", "before".to_owned())] {
+            for (id, text) in [("large:zlarge", "x".repeat(SYNC_STREAM_EVENT_MAX_BYTES + 1)), ("large:small", "before".to_owned())] {
                 tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'large',?2,1)", rusqlite::params![id, json!({"id":id,"role":"assistant","text":text}).to_string()])?;
             }
             Ok(())
@@ -3013,8 +3139,7 @@ mod tests {
         // Removing and adding in one POST requires a new baseline even when the
         // final resource set retains the selector and its previous stream cursor.
         let resource = json!({"kind":"transcript","agentId":"large"});
-        let update =
-            json!({"sessionId":session["sessionId"],"gen":1,"add":[resource],"remove":[resource]});
+        let update = json!({"sessionId":session["sessionId"],"gen":1,"add":[{"resource":resource}],"remove":[resource]});
         let response = app
             .oneshot(request(
                 "POST",

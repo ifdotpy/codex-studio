@@ -1500,7 +1500,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }, SUBSCRIPTION_ACK_TIMEOUT_MS);
     void post(
       "/api/sync/subscriptions",
-      { sessionId, gen, add, remove, tokenRates },
+      {
+        sessionId,
+        gen,
+        add: add.map((resource) => ({ resource })),
+        remove,
+        tokenRates,
+      },
       { signal: controller.signal, timeoutMs: SUBSCRIPTION_ACK_TIMEOUT_MS },
     )
       .catch(() => {

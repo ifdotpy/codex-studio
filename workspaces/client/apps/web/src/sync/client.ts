@@ -1204,7 +1204,7 @@ export function createSyncClient(options: SyncClientOptions) {
       if (!document._deleted && !isDelta)
         removed.push(...oldOrder.filter((key) => !order.includes(key)));
       const previousMetadata = isDelta ? base?.metadata || {} : {};
-      const metadata =
+      const metadata: TranscriptProjectionMeta["metadata"] =
         incoming === null
           ? {}
           : { ...previousMetadata, ...transcriptMetadata(incoming) };
