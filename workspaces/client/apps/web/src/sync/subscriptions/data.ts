@@ -32,10 +32,11 @@ export function createDataObserver(
     }
     const transient = (version?: ResourceVersion) => {
       const data =
-        version?.progress?.value ??
-        version?.discoverySnapshot ??
-        version?.voiceRecords ??
-        version?.draftChanges;
+        version?.progress !== undefined
+          ? version.progress.value
+          : (version?.discoverySnapshot ??
+            version?.voiceRecords ??
+            version?.draftChanges);
       if (data !== undefined) accept(data as ResourceData<R>);
     };
     const stop = events.watchResourceChanges(ref, transient);

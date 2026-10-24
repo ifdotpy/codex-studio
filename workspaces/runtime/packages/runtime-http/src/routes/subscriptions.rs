@@ -151,7 +151,27 @@ pub(super) async fn initial_snapshot(
     since: Option<SubscriptionCursor>,
 ) -> Result<ResourceRevisionEntry, ApiError> {
     let handler = handler(&resource)?;
-    handler.initial_snapshot(state, resource, since).await
+    let reference = resource.clone();
+    let entry = handler.initial_snapshot(state, resource, since).await?;
+    if entry
+        .resource
+        .as_ref()
+        .and_then(Option::as_ref)
+        .is_some_and(|changed| !handler.matches_change(&reference, changed))
+    {
+        return Err(ApiError::internal());
+    }
+    if serde_json::to_vec(&entry)
+        .map_err(|_| ApiError::internal())?
+        .len()
+        > handler.max_bytes()
+    {
+        return serde_json::from_value(
+            serde_json::json!({"revision":entry.revision,"resource":reference}),
+        )
+        .map_err(|_| ApiError::internal());
+    }
+    Ok(entry)
 }
 
 pub(super) async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> {

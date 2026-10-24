@@ -651,11 +651,15 @@ fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>,
         return Err(invalid());
     }
     let mut seen = BTreeSet::new();
-    Ok(values
-        .iter()
-        .filter(|value| seen.insert(value.to_string()))
-        .cloned()
-        .collect())
+    let mut resources = Vec::new();
+    for value in values {
+        let resource: ResourceRef = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
+        let key = super::subscriptions::handler(&resource)?.debug_key(&resource);
+        if seen.insert(key) {
+            resources.push(value.clone());
+        }
+    }
+    Ok(resources)
 }
 
 async fn read_entity_sequence(

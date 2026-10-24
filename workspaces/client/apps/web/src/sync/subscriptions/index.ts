@@ -1,6 +1,5 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useServerResources } from "../../servers/ServerServicesContext";
-import { defaultSubscriptions } from "./events";
 import {
   subscriptionKey,
   type ResourceData,
@@ -25,9 +24,7 @@ export function useSubscription<R extends ResourceRef>(
   ref: R | null,
   options: SubscriptionOptions = {},
 ): SubscriptionState<ResourceData<R>> {
-  const resources = useServerResources();
-  const subscriptions =
-    "subscribe" in resources ? resources : defaultSubscriptions;
+  const subscriptions = useServerResources();
   const key = ref === null ? null : subscriptionKey(ref);
   // Caller object identity must never change its reference-counted interest.
   const stableRef = useMemo(() => ref, [key]);

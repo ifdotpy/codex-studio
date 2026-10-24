@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createResourceEvents } from "./resourceEvents";
+import { createSubscriptionStore } from "./subscriptions/store";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
@@ -606,4 +607,48 @@ it("sends applied ref cursors on re-add and reconnect with zero pulls", async ()
   expect(
     f.get.mock.calls.some(([path]) => String(path).includes("/api/sync/pull")),
   ).toBe(false);
+});
+
+it("T28 recently viewed chat switching sends no subscription changes within grace", async () => {
+  const measurements: {
+    mode: string;
+    switches: number;
+    subscriptionPosts: number;
+  }[] = [];
+  for (const mode of ["immediate", "grace"] as const) {
+    const f = await fixture();
+    const store = createSubscriptionStore(f.transport);
+    disposals.push(store.dispose);
+    const events = mode === "grace" ? store : f.transport;
+    const refs = ["chat-a", "chat-b"].map(
+      (agentId) => ({ kind: "transcript", agentId }) as const,
+    );
+    const settle = async () => {
+      await vi.advanceTimersByTimeAsync(50);
+      const request = f.post.mock.calls.at(-1)?.[1];
+      if (request) f.source.emit("subscriptions", { gen: request.gen });
+      await vi.advanceTimersByTimeAsync(50);
+    };
+    let stop = events.watchResourceChanges(refs[0], () => {});
+    await settle();
+    stop();
+    stop = events.watchResourceChanges(refs[1], () => {});
+    await settle();
+    const baseline = f.post.mock.calls.length;
+    for (let step = 0; step < 10; step++) {
+      stop();
+      stop = events.watchResourceChanges(refs[step % refs.length], () => {});
+      await settle();
+    }
+    const posts = f.post.mock.calls.length - baseline;
+    measurements.push({ mode, switches: 10, subscriptionPosts: posts });
+    expect(posts).toBe(mode === "grace" ? 0 : 10);
+    stop();
+    store.dispose();
+    f.transport.dispose();
+  }
+  console.info(
+    "T28 subscription POST measurements",
+    JSON.stringify(measurements),
+  );
 });

@@ -19058,7 +19058,7 @@ export interface components {
       /** Revision */
       revision: number;
       transcriptChanges?: components["schemas"]["TranscriptChangeBatch"] | null;
-      /** @description Bounded complete transcript baseline sent immediately after a subscription acknowledgement. Omission requires scoped recovery. */
+      /** @description Newest transcript history window sent immediately after a subscription acknowledgement, with older-history cursors. The server shrinks it to fit the stream event byte limit; a single oversized newest item requires scoped recovery. */
       transcriptSnapshot?:
         | components["schemas"]["TranscriptPageResponse"]
         | null;
@@ -24168,6 +24168,11 @@ export interface components {
        * @enum {string}
        */
       kind: "transcript";
+      /**
+       * @description Newest records requested in the initial stream window, in items. Default and maximum are checked against runtime-schema shared_values; the server may shrink by encoded bytes.
+       * @default 40
+       */
+      tail?: number;
     };
     /** TranscriptSearchResponse */
     TranscriptSearchResponse: {

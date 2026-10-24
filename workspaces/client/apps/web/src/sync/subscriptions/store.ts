@@ -5,6 +5,7 @@ import type {
 } from "../resourceEvents";
 import {
   DEFAULT_SUBSCRIPTION_GRACE_MS,
+  MAX_INACTIVE_SUBSCRIPTION_CACHE_ENTRIES,
   subscriptionKey,
   type ResourceData,
   type ResourceRef,
@@ -101,6 +102,17 @@ export function createSubscriptionStore(transport: SubscriptionTransport) {
     entry.version = undefined;
     entry.confirmed = false;
     status(entry);
+    const inactive = [...entries.entries()].filter(
+      ([, candidate]) =>
+        !candidate.stop &&
+        !candidate.consumers.size &&
+        !candidate.observers.size,
+    );
+    for (const [key] of inactive.slice(
+      0,
+      Math.max(0, inactive.length - MAX_INACTIVE_SUBSCRIPTION_CACHE_ENTRIES),
+    ))
+      entries.delete(key);
     if (![...entries.values()].some((candidate) => candidate.stop)) {
       stopConnection?.();
       stopConnection = undefined;
@@ -155,6 +167,7 @@ export function createSubscriptionStore(transport: SubscriptionTransport) {
     return () => {
       if (stopped) return;
       stopped = true;
+      if (disposed) return;
       entry.consumers.delete(listener);
       status(entry);
       if (!entry.consumers.size) {
