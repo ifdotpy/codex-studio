@@ -24,6 +24,7 @@ import {
   Pin,
   PinOff,
   Trash2,
+  WifiOff,
 } from "lucide-react";
 import type { Agent } from "../types";
 import {
@@ -31,11 +32,7 @@ import {
   type ChatIndicator,
 } from "./chat-status/chatStatusModel";
 import ChatStatus from "./agents/ChatStatus";
-import { AgentProgress } from "./agents/AgentProgress";
-import {
-  ChatServerLine,
-  offlineServerDescription,
-} from "../servers/ProjectChatRows";
+import { offlineServerDescription } from "../servers/ProjectChatRows";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 
 type Actions = {
@@ -63,11 +60,12 @@ type Props = {
   row: Agent;
   selected: boolean;
   serverAlias: string;
+  showServer: boolean;
   indicator?: ChatIndicator;
   serverOffline?: boolean;
   renaming: boolean;
-  name: string;
   organizing: boolean;
+  name: string;
   compact: boolean;
   markingRead: boolean;
   bindings: Bindings;
@@ -132,11 +130,12 @@ export default function SidebarRow(props: Props) {
       row={props.row}
       selected={props.selected}
       serverAlias={props.serverAlias}
+      showServer={props.showServer}
       indicator={indicator}
       serverOffline={props.serverOffline}
       renaming={props.renaming}
-      name={props.name}
       organizing={props.organizing}
+      name={props.name}
       compact={props.compact}
       markingRead={props.markingRead}
       disabled={props.disabled}
@@ -151,11 +150,12 @@ const SidebarRowView = memo(function SidebarRowView({
   row,
   selected,
   serverAlias,
+  showServer,
   indicator,
   serverOffline = false,
   renaming,
-  name,
   organizing,
+  name,
   compact,
   markingRead,
   disabled = false,
@@ -176,6 +176,7 @@ const SidebarRowView = memo(function SidebarRowView({
       aria-description={[
         "Drag onto a team to join it, or onto the project name to leave. Drop a team chat in the center of another lead chat to make it a subagent. Drag to an edge to reorder. Alt + Up or Down also works.",
         offlineDescription,
+        indicator?.label,
       ]
         .filter(Boolean)
         .join(" ")}
@@ -188,41 +189,49 @@ const SidebarRowView = memo(function SidebarRowView({
       aria-current={selected}
     >
       <span className="row-copy">
-        <strong>
-          {a?.pinned && <Pin size={11} className="chat-pin" />}
-          {row.name ?? ""}
-        </strong>
-        <AgentProgress agent={row} />
-        <ChatServerLine
-          provider={a.provider || undefined}
-          alias={serverAlias}
-          offline={serverOffline}
-        />
+        <span className="fleet-chat-heading">
+          <ChatStatus
+            status={indicator}
+            provider={a.provider ?? undefined}
+            model={a.model ?? undefined}
+          />
+          <strong>
+            {a?.pinned && <Pin size={11} className="chat-pin" />}
+            {row.name ?? ""}
+          </strong>
+        </span>
+        {(showServer || serverOffline || row.stall) && (
+          <span className="fleet-chat-meta">
+            {(showServer || serverOffline) && (
+              <span
+                className="fleet-server-badge"
+                data-offline={serverOffline || undefined}
+                title={offlineDescription || serverAlias}
+                aria-label={
+                  serverOffline ? offlineDescription : `Server ${serverAlias}`
+                }
+              >
+                {serverOffline && <WifiOff size="1em" aria-hidden="true" />}
+                {showServer ? serverAlias : "Offline"}
+              </span>
+            )}
+            {row.stall && (
+              <span className="agent-stall" role="status">
+                Waiting for lead
+              </span>
+            )}
+          </span>
+        )}
       </span>
-      <ChatStatus
-        status={indicator}
-        provider={a.provider ?? undefined}
-        model={a.model ?? undefined}
-      />
     </UnstyledButton>
   );
   return (
     <div
-      className={`sidebar-row lead-row ${selected ? "selected" : ""}`}
+      className={`sidebar-row fleet-strip lead-row ${selected ? "selected" : ""}`}
       data-sidebar-item={row.id}
+      data-studio-state={indicator?.kind || "none"}
     >
       {chatRow}
-      {!renaming && (
-        <ActionIcon
-          className="row-pin-action"
-          aria-label={`${row.pinned ? "Unpin" : "Pin"} ${row.name}`}
-          title={row.pinned ? "Unpin chat" : "Pin chat"}
-          disabled={organizing || disabled}
-          onClick={() => actions.pin()}
-        >
-          {row.pinned ? <PinOff size={14} /> : <Pin size={14} />}
-        </ActionIcon>
-      )}
       {renaming ? (
         <form className="inline-rename" onSubmit={(e) => actions.rename(e)}>
           <TextInput
@@ -250,7 +259,7 @@ const SidebarRowView = memo(function SidebarRowView({
               <MoreHorizontal size={16} />
             </ActionIcon>
           </Menu.Target>
-          <Menu.Dropdown>
+          <Menu.Dropdown className="fleet-menu">
             <Menu.Item
               disabled={disabled}
               leftSection={<Pencil size={14} />}
@@ -286,7 +295,7 @@ const SidebarRowView = memo(function SidebarRowView({
             {a && (
               <>
                 <Menu.Item
-                  disabled={disabled}
+                  disabled={disabled || organizing}
                   leftSection={
                     a.pinned ? <PinOff size={14} /> : <Pin size={14} />
                   }

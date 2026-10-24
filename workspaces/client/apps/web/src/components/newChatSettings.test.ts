@@ -145,3 +145,27 @@ test("switching accounts resolves a pinned worker's inherited model first", () =
     account_key: "worker-codex",
   });
 });
+
+test("a Claude lead request leaves worker defaults to the server unless explicitly chosen", () => {
+  const request = settingsForNewChatRequest(
+    {},
+    "claude",
+    true,
+    "claude-opus-5-5",
+  );
+  expect(request).toEqual({ account_key: "claude", model: "claude-opus-5-5" });
+  expect(request).not.toHaveProperty("worker_defaults");
+  const worker_defaults = {
+    model: "gpt-6-luna",
+    effort: "high",
+    fast_mode: false,
+  };
+  expect(
+    settingsForNewChatRequest(
+      { worker_defaults },
+      "claude",
+      true,
+      "claude-opus-5-5",
+    ).worker_defaults,
+  ).toEqual(worker_defaults);
+});

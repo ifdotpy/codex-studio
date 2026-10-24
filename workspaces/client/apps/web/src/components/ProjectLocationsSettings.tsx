@@ -19,6 +19,7 @@ import {
   useMenuEscapeSuppression,
 } from "./closeMenuFromTriggerOnEscape";
 import "./project-locations.css";
+import { SettingsRow } from "./ui/primitives";
 
 export default function ProjectLocationsSettings({
   project,
@@ -100,21 +101,26 @@ export default function ProjectLocationsSettings({
   return (
     <div className="project-locations" aria-label="Project folders">
       {(project.locations || []).map((location) => (
-        <div className="project-location-row" key={location.serverId}>
-          <div>
-            <strong>
-              {servers?.find(
-                (row) => (row.serverId || row.id) === location.serverId,
-              )?.label || location.serverId}
-            </strong>
-            <p>{location.path}</p>
-            {location.requestedPath && (
-              <small>Selected folder: {location.requestedPath}</small>
-            )}
-            {heads[location.serverId] && (
-              <small>HEAD {heads[location.serverId]}</small>
-            )}
-          </div>
+        <SettingsRow
+          className="project-location-row"
+          key={location.serverId}
+          label={
+            <div>
+              <strong>
+                {servers?.find(
+                  (row) => (row.serverId || row.id) === location.serverId,
+                )?.label || location.serverId}
+              </strong>
+              <p>{location.path}</p>
+              {location.requestedPath && (
+                <small>Selected folder: {location.requestedPath}</small>
+              )}
+              {heads[location.serverId] && (
+                <small>HEAD {heads[location.serverId]}</small>
+              )}
+            </div>
+          }
+        >
           <Menu
             opened={openLocationMenu === location.serverId}
             onChange={(nextOpened) => {
@@ -184,7 +190,7 @@ export default function ProjectLocationsSettings({
               </Menu.Item>
             </Menu.Dropdown>
           </Menu>
-        </div>
+        </SettingsRow>
       ))}
       {error && <p role="alert">{error}</p>}
       {adding ? (

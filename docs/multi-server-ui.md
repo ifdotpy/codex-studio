@@ -88,6 +88,10 @@ They have no local server or automatic server setting.
 7. Paste the whole invitation.
 8. Select **Pair server**.
 
+In **Servers**, open a server's **Edit** disclosure to change **Server name** or
+**Server alias**, then select **Save**. Only changed fields are sent. If one field
+fails, the confirmed field stays saved and is not sent again on retry.
+
 A phone at its configured Tailscale Serve address keeps the existing session and local token flow.
 Only the explicit `studio-ui-only=1` flag selects the UI-only manager.
 The invitation grants full access to that server.

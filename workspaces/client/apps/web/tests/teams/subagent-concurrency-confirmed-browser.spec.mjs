@@ -104,7 +104,7 @@ test("subagent concurrency uses the confirmed response", async ({ page }) => {
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
     const control = page.locator(".agent-mode-control");
-    const input = page.getByRole("spinbutton", {
+    const input = page.getByRole("textbox", {
       name: "Subagent parallelism",
     });
     await expect(control).toHaveAttribute("data-concurrency", "32");

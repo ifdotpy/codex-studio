@@ -461,6 +461,7 @@ function ScopedMessageQueue(p: Props) {
     <section
       className="message-queue"
       data-testid="message-queue"
+      data-studio-state={error || p.error || storageError ? "error" : "paused"}
       aria-label="Message queue"
       aria-busy={disabled}
     >

@@ -127,10 +127,10 @@ test("Team panel ui", async ({
     );
     await page.goto(origin);
     await page.locator("#message").waitFor();
-    for (const width of [1440, 320]) {
+    for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 960 });
       await page.emulateMedia({
-        colorScheme: width === 320 ? "dark" : "light",
+        colorScheme: width <= 390 ? "dark" : "light",
       });
       await page.waitForFunction(
         (expectedWidth) =>
@@ -179,10 +179,70 @@ test("Team panel ui", async ({
         );
       });
       assert.equal(
-        await panel.locator("#worker-search, .team-filters").count(),
+        await panel.locator("#worker-search, .team-summary-filters").count(),
         2,
       );
       assert.equal(await panel.locator(".team-overview").count(), 1);
+      await expect(panel.locator("[data-lead]")).toHaveCount(0);
+      await expect(panel.locator('[data-team-count="all"] strong')).toHaveText(
+        "4",
+      );
+      const geometry = await panel.evaluate((team) => {
+        const style = getComputedStyle(team);
+        const probe = document.createElement("div");
+        probe.style.width = "var(--mantine-spacing-md)";
+        team.append(probe);
+        const gutter = probe.getBoundingClientRect().width;
+        probe.style.width = "var(--mantine-spacing-sm)";
+        probe.style.height = "var(--mantine-spacing-xs)";
+        const { width: inlinePadding, height: blockPadding } =
+          probe.getBoundingClientRect();
+        probe.remove();
+        return {
+          gutter,
+          inlinePadding,
+          blockPadding,
+          strips: [...team.querySelectorAll(".worker-entry")].map((strip) => {
+            const computed = getComputedStyle(strip);
+            return {
+              inline: parseFloat(computed.paddingInlineStart),
+              top: parseFloat(computed.paddingBlockStart),
+              bottom: parseFloat(computed.paddingBlockEnd),
+            };
+          }),
+          padding: parseFloat(style.paddingInlineStart),
+          edge:
+            team.getBoundingClientRect().left +
+            parseFloat(style.borderInlineStartWidth) +
+            gutter,
+          edges: [
+            ...team.querySelectorAll(
+              ".team-heading h2, .team-summary-filters, :scope > .mantine-TextInput-root, .team-status-group h3, .worker-entry:not([data-has-parent])",
+            ),
+          ].map((node) => node.getBoundingClientRect().left),
+        };
+      });
+      assert.equal(
+        geometry.padding,
+        geometry.gutter,
+        "Team uses the shared md gutter",
+      );
+      for (const strip of geometry.strips) {
+        assert.ok(
+          strip.inline >= geometry.inlinePadding,
+          "Strip content has at least sm inline padding",
+        );
+        assert.ok(
+          strip.top >= geometry.blockPadding &&
+            strip.bottom >= geometry.blockPadding,
+          "Strip content has at least xs block padding",
+        );
+      }
+      for (const edge of geometry.edges)
+        assert.ok(
+          Math.abs(edge - geometry.edge) < 1,
+          "Team content and top-level rails share the inner edge",
+        );
       try {
         await panel.locator(".team-heading").waitFor();
       } catch (error) {
@@ -202,41 +262,45 @@ test("Team panel ui", async ({
       }
       assert.equal(await panel.locator(".team-heading h2").innerText(), "Team");
       assert.equal(
-        await panel.locator('[data-team-count="working"] dd').innerText(),
+        await panel.locator('[data-team-count="working"] strong').innerText(),
         "1",
       );
       assert.equal(
-        await panel.locator('[data-team-count="answer"] dd').innerText(),
+        await panel.locator('[data-team-count="answer"] strong').innerText(),
         "1",
       );
       assert.equal(
-        await panel.locator('[data-team-count="attention"] dd').innerText(),
+        await panel.locator('[data-team-count="error"] strong').innerText(),
         "1",
       );
       await expect(panel.locator(".worker-entry strong")).toHaveText([
-        "Active worker",
         "Needs you",
         "Подача уведомления",
+        "Active worker",
         "Stalled worker",
       ]);
       assert.equal(
-        await panel.locator('[data-team-count="stalled"] dd').innerText(),
+        await panel.locator('[data-team-count="unread"] strong').innerText(),
         "1",
       );
+      await panel
+        .locator(".worker-entry")
+        .filter({ has: page.locator('[data-worker="worker-active"]') })
+        .locator(".worker-command-details > .disclosure-control")
+        .click();
       const command = panel.locator('[data-monitor="fixture-gate"]');
       await expect(command).toContainText(/just test-fast · 12m/);
       await expect(command).toContainText(
         "Rust checks passed; browser checks running",
       );
       await expect(panel.locator(".agent-stall")).toHaveText(
-        "Waiting for lead · task task-14 not submitted",
+        "Waiting for lead",
       );
       if (width > 760) {
-        await expect(
-          page.locator(
-            `[data-chat="${lead.id}"] [data-monitor="fixture-lead-gate"]`,
-          ),
-        ).toContainText("Final review");
+        const leadRow = page.locator(`.project-chats [data-chat="${lead.id}"]`);
+        await expect(leadRow).toBeVisible();
+        // Sidebar strips reserve space for titles; routine command progress stays in Team.
+        await expect(leadRow.locator("[data-monitor]")).toHaveCount(0);
       }
       assert.equal(
         await panel.locator(".worker-disk, .team-disk-total").count(),
@@ -251,7 +315,7 @@ test("Team panel ui", async ({
       assert.ok((await card.boundingBox()).height < 250, "compact error card");
       assert.equal(await card.locator("pre").isVisible(), false);
       await panel.screenshot({ path: join(evidence, `team-${width}.png`) });
-      await card.locator(".worker-error-details summary").click();
+      await card.locator(".worker-error-details > .disclosure-control").click();
       assert.equal(
         await card.locator("pre").innerText(),
         rawError,
@@ -264,11 +328,13 @@ test("Team panel ui", async ({
         ),
         "no horizontal overflow",
       );
-      await card.locator(".worker-error-details summary").click();
+      await card.locator(".worker-error-details > .disclosure-control").click();
+      await panel.locator("#team-close").click();
+      await panel.waitFor({ state: "hidden" });
     }
     assert.deepEqual(errors, []);
     console.log(
-      `PASS compact team, readable error, complete details, 1440/320px. ${evidence}`,
+      `PASS compact team, readable error, complete details, 1440/390/320px. ${evidence}`,
     );
   } finally {
     await Promise.all(

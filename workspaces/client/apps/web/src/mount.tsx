@@ -29,6 +29,7 @@ import "./workspace-layout.css";
 import "./appearance.css";
 import "./studio-preferences.css";
 import "./visual-activity.css";
+import "./design/state.css";
 import { initializeNativeClose } from "./native/close";
 
 async function mount() {

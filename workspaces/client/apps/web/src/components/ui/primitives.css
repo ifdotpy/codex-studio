@@ -1,6 +1,6 @@
 .ui-settings-section {
   display: grid;
-  gap: 16px;
+  gap: var(--mantine-spacing-md);
   min-width: 0;
 }
 .ui-panel-header,
@@ -9,7 +9,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--mantine-spacing-md);
   min-width: 0;
   font-size: var(--studio-text-body);
 }
@@ -29,7 +29,7 @@
   font-weight: 500;
 }
 .ui-help {
-  margin-top: 4px;
+  margin-top: calc(var(--mantine-spacing-xs) * 0.4);
   color: var(--muted);
   font-size: var(--studio-text-meta);
   line-height: 1.5;
@@ -38,29 +38,31 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--mantine-spacing-xs);
 }
 .ui-section-body {
   display: grid;
-  gap: 12px;
+  gap: var(--mantine-spacing-sm);
   min-width: 0;
 }
 .ui-settings-row {
-  padding-block: 8px;
+  padding-block: var(--mantine-spacing-xs);
 }
 .ui-row-control {
   flex: 0 0 auto;
   max-width: 55%;
+  min-width: 0;
 }
 .ui-empty-state {
-  padding-block: 12px;
+  padding-block: var(--mantine-spacing-sm);
 }
-@media (max-width: 760px) {
+/* Phone and tablet controls stack at this content breakpoint. */
+@media (max-width: 47.5rem) {
   .ui-settings-row,
   .ui-empty-state {
     flex-direction: column;
     align-items: stretch;
-    gap: 8px;
+    gap: var(--mantine-spacing-xs);
   }
   .ui-row-control {
     max-width: none;
@@ -70,7 +72,7 @@
 .ui-settings-row-stacked {
   flex-direction: column;
   align-items: stretch;
-  gap: 8px;
+  gap: var(--mantine-spacing-xs);
 }
 .ui-settings-row-stacked .ui-row-control {
   max-width: none;

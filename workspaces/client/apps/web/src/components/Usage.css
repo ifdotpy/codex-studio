@@ -1,24 +1,3 @@
-.usage-footer .account-limits-toggle {
-  flex: 0 1 auto;
-  min-width: 0;
-  height: 26px;
-  min-height: 26px;
-  padding: 4px 6px;
-  max-width: 100%;
-  color: var(--text);
-  font-size: 11px;
-  font-weight: 500;
-}
-.session-cost-summary {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.3;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
 .account-limits-toggle .mantine-Button-inner {
   min-width: 0;
   justify-content: flex-end;
@@ -28,23 +7,11 @@
   overflow: hidden;
   white-space: nowrap;
 }
-.account-limits-summary {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-  font-variant-numeric: tabular-nums;
-}
-.account-limits-summary > span + span {
-  margin-left: 7px;
-}
 .account-limits-label {
   color: var(--muted);
 }
 .account-limits-warning {
-  color: light-dark(#8a4700, #ffbd78);
+  color: var(--studio-state-answer);
 }
 .account-limits-group {
   display: flex;
@@ -109,92 +76,92 @@
   overflow: hidden;
 }
 .account-limits-panel {
-  font-size: 12px;
-  padding: 18px;
+  font-size: var(--studio-text-meta);
+  padding: var(--mantine-spacing-lg);
 }
 .account-limits-heading {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: var(--mantine-spacing-sm);
+  margin-bottom: var(--mantine-spacing-md);
 }
 .account-limits-heading h3 {
   margin: 0;
-  font-size: 15px;
-  font-weight: 650;
+  font-size: var(--mantine-font-size-lg);
+  font-weight: 600;
 }
 .account-limits-heading p {
-  margin: 4px 0 0;
+  margin: calc(var(--mantine-spacing-xs) * 0.4) 0 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
 }
 .account-limits-groups {
   display: grid;
-  gap: 12px;
-  max-height: min(460px, 53dvh);
+  gap: var(--mantine-spacing-sm);
+  max-height: min(var(--studio-form-max), 53dvh);
   overflow: auto;
 }
 .account-limit-group {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 13px;
+  border: var(--studio-border-width) solid var(--line);
+  border-radius: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-sm);
   min-width: 0;
 }
 .account-limit-group > header {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 14px;
+  gap: var(--mantine-spacing-xs);
+  margin-bottom: var(--mantine-spacing-md);
   overflow-wrap: anywhere;
 }
 .account-limit-group > header > strong {
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
 }
 .account-limit-group > header > span {
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
   color: var(--muted);
   text-transform: capitalize;
 }
 .account-limit-windows {
   display: grid;
-  gap: 16px;
+  gap: var(--mantine-spacing-md);
 }
 .account-limit-value {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 7px;
+  gap: var(--mantine-spacing-sm);
+  margin-bottom: var(--mantine-spacing-xs);
 }
 .account-limit-value > span {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
 }
 .account-limit-value > strong {
-  font-size: 19px;
-  font-weight: 650;
+  font-size: var(--mantine-font-size-lg);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 .account-limit-value small {
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   font-weight: 400;
   color: var(--muted);
 }
 .account-limit-reset {
-  margin: 6px 0 0;
+  margin: var(--mantine-spacing-xs) 0 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
 }
 .account-limit-credits {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  border-top: 1px solid var(--line);
-  margin-top: 13px;
-  padding-top: 11px;
+  gap: var(--mantine-spacing-sm);
+  border-top: var(--studio-border-width) solid var(--line);
+  margin-top: var(--mantine-spacing-sm);
+  padding-top: var(--mantine-spacing-sm);
 }
 .account-limit-credits > span {
   color: var(--muted);
@@ -204,13 +171,13 @@
   text-align: right;
 }
 .account-limits-updated {
-  margin-top: 13px;
+  margin-top: var(--mantine-spacing-sm);
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
 }
 .account-limits-empty {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
   margin: 0;
 }
 @media (max-width: 600px) {
@@ -218,28 +185,28 @@
     margin-left: 0;
   }
   .account-limits-panel {
-    padding: 14px;
+    padding: var(--mantine-spacing-md);
   }
 }
 
 /* Dense quota rows keep both pools and reset clocks visible together. */
 .account-limits-panel {
-  padding: 12px;
-  max-height: min(680px, 78dvh);
+  padding: var(--mantine-spacing-sm);
+  max-height: min(var(--studio-form-max), 78dvh);
   overflow-y: auto;
 }
 .account-limits-heading {
-  margin-bottom: 10px;
+  margin-bottom: var(--mantine-spacing-xs);
 }
 .account-limits-heading h3 {
-  font-size: 13px;
+  font-size: var(--studio-text-body);
 }
 .account-limits-heading p {
-  font-size: 10px;
-  margin-top: 2px;
+  font-size: var(--studio-text-meta);
+  margin-top: calc(var(--mantine-spacing-xs) / 5);
 }
 .account-limits-groups {
-  gap: 10px;
+  gap: var(--mantine-spacing-xs);
   max-height: none;
   overflow: visible;
 }
@@ -249,163 +216,163 @@
   border-radius: 0;
 }
 .account-limit-group + .account-limit-group {
-  border-top: 1px solid var(--line);
-  padding-top: 9px;
+  border-top: var(--studio-border-width) solid var(--line);
+  padding-top: var(--mantine-spacing-xs);
 }
 .account-limit-group > header {
-  margin-bottom: 7px;
+  margin-bottom: var(--mantine-spacing-xs);
 }
 .account-limit-windows {
-  gap: 8px;
+  gap: var(--mantine-spacing-xs);
 }
 .account-limit-window {
   display: grid;
-  grid-template-columns: 106px minmax(0, 1fr);
+  grid-template-columns: var(--studio-settings-nav-size) minmax(0, 1fr);
   align-items: center;
-  gap: 3px 12px;
+  gap: var(--studio-rail-size) var(--mantine-spacing-sm);
 }
 .account-limit-value {
   margin: 0;
-  gap: 5px;
+  gap: calc(var(--mantine-spacing-xs) / 2);
 }
 .account-limit-value > span {
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
 }
 .account-limit-value > strong {
-  font-size: 13px;
+  font-size: var(--studio-text-body);
   white-space: nowrap;
 }
 .account-limit-value small {
-  font-size: 9px;
+  font-size: var(--studio-text-meta);
 }
 .account-limit-reset {
   grid-column: 1 / -1;
   display: flex;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--mantine-spacing-xs);
   margin: 0;
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
 }
 .account-limit-reset time {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 .account-limit-credits {
-  margin-top: 7px;
-  padding-top: 6px;
-  font-size: 10px;
+  margin-top: var(--mantine-spacing-xs);
+  padding-top: var(--mantine-spacing-xs);
+  font-size: var(--studio-text-meta);
 }
 .account-limits-updated {
-  margin-top: 8px;
+  margin-top: var(--mantine-spacing-xs);
 }
 .account-costs {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
+  margin-top: var(--mantine-spacing-sm);
+  padding-top: var(--mantine-spacing-xs);
+  border-top: var(--studio-border-width) solid var(--line);
 }
 .account-costs > header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
 }
 .account-costs > header > span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
 }
 .account-cost-values {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin: 8px 0;
+  gap: var(--mantine-spacing-sm);
+  margin: var(--mantine-spacing-xs) 0;
 }
 .account-cost-values > div {
   display: grid;
-  gap: 3px;
+  gap: var(--studio-rail-size);
 }
 .account-cost-values span {
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
   color: var(--muted);
 }
 .account-cost-values strong {
-  font-size: 18px;
+  font-size: var(--mantine-font-size-lg);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 .account-cost-values strong.account-cost-missing {
-  font-size: 13px;
+  font-size: var(--studio-text-body);
   font-weight: 500;
   color: var(--muted);
 }
 .account-costs p {
-  margin: 4px 0 0;
-  font-size: 10px;
+  margin: calc(var(--mantine-spacing-xs) * 0.4) 0 0;
+  font-size: var(--studio-text-meta);
   color: var(--muted);
   overflow-wrap: anywhere;
   line-height: 1.4;
 }
 .account-costs .account-limits-warning {
-  color: light-dark(#8a4700, #ffbd78);
+  color: var(--studio-state-answer);
 }
 @media (max-width: 600px) {
   .account-limits-panel {
-    padding: 12px;
+    padding: var(--mantine-spacing-sm);
   }
 }
 .account-reset-credits {
-  margin-top: 10px;
-  padding-top: 9px;
-  border-top: 1px solid var(--line);
+  margin-top: var(--mantine-spacing-xs);
+  padding-top: var(--mantine-spacing-xs);
+  border-top: var(--studio-border-width) solid var(--line);
 }
 .account-reset-credits > header {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
-  font-size: 11px;
+  gap: var(--mantine-spacing-xs);
+  font-size: var(--studio-text-meta);
 }
 .account-reset-credits > header > span {
   color: var(--muted);
 }
 .account-reset-credit {
-  padding-top: 8px;
+  padding-top: var(--mantine-spacing-xs);
 }
 .account-reset-credit-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 10px;
+  gap: var(--mantine-spacing-xs);
 }
 .account-reset-credit-row > div {
   min-width: 0;
   display: grid;
-  gap: 3px;
+  gap: var(--studio-rail-size);
 }
 .account-reset-credit-row strong {
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   overflow-wrap: anywhere;
 }
 .account-reset-credit-row span,
 .account-reset-credits p {
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
   color: var(--muted);
   line-height: 1.4;
 }
 .account-reset-credits p {
-  margin: 5px 0 0;
+  margin: calc(var(--mantine-spacing-xs) / 2) 0 0;
   overflow-wrap: anywhere;
 }
 .account-reset-credits .account-limits-warning {
-  color: light-dark(#8a4700, #ffbd78);
+  color: var(--studio-state-answer);
 }
 .account-reset-credit-row > button {
   flex-shrink: 0;
 }
 .account-reset-confirm {
   background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  margin-top: 6px;
-  padding: 8px;
+  border: var(--studio-border-width) solid var(--line);
+  border-radius: var(--mantine-spacing-xs);
+  margin-top: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-xs);
 }
 .account-reset-confirm > p {
   color: var(--text);
@@ -414,47 +381,23 @@
 .account-reset-confirm > div {
   display: flex;
   justify-content: flex-end;
-  gap: 7px;
-  margin-top: 8px;
+  gap: var(--mantine-spacing-xs);
+  margin-top: var(--mantine-spacing-xs);
 }
 .account-limit-recovery {
-  padding: 10px;
-  margin-bottom: 10px;
-  border: 1px solid var(--mantine-color-orange-6);
-  border-radius: 6px;
+  padding: var(--mantine-spacing-xs);
+  margin-bottom: var(--mantine-spacing-xs);
+  border: var(--studio-border-width) solid var(--mantine-color-orange-6);
+  border-radius: var(--mantine-spacing-xs);
   overflow-wrap: anywhere;
 }
 .account-limit-recovery p {
-  margin: 6px 0 0;
-}
-
-@media (max-width: 600px) {
-  .usage-footer .session-cost-summary {
-    flex: 1 1 calc(100% - 12ch - 8px);
-  }
+  margin: var(--mantine-spacing-xs) 0 0;
 }
 
 /* The composer footer keeps context, estimate and allowance in one row. */
-.usage-footer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: nowrap;
-}
-.usage-footer .context-use {
-  position: static;
-  order: -1;
-  border: 0;
-  background: transparent;
-  padding: 4px 0;
-  font-size: 12px;
-}
-.usage-footer .session-cost-summary {
-  font-size: 12px;
-  flex: 1 1 auto;
-}
 .account-cost-values strong {
-  font-size: 14px;
+  font-size: var(--studio-text-body);
 }
 .account-limits-panel small,
 .account-limits-heading p,
@@ -462,21 +405,14 @@
 .account-cost-values span,
 .account-costs > header,
 .account-costs > header > span {
-  font-size: 12px;
-}
-
-.usage-footer .context-use {
-  flex-shrink: 0;
-}
-.usage-footer .account-limits-group {
-  flex-shrink: 1;
+  font-size: var(--studio-text-meta);
 }
 
 /* Local selection shows account details without changing the chat account. */
 .account-limits-tiles [role="tablist"] {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--mantine-spacing-xs);
   border: 0;
 }
 .account-limits-tiles .setup-account {
@@ -484,16 +420,17 @@
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
-  gap: 2px;
+  gap: calc(var(--mantine-spacing-xs) / 5);
   min-width: 0;
-  height: 56px;
-  padding: 8px 9px 12px;
-  border: 1px solid transparent;
+  height: calc(var(--studio-action-size) * 2);
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-xs)
+    var(--mantine-spacing-sm);
+  border: var(--studio-border-width) solid transparent;
   color: var(--text);
 }
 .account-limits-tiles .setup-account[data-selected] {
-  border-color: light-dark(#b3b6c0, #686b76);
-  background: light-dark(#e8eaf0, #303138);
+  border-color: var(--line);
+  background: var(--mantine-color-default-hover);
 }
 .account-limits-tile-name {
   line-height: 1.4;
@@ -502,19 +439,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
   text-align: left;
 }
 .account-limits-current {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
 }
 .account-limits-selected-name {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 6px;
-  margin: 14px 0 9px;
+  gap: var(--mantine-spacing-xs);
+  margin: var(--mantine-spacing-md) 0 var(--mantine-spacing-xs);
   overflow-wrap: anywhere;
 }
 .account-limits-selected-name small {
@@ -523,40 +460,34 @@
 .account-limit-window {
   line-height: 1.3;
   grid-template-columns: minmax(0, 1fr);
-  gap: 3px;
+  gap: var(--studio-rail-size);
 }
 .account-limit-value > strong {
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
   font-weight: 500;
 }
 .account-limit-value > span,
 .account-limit-value small,
 .account-limit-reset,
 .account-limit-group > header > span {
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
 }
 .account-limit-reset {
   flex-wrap: wrap;
-  gap: 2px 8px;
+  gap: calc(var(--mantine-spacing-xs) / 5) var(--mantine-spacing-xs);
 }
 .account-limit-windows {
-  gap: 8px;
+  gap: var(--mantine-spacing-xs);
 }
 .account-cost-values strong {
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
   font-weight: 500;
 }
 .account-cost-values {
-  gap: 8px;
-  margin-bottom: 4px;
+  gap: var(--mantine-spacing-xs);
+  margin-bottom: calc(var(--mantine-spacing-xs) * 0.4);
 }
 
-.usage-footer .account-limits-group .account-limits-toggle {
-  flex-shrink: 0;
-}
-.usage-footer .account-limits-group {
-  flex: 0 0 auto;
-}
 @media (max-width: 600px) {
   .account-limits-summary .account-limits-warning {
     display: none;
@@ -569,5 +500,241 @@
 }
 
 .model-limit-eligibility p {
-  margin: 0.35rem 0;
+  margin: var(--studio-rail-size) 0;
+}
+
+/* Footer layout is shared with execution controls through conversation-composer-footer. */
+.usage-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  font-variant-numeric: tabular-nums;
+}
+.session-cost-summary {
+  white-space: nowrap;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  font-variant-numeric: tabular-nums;
+}
+.session-cost-summary:empty {
+  display: none;
+}
+.context-use {
+  order: -1;
+  min-width: 0;
+  min-height: var(--studio-control-size);
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.context-use:hover {
+  color: var(--text);
+}
+.context-use:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 4px;
+}
+.account-limits-summary {
+  display: block;
+  min-width: 0;
+  white-space: nowrap;
+}
+.account-limits-summary > span + span {
+  margin-left: 7px;
+}
+.account-limits-toggle {
+  height: auto;
+  min-height: var(--studio-control-size);
+  padding: 0 var(--mantine-spacing-xs);
+  color: var(--text);
+  font-size: var(--studio-text-meta);
+}
+.account-limits-updated {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs);
+}
+
+@container conversation-footer (max-width: 47.5em) {
+  .usage-footer {
+    gap: var(--mantine-spacing-xs);
+  }
+  .usage-footer .token-rate,
+  .account-limits-summary .account-limits-warning {
+    display: none;
+  }
+  .context-use,
+  .account-limits-toggle {
+    min-height: var(--mantine-spacing-lg);
+  }
+  .account-limits-dots,
+  .account-limits-dot-target {
+    height: var(--studio-secondary-touch-target);
+  }
+}
+.session-cost-compact-label {
+  display: none;
+}
+@container conversation-footer (max-width: 28em) {
+  .session-cost-label {
+    position: absolute;
+    inline-size: var(--studio-border-width);
+    block-size: var(--studio-border-width);
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .session-cost-compact-label {
+    display: inline-flex;
+    vertical-align: middle;
+    margin-inline-end: calc(var(--mantine-spacing-xs) / 2);
+  }
+}
+
+/* Mounted panels share a grid cell, reserving the tallest natural content. */
+.account-limits-tiles,
+.account-limits-detail-stack {
+  display: grid;
+  min-width: 0;
+}
+.account-limits-provider-panel,
+.account-limits-detail-panel {
+  grid-area: 1 / 1;
+  min-width: 0;
+  visibility: hidden;
+}
+.account-limits-provider-panel[data-active],
+.account-limits-detail-panel[data-active] {
+  visibility: visible;
+}
+.account-limits-panel {
+  padding: var(--mantine-spacing-xs);
+  max-block-size: calc(
+    100dvh - var(--studio-touch-target) - var(--mantine-spacing-xl)
+  );
+  overflow-y: auto;
+}
+.account-limits-tiles [role="tablist"] {
+  gap: var(--studio-rail-size);
+}
+.account-limits-tiles .setup-account {
+  height: var(--studio-touch-target);
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+  padding: var(--studio-rail-size) var(--mantine-spacing-xs);
+}
+.account-limits-tiles .setup-account-label {
+  display: flex;
+  flex: 1;
+  flex-wrap: nowrap;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+}
+.account-limits-tile-name {
+  flex: 1;
+  width: auto;
+}
+.account-limits-tiles .account-remaining {
+  flex: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.account-limits-current {
+  flex: none;
+}
+
+.account-limit-windows {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.account-limit-reset {
+  display: grid;
+  gap: 0;
+}
+.account-limit-reset time {
+  text-align: start;
+}
+.account-limit-group > header {
+  margin-bottom: var(--studio-rail-size);
+}
+.account-cost-values > div {
+  display: flex;
+  justify-content: space-between;
+}
+.account-limits-tiles .mantine-Tabs-tabLabel {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+}
+.account-limits-popover .account-tiles {
+  gap: var(--studio-rail-size);
+  margin-block: var(--studio-rail-size);
+}
+.account-limits-selected-name {
+  margin-block: var(--studio-rail-size);
+}
+.account-limits-panel .account-reset-credit,
+.account-limits-panel .account-reset-credits,
+.account-limits-panel .account-costs {
+  margin-top: var(--mantine-spacing-xs);
+  padding-top: var(--studio-rail-size);
+}
+.account-limits-heading {
+  margin-bottom: var(--studio-rail-size);
+}
+
+.account-limits-selected-name {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.account-limits-selected-name > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-limits-selected-name .account-plan {
+  flex: none;
+  text-transform: capitalize;
+}
+
+@media (pointer: coarse) {
+  .account-limits-dot-target {
+    flex-basis: var(--studio-secondary-touch-target);
+    width: var(--studio-secondary-touch-target);
+    min-width: var(--studio-secondary-touch-target);
+    min-height: var(--studio-secondary-touch-target);
+  }
+  .usage-footer .context-use,
+  .usage-footer .account-limits-toggle,
+  .usage-footer .session-cost-summary {
+    min-height: var(--studio-secondary-touch-target);
+    min-width: var(--studio-secondary-touch-target);
+  }
+  .usage-footer .session-cost-summary {
+    display: flex;
+    align-items: center;
+  }
+  .usage-footer {
+    gap: var(--mantine-spacing-xs);
+  }
+  .account-limits-group {
+    gap: var(--mantine-spacing-xs);
+  }
 }

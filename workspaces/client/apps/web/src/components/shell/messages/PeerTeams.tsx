@@ -166,7 +166,7 @@ export function PeerTeamGroup({
               <MoreHorizontal size={15} />
             </ActionIcon>
           </Menu.Target>
-          <Menu.Dropdown>
+          <Menu.Dropdown className="fleet-menu">
             {((team.members ?? []).length === 2 || roomId) && (
               <Menu.Item
                 disabled={pending || disabled}

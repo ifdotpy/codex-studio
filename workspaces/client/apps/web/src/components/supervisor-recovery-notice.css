@@ -1,7 +1,7 @@
 .supervisor-recovery-notice {
-  margin: 0 0 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--mantine-color-yellow-6);
+  margin: 0 0 var(--mantine-spacing-sm);
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  border: var(--studio-border-width) solid var(--mantine-color-yellow-6);
   border-radius: var(--mantine-radius-sm);
   color: var(--mantine-color-text);
   background: var(--mantine-color-yellow-light);
@@ -12,4 +12,15 @@
 .supervisor-recovery-notice[data-level="full"] {
   border-color: var(--mantine-color-red-6);
   background: var(--mantine-color-red-light);
+}
+
+@container workspace (max-width: 47.5em) {
+  .supervisor-recovery-notice {
+    min-width: 0;
+    margin-bottom: 0;
+    padding-block: calc(var(--mantine-spacing-xs) / 2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }

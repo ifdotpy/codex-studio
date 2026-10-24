@@ -121,7 +121,13 @@ Send delivers after active tool calls. Desktop Enter does the same.
 **Queue after turn** holds the message until the current turn ends.
 Shift+Enter adds a line. Tab and Shift+Tab move the keyboard focus.
 An idle agent starts a new turn with either send action.
-New chats use the server's default model without a model catalog request.
+The new-chat dialog shows one inline model picker. Switch between **Lead** and
+**Workers** to edit their separate choices; both choices persist when switching
+roles and starting the chat. Chat settings uses the same role-based picker.
+Model and reasoning fields retain accessible names without visible captions;
+model descriptions do not add lines below the list. Picker width is owned by
+`--studio-model-picker-size` in [`src/design/layout.css`](src/design/layout.css)
+and stays within the available width on phones.
 The server's creation response opens the chat before the full list refreshes.
 An older list cannot remove that confirmed chat while synchronization catches up.
 The client retains the confirmed chat across reloads until the list includes it.
