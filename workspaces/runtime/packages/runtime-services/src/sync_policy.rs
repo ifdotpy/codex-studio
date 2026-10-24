@@ -40,11 +40,9 @@ const LIVE_TASK_AGENT: &str = "json_extract(t.record,'$.agent') IN \
 /// bound; a parity test below checks every `LIMIT` there.
 pub const EVENT_WINDOW_ROWS: usize = 200;
 const SYNC_SEEDED_MARKER: &str = "seeded";
-/// Upgrade marker for source-published retained folders and question history.
-const CONVERSATION_DETAILS_SEED_MARKER: &str = "conversation_details_v1";
 const AGENT_ORGANIZATION_FIELDS_MARKER: &str = "agent_organization_fields";
 const AGENT_ORGANIZATION_FIELDS_VERSION: i64 = 3;
-use studio_runtime_store::SUMMARY_ENTITIES_SEED_MARKER;
+use studio_runtime_store::{CONVERSATION_DETAILS_SEED_MARKER, SUMMARY_ENTITIES_SEED_MARKER};
 
 /// Whether Python's durable seed and entity-view upgrade markers prove the
 /// persisted sync projection is complete. Legacy behavior: codex_sync_entities.seed.

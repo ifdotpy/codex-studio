@@ -17,10 +17,15 @@ afterEach(() => {
   h.effects = [];
 });
 
-it.each(["empty", "legacy", "pending"] as const)(
+it.each(["empty", "empty-group", "legacy", "pending"] as const)(
   "sidebar order %s preserves intentional writes without creating an empty migration",
   async (scenario) => {
-    const groups = scenario === "legacy" ? { projects: ["one"] } : {};
+    const groups =
+      scenario === "legacy"
+        ? { projects: ["one"] }
+        : scenario === "empty-group"
+          ? { projects: [] }
+          : {};
     const pending =
       scenario === "pending"
         ? {
@@ -65,7 +70,8 @@ it.each(["empty", "legacy", "pending"] as const)(
     for (const effect of h.effects.splice(0)) effect();
     await Promise.resolve();
     await Promise.resolve();
-    if (scenario === "empty") expect(post).not.toHaveBeenCalled();
+    if (scenario === "empty" || scenario === "empty-group")
+      expect(post).not.toHaveBeenCalled();
     else {
       expect(post).toHaveBeenCalledTimes(1);
       expect(post.mock.calls[0][1]).toEqual(

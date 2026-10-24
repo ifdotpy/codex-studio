@@ -11,6 +11,8 @@ mod fresh_state;
 
 /// Durable marker proving bounded summary entities have been seeded. Unit: metadata key.
 pub const SUMMARY_ENTITIES_SEED_MARKER: &str = "summary_entities_v1";
+/// Durable marker for retained-folder and question-history projections. Unit: metadata key.
+pub const CONVERSATION_DETAILS_SEED_MARKER: &str = "conversation_details_v1";
 mod multi_server_state_check;
 mod path;
 pub mod path_identity;
