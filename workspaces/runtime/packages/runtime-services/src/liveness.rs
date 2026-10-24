@@ -3,10 +3,11 @@
 //! plain reason. Where it is safe, the checker runs one automatic recovery
 //! through an existing idempotent path, and never sends an input:
 //! - `turn_stalled`: a running chat whose provider sent nothing for
-//!   [`SILENT_TURN_SECONDS`] while no tool runs. The account worker checks a
-//!   Codex turn with native history and settles it once
-//!   (`account_worker::silent_turns`). A Claude bridge holds its turn in
-//!   memory and reports it active, so its row only names the stall.
+//!   [`SILENT_TURN_SECONDS`] while no tool runs. The account worker checks the
+//!   turn with native history and settles it once
+//!   (`account_worker::silent_turns`): a Codex turn through the existing turn
+//!   recovery, a Claude turn through the bridge's `turn/reconcile`, because
+//!   the bridge holds its turn in memory and reports it active.
 //! - `input_not_started`: an owner message that waits longer than
 //!   [`PENDING_INPUT_SECONDS`] while its chat is idle. The checker queues the
 //!   chat once per message, as a new message would; the scheduler then claims
@@ -116,8 +117,10 @@ pub fn clear_session_start_failure(tx: &Transaction<'_>, account: &str) -> Resul
 /// The outcome of the latest native-history check of a silent turn.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TurnCheck {
-    /// Native history shows the turn still running.
+    /// The turn still runs: native history or the bridge says so.
     Active,
+    /// Native history does not show that the turn ended.
+    Unconfirmed,
     /// Native history could not be read or compared.
     Unreadable,
 }
@@ -142,6 +145,7 @@ pub fn record_turn_check(
         RECEIPT_SIGNATURE,
         &json!({"turn":turn,"check":check,"outcome":match outcome {
             TurnCheck::Active => "active",
+            TurnCheck::Unconfirmed => "unconfirmed",
             TurnCheck::Unreadable => "unreadable",
         },"at":now})
         .to_string(),
@@ -233,29 +237,27 @@ fn stalled_turns(
         let check = EventWriteRepository::receipt(tx, &turn_check_key(&id))?
             .and_then(|receipt| serde_json::from_str::<Value>(&receipt.result).ok())
             .filter(|check| check["turn"].as_str() == Some(turn));
-        let detail = if claude {
-            format!(
-                "The provider sent nothing for {} minutes, and no tool runs. The Claude bridge still holds the turn open, so Studio cannot settle it from native history.",
-                minutes(now - since)
-            )
-        } else {
-            match check.as_ref().and_then(|check| check["outcome"].as_str()) {
-                // Native history shows the turn still running: not stuck.
-                Some("active") => continue,
-                Some("unreadable") => format!(
-                    "The provider sent nothing for {} minutes, and no tool runs. Studio could not read the native history of the turn.",
-                    minutes(now - since)
-                ),
-                // The account worker checks the turn within a minute; only an
-                // unchecked turn past that grace is shown.
-                _ if now - since < SILENT_TURN_SECONDS + CHECK_INTERVAL.as_secs_f64() * 2.0 => {
-                    continue;
-                }
-                _ => format!(
-                    "The provider sent nothing for {} minutes, and no tool runs. Studio has not checked the native history yet; the account session may not run.",
-                    minutes(now - since)
-                ),
+        let silent = minutes(now - since);
+        let detail = match check.as_ref().and_then(|check| check["outcome"].as_str()) {
+            // Native history or the bridge shows the turn still running.
+            Some("active") => continue,
+            Some("unconfirmed") => format!(
+                "The provider sent nothing for {silent} minutes, and no tool runs. Native history does not show that the turn ended, so Studio did not settle it."
+            ),
+            Some("unreadable") if claude => format!(
+                "The provider sent nothing for {silent} minutes, and no tool runs. Studio could not ask the Claude bridge about the turn."
+            ),
+            Some("unreadable") => format!(
+                "The provider sent nothing for {silent} minutes, and no tool runs. Studio could not read the native history of the turn."
+            ),
+            // The account worker checks the turn within a minute; only an
+            // unchecked turn past that grace is shown.
+            _ if now - since < SILENT_TURN_SECONDS + CHECK_INTERVAL.as_secs_f64() * 2.0 => {
+                continue;
             }
+            _ => format!(
+                "The provider sent nothing for {silent} minutes, and no tool runs. Studio has not checked the native history yet; the account session may not run."
+            ),
         };
         found.push(Finding {
             code: Code::TurnStalled,

@@ -130,6 +130,7 @@ define_methods! {
     TurnStart => "turn/start",
     TurnSteer => "turn/steer",
     TurnInterrupt => "turn/interrupt",
+    TurnReconcile => "turn/reconcile",
     ThreadList => "thread/list",
     ThreadArchive => "thread/archive",
     ThreadFork => "thread/fork",

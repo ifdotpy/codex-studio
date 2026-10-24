@@ -4,15 +4,19 @@
 //! history with the existing turn recovery: two thread reads around an exact
 //! turn read, then a compare-and-apply settlement. It settles the turn once,
 //! and it never sends input: the retained reader allows only history reads of
-//! the turn's thread. A Claude bridge reports a turn it holds as active, so
-//! only Codex turns are checked here; the liveness list shows Claude stalls.
+//! the turn's thread. A Claude bridge reports a turn it holds as active, so a
+//! Claude turn is asked with `turn/reconcile`: the bridge completes it once
+//! when its native transcript ends with the final answer and records every
+//! steer, and the normal `turn/completed` settles it here.
 //!
 //! Each silence episode is checked at 10, 20, 40, 80 ... minutes of silence.
 //! The check identity names the episode and its step, so its retained history
 //! reads stay bounded and a repeated check of one step replays its answer.
 use super::{AccountCommand, StoreBridge};
 use crate::{
-    account_worker::retained::{RequestActor, RetainedSessionPort, consumers::HistoryPort},
+    account_worker::retained::{
+        RequestActor, RequestResult, RetainedSessionPort, SessionRequest, consumers::HistoryPort,
+    },
     liveness,
     recovery::{RecoveryError, RecoveryOutcome},
     recovery_absence::RecoveryObservation,
@@ -27,6 +31,8 @@ use studio_runtime_store::{EventWriteRepository, RuntimeStore, StoreError};
 
 /// Most silent turns one pass checks.
 const MAX_CHECKS: usize = 8;
+/// Unit: wall time for one Claude bridge reconcile request.
+const RECONCILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub(super) struct Pass {
     pub(super) bridge: StoreBridge,
@@ -36,9 +42,10 @@ pub(super) struct Pass {
     pub(super) commands: tokio::sync::mpsc::Sender<AccountCommand>,
 }
 
-/// A silent Codex turn of this account and the identity of its check.
+/// A silent turn of this account and the identity of its check.
 struct Candidate {
     snapshot: RecoverySnapshot,
+    claude: bool,
     agent: String,
     epoch: i64,
     thread: String,
@@ -63,7 +70,7 @@ fn candidates(
 ) -> Result<Vec<Candidate>, StoreError> {
     let mut statement = tx.prepare_cached(
         "SELECT id,record FROM runtime_agents WHERE account_key=?1 AND deleted_at IS NULL \
-         AND status='running' AND COALESCE(in_flight,0)=1 AND provider='codex' ORDER BY id",
+         AND status='running' AND COALESCE(in_flight,0)=1 AND provider IN ('codex','claude') ORDER BY id",
     )?;
     let rows = statement
         .query_map([account], |row| {
@@ -97,11 +104,13 @@ fn candidates(
         if checked {
             continue;
         }
+        let claude = record["provider"] == "claude";
         let Ok(snapshot) = RecoverySnapshot::from_record(record) else {
             continue;
         };
         found.push(Candidate {
             snapshot,
+            claude,
             agent: id,
             epoch,
             thread,
@@ -133,15 +142,21 @@ pub(super) async fn check_account(pass: Pass) {
         if !pass.session.is_live() {
             return;
         }
-        let outcome = check(&store, &pass, &candidate, now).await;
-        // A settled turn is no longer running; a superseded check (the turn
-        // changed while it ran) is repeated by the next pass.
-        let verdict = match &outcome {
-            Ok(RecoveryOutcome::Unconfirmed) => liveness::TurnCheck::Active,
-            Err(RecoveryError::History(_) | RecoveryError::Dependency(_)) => {
-                liveness::TurnCheck::Unreadable
+        let verdict = if candidate.claude {
+            match reconcile(&pass, &candidate).await {
+                Some(verdict) => verdict,
+                None => continue,
             }
-            Ok(_) | Err(_) => continue,
+        } else {
+            // A settled turn is no longer running; a superseded check (the
+            // turn changed while it ran) is repeated by the next pass.
+            match check(&store, &pass, &candidate, now).await {
+                Ok(RecoveryOutcome::Unconfirmed) => liveness::TurnCheck::Active,
+                Err(RecoveryError::History(_) | RecoveryError::Dependency(_)) => {
+                    liveness::TurnCheck::Unreadable
+                }
+                Ok(_) | Err(_) => continue,
+            }
         };
         let (agent, turn, check) = (
             candidate.agent.clone(),
@@ -158,6 +173,40 @@ pub(super) async fn check_account(pass: Pass) {
                 candidate.agent
             ));
         }
+    }
+}
+
+/// Ask the Claude bridge to complete a turn that its native transcript shows
+/// ended. The check identity is the operation id, so a repeated pass of the
+/// same silence step replays the answer instead of asking again. `None` when
+/// the bridge completed the turn or no longer holds it; its `turn/completed`
+/// settles the chat through the journal.
+async fn reconcile(pass: &Pass, candidate: &Candidate) -> Option<liveness::TurnCheck> {
+    let receipt = pass
+        .session
+        .request(SessionRequest {
+            scope: pass.scope.clone(),
+            expected_scope: Some(pass.scope.clone()),
+            operation: candidate.check.clone(),
+            actor: Some(RequestActor {
+                agent: candidate.agent.clone(),
+                epoch: candidate.epoch,
+            }),
+            transfer: None,
+            deleted_actor_session: None,
+            method: studio_runtime_providers::Method::TurnReconcile,
+            params: serde_json::json!({"threadId":candidate.thread,"turnId":candidate.turn}),
+            deadline: std::time::Instant::now() + RECONCILE_TIMEOUT,
+        })
+        .await;
+    match receipt.map(|receipt| receipt.result) {
+        Ok(RequestResult::Reply(reply)) => match reply["status"].as_str() {
+            Some("completed" | "notActive") => None,
+            Some("busy") => Some(liveness::TurnCheck::Active),
+            _ => Some(liveness::TurnCheck::Unconfirmed),
+        },
+        Ok(RequestResult::Rejected(_)) => Some(liveness::TurnCheck::Unreadable),
+        Ok(RequestResult::NotSent | RequestResult::Unknown) | Err(_) => None,
     }
 }
 

@@ -318,6 +318,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ThreadRollback
                 | Method::ThreadQueueList
                 | Method::TurnInterrupt
+                | Method::TurnReconcile
                 | Method::ConfigRead
                 | Method::CommandExec
                 | Method::CommandExecWrite
@@ -363,6 +364,19 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                                 .get(*key)
                                 .and_then(Value::as_str)
                                 .is_some_and(|v| !v.trim().is_empty())
+                        })
+                })))
+        // The liveness check of a silent Claude turn: one exact turn, read
+        // from native history by the bridge, never any input.
+        || (request.method == Method::TurnReconcile
+            && (!request.operation.starts_with("liveness-turn:")
+                || request.params.as_object().is_none_or(|params| {
+                    params.len() != 2
+                        || !["threadId", "turnId"].iter().all(|key| {
+                            params
+                                .get(*key)
+                                .and_then(Value::as_str)
+                                .is_some_and(|value| !value.is_empty())
                         })
                 })))
         || (request.method == Method::ThreadRead
