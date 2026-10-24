@@ -32,6 +32,11 @@ use tokio::{
 /// not count: that journal is finite, and counting it could hold back the
 /// frames the current generation needs to become ready.
 pub const MAX_UNSETTLED: usize = 64;
+/// Provider journal entries the session receives after it requested the
+/// provider's shutdown, beyond those its bounded lane already holds; unit:
+/// entries. They join the undelivered tail of the session exit. The adapter's
+/// drain grace bounds the tail in time; this bounds its memory.
+const SHUTDOWN_TAIL_ENTRIES: usize = 4096;
 const MAX_TIMEOUT_MS: u64 = u32::MAX as u64;
 
 pub struct SessionTaskConfig {
@@ -690,7 +695,9 @@ impl SessionTask {
         }
         self.settled.close();
         self.stop.cancel();
-        let exit = adapter.shutdown().await;
+        // The account may have stopped consuming events, so every lane can be
+        // full. Keep the provider's exit tail, such as a final turn/completed.
+        let (exit, tail) = adapter.shutdown_retaining_tail(SHUTDOWN_TAIL_ENTRIES).await;
         if let Some(future) = flight {
             self.retained.receipt = Some(future.await);
             self.retained.receipt_reported = false;
@@ -710,13 +717,12 @@ impl SessionTask {
                 );
             }
         }
+        // The pending event was received before every entry of the tail.
         let mut undelivered: Vec<_> = self.retained.pending.take().into_iter().collect();
-        while let Ok(journal) = adapter.journal.try_recv() {
-            undelivered.push(SessionEvent {
-                journal: Some(journal),
-                outcomes: vec![],
-            });
-        }
+        undelivered.extend(tail.into_iter().map(|journal| SessionEvent {
+            journal: Some(journal),
+            outcomes: vec![],
+        }));
         let mut outcomes = self
             .retained
             .control

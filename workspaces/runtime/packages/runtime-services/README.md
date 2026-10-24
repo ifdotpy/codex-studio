@@ -366,9 +366,12 @@ child generation. The session owns the one SessionState and its deadline source.
 `shutdown().await` on the handle signals stop and joins the adapter before returning
 `SessionExit`. `completion().await` joins without initiating stop; cancelling either
 wait retains the join owner. Persist `exit.adapter.recovery_needed`, final outcomes,
-and `undelivered`; also drain buffered consumer events. After joining the adapter,
-the session drains its journal lane into this handoff: at most 17 envelopes (one
-retained transition plus 16 buffered entries). Retained control outcomes go in
+and `undelivered`; also drain buffered consumer events before it. While joining
+the adapter, the session receives the provider's exit tail from its journal lane
+into this handoff, in cursor order after the one retained transition: at most
+`SHUTDOWN_TAIL_ENTRIES` entries before the join plus the 16 the lane still holds,
+so a consumer that stopped reading cannot lose a final `turn/completed`. The
+adapter's drain grace bounds the tail in time. Retained control outcomes go in
 `exit.outcomes`. Evidence stays task-owned before fallible processing, including
 across an injected panic; terminal cleanup does not execute more protocol writes.
 Shutdown never ACKs or waits for room in the consumer lane.

@@ -345,12 +345,44 @@ impl ProviderAttachment {
         self.completion().await
     }
 
+    /// Shutdown for a consumer that has stopped reading the journal. The task
+    /// may still journal the provider's exit tail; this receives it while the
+    /// task completes, keeping order, so a full lane cannot drop the tail. At
+    /// most `limit` entries are received before completion, plus those left
+    /// in the lane after it; the task's own cleanup bound ends the tail.
+    pub async fn shutdown_retaining_tail(&mut self, limit: usize) -> (TaskExit, Vec<JournalEntry>) {
+        self.shutdown.cancel();
+        let mut tail = Vec::new();
+        let exit = {
+            let completion = Self::join(&mut self.task, &self.status);
+            tokio::pin!(completion);
+            loop {
+                tokio::select! {
+                    biased;
+                    exit = &mut completion => break exit,
+                    Some(entry) = self.journal.recv(), if tail.len() < limit => tail.push(entry),
+                }
+            }
+        };
+        while let Ok(entry) = self.journal.try_recv() {
+            tail.push(entry);
+        }
+        (exit, tail)
+    }
+
     pub async fn completion(&mut self) -> TaskExit {
-        let result = match self.task.as_mut() {
+        Self::join(&mut self.task, &self.status).await
+    }
+
+    async fn join(
+        task: &mut Option<JoinHandle<TaskExit>>,
+        status: &watch::Receiver<AttachmentStatus>,
+    ) -> TaskExit {
+        let result = match task.as_mut() {
             Some(task) => task.await.unwrap_or_else(|_| TaskExit {
                 result: Err(AdapterError::TaskFailed),
                 cleanup_error: Some(PROVIDER_CLEANUP_UNCONFIRMED.into()),
-                recovery_needed: self.status.borrow().initialization_recovery(),
+                recovery_needed: status.borrow().initialization_recovery(),
                 provider_retained: false,
             }),
             None => TaskExit {
@@ -360,7 +392,7 @@ impl ProviderAttachment {
                 provider_retained: false,
             },
         };
-        self.task.take();
+        task.take();
         result
     }
 }
