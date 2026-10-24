@@ -1149,13 +1149,22 @@ mod tests {
     #[test]
     fn title_prompt_uses_first_user_request_and_last_eight_messages() {
         let agent = json!({"id":"a","prompt":"initial"});
-        let items = vec![
-            json!({"id":"one","role":"user","text":"first question","created":1.0}),
-            json!({"id":"two","role":"assistant","text":"answer","created":2.0}),
-        ];
-        let prompt = title_prompt(&agent, &items, &items).expect("prompt");
+        let oldest = [json!({"id":"first","role":"user","text":"first question","created":0.0})];
+        let items = (1..=10).rev().map(|index|
+            json!({"id":format!("message-{index}"),"role":"assistant","text":format!("answer {index}"),"created":index})
+        ).collect::<Vec<_>>();
+        let prompt = title_prompt(&agent, &items, &oldest).expect("prompt");
         assert!(prompt.contains("First user request: first question"));
-        assert!(prompt.contains("User: first question\nAgent: answer"));
+        assert_eq!(
+            prompt
+                .split_once("Recent conversation:\n")
+                .expect("recent section")
+                .1,
+            (3..=10)
+                .map(|index| format!("Agent: answer {index}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
     }
 
     #[test]

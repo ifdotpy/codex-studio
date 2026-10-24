@@ -444,6 +444,7 @@ mod tests {
             vec![
                 agent("lead", "lead", None),
                 agent("worker", "lead", None),
+                agent("other", "other", None),
                 agent("deleted", "lead", Some(1.0)),
             ],
             vec![
@@ -455,8 +456,15 @@ mod tests {
             ],
         )
         .expect("question projection succeeds");
-        assert_eq!(result["items"][0]["id"], "new");
-        assert_eq!(result["items"][1]["id"], "old");
+        assert_eq!(
+            result["items"]
+                .as_array()
+                .expect("questions")
+                .iter()
+                .map(|item| item["id"].as_str().expect("question id"))
+                .collect::<Vec<_>>(),
+            ["new", "old"]
+        );
         assert_eq!(result["items"][0]["questions"][0]["question"], "name");
     }
 
@@ -538,11 +546,23 @@ mod tests {
     }
 
     #[test]
-    fn filters_checkpoint_rows_and_refuses_invalid_records() {
-        let row = json!({"id":"checkpoint","agent":"lead","created":1.0,"items":["large"],"_payloadBlobs":{"secret":"sha"},"extension":9007199254740993_u64});
-        let rows = vec![CheckpointRecord::from_value(row).expect("checkpoint validates")];
+    fn checkpoint_summaries_filter_agents_and_strip_payloads() {
+        let row = json!({"id":"checkpoint","agent":"lead","created":1.0,"items":["large"],"historyDelta":["large"],"_payloadBlobs":{"secret":"sha"},"extension":9007199254740993_u64});
+        let mut other = row.clone();
+        other["id"] = json!("other-checkpoint");
+        other["agent"] = json!("other");
+        let rows = vec![row, other]
+            .into_iter()
+            .map(|row| CheckpointRecord::from_value(row).expect("checkpoint validates"))
+            .collect();
         let result = checkpoint_list(Some("lead"), vec![agent("lead", "lead", None)], rows)
             .expect("checkpoint summary succeeds");
+        assert_eq!(
+            result["checkpoints"].as_array().expect("checkpoints").len(),
+            1
+        );
+        assert_eq!(result["checkpoints"][0]["id"], "checkpoint");
+        assert!(result["checkpoints"][0].get("historyDelta").is_none());
         assert!(result["checkpoints"][0].get("items").is_none());
         assert!(result["checkpoints"][0].get("_payloadBlobs").is_none());
         assert_eq!(

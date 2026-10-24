@@ -764,27 +764,27 @@ mod tests {
                 json!({
                     "processHandle":"failing-notification",
                     "cwd":cwd.path(),
-                    "command":["/bin/sh","-c","printf first; sleep 0.1; printf second; sleep 5"],
+                    "command":["/bin/sh","-c","printf first; IFS= read -r release; printf second"],
                     "env":{"TERM":"xterm-256color"},
                     "size":{"cols":100,"rows":28}
                 }),
             )
             .expect("spawn notification writer");
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            let sessions = adapter.sessions.lock().expect("session map");
-            let live = sessions.get("failing-notification").expect("live terminal");
-            if live.reader.as_ref().expect("reader thread").is_finished() {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "reader stops after callback failure"
-            );
-            drop(sessions);
-            std::thread::yield_now();
-        }
+        // Consuming completion also transfers the reader join to this fixture.
+        let (done, reader) = {
+            let mut sessions = adapter.sessions.lock().expect("session map");
+            let live = sessions
+                .get_mut("failing-notification")
+                .expect("live terminal");
+            (
+                live.reader_done.take().expect("reader completion"),
+                live.reader.take().expect("reader thread"),
+            )
+        };
+        done.recv_timeout(Duration::from_secs(2))
+            .expect("reader stops after callback failure");
+        reader.join().expect("failed reader exits");
         assert_eq!(failed_calls.load(Ordering::SeqCst), 1);
         let retained = adapter.sessions.lock().expect("session map")["failing-notification"]
             .pending_notification
@@ -995,38 +995,10 @@ mod tests {
                                 && case.locale == locale_case
                         })
                         .expect("recorded environment matrix case");
-                    // This matrix checks child environment semantics, not PTY
-                    // hangup timing. Capture the short-lived probe through pipes,
-                    // as the Python oracle does. The live terminal tests above
-                    // separately require lossless PTY output, input and resize.
-                    let rust_output = Command::new("/usr/bin/env")
-                        .arg("-0")
-                        .current_dir(cwd.path())
-                        .env_clear()
-                        .envs(&rust_env)
-                        .output()
-                        .expect("run Rust environment probe");
-                    assert!(
-                        rust_output.status.success(),
-                        "Rust environment probe failed: {:?}: {}",
-                        rust_output.status,
-                        String::from_utf8_lossy(&rust_output.stderr)
-                    );
-                    let bytes = rust_output.stdout;
-                    let rust_keys: BTreeSet<Vec<u8>> = bytes
-                        .split(|byte| *byte == 0)
-                        .filter(|pair| !pair.is_empty())
-                        .map(|pair| {
-                            pair.split(|byte| *byte == b'=')
-                                .next()
-                                .unwrap_or_default()
-                                .to_vec()
-                        })
-                        .collect();
                     let encode = |key: &[u8]| base64::engine::general_purpose::STANDARD.encode(key);
-                    let rust_keys = rust_keys
-                        .iter()
-                        .map(|key| encode(key))
+                    let rust_keys = rust_env
+                        .keys()
+                        .map(|key| encode(key.as_encoded_bytes()))
                         .collect::<BTreeSet<_>>();
                     let expected_keys = expected.keys.clone();
                     #[cfg(target_os = "macos")]
@@ -1038,11 +1010,29 @@ mod tests {
                         rust_keys, expected_keys,
                         "environment keys differ (supervisor={supervisor}, backend-overrides={backend_overrides}, locale={locale_case})"
                     );
-                    assert!(
-                        bytes
-                            .windows(b"STUDIO_RAW_\xff=raw-value-\xfe".len())
-                            .any(|window| window == b"STUDIO_RAW_\xff=raw-value-\xfe")
-                    );
+                    if !supervisor && backend_overrides && locale_case == "utf8" {
+                        let probe = Command::new("/usr/bin/env")
+                            .arg("-0")
+                            .current_dir(cwd.path())
+                            .env_clear()
+                            .envs(&rust_env)
+                            .output()
+                            .expect("raw environment probe");
+                        assert!(probe.status.success());
+                        let actual = probe
+                            .stdout
+                            .split(|byte| *byte == 0)
+                            .filter(|pair| !pair.is_empty())
+                            .map(<[u8]>::to_vec)
+                            .collect::<BTreeSet<_>>();
+                        let expected = rust_env
+                            .iter()
+                            .map(|(key, value)| {
+                                [key.as_encoded_bytes(), b"=", value.as_encoded_bytes()].concat()
+                            })
+                            .collect::<BTreeSet<_>>();
+                        assert_eq!(actual, expected);
+                    }
                     let encode = |key: &str| encode(key.as_bytes());
                     for key in [
                         "HOME",

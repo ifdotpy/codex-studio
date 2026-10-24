@@ -153,16 +153,6 @@ pub fn claim_cost_refresh_attempt(account_key: &str) -> bool {
 
 /// Refresh local session logs into the account-scoped cache.
 /// GET handlers return their cache before scheduling this blocking work.
-#[cfg(test)]
-fn refresh_account_costs(
-    state_dir: &Path,
-    account_key: &str,
-    account: &Value,
-    cancelled: &AtomicBool,
-) -> Result<(), UsageError> {
-    refresh_account_costs_report(state_dir, account_key, account, cancelled).1
-}
-
 /// Refresh and report whether a cache value was durably saved, even if the
 /// scanner itself failed and the saved value records that failure.
 pub fn refresh_account_costs_report(
@@ -1126,7 +1116,7 @@ fn local_day(timestamp: f64) -> String {
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
-    use super::{account_cost_snapshot, refresh_account_costs, scan_claude_sessions};
+    use super::{account_cost_snapshot, refresh_account_costs_with, scan_claude_sessions};
     use serde_json::{Value, json};
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
@@ -1398,6 +1388,7 @@ mod tests {
     fn local_claude_session_fixture_is_deduplicated_and_priced() {
         let directory = tempfile::tempdir().expect("owned test directory");
         let root = directory.path().to_path_buf();
+        let now = chrono::DateTime::from_timestamp(1_700_049_600, 0).expect("fixed scan day");
         let home = root.join("profile");
         let logs = home.join("projects/sample");
         std::fs::create_dir_all(&logs).expect("fixture sessions");
@@ -1405,7 +1396,7 @@ mod tests {
         std::fs::write(
             root.join("state/model-pricing/models-dev-v1.json"),
             json!({
-                "version":1,"fetchedAtEpoch":chrono::Utc::now().timestamp(),
+                "version":1,"fetchedAtEpoch":now.timestamp(),
                 "catalog":{"providers":{
                     "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2}}}},
                     "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2}}}}
@@ -1414,7 +1405,6 @@ mod tests {
             .to_string(),
         )
         .expect("fixture catalog");
-        let now = chrono::Utc::now();
         let stamp = now.to_rfc3339();
         let row = format!(
             "{{\"type\":\"assistant\",\"timestamp\":\"{stamp}\",\"message\":{{\"id\":\"message-1\",\"model\":\"claude-test\",\"usage\":{{\"input_tokens\":100000,\"output_tokens\":100000}}}}}}\n"
@@ -1434,8 +1424,16 @@ mod tests {
         let account = json!({"id":"claude-local","provider":"claude","home":home,
             "status":"ready"});
         let state = root.join("state");
-        refresh_account_costs(&state, "claude-local", &account, &AtomicBool::new(false))
-            .expect("refresh local Claude cache");
+        refresh_account_costs_with(
+            &state,
+            "claude-local",
+            &account,
+            &AtomicBool::new(false),
+            || now.timestamp() as f64,
+            |_, _, _| panic!("Claude uses its own scanner"),
+        )
+        .1
+        .expect("refresh local Claude cache");
         let cached =
             account_cost_snapshot(&state, "claude-local", &account, now.timestamp() as f64)
                 .expect("read refreshed Claude cache");

@@ -1370,18 +1370,22 @@ mod tests {
         assert_eq!(hub.snapshot(), saved);
         let records = (0..TOKEN_RATE_MAX_ENTRIES)
             .map(|index| {
-                let mut next = record.clone();
-                next["agentId"] = json!(format!("a{index}"));
-                next
+                json!({"agentId":format!("a{index}"),"rootId":"root","turnId":"turn",
+                    "active":true,"estimated":false,"rate":0,"outputTokens":0})
             })
             .collect::<Vec<_>>();
         assert!(
             hub.publish(json!({"records":records}))
                 .expect("entry boundary")
         );
+        let saved = hub.snapshot();
         let mut overfull = records;
         overfull.push(record);
         assert!(hub.publish(json!({"records":overfull})).is_err());
+        assert!(
+            hub.snapshot() == saved,
+            "overfull rejection preserves the snapshot"
+        );
     }
 
     #[test]

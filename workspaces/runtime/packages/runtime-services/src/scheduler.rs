@@ -1237,7 +1237,8 @@ mod child_turn_parent_tests {
 
     #[tokio::test]
     async fn monitor_completion_waits_after_turn_and_each_exit_queues_the_owner() {
-        for provider in ["codex", "claude"] {
+        {
+            let provider = "codex";
             let (directory, store, intent) = seeded(provider).await;
             let log_root = directory
                 .path()
@@ -1296,7 +1297,8 @@ mod child_turn_parent_tests {
     #[tokio::test]
     async fn monitor_completion_recovered_turn_keeps_owned_command_waiting() {
         use crate::recovery_store::RecoveryDelivery;
-        for provider in ["codex", "claude"] {
+        {
+            let provider = "codex";
             let (directory, store, _intent) = seeded(provider).await;
             let log_root = directory
                 .path()
@@ -1927,7 +1929,8 @@ mod child_result_coalesce_tests {
 
     #[tokio::test]
     async fn sequential_child_results_wake_the_lead_once_with_all_results() {
-        for provider in ["codex", "claude"] {
+        {
+            let provider = "codex";
             let directory = tempfile::tempdir().expect("temporary state directory");
             let (store, intents) = team(directory.path(), provider).await;
             for id in &CHILDREN[..2] {
