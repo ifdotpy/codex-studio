@@ -176,6 +176,13 @@ scripts select client unit, browser, desktop, and provider bridge checks. Browse
 checks build the renderer, use isolated state and a Rust HTTP fixture, and reap
 fixture process groups after success, failure, or timeout. Browser scratch and
 parallelism are owned by the [launcher](../workspaces/client/apps/web/scripts/run-browser-tests.mjs).
+Read-only layout and navigation specs can opt into `readOnlyRust` in the
+[shared browser fixtures](../workspaces/client/apps/web/tests/playwright.mjs).
+It reuses one minimal backend per worker, mocks preference and read acknowledgements
+per browser context, and rejects other persistent writes. Tests that exercise
+mutations keep disposable backends. The scroll-follow smoke covers the phone
+reader/stream/Latest path; its desktop, trackpad and content-growth matrix remains
+in the full browser project.
 Explicit worker counts override its automatic plan. The wrapper clears `BROWSER`
 before launching and retains JSON diagnostics for failures.
 

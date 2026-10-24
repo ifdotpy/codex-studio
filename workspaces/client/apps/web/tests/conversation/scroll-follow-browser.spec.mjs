@@ -60,11 +60,22 @@ function history() {
 test("a scrolled-up reader keeps its place while the agent streams", async ({
   page,
 }) => {
+  await scrollFollow(page, false);
+});
+
+test("scroll-follow desktop and phone wheel, trackpad and content-growth races", async ({
+  page,
+}) => {
+  await scrollFollow(page, true);
+});
+
+async function scrollFollow(page, full) {
   test.setTimeout(150_000);
   page.setDefaultTimeout(15000);
   const dir = await mkdtemp(join(tmpdir(), "studio-scroll-follow-"));
   const proc = spawn(process.execPath, [rustUiFixture, dir], {
     stdio: ["ignore", "pipe", "pipe"],
+    env: { FIXTURE_WORKER_COUNT: "0" },
   });
   let log = "";
   proc.stderr.on("data", (d) => (log += d));
@@ -76,10 +87,12 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
   const state = await readTestState(origin);
   const syncContract = await readFixtureSyncContract(origin);
   const chat = state.threads.find((a) => a.name === "Other project");
-  const passes = [
-    { width: 1440, height: 900 },
-    { width: 390, height: 844 },
-  ];
+  const passes = full
+    ? [
+        { width: 1440, height: 900 },
+        { width: 390, height: 844 },
+      ]
+    : [{ width: 390, height: 844 }];
   const reset = () => ({
     items: history(),
     agent: {
@@ -620,102 +633,104 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       await anchored(left, "the reader stays where the wheel step left it");
       await latest.waitFor();
 
-      // A further wheel step while scrolled up is kept the same way.
-      await wheelStepInGap(
-        -300,
-        "a stream render does not undo a scroll step or growth above",
-        240,
-      );
-      const further = await readingPoint();
-      await nextRender();
-      await settle(true);
-      await anchored(further, "the reader stays after a further step");
+      if (full) {
+        // A further wheel step while scrolled up is kept the same way.
+        await wheelStepInGap(
+          -300,
+          "a stream render does not undo a scroll step or growth above",
+          240,
+        );
+        const further = await readingPoint();
+        await nextRender();
+        await settle(true);
+        await anchored(further, "the reader stays after a further step");
 
-      // Trackpad-sized wheel steps, then more stream updates.
-      const box = await root.boundingBox();
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      for (let step = 0; step < 20; step++) {
-        await page.mouse.wheel(0, -30);
-        await page.waitForTimeout(16);
-      }
-      await settle(true);
-      const reading = await readingPoint();
-      assert.ok(
-        reading.gap > 900 && reading.message,
-        `${width}px: wheel steps move the reader up (${JSON.stringify(reading)})`,
-      );
-      for (let update = 0; update < 4; update++) await nextRender();
-      await settle(true);
-      // Rows that the window mounts above the reader can change scrollTop
-      // by their measured height. The visible text must not move.
-      await anchored(
-        reading,
-        "the reading paragraph stays in place during the stream",
-      );
+        // Trackpad-sized wheel steps, then more stream updates.
+        const box = await root.boundingBox();
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        for (let step = 0; step < 20; step++) {
+          await page.mouse.wheel(0, -30);
+          await page.evaluate(() => new Promise(requestAnimationFrame));
+        }
+        await settle(true);
+        const reading = await readingPoint();
+        assert.ok(
+          reading.gap > 900 && reading.message,
+          `${width}px: wheel steps move the reader up (${JSON.stringify(reading)})`,
+        );
+        for (let update = 0; update < 4; update++) await nextRender();
+        await settle(true);
+        // Rows that the window mounts above the reader can change scrollTop
+        // by their measured height. The visible text must not move.
+        await anchored(
+          reading,
+          "the reading paragraph stays in place during the stream",
+        );
 
-      // Content above the reader grows, as a late image or an expanded row.
-      // It grows at the start of the window row that crosses the viewport
-      // top, which is also the window's own anchor, and a stream commit
-      // is observed before this witness releases the growth operation.
-      await root.evaluate(
-        (element, sentence) =>
-          new Promise((resolve, reject) => {
-            let attempts = 0;
-            const attempt = () => {
-              attempts++;
-              const reply = element.querySelector(
-                '[data-message="reply-live"]',
-              );
-              if (!reply) {
-                reject(new Error("The streamed reply is not mounted."));
-                return;
-              }
-              const top = element.getBoundingClientRect().top;
-              const above =
-                [...element.querySelectorAll("[data-history-row]")].find(
-                  (row) => {
-                    const box = row.getBoundingClientRect();
-                    return box.top < top && box.bottom > top;
-                  },
-                ) ||
-                [...element.querySelectorAll("[data-message]")].findLast(
-                  (node) => node.getBoundingClientRect().bottom < top,
-                );
-              above.style.paddingTop = "240px";
-              const observer = new MutationObserver(() => {
-                const current = element.querySelector(
+        // Content above the reader grows, as a late image or an expanded row.
+        // It grows at the start of the window row that crosses the viewport
+        // top, which is also the window's own anchor, and a stream commit
+        // is observed before this witness releases the growth operation.
+        await root.evaluate(
+          (element, sentence) =>
+            new Promise((resolve, reject) => {
+              let attempts = 0;
+              const attempt = () => {
+                attempts++;
+                const reply = element.querySelector(
                   '[data-message="reply-live"]',
                 );
-                if (!current?.textContent.includes(sentence)) return;
-                clearTimeout(deadline);
-                observer.disconnect();
-                resolve(attempts);
-              });
-              const deadline = setTimeout(() => {
-                observer.disconnect();
-                reject(
-                  new Error(
-                    "The stream did not commit after growth above the reader.",
-                  ),
-                );
-              }, 15000);
-              observer.observe(element, {
-                childList: true,
-                subtree: true,
-                characterData: true,
-              });
-              void window.publishScrollUpdate().catch(reject);
-            };
-            attempt();
-          }),
-        `Streamed ${width} sentence ${streamed} `,
-      );
-      await nextRender();
-      await settle(true);
-      await anchored(
-        reading,
-        "content growth above the reader keeps it anchored",
-      );
+                if (!reply) {
+                  reject(new Error("The streamed reply is not mounted."));
+                  return;
+                }
+                const top = element.getBoundingClientRect().top;
+                const above =
+                  [...element.querySelectorAll("[data-history-row]")].find(
+                    (row) => {
+                      const box = row.getBoundingClientRect();
+                      return box.top < top && box.bottom > top;
+                    },
+                  ) ||
+                  [...element.querySelectorAll("[data-message]")].findLast(
+                    (node) => node.getBoundingClientRect().bottom < top,
+                  );
+                above.style.paddingTop = "240px";
+                const observer = new MutationObserver(() => {
+                  const current = element.querySelector(
+                    '[data-message="reply-live"]',
+                  );
+                  if (!current?.textContent.includes(sentence)) return;
+                  clearTimeout(deadline);
+                  observer.disconnect();
+                  resolve(attempts);
+                });
+                const deadline = setTimeout(() => {
+                  observer.disconnect();
+                  reject(
+                    new Error(
+                      "The stream did not commit after growth above the reader.",
+                    ),
+                  );
+                }, 15000);
+                observer.observe(element, {
+                  childList: true,
+                  subtree: true,
+                  characterData: true,
+                });
+                void window.publishScrollUpdate().catch(reject);
+              };
+              attempt();
+            }),
+          `Streamed ${width} sentence ${streamed} `,
+        );
+        await nextRender();
+        await settle(true);
+        await anchored(
+          reading,
+          "content growth above the reader keeps it anchored",
+        );
+      }
 
       // The explicit Latest action returns to the bottom and follows again.
       await latest.click();
@@ -740,4 +755,4 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
     );
   }
   expect(errors).toEqual([]);
-});
+}
