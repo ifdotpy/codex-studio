@@ -856,7 +856,7 @@ pub async fn adopt_receipt(
 }
 
 fn check_durable_blockers(tx: &Transaction<'_>, agent: &str) -> Result<(), TransferError> {
-    for table in ["runtime_tasks", "runtime_monitors", "runtime_requests"] {
+    for table in ["runtime_tasks", "runtime_requests"] {
         let sql = format!(
             "SELECT EXISTS(SELECT 1 FROM {table} WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') IN ('running','starting','approval','pending','unknown'))"
         );
@@ -866,6 +866,26 @@ fn check_durable_blockers(tx: &Transaction<'_>, agent: &str) -> Result<(), Trans
         if busy {
             return Err(TransferError::Refused(
                 "Waiting for background work or a tool response",
+            ));
+        }
+    }
+    let mut monitors=tx.prepare_cached("SELECT id FROM runtime_monitors WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') IN ('running','starting','approval','pending','unknown')").map_err(studio_runtime_store::StoreError::from)?;
+    let monitors = monitors
+        .query_map([agent], |row| row.get::<_, String>(0))
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    for id in monitors {
+        if !crate::account_worker::retained::monitor_survives_account_transfer(tx, &id, agent)
+            .map_err(|error| match error {
+                crate::account_worker::WorkerError::Store(error) => TransferError::Store(error),
+                _ => {
+                    TransferError::Refused("Source monitor process ownership could not be verified")
+                }
+            })?
+        {
+            return Err(TransferError::Refused(
+                "Waiting for verified source monitor ownership. The original process was not stopped.",
             ));
         }
     }
@@ -941,7 +961,17 @@ pub async fn execute_member(
     let transaction_agent_id = agent_id.clone();
     let input = store
         .transaction_with_error(move |tx| {
-            check_durable_blockers(tx, &transaction_agent_id)?;
+            if let Err(error) = check_durable_blockers(tx, &transaction_agent_id) {
+                if let TransferError::Refused(reason) = &error {
+                    let snapshot = load(tx, &operation_id)?;
+                    persist(
+                        tx,
+                        snapshot.waiting_for_blocker(&transaction_agent_id, reason)?,
+                        now,
+                    )?;
+                }
+                return Ok(Err(error));
+            }
             let snapshot = load(tx, &operation_id)?;
             let decision = snapshot.begin_read(&transaction_agent_id)?;
             let input = TransferPreparation {
@@ -949,9 +979,9 @@ pub async fn execute_member(
                 agent: snapshot.agent(&transaction_agent_id)?.clone(),
             };
             persist(tx, decision, now)?;
-            Ok::<_, TransferError>(input)
+            Ok::<_, TransferError>(Ok(input))
         })
-        .await?;
+        .await??;
     let prepared = executor.prepare(&input).await.and_then(|prepared| {
         if prepared.ticket.operation != operation || prepared.ticket.agent != agent {
             return Err(TransferError::Refused(
@@ -1041,6 +1071,94 @@ mod request_tests {
             Ok::<_, studio_runtime_store::StoreError>(())
         })).expect("test fixture operation succeeds");
         (root, store)
+    }
+
+    #[test]
+    fn a_running_retained_monitor_does_not_block_its_owners_account_transfer() {
+        let (_root, store) = store_with_agents();
+        run_async(store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
+                [json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}}).to_string()])?;
+            let key=format!("retained:source:{}",studio_runtime_store::sha256_hex(b"monitor:watch"));
+            let submitted=json!({"call":{"scope":{"account":"source","connection":"original","generation":4},"operation":"monitor:watch","actor":{"agent":"lead","epoch":1},"transfer":null,"deleted_actor_session":null,"method":"command/exec","params":{"processId":"watch","cwd":"/tmp/work","command":["true"]}},
+                "request":{"id":key,"generation":4,"method":"command/exec","operation":key,"thread":null,"lightweight":true,"deadline":60000,"remoteId":null}});
+            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'test',?2)",(format!("account-worker:{key}:submitted"),submitted.to_string()))?;
+            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'test',?2)",(format!("account-worker:{key}:written"),submitted["request"].to_string()))?;
+            Ok(())
+        })).expect("persist the original written command");
+        let transfer = "5a300f72-4ea6-4d30-8a0e-9b2c13c4a001";
+        request(&store, transfer, "lead", "target", "team", "codex", 1.0)
+            .expect("request the account transfer");
+        run_async(begin_read(&store, transfer, "lead", 2.0))
+            .expect("the model account can move without restarting its original process");
+        let monitor = studio_runtime_store::MonitorsRepository::get(
+            &store.test_reader().expect("reader"),
+            "watch",
+        )
+        .expect("read monitor")
+        .expect("monitor remains");
+        assert_eq!(monitor.value()["status"], "running");
+        assert_eq!(monitor.value()["operation"]["accountKey"], "source");
+    }
+
+    #[test]
+    fn an_unproven_monitor_publishes_one_transfer_wait_without_repeated_writes() {
+        struct NoNative;
+        impl TransferTransport for NoNative {
+            fn send<'a>(
+                &'a self,
+                _: &'a Ticket,
+                _: &'a crate::account_session_runtime::ConnectionScope,
+                _: &'a str,
+                _: &'a Value,
+            ) -> TransferFuture<'a, TransferDispatch> {
+                Box::pin(async { panic!("an unproven monitor cannot dispatch a transfer") })
+            }
+        }
+        impl TransferExecutor for NoNative {
+            fn available(&self) -> Result<(), TransferError> {
+                Ok(())
+            }
+            fn prepare<'a>(
+                &'a self,
+                _: &'a TransferPreparation,
+            ) -> TransferFuture<'a, Result<PreparedTransfer, TransferError>> {
+                Box::pin(async { panic!("an unproven monitor cannot prepare a transfer") })
+            }
+        }
+        let (_root, store) = store_with_agents();
+        run_async(store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",[json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}}).to_string()])?;
+            Ok(())
+        })).expect("persist the unproven monitor");
+        let transfer = "5a300f72-4ea6-4d30-8a0e-9b2c13c4a001";
+        request(&store, transfer, "lead", "target", "team", "codex", 1.0)
+            .expect("request the account transfer");
+        let first = run_async(execute_member(&store, &NoNative, transfer, "lead", 2.0))
+            .expect_err("unproven ownership blocks the transfer");
+        assert!(
+            first
+                .to_string()
+                .contains("verified source monitor ownership")
+        );
+        let before=run_async(store.transaction(|tx| {
+            let raw=Repository::get(tx,transfer)?.expect("transfer remains");
+            let operation:Value=serde_json::from_str(&raw)?;
+            assert!(operation["members"]["lead"]["waiting"].as_str().expect("visible wait reason").contains("verified source monitor ownership"));
+            assert_eq!(operation["members"]["lead"]["phase"],"lazy");
+            tx.execute_batch("CREATE TRIGGER no_repeated_transfer_write BEFORE UPDATE ON runtime_account_transfers BEGIN SELECT RAISE(ABORT,'repeated transfer write'); END; CREATE TRIGGER no_repeated_actor_write BEFORE UPDATE ON runtime_agents BEGIN SELECT RAISE(ABORT,'repeated actor write'); END;")?;
+            Ok(raw)
+        })).expect("save the wait and install no-write guards");
+        let second = run_async(execute_member(&store, &NoNative, transfer, "lead", 3.0))
+            .expect_err("the same blocker remains read-only");
+        assert_eq!(first.to_string(), second.to_string());
+        let after = Repository::get(&store.test_reader().expect("reader"), transfer)
+            .expect("read unchanged transfer")
+            .expect("transfer remains");
+        assert_eq!(
+            before, after,
+            "the same blocker changes no revision or timestamp"
+        );
     }
 
     #[test]

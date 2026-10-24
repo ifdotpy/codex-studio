@@ -2525,6 +2525,261 @@ async fn tool_monitor_on_a_non_default_account_reaches_its_provider() {
     worker.shutdown().await.unwrap();
 }
 
+/// A lazy transfer changes the actor's account before its old command ends.
+/// Cancel and the retained exit still belong to that original command only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_exit() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let actor = state.agent.clone();
+    let epoch = state.epoch;
+    let scope = port.scope().clone();
+    let operation = crate::monitor_policy::Operation {
+        agent: actor.clone(),
+        epoch,
+        account_key: scope.account.clone(),
+        connection_id: scope.connection.clone(),
+        evidence: Default::default(),
+    };
+    let saved_operation = operation.clone();
+    let cwd = state.record().await["cwd"].as_str().unwrap().to_owned();
+    let seed_cwd = cwd.clone();
+    state.bridge.run(move |store| async move {
+        let log=crate::monitor_output::log_root(store.root()).join("transfer-watch.log");
+        store.transaction_with(move |tx| {
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('transfer-watch',?1)",
+                [json!({"id":"transfer-watch","agent":actor,"epoch":epoch,"status":"running",
+                    "cwd":seed_cwd,"command":"true","interactive":true,"log":log,"operation":saved_operation}).to_string()])?;
+            Ok(())
+        }).await
+    }).await.unwrap();
+    let exec = monitor_request(
+        &state,
+        &port,
+        "monitor:transfer-watch".into(),
+        Method::CommandExec,
+        json!({"command":["/bin/sh","-c","true"],"cwd":cwd,"processId":"transfer-watch"}),
+    );
+    let sender = port.clone();
+    let mut running = tokio::spawn(async move { sender.request(exec).await });
+    let exec_wire = monitor_write(&mut peer, &mut running, "command/exec").await;
+    let actor = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            crate::account_transfer_driver::request(
+                &store,
+                "5a300f72-4ea6-4d30-8a0e-9b2c13c4a001",
+                &actor,
+                "target",
+                "team",
+                "codex",
+                1.0,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+        })
+        .await
+        .unwrap();
+    let output_cursor=peer.frame(json!({"method":"command/exec/outputDelta","params":{"processId":"transfer-watch","stream":"stdout","deltaBase64":"aGVsbG8="}})).await;
+    peer.acknowledged(output_cursor).await;
+    let output_scope = scope.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let record =
+                        studio_runtime_store::MonitorsRepository::get(tx, "transfer-watch")?
+                            .unwrap();
+                    assert_eq!(record.value()["streamQueue"][0]["deltaBase64"], "aGVsbG8=");
+                    assert!(!crate::monitor_event_queue::enqueue_output_in_transaction(
+                        tx,
+                        "transfer-watch",
+                        &output_scope.account,
+                        output_scope.generation + 1,
+                        output_cursor + 1,
+                        &json!({"processId":"transfer-watch","deltaBase64":"eA=="})
+                    )?);
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    let delivery = crate::monitor_event_queue::next(&state.bridge.store)
+        .await
+        .unwrap()
+        .unwrap();
+    let crate::monitor_runtime_wiring::MonitorEvent::OutputStream {
+        offset,
+        ref stream,
+        ref bytes,
+    } = delivery.event
+    else {
+        panic!("source output")
+    };
+    crate::monitor_output::MonitorOutput::default()
+        .append_stream(
+            &state.bridge.store,
+            &delivery.id,
+            &delivery.operation,
+            offset,
+            stream,
+            bytes,
+            2.0,
+        )
+        .await
+        .unwrap();
+    crate::monitor_event_queue::acknowledge(&state.bridge.store, &delivery)
+        .await
+        .unwrap();
+    let (observed, _, _) = crate::monitor_observation::read(
+        &state.bridge.store,
+        &state.agent,
+        state.epoch,
+        "target",
+        "transfer-watch",
+    )
+    .await
+    .unwrap();
+    assert_eq!(observed["tail"], "hello");
+    for (ticket, input) in [
+        (
+            "write-after-transfer",
+            crate::monitor_policy::Input {
+                text: "hello".into(),
+                rows: None,
+                cols: None,
+                close_stdin: false,
+            },
+        ),
+        (
+            "resize-after-transfer",
+            crate::monitor_policy::Input {
+                text: String::new(),
+                rows: Some(30),
+                cols: Some(100),
+                close_stdin: false,
+            },
+        ),
+    ] {
+        let effect = crate::monitor_runtime::reserve_input(
+            &state.bridge.store,
+            "transfer-watch",
+            &operation,
+            ticket,
+            &input,
+            2.0,
+        )
+        .await
+        .unwrap();
+        let crate::monitor_policy::Effect::Native {
+            identity,
+            method,
+            params,
+        } = effect
+        else {
+            panic!("native input")
+        };
+        let method = Method::from_wire(method).unwrap();
+        let call = monitor_request(&state, &port, identity, method, params);
+        let sender = port.clone();
+        let mut input_task = tokio::spawn(async move { sender.request(call).await });
+        let wire = monitor_write(&mut peer, &mut input_task, method.as_str()).await;
+        assert_eq!(wire["params"]["processId"], "transfer-watch");
+        peer.reply(&wire, json!({})).await;
+        assert!(input_task.await.unwrap().is_ok());
+        crate::monitor_runtime::settle_input(
+            &state.bridge.store,
+            "transfer-watch",
+            &operation,
+            ticket,
+            crate::monitor_policy::InputOutcome::Acknowledged,
+            3.0,
+        )
+        .await
+        .unwrap();
+    }
+    // The public driver latches cancellation before native I/O.
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    crate::monitor_driver::reserve_cancel(tx, "transfer-watch", None, 4.0)
+                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    let cancel = monitor_request(
+        &state,
+        &port,
+        "monitor-cancel:transfer-watch".into(),
+        Method::CommandExecTerminate,
+        json!({"processId":"transfer-watch"}),
+    );
+    let sender = port.clone();
+    let replay = cancel.clone();
+    let mut cancelling = tokio::spawn(async move { sender.request(cancel).await });
+    let cancel_wire = monitor_write(&mut peer, &mut cancelling, "command/exec/terminate").await;
+    assert_eq!(cancel_wire["params"], json!({"processId":"transfer-watch"}));
+    peer.reply(&cancel_wire, json!({})).await;
+    assert!(cancelling.await.unwrap().is_ok());
+    assert!(port.request(replay).await.unwrap().replayed);
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "cancel replay sends no second request"
+    );
+    peer.reply(&exec_wire, json!({"exitCode":0})).await;
+    assert!(running.await.unwrap().is_ok());
+    let result = crate::account_worker::retained::monitor_result(
+        &state.bridge.store,
+        "transfer-watch",
+        &operation,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(result,Some(ProviderResponse::Reply(ref value)) if value["exitCode"]==0));
+    let receipt = crate::monitor_receipts::ResultReceipt {
+        version: 1,
+        key: "transfer-watch".into(),
+        code: Some(0),
+        error: None,
+        operation: Some(operation),
+        finished: 5.0,
+    };
+    crate::monitor_receipts::finish(&state.bridge.store, &receipt)
+        .await
+        .unwrap();
+    crate::monitor_receipts::finish(&state.bridge.store, &receipt)
+        .await
+        .unwrap();
+    state.bridge.run(|store|async move {
+        store.read_async("test/transferred-monitor-exit",|tx| {
+            let count:i64=tx.query_row("SELECT count(*) FROM runtime_events WHERE id='monitor:transfer-watch' AND kind='monitor_exit'",[],|row|row.get(0))?;
+            assert_eq!(count,1,"the transferred owner receives its source exit once");
+            Ok(())
+        }).await
+    }).await.unwrap();
+    assert_eq!(
+        state.event_status("input").await,
+        "pending",
+        "the source worker does not claim the target account's user input"
+    );
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "the original command never runs again"
+    );
+    worker.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn deleted_voice_stop_requires_the_exact_committed_session() {
     let state = State::new().await;

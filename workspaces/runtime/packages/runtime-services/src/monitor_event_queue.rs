@@ -5,6 +5,7 @@
 //! output/result, so replay after restart is exact and never starts a command.
 
 use base64::Engine;
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     MonitorRecord, MonitorsRepository, RuntimeStore, StoreError, Table, Transaction,
@@ -77,6 +78,37 @@ pub fn enqueue_output_with_scope_in_transaction(
             .is_some_and(|agent| record["agent"].as_str() != Some(agent))
     {
         return Ok(false);
+    }
+    let agent = record["agent"]
+        .as_str()
+        .ok_or(NotificationDispatchError::InvalidNotification)?;
+    let owner_account = tx
+        .query_row(
+            "SELECT COALESCE(account_key,'default') FROM runtime_agents WHERE id=?1",
+            [agent],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(StoreError::from)?;
+    if owner_account
+        .as_deref()
+        .is_some_and(|account| account != scope.account)
+    {
+        let operation = serde_json::from_value::<Operation>(record["operation"].clone())
+            .map_err(|_| NotificationDispatchError::InvalidNotification)?;
+        let original =
+            crate::account_worker::retained::monitor_command_scope(tx, process_id, &operation)
+                .map_err(|error| match error {
+                    crate::account_worker::WorkerError::Store(error) => {
+                        NotificationDispatchError::Store(error)
+                    }
+                    _ => NotificationDispatchError::InvalidNotification,
+                })?;
+        if original.is_none_or(|original| {
+            original.generation != scope.generation || original.account != scope.account
+        }) {
+            return Ok(false);
+        }
     }
     let Some(encoded) = params["deltaBase64"].as_str() else {
         return Err(NotificationDispatchError::InvalidNotification);

@@ -392,6 +392,12 @@ impl MonitorSnapshot {
     pub fn operation(&self) -> Option<&Operation> {
         self.fields.operation.as_ref()
     }
+    /// The native process stays on its submitted account after a model-account move.
+    fn command_account(&self) -> &str {
+        self.operation()
+            .map(|operation| operation.account_key.as_str())
+            .unwrap_or(&self.actor.account_key)
+    }
     pub(crate) fn active_owner(&self) -> bool {
         self.actor.deleted_at.is_none_or(|at| at == 0.0)
             && self.actor.auto_wake
@@ -732,7 +738,6 @@ pub fn begin_input(
         || !snapshot.active_owner()
         || f.cancel_requested
         || !f.interactive
-        || snapshot.actor.account_key != operation.account_key
     {
         return Err(MonitorError::Refused(
             "This interactive monitor is not active",
@@ -966,7 +971,7 @@ pub fn restart_recovery(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision
         return Ok(decision);
     }
     decision.record["reattachRecovery"] = json!(ReattachRecovery {
-        account_key: snapshot.actor.account_key.clone(),
+        account_key: snapshot.command_account().to_owned(),
         epoch: snapshot.actor.epoch,
         status: RecoveryStatus::Running,
         started_at: now,
@@ -1019,11 +1024,11 @@ pub fn reattach(
         MonitorStatus::Running | MonitorStatus::Starting | MonitorStatus::Approval
     ) || proof.operation_id != format!("monitor:{}", snapshot.id())
         || proof.current_connection.is_empty()
-        || proof.operation.account_key != snapshot.actor.account_key
+        || proof.operation.account_key != snapshot.command_account()
         || recovery.is_none_or(|recovery| {
             recovery.status != RecoveryStatus::Running
                 || recovery.epoch != snapshot.actor.epoch
-                || recovery.account_key != snapshot.actor.account_key
+                || recovery.account_key != snapshot.command_account()
         })
     {
         return Err(MonitorError::Refused(
