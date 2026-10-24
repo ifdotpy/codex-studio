@@ -166,8 +166,8 @@ mod tests {
     use std::{io::Cursor, sync::Arc, time::Instant};
     use studio_runtime_services::provider_versions::{
         ActiveProviderConnections, Clock, ProviderPortError, ProviderProfile,
-        ProviderVersionMonitor, ProviderVersionStore, SystemVersionProbe, UpstreamFetch,
-        UpstreamReply, VersionFacts, VersionProbe,
+        ProviderVersionMonitor, ProviderVersionStore, UpstreamFetch, UpstreamReply, VersionFacts,
+        VersionProbe,
     };
     use tower::ServiceExt;
 
@@ -192,7 +192,6 @@ mod tests {
     }
 
     struct LiveSessions {
-        claude_binary: String,
         changes: tokio::sync::watch::Sender<u64>,
     }
     impl ActiveProviderConnections for LiveSessions {
@@ -210,8 +209,8 @@ mod tests {
                 ProviderProfile {
                     account_key: "claude-connected".into(),
                     provider: "claude".into(),
-                    launched_binary: Some(self.claude_binary.clone()),
-                    configured_binary: Some(self.claude_binary.clone()),
+                    launched_binary: Some("/fixture/claude".into()),
+                    configured_binary: Some("/fixture/claude".into()),
                     server_identity: "server-8".into(),
                     connection_id: Some("connection-11".into()),
                 },
@@ -223,17 +222,22 @@ mod tests {
         }
     }
 
-    struct Probe {
-        production: SystemVersionProbe,
-    }
+    struct Probe;
     impl VersionProbe for Probe {
         fn probe(
             &self,
             profile: &ProviderProfile,
-            deadline: Instant,
+            _: Instant,
         ) -> Result<VersionFacts, ProviderPortError> {
             if profile.provider == "claude" {
-                self.production.probe(profile, deadline)
+                Ok(VersionFacts {
+                    installed_version: Some("2.1.279".into()),
+                    configured_version: Some("2.1.279".into()),
+                    running_note: Some(
+                        "The exact version already running in Claude sessions is unknown.".into(),
+                    ),
+                    ..VersionFacts::default()
+                })
             } else {
                 Ok(VersionFacts {
                     running_version: Some("0.153.3".into()),
@@ -408,9 +412,7 @@ mod tests {
             Arc::new(FixtureStore),
             None,
             root.path().join("provider-cache.json"),
-            Arc::new(Probe {
-                production: SystemVersionProbe,
-            }),
+            Arc::new(Probe),
             Arc::new(Fetch),
             Arc::new(FixtureClock),
         )
@@ -490,26 +492,12 @@ mod tests {
     #[tokio::test]
     async fn desktop_http_projects_only_live_connections() {
         let temporary = tempfile::tempdir().expect("isolated cache directory");
-        let claude_binary = temporary.path().join("claude-version-fixture");
-        std::fs::write(&claude_binary, "#!/bin/sh\nprintf '2.1.279\\n'\n")
-            .expect("Claude CLI test double written");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&claude_binary, std::fs::Permissions::from_mode(0o700))
-                .expect("Claude CLI test double made executable");
-        }
         let (changes, _) = tokio::sync::watch::channel(0);
         let monitor = ProviderVersionMonitor::start(
             Arc::new(FixtureStore),
-            Some(Arc::new(LiveSessions {
-                claude_binary: claude_binary.to_string_lossy().into_owned(),
-                changes,
-            })),
+            Some(Arc::new(LiveSessions { changes })),
             temporary.path().join("cache.json"),
-            Arc::new(Probe {
-                production: SystemVersionProbe,
-            }),
+            Arc::new(Probe),
             Arc::new(Fetch),
             Arc::new(FixtureClock),
         )
@@ -586,7 +574,7 @@ mod tests {
         assert_eq!(
             actual["providerVersions"]["providers"][1]["message"],
             "The exact version already running in Claude sessions is unknown.",
-            "the Claude projection uses the production probe's running-session note"
+            "the Claude projection retains the probe's running-session note"
         );
         monitor.shutdown().await;
     }

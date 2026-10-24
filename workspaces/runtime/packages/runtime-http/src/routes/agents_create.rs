@@ -256,7 +256,7 @@ mod workspace_admission_tests {
             "workspaceMode":"worktree","cwd":"/fake/project"
         }))
         .expect("native parent");
-        assert_eq!(parent_workspace_mode(&native), "worktree");
+        assert!(prepare_parent_workspace(&native).is_ok());
 
         let image_lead = studio_runtime_store::AgentRecord::from_value(serde_json::json!({
             "id":"image-parent","rootId":"image-parent","epoch":2,"status":"queued",
@@ -265,7 +265,10 @@ mod workspace_admission_tests {
             "cwd":"/fake/mount/repo"
         }))
         .expect("image lead");
-        assert_eq!(parent_workspace_mode(&image_lead), "image");
+        assert!(prepare_parent_workspace(&image_lead).is_ok());
+        let mut unready = image_lead;
+        unready.extra.remove("imageWorkspaceRepo");
+        assert!(prepare_parent_workspace(&unready).is_err());
     }
 
     /// Live 128-worker run: a second spawn batch was refused while the first
