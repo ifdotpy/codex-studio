@@ -21,6 +21,9 @@ const lost: StudioErrorItem = {
   detail:
     "Command outcome unknown after losing the provider result; not rerun.",
   subject: "cargo test",
+  ruleId: null,
+  count: 1,
+  firstAt: 1_792_700_000,
   at: 1_792_700_000,
 };
 
@@ -58,6 +61,22 @@ test("each row shows its reason and one safe action", () => {
   expect(markup).toContain("Dismiss");
   expect(actionLabel(lost)).toBe("Open");
   expect(actionLabel(disconnected)).toBe("Resume");
+});
+
+test("a repeated failure shows its count and time range once", () => {
+  const repeated: StudioErrorItem = {
+    ...lost,
+    id: "monitors:rule:watch:monitor_not_recorded",
+    kind: "monitor_not_recorded",
+    ruleId: "watch",
+    count: 74,
+    firstAt: 1_792_600_000,
+  };
+  const markup = render([repeated]);
+  expect(markup).toContain("74 times");
+  expect(markup).toContain(new Date(1_792_600_000 * 1000).toLocaleString());
+  expect(markup).toContain(new Date(1_792_700_000 * 1000).toLocaleString());
+  expect(render([lost])).not.toContain("times");
 });
 
 test("an empty list says that nothing needs the owner", () => {

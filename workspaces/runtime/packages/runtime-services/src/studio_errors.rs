@@ -6,6 +6,11 @@
 //! and never sends uncertain input again. `check` opens the agent, because
 //! only the owner can decide. Studio never runs a command or sends input from
 //! this list. A dismissed row stays hidden.
+//!
+//! A rule or a command can fail the same way many times, for example a rule
+//! that checks every few minutes while its owner cannot run. Its failures of
+//! one kind are one row with their count and time range. A failure that a
+//! later run of the same rule followed with a success is not on the list.
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{
     BACKEND_RESTARTED_TURN_ERROR, MONITOR_OWNER_STOPPED_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
@@ -23,6 +28,11 @@ pub const STUCK_INPUT_SECONDS: f64 = 10.0 * 60.0;
 pub const MAX_ROWS: usize = 200;
 /// Receipt-id prefix of a dismissed row.
 const DISMISSED_PREFIX: &str = "studio-errors:dismissed:";
+/// Row-id prefix of the failures of one rule or command and kind. Dismissing
+/// such a row hides its failures up to that time; a later one returns.
+const MONITOR_GROUP_PREFIX: &str = "monitors:";
+/// Row-id prefix of one monitor, as stored by dismissals before grouping.
+const MONITOR_ROW_PREFIX: &str = "monitor:";
 const DISMISSED_SIGNATURE: &str = "studio-error-dismissal";
 
 /// Why a row is on the list; each kind has one reason text and one action.
@@ -44,6 +54,14 @@ pub enum Kind {
     TurnDisconnected,
     /// Studio could not prepare the agent's workspace.
     WorkspaceFailed,
+    /// A running turn whose provider is silent while no tool runs.
+    TurnStalled,
+    /// An owner message that waits while its chat does not start.
+    InputNotStarted,
+    /// Chats that wait for an account session that does not start.
+    SessionNotStarted,
+    /// A usage resume, capacity retry or account transfer that did not move.
+    ScheduleStalled,
 }
 
 impl Kind {
@@ -57,6 +75,10 @@ impl Kind {
             Self::InputStuck => "input_stuck",
             Self::TurnDisconnected => "turn_disconnected",
             Self::WorkspaceFailed => "workspace_failed",
+            Self::TurnStalled => "turn_stalled",
+            Self::InputNotStarted => "input_not_started",
+            Self::SessionNotStarted => "session_not_started",
+            Self::ScheduleStalled => "schedule_stalled",
         }
     }
 
@@ -76,6 +98,12 @@ impl Kind {
             Self::InputStuck => "This message waits because of a Studio error.",
             Self::TurnDisconnected => "The provider connection ended during the turn.",
             Self::WorkspaceFailed => "Studio could not prepare the workspace of this agent.",
+            Self::TurnStalled => {
+                "The chat shows a running turn, but its provider sent nothing for 10 minutes."
+            }
+            Self::InputNotStarted => "A message waits, but its chat did not start.",
+            Self::SessionNotStarted => "Chats wait for an account session that did not start.",
+            Self::ScheduleStalled => "A scheduled step did not move after its due time.",
         }
     }
 
@@ -88,7 +116,21 @@ impl Kind {
             | Self::MonitorNotRecorded
             | Self::InputNotSent
             | Self::InputUnconfirmed
-            | Self::WorkspaceFailed => "check",
+            | Self::WorkspaceFailed
+            | Self::TurnStalled
+            | Self::InputNotStarted
+            | Self::SessionNotStarted
+            | Self::ScheduleStalled => "check",
+        }
+    }
+
+    /// The row kind of a liveness finding.
+    fn of_liveness(code: crate::liveness::Code) -> Self {
+        match code {
+            crate::liveness::Code::TurnStalled => Self::TurnStalled,
+            crate::liveness::Code::InputNotStarted => Self::InputNotStarted,
+            crate::liveness::Code::SessionNotStarted => Self::SessionNotStarted,
+            crate::liveness::Code::ScheduleStalled => Self::ScheduleStalled,
         }
     }
 }
@@ -168,7 +210,10 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
     };
     let mut rows = Vec::new();
     let push = |rows: &mut Vec<Value>, row: Value| {
-        if row["id"].as_str().is_some_and(|id| !dismissed.contains(id)) {
+        if row["id"]
+            .as_str()
+            .is_some_and(|id| !dismissed.contains_key(id))
+        {
             rows.push(row);
         }
     };
@@ -182,6 +227,7 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(monitors);
+    let mut groups = std::collections::BTreeMap::<(String, &'static str), MonitorGroup>::new();
     for (id, raw) in found {
         let Ok(record) = serde_json::from_str::<Value>(&raw) else {
             continue;
@@ -189,28 +235,88 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
         let Some(kind) = monitor_kind(&record) else {
             continue;
         };
-        let agent_id = record["agent"].as_str().unwrap_or_default();
-        let Some(owner) = agent(agent_id)? else {
+        if dismissed.contains_key(&format!("{MONITOR_ROW_PREFIX}{id}")) {
+            continue;
+        }
+        let agent_id = record["agent"].as_str().unwrap_or_default().to_owned();
+        let command = record["command"].as_str().unwrap_or_default().to_owned();
+        let rule = record["ruleId"]
+            .as_str()
+            .filter(|rule| !rule.is_empty())
+            .map(str::to_owned);
+        let key = match &rule {
+            Some(rule) => format!("rule:{rule}"),
+            None => format!(
+                "command:{agent_id}:{}",
+                &studio_runtime_store::sha256_hex(command.as_bytes())[..16]
+            ),
+        };
+        let failure = MonitorFailure {
+            id,
+            created: record["created"].as_f64().unwrap_or(0.0),
+            at: record["finished"]
+                .as_f64()
+                .or_else(|| record["created"].as_f64())
+                .unwrap_or(0.0),
+            error: record["error"].as_str().unwrap_or_default().to_owned(),
+        };
+        groups
+            .entry((key, kind.code()))
+            .or_insert_with(|| MonitorGroup {
+                kind,
+                agent: agent_id,
+                rule,
+                command: command.clone(),
+                failures: Vec::new(),
+            })
+            .failures
+            .push(failure);
+    }
+    for ((key, code), mut group) in groups {
+        let row_id = format!("{MONITOR_GROUP_PREFIX}{key}:{code}");
+        let dismissed_at = dismissed.get(&row_id).copied();
+        let succeeded_at = match &group.rule {
+            Some(rule) => {
+                let earliest = group
+                    .failures
+                    .iter()
+                    .map(|failure| failure.created)
+                    .fold(f64::INFINITY, f64::min);
+                last_rule_success(tx, rule, earliest)?
+            }
+            None => None,
+        };
+        group.failures.retain(|failure| {
+            succeeded_at.is_none_or(|success| failure.created >= success)
+                && dismissed_at.is_none_or(|dismissed| failure.at > dismissed)
+        });
+        group
+            .failures
+            .sort_by(|a, b| a.at.total_cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
+        let (Some(first), Some(last)) = (group.failures.first(), group.failures.last()) else {
+            continue;
+        };
+        let Some(owner) = agent(&group.agent)? else {
             continue;
         };
         if owner.deleted {
             continue;
         }
-        push(
-            &mut rows,
-            json!({
-                "id":format!("monitor:{id}"),
-                "kind":kind.code(),
-                "reason":kind.reason(),
-                "action":kind.action(),
-                "agentId":agent_id,
-                "agentName":owner.name,
-                "monitorId":id,
-                "detail":record["error"].as_str().unwrap_or_default(),
-                "subject":record["command"].as_str().unwrap_or_default(),
-                "at":record["finished"].as_f64().or_else(|| record["created"].as_f64()).unwrap_or(0.0),
-            }),
-        );
+        rows.push(json!({
+            "id":row_id,
+            "kind":group.kind.code(),
+            "reason":group.kind.reason(),
+            "action":group.kind.action(),
+            "agentId":group.agent,
+            "agentName":owner.name,
+            "monitorId":last.id,
+            "ruleId":group.rule,
+            "detail":last.error,
+            "subject":group.command,
+            "count":group.failures.len(),
+            "firstAt":first.at,
+            "at":last.at,
+        }));
     }
 
     let mut events = tx.prepare_cached(
@@ -251,6 +357,8 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
                 "eventId":id,
                 "detail":error,
                 "subject":text.chars().take(200).collect::<String>(),
+                "count":1,
+                "firstAt":created,
                 "at":created,
             }),
         );
@@ -287,7 +395,30 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
                 "agentName":name,
                 "detail":error,
                 "subject":"",
+                "count":1,
+                "firstAt":at,
                 "at":at,
+            }),
+        );
+    }
+
+    for finding in crate::liveness::findings(tx, now)? {
+        let kind = Kind::of_liveness(finding.code);
+        push(
+            &mut rows,
+            json!({
+                "id":finding.id,
+                "kind":kind.code(),
+                "reason":kind.reason(),
+                "action":kind.action(),
+                "agentId":finding.agent,
+                "agentName":finding.agent_name,
+                "eventId":finding.event,
+                "detail":finding.detail,
+                "subject":finding.subject,
+                "count":1,
+                "firstAt":finding.first_at,
+                "at":finding.at,
             }),
         );
     }
@@ -303,9 +434,43 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
     Ok(json!({"items":rows}))
 }
 
-fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeSet<String>, StoreError> {
+/// One failed or lost run of a rule or command.
+struct MonitorFailure {
+    id: String,
+    /// Unix seconds of its start.
+    created: f64,
+    /// Unix seconds of its end, or of its start when it has none.
+    at: f64,
+    error: String,
+}
+
+/// The failures of one rule or command and kind.
+struct MonitorGroup {
+    kind: Kind,
+    agent: String,
+    rule: Option<String>,
+    command: String,
+    failures: Vec<MonitorFailure>,
+}
+
+/// Unix seconds of the start of the latest successful run of `rule` that
+/// started at or after `since`.
+fn last_rule_success(
+    tx: &Transaction<'_>,
+    rule: &str,
+    since: f64,
+) -> Result<Option<f64>, StoreError> {
+    Ok(tx.query_row(
+        "SELECT MAX(json_extract(record,'$.created')) FROM runtime_monitors WHERE json_extract(record,'$.status')='completed' AND json_extract(record,'$.created')>=?1 AND json_extract(record,'$.ruleId')=?2",
+        rusqlite::params![since, rule],
+        |row| row.get::<_, Option<f64>>(0),
+    )?)
+}
+
+/// Dismissed row ids, each with the Unix seconds of its latest dismissal.
+fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeMap<String, f64>, StoreError> {
     let mut statement = tx.prepare_cached(
-        "SELECT substr(id,?3) FROM runtime_operation_receipts WHERE id>=?1 AND id<?2",
+        "SELECT substr(id,?3),COALESCE(json_extract(result,'$.at'),0) FROM runtime_operation_receipts WHERE id>=?1 AND id<?2",
     )?;
     let ids = statement
         .query_map(
@@ -314,22 +479,21 @@ fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeSet<String>,
                 format!("{DISMISSED_PREFIX}~"),
                 i64::try_from(DISMISSED_PREFIX.len() + 1).unwrap_or(i64::MAX)
             ],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)),
         )?
         .collect::<Result<_, _>>()?;
     Ok(ids)
 }
 
-/// Hide row `id` from the list. Dismissing it again changes nothing.
+/// Hide row `id` from the list. Dismissing it again changes nothing, except
+/// for the row of a rule or command: that hides its failures up to `now`.
 pub fn dismiss(tx: &Transaction<'_>, id: &str, now: f64) -> Result<(), StoreError> {
     let key = format!("{DISMISSED_PREFIX}{id}");
-    if EventWriteRepository::receipt(tx, &key)?.is_none() {
-        EventWriteRepository::put_receipt(
-            tx,
-            &key,
-            DISMISSED_SIGNATURE,
-            &json!({"at":now}).to_string(),
-        )?;
+    let value = json!({"at":now}).to_string();
+    if id.starts_with(MONITOR_GROUP_PREFIX) {
+        EventWriteRepository::replace_receipt(tx, &key, DISMISSED_SIGNATURE, &value)?;
+    } else if EventWriteRepository::receipt(tx, &key)?.is_none() {
+        EventWriteRepository::put_receipt(tx, &key, DISMISSED_SIGNATURE, &value)?;
     }
     Ok(())
 }
@@ -411,6 +575,10 @@ mod tests {
             Kind::InputNotSent,
             Kind::InputUnconfirmed,
             Kind::WorkspaceFailed,
+            Kind::TurnStalled,
+            Kind::InputNotStarted,
+            Kind::SessionNotStarted,
+            Kind::ScheduleStalled,
         ] {
             assert_eq!(kind.action(), "check", "{kind:?}");
         }
