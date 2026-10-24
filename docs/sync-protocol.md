@@ -85,7 +85,9 @@ renderer persists it before notifying transcript readers. Oversized frames keep
 the scoped recovery hint. Saved Claude repair evidence is read on opening the
 view or explicit refresh, never because an agent's status changed. Viewing a
 focused completed result records its read receipt; its confirmed mutation
-response does not cause another session or projection read.
+response does not cause another session or projection read. An empty local
+sidebar order never creates a migration write; existing pending requests and
+nonempty legacy user preferences retain their original migration lifecycle.
 
 The existing native EventSource transport and RxDB projection cache remain in
 use. Adding a separate query cache is unnecessary for this contract. FastAPI

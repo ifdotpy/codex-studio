@@ -831,8 +831,8 @@ fn assert_conversation_detail_sources(snapshot: &Value) {
             studio_runtime_schema::validate_sync_entity_payload_strict(
                 collection,
                 row[1].as_str().expect("id"),
-                &payload,
-                false
+                false,
+                &payload
             )
             .expect("entity validator")
         );

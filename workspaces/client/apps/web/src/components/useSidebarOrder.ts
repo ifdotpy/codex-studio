@@ -94,7 +94,10 @@ export function useSidebarOrder(
     const pending = saved<Pending | null>(pendingKey, null);
     if (pending?.body) {
       void send(pending);
-    } else if (server.groups === null) {
+    } else if (
+      server.groups === null &&
+      Object.keys(saved<Order>(key, {})).length > 0
+    ) {
       const backend = services.owner(migrationTarget);
       requestBackend.current = backend;
       void send({
