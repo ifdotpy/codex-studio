@@ -533,11 +533,16 @@ fn decide(
     } else {
         None
     };
+    let held_input = match sampled.held_input_owner() {
+        Some((agent, epoch)) => RulesTickRepository::held_input(connection, agent, epoch)?,
+        None => false,
+    };
     let decision = sampled.tick(
         now,
         TickObservation {
             fingerprint: Some(fingerprint),
             active_workers: activity,
+            held_input,
         },
     )?;
     if decision.check.is_some() && !available {

@@ -18,6 +18,14 @@ function when(at: number) {
   return at > 0 ? new Date(at * 1000).toLocaleString() : "";
 }
 
+/** When the row's failures happened: one time, or the count and the range. */
+export function period(item: StudioErrorItem) {
+  const last = when(item.at);
+  if (item.count <= 1) return last;
+  const first = when(item.firstAt);
+  return `${item.count} times${first && last ? `, ${first} to ${last}` : ""}`;
+}
+
 /** The rows with their reason and one safe action each. */
 export function StudioErrorList({
   items,
@@ -54,9 +62,9 @@ export function StudioErrorList({
             </Text>
           )}
           <Group gap="xs" mt={4}>
-            {when(item.at) && (
+            {period(item) && (
               <Text size="xs" c="dimmed">
-                {when(item.at)}
+                {period(item)}
               </Text>
             )}
             <Button
