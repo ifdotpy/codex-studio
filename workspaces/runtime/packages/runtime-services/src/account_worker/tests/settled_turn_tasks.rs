@@ -120,6 +120,7 @@ async fn a_turn_cut_off_by_a_disconnect_closes_its_items_when_it_settles() {
     let mut next = Peer::new();
     let mut replacement = next.worker(replacement_bridge(&state).await).await;
     // The cut-off turn is live, so the new worker checks no command of it.
+    answer_adopted_turn_check(&mut next).await;
     worker_barrier(&replacement).await;
     assert_eq!(task(&state, "cmd").await["status"], "running");
     next.cursor = peer.cursor;

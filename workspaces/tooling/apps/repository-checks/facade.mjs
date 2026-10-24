@@ -1405,6 +1405,7 @@ function fastTierCommands(root) {
               "test(account_transfer::provider_receipt_tests::cancel_returns_a_lazy_member_whose_move_sent_no_thread_request)",
               "test(account_transfer_executor::retained_executor_tests::source_reads_start_a_dormant_source_session)",
               "test(account_worker::tests::auth_hold::held_start_wakes_nothing_until_an_account_change)",
+              "test(account_worker::tests::transport_reattach::)",
               "test(account_worker::tests::unsent_start::a_submitted_turn_start_that_stays_unsent_keeps_its_input_pending)",
               "test(account_worker::tests::disconnected_unknown_start::)",
               "test(account_worker::tests::callback_head_of_line)",

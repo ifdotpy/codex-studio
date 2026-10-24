@@ -245,8 +245,12 @@ async fn reconcile_first_pass(
 /// starts a new connection.
 fn automatic_check_id(snapshot: &RecoverySnapshot, scope: &ConnectionScope) -> String {
     let check = snapshot.connection_recovery_id();
-    let marker = &snapshot.record()["restartRecovery"];
-    if marker["stage"] == "continued" && marker["outcome"] == "active" {
+    let record = snapshot.record();
+    let marker = &record["restartRecovery"];
+    // A turn adopted after a provider disconnect stays `running` the same way.
+    let adopted_transport_turn =
+        record["status"] == "running" && record["connectionRecovery"]["outcome"] == "active";
+    if (marker["stage"] == "continued" && marker["outcome"] == "active") || adopted_transport_turn {
         studio_runtime_store::sha256_hex(
             json!([check, scope.account, scope.connection, scope.generation])
                 .to_string()
