@@ -3946,7 +3946,9 @@ impl Worker {
                     generation,
                     actor.as_deref(),
                     &frame,
-                    managed_tool_runtime.as_deref(),
+                    managed_tool_runtime
+                        .as_deref()
+                        .map(|runtime| runtime as &dyn callback::CatalogWait),
                 )
                 .await
                 {
