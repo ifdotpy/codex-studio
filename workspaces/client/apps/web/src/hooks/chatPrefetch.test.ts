@@ -94,7 +94,7 @@ it("releases prefetch detail when its server screen becomes hidden and restores 
   expect([...mocks.resources]).toEqual(["prefetch"]);
 });
 
-it("keeps inline prefetch updates warm without pulling and recovers uncovered hints", async () => {
+it("does not answer ordinary transcript notifications with HTTP reads", async () => {
   vi.useFakeTimers();
   vi.stubGlobal("document", {
     hidden: false,
@@ -125,8 +125,8 @@ it("keeps inline prefetch updates warm without pulling and recovers uncovered hi
   expect(mocks.prefetch).not.toHaveBeenCalled();
   changed({ epoch: "live", revision: 11, transcriptSequence: 11 });
   await vi.advanceTimersByTimeAsync(0);
-  expect(mocks.prefetch).toHaveBeenCalledTimes(1);
+  expect(mocks.prefetch).not.toHaveBeenCalled();
   changed({ epoch: "live", revision: 12 });
   await vi.advanceTimersByTimeAsync(0);
-  expect(mocks.prefetch).toHaveBeenCalledTimes(2);
+  expect(mocks.prefetch).not.toHaveBeenCalled();
 });

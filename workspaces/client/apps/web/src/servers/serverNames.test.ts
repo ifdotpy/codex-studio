@@ -261,3 +261,26 @@ test("an old name response cannot overwrite a same-ID replacement peer", async (
   });
   stop();
 });
+
+test("saved servers stay idle without periodic status reads", async () => {
+  vi.useFakeTimers();
+  const server = {
+    id: "remote",
+    label: "Remote",
+    origin: "https://remote.tailnet.ts.net",
+    credentialId: "credential",
+  };
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) =>
+      key === SERVER_REGISTRY_KEY ? JSON.stringify([server]) : null,
+    setItem: vi.fn(),
+  });
+  vi.stubGlobal("window", new EventTarget());
+  const refresh = vi.fn(async () => {});
+  const stop = watchRegisteredServerNames(refresh);
+  await vi.advanceTimersByTimeAsync(0);
+  refresh.mockClear();
+  await vi.advanceTimersByTimeAsync(5 * 60_000);
+  expect(refresh).not.toHaveBeenCalled();
+  stop();
+});
