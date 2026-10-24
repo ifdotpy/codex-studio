@@ -38,6 +38,8 @@ export function declaredTimeoutMs(block, env = process.env) {
 // tests and for operators; production uses the defaults.
 export function stallLimits(env = process.env) {
   return {
+    // Grace after a successful result for a pending steer's echo, in milliseconds.
+    steerEchoGraceMs: positive(env.STUDIO_CLAUDE_STEER_ECHO_GRACE_MS) ?? 3_000,
     // Added to a declared tool timeout. The CLI must also have sent no event
     // at all for this long, so hooks and progress keep a live call alive.
     graceMs: positive(env.STUDIO_CLAUDE_TOOL_STALL_GRACE_MS) ?? 120_000,

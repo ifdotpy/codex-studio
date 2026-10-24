@@ -1,57 +1,54 @@
 .native-error {
-  margin: 8px 20px;
-  padding: 10px 14px;
-  border: 1px solid
-    color-mix(in srgb, var(--mantine-color-red-4) 30%, transparent);
-  border-radius: 10px;
-  color: var(--mantine-color-red-3);
-  font-size: 13px;
+  background: var(--surface);
+  margin: var(--mantine-spacing-xs) var(--mantine-spacing-lg);
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-sm);
+  border: var(--studio-border-width) solid
+    color-mix(in srgb, var(--studio-state-error) 30%, transparent);
+  border-radius: var(--mantine-radius-sm);
+  color: var(--studio-state-error);
+  font-size: var(--studio-text-body);
   overflow-wrap: anywhere;
 }
 
 .native-policy-composer-warning {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.3rem 0.55rem;
-  padding: 0.55rem 0.75rem;
-  color: var(--mantine-color-orange-9);
-  background: var(--mantine-color-orange-0);
+  gap: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  color: var(--studio-state-answer);
+  background: var(--surface);
   border-radius: var(--mantine-radius-sm);
   font-size: var(--mantine-font-size-sm);
 }
 .native-error > small {
   display: block;
-  margin-top: 4px;
+  margin-top: var(--mantine-spacing-xs);
   color: var(--mantine-color-dimmed);
 }
 .native-error.warning {
-  border-color: color-mix(
-    in srgb,
-    var(--mantine-color-yellow-4) 30%,
-    transparent
-  );
-  color: var(--mantine-color-yellow-3);
+  border-color: color-mix(in srgb, var(--studio-state-answer) 30%, transparent);
+  color: var(--studio-state-answer);
 }
 .native-error.info {
   border-color: color-mix(
     in srgb,
-    var(--mantine-color-blue-4) 30%,
+    var(--studio-state-working) 30%,
     transparent
   );
-  color: var(--mantine-color-blue-3);
+  color: var(--studio-state-working);
 }
 .native-error-links,
 .native-error-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 16px;
-  margin-top: 8px;
+  gap: var(--mantine-spacing-xs) var(--mantine-spacing-md);
+  margin-top: var(--mantine-spacing-xs);
 }
 .native-error > button {
-  margin-top: 8px;
+  margin-top: var(--mantine-spacing-xs);
 }
 .native-error details {
-  margin-top: 6px;
+  margin-top: var(--mantine-spacing-xs);
   color: var(--mantine-color-dimmed);
 }
 .native-error summary,
@@ -60,44 +57,45 @@
 }
 .native-error pre,
 .native-notice pre {
-  max-height: 180px;
+  max-height: var(--studio-notice-details-max);
   max-width: 100%;
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
 }
 .native-notice {
-  margin: 12px 0;
-  font-size: 13px;
+  background: var(--surface);
+  margin: var(--mantine-spacing-sm) 0;
+  font-size: var(--studio-text-body);
   color: var(--mantine-color-dimmed);
   overflow-wrap: anywhere;
 }
 .native-notice.error {
-  color: var(--mantine-color-red-3);
+  color: var(--studio-state-error);
 }
 .native-notice.warning {
-  color: var(--mantine-color-yellow-3);
+  color: var(--studio-state-answer);
 }
 .native-notice.info {
-  color: var(--mantine-color-blue-3);
+  color: var(--studio-state-working);
 }
 .native-notice > small {
   display: block;
-  margin-top: 4px;
+  margin-top: var(--mantine-spacing-xs);
   color: var(--mantine-color-dimmed);
 }
 
 .native-limit-notice {
-  padding: 12px 0;
-  border-block: 1px solid var(--mantine-color-dark-4);
+  padding: var(--mantine-spacing-sm) 0;
+  border-block: var(--studio-border-width) solid var(--line);
   color: var(--mantine-color-text);
 }
 .native-limit-notice-heading {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--mantine-color-red-3);
+  gap: var(--mantine-spacing-xs);
+  color: var(--studio-state-error);
 }
 .native-limit-notice-heading > svg {
   flex-shrink: 0;
@@ -106,29 +104,29 @@
   font-weight: 600;
 }
 .native-limit-notice > p {
-  margin: 6px 0 0 24px;
+  margin: var(--mantine-spacing-xs) 0 0 var(--studio-notice-indent);
   line-height: 1.5;
 }
 .native-limit-notice > details {
-  margin: 8px 0 0 24px;
+  margin: var(--mantine-spacing-xs) 0 0 var(--studio-notice-indent);
   color: var(--mantine-color-dimmed);
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
 }
 
 .capacity-retry p {
-  margin: 6px 0;
+  margin: var(--mantine-spacing-xs) 0;
   color: var(--mantine-color-dimmed);
 }
 .account-limit-recovery small {
   display: block;
-  margin-top: 6px;
+  margin-top: var(--mantine-spacing-xs);
   color: var(--mantine-color-dimmed);
 }
 .account-limit-recovery .mantine-Button-root {
   max-width: 100%;
   height: auto;
-  min-height: 26px;
-  padding-block: 4px;
+  min-height: var(--studio-control-size);
+  padding-block: var(--mantine-spacing-xs);
 }
 .account-limit-recovery .mantine-Button-label {
   white-space: normal;
@@ -136,9 +134,9 @@
 }
 
 .native-error.usage-limit {
-  padding: 14px 16px;
-  border-color: var(--mantine-color-default-border);
-  background: var(--mantine-color-default);
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+  border-color: var(--line);
+  background: var(--surface);
   color: var(--mantine-color-text);
 }
 .native-error.usage-limit .account-limit-recovery.inline {
@@ -147,42 +145,42 @@
   border: 0;
 }
 .native-error.usage-limit .account-limit-recovery > strong {
-  font-size: 14px;
+  font-size: var(--studio-text-body);
   font-weight: 600;
 }
 .native-error.usage-limit .account-limit-recovery > p {
-  margin: 5px 0 0;
+  margin: var(--mantine-spacing-xs) 0 0;
   color: var(--mantine-color-dimmed);
   line-height: 1.5;
 }
 .native-error.usage-limit > button {
-  margin-top: 10px;
+  margin-top: var(--mantine-spacing-sm);
 }
 .native-error.usage-limit > details {
-  margin-top: 10px;
-  font-size: 12px;
+  margin-top: var(--mantine-spacing-sm);
+  font-size: var(--studio-text-meta);
 }
 
 .native-safety {
-  margin: 12px 0;
-  padding: 12px 14px;
-  border: 1px solid var(--mantine-color-default-border);
-  border-radius: 10px;
+  margin: var(--mantine-spacing-sm) 0;
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-sm);
+  border: var(--studio-border-width) solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
   color: var(--mantine-color-text);
-  font-size: 13px;
+  font-size: var(--studio-text-body);
   overflow-wrap: anywhere;
 }
 .native-safety-title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--mantine-spacing-xs);
 }
 .native-safety-title svg {
   flex-shrink: 0;
   color: var(--mantine-color-dimmed);
 }
 .native-safety p {
-  margin: 6px 0 0;
+  margin: var(--mantine-spacing-xs) 0 0;
   color: var(--mantine-color-dimmed);
   line-height: 1.5;
 }

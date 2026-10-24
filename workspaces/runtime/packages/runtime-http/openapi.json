@@ -44122,9 +44122,9 @@
             "type": "string"
           },
           "protocol": {
-            "const": 3,
-            "maximum": 3,
-            "minimum": 3,
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
             "title": "Protocol",
             "type": "integer"
           },
@@ -44187,9 +44187,9 @@
             "type": "string"
           },
           "protocol": {
-            "const": 3,
-            "maximum": 3,
-            "minimum": 3,
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
             "title": "Protocol",
             "type": "integer"
           },
@@ -44441,7 +44441,7 @@
       },
       "ResourceTokenRatesEvent": {
         "additionalProperties": false,
-        "description": "Named token-rates SSE payload; one complete record per agent with authoritative root membership.",
+        "description": "Named token-rates SSE payload. The first frame is a full snapshot; later frames contain changed records and removed agent ids.",
         "properties": {
           "epoch": {
             "minLength": 1,
@@ -44449,9 +44449,9 @@
             "type": "string"
           },
           "protocol": {
-            "const": 3,
-            "maximum": 3,
-            "minimum": 3,
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
             "title": "Protocol",
             "type": "integer"
           },
@@ -44463,11 +44463,26 @@
             "title": "Records",
             "type": "array"
           },
+          "removed": {
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 4096,
+            "title": "Removed",
+            "type": "array",
+            "uniqueItems": true
+          },
           "revision": {
             "maximum": 9007199254740991,
             "minimum": 0,
             "title": "Revision",
             "type": "integer"
+          },
+          "snapshot": {
+            "title": "Snapshot",
+            "type": "boolean"
           },
           "workspaceId": {
             "minLength": 1,
@@ -44480,7 +44495,9 @@
           "workspaceId",
           "epoch",
           "revision",
-          "records"
+          "records",
+          "snapshot",
+          "removed"
         ],
         "title": "ResourceTokenRatesEvent",
         "type": "object"
@@ -52157,19 +52174,396 @@
         "type": "object"
       },
       "SyncEntity": {
-        "additionalProperties": false,
-        "description": "One durable sync entity change attached to a successful response.",
-        "properties": {
-          "_deleted": {
-            "title": "Deleted",
-            "type": "boolean"
+        "description": "One v4 entity change. The collection DTO is structured; deletes omit value.",
+        "oneOf": [
+          {
+            "properties": {
+              "collection": {
+                "const": "agent",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/AgentEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
           },
-          "id": {
-            "title": "Id",
+          {
+            "properties": {
+              "collection": {
+                "const": "chat",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/ChatEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "complaint",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/ComplaintEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "edge",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/EdgeEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "event",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/EventEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "monitor",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/MonitorEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "peerTeam",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/PeerTeamEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "project",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/ProjectEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "request",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/RequestEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "room",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/RoomEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "rule",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/RuleEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "task",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/TaskEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "uiPreferences",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/UiPreferencesDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "work",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "workspace",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkspaceEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "rateLimit",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/AccountRateLimitsDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "not": {
+              "required": [
+                "value"
+              ]
+            },
+            "properties": {
+              "collection": {
+                "enum": [
+                  "agent",
+                  "chat",
+                  "complaint",
+                  "edge",
+                  "event",
+                  "monitor",
+                  "peerTeam",
+                  "project",
+                  "request",
+                  "room",
+                  "rule",
+                  "task",
+                  "uiPreferences",
+                  "work",
+                  "workspace",
+                  "rateLimit"
+                ],
+                "type": "string"
+              },
+              "op": {
+                "const": "delete",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "collection"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "collection": {
             "type": "string"
           },
-          "payload": {
-            "title": "Payload",
+          "id": {
+            "type": "string"
+          },
+          "op": {
+            "enum": [
+              "upsert",
+              "delete"
+            ],
             "type": "string"
           },
           "seq": {
@@ -52180,13 +52574,14 @@
           }
         },
         "required": [
+          "op",
+          "collection",
           "id",
-          "seq",
-          "payload",
-          "_deleted"
+          "seq"
         ],
         "title": "SyncEntity",
-        "type": "object"
+        "type": "object",
+        "unevaluatedProperties": false
       },
       "SyncEntityPayload": {
         "discriminator": {
@@ -52199,6 +52594,7 @@
             "monitor": "#/components/schemas/SyncMonitorEntityPayload",
             "peerTeam": "#/components/schemas/SyncPeerTeamEntityPayload",
             "project": "#/components/schemas/SyncProjectEntityPayload",
+            "rateLimit": "#/components/schemas/SyncRateLimitEntityPayload",
             "request": "#/components/schemas/SyncRequestEntityPayload",
             "room": "#/components/schemas/SyncRoomEntityPayload",
             "rule": "#/components/schemas/SyncRuleEntityPayload",
@@ -52254,6 +52650,9 @@
           },
           {
             "$ref": "#/components/schemas/SyncWorkspaceEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncRateLimitEntityPayload"
           }
         ]
       },
@@ -52468,9 +52867,9 @@
             "type": "integer"
           },
           "protocolVersion": {
-            "const": 3,
-            "maximum": 3,
-            "minimum": 3,
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
             "title": "Protocolversion",
             "type": "integer"
           },
@@ -52493,9 +52892,9 @@
           },
           "supportedVersions": {
             "items": {
-              "const": 3,
-              "maximum": 3,
-              "minimum": 3,
+              "const": 4,
+              "maximum": 4,
+              "minimum": 4,
               "type": "integer"
             },
             "title": "Supportedversions",
@@ -52624,7 +53023,14 @@
           },
           "documents": {
             "items": {
-              "$ref": "#/components/schemas/SyncDocument"
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/SyncDocument"
+                },
+                {
+                  "$ref": "#/components/schemas/SyncEntity"
+                }
+              ]
             },
             "title": "Documents",
             "type": "array"
@@ -52704,6 +53110,30 @@
         "title": "SyncPullResponse",
         "type": "object"
       },
+      "SyncRateLimitEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "rateLimit",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/AccountRateLimitsDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncRateLimitEntityPayload",
+        "type": "object"
+      },
       "SyncRequestEntityPayload": {
         "additionalProperties": false,
         "properties": {
@@ -52774,6 +53204,74 @@
           "value"
         ],
         "title": "SyncRuleEntityPayload",
+        "type": "object"
+      },
+      "SyncSessionEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "sessionId": {
+            "maxLength": 36,
+            "minLength": 36,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "title": "SyncSessionEvent",
+        "type": "object"
+      },
+      "SyncSubscriptionAck": {
+        "additionalProperties": false,
+        "properties": {
+          "gen": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "gen"
+        ],
+        "title": "SyncSubscriptionAck",
+        "type": "object"
+      },
+      "SyncSubscriptionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "add": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceRef"
+            },
+            "type": "array"
+          },
+          "gen": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "remove": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceRef"
+            },
+            "type": "array"
+          },
+          "sessionId": {
+            "maxLength": 36,
+            "minLength": 36,
+            "type": "string"
+          },
+          "tokenRates": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sessionId",
+          "gen",
+          "add",
+          "remove"
+        ],
+        "title": "SyncSubscriptionRequest",
         "type": "object"
       },
       "SyncTaskEntityPayload": {
@@ -62583,30 +63081,6 @@
               }
             ],
             "title": "Projectorganizationversion"
-          },
-          "rateLimits": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AccountRateLimitsDto"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rateLimitsByAccount": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "$ref": "#/components/schemas/AccountRateLimitsDto"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ratelimitsbyaccount"
           },
           "sidebarOrder": {
             "anyOf": [
@@ -79557,12 +80031,20 @@
                     },
                     {
                       "$ref": "#/components/schemas/ResourceTokenRatesEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SyncSessionEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SyncSubscriptionAck"
                     }
                   ],
                   "x-sse-events": {
                     "api-schema": "ApiSchemaEvent",
                     "heartbeat": "ResourceHeartbeatEvent",
                     "resources": "ResourceChangeEvent",
+                    "session": "SyncSessionEvent",
+                    "subscriptions": "SyncSubscriptionAck",
                     "token-rates": "ResourceTokenRatesEvent"
                   }
                 }
@@ -79615,6 +80097,57 @@
           }
         },
         "summary": "Sync Stream"
+      }
+    },
+    "/api/sync/subscriptions": {
+      "post": {
+        "description": "Changes one open stream. HTTP 410 means the stream session expired; reopen with the full resource set and cursors. A lost response must recover by reopening, never retrying the diff. Resource bounds use MAX_SYNC_RESOURCE_COUNT and MAX_SYNC_RESOURCE_QUERY_BYTES from runtime-schema/src/shared_values.rs, as for the stream selector.",
+        "operationId": "sync_subscriptions_api_sync_subscriptions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncSubscriptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncSubscriptionAck"
+                }
+              }
+            },
+            "description": "Subscription change accepted; the SSE acknowledgement precedes added-resource initial data."
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or expired stream session"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500"
+          }
+        },
+        "summary": "Change live sync subscriptions"
       }
     },
     "/api/task": {

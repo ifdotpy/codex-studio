@@ -185,12 +185,43 @@ fn selection_decision_keeps_resume_for_atomic_store_cancellation() {
 
 #[test]
 fn retry_only_resets_blocked_members() {
-    let (mut op, agent, _) = fixture();
-    op["members"]["a"]["phase"] = json!("ready");
-    let result = snapshot(&op, &agent)
+    for (lazy, saved, phase) in [
+        (false, false, "waiting"),
+        (true, false, "lazy"),
+        (false, true, "ready"),
+    ] {
+        let (mut op, agent, _) = fixture();
+        op["members"]["a"]["phase"] = json!("ready");
+        let ready = op["members"]["a"].clone();
+        op["members"]["b"] = json!({"phase":"blocked","sourceAccountKey":"source","lazy":lazy,
+            "result":saved.then(|| json!({"thread":{"id":"fork"}})),"error":"retry me","nextCheck":99,
+            "interruptTurnId":"turn","interruptSubmittedAt":4,"interruptOutcome":"unknown"});
+        let mut blocked_agent = agent.clone();
+        blocked_agent["id"] = json!("b");
+        blocked_agent["lazyAccountTransfer"] = json!(lazy);
+        let result = Snapshot::read(
+            &op.to_string(),
+            [
+                ("a".into(), agent.to_string()),
+                ("b".into(), blocked_agent.to_string()),
+            ],
+        )
+        .expect("snapshot")
         .decide(Transition::Action(Action::Retry))
         .expect("retry");
-    assert_eq!(result.operation["members"]["a"]["phase"], "ready");
+        assert_eq!(result.operation["members"]["a"], ready);
+        let blocked = &result.operation["members"]["b"];
+        assert_eq!(blocked["phase"], phase);
+        assert_eq!(blocked["error"], Value::Null);
+        assert_eq!(blocked["nextCheck"], 0);
+        for field in [
+            "interruptTurnId",
+            "interruptSubmittedAt",
+            "interruptOutcome",
+        ] {
+            assert!(blocked.get(field).is_none(), "{field}");
+        }
+    }
 }
 
 #[test]

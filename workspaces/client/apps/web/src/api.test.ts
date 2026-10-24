@@ -245,16 +245,13 @@ describe("OpenAPI transport facade", () => {
     vi.stubGlobal("window", events);
     const documents = [
       {
-        id: "entity:workspace:current",
+        op: "upsert",
+        collection: "workspace",
+        id: "current",
+        value: {
+          sidebarOrder: { revision: 1, groups: { projects: ["c", "a"] } },
+        },
         seq: 5,
-        payload: JSON.stringify({
-          collection: "workspace",
-          id: "current",
-          value: {
-            sidebarOrder: { revision: 1, groups: { projects: ["c", "a"] } },
-          },
-        }),
-        _deleted: false,
       },
     ];
     vi.stubGlobal(
@@ -329,7 +326,6 @@ describe("OpenAPI transport facade", () => {
       const request = post("/api/sync/drafts", { rows: [] });
       await started;
       expect(checkpoint.effectiveCoverage()).toBe(12);
-      const pull = vi.fn(async () => "unexpected pull");
       const covered = entitySequenceInvalidationCovered(
         checkpoint.effectiveCoverage(),
         12,
@@ -337,7 +333,6 @@ describe("OpenAPI transport facade", () => {
       );
       expect(covered).toBe(true);
       checkpoint.markInFlightCoverageUsed(12);
-      expect(pull).not.toHaveBeenCalled();
       releasePersistence();
       await request;
       expect(checkpoint.value).toBe(12);
@@ -349,8 +344,6 @@ describe("OpenAPI transport facade", () => {
           false,
         ),
       ).toBe(true);
-      expect(pull).not.toHaveBeenCalled();
-      const foreignPull = vi.fn(async () => "foreign change pulled");
       expect(
         entitySequenceInvalidationCovered(
           checkpoint.effectiveCoverage(),
@@ -358,8 +351,6 @@ describe("OpenAPI transport facade", () => {
           false,
         ),
       ).toBe(false);
-      await foreignPull();
-      expect(foreignPull).toHaveBeenCalledOnce();
     } finally {
       unregister();
     }
@@ -407,14 +398,11 @@ describe("OpenAPI transport facade", () => {
     checkpoint.assign(20);
     const documents = [
       {
-        id: "entity:workspace:current",
+        op: "upsert",
+        collection: "workspace",
+        id: "current",
+        value: {},
         seq: 22,
-        payload: JSON.stringify({
-          collection: "workspace",
-          id: "current",
-          value: {},
-        }),
-        _deleted: false,
       },
     ];
     vi.stubGlobal(

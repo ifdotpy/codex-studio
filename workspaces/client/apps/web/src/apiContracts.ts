@@ -1,7 +1,6 @@
 import type {
   FilterKeys,
   PathsWithMethod,
-  Readable,
   RequiredKeysOf,
 } from "openapi-typescript-helpers";
 
@@ -22,17 +21,15 @@ type IsSuccessStatus<Status> = Status extends number
 export type ApiSuccessBodyFor<Operation> = Operation extends {
   responses: infer Responses;
 }
-  ? Readable<
-      {
-        [Status in keyof Responses]: IsSuccessStatus<Status> extends true
-          ? Responses[Status] extends { content: infer Content }
-            ? Content extends { "application/json": infer Body }
-              ? Body
-              : undefined
+  ? {
+      [Status in keyof Responses]: IsSuccessStatus<Status> extends true
+        ? Responses[Status] extends { content: infer Content }
+          ? Content extends { "application/json": infer Body }
+            ? Body
             : undefined
-          : never;
-      }[keyof Responses]
-    >
+          : undefined
+        : never;
+    }[keyof Responses]
   : never;
 
 type HasRequiredQuery<Operation> = [ApiQueryFor<Operation>] extends [never]

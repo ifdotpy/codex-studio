@@ -38,7 +38,7 @@ test("combined shell reserves terminal height inside the safe content rectangle"
       };
     });
   await page.setContent(
-    `<style>${css}</style><div id="root" style="--terminal-dock-height:180px"><div class="multi-server-shell" data-shell-terminal="open" style="--shell-sidebar-width:240px;--shell-terminal-height:180px"><aside id="sidebar">Navigation</aside><main class="server-views"><div class="workspace-layout-row"><main class="workspace">Conversation</main></div><div class="terminal-dock" hidden></div></main><div class="shell-terminal-bar">Terminal</div></div></div>`,
+    `<style>${css}</style><div id="root" style="--terminal-dock-height:180px"><div class="multi-server-shell" data-shell-terminal="open" style="--shell-sidebar-width:240px;--shell-terminal-height:180px"><aside id="sidebar" style="width:var(--shell-sidebar-width);flex:0 0 var(--shell-sidebar-width)">Navigation</aside><main class="server-views"><div class="workspace-layout-row"><main class="workspace">Conversation</main></div><div class="terminal-dock" hidden></div></main><div class="shell-terminal-bar">Terminal</div></div></div>`,
   );
   await page.evaluate(() => {
     document.documentElement.dataset.terminalDock = "open";

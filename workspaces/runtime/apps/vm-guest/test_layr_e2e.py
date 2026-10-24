@@ -206,12 +206,28 @@ class MacSyncEndToEnd(LayrEndToEnd):
 
         # Uncommitted lead work in main makes a round wait, never a conflict.
         upload = await self.make_upload({"other.txt": "x\n"})
-        (main / "scratch.txt").write_text("lead work in progress\n")
+        scratch = b"lead work in progress\n"
+        (main / "scratch.txt").write_bytes(scratch)
+        dirty = await sync.layr(["status", "--porcelain"], cwd=main, owner=owner)
+        self.assertIn("?? scratch.txt", dirty)
         third = await sync.apply("r5", {"projectId": self.project, "operationId": "round-3", "upload": upload,
                                         "since": [second["mainStateId"]], "entries": [
                                             {"path": "other.txt", "kind": "file", "base": None}]})
         self.assertIn(third["merge"], {"merged", "refused"})
         self.assertEqual(third["mergeConflicts"], [])
+        self.assertEqual((main / "scratch.txt").read_bytes(), scratch)
+        self.assertEqual(await sync.layr(["status", "--porcelain"], cwd=main, owner=owner), dirty)
+        outbound = {row["path"] for row in third["outbound"][second["mainStateId"]]}
+        self.assertNotIn("scratch.txt", outbound)
+        if third["merge"] == "merged":
+            self.assertEqual((main / "other.txt").read_text(), "x\n")
+            self.assertIn("other.txt", third["applied"])
+            self.assertIn("other.txt", outbound)
+        else:
+            self.assertFalse((main / "other.txt").exists())
+            self.assertEqual(third["mainStateId"], second["mainStateId"])
+            self.assertEqual(third["applied"], [])
+            self.assertNotIn("other.txt", outbound)
 
         page = await sync.hashes("r6", {"projectId": self.project, "stateId": start})
         self.assertIn("app.txt", page["items"])

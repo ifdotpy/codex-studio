@@ -1,15 +1,13 @@
-import {
-  TeamRetainedWorktrees,
-  useRetainedWorktrees,
-} from "./components/agents/RetainedWorktrees";
 import { EdgeRail } from "./components/edge-rail/EdgeRail";
 import { useEdgeRail } from "./components/edge-rail/useEdgeRail";
 import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
 import { useWorkspaceLayout } from "./layout/useWorkspaceLayout";
-import {
-  layoutQueries,
-  layoutValues,
-} from "./layout/layout-contract.generated";
+import { layoutQueries } from "./layout/layout-contract.generated";
+import { restoreSidebarFocus } from "./components/sidebar/SidebarFrame";
+import { ModelWhitelistSettings } from "./components/models/ModelWhitelistSettings";
+import Disclosure from "./components/ui/Disclosure";
+import { ChatSettingsDialog } from "./components/agents/ChatSettingsDialog";
+import { useRetainedWorktrees } from "./components/agents/RetainedWorktrees";
 import { DeliveryMoment } from "./generated/deliveryMoment";
 import { useScreenEnvironment } from "./servers/ScreenContext";
 import {
@@ -28,8 +26,8 @@ import { onDesktopNavigate } from "./native/notifications";
 import { writePreferenceEdit } from "./sync/uiPreferenceStore";
 import { createUiPreferenceBridge } from "./sync/uiPreferenceBridge";
 import type { UiPreferenceProjection } from "./sync/entityProjection";
-import { Tooltip } from "@mantine/core";
-import StudioSettingsTabs, {
+import {
+  StudioSettingsLayout,
   isStudioSettingsTab,
   type StudioSettingsTab,
 } from "./components/StudioSettingsTabs";
@@ -43,8 +41,13 @@ import ServerAccountsPanel from "./servers/ServerAccountsPanel";
 import {
   localServer,
   viewServer,
+  readServerAliases,
   SERVER_REGISTRY_EVENT,
 } from "./servers/registry";
+import {
+  useServerAliases,
+  DEFAULT_LOCAL_SERVER_ALIAS,
+} from "./servers/serverAliases";
 import { serverLocalStorage as localStorage } from "./servers/storage";
 import { ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS } from "./generated/sharedValues";
 import SearchOverlay from "./components/shell/SearchOverlay";
@@ -87,11 +90,11 @@ import {
   Tabs,
   useMantineColorScheme,
   TextInput,
-  UnstyledButton,
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import {
   Activity,
+  ArrowLeft,
   BookOpen,
   Clock3,
   FileDiff,
@@ -100,16 +103,12 @@ import {
   ShieldCheck,
   Settings,
   Square,
-  ArrowLeft,
-  Folder,
   MessageSquare,
   Mail,
   PanelLeft,
-  Plus,
   Search,
   Settings2,
   Users,
-  X,
 } from "lucide-react";
 import {
   useCallback,
@@ -154,13 +153,7 @@ import {
   createConversationDataSelector,
 } from "./hooks/conversationData";
 import { reportPromptComposerRender } from "./components/prompt-composer/renderProbe";
-import {
-  busy,
-  nativeReleaseLabel,
-  statusLabel,
-  type Agent,
-  type Json,
-} from "./types";
+import { busy, type Agent, type Json } from "./types";
 
 type LeadCreateRequest = Omit<
   PostBody<"/api/leads">,
@@ -186,7 +179,6 @@ function isLeadCreateRequest(value: Json): value is LeadCreateRequest {
   );
 }
 import Sidebar from "./components/Sidebar";
-import { restoreSidebarFocus } from "./components/sidebar/SidebarFrame";
 import {
   createAppCatalogSelector,
   mostRecentActivity,
@@ -205,12 +197,10 @@ import ProjectAccount from "./components/ProjectAccount";
 import ProjectFolderDialog from "./components/ProjectFolderDialog";
 import SessionActivity from "./components/agents/SessionActivity";
 import { useWorkerModels } from "./components/agents/WorkerModelPicker";
-import { UnifiedAgentSettings } from "./components/agents/UnifiedAgentSettings";
 import { FederationSettings } from "./components/FederationSettings";
 import { LinuxVMSettings } from "./components/LinuxVMSettings";
 import { SignInPushSettings } from "./components/SignInPushSettings";
 import { OrchestrationSettings } from "./components/OrchestrationSettings";
-import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import ProviderUpdateSettings from "./components/ProviderUpdateSettings";
 import SupervisorRecoveryNotice from "./components/SupervisorRecoveryNotice";
 import Accounts, { useAccounts } from "./components/Accounts";
@@ -218,7 +208,10 @@ import ClaudeSignIn from "./components/ClaudeSignIn";
 import AccountSignInNotice from "./components/AccountSignInNotice";
 import CodexSignIn from "./components/CodexSignIn";
 import ConversationTitle from "./components/shell/ConversationTitle";
-import SubagentConcurrencyControl from "./components/agents/SubagentConcurrencyControl";
+import {
+  useOfflineSendFeedback,
+  connectionFailureText,
+} from "./components/message-delivery/useOfflineSendFeedback";
 import Conversation from "./components/Conversation";
 const SelectedConversation = memo(Conversation);
 import type { UsageAccount } from "./components/Usage";
@@ -243,21 +236,10 @@ import {
 import "./desktop";
 import "./components/team-navigation.css";
 import "./hooks/viewport-surface.css";
-import WorkerCard from "./components/agents/WorkerCard";
+import TeamPanel from "./components/agents/TeamPanel";
 import FilePreview, { type PreviewTarget } from "./components/FilePreview";
-import {
-  awaitingAnswerIds,
-  TeamSummary,
-  workerState,
-  TEAM_PANEL_STATES,
-  TeamModels,
-} from "./components/agents/WorkerOverview";
+import { awaitingAnswerIds } from "./components/agents/WorkerOverview";
 import { activeTask, backgroundTasks } from "./components/backgroundTaskModel";
-const ClaudeSettings = lazy(() =>
-  import("./components/ClaudeSettings").then((module) => ({
-    default: module.ClaudeSettings,
-  })),
-);
 const TerminalDock = lazy(() => import("./components/TerminalDock"));
 import Workspace from "./components/shell/DeferredWorkspace";
 const BackgroundTasks = lazy(
@@ -288,6 +270,7 @@ export default function App({ active = true }: { active?: boolean }) {
     useServerResources();
   const watchResourceReads = useServerResourceReads();
   const sidebarServices = useServerSidebarServices();
+  const serverAliases = useServerAliases(readServerAliases);
   const {
     configureLimitsCache,
     cachedLimitsByAccount,
@@ -352,18 +335,13 @@ export default function App({ active = true }: { active?: boolean }) {
     () => mergeOutgoing(outbox.entries, outgoing, observedSends.current),
     [outbox.entries, outgoing],
   );
-  const [livePhase, setLivePhase] = useState<{
-    id: string | null;
-    label: string;
-  } | null>(null);
-  const onPhase = useCallback(
-    (id: string | null, label: string) =>
-      setLivePhase((old) =>
-        old?.id === id && old.label === label ? old : { id, label },
-      ),
-    [],
+  const mobileClient = useMediaQuery(
+    layoutQueries.navigationCompact,
+    undefined,
+    {
+      getInitialValueInEffect: false,
+    },
   );
-  const mobileClient = useMediaQuery(layoutQueries.navigationCompact);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [localStudioSettingsOpen, setLocalStudioSettingsOpen] = useState(false);
   const [localStudioSettingsTab, setLocalStudioSettingsTab] =
@@ -428,9 +406,6 @@ export default function App({ active = true }: { active?: boolean }) {
     ServerCommand,
     { action: "account-sign-in" | "account-action" }
   > | null>(null);
-  const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
-  const [workerSettingsOpen, setWorkerSettingsOpen] = useState(false);
-  const [reviewSettingsOpen, setReviewSettingsOpen] = useState(false);
   const [filePreview, setFilePreview] = useState<PreviewTarget | null>(null);
   const { colorScheme, setColorScheme } = useMantineColorScheme();
   const preferenceLoad = useMemo(() => {
@@ -517,7 +492,7 @@ export default function App({ active = true }: { active?: boolean }) {
     },
     [colorScheme, setColorScheme, studioPreferences],
   );
-  const [sidebarCompact, setSidebarCompact] = useState(!!mobileClient);
+  const [sidebarCompact, setSidebarCompact] = useState(mobileClient);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     saved("codex-sidebar-collapsed", false),
   );
@@ -555,7 +530,13 @@ export default function App({ active = true }: { active?: boolean }) {
   }, []);
   const toggleSidebar = useCallback(() => {
     if (isServerView && !isClassicServerView) {
-      postToShell({ kind: "studio-server-toggle-sidebar" }, serverParentOrigin);
+      postToShell(
+        {
+          kind: "studio-server-toggle-sidebar",
+          ...(sidebarCompact ? { opened: true } : {}),
+        },
+        serverParentOrigin,
+      );
       return;
     }
     restoreSidebarFocus();
@@ -619,9 +600,18 @@ export default function App({ active = true }: { active?: boolean }) {
   const navigationIntent = useRef(0);
   const createdSelection = useRef<string | null>(null);
   useMobileViewport(active, mobileClient);
-  const teamViewportCompact = useMediaQuery(layoutQueries.teamCompact);
   const [workspacePanelSlot, setWorkspacePanelSlot] =
     useState<HTMLDivElement | null>(null);
+  // CSS owns these sums: --studio-form-max + --studio-team-size, with
+  // --studio-sidebar-width when the desktop fleet occupies space. The Team
+  // layout parity test keeps the media queries aligned with those owners.
+  const teamFitsWithoutSidebar = useMediaQuery("(min-width: 60rem)");
+  const teamFitsWithSidebar = useMediaQuery("(min-width: 79.8rem)");
+  const teamHasSidebar =
+    (!isServerView || isClassicServerView) &&
+    !mobileClient &&
+    !sidebarCollapsed;
+
   const {
       data,
       error,
@@ -631,11 +621,7 @@ export default function App({ active = true }: { active?: boolean }) {
       forgetCreated,
       creationScope,
     } = useSnapshot(receiveUiPreferences),
-    [opened, setOpened] = useState<string | null>(() =>
-      window.matchMedia(layoutQueries.navigationCompact).matches
-        ? saved("codex-mobile-opened", null)
-        : null,
-    ),
+    [opened, setOpened] = useState<string | null>(null),
     [roomContext, setRoomContext] = useState<string | null>(null),
     [sidebar, setSidebar] = useState(false),
     [teamOpen, setTeamOpen] = useState(false),
@@ -655,15 +641,18 @@ export default function App({ active = true }: { active?: boolean }) {
     [modal, setModal] = useState<{ title: string; body: ReactNode } | null>(
       null,
     );
-  const workspacePanelWidth = useWorkspacePanelWidth(
-    `${serverViewId || "local"}:${workspaceId || "pending"}`,
-  );
+  const {
+    preferredWidthRem: preferredPanelWidthRem,
+    setPreferredWidthRem: setPreferredPanelWidthRem,
+  } = useWorkspacePanelWidth(workspaceId || data?.stateDir || "pending");
   const rowLayout = useWorkspaceLayout({
     workspaceOpen,
     teamPreferred: wideTeamOpen,
-    preferredPanelWidthRem: workspacePanelWidth.preferredWidthRem,
+    preferredPanelWidthRem,
   });
-  const narrowTeam = teamViewportCompact || !rowLayout.teamCanInline;
+  const narrowTeam =
+    !(teamHasSidebar ? teamFitsWithSidebar : teamFitsWithoutSidebar) ||
+    !rowLayout.teamCanInline;
   useEffect(() => {
     if (!workspaceId) return;
     const key = `studio-server-workspace-id:${serverViewId || "local"}`;
@@ -729,7 +718,12 @@ export default function App({ active = true }: { active?: boolean }) {
       ),
     };
   }, [data, pendingConversationDelete]);
-  const prepareChat = useChatPrefetch(prefetchData, opened, workspaceId);
+  const prepareChat = useChatPrefetch(
+    prefetchData,
+    opened,
+    workspaceId,
+    active,
+  );
   useEffect(() => {
     if (tasksOpen) setTasksRendered(true);
     if (workspaceOpen) setWorkspaceRendered(true);
@@ -778,6 +772,16 @@ export default function App({ active = true }: { active?: boolean }) {
   const conversationDraftConflicts = useRetainedArray(
     draftConflicts.filter((version) => version.session === (opened || "new")),
   );
+  const offlineSendFeedback = useOfflineSendFeedback(visibleOutgoing, opened, [
+    error,
+    draftError,
+    outbox.error,
+    toast,
+  ]);
+  useEffect(() => {
+    if (offlineSendFeedback.pending && connectionFailureText(toast))
+      setToast("");
+  }, [offlineSendFeedback.pending, toast]);
   useServerActivity(localPersistenceFailed || sending);
   const rendererBusy = useSyncExternalStore(
     subscribeServerActivity,
@@ -1053,6 +1057,10 @@ export default function App({ active = true }: { active?: boolean }) {
       : `codex-desktop-opened:${data.stateDir}`;
     if (selectionScope.current !== scope) {
       selectionScope.current = scope;
+      if (mobileClient) {
+        if (!opened) setSidebar(true);
+        return;
+      }
       const selected = saved<string | null>(key, null);
       if (
         selected &&
@@ -1072,6 +1080,13 @@ export default function App({ active = true }: { active?: boolean }) {
     )
       return;
     if (agent?.id === createdSelection.current) createdSelection.current = null;
+    if (mobileClient) {
+      if (opened && !agent && !room && !legacy) {
+        setOpened(null);
+        setSidebar(true);
+      } else if (opened) save(key, opened);
+      return;
+    }
     if (!opened || (!agent && !room && !legacy))
       setOpened(
         mostRecentActivity(leads)?.id ||
@@ -1122,6 +1137,7 @@ export default function App({ active = true }: { active?: boolean }) {
     } else {
       navigationIntent.current++;
       setOpened(navigationTarget.agentId);
+      setSidebar(false);
       setWorkspaceSection("messages");
       setWorkspaceFocus(
         navigationTarget.itemId
@@ -1291,6 +1307,7 @@ export default function App({ active = true }: { active?: boolean }) {
           label: account?.label || key,
           email: account?.email,
           provider: account?.provider ?? undefined,
+          plan: account?.plan,
           accountId: account?.accountId,
           signedOut: !!account?.disconnected,
           limits,
@@ -1391,10 +1408,11 @@ export default function App({ active = true }: { active?: boolean }) {
   }, [data?.stateDir]);
   useEffect(() => {
     if (!data?.stateDir) return;
-    const keys = new Set([
-      accountKey,
-      ...usageAccountKeys.split("\n").filter(Boolean),
-    ]);
+    const keys = new Set(
+      active
+        ? [accountKey, ...usageAccountKeys.split("\n").filter(Boolean)]
+        : [],
+    );
     for (const [key, stop] of limitsWatchers.current) {
       if (keys.has(key)) continue;
       stop();
@@ -1439,7 +1457,13 @@ export default function App({ active = true }: { active?: boolean }) {
       };
       limitsWatchers.current.set(key, stop);
     }
-  }, [data?.stateDir, accountKey, usageAccountKeys, watchResourceReads]);
+  }, [
+    data?.stateDir,
+    accountKey,
+    usageAccountKeys,
+    watchResourceReads,
+    active,
+  ]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };
@@ -2439,13 +2463,13 @@ export default function App({ active = true }: { active?: boolean }) {
         window.focus();
         document.getElementById("message")?.focus();
         window.dispatchEvent(new Event("focus"));
-      } else if (command.action === "notifications")
+      } else if (command.action === "notifications") {
         setNavigationTarget({
           ...command,
           section: "messages",
           requestId: crypto.randomUUID(),
         });
-      else if (command.action === "projects") {
+      } else if (command.action === "projects") {
         document.documentElement.dataset.serverProjects = "true";
         setSidebarCollapsed(false);
         setSidebar(true);
@@ -2493,176 +2517,29 @@ export default function App({ active = true }: { active?: boolean }) {
       .map((request) => request.agent)
       .filter((agentId): agentId is string => typeof agentId === "string"),
   );
-  const worker = (a: Agent) => (
-    <UIErrorBoundary key={a.id} label="this subagent" resetKey={a.id}>
-      <WorkerCard
-        agent={a}
-        accounts={accounts.data.accounts}
-        selected={opened === a.id}
-        awaitingAnswer={workerState(a, answerIds, deferredIds) === "answer"}
-        deferred={deferredIds.has(a.id)}
-        indicator={indicators.get(a.id)}
-        open={() => open(a.id)}
-        previewResult={() =>
-          setFilePreview({
-            agent: a.id,
-            path: a.overview?.resultFile ?? undefined,
-          })
-        }
-        remove={() => {
-          setTeamOpen(false);
-          remove(a.id, false, true);
-        }}
-      />
-    </UIErrorBoundary>
-  );
-  // Failed workers are the lead's work; the filter only finds them.
-  const failed = (a: Agent) =>
-    workerState(a, answerIds, deferredIds) === "attention";
-  const query = workerQuery.trim().toLowerCase();
-  const shown = workers.filter((a) =>
-    query
-      ? `${a.name} ${a.status} ${a.role || ""} ${a.overview?.task || ""} ${a.overview?.result || ""}`
-          .toLowerCase()
-          .includes(query)
-      : workerFilter === "attention"
-        ? failed(a)
-        : workerFilter === "active"
-          ? busy.has(a.status ?? "")
-          : true,
-  );
-  // The same states and names as the team summary; Finished stays collapsed below.
-  const panelState = (a: Agent) =>
-    a.inFlight && ["running", "starting"].includes(a.status ?? "")
-      ? "working"
-      : workerState(a, answerIds, deferredIds);
-  const groups = TEAM_PANEL_STATES.filter(
-    ([state]) => state !== "completed",
-  ).map(([state, name]) => ({
-    name,
-    workers: shown.filter((a) => panelState(a) === state),
-  }));
-  const completed = shown.filter(
-    (a) => workerState(a, answerIds, deferredIds) === "completed",
-  );
-  const smallTeam = workers.length <= 3;
-  const showTeamFilters = !smallTeam || !!workerQuery || workerFilter !== "all";
   const teamPanel = (
-    <TeamModels accountKey={lead?.accountKey || "default"}>
-      <aside
-        id="team"
-        aria-label="Team"
-        className={smallTeam ? "team-compact" : undefined}
-      >
-        <div className="team-heading">
-          <h2>Team</h2>
-          <ActionIcon
-            aria-label="Close team"
-            id="team-close"
-            onClick={() => {
-              setTeamOpen(false);
-              setWideTeamOpen(false);
-              save("codex-team-open", false);
-            }}
-          >
-            <X size={16} />
-          </ActionIcon>
-        </div>
-        <TeamRetainedWorktrees items={retainedWorktrees} />
-        <TeamSummary
-          workers={workers}
-          answers={answerIds}
-          deferred={deferredIds}
-        />
-        {/* The lead link is only useful from a worker chat. */}
-        {lead && opened !== lead.id && (
-          <Button
-            id="lead-row"
-            variant="subtle"
-            size="compact-sm"
-            title={lead.name || "Main agent"}
-            leftSection={<ArrowLeft size={13} />}
-            onClick={() => open(lead.id)}
-          >
-            Back to main agent
-          </Button>
-        )}
-        {showTeamFilters && (
-          <>
-            <TextInput
-              leftSection={<Search size={14} />}
-              id="worker-search"
-              type="search"
-              aria-label="Find a subagent"
-              placeholder="Find a worker"
-              value={workerQuery}
-              onChange={(e) => setWorkerQuery(e.target.value)}
-            />
-            {query ? (
-              <p className="team-search-count" role="status">
-                {shown.length} {shown.length === 1 ? "match" : "matches"} in
-                this team
-              </p>
-            ) : (
-              <div
-                className="team-filters"
-                role="group"
-                aria-label="Filter subagents"
-              >
-                {[
-                  ["all", "All"],
-                  ["active", "Active"],
-                  ["attention", "Failed"],
-                ].map(([value, label]) => (
-                  <UnstyledButton
-                    key={value}
-                    aria-pressed={workerFilter === value}
-                    onClick={() => setWorkerFilter(String(value))}
-                  >
-                    {label}
-                  </UnstyledButton>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-        <div id="workers">
-          {groups.map((group) =>
-            group.workers.length ? (
-              <section
-                className="team-status-group"
-                aria-label={group.name}
-                key={group.name}
-              >
-                {!smallTeam && <h3>{group.name}</h3>}
-                {group.workers.map(worker)}
-              </section>
-            ) : null,
-          )}
-          {!!completed.length && (
-            <details
-              className="worker-group"
-              open={!!query || completedOpen}
-              onToggle={(event) => {
-                if (!query) setCompletedOpen(event.currentTarget.open);
-              }}
-            >
-              <summary>Finished</summary>
-              {/* A collapsed group keeps its rows out of the DOM; the summary
-                  and the team overview still count them. */}
-              {(!!query || completedOpen) && completed.map(worker)}
-            </details>
-          )}
-          {!shown.length && (
-            <p className="team-empty" role="status">
-              {query
-                ? "No workers match your search."
-                : "No workers in this group."}
-            </p>
-          )}
-        </div>
-      </aside>
-    </TeamModels>
+    <TeamPanel
+      lead={lead}
+      workers={workers}
+      retainedWorktrees={retainedWorktrees}
+      accounts={accounts.data.accounts}
+      opened={opened}
+      answerIds={answerIds}
+      deferredIds={deferredIds}
+      indicators={indicators}
+      workerQuery={workerQuery}
+      setWorkerQuery={setWorkerQuery}
+      workerFilter={workerFilter}
+      setWorkerFilter={setWorkerFilter}
+      completedOpen={completedOpen}
+      setCompletedOpen={setCompletedOpen}
+      setTeamOpen={setTeamOpen}
+      setWideTeamOpen={setWideTeamOpen}
+      saveClosed={() => save("codex-team-open", false)}
+      open={open}
+      previewResult={setFilePreview}
+      remove={(id) => remove(id, false, true)}
+    />
   );
   const toggleTeam = () => {
     if (narrowTeam) setTeamOpen(!teamOpen);
@@ -2924,75 +2801,68 @@ export default function App({ active = true }: { active?: boolean }) {
         menu={chatActionsMenu}
         menuButtonRef={chatActionsButton}
       />
-      <div className="workspace-layout-row" ref={rowLayout.rowRef}>
+      <div
+        className="workspace-frame workspace-layout-row"
+        ref={rowLayout.rowRef}
+      >
         <main
           className="workspace"
           data-show-message-avatars={studioPreferences.showMessageAvatars}
         >
           <SupervisorRecoveryNotice />
           <header className="workspace-header simple-workspace-header">
-            <ActionIcon
-              id="sidebar-toggle"
-              aria-label="Toggle conversations"
-              aria-expanded={sidebarCompact ? sidebar : !sidebarCollapsed}
-              onClick={toggleSidebar}
-            >
-              <PanelLeft size={18} />
-            </ActionIcon>
+            {sidebarCompact ? (
+              <Button
+                id="sidebar-toggle"
+                variant="subtle"
+                size="compact-xs"
+                aria-label="Back to chats"
+                aria-expanded={sidebar}
+                onClick={toggleSidebar}
+                leftSection={<ArrowLeft size={18} />}
+              >
+                Chats
+              </Button>
+            ) : (
+              <ActionIcon
+                id="sidebar-toggle"
+                aria-label="Toggle conversations"
+                aria-expanded={sidebarCompact ? sidebar : !sidebarCollapsed}
+                onClick={toggleSidebar}
+              >
+                <PanelLeft size={18} />
+              </ActionIcon>
+            )}
             <ConversationTitle
               title={title}
               agent={agent}
-              indicator={agent ? indicators.get(agent.id) : undefined}
-              projectPrefix={
-                mobileClient && agent?.cwd ? `${projectName} · ` : ""
+              serverAlias={
+                agent
+                  ? sidebarServices.alias?.({ kind: "chat", id: agent.id }) ||
+                    serverAliases[
+                      (agent as Agent & { serverId?: string }).serverId ||
+                        serverViewId ||
+                        "local"
+                    ] ||
+                    serverAliases[sidebarServices.serverForChat(agent.id)] ||
+                    DEFAULT_LOCAL_SERVER_ALIAS
+                  : undefined
+              }
+              serverOffline={
+                agent
+                  ? !(
+                      sidebarServices.available?.({
+                        kind: "chat",
+                        id: agent.id,
+                      }) ?? true
+                    )
+                  : false
               }
               onBack={
                 // Only a worker chat links back; the lead and team rooms do not.
                 lead && agent && !agent.isLead && agent.id !== lead.id
                   ? () => open(lead.id)
                   : undefined
-              }
-              modeControl={
-                lead?.source === "managed" && !mobileClient ? (
-                  <span className="header-mode-summary">
-                    {lead.concurrency === 0 ||
-                    (lead.concurrency == null &&
-                      lead.agentModeSupported &&
-                      lead.agentMode === "single")
-                      ? "Single agent"
-                      : lead.concurrency != null ||
-                          (lead.agentModeSupported &&
-                            lead.agentMode === "multi")
-                        ? "Multi agent"
-                        : "Mode unavailable"}
-                  </span>
-                ) : undefined
-              }
-              statusText={
-                agent
-                  ? indicators.get(agent.id)?.kind === "answer" ||
-                    (indicators.get(agent.id)?.kind === "working" &&
-                      !agent.inFlight)
-                    ? indicators.get(agent.id)?.label || ""
-                    : livePhase?.id === agent.id
-                      ? livePhase.label
-                      : [
-                          statusLabel(
-                            agent.status ?? "unknown",
-                            agent.activity?.phase ?? undefined,
-                            agent.parkedEvent ?? undefined,
-                          ),
-                          nativeReleaseLabel(agent),
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")
-                  : room?.radio
-                    ? "Shared chat · One agent speaks at a time"
-                    : room?.kind === "private"
-                      ? "Private agent chat"
-                      : room
-                        ? "Broadcast"
-                        : ""
               }
             />
             <div id="conversation-header-tools" />
@@ -3011,6 +2881,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 leftSection={<Users size={16} />}
                 id="team-toggle"
                 aria-label="Team"
+                title={`Team: ${workers.filter((worker) => busy.has(worker.status ?? "")).length} working of ${workers.length}`}
                 aria-expanded={narrowTeam ? teamOpen : wideTeamOpen}
                 onClick={toggleTeam}
               >
@@ -3186,7 +3057,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 }
               />
             ))}
-          {error && (
+          {error && !offlineSendFeedback.owns(error) && (
             <div id="error" role="alert">
               {error}
             </div>
@@ -3235,12 +3106,12 @@ export default function App({ active = true }: { active?: boolean }) {
                   </Button>
                 </div>
               ))}
-            {draftError && (
+            {draftError && !offlineSendFeedback.owns(draftError) && (
               <p className="sync-status" role="status" data-draft-sync-status>
                 {draftError}
               </p>
             )}
-            {outbox.error && (
+            {outbox.error && !offlineSendFeedback.owns(outbox.error) && (
               <p className="sync-status" role="alert">
                 {outbox.error}
               </p>
@@ -3266,10 +3137,36 @@ export default function App({ active = true }: { active?: boolean }) {
               />
             ) : (
               <SelectedConversation
+                projectName={projectName}
+                recentChats={
+                  agent?.empty
+                    ? data.threads
+                        .filter(
+                          (chat) =>
+                            chat.id !== agent.id &&
+                            chat.isLead &&
+                            !chat.archived &&
+                            !chat.empty &&
+                            chat.cwd === agent.cwd,
+                        )
+                        .sort(
+                          (a, b) =>
+                            (b.updated || b.created || 0) -
+                            (a.updated || a.created || 0),
+                        )
+                        .slice(0, 5)
+                        .map((chat) => ({
+                          id: chat.id,
+                          title: chat.name || "Conversation",
+                          indicator: indicators.get(chat.id),
+                        }))
+                    : undefined
+                }
                 accountsState={accounts}
                 syncWorkspaceId={workspaceId}
                 id={opened}
                 agent={agent}
+                lead={lead || undefined}
                 room={room}
                 legacy={legacy}
                 data={conversationData!}
@@ -3283,6 +3180,8 @@ export default function App({ active = true }: { active?: boolean }) {
                 sending={sending}
                 schemaMismatch={schemaMismatch}
                 outgoing={conversationOutgoing}
+                offlineSendPending={offlineSendFeedback.pending}
+                offlineSendDetails={offlineSendFeedback.details}
                 onObserved={observeSends}
                 onReadResult={readState.observeRead}
                 onOutgoingEdit={editSend}
@@ -3298,7 +3197,6 @@ export default function App({ active = true }: { active?: boolean }) {
                   selectedAccount?.email || selectedAccount?.label
                 }
                 reloadLimits={forceReloadLimits}
-                onPhase={onPhase}
                 onSelect={open}
                 onBranchCreated={branchCreated}
                 onNewChat={newConversation}
@@ -3311,8 +3209,6 @@ export default function App({ active = true }: { active?: boolean }) {
           id="workspace-panel-slot"
           className="workspace-panel-slot"
           ref={setWorkspacePanelSlot}
-          data-ready={workspacePanelSlot ? "yes" : "no"}
-          data-layout-mode={rowLayout.panelLayout.mode}
         />
         {hasTeam &&
           (narrowTeam ? (
@@ -3320,7 +3216,7 @@ export default function App({ active = true }: { active?: boolean }) {
               opened={teamOpen}
               onClose={() => setTeamOpen(false)}
               position="right"
-              size={`${layoutValues.team.drawerMax}rem`}
+              size="var(--studio-team-size)"
               padding={0}
               withCloseButton={false}
               title="Team"
@@ -3356,11 +3252,11 @@ export default function App({ active = true }: { active?: boolean }) {
             key={`workspace:${lead?.id || "none"}`}
             initialSection={workspaceSection}
             initialFocus={workspaceFocus}
-            opened={workspaceOpen}
             inlineTarget={workspacePanelSlot}
             panelLayout={rowLayout.panelLayout}
-            onPanelWidthChange={workspacePanelWidth.setPreferredWidthRem}
-            resizeScope={`${serverViewId || "local"}:${workspaceId || "pending"}`}
+            onPanelWidthChange={setPreferredPanelWidthRem}
+            resizeScope={workspaceId || data?.stateDir || "pending"}
+            opened={workspaceOpen}
             onClose={() => setWorkspaceOpen(false)}
             agent={agent || lead}
             data={chatData!}
@@ -3418,12 +3314,10 @@ export default function App({ active = true }: { active?: boolean }) {
         classNames={{ body: "studio-settings-body" }}
       >
         <div className="studio-settings-panel" data-testid="studio-settings">
-          <Tabs
+          <StudioSettingsLayout
             value={studioSettingsTab}
             onChange={activateSettingsTab}
-            className="studio-settings-tabs"
           >
-            <StudioSettingsTabs />
             <Tabs.Panel value="accounts" pt="md">
               <section className="settings-group" aria-label="Studio accounts">
                 <ServerAccountsPanel
@@ -3448,6 +3342,9 @@ export default function App({ active = true }: { active?: boolean }) {
               {serverSettings?.panel || (
                 <ServerAccessSettings active={studioSettingsOpen} />
               )}
+            </Tabs.Panel>
+            <Tabs.Panel value="models" pt="md" keepMounted={false}>
+              <ModelWhitelistSettings />
             </Tabs.Panel>
             <Tabs.Panel value="appearance" pt="md">
               <div className="studio-appearance-groups">
@@ -3596,8 +3493,7 @@ export default function App({ active = true }: { active?: boolean }) {
                     }}
                   />
                 </SettingsRow>
-                <details className="studio-appearance-more">
-                  <summary>More</summary>
+                <Disclosure className="studio-appearance-more" summary="More">
                   <div className="studio-appearance-more-content">
                     <section className="settings-group" aria-label="Fonts">
                       <h2>Fonts</h2>
@@ -3804,7 +3700,7 @@ export default function App({ active = true }: { active?: boolean }) {
                       </Button>
                     </section>
                   </div>
-                </details>
+                </Disclosure>
               </div>
             </Tabs.Panel>
             <Tabs.Panel value="federation" pt="md">
@@ -3899,7 +3795,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 </SettingsRow>
               </section>
             </Tabs.Panel>
-          </Tabs>
+          </StudioSettingsLayout>
           {studioPreferencesError && (
             <p className="studio-preferences-error" role="alert">
               {studioPreferencesError}
@@ -3907,176 +3803,31 @@ export default function App({ active = true }: { active?: boolean }) {
           )}
         </div>
       </Modal>
-      <Modal
-        opened={settingsOpen}
-        closeOnEscape={
-          !accountModalOpen &&
-          !mainSettingsOpen &&
-          !workerSettingsOpen &&
-          !reviewSettingsOpen
-        }
-        closeOnClickOutside={
-          !accountModalOpen &&
-          !mainSettingsOpen &&
-          !workerSettingsOpen &&
-          !reviewSettingsOpen
-        }
-        onClose={() => {
-          if (accountModalOpenRef.current) return;
-          setSettingsOpen(false);
-        }}
-        title="Chat settings"
-        size={modalSizes.settings}
-      >
-        <div className="chat-settings-panel chat-settings-rows">
-          {agent?.source === "managed" && (
-            <>
-              <SettingsRow label="Model">
-                <UnifiedAgentSettings
-                  key={"execution:" + agent.id}
-                  state={accounts}
-                  notify={notify}
-                  settingsRow
-                  permissionsTargetId="chat-settings-permissions"
-                  extrasTargetId="chat-settings-modes"
-                  onOpenChange={setMainSettingsOpen}
-                  onAccountModalOpenChange={updateAccountModalOpen}
-                  showAccountExclusions
-                  agent={agent}
-                  catalog={agentModels}
-                  team={data?.runtime?.agents || []}
-                  refresh={refresh}
-                />
-              </SettingsRow>
-              {lead?.isLead &&
-                (["worker", "review"] as const).map((role) => (
-                  <SettingsRow
-                    key={role}
-                    label={role === "worker" ? "Workers" : "Review"}
-                  >
-                    <UnifiedAgentSettings
-                      state={accounts}
-                      notify={notify}
-                      settingsRow
-                      initialRole={role}
-                      onOpenChange={
-                        role === "worker"
-                          ? setWorkerSettingsOpen
-                          : setReviewSettingsOpen
-                      }
-                      onAccountModalOpenChange={setAccountModalOpen}
-                      agent={lead}
-                      catalog={agentModels}
-                      team={data?.runtime?.agents || []}
-                      refresh={refresh}
-                    />
-                  </SettingsRow>
-                ))}
-            </>
-          )}
-          {lead?.source === "managed" && (
-            <SettingsRow label="Parallel">
-              <SubagentConcurrencyControl
-                compact
-                lead={lead}
-                stateDir={data.stateDir}
-                workspaceId={workspaceId}
-                refresh={refresh}
-              />
-            </SettingsRow>
-          )}
-          <div id="chat-settings-permissions" />
-          <BrowserAccessNotice
-            compact
-            accountKey={accountKey}
-            active={settingsOpen && (agent || lead)?.provider !== "claude"}
-          />
-          <div className="chat-settings-footer">
-            {agent?.cwd && (
-              <Button
-                variant="default"
-                className="settings-new-chat"
-                leftSection={<Plus size={14} />}
-                aria-label="New chat in this project"
-                disabled={creating}
-                onClick={() => {
-                  setSettingsOpen(false);
-                  void newChat(agent.cwd ?? undefined);
-                }}
-              >
-                New chat
-              </Button>
-            )}
-            {agent?.source === "managed" &&
-              (["compact", "review"] as const)
-                .filter((action) =>
-                  menuActions(agent.provider ?? undefined).includes(action),
-                )
-                .map((action) => {
-                  const disabled =
-                    busy.has(agent.status ?? "") ||
-                    !!agent.inFlight ||
-                    !!nativeThreadError(agent) ||
-                    !agent.threadId;
-                  return (
-                    <Tooltip
-                      key={action}
-                      disabled={!disabled}
-                      label={
-                        !agent.threadId
-                          ? "Available after the chat starts."
-                          : "Wait until the chat is ready."
-                      }
-                    >
-                      <span>
-                        <Button
-                          variant="default"
-                          disabled={disabled}
-                          onClick={() => {
-                            setSettingsOpen(false);
-                            void run(() => submitNativeAction(agent, action));
-                          }}
-                        >
-                          {action === "compact" ? "Compact" : "Review"}
-                        </Button>
-                      </span>
-                    </Tooltip>
-                  );
-                })}
-          </div>
-          <details className="chat-settings-more">
-            <summary>More</summary>
-            <div id="chat-settings-modes" />
-            {agent?.cwd && (
-              <Button
-                leftSection={<Folder size={14} />}
-                aria-label="Choose project folder"
-                onClick={() => {
-                  setSettingsOpen(false);
-                  project();
-                }}
-              >
-                Folder
-              </Button>
-            )}
-            {agent?.provider === "claude" && (
-              <Suspense fallback={null}>
-                <ClaudeSettings
-                  agent={agent}
-                  account={selectedAccount}
-                  permissionsTargetId="chat-settings-permissions"
-                  onSignIn={(key) => {
-                    setSettingsOpen(false);
-                    setClaudeLoginKey(key);
-                  }}
-                />
-              </Suspense>
-            )}
-          </details>
-        </div>
-      </Modal>
+      <ChatSettingsDialog
+        settingsOpen={settingsOpen}
+        accountModalOpen={accountModalOpen}
+        setSettingsOpen={setSettingsOpen}
+        agent={agent}
+        lead={lead}
+        accounts={accounts}
+        notify={notify}
+        agentModels={agentModels}
+        data={data}
+        refresh={refresh}
+        workspaceId={workspaceId}
+        creating={creating}
+        newChat={newChat}
+        project={project}
+        selectedAccount={selectedAccount}
+        setClaudeLoginKey={setClaudeLoginKey}
+      />
       <Modal
         opened={!!modal}
+        padding={
+          modal?.title === "New chat"
+            ? "var(--studio-model-dialog-padding)"
+            : undefined
+        }
         closeOnEscape={modal?.title !== "New chat"}
         onClose={() => setModal(null)}
         title={modal?.title}
@@ -4084,7 +3835,7 @@ export default function App({ active = true }: { active?: boolean }) {
           modal?.title === "Project settings"
             ? modalSizes.settings
             : modal?.title === "New chat"
-              ? "lg"
+              ? "var(--studio-model-dialog-size)"
               : undefined
         }
       >
@@ -4112,7 +3863,7 @@ export default function App({ active = true }: { active?: boolean }) {
         )}
       </Modal>
       {schemaMismatch && schemaMismatchDialog}
-      {toast && (
+      {toast && !offlineSendFeedback.owns(toast) && (
         <div id="toast" role="status">
           {toast}
         </div>

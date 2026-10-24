@@ -17,6 +17,9 @@ pnpm --filter codex-agents-desktop run start
 ```
 
 The installer builds the Rust command binaries and links them into `~/.local/bin`.
+On Linux, `just deliver-server <commit>` builds and verifies a release in a
+separate systemd user service so delivery survives the backend restart. See
+[Linux server setup](docs/linux-server-setup.md) for delivery logs and recovery.
 
 The root [`package.json`](package.json) owns root commands. Each app manifest
 owns its package commands; see the workspace guides below.

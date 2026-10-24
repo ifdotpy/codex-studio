@@ -286,6 +286,7 @@ fn run(case: &Value, records: &Value) -> Value {
     }
     json!(outputs)
 }
+#[test]
 fn every_budget_case_runs_to_completion() {
     let cases: Value = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
     for case in cases.as_array().expect("cases") {
@@ -409,11 +410,18 @@ fn exact_response_replay_is_noop_and_conflicting_replay_refuses_without_writes()
 }
 
 fn fixture() -> (Value, Value) {
-    let cases: Value = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
-    let case = cases[0].clone();
-    let records = records(&case);
-    (case, records)
+    static FIXTURE: std::sync::OnceLock<(Value, Value)> = std::sync::OnceLock::new();
+    FIXTURE
+        .get_or_init(|| {
+            let cases: Value =
+                serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
+            let case = cases[0].clone();
+            let records = records(&case);
+            (case, records)
+        })
+        .clone()
 }
+
 fn sync_fixture(db: &Connection) {
     db.execute_batch("CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));CREATE TABLE sync_documents(seq INTEGER);CREATE TABLE sync_versions(seq INTEGER);INSERT INTO sync_entities VALUES('agent','a',1,'initial','{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"name\":\"Keep presentation\",\"source\":\"native\",\"kind\":\"agent\",\"canSend\":true}}',0);").expect("sync fixture");
 }
@@ -425,6 +433,7 @@ fn all_stored(db: &Connection) -> Value {
         .expect("sync");
     json!({"stored":stored(db),"sync":sync.map(|v|serde_json::from_str::<Value>(&v).expect("sync")),"sequence":db.query_row("SELECT seq FROM sync_entities WHERE id='a'",[],|r|r.get::<_,i64>(0)).expect("seq")})
 }
+#[test]
 fn capture_failpoints_restart_and_lost_response() {
     let (case, records) = fixture();
     let params = &case["steps"][0]["params"];
@@ -508,6 +517,7 @@ fn capture_failpoints_restart_and_lost_response() {
         }
     }
 }
+#[test]
 fn capture_rejects_stale_durable_identity() {
     let (case, records) = fixture();
     for source in [CaptureSource::Live, CaptureSource::History] {
@@ -568,6 +578,7 @@ fn capture_rejects_stale_durable_identity() {
     }
 }
 
+#[test]
 fn history_capture_uses_event_turn_and_keeps_durable_turn() {
     let (case, mut records) = fixture();
     records["agents"]["a"]["turnId"] = json!("durable-turn");
@@ -676,6 +687,7 @@ fn history_capture_uses_event_turn_and_keeps_durable_turn() {
     assert_ne!(usages[0]["id"], usages[1]["id"]);
 }
 
+#[test]
 fn capture_partial_copy_uses_durable_identity() {
     let (mut case, _) = fixture();
     case["agents"][0]["turnId"] = json!("durable-turn");
@@ -717,6 +729,7 @@ fn capture_partial_copy_uses_durable_identity() {
     }
 }
 
+#[test]
 fn malformed_budget_inputs_refuse_without_writes() {
     let (case, records) = fixture();
     for field in [
@@ -773,6 +786,7 @@ fn malformed_budget_inputs_refuse_without_writes() {
     }
 }
 
+#[test]
 fn wait_failpoints_preserve_batch_and_exact_resume() {
     let cases: Value = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
     let case = cases
@@ -851,6 +865,7 @@ fn wait_failpoints_preserve_batch_and_exact_resume() {
     }
 }
 
+#[test]
 fn malformed_stored_ledgers_and_late_team_read_roll_back() {
     let (case, records) = fixture();
     let written = run(&case, &records);
@@ -906,6 +921,7 @@ fn malformed_stored_ledgers_and_late_team_read_roll_back() {
     tx.commit().expect("commit refused scope");
     assert_eq!(stored(&connection), before);
 }
+#[test]
 fn usage_state_check_refuses_bad_scalar_rows_without_writing() {
     let (case, records) = fixture();
     let connection = db(&records, &case);
@@ -924,6 +940,7 @@ fn usage_state_check_refuses_bad_scalar_rows_without_writing() {
     assert_eq!(connection.total_changes(), changes);
 }
 
+#[test]
 fn action_retirement_failpoints_keep_receipt_and_wait_atomic() {
     let cases: Value = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
     let case = cases
@@ -978,6 +995,7 @@ fn action_retirement_failpoints_keep_receipt_and_wait_atomic() {
     }
 }
 
+#[test]
 fn incomplete_collected_tail_cannot_authorize_admission() {
     let (case, records) = fixture();
     let mut connection = db(&records, &case);
@@ -1176,70 +1194,4 @@ fn mixed_team_budget_includes_claude_live_usage() {
         assert_eq!(decision.denial.is_none(), spent < 1000, "{decision:?}");
         assert!(decision.status.incomplete.is_empty());
     }
-}
-
-#[test]
-fn budget_corpus_suite() {
-    let cases: &[(&str, fn())] = &[
-        (
-            "every_budget_case_runs_to_completion",
-            every_budget_case_runs_to_completion,
-        ),
-        (
-            "capture_failpoints_restart_and_lost_response",
-            capture_failpoints_restart_and_lost_response,
-        ),
-        (
-            "capture_rejects_stale_durable_identity",
-            capture_rejects_stale_durable_identity,
-        ),
-        (
-            "history_capture_uses_event_turn_and_keeps_durable_turn",
-            history_capture_uses_event_turn_and_keeps_durable_turn,
-        ),
-        (
-            "capture_partial_copy_uses_durable_identity",
-            capture_partial_copy_uses_durable_identity,
-        ),
-        (
-            "malformed_budget_inputs_refuse_without_writes",
-            malformed_budget_inputs_refuse_without_writes,
-        ),
-        (
-            "wait_failpoints_preserve_batch_and_exact_resume",
-            wait_failpoints_preserve_batch_and_exact_resume,
-        ),
-        (
-            "malformed_stored_ledgers_and_late_team_read_roll_back",
-            malformed_stored_ledgers_and_late_team_read_roll_back,
-        ),
-        (
-            "usage_state_check_refuses_bad_scalar_rows_without_writing",
-            usage_state_check_refuses_bad_scalar_rows_without_writing,
-        ),
-        (
-            "action_retirement_failpoints_keep_receipt_and_wait_atomic",
-            action_retirement_failpoints_keep_receipt_and_wait_atomic,
-        ),
-        (
-            "incomplete_collected_tail_cannot_authorize_admission",
-            incomplete_collected_tail_cannot_authorize_admission,
-        ),
-    ];
-    let mut failures = Vec::new();
-    for (name, case) in cases {
-        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(case)) {
-            let message = payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("non-string panic");
-            failures.push(format!("{name}: {message}"));
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "budget corpus failures:\n{}",
-        failures.join("\n")
-    );
 }

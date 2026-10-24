@@ -1,9 +1,9 @@
 //! The outcome of the `turn/start` that carried a capacity retry's follow-up
-//! input settles its record through the account worker's store, for both
-//! providers: an accepted start binds the turn and the turn's completion
+//! input settles its record through the account worker's shared store.
+//! An accepted start binds the turn and the turn's completion
 //! finishes the record, a rejected start ends it `failed`, and a reply without
 //! a turn id ends it `unknown`. Only an accepted start counts the attempt.
-use super::auth_hold::{agents, record_of};
+use super::auth_hold::record_of;
 use super::*;
 use crate::capacity_retry::{self, Action, Failure};
 use crate::continuation::Snapshot;
@@ -154,61 +154,58 @@ async fn settle(state: &State, id: &str, outcome: CapacityStartOutcome<'static>)
         .unwrap();
 }
 
-/// Both providers share the account worker's settlement; each provider's agent takes every
-/// outcome. A finished turn closes only an accepted retry.
+/// The provider-independent settlement handles every outcome.
+/// A finished turn closes only an accepted retry.
 #[tokio::test]
 async fn a_capacity_retry_start_settles_its_record_for_every_outcome() {
-    for kind in ProviderKind::ALL {
-        for outcome in ["accepted", "rejected", "no-turn-id"] {
-            let state = State::new().await;
-            agents(&state, kind, 0).await;
-            let id = claim_retry(&state).await;
-            assert_eq!(retry_of(&state, &id).await["status"], "starting");
-            let (status, count) = match outcome {
-                "accepted" => {
-                    settle(
-                        &state,
-                        &id,
-                        CapacityStartOutcome::Accepted { turn_id: "turn" },
-                    )
-                    .await;
-                    ("starting", 1)
-                }
-                "rejected" => {
-                    let failed = CapacityStartOutcome::Failed {
-                        reason: "rejected",
-                        unknown: false,
-                    };
-                    settle(&state, &id, failed).await;
-                    ("failed", 0)
-                }
-                _ => {
-                    let lost = CapacityStartOutcome::Failed {
-                        reason: "no turn id",
-                        unknown: true,
-                    };
-                    settle(&state, &id, lost).await;
-                    ("unknown", 0)
-                }
-            };
-            let retry = retry_of(&state, &id).await;
-            assert_eq!(retry["status"], status, "{kind:?} {outcome}: {retry}");
-            let agent = record_of(&state, &state.agent).await;
-            assert_eq!(
-                agent["capacityRetryCount"].as_u64().unwrap_or(0),
-                count,
-                "{kind:?} {outcome}: {agent}"
-            );
-            assert_eq!(agent["capacityRetry"]["status"], status);
-            if outcome == "accepted" {
-                assert_eq!(retry["acceptedTurnId"], "turn");
-                let completion = capacity_retry::Action::Completed {
-                    turn_id: "turn",
-                    completed: true,
-                };
-                complete(&state, &id, completion).await;
-                assert_eq!(retry_of(&state, &id).await["status"], "finished");
+    for outcome in ["accepted", "rejected", "no-turn-id"] {
+        let state = State::new().await;
+        let id = claim_retry(&state).await;
+        assert_eq!(retry_of(&state, &id).await["status"], "starting");
+        let (status, count) = match outcome {
+            "accepted" => {
+                settle(
+                    &state,
+                    &id,
+                    CapacityStartOutcome::Accepted { turn_id: "turn" },
+                )
+                .await;
+                ("starting", 1)
             }
+            "rejected" => {
+                let failed = CapacityStartOutcome::Failed {
+                    reason: "rejected",
+                    unknown: false,
+                };
+                settle(&state, &id, failed).await;
+                ("failed", 0)
+            }
+            _ => {
+                let lost = CapacityStartOutcome::Failed {
+                    reason: "no turn id",
+                    unknown: true,
+                };
+                settle(&state, &id, lost).await;
+                ("unknown", 0)
+            }
+        };
+        let retry = retry_of(&state, &id).await;
+        assert_eq!(retry["status"], status, "{outcome}: {retry}");
+        let agent = record_of(&state, &state.agent).await;
+        assert_eq!(
+            agent["capacityRetryCount"].as_u64().unwrap_or(0),
+            count,
+            "{outcome}: {agent}"
+        );
+        assert_eq!(agent["capacityRetry"]["status"], status);
+        if outcome == "accepted" {
+            assert_eq!(retry["acceptedTurnId"], "turn");
+            let completion = capacity_retry::Action::Completed {
+                turn_id: "turn",
+                completed: true,
+            };
+            complete(&state, &id, completion).await;
+            assert_eq!(retry_of(&state, &id).await["status"], "finished");
         }
     }
 }

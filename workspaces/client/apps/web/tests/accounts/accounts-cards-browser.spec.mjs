@@ -109,7 +109,7 @@ async function fixture(page) {
         contentType: "text/event-stream",
         body: apiSchemaHandshakeSse(
           protocol3SseEvent("resources", {
-            protocol: 3,
+            protocol: 4,
             workspaceId: "a".repeat(32),
             epoch: "cards",
             revision: 1,
@@ -256,10 +256,16 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
     await expect(
       settings
         .locator('[data-account="expired"]')
+        .locator(".account-card-heading")
         .getByText("Sign in needed", { exact: true }),
     ).toBeVisible();
     const failure = settings.locator('[data-account="error"]');
-    await expect(failure.getByText("Error", { exact: true })).toBeVisible();
+    await expect(
+      failure
+        .locator(".account-card-heading")
+        .getByText("Error", { exact: true }),
+    ).toBeVisible();
+    await failure.getByRole("button", { name: /^Limit details for/ }).click();
     await failure
       .getByRole("button", { name: "Error details", exact: true })
       .click();
@@ -267,8 +273,11 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
     await failure
       .getByRole("button", { name: "Hide error details", exact: true })
       .click();
+    await failure.getByRole("button", { name: /^Limit details for/ }).click();
     await expect(
-      personal.getByText("Application default", { exact: true }),
+      personal
+        .locator(".account-card-heading")
+        .getByText("Application default", { exact: true }),
     ).toBeVisible();
     for (const [color, width] of [
       ["dark", 1440],
@@ -283,18 +292,35 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
       );
       const a = await personal.boundingBox();
       const b = await work.boundingBox();
-      if (width === 390) {
-        expect(b.y).toBeGreaterThan(a.y);
-        expect(b.x).toBe(a.x);
-      } else {
-        expect(b.y).toBe(a.y);
-        expect(b.x).toBeGreaterThan(a.x);
-      }
+      expect(b.y).toBeGreaterThan(a.y);
+      expect(b.x).toBe(a.x);
+      expect(a.height).toBeLessThanOrEqual(80);
+      expect(b.height).toBeLessThanOrEqual(80);
+      const windows = personal.locator(".account-window-grid");
+      await expect(windows).not.toBeAttached();
+      await expect(
+        personal.getByRole("textbox", {
+          name: "Group of personal@example.com",
+        }),
+      ).toBeHidden();
+      await personal
+        .getByRole("button", { name: /^Limit details for/ })
+        .click();
+      await expect(
+        personal.getByRole("textbox", {
+          name: "Group of personal@example.com",
+        }),
+      ).toBeVisible();
       expect(
         await personal
-          .locator(".account-limit-bar")
+          .locator(".account-window-meter")
+          .first()
           .evaluate((element) => element.getBoundingClientRect().height),
       ).toBe(3);
+      await work.getByRole("button", { name: /^Limit details for/ }).click();
+      await expect(personal.locator(".account-expanded")).not.toBeAttached();
+      await expect(work.locator(".account-expanded")).toBeVisible();
+      await work.getByRole("button", { name: /^Limit details for/ }).click();
       expect(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth,
@@ -342,7 +368,9 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
       })
       .click();
     await expect(
-      work.getByText("Application default", { exact: true }),
+      work
+        .locator(".account-card-heading")
+        .getByText("Application default", { exact: true }),
     ).toBeVisible();
     expect(f.bodies.at(-1)).toEqual({
       path: "/api/accounts/default",
@@ -381,6 +409,7 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
     await disconnect
       .getByRole("button", { name: "Disconnect account", exact: true })
       .click();
+    await work.getByRole("button", { name: /^Limit details for/ }).click();
     await expect(
       work.getByText("Hidden from new chats.", { exact: true }),
     ).toBeVisible();

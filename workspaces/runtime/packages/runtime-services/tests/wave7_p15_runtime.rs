@@ -1130,12 +1130,12 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
         "processId":id,
         "deltaBase64":base64::engine::general_purpose::STANDARD.encode(b"x")
     });
-    for cursor in 0..126 {
-        let enqueue_id = id.to_owned();
-        let enqueue_account = account.to_owned();
-        let enqueue_chunk = chunk.clone();
-        store
-            .transaction_with(move |tx| {
+    let enqueue_id = id.to_owned();
+    let enqueue_account = account.to_owned();
+    let enqueue_chunk = chunk.clone();
+    store
+        .transaction_with(move |tx| {
+            for cursor in 0..126 {
                 monitor_event_queue::enqueue_output_in_transaction(
                     tx,
                     &enqueue_id,
@@ -1143,11 +1143,12 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
                     7,
                     cursor,
                     &enqueue_chunk,
-                )
-            })
-            .await
-            .expect("fill output admission slots");
-    }
+                )?;
+            }
+            Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
+        })
+        .await
+        .expect("fill output slots");
     let before = record(&store, id);
     let rejected_id = id.to_owned();
     let rejected_account = account.to_owned();
@@ -1217,12 +1218,12 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
         "processId":id,
         "deltaBase64":base64::engine::general_purpose::STANDARD.encode(&bytes)
     });
-    for cursor in 0..30 {
-        let enqueue_id = id.to_owned();
-        let enqueue_account = account.to_owned();
-        let enqueue_chunk = chunk.clone();
-        store
-            .transaction_with(move |tx| {
+    let enqueue_id = id.to_owned();
+    let enqueue_account = account.to_owned();
+    let enqueue_chunk = chunk.clone();
+    store
+        .transaction_with(move |tx| {
+            for cursor in 0..30 {
                 monitor_event_queue::enqueue_output_in_transaction(
                     tx,
                     &enqueue_id,
@@ -1230,11 +1231,12 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
                     7,
                     cursor,
                     &enqueue_chunk,
-                )
-            })
-            .await
-            .expect("fill output byte admission limit");
-    }
+                )?;
+            }
+            Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
+        })
+        .await
+        .expect("fill output byte admission limit");
     assert_eq!(
         record(&store, id)["streamQueue"][29]["byteLength"],
         32 * 1024

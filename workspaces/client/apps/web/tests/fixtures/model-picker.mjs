@@ -1,57 +1,29 @@
-// Helpers for the shared model picker. The trigger is a button labelled by the
-// field label. It keeps the chosen value in data-value. The open list renders
-// one option per model with data-value.
-export const modelValue = (picker) => picker.getAttribute("data-value");
-const isSetup = async (picker) =>
-  (await picker.getAttribute("role")) === "listbox";
-
-const listFor = (picker) =>
-  picker.page().locator('[role="listbox"]:visible [role="option"]');
-
-export async function openModelList(picker) {
-  if (await isSetup(picker)) {
-    await listFor(picker).first().waitFor();
-    return listFor(picker);
-  }
-  if ((await picker.getAttribute("aria-expanded")) !== "true")
-    await picker.click();
-  await listFor(picker).first().waitFor();
-  return listFor(picker);
-}
-
-export async function closeModelList(picker) {
-  if (await isSetup(picker)) return;
-  if ((await picker.getAttribute("aria-expanded")) === "true")
-    await picker.press("Escape");
-  if (!(await isSetup(picker)))
-    await listFor(picker).first().waitFor({ state: "hidden" });
-}
-
-export async function modelOptions(picker) {
-  const options = await openModelList(picker);
-  const values = await options.evaluateAll((nodes) =>
-    nodes.map((node) => node.getAttribute("data-value")),
+// The setup fieldset and compact native select both retain data-value.
+export const modelValue = (picker) =>
+  picker.evaluate(
+    (node) =>
+      node.getAttribute("data-value") ??
+      node.parentElement?.getAttribute("data-value"),
   );
-  await closeModelList(picker);
-  return values;
+const isSelect = (picker) =>
+  picker.evaluate((node) => node.tagName === "SELECT");
+const listFor = async (picker) =>
+  (await isSelect(picker))
+    ? picker.locator("option")
+    : picker.getByRole("option");
+export const openModelList = listFor;
+export async function closeModelList() {}
+export async function modelOptions(picker) {
+  return (await listFor(picker)).evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("data-value") ?? node.value),
+  );
 }
-
-const optionFor = (picker, value) =>
-  picker
-    .page()
-    .locator(`[role="listbox"]:visible [role="option"][data-value="${value}"]`);
-
 export async function modelOptionDisabled(picker, value) {
-  await openModelList(picker);
-  const option = optionFor(picker, value);
-  const disabled = (await option.getAttribute("aria-disabled")) === "true";
-  await closeModelList(picker);
-  return disabled;
+  return picker
+    .locator(`[data-value="${value}"], option[value="${value}"]`)
+    .isDisabled();
 }
-
 export async function selectModel(picker, value) {
-  await openModelList(picker);
-  await optionFor(picker, value).click();
-  if (!(await isSetup(picker)))
-    await listFor(picker).first().waitFor({ state: "hidden" });
+  if (await isSelect(picker)) await picker.selectOption(value);
+  else await picker.locator(`[role="option"][data-value="${value}"]`).click();
 }

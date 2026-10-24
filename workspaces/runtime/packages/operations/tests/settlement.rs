@@ -33,7 +33,6 @@ struct MemoryStore {
     operation_receipts: HashMap<RequestId, bool>,
     fail_next: Option<FailureWindow>,
     writes: usize,
-    effects: usize,
 }
 
 impl RequestStore for MemoryStore {
@@ -543,7 +542,7 @@ fn absent_receipt_is_always_unknown() {
 }
 
 #[test]
-fn fault_after_nested_commit_preserves_uncertainty_and_never_dispatches_again() {
+fn fault_after_nested_commit_preserves_uncertainty_on_retry() {
     let id = RequestId::from("request-a");
     let mut store = MemoryStore::default();
     store.requests.insert(id.clone(), dispatched_state());
@@ -567,8 +566,9 @@ fn fault_after_nested_commit_preserves_uncertainty_and_never_dispatches_again() 
         Some(OperationState::Unknown)
     );
     assert_eq!(result.event, EventKind::CommittedOperationReceipt);
+    assert_eq!(store.requests.get(&id), Some(&result.state));
+    assert_eq!(store.writes, 1);
     assert!(store.operation_receipts.get(&id).copied().unwrap_or(false));
-    assert_eq!(store.effects, 0);
 }
 
 #[test]
@@ -600,7 +600,7 @@ fn result_commit_before_receipt_retries_from_saved_result() {
 }
 
 #[test]
-fn receipt_commit_before_reply_replays_without_second_write_or_effect() {
+fn receipt_commit_before_reply_replays_without_second_write() {
     let id = RequestId::from("request-a");
     let mut store = MemoryStore::default();
     store.requests.insert(id.clone(), dispatched_state());
@@ -617,6 +617,6 @@ fn receipt_commit_before_reply_replays_without_second_write_or_effect() {
     settled.result_changed = false;
     let retry = settle_in_store(&mut store, &settled).expect("receipt replay");
     assert_eq!(retry.kind, SettlementKind::NoChange);
+    assert!(retry.intents.is_empty());
     assert_eq!(store.writes, 1);
-    assert_eq!(store.effects, 0);
 }

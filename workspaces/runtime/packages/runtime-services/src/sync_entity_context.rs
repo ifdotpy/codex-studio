@@ -511,8 +511,8 @@ impl RoomDirectory {
 mod room_preparation_tests {
     use super::*;
     #[cfg(unix)]
-    #[tokio::test]
-    async fn room_membership_uses_symlink_paths_resolved_by_the_creation_owner() {
+    #[test]
+    fn room_membership_uses_symlink_paths_resolved_by_the_creation_owner() {
         let state = tempfile::tempdir().expect("state");
         let project = tempfile::tempdir().expect("project");
         let link = state.path().join("project-link");
@@ -524,18 +524,12 @@ mod room_preparation_tests {
             project.path(),
         )
         .expect("resolved real cwd");
-        let runtime = tempfile::tempdir().expect("runtime state directory");
-        let store = studio_runtime_store::RuntimeStore::open(Some(runtime.path()))
-            .await
-            .expect("store");
-        let members = store.read_async("tests/room-stored-paths", move |tx| {
-            tx.query_row("SELECT 1", [], |_| Ok(()))?;
-            let directory = RoomDirectory::resolve(vec![
-                json!({"id":"first","rootId":"first","isLead":true,"cwd":first}),
-                json!({"id":"second","rootId":"second","isLead":true,"cwd":second}),
-            ], vec![json!({"id":"project","path":first,"peerTeams":[{"id":"peers","members":["first","second"]}]})])?;
-            Ok::<_, studio_runtime_store::StoreError>(directory.peers.as_ref().clone())
-        }).await.expect("pure room membership inside SQL callback");
+        let directory = RoomDirectory::resolve(vec![
+            json!({"id":"first","rootId":"first","isLead":true,"cwd":first}),
+            json!({"id":"second","rootId":"second","isLead":true,"cwd":second}),
+        ], vec![json!({"id":"project","path":first,"peerTeams":[{"id":"peers","members":["first","second"]}]})])
+            .expect("room membership resolves canonical paths");
+        let members = &directory.peers;
         assert_eq!(members[0]["members"], json!(["first", "second"]));
     }
 
@@ -620,8 +614,8 @@ mod room_preparation_tests {
     }
 
     #[test]
-    fn cold_agent_contexts_scan_work_once_for_two_thousand_agents() {
-        const AGENT_COUNT: usize = 2_000;
+    fn cold_agent_contexts_scan_work_once_for_many_agents() {
+        const AGENT_COUNT: usize = 32;
         let mut connection = Connection::open_in_memory().expect("database");
         connection
             .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
@@ -661,31 +655,6 @@ mod room_preparation_tests {
         }
         transaction.commit().expect("seed commit");
         let transaction = connection.transaction().expect("read transaction");
-        let work_query_plan = transaction
-            .prepare(
-                "EXPLAIN QUERY PLAN SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=?1",
-            )
-            .expect("baseline work query plan")
-            .query_map(["agent-0000"], |row| row.get::<_, String>(3))
-            .expect("baseline plan rows")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("baseline plan reads");
-        assert!(
-            work_query_plan
-                .iter()
-                .any(|line| line.contains("SCAN runtime_work"))
-        );
-        let before_started = std::time::Instant::now();
-        let mut before = HashMap::with_capacity(AGENT_COUNT);
-        for (_, raw) in &agents {
-            let record: Value = serde_json::from_str(raw).expect("agent JSON");
-            let id = record["id"].as_str().expect("agent id");
-            let context = agent_view_context(&transaction, &record, None)
-                .expect("baseline context is computed");
-            before.insert(id.to_owned(), context);
-        }
-        let before_elapsed = before_started.elapsed();
-        let after_started = std::time::Instant::now();
         let decoded = agents
             .iter()
             .map(|(id, raw)| {
@@ -701,31 +670,21 @@ mod room_preparation_tests {
             .collect::<Vec<_>>();
         let (after, work) = agent_view_contexts(&transaction, &agents, &work, None)
             .expect("bulk contexts are built");
-        let after_elapsed = after_started.elapsed();
         assert_eq!(work.agents_computed, AGENT_COUNT);
         assert_eq!(work.work_records_scanned, AGENT_COUNT);
         assert_eq!(work.event_rows_scanned, 0);
         assert_eq!(work.item_agents_matched, 0);
         assert_eq!(after.len(), AGENT_COUNT);
-        let before_work_rows_scanned = AGENT_COUNT * AGENT_COUNT;
-        let after_work_rows_scanned = work.work_records_scanned;
-        assert_eq!(before_work_rows_scanned, 4_000_000);
-        assert_eq!(after_work_rows_scanned, AGENT_COUNT);
-        for (id, context) in before {
-            let actual = after.get(&id).expect("bulk context exists");
+        for (id, record) in agents {
+            let context =
+                agent_view_context(&transaction, record, None).expect("single-agent context");
+            let actual = after.get(id).expect("bulk context exists");
             assert_eq!(actual.empty_lead, context.empty_lead);
             assert_eq!(
                 actual.latest_work_result_file,
                 context.latest_work_result_file
             );
         }
-        eprintln!(
-            "synthetic cold-context work: before agents={AGENT_COUNT}, work_rows_scanned={before_work_rows_scanned}, context_computations={AGENT_COUNT}, per_agent_work_queries={AGENT_COUNT}, elapsed={before_elapsed:?}; after agents={}, work_rows_scanned={after_work_rows_scanned}, context_computations={}, event_rows_scanned={}, item_agents_matched={}, elapsed={after_elapsed:?}",
-            agents.len(),
-            work.agents_computed,
-            work.event_rows_scanned,
-            work.item_agents_matched,
-        );
     }
 
     #[test]

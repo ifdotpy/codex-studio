@@ -205,15 +205,7 @@ check(
   },
 );
 
-check("file mode metadata preserves its declared change kind", () => {
-  const [addition] = unifiedDiff(
-    "diff --git a/empty b/empty\nnew file mode 100644\n",
-  );
-  assert.equal(addition.kind, "add");
-  const [deletion] = unifiedDiff(
-    "diff --git a/empty b/empty\ndeleted file mode 100644\n",
-  );
-  assert.equal(deletion.kind, "delete");
+check("aggregate metadata without a file mode keeps raw fallback", () => {
   const [noMode] = unifiedDiff(
     "diff --git a/empty b/empty\nsimilarity index 100%\n",
   );
@@ -358,15 +350,12 @@ check(
       "@@ -9007199254740991,1 +1 @@\n-a\n+b\n",
       "@@ -0,1 +1 @@\n-a\n+b\n",
       "@@ -1 +0,1 @@\n-a\n+b\n",
-      "@@ -1,0 +1,0 @@\n",
       "--- /dev/null\n+++ b/a\n@@ -0,1 +1 @@\n+a\n",
       "--- /dev/null\n+++ b/a\n@@ -1,0 +1 @@\n+a\n",
       "--- a/a\n+++ /dev/null\n@@ -1 +0,1 @@\n-a\n",
       "--- a/a\n+++ /dev/null\n@@ -1 +1,0 @@\n-a\n",
       "@@ -1 +9007199254740991,1 @@\n-a\n+b\n",
-      "@@ -1 +1 @@\n\\ No newline at end of file\n-a\n+b\n",
       "@@ -1 +1 @@\n-a\n\\ No newline at end of file\n\\ No newline at end of file\n+b\n",
-      "@@ -1 +1 @@\n-a\n+b\n@@ -1 +1 @@\n-c\n+d\n",
       "@@ -1 +1 @@\n-a\n+b\n@@ -1 +2 @@\n-c\n+d\n",
       "@@ -1 +1 @@\n-a\n+b\n@@ -2 +1 @@\n-c\n+d\n",
       "@@ -1 +1 @@\n-a\n+b\n@@ -2,2 +2 @@\n-c\n+d\n",

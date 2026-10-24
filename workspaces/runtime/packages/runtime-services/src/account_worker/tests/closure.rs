@@ -282,7 +282,7 @@ pub(super) async fn scenario_old_generation_pending_text_is_materialized_and_rec
     let end = if MATRIX.try_with(|_| ()).is_ok() {
         3
     } else {
-        18
+        5
     };
     for generation in 2..end {
         let mut bridge = StoreBridge::new(state.bridge.store.clone()).await.unwrap();

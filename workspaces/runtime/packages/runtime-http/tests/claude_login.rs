@@ -327,6 +327,31 @@ async fn inconclusive_status_probe_keeps_the_unknown_outcome() {
         .await
         .expect("valid fixture");
 
+    // status() settles unknown receipts when the lease is free; observe the
+    // actor's durable terminal receipt without triggering that recovery path.
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let changed = f.changes.notified();
+            let saved = studio_runtime_services::claude_login::ports::LoginReceipts::load(
+                f.receipts.as_ref(),
+            )
+            .expect("load probe outcome");
+            if saved.iter().any(|snapshot| {
+                snapshot.request_id() == ID
+                    && snapshot.receipt()["status"] == "error"
+                    && snapshot.receipt()["error"] == FAILED
+            }) {
+                break;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .expect("malformed successful probe settles before shutdown");
+    assert!(
+        probe.closed.load(Ordering::SeqCst),
+        "probe closes before shutdown"
+    );
     service
         .shutdown()
         .await

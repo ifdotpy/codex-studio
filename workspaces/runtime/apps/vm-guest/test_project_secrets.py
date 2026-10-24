@@ -174,7 +174,10 @@ class InjectionTests(unittest.IsolatedAsyncioTestCase):
             "projectId": PROJECT, "name": "ZULIP_APEIRO_SHOWROOM_API_KEY", "value": VALUE}}, None)
         self.assertIn("result", response)
         self.owner = pwd.getpwuid(os.getuid()).pw_name
-        self.agents = AgentHandlers(self.state, self.store)
+        with patch("layr_agents.subprocess.run") as system, patch.object(
+                AgentHandlers, "join_project_groups"):
+            self.agents = AgentHandlers(self.state, self.store)
+        system.assert_not_called()
         self.agent = str(uuid.uuid4())
         self.context = {"agentId": self.agent, "projectId": PROJECT, "line": "main", "subpath": ".",
                         "readOnly": False, "owner": self.owner, "uid": os.getuid(), "gid": os.getgid(),
@@ -300,8 +303,9 @@ class InjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(marker.exists())
 
 
-@unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0 and Path(project_env.RUNUSER).exists(),
-                     "needs root on Linux with runuser")
+@unittest.skipUnless(os.environ.get("LAYR_E2E_ROOT") and sys.platform == "linux"
+                     and os.geteuid() == 0 and Path(project_env.RUNUSER).exists(),
+                     "needs LAYR_E2E_ROOT, root on Linux with runuser")
 class RunuserTests(unittest.TestCase):
     """The real runuser keeps the descriptor; the root steps never hold a value in their environment."""
 

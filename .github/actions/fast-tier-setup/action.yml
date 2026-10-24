@@ -56,6 +56,6 @@ runs:
     - name: Select the isolated check cache
       shell: bash
       run: echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
-    - name: Build the Rust diagnostics command
+    - name: Select the shared compilation budget
       shell: bash
-      run: cargo build --locked --release -p studio-diagnostics
+      run: echo "CARGO_BUILD_JOBS=$(node workspaces/tooling/apps/repository-checks/gate-config.mjs)" >> "$GITHUB_ENV"

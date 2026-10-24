@@ -238,10 +238,9 @@ mod tests {
         started.notified().await;
 
         // The route started only after the owner admitted the request.
-        tasks.close_admission();
-        let shutdown_tasks = Arc::clone(&tasks);
-        let shutdown = tokio::spawn(async move { shutdown_tasks.shutdown().await });
-        assert!(!shutdown.is_finished());
+        let shutdown = tasks.shutdown();
+        tokio::pin!(shutdown);
+        assert!(futures_util::poll!(shutdown.as_mut()).is_pending());
 
         let closed = app
             .oneshot(
@@ -257,7 +256,7 @@ mod tests {
 
         finish.notify_one();
         request.await.expect("request task").expect("response");
-        shutdown.await.expect("shutdown task");
+        shutdown.await;
     }
 
     #[tokio::test]

@@ -3,6 +3,7 @@
 use super::*;
 use std::sync::Mutex;
 
+#[cfg(target_os = "macos")]
 fn executable(path: &Path, text: &str) {
     use std::os::unix::fs::PermissionsExt;
     fs::write(path, text).unwrap();
@@ -11,6 +12,7 @@ fn executable(path: &Path, text: &str) {
 
 /// A stand-in for `mount_smbfs`: it asks for the password on its controlling
 /// terminal, as `mount_smbfs` does, and saves its arguments and the password.
+#[cfg(target_os = "macos")]
 const PROMPTING_MOUNT: &str = r#"#!/bin/sh
 out="$(dirname "$0")"
 printf '%s\n' "$@" > "$out/argv"
@@ -26,7 +28,9 @@ exit 77
 
 /// The password reaches `mount_smbfs` only on its controlling terminal: never
 /// in an argument, and never in the failure text.
+#[cfg(target_os = "macos")]
 #[test]
+#[cfg(target_os = "macos")]
 fn the_password_is_typed_on_the_terminal_of_mount_smbfs() {
     let folder = tempfile::tempdir().unwrap();
     let program = folder.path().join("mount_smbfs");
@@ -145,9 +149,19 @@ fn a_remount_waits_while_the_admin_channel_restarts() {
         ]),
         calls: Mutex::default(),
     };
+    let began = Instant::now();
+    let clock = std::cell::Cell::new(began);
+    let wait = |duration| {
+        assert_eq!(duration, Duration::from_secs_f64(ADMIN_RETRY_SECONDS));
+        clock.set(clock.get() + duration);
+    };
     assert_eq!(
-        ensure_project(&guest, "p1").unwrap()["projectId"],
+        ensure_project_with_sources(&guest, "p1", || clock.get(), wait).unwrap()["projectId"],
         json!("p1")
+    );
+    assert_eq!(
+        clock.get() - began,
+        Duration::from_secs_f64(ADMIN_RETRY_SECONDS)
     );
     assert_eq!(guest.calls.lock().unwrap().len(), 2);
     let guest = ScriptedGuest {
@@ -161,8 +175,24 @@ fn a_remount_waits_while_the_admin_channel_restarts() {
         )]),
         calls: Mutex::default(),
     };
-    assert!(ensure_project(&guest, "p1").is_err());
+    assert!(ensure_project_with_sources(&guest, "p1", || clock.get(), wait).is_err());
     assert_eq!(guest.calls.lock().unwrap().len(), 1);
+    let retries = (ADMIN_WAIT_SECONDS / ADMIN_RETRY_SECONDS) as usize;
+    let guest = ScriptedGuest {
+        answers: Mutex::new(
+            (0..=retries)
+                .map(|_| ("project.ensure", Err(unavailable())))
+                .collect(),
+        ),
+        calls: Mutex::default(),
+    };
+    let began = clock.get();
+    assert!(ensure_project_with_sources(&guest, "p1", || clock.get(), wait).is_err());
+    assert_eq!(
+        clock.get() - began,
+        Duration::from_secs_f64(ADMIN_WAIT_SECONDS)
+    );
+    assert_eq!(guest.calls.lock().unwrap().len(), retries + 1);
 }
 
 #[derive(Default)]

@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -134,6 +135,18 @@ class AgentEnvironment(unittest.TestCase):
 
 
 class Listeners(unittest.TestCase):
+    def test_the_proc_probe_is_unknown_when_the_tcp_table_cannot_be_read(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        empty = root / "proc-empty"
+        empty.mkdir()
+        self.assertIsNone(proc_listeners(empty))
+        ipv4_only = root / "proc-ipv4"
+        ipv4_only.mkdir()
+        (ipv4_only / "tcp").write_text(
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid\n"
+            "   0: 0100007F:1F40 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1010 0 1 1\n")
+        self.assertEqual(proc_listeners(ipv4_only), [Listener("127.0.0.1", 8000, 1010)])
+
     TCP = ("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
            "   0: 0100007F:1F40 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1010        0 1 1\n"
            "   1: 00000000:943B 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1011        0 2 1\n"
@@ -205,7 +218,7 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self.bridge.close()
-        # Server shutdown blocks for its poll interval, so it runs outside the event loop.
+        # Joining request/server threads stays outside the event loop.
         for tool in self.tools:
             await asyncio.to_thread(tool.close)
         await asyncio.to_thread(self.provider.close)
@@ -328,11 +341,20 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         raw[1].write(b"not json\n")
         self.assertIn(b"invalid_request", await raw[0].readline())
         raw[1].close()
+        await raw[1].wait_closed()
 
     async def test_wait_wakes_on_a_new_link_and_check_marks_stopped_tools(self) -> None:
         tool = self.tool("aws")
+        waiting = asyncio.Event()
+        original_wait = self.bridge.changed.wait
+
+        async def wait():
+            waiting.set()
+            return await original_wait()
+
+        self.bridge.changed.wait = wait
         waiter = asyncio.create_task(self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 10}))
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(waiting.wait(), 5)
         self.assertFalse(waiter.done())
         await self.launch(tool)
         woken = await asyncio.wait_for(waiter, 5)
@@ -437,17 +459,6 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
             await self.bridge.call("browser.callback", {"id": fresh["id"], "target": "/oauth/callback?code=x"})
         self.assertEqual(relay.exception.code, SIGN_IN_NOT_SENT_CODE)
         self.assertEqual(self.bridge.items[fresh["id"]]["relays"], 0)
-
-    def test_the_proc_probe_is_unknown_when_the_tcp_table_cannot_be_read(self) -> None:
-        empty = self.root / "proc-empty"
-        empty.mkdir()
-        self.assertIsNone(proc_listeners(empty))
-        ipv4_only = self.root / "proc-ipv4"
-        ipv4_only.mkdir()
-        (ipv4_only / "tcp").write_text(
-            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid\n"
-            "   0: 0100007F:1F40 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1010 0 1 1\n")
-        self.assertEqual(proc_listeners(ipv4_only), [Listener("127.0.0.1", 8000, 1010)])
 
     async def test_decline_close_expiry_and_device_links(self) -> None:
         tool = self.tool("aws")

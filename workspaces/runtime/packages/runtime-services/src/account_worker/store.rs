@@ -1587,6 +1587,10 @@ pub(super) async fn journal_batch(
     let server_id = store.local_server_id()?;
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let server_id = server_id.as_deref();
+        // A background recovery can commit before its cache handoff arrives.
+        // Validate the cached snapshot under the writer, reconstructing only
+        // after a newer commit or rollback invalidated its revision.
+        let streams = current_streams(tx, &account, Some(&streams))?;
         let mut faults = Vec::new();
         // Before this batch's receipts are counted against their bound.
         delete_delivered_publications(tx, &delivered)?;
@@ -1685,7 +1689,7 @@ pub(super) async fn journal_batch(
         // with the batch's input, so the comparison reads no stream text.
         if next.changed_from(&streams) {
             crate::diagnostics::measure_runtime_stage("journal.persist_streams", || {
-                persist_streams(tx, &account, &next)
+                persist_streams(tx, &account, &mut next)
             })?;
         }
         // One compaction per batch: every entry of a generation shares the checkpoint.
@@ -2994,11 +2998,17 @@ async fn publish_pending(
 pub(crate) fn persist_streams(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
-    streams: &NotificationStreamBuffer,
+    streams: &mut NotificationStreamBuffer,
 ) -> Result<(), WorkerError> {
     let (metadata, pending) = streams.persisted_text().map_err(|_| invalid(account))?;
     let key = format!("streams:{account}");
-    replace_text(tx, &key, "metadata", &metadata)?;
+    // The signature is an opaque revision of both metadata and pending text.
+    // A unique token also makes a rolled-back staged cache fail validation.
+    let revision = uuid::Uuid::new_v4().to_string();
+    tx.execute_cached(
+        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET signature=excluded.signature,result=excluded.result",
+        params![receipt_id(&key, "metadata"), revision, metadata],
+    )?;
     match pending {
         Some(pending) => replace_text(tx, &key, "pending", &pending),
         None => {
@@ -3008,15 +3018,50 @@ pub(crate) fn persist_streams(
             )?;
             Ok(())
         }
-    }
+    }?;
+    streams.store_revision = Some((account.to_owned(), revision));
+    Ok(())
 }
+
+/// The metadata signature owns cache validity for all account stream writers.
+/// A current cache costs one indexed scalar read and retains its allocations.
+/// Legacy phase signatures are supported until the next persist replaces them.
+pub(super) fn current_streams(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    cached: Option<&NotificationStreamBuffer>,
+) -> Result<NotificationStreamBuffer, WorkerError> {
+    if let Some(cached) = cached
+        && let Some((cached_account, revision)) = cached.store_revision.as_ref()
+        && cached_account == account
+    {
+        let current: Option<String> = tx
+            .query_row_cached(
+                "SELECT signature FROM runtime_operation_receipts WHERE id=?1",
+                [receipt_id(&format!("streams:{account}"), "metadata")],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current.as_ref() == Some(revision) {
+            return Ok(cached.clone());
+        }
+    }
+    load_streams(tx, account)
+}
+
 pub(super) fn load_streams(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
 ) -> Result<NotificationStreamBuffer, WorkerError> {
     let key = format!("streams:{account}");
-    let mut metadata =
-        receipt(tx, &key, "metadata")?.unwrap_or_else(|| json!({"entries":[],"closed":[]}));
+    let saved = EventWriteRepository::receipt(tx, &receipt_id(&key, "metadata"))?;
+    let revision = saved
+        .as_ref()
+        .map(|row| (account.to_owned(), row.signature.clone()));
+    let mut metadata = saved
+        .map(|row| serde_json::from_str::<Value>(&row.result).map_err(|_| invalid(account)))
+        .transpose()?
+        .unwrap_or_else(|| json!({"entries":[],"closed":[]}));
     if let Some(pending) = receipt(tx, &key, "pending")? {
         for entry in pending.as_array().ok_or_else(|| invalid(account))? {
             let target = metadata["entries"]
@@ -3035,7 +3080,10 @@ pub(super) fn load_streams(
             }
         }
     }
-    serde_json::from_value(metadata).map_err(|_| invalid(account))
+    let mut streams: NotificationStreamBuffer =
+        serde_json::from_value(metadata).map_err(|_| invalid(account))?;
+    streams.store_revision = revision;
+    Ok(streams)
 }
 pub(super) async fn restore_streams(
     store: &RuntimeStore,
@@ -3046,7 +3094,7 @@ pub(super) async fn restore_streams(
         .transaction_with(move |tx| {
             let mut streams = load_streams(tx, &account)?;
             crate::notification_dispatch::prune_inactive_streams(tx, &mut streams, now(), true)?;
-            persist_streams(tx, &account, &streams)?;
+            persist_streams(tx, &account, &mut streams)?;
             Ok(streams)
         })
         .await
@@ -3083,7 +3131,7 @@ pub(super) async fn flush_streams(
                 streams = next;
             }
         }
-        persist_streams(tx, &account, &streams)?;
+        persist_streams(tx, &account, &mut streams)?;
         Ok(streams)
     })
     .await

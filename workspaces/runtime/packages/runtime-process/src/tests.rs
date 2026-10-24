@@ -113,11 +113,16 @@ fn event_payload_and_unknown_kind_round_trip() {
 
 #[test]
 fn frame_reader_rejects_oversized_and_incomplete_frames() {
-    let mut too_large = Cursor::new(vec![b'x'; MAX_FRAME_BYTES + 1]);
+    // Valid JSON and a delimiter: removing the size check must accept this frame.
+    let mut bytes = vec![b' '; MAX_FRAME_BYTES - 2];
+    bytes.extend_from_slice(b"{}\n");
+    let mut too_large = Cursor::new(bytes);
     assert!(matches!(
         read_frame(&mut too_large),
         Err(SupervisorError::InvalidFrame(_))
     ));
+    too_large.set_position(1);
+    assert!(read_frame(&mut too_large).unwrap().is_some());
     let mut partial = Cursor::new(b"{}".to_vec());
     assert!(matches!(
         read_frame(&mut partial),

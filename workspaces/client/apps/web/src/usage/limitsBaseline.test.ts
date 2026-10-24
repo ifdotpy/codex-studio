@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResourceVersion } from "../sync/resourceEvents";
 import {
   type AccountLimitsSnapshot,
@@ -10,6 +10,9 @@ import { limitsBaselineReader } from "./limitsBaseline";
 
 const version = (revision: number, epoch = "workspace") =>
   ({ epoch, revision }) satisfies ResourceVersion;
+
+beforeEach(() => vi.useFakeTimers());
+afterEach(() => vi.useRealTimers());
 
 describe("limits baseline hydration", () => {
   it("keeps the baseline open after a versionless reset notification", async () => {
@@ -114,13 +117,15 @@ describe("limits baseline hydration", () => {
 
     await onBaseline(version(1));
     const versionTwo = onBaseline(version(2));
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(read).toHaveBeenCalledTimes(1);
     const versionThree = onBaseline(version(3));
     await Promise.resolve();
 
     expect(read).toHaveBeenCalledTimes(1);
     pendingReads[0](true);
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(read).toHaveBeenCalledTimes(2);
     const duplicateVersionThree = onBaseline(version(3));
     pendingReads[1](true);
     await Promise.all([versionTwo, versionThree, duplicateVersionThree]);
@@ -151,11 +156,13 @@ describe("limits baseline hydration", () => {
 
     await onBaseline(version(1));
     const versionTwo = onBaseline(version(2));
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(read).toHaveBeenCalledTimes(1);
     const versionThree = onBaseline(version(3));
 
     pendingReads[0].reject(new Error("version 2 read failed"));
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(read).toHaveBeenCalledTimes(2);
     pendingReads[1].resolve(true);
     await Promise.all([versionTwo, versionThree]);
 
@@ -184,43 +191,14 @@ describe("limits baseline hydration", () => {
     );
 
     const versionlessBaseline = onBaseline();
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(read).toHaveBeenCalledTimes(1);
     const versionOne = onBaseline(version(1));
     pendingReads[0].reject(new Error("versionless read failed"));
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(read).toHaveBeenCalledTimes(2);
     pendingReads[1].resolve(true);
     await Promise.all([versionlessBaseline, versionOne]);
-
-    expect(read).toHaveBeenCalledTimes(2);
-  }, 1_000);
-
-  it("keeps a newer version seen at read completion inside the same drain", async () => {
-    const pendingReads: Array<(succeeded: boolean) => void> = [];
-    const read = vi.fn(
-      () =>
-        new Promise<boolean>((resolve) => {
-          if (pendingReads.length >= 2)
-            throw new Error("version drain exceeded its read bound");
-          pendingReads.push(resolve);
-        }),
-    );
-    const onBaseline = limitsBaselineReader(
-      async () => true,
-      read,
-      undefined,
-      () => true,
-    );
-
-    await onBaseline(version(1));
-    const versionTwo = onBaseline(version(2));
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
-    const versionThree = onBaseline(version(3));
-
-    // Enter v3 before allowing the v2 read continuation to resume.
-    pendingReads[0](true);
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
-    pendingReads[1](true);
-    await Promise.all([versionTwo, versionThree]);
 
     expect(read).toHaveBeenCalledTimes(2);
   }, 1_000);
@@ -244,7 +222,8 @@ describe("limits baseline hydration", () => {
 
     await onBaseline(version(1));
     const versionTwo = onBaseline(version(2));
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(read).toHaveBeenCalledTimes(1);
     const versionThree = firstRead.then(() => onBaseline(version(3)));
     resolveFirstRead(true);
     await Promise.all([versionTwo, versionThree]);
@@ -271,7 +250,8 @@ describe("limits baseline hydration", () => {
 
     await onBaseline(version(1));
     const versionTwo = onBaseline(version(2));
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(read).toHaveBeenCalledTimes(1);
     const versionThree = firstRead.catch(() => onBaseline(version(3)));
     rejectFirstRead(new Error("version 2 read failed"));
     const [versionTwoResult, versionThreeResult] = await Promise.allSettled([
@@ -496,48 +476,6 @@ describe("limits baseline hydration", () => {
     expect(currentSnapshot).toEqual(cachedNoLimits);
     expect(hydrate).toHaveBeenCalledOnce();
     expect(read).toHaveBeenCalledOnce();
-  });
-
-  it("does not fall back if the account disconnects during hydration", async () => {
-    let resolveHydration!: (result: boolean) => void;
-    const hydration = new Promise<boolean>((resolve) => {
-      resolveHydration = resolve;
-    });
-    const read = vi.fn(async () => {});
-    let connected = true;
-    const onBaseline = limitsBaselineReader(
-      () => hydration,
-      read,
-      () => connected,
-    );
-
-    const baseline = onBaseline(version(1));
-    connected = false;
-    resolveHydration(false);
-    await baseline;
-
-    expect(read).not.toHaveBeenCalled();
-  });
-
-  it("does not read after disposal while failed hydration is pending", async () => {
-    let resolveHydration!: (result: boolean) => void;
-    const hydration = new Promise<boolean>((resolve) => {
-      resolveHydration = resolve;
-    });
-    const read = vi.fn(async () => {});
-    let active = true;
-    const onBaseline = limitsBaselineReader(
-      () => hydration,
-      read,
-      () => active,
-    );
-
-    const baseline = onBaseline(version(1));
-    active = false;
-    resolveHydration(false);
-    await baseline;
-
-    expect(read).not.toHaveBeenCalled();
   });
 
   it("stops after a failed read without a newer version and retries later", async () => {

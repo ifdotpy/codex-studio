@@ -1344,6 +1344,7 @@ impl RuntimeStore {
             .transaction(move |transaction| {
                 agent_columns::prepare(transaction)?;
                 bootstrap::prepare_sync_schema(transaction)?;
+                account_state::migrate_workspace_limits(transaction)?;
                 bootstrap::prepare_runtime_event_indexes(transaction)?;
                 AgentRepository::prepare_change_journal(transaction)?;
                 agent_volatile::prepare(transaction)?;
@@ -1616,14 +1617,19 @@ impl RuntimeStore {
     /// The server uses this only after an event-triggered checkpoint was
     /// deferred, so no periodic WAL polling is needed.
     pub fn wal_checkpoint_retry_after(&self) -> StoreResult<Option<Duration>> {
+        self.wal_checkpoint_retry_after_at(Instant::now())
+    }
+
+    fn wal_checkpoint_retry_after_at(&self, now: Instant) -> StoreResult<Option<Duration>> {
         if !self.wal_checkpoint_requested.load(Ordering::Acquire) {
             return Ok(None);
         }
-        let elapsed = self
-            .last_wal_checkpoint
-            .lock()
-            .map_err(|_| StoreError::WriterPoisoned)?
-            .elapsed();
+        let elapsed = now.saturating_duration_since(
+            *self
+                .last_wal_checkpoint
+                .lock()
+                .map_err(|_| StoreError::WriterPoisoned)?,
+        );
         Ok(Some(WAL_CHECKPOINT_CADENCE.saturating_sub(elapsed)))
     }
 
@@ -2781,7 +2787,7 @@ mod diagnostics_hook_tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn optional_hook_observes_writer_and_sql_timing_and_can_be_cleared() {
         let _test_guard = TEST_LOCK.lock().await;
         let directory = tempfile::tempdir().expect("temporary state directory");
@@ -2874,7 +2880,7 @@ mod diagnostics_hook_tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn queued_writer_job_reports_queue_as_wait_and_its_caller_origin() {
         const BLOCKED: Duration = Duration::from_millis(150);
         let _test_guard = TEST_LOCK.lock().await;
@@ -2941,7 +2947,7 @@ mod diagnostics_hook_tests {
         assert!(queued_event.2.ends_with("runtime-store/src/lib.rs"));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn analytics_writer_waits_for_canvas_actor_while_raw_reads_remain_independent() {
         let _test_guard = TEST_LOCK.lock().await;
         let directory = tempfile::tempdir().expect("temporary state directory");
@@ -2955,23 +2961,24 @@ mod diagnostics_hook_tests {
             .set_diagnostics_callback(Some(record_event))
             .await
             .expect("install diagnostics callback");
-        let entered = Arc::new(std::sync::Barrier::new(2));
-        let release = Arc::new(std::sync::Barrier::new(2));
-        let entered_job = Arc::clone(&entered);
-        let release_job = Arc::clone(&release);
+        let (entered_job, entered) = tokio::sync::oneshot::channel();
+        let (release, release_job) = std::sync::mpsc::channel();
         let canvas_job = {
             let store = Arc::clone(&store);
             tokio::spawn(async move {
                 store
                     .transaction(move |_| {
-                        entered_job.wait();
-                        release_job.wait();
+                        entered_job.send(()).expect("writer entered");
+                        let _released = release_job.recv();
                         Ok::<(), StoreError>(())
                     })
                     .await
             })
         };
-        entered.wait();
+        tokio::time::timeout(Duration::from_secs(2), entered)
+            .await
+            .expect("writer entry deadline")
+            .expect("writer entered");
         let (completed_tx, mut completed_rx) = tokio::sync::oneshot::channel();
         let analytics_job = {
             let store = Arc::clone(&store);
@@ -2994,7 +3001,7 @@ mod diagnostics_hook_tests {
             completed_rx.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
-        release.wait();
+        release.send(()).expect("release writer");
         canvas_job
             .await
             .expect("Canvas writer task")
@@ -3249,10 +3256,20 @@ mod diagnostics_hook_tests {
             })
             .await
             .expect("commit requests checkpoint");
-        let retry_after = store
-            .wal_checkpoint_retry_after()
-            .expect("requested checkpoint cadence");
-        assert!(retry_after.is_some_and(|delay| delay <= WAL_CHECKPOINT_CADENCE));
+        let last = *store.last_wal_checkpoint.lock().expect("checkpoint time");
+        for elapsed in [
+            Duration::ZERO,
+            WAL_CHECKPOINT_CADENCE / 2,
+            WAL_CHECKPOINT_CADENCE,
+            WAL_CHECKPOINT_CADENCE * 2,
+        ] {
+            assert_eq!(
+                store
+                    .wal_checkpoint_retry_after_at(last + elapsed)
+                    .expect("cadence"),
+                Some(WAL_CHECKPOINT_CADENCE.saturating_sub(elapsed))
+            );
+        }
     }
 }
 
@@ -4170,7 +4187,7 @@ mod commit_notification_tests {
             .expect("read rowids")
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn row_observer_receives_committed_rowids_in_write_order() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = Arc::new(
@@ -4202,7 +4219,7 @@ mod commit_notification_tests {
         assert_eq!(*recorded.lock().expect("recorded"), vec![Some(written)]);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn rolled_back_transaction_reports_no_table_change() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = Arc::new(
@@ -4224,7 +4241,7 @@ mod commit_notification_tests {
         assert!(recorded.lock().expect("recorded").is_empty());
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn unknown_commit_outcome_reports_full_reread() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = Arc::new(
@@ -4249,7 +4266,7 @@ mod commit_notification_tests {
         assert_eq!(*recorded.lock().expect("recorded"), vec![None]);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn row_hint_cap_keeps_rows_at_limit_and_reports_full_past_it() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = Arc::new(
@@ -4284,7 +4301,7 @@ mod commit_notification_tests {
         assert_eq!(changes[1], None);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn observer_registered_mid_transaction_gets_full_for_that_commit() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = Arc::new(
@@ -4327,7 +4344,7 @@ mod commit_notification_tests {
         assert_eq!(changes[1].as_ref().map(Vec::len), Some(1));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn observer_registered_inside_callback_does_not_block_later_commits() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = Arc::new(
@@ -4366,7 +4383,7 @@ mod commit_notification_tests {
         assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canceled_write_response_keeps_commit_notification() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = Arc::new(
@@ -4508,7 +4525,7 @@ mod commit_notification_tests {
         assert_eq!(count, 1);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn queued_transaction_retains_local_identity_after_store_drop() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = Arc::new(
@@ -4520,18 +4537,16 @@ mod commit_notification_tests {
             .set_local_server_id(Some("lease-test-server".to_owned()))
             .expect("configure local server identity");
 
-        let entered = Arc::new(std::sync::Barrier::new(2));
-        let release = Arc::new(std::sync::Barrier::new(2));
-        let entered_job = Arc::clone(&entered);
-        let release_job = Arc::clone(&release);
+        let (entered_job, entered) = tokio::sync::oneshot::channel();
+        let (release, release_job) = std::sync::mpsc::channel();
         let (identity_sender, identity_receiver) = std::sync::mpsc::channel();
         let transaction_task = {
             let store = Arc::clone(&store);
             tokio::spawn(async move {
                 store
                     .transaction(move |transaction| {
-                        entered_job.wait();
-                        release_job.wait();
+                        entered_job.send(()).expect("writer entered");
+                        let _released = release_job.recv();
                         let server_id = RuntimeStore::transaction_local_server_id(transaction)?;
                         identity_sender
                             .send(server_id)
@@ -4541,7 +4556,10 @@ mod commit_notification_tests {
                     .await
             })
         };
-        entered.wait();
+        tokio::time::timeout(Duration::from_secs(2), entered)
+            .await
+            .expect("writer entry deadline")
+            .expect("writer entered");
         transaction_task.abort();
         assert!(
             transaction_task
@@ -4551,7 +4569,7 @@ mod commit_notification_tests {
         );
         drop(store);
 
-        release.wait();
+        release.send(()).expect("release writer");
         let server_id = crate::blocking_pool::spawn_blocking("runtime-store/lib", move || {
             identity_receiver
                 .recv_timeout(Duration::from_secs(2))
@@ -4567,9 +4585,8 @@ mod commit_notification_tests {
 mod sync_pull_admission_tests {
     use super::*;
     use crate::SyncDocumentsRepository;
-    use std::sync::Barrier;
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_only_pull_completes_while_analytics_transaction_is_held() {
         let directory = tempfile::tempdir().expect("isolated store directory");
         let store = Arc::new(
@@ -4577,30 +4594,38 @@ mod sync_pull_admission_tests {
                 .await
                 .expect("runtime store"),
         );
-        let analytics_entered = Arc::new(Barrier::new(2));
-        let analytics_release = Arc::new(Barrier::new(2));
+        let (entered, analytics_entered) = tokio::sync::oneshot::channel();
+        let (analytics_release, release) = std::sync::mpsc::channel();
         let analytics_store = Arc::clone(&store);
-        let entered = Arc::clone(&analytics_entered);
-        let release = Arc::clone(&analytics_release);
         let analytics = tokio::spawn(async move {
             analytics_store
                 .analytics_transaction(move |_, _| {
-                    entered.wait();
-                    release.wait();
+                    entered.send(()).expect("analytics entered");
+                    let _released = release.recv();
                     Ok::<_, StoreError>(())
                 })
                 .await
                 .expect("held analytics transaction");
         });
-
-        analytics_entered.wait();
-        let connection = store.test_reader().expect("read-only pull connection");
-        let page = SyncDocumentsRepository::pull_drafts(&connection, 0, 100)
-            .expect("read-only pull page completes while analytics is held");
-        assert!(page.is_empty());
-        drop(connection);
-        analytics_release.wait();
+        tokio::time::timeout(Duration::from_secs(2), analytics_entered)
+            .await
+            .expect("analytics entry deadline")
+            .expect("analytics entered");
+        let mut read = crate::blocking_pool::spawn_blocking("runtime-store/lib", move || {
+            let connection = store.test_reader().expect("read-only pull connection");
+            SyncDocumentsRepository::pull_drafts(&connection, 0, 100).expect("read-only pull page")
+        });
+        let completed = tokio::time::timeout(Duration::from_secs(2), &mut read).await;
+        analytics_release.send(()).expect("release analytics");
         analytics.await.expect("analytics transaction task");
+        let page = match completed {
+            Ok(page) => page.expect("read task"),
+            Err(error) => {
+                read.await.expect("read joins after releasing analytics");
+                panic!("read-only pull waited for analytics: {error}");
+            }
+        };
+        assert!(page.is_empty());
     }
 }
 

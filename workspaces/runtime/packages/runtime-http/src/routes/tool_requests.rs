@@ -169,7 +169,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn tool_request_response_resolves_nested_payload_outside_the_store_transaction() {
+    fn tool_request_response_resolves_nested_blob_payloads() {
         let root = tempfile::tempdir().expect("isolated state directory");
         let content = "recovered output ".repeat(5_000);
         let externalized =

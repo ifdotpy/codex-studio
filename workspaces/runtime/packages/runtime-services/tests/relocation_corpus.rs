@@ -776,6 +776,9 @@ async fn tool_reconciliation_binds_identity_aliases_and_rolls_back() {
     );
 }
 
+const BEFORE_COMMIT_EXIT_CODE: i32 = 81;
+const AFTER_COMMIT_EXIT_CODE: i32 = 82;
+
 #[tokio::test]
 #[allow(clippy::disallowed_methods)]
 async fn location_process_loss_before_and_after_commit_is_recoverable() {
@@ -792,17 +795,43 @@ async fn location_process_loss_before_and_after_commit_is_recoverable() {
             .args([
                 "--exact",
                 "relocation_corpus::relocation_process_stop_child",
+                "--ignored",
                 "--nocapture",
             ])
             .env("RELOCATION_CRASH_ROOT", &path)
             .status()
             .expect("crash fixture starts");
-        assert!(status.success());
+        assert_eq!(
+            status.code(),
+            Some(if committed {
+                AFTER_COMMIT_EXIT_CODE
+            } else {
+                BEFORE_COMMIT_EXIT_CODE
+            }),
+            "child reaches the selected crash cut"
+        );
         let store = RuntimeStore::open(Some(&path))
             .await
             .expect("recover process-owned journal");
         if !committed {
             assert_eq!(snapshot(&store), before);
+        }
+        let committed_state = snapshot(&store);
+        if committed {
+            assert_ne!(committed_state, before);
+            assert_eq!(
+                ProjectsRepository::get(&store.test_reader().expect("read"), "/home-project")
+                    .expect("project")
+                    .expect("exists")
+                    .1,
+                case["expected"]["project"]
+            );
+            assert!(
+                !committed_state["runtime_operation_receipts"]
+                    .as_array()
+                    .expect("receipts")
+                    .is_empty()
+            );
         }
         let outbox = &case["outbox"];
         complete_location(
@@ -816,6 +845,13 @@ async fn location_process_loss_before_and_after_commit_is_recoverable() {
         )
         .await
         .expect("recover same request");
+        if committed {
+            assert_eq!(
+                snapshot(&store),
+                committed_state,
+                "replay preserves the committed snapshot"
+            );
+        }
         assert_eq!(
             ProjectsRepository::get(&store.test_reader().expect("read"), "/home-project")
                 .expect("read project")
@@ -827,6 +863,7 @@ async fn location_process_loss_before_and_after_commit_is_recoverable() {
 }
 
 #[tokio::test]
+#[ignore = "explicit subprocess crash entry"]
 async fn relocation_process_stop_child() {
     let Some(path) = std::env::var_os("RELOCATION_CRASH_ROOT") else {
         return;
@@ -853,13 +890,13 @@ async fn relocation_process_stop_child() {
                 child_input["now"].as_f64().expect("clock"),
             )?;
             if child_input["committed"] == false {
-                std::process::exit(0);
+                std::process::exit(BEFORE_COMMIT_EXIT_CODE);
             }
             Ok::<(), studio_runtime_services::project_locations::LocationError>(())
         })
         .await
         .expect("commit before process loss");
-    std::process::exit(0);
+    std::process::exit(AFTER_COMMIT_EXIT_CODE);
 }
 
 #[tokio::test]

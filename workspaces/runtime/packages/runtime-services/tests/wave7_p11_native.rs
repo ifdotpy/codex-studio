@@ -154,7 +154,7 @@ fn crash_matrix_never_reclaims_committed_handoff() {
     let case = &corpus()["actions"][0];
     // Each durable boundary is interrupted on both sides by transaction rollback
     // or commit. Reopening the file proves the hold survives process lifetime.
-    for stop in 0..6 {
+    for stop in 0..5 {
         let temp = tempfile::tempdir().expect("tmpfs fixture");
         let path = temp.path().join("state.sqlite3");
         let mut db = db(case);

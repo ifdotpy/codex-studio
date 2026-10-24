@@ -1183,17 +1183,17 @@ mod compatibility_tests {
     }
 
     #[test]
-    fn profile_normalization_matches_python_for_missing_parent_components() {
+    fn project_key_normalizes_missing_parent_components() {
         let home = tempfile::tempdir().expect("temporary home");
         let requested = home.path().join("fixtures/../profile");
-        // Python `resolve()` also resolves the links of the existing prefix.
+        // Resolve links in the existing prefix before normalizing the missing tail.
         let resolved_home = studio_runtime_store::path_identity::resolve(home.path())
             .expect("resolved temporary home");
         assert_eq!(
-            studio_runtime_store::path_identity::CanonicalPath::ancestor_nonstrict(&requested)
-                .expect("normalized profile"),
-            resolved_home.join("profile")
+            super::project_key(Some(&serde_json::json!(requested)), false).expect("project path"),
+            resolved_home.join("profile").to_string_lossy()
         );
+        assert!(super::project_key(Some(&serde_json::json!(requested)), true).is_err());
     }
 }
 

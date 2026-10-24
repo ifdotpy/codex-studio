@@ -39,7 +39,7 @@ test("Terminal dock transport", async () => {
       }
     }
     const event = {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch,
       revision: resourceRevision,
@@ -97,7 +97,7 @@ test("Terminal dock transport", async () => {
         writeResourceEvent(stream, "initial");
         const heartbeat = setInterval(() => {
           const value = {
-            protocol: 3,
+            protocol: 4,
             workspaceId,
             epoch,
             revision: resourceRevision,

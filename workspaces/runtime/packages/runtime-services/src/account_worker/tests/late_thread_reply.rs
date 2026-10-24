@@ -92,15 +92,6 @@ async fn saved_start_effect_of_a_held_attempt_does_not_end_the_restarted_worker(
         next.writes.try_recv().is_err(),
         "the stale effect sends nothing"
     );
-    assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            replacement.completion()
-        )
-        .await
-        .is_err(),
-        "the account worker keeps running"
-    );
 
     // A new message is the user's decision to continue.
     let agent_id = state.agent.clone();

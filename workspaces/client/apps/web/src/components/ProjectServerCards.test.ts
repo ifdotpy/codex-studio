@@ -31,8 +31,10 @@ describe("new chat actions", () => {
     expect(markup).toContain("layr");
     expect(markup).toContain("ASIF");
     expect(markup).toContain("worktree");
-    expect(markup).toContain("Model");
-    expect(markup).toContain("Workers");
+    expect(markup).toContain('aria-label="Agent role" role="radiogroup"');
+    expect(markup).toMatch(/<input[^>]*type="radio"[^>]*value="worker"/);
+    expect(markup).toMatch(/<input[^>]*type="radio"[^>]*value="review"/);
+    expect(markup).toContain('role="listbox" aria-label="Main agent model"');
     expect(markup).toContain("Cancel");
     expect(markup).toContain("Start chat");
     expect(markup).toMatch(/data-variant="filled"[^>]*>[\s\S]*?Start chat/);

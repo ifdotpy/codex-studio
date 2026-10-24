@@ -330,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn atomic_write_handles_payload_name_and_syncs_new_directory_chain() {
+    fn atomic_write_handles_the_payload_temporary_filename() {
         let root = tempfile::tempdir().expect("temporary state directory creates");
         let id = "8f319af0-59e9-4c6a-8ec8-e99c9e354092";
         let directory = root.path().join("uploads").join(id);
@@ -345,14 +345,15 @@ mod tests {
     #[test]
     fn encoded_size_is_rejected_before_base64_decode() {
         let encoded_bytes = MAX_UPLOAD_BYTES.div_ceil(3) * 4;
-        let over_limit_unpadded = "A".repeat(encoded_bytes);
+        let mut encoded = "A".repeat(encoded_bytes);
         assert!(matches!(
-            validate_encoded_length(&over_limit_unpadded),
+            validate_encoded_length(&encoded),
             Err(super::PayloadStoreError::ContentLimit)
         ));
 
-        let at_limit = format!("{}=", "A".repeat(encoded_bytes - 1));
-        assert!(validate_encoded_length(&at_limit).is_ok());
+        encoded.pop();
+        encoded.push('=');
+        assert!(validate_encoded_length(&encoded).is_ok());
     }
 
     #[test]

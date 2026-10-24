@@ -40,23 +40,44 @@ fn add_event(tx: &rusqlite::Transaction<'_>, id: &str, agent: &str, status: &str
 }
 
 fn complete_rows(store: &RuntimeStore, id: &str) -> Value {
-    let (monitor, requests) = {
-        let connection = store.test_reader().expect("read startup state");
-        let monitor = MonitorsRepository::get(&connection, id)
-            .expect("read monitor")
-            .expect("monitor exists")
-            .value()
-            .clone();
-        let requests = Table::<RequestRecord>::new(&connection)
-            .list()
-            .expect("read requests")
-            .into_iter()
-            .map(|request| request.value().clone())
-            .collect::<Vec<_>>();
-        (monitor, requests)
-    };
+    let connection = store.test_reader().expect("read startup state");
+    let monitor = MonitorsRepository::get(&connection, id)
+        .expect("read monitor")
+        .expect("monitor exists")
+        .value()
+        .clone();
+    let requests = Table::<RequestRecord>::new(&connection)
+        .list()
+        .expect("read requests")
+        .into_iter()
+        .map(|request| request.value().clone())
+        .collect::<Vec<_>>();
     let events = fixtures::events(store);
-    json!({"monitor": monitor, "requests": requests, "events": events})
+    let projections = [
+        "sync_entities",
+        "sync_documents",
+        "sync_versions",
+        "sync_entity_meta",
+    ]
+    .into_iter()
+    .map(|table| {
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+            .expect("projection query");
+        let columns = statement.column_count();
+        let rows = statement
+            .query_map([], |row| {
+                Ok((0..columns)
+                    .map(|i| format!("{:?}", row.get_ref(i).expect("column")))
+                    .collect::<Vec<_>>())
+            })
+            .expect("projection rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("projections");
+        json!({"table": table, "rows": rows})
+    })
+    .collect::<Vec<_>>();
+    json!({"monitor": monitor, "requests": requests, "events": events, "projections": projections})
 }
 
 #[tokio::test]
@@ -292,20 +313,14 @@ async fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
                 Ok(())
             }).await
             .expect("install recovery failpoint");
+        let before = complete_rows(&store, &id);
         assert!(
             monitor_runtime::recover_on_startup(&store, 2000.0)
                 .await
                 .is_err(),
             "{table}"
         );
-        assert_eq!(
-            MonitorsRepository::get(&store.test_reader().expect("read rollback"), &id)
-                .expect("read monitor")
-                .expect("monitor")
-                .value()["status"],
-            "running",
-            "{table}"
-        );
+        assert_eq!(complete_rows(&store, &id), before, "{table}: rollback");
         store
             .transaction(move |tx| {
                 tx.execute_batch("DROP TRIGGER injected")?;
@@ -316,10 +331,22 @@ async fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
         monitor_runtime::recover_on_startup(&store, 2000.0)
             .await
             .expect("restart recovery");
+        let recovered = complete_rows(&store, &id);
+        assert_eq!(recovered["monitor"]["status"], "running");
+        assert_eq!(
+            recovered["monitor"]["reattachRecovery"]["status"],
+            "running"
+        );
+        assert_eq!(recovered["requests"][0]["status"], "expired");
+        assert_eq!(recovered["events"][0]["status"], "uncertain");
         monitor_runtime::recover_on_startup(&store, 3000.0)
             .await
             .expect("idempotent restart");
-        assert_eq!(complete_rows(&store, &id)["monitor"]["status"], "running");
+        assert_eq!(
+            complete_rows(&store, &id),
+            recovered,
+            "{table}: idempotence"
+        );
     }
 }
 

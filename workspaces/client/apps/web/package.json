@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "test:unit": "pnpm run build:wasm && vitest run --config vitest.unit.config.ts",
-    "test:unit:fast": "vitest run --config vitest.unit.config.ts src/api.test.ts src/startWait.test.ts src/apiSchema.test.ts src/chatScope.test.ts src/hooks/conversationData.test.ts src/scaleVerifierHelpers.test.mjs src/uiTeamScaleHelpers.test.mjs src/uiTeamScaleAudit.test.mjs src/verifyRustChatLifecycle.test.mjs src/components/agents/AgentProgress.test.ts src/components/chat-status/chatStatusModel.test.mjs src/sync/outboxWriteFailure.test.ts src/pythonBackendRemoval.test.mjs src/sync/draftPayload.test.mjs src/scrollFollowFixture.test.mjs src/transcriptPageBounds.test.ts src/components/message-delivery/messageDelivery.test.mjs src/components/claudeRepairModel.test.ts src/components/turnHistoryModel.test.mjs src/components/useTurnErrors.test.ts src/components/conversation/transcript/TurnHistory.uncertain.test.ts src/components/shell/WorkerPermissions.test.ts src/components/agents/RetainedWorktrees.test.ts src/layout/deriveWorkspaceLayout.test.ts src/hooks/mobileViewport.test.ts src/layout/terminalGeometry.test.ts src/touchInputZoom.test.mjs src/components/sidebar/sidebarWidth.test.ts src/components/shell/workspacePanelWidth.test.ts src/components/terminalHeight.test.ts src/components/terminalResize.test.ts src/components/edge-rail/edgeRailPolicy.test.ts src/components/edge-rail/EdgeRail.render.test.ts src/components/edge-rail/useEdgeRail.test.ts src/rootSelectors.test.mjs",
-    "test:api-contract-types": "tsc --noEmit -p tsconfig.api-contract.json",
+    "test:unit:fast": "vitest run --config vitest.fast.config.ts --project fast",
+    "test:api-contract-types": "tsc --noEmit -p tsconfig.api-contract.json --incremental --tsBuildInfoFile \"${STUDIO_TSC_CACHE:-${TMPDIR:-/tmp}}/codex-studio-api-contract.tsbuildinfo\"",
     "test:browser": "pnpm run build && node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client",
-    "test:browser:smoke": "pnpm run build && node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client --grep \"execution settings ui|Mobile composer 320px setup renders the settled action row|Message receipt pagination browser|a real built renderer uses a new projection cache and preserves drafts|accounts settings show per-server state and provider choices|direct screens keep overlapping chat drafts and sends with their owner|direct screens automatically include paired servers on phones|a scrolled-up reader keeps its place while the agent streams|Sign-in card at phone width uses paste mode and the device code|Claude unconfirmed turn and journal repair\"",
+    "test:browser:smoke": "pnpm run build && pnpm run test:browser:smoke:prepared",
     "test:browser:list": "node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client --list",
     "test:performance": "pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=performance",
     "test:mutation": "stryker run stryker.config.mjs",
@@ -38,10 +38,13 @@
     "storybook": "pnpm run build:wasm && STORYBOOK_DISABLE_TELEMETRY=1 storybook dev --config-dir .storybook --disable-telemetry --host 127.0.0.1 --no-open",
     "build-storybook": "pnpm run build:wasm && STORYBOOK_DISABLE_TELEMETRY=1 storybook build --config-dir .storybook --disable-telemetry",
     "test:storybook": "STORYBOOK_DISABLE_TELEMETRY=1 vitest run --config vitest.config.ts --project=storybook",
-    "typecheck:focused": "pnpm run build:wasm && tsc --noEmit",
-    "typecheck:fast": "tsc --noEmit",
+    "typecheck:focused": "pnpm run build:wasm && pnpm run typecheck:fast",
+    "typecheck:fast": "tsc --noEmit --incremental --tsBuildInfoFile \"${STUDIO_TSC_CACHE:-${TMPDIR:-/tmp}}/codex-studio-web.tsbuildinfo\"",
     "build:wasm": "node scripts/build-client-wasm.mjs",
-    "test:wasm": "pnpm run build:wasm && node scripts/check-client-wasm.mjs"
+    "test:wasm": "pnpm run build:wasm && node scripts/check-client-wasm.mjs",
+    "test:unit:prepared": "vitest run --config vitest.unit.config.ts",
+    "build:bundle:prepared": "vite build",
+    "test:browser:smoke:prepared": "node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client --grep \"execution settings ui|Mobile composer 320px setup renders the settled action row|Message receipt pagination browser|a real built renderer uses a new projection cache and preserves drafts|accounts settings show per-server state and provider choices|direct screens keep overlapping chat drafts and sends with their owner|direct screens automatically include paired servers on phones|a scrolled-up reader keeps its place while the agent streams|Sign-in card at phone width uses paste mode and the device code|Claude unconfirmed turn and journal repair\""
   },
   "dependencies": {
     "@mantine/core": "9.7.3",

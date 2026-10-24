@@ -30,7 +30,7 @@ export const cssName = (key) =>
     .replaceAll(".", "-")
     .toLowerCase()}`;
 export function validateContract(contract) {
-  const units = new Set(["px", "rem", "ratio", "layer"]);
+  const units = new Set(["px", "rem", "em", "ratio", "layer"]);
   for (const [key, token] of Object.entries(contract.tokens)) {
     if (
       !units.has(token.unit) ||
@@ -78,7 +78,7 @@ export function renderContract(contract) {
   )
     .map(
       ([key, t]) =>
-        `  ${cssName(key)}: ${t.value}${["px", "rem"].includes(t.unit) ? t.unit : ""};`,
+        `  ${cssName(key)}: ${t.value}${["px", "rem", "em"].includes(t.unit) ? t.unit : ""};`,
     )
     .join("\n")}\n}\n`;
   const output = {

@@ -127,20 +127,6 @@ pub trait ManagedCreationEnvironment: Send + Sync {
         &self,
         request: crate::provider_callbacks::WorkerAccountRequest<'_>,
     ) -> Result<(String, crate::host_worker_create::AccountIdentity), ManagedCreationEnvironmentError>;
-    fn validate_worker_choice<'a>(
-        &'a self,
-        store: &'a RuntimeStore,
-        account_key: &'a str,
-        account: &'a crate::host_worker_create::AccountIdentity,
-        requested: &'a str,
-        default: &'a str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), ManagedCreationEnvironmentError>>
-                + Send
-                + 'a,
-        >,
-    >;
     fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog;
     fn prepare_workspace(
         &self,
@@ -653,23 +639,6 @@ pub(crate) async fn spawn_agents(
                 active_agents: &account_load,
             })?;
         *account_load.entry(account_key.clone()).or_default() += 1;
-        if spec.get("model").and_then(Value::as_str).is_some() || profile_model.is_some() {
-            let default_model = defaults
-                .get("model")
-                .and_then(Value::as_str)
-                .filter(|model| !model.is_empty())
-                .or_else(|| root_value.get("model").and_then(Value::as_str))
-                .unwrap_or(requested_model);
-            environment
-                .validate_worker_choice(
-                    store,
-                    &account_key,
-                    &account,
-                    requested_model,
-                    default_model,
-                )
-                .await?;
-        }
         let provider = account.provider.key();
         let account_adapter = crate::provider_adapter::adapter(account.provider);
         // An unselected lead default that the account's provider cannot run
@@ -1733,8 +1702,40 @@ mod vm_review_identity_tests {
 
     #[test]
     fn guest_review_ids_are_bounded_by_the_named_limit() {
-        let rust_guest = include_str!("linux_vm_guest.rs");
-        assert!(rust_guest.contains("chars().count() > GUEST_REQUEST_ID_MAX_CHARS"));
+        #[cfg(unix)]
+        {
+            use crate::linux_vm_guest::{
+                GUEST_REQUEST_ID_MAX_CHARS, GuestError, GuestRpc, UnixGuestRpc,
+            };
+            let root = tempfile::tempdir().unwrap();
+            let rpc = UnixGuestRpc::new(root.path());
+            for character in ["a", "界"] {
+                let mut identity = character.repeat(GUEST_REQUEST_ID_MAX_CHARS);
+                let call = |identity: &str| {
+                    rpc.call(
+                        "health",
+                        &json!({}),
+                        Some(identity),
+                        std::time::Duration::from_secs(1),
+                    )
+                };
+                assert!(
+                    matches!(
+                        call(&identity),
+                        Err(GuestError::Transport {
+                            uncertain: false,
+                            ..
+                        })
+                    ),
+                    "the limit is admitted up to the absent socket"
+                );
+                identity.push_str(character);
+                assert!(
+                    matches!(call(&identity), Err(GuestError::InvalidRequest)),
+                    "over-limit identity must be refused before transport"
+                );
+            }
+        }
         let long = "r".repeat(4096);
         for supplied in ["short-request", long.as_str()] {
             let (request_id, turn_id) = vm_review_guest_ids(supplied).unwrap();
@@ -1750,6 +1751,21 @@ mod vm_review_identity_tests {
                 "operation IDs are stable for the same source request"
             );
         }
+    }
+
+    #[test]
+    fn review_home_expansion_uses_the_supplied_home() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().to_str().unwrap();
+        assert_eq!(super::expand_review_home("~", Some(home)), root.path());
+        assert_eq!(
+            super::expand_review_home("~/review-target", Some(home)),
+            root.path().join("review-target")
+        );
+        assert_eq!(
+            super::expand_review_home("~/review-target", None),
+            std::path::Path::new("~/review-target")
+        );
     }
 
     #[test]

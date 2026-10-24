@@ -855,27 +855,19 @@ mod tests {
             "acct".to_owned(),
             json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
         )]);
-        let snapshot = |thread: &str, native: &str, turn_bytes: usize| {
-            json!({
-                "format": super::claude_session_format(),
-                "sequence": 3,
-                "session": {
-                    "id": thread,
-                    "nativeId": native,
-                    "turns": [{"text": "x".repeat(turn_bytes)}]
-                }
-            })
-            .to_string()
-        };
         for (thread, native, bytes) in [
             ("thread-small", "native-small", 1_024),
             ("thread-large", "native-large", 17 * 1024 * 1024),
         ] {
-            fs::write(
+            use std::io::{Read, Write};
+            let mut snapshot = fs::File::create(
                 state.join(format!("account-servers/acct/sessions/{thread}.json")),
-                snapshot(thread, native, bytes),
             )
-            .expect("write session snapshot");
+            .expect("create session snapshot");
+            write!(snapshot, "{{\"format\":{:?},\"sequence\":3,\"session\":{{\"id\":{thread:?},\"nativeId\":{native:?},\"turns\":[{{\"text\":\"", super::claude_session_format()).expect("snapshot prefix");
+            std::io::copy(&mut std::io::repeat(b'x').take(bytes), &mut snapshot)
+                .expect("snapshot turns");
+            snapshot.write_all(b"\"}]}}").expect("snapshot suffix");
             let members = vec![(
                 "agent".to_owned(),
                 member(json!({"accountKey":"acct","threadId":thread})),

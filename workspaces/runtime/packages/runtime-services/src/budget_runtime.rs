@@ -463,8 +463,8 @@ pub fn claim_wait(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_HISTORY_READ_ATTEMPTS, admission_with_analytics_path, read_history_file,
-        read_history_file_bounded_with,
+        MAX_HISTORY_READ_ATTEMPTS, MAX_HISTORY_TAIL, admission_with_analytics_path,
+        read_history_file, read_history_file_bounded_with,
     };
     use crate::budget::{HistoryObservation, HistoryRuntimeBinding};
     use rusqlite::Connection;
@@ -475,25 +475,34 @@ mod tests {
     fn reads_bounded_history_tail_from_checkpoint_offset() {
         let directory = tempfile::tempdir().expect("temporary history directory");
         let path = directory.path().join("rollout.jsonl");
-        fs::write(&path, b"{}\n{}").expect("write fixture history");
-        let metadata = fs::metadata(&path).expect("history metadata");
-        #[cfg(unix)]
-        let identity = {
-            use std::os::unix::fs::MetadataExt;
-            json!([metadata.dev(), metadata.ino()])
-        };
-        #[cfg(not(unix))]
-        let identity = json!([0, 0]);
-        let observation = read_history_file(&json!({
-            "path": path,
-            "offset": 3,
-            "identity": identity,
-        }))
-        .expect("stable history")
-        .expect("read bounded tail");
-        assert_eq!(observation.tail, "{}");
-        assert_eq!(observation.size, observation.final_size);
-        assert!(!observation.content_hash.is_empty());
+        let bound = MAX_HISTORY_TAIL as usize;
+        for (bytes, offset, expected) in [
+            ("{}\n{}".to_owned(), 3, "{}".to_owned()),
+            ("x".repeat(bound), 0, "x".repeat(bound)),
+            ("x".repeat(bound + 1), 0, String::new()),
+            ("{}".to_owned(), 3, String::new()),
+        ] {
+            fs::write(&path, &bytes).expect("write fixture history");
+            let observation = read_history_file(&json!({
+                "path": path,
+                "offset": offset,
+            }))
+            .expect("stable history")
+            .expect("read bounded tail");
+            assert_eq!(
+                Some(observation.identity),
+                super::file_identity(&fs::metadata(&path).expect("history metadata"))
+            );
+            assert_eq!(observation.tail, expected);
+            assert_eq!(
+                (observation.size, observation.final_size),
+                (bytes.len() as u64, bytes.len() as u64)
+            );
+            assert_eq!(
+                observation.content_hash,
+                studio_runtime_store::sha256_hex(expected.as_bytes())
+            );
+        }
     }
 
     #[test]

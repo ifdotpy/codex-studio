@@ -47,7 +47,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
   const writeResources = (stream, reason, resources = stream.resources) => {
     if (reason !== "initial") revision++;
     const event = {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch,
       revision,
@@ -62,7 +62,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
   };
   const writeHeartbeat = (stream) => {
-    const event = { protocol: 3, workspaceId, epoch, revision };
+    const event = { protocol: 4, workspaceId, epoch, revision };
     assert.ok(Number.isFinite(event.revision));
     stream.response.write(
       `event: heartbeat\ndata: ${JSON.stringify(event)}\n\n`,
@@ -75,15 +75,24 @@ test("usage accounts ui", async ({ browser: _browser }) => {
   import {MantineProvider} from '@mantine/core';
   import '@mantine/core/styles.css';
   import Usage from '/src/components/Usage.tsx';
+  import {accountLimitFixtures} from '/src/components/AccountLimits.fixtures.ts';
+  import {theme} from '/src/theme.ts';
+  const geometry=location.search.includes('geometry');
+  if(geometry){await import('/src/style.css');await import('/src/design/state.css');}
   const own={id:'chat',rootId:'chat',accountKey:'own',source:'managed',model:'gpt-6-astra',status:'completed',isLead:true,created:1,contextUsage:{tokens:10,window:100}};
   const ownLimits={accountKey:'own',at:${now},data:{accountId:'own-account',rateLimits:{limitId:'codex',primary:{usedPercent:20,resetsAt:${now + 3600}}}}};
   const teamLimits={accountKey:'team',at:${now},data:{accountId:'team-account',rateLimits:{limitId:'codex',primary:{usedPercent:92,resetsAt:${now + 3600}}},rateLimitResetCredits:{availableCount:1,credits:[{id:'team-credit',title:'Team reset',status:'available',resetType:'codexRateLimits'}]}}};
+  window.heartbeats=0;
+  const NativeEventSource=window.EventSource;
+  window.EventSource=class extends NativeEventSource {
+    constructor(...args){super(...args);this.addEventListener('heartbeat',()=>window.heartbeats++);}
+  };
   window.reloadCalls=[];
   function Fixture(){
    const [multi,setMulti]=useState(location.search.includes('multi'));
    const [teamReady,setTeamReady]=useState(false);
-   const accounts=[{key:'own',label:'Own account',email:'own@example.test',accountId:'own-account',limits:ownLimits,loading:false,reload:(force=false)=>{window.reloadCalls.push(['own',force]);}},...(multi?[{key:'team',label:'Team account',email:'team@example.test',provider:'openai',accountId:'team-account',limits:teamReady?teamLimits:null,loading:false,reload:(force=false)=>{window.reloadCalls.push(['team',force]);if(!teamReady)setTeamReady(true);}},{key:'claude',label:'Claude work',email:'claude@example.test',provider:'claude',limits:{accountKey:'claude',at:${now},data:{rateLimits:{limitId:'claude',primary:{usedPercent:50,resetsAt:${now + 3600}}}}},loading:false,reload:(force=false)=>window.reloadCalls.push(['claude',force])},{key:'unnamed',label:'unnamed',provider:'codex',limits:{accountKey:'unnamed',at:${now},data:{rateLimits:{limitId:'codex',primary:{usedPercent:85,resetsAt:${now + 3600}}}}},loading:false,reload:(force=false)=>window.reloadCalls.push(['unnamed',force])}]:[])];
-   return <MantineProvider><Usage agent={own} stateDir='/fixture' limits={ownLimits} accountLabel='own@example.test' reload={()=>window.reloadCalls.push(['fallback',true])} opened={true} onChange={()=>{}} limitsLoading={false} accounts={accounts}/></MantineProvider>;
+   const accounts=geometry?accountLimitFixtures:[{key:'own',label:'Own account',email:'own@example.test',accountId:'own-account',limits:ownLimits,loading:false,reload:(force=false)=>{window.reloadCalls.push(['own',force]);}},...(multi?[{key:'team',label:'Team account',email:'team@example.test',provider:'openai',accountId:'team-account',limits:teamReady?teamLimits:null,loading:false,reload:(force=false)=>{window.reloadCalls.push(['team',force]);if(!teamReady)setTeamReady(true);}},{key:'claude',label:'Claude work',email:'claude@example.test',provider:'claude',limits:{accountKey:'claude',at:${now},data:{rateLimits:{limitId:'claude',primary:{usedPercent:50,resetsAt:${now + 3600}}}}},loading:false,reload:(force=false)=>window.reloadCalls.push(['claude',force])},{key:'unnamed',label:'unnamed',provider:'codex',limits:{accountKey:'unnamed',at:${now},data:{rateLimits:{limitId:'codex',primary:{usedPercent:85,resetsAt:${now + 3600}}}}},loading:false,reload:(force=false)=>window.reloadCalls.push(['unnamed',force])}]:[])];
+   return <MantineProvider theme={theme} forceColorScheme={new URLSearchParams(location.search).get('scheme') || undefined}><div style={geometry?{display:'flex',alignItems:'end',width:'100%',height:'100dvh',padding:'var(--mantine-spacing-sm)',containerType:'inline-size',containerName:'conversation-footer'}:undefined}><Usage agent={geometry?{...own,accountKey:'codex-main'}:own} stateDir='/fixture' limits={ownLimits} accountLabel='own@example.test' reload={()=>window.reloadCalls.push(['fallback',true])} opened={true} onChange={()=>{}} limitsLoading={false} accounts={accounts}/></div></MantineProvider>;
   }
   createRoot(document.getElementById('root')).render(<Fixture/>);`;
   const server = await createServer({
@@ -126,11 +135,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
               res.write(apiSchemaHandshakeSse());
               streams.add(stream);
               writeResources(stream, "initial");
-              const heartbeat = setInterval(() => writeHeartbeat(stream), 1000);
-              res.on("close", () => {
-                clearInterval(heartbeat);
-                streams.delete(stream);
-              });
+              res.on("close", () => streams.delete(stream));
               return;
             }
             if (req.url?.startsWith("/api/")) {
@@ -174,7 +179,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
             if (req.url?.split("?")[0] !== "/") return next();
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/__usage-accounts-fixture.jsx"></script>',
+              '<meta name="viewport" content="width=device-width, initial-scale=1"><div id="root"></div><script type="module" src="/__usage-accounts-fixture.jsx"></script>',
             );
           });
         },
@@ -188,6 +193,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     const page = await browser.newPage({
       viewport: { width: 1100, height: 900 },
     });
+    await page.clock.install();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(server.resolvedUrls.local[0]);
@@ -211,21 +217,26 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
     const costsBeforeChange = reads.costs;
     const sessionCostBeforeChange = reads.sessionCost;
+    const costsChanged = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/costs",
+    );
     for (const stream of streams) {
       const costs = stream.resources.filter(
         (resource) => resource.kind === "costs",
       );
       if (costs.length) writeResources(stream, "change", costs);
     }
-    const changeDeadline = Date.now() + 3000;
-    while (reads.costs === costsBeforeChange && Date.now() < changeDeadline)
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    await (await costsChanged).finished();
     assert.equal(
       reads.costs,
       costsBeforeChange + 1,
       "a typed costs notification performs exactly one targeted read",
     );
-    await new Promise((resolve) => setTimeout(resolve, 3200));
+    for (const count of [1, 2, 3]) {
+      for (const stream of streams) writeHeartbeat(stream);
+      await page.waitForFunction((count) => window.heartbeats >= count, count);
+      await page.clock.runFor(1100);
+    }
     assert.equal(
       reads.costs,
       costsBeforeChange + 1,
@@ -341,11 +352,16 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
     const teamMeter = teamTab.getByRole("meter");
     assert.equal(await teamMeter.getAttribute("aria-valuenow"), "8");
+    const { remainingLimitColor } = await server.ssrLoadModule(
+      "/src/components/accountLimitColor.ts",
+    );
     assert.equal(
       await teamMeter
         .locator("span")
         .evaluate((element) => element.style.background),
-      "var(--mantine-color-red-6)",
+      remainingLimitColor(
+        Number(await teamMeter.getAttribute("aria-valuenow")),
+      ),
     );
     await page
       .getByRole("radio", { name: "Claude", exact: true })
@@ -370,7 +386,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       await claudeMeter
         .locator("span")
         .evaluate((element) => element.style.background),
-      "var(--mantine-color-yellow-6)",
+      remainingLimitColor(
+        Number(await claudeMeter.getAttribute("aria-valuenow")),
+      ),
     );
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
@@ -389,7 +407,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         .getByRole("meter")
         .locator("span")
         .evaluate((element) => element.style.background),
-      "var(--mantine-color-green-6)",
+      remainingLimitColor(
+        Number(await ownTile.getByRole("meter").getAttribute("aria-valuenow")),
+      ),
     );
     const unnamedTile = page.getByRole("tab", {
       name: "Account name unavailable, codex account limits",
@@ -408,19 +428,219 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         .getByRole("meter")
         .locator("span")
         .evaluate((element) => element.style.background),
-      "var(--mantine-color-yellow-6)",
+      remainingLimitColor(
+        Number(
+          await unnamedTile.getByRole("meter").getAttribute("aria-valuenow"),
+        ),
+      ),
     );
     await unnamedTile.click();
     assert.equal(await unnamedTile.getAttribute("aria-selected"), "true");
     assert.equal(await ownTile.getAttribute("aria-current"), "true");
     assert.equal(
-      await page.locator(".account-limits-selected-name strong").innerText(),
+      await page
+        .locator(
+          ".account-limits-detail-panel[data-active] .account-limits-selected-name strong",
+        )
+        .innerText(),
       "Account name unavailable",
     );
 
+    // The five-account edge fixture reserves the taller mounted provider panel.
+    for (const width of [320, 390, 1440])
+      for (const scheme of ["light", "dark"]) {
+        const page = await browser.newPage({
+          viewport: { width, height: 844 },
+          isMobile: width < 760,
+          hasTouch: width < 760,
+        });
+        page.on("pageerror", (error) => errors.push(error.message));
+        await page.goto(
+          server.resolvedUrls.local[0] + `?geometry&scheme=${scheme}`,
+        );
+        assert.equal(
+          await page.locator(".context-use").innerText(),
+          "Context 10%",
+        );
+        await page.evaluate(() => document.fonts.ready);
+        const dots = await page
+          .locator(".account-limits-dot-target .account-limits-dot")
+          .evaluateAll((elements) =>
+            elements.map((element) => ({
+              width: element.getBoundingClientRect().width,
+              height: element.getBoundingClientRect().height,
+              radius: getComputedStyle(element).borderRadius,
+              color: element.getAttribute("data-color"),
+              background: getComputedStyle(element).backgroundColor,
+            })),
+          );
+        const palette =
+          scheme === "light"
+            ? {
+                green: "rgb(52, 134, 109)",
+                yellow: "rgb(166, 124, 33)",
+                red: "rgb(179, 81, 81)",
+                gray: "rgb(139, 144, 154)",
+              }
+            : {
+                green: "rgb(103, 173, 145)",
+                yellow: "rgb(213, 173, 82)",
+                red: "rgb(204, 119, 119)",
+                gray: "rgb(133, 139, 150)",
+              };
+        assert.equal(dots.length, 5);
+        for (const dot of dots) {
+          assert.equal(dot.width, 6);
+          assert.equal(dot.height, 6);
+          assert.equal(dot.radius, "50%");
+          assert.equal(dot.background, palette[dot.color]);
+        }
+        const targets = await page
+          .locator(".account-limits-dot-target")
+          .evaluateAll((elements) =>
+            elements.map((element) => element.getBoundingClientRect().toJSON()),
+          );
+        for (const [index, target] of targets.entries()) {
+          assert.ok(
+            target.width >= (width < 760 ? 24 : 12),
+            "allowance dots have usable hit targets",
+          );
+          assert.ok(target.height >= 24);
+          if (index)
+            assert.ok(
+              target.left >= targets[index - 1].right,
+              "allowance targets do not overlap",
+            );
+        }
+        const footerControls = await page
+          .locator(
+            ".context-use, .session-cost-summary, .account-limits-dots, .account-limits-toggle",
+          )
+          .evaluateAll((elements) =>
+            elements
+              .map((element) => ({
+                name: element.className,
+                ...element.getBoundingClientRect().toJSON(),
+              }))
+              .sort((a, b) => a.left - b.left),
+          );
+        for (const [index, control] of footerControls.entries()) {
+          assert.ok(
+            control.left >= 0 && control.right <= width,
+            JSON.stringify({ width, footerControls }),
+          );
+          if (index)
+            assert.ok(
+              control.left >= footerControls[index - 1].right,
+              JSON.stringify({ width, footerControls }),
+            );
+        }
+        const footer = await page.locator(".usage-footer").boundingBox();
+        assert.ok(
+          footer.height <= (width < 760 ? 24 : 32),
+          "usage footer preserves its row height",
+        );
+        console.log(
+          "Usage footer geometry:",
+          JSON.stringify({
+            width,
+            scheme,
+            height: footer.height,
+            targetWidth: targets[0].width,
+            targetHeight: targets[0].height,
+          }),
+        );
+        const popover = page.locator(".account-limits-popover");
+        await page
+          .getByRole("button", { name: "Apply reset", exact: true })
+          .waitFor();
+        await page.waitForFunction(
+          () =>
+            getComputedStyle(document.querySelector(".account-limits-popover"))
+              .opacity === "1",
+        );
+        await page.evaluate(
+          () =>
+            new Promise((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(resolve)),
+            ),
+        );
+        assert.doesNotMatch(await popover.innerText(), /Session estimate/);
+        assert.match(await popover.innerText(), /Estimated API cost/);
+        const before = await popover.boundingBox();
+        assert.equal(await page.getByRole("tab").count(), 3);
+        const assertFits = async () => {
+          assert.deepEqual(
+            await popover.evaluate((element) => {
+              const panel = element.querySelector(".account-limits-panel");
+              return {
+                clipped: panel.scrollHeight > panel.clientHeight + 1,
+                scrollbars: [...element.querySelectorAll("*")]
+                  .filter(
+                    (e) =>
+                      ["auto", "scroll"].includes(
+                        getComputedStyle(e).overflowY,
+                      ) && e.scrollHeight > e.clientHeight + 1,
+                  )
+                  .map((e) => e.className),
+              };
+            }),
+            { clipped: false, scrollbars: [] },
+          );
+          const rect = await popover.boundingBox();
+          assert.ok(
+            rect.y >= 0 && rect.y + rect.height <= 845,
+            "all limits fit in the viewport",
+          );
+        };
+        await assertFits();
+        await page
+          .getByRole("radio", { name: "Claude", exact: true })
+          .locator("..")
+          .locator("label")
+          .click();
+        await page.getByRole("link", { name: "Open free resets" }).waitFor();
+        assert.equal(await page.getByRole("tab").count(), 2);
+        const after = await popover.boundingBox();
+        assert.equal(
+          after.height,
+          before.height,
+          "switching providers preserves natural panel height",
+        );
+        assert.equal(
+          after.y,
+          before.y,
+          "switching providers preserves popover position",
+        );
+        await assertFits();
+        await page
+          .getByRole("radio", { name: "Codex", exact: true })
+          .locator("..")
+          .locator("label")
+          .click();
+        await page
+          .getByRole("button", { name: "Apply reset", exact: true })
+          .waitFor();
+        assert.equal((await popover.boundingBox()).height, before.height);
+        const claudeDot = page.locator(
+          '.account-limits-dot-target[data-account-key="claude-main"]',
+        );
+        await claudeDot.focus();
+        await page.keyboard.press("Enter");
+        await page.getByRole("link", { name: "Open free resets" }).waitFor();
+        assert.equal(await claudeDot.getAttribute("aria-expanded"), "true");
+        assert.equal(
+          await page
+            .locator('.account-limits-dot-target[aria-current="true"]')
+            .getAttribute("data-account-key"),
+          "codex-main",
+        );
+        await page.context().close();
+      }
+
     assert.deepEqual(errors, []);
     console.log(
-      "Usage account UI: single account, tabs, lazy load, refresh, low allowance, and account-bound reset passed.",
+      "Usage account UI: single account, tabs, lazy load, refresh, low allowance, account-bound reset, and stable five-account popovers at 320/390/1440 light/dark passed.",
     );
   } finally {
     await server.close();

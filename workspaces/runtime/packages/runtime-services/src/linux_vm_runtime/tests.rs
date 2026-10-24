@@ -940,10 +940,9 @@ fn the_maintenance_lock_name_matches_its_desktop_owner() {
     );
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn the_host_boot_time_is_known_on_macos() {
-    if cfg!(target_os = "macos") {
-        let boot = host_boot_time().expect("kern.boottime");
-        assert!(boot > 1_500_000_000.0 && boot < now(), "{boot}");
-    }
+    let boot = host_boot_time().expect("kern.boottime");
+    assert!(boot > 1_500_000_000.0 && boot < now(), "{boot}");
 }

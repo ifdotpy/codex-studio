@@ -3331,27 +3331,6 @@ mod tests {
             ))
         }
 
-        fn validate_worker_choice<'a>(
-            &'a self,
-            _store: &'a RuntimeStore,
-            _account_key: &'a str,
-            _account: &'a AccountIdentity,
-            _requested: &'a str,
-            _default: &'a str,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = Result<
-                            (),
-                            crate::managed_child_create::ManagedCreationEnvironmentError,
-                        >,
-                    > + Send
-                    + 'a,
-            >,
-        > {
-            Box::pin(async move { Ok(()) })
-        }
-
         fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {
             &self.catalog
         }
@@ -4220,7 +4199,7 @@ mod tests {
         );
     }
 
-    fn snapshot(store: &RuntimeStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+    fn snapshot(store: &RuntimeStore) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
         // The controlled interleaving validator runs while the operation's
         // pooled read lease is live. Observe its committed writer transaction
         // through an independent test connection instead of checking out a
@@ -4234,14 +4213,22 @@ mod tests {
             .query_map([], |row| row.get::<_, String>(0))
             .expect("table rows")
             .map(|name| {
+                let name = name.expect("table");
                 let mut rows = connection
-                    .prepare(&format!("SELECT * FROM \"{}\"", name.expect("table")))
+                    .prepare(&format!("SELECT * FROM \"{}\"", name))
                     .expect("read table");
                 let columns = rows.column_count();
-                rows.query_map([], |row| (0..columns).map(|index| row.get(index)).collect())
+                let mut values = rows
+                    .query_map([], |row| {
+                        (0..columns)
+                            .map(|index| row.get(index))
+                            .collect::<Result<Vec<_>, _>>()
+                    })
                     .expect("rows")
                     .collect::<Result<Vec<_>, _>>()
-                    .expect("snapshot")
+                    .expect("snapshot");
+                values.sort_by_cached_key(|row| format!("{row:?}"));
+                (name, values)
             })
             .collect()
     }
@@ -4390,7 +4377,7 @@ mod tests {
                     "lead" => changed["quickCreateRequest"] = json!("{}"),
                     _ => changed["deletedAt"] = json!(1),
                 }
-                let result = writer_store
+                writer_store
                     .transaction(move |tx| {
                         tx.execute(
                             "UPDATE runtime_agents SET record=?1 WHERE id=?2",
@@ -4398,9 +4385,11 @@ mod tests {
                         )?;
                         Ok(())
                     })
-                    .await;
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let committed = snapshot(&writer_store);
                 drop(release_on_drop);
-                result.map_err(|error| error.to_string())
+                Ok::<_, String>(committed)
             });
             let request = Creation {
                 id: Some(
@@ -4425,12 +4414,11 @@ mod tests {
             } else {
                 lead(&context, request).await
             };
-            tokio::time::timeout(INTERLEAVING_DEADLINE * 2, writer)
+            let after_interleaving = tokio::time::timeout(INTERLEAVING_DEADLINE * 2, writer)
                 .await
                 .expect("controlled writer completes before the test deadline")
                 .expect("controlled writer task joins")
                 .expect("interleaved writer commits");
-            let after_interleaving = snapshot(&store);
             assert!(
                 matches!(
                     result,
@@ -4441,8 +4429,8 @@ mod tests {
                 "{scenario}: {result:?}"
             );
             assert_eq!(
-                Some(snapshot(&store)),
-                Some(after_interleaving),
+                snapshot(&store),
+                after_interleaving,
                 "refusal writes nothing after {scenario} interleaving"
             );
         }

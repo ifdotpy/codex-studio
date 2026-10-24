@@ -8,7 +8,6 @@ import {
   type ContextType,
 } from "react";
 import { ApiError, get, errorText, type GetResult } from "../../api";
-import { claudeModelLabel } from "../../claude-model-label";
 import { watchResourceReads } from "../watchResourceReads";
 import type { ResourceVersion } from "../../sync/resourceEvents";
 import { serverResourceScope } from "../../servers/registry";
@@ -412,21 +411,7 @@ export function useWorkerModels(
   );
   const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const models = useMemo(
-    () =>
-      current.models
-        .filter((model) => model.model && !model.hidden)
-        .map((model): WorkerModelInfo => ({
-          ...model,
-          displayName:
-            typeof model.displayName === "string" && model.displayName
-              ? claudeModelLabel(
-                  model.displayName,
-                  typeof model.description === "string"
-                    ? model.description
-                    : "",
-                )
-              : model.displayName,
-        })) || [],
+    () => current.models.filter((model) => model.model && !model.hidden),
     [current.models],
   );
   return {

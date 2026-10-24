@@ -16,6 +16,7 @@ import type {
   WorkspaceEntityDto,
 } from "../generated/api";
 import type { components } from "../generated/api";
+type AccountRateLimitsDto = components["schemas"]["AccountRateLimitsDto"];
 export type UiPreferencesDto = components["schemas"]["UiPreferencesDto"];
 import type { Snapshot } from "../types";
 
@@ -28,12 +29,13 @@ export type UiPreferenceProjection = Partial<
   Record<UiPreferenceScope, UiPreferencesDto>
 >;
 
-/** Local new rows may omit the wire tombstone flag until storage fills it. */
+/** Local cache rows retain structured entities; storage fills the tombstone flag. */
 export type EntityRow = Omit<
   components["schemas"]["SyncDocument"],
   "_deleted"
 > & {
   _deleted?: components["schemas"]["SyncDocument"]["_deleted"];
+  entity?: SyncEntityPayload;
 };
 
 type EntityCollection = SyncEntityPayload["collection"];
@@ -52,6 +54,7 @@ const ENTITY_COLLECTIONS = [
   "event",
   "work",
   "workspace",
+  "rateLimit",
   "uiPreferences",
 ] as const satisfies readonly EntityCollection[];
 type Assert<T extends true> = T;
@@ -102,6 +105,7 @@ function emptyEntityValues(): EntityValues {
     event: new Map<string, EventEntityDto>(),
     work: new Map<string, WorkEntityDto>(),
     workspace: new Map<string, WorkspaceEntityDto>(),
+    rateLimit: new Map<string, AccountRateLimitsDto>(),
     uiPreferences: new Map<string, UiPreferencesDto>(),
   };
 }
@@ -111,13 +115,7 @@ function emptyEntityValues(): EntityValues {
  * Shape validation remains necessary because a mismatched server response or
  * storage corruption can still damage a row before it reaches the cache.
  */
-function parseEntityPayload(payload: string): SyncEntityPayload | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch {
-    return null;
-  }
+function parseEntityPayload(parsed: unknown): SyncEntityPayload | null {
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
     return null;
   const candidate = parsed as Record<string, unknown>;
@@ -194,8 +192,14 @@ function projectSnapshotCollections(
       ? prior.runtime.work
       : entityValues(values, "work");
   const workspace = values.workspace.get("current");
+  const rateLimitsByAccount =
+    prior && !changed.has("rateLimit")
+      ? prior.runtime.rateLimitsByAccount
+      : Object.fromEntries(values.rateLimit);
   const runtime = {
     ...workspace,
+    rateLimitsByAccount,
+    rateLimits: rateLimitsByAccount?.default ?? null,
     agents,
     rooms,
     tasks,
@@ -255,7 +259,11 @@ function retainTombstone(
  * arrives. Passing ready=false retains changes for one later publication. */
 export function applyEntityChanges(
   state: EntityProjection,
-  rows: Iterable<EntityRow>,
+  rows: Iterable<
+    Readonly<Pick<EntityRow, "id" | "seq" | "_deleted">> & {
+      readonly entity?: unknown;
+    }
+  >,
   ready: boolean,
 ): Snapshot | null {
   const changed = state.changed;
@@ -284,7 +292,7 @@ export function applyEntityChanges(
       });
       continue;
     }
-    const payload = parseEntityPayload(row.payload);
+    const payload = parseEntityPayload(row.entity);
     if (!payload) {
       if (state.invalidReportedSeq.get(row.id) !== row.seq) {
         state.invalidReportedSeq.set(row.id, row.seq);
@@ -346,6 +354,9 @@ export function applyEntityChanges(
         break;
       case "uiPreferences":
         state.values.uiPreferences.set(payload.id, payload.value);
+        break;
+      case "rateLimit":
+        state.values.rateLimit.set(payload.id, payload.value);
         break;
       case "workspace":
         state.values.workspace.set(payload.id, payload.value);

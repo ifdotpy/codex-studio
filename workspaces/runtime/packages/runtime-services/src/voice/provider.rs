@@ -2882,22 +2882,18 @@ mod tests {
     #[tokio::test]
     async fn dispatch_guard_serializes_same_session_but_not_other_sessions() {
         let held = session_dispatch_guard("agent", "session-a").await;
-        let (same_tx, mut same_rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let _guard = session_dispatch_guard("agent", "session-a").await;
-            same_tx.send(()).expect("same-session receiver remains");
-        });
-        let (other_tx, other_rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let _guard = session_dispatch_guard("agent", "session-b").await;
-            other_tx.send(()).expect("other-session receiver remains");
-        });
-        other_rx
-            .await
-            .expect("different-session guard acquisition completes");
-        assert!(same_rx.try_recv().is_err(), "same-session work must wait");
+        let same = session_dispatch_guard("agent", "session-a");
+        tokio::pin!(same);
+        assert!(
+            futures_util::poll!(&mut same).is_pending(),
+            "same-session work must wait"
+        );
+        let other = session_dispatch_guard("agent", "session-b").await;
+        drop(other);
         drop(held);
-        same_rx.await.expect("same-session guard releases");
+        tokio::time::timeout(std::time::Duration::from_secs(5), same)
+            .await
+            .expect("same-session guard releases");
     }
 
     #[test]

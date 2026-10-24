@@ -14,7 +14,8 @@ import { it } from "vitest";
 it("reuses unchanged entity data and bounds transcript and history caches", () => {
   const row = (collection, id, value, seq, deleted = false) => ({
     id: `entity:${collection}:${id}`,
-    payload: JSON.stringify({ collection, id, value }),
+    payload: "",
+    entity: { collection, id, value },
     seq,
     ...(deleted ? { _deleted: true } : {}),
   });
@@ -32,7 +33,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       row("project", "p", { id: "p", name: "P" }, 3),
     ];
     const first = applyEntityRows(state, initial, true);
-    assert.equal(parsed, 3, "the initial entity rows parse once");
+    assert.equal(parsed, 0, "structured entity rows need no JSON parsing");
     const agentA = first.threads[0];
     const projectList = first.runtime.projects;
 
@@ -41,7 +42,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       [initial[0], row("agent", "b", { id: "b", name: "B2" }, 4), initial[2]],
       true,
     );
-    assert.equal(parsed, 4, "one entity update parses one payload");
+    assert.equal(parsed, 0, "structured updates need no JSON parsing");
     assert.equal(
       changed.threads[0],
       agentA,
@@ -68,7 +69,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       "B2",
       "older sequences cannot replace newer values",
     );
-    assert.equal(parsed, 4, "stale sequences are not parsed");
+    assert.equal(parsed, 0, "stale sequences are not parsed");
 
     const deleted = applyEntityRows(
       state,
@@ -79,7 +80,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       deleted.threads.map((agent) => agent.id),
       ["a"],
     );
-    assert.equal(parsed, 4, "tombstones do not parse payloads");
+    assert.equal(parsed, 0, "tombstones do not parse payloads");
     const afterStale = applyEntityRows(
       state,
       [
@@ -93,7 +94,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       afterStale.threads.map((agent) => agent.id),
       ["a"],
     );
-    assert.equal(parsed, 4, "an older row cannot resurrect a newer delete");
+    assert.equal(parsed, 0, "an older row cannot resurrect a newer delete");
     const restored = applyEntityRows(
       state,
       [
@@ -336,18 +337,21 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
 
 const entityRow = (collection, id, value, seq, extra = {}) => ({
   id: `entity:${collection}:${id}`,
-  payload: JSON.stringify({ collection, id, value }),
+  payload: "",
+  entity: { collection, id, value },
   seq,
   ...extra,
 });
 const keyedEntityRow = (rowId, entityId, value, seq) => ({
   id: `entity:agent:${rowId}`,
-  payload: JSON.stringify({ collection: "agent", id: entityId, value }),
+  payload: "",
+  entity: { collection: "agent", id: entityId, value },
   seq,
 });
 const payloadRow = (rowId, collection, entityId, value, seq) => ({
   id: `entity:source:${rowId}`,
-  payload: JSON.stringify({ collection, id: entityId, value }),
+  payload: "",
+  entity: { collection, id: entityId, value },
   seq,
 });
 
@@ -526,22 +530,22 @@ it("skips malformed entity rows once and still applies the rest of the batch", (
     { id: "entity:broken:array", payload: "[]", seq: 8 },
     {
       id: "entity:agent:missing-id",
-      payload: JSON.stringify({ collection: "agent", value: { name: "A" } }),
+      entity: { collection: "agent", value: { name: "A" } },
       seq: 9,
     },
     {
       id: "entity:agent:null-value",
-      payload: JSON.stringify({ collection: "agent", id: "a", value: null }),
+      entity: { collection: "agent", id: "a", value: null },
       seq: 10,
     },
     {
       id: "entity:agent:missing-value",
-      payload: JSON.stringify({ collection: "agent", id: "a" }),
+      entity: { collection: "agent", id: "a" },
       seq: 11,
     },
     {
       id: "entity:future:x",
-      payload: JSON.stringify({ collection: "future", id: "x", value: {} }),
+      entity: { collection: "future", id: "x", value: {} },
       seq: 12,
     },
   ];
@@ -802,29 +806,6 @@ it("keeps an empty chat list empty while unrelated entities update", () => {
   assert.deepEqual(updated.chats, []);
 });
 
-it("preserves work when an agent changes and the work row is unchanged", () => {
-  const state = emptyEntityProjection();
-  applyEntityRows(
-    state,
-    [
-      entityRow("work", "w1", { id: "w1" }, 1),
-      entityRow("agent", "a1", { id: "a1", name: "A" }, 1),
-      entityRow("chat", "c1", { id: "c1" }, 1),
-    ],
-    true,
-  );
-  const updated = applyEntityRows(
-    state,
-    [
-      entityRow("work", "w1", { id: "w1" }, 1),
-      entityRow("agent", "a1", { id: "a1", name: "A2" }, 2),
-      entityRow("chat", "c1", { id: "c1" }, 1),
-    ],
-    true,
-  );
-  assert.deepEqual(updated.runtime.work, [{ id: "w1" }]);
-});
-
 it("reuses unchanged work, request, and peer team arrays when agents change", () => {
   const state = emptyEntityProjection();
   const initial = applyEntityRows(
@@ -847,6 +828,7 @@ it("reuses unchanged work, request, and peer team arrays when agents change", ()
     ],
     true,
   );
+  assert.deepEqual(updated.runtime.work, [{ id: "w1" }]);
   assert.equal(updated.runtime.work, initial.runtime.work);
   assert.equal(updated.runtime.requests, initial.runtime.requests);
   assert.equal(updated.runtime.peerTeams, initial.runtime.peerTeams);
@@ -1096,4 +1078,81 @@ it("keeps extra and wrong-typed known DTO fields after envelope validation", () 
   assert.equal(snapshot.runtime.agents[1].name, 42);
   assert.equal(state.rows.get("entity:agent:extra").seq, 1);
   assert.equal(state.rows.get("entity:agent:wrong-type").seq, 2);
+});
+
+it("applies v4 structured entity rows without parsing JSON strings", () => {
+  const state = emptyEntityProjection();
+  const upsert = {
+    id: "entity:agent:a",
+    payload: "",
+    entity: { collection: "agent", id: "a", value: { id: "a", name: "A" } },
+    seq: 1,
+  };
+  const first = applyEntityRows(state, [upsert], true);
+  assert.equal(first.threads[0]?.name, "A");
+  const deleted = applyEntityRows(
+    state,
+    [
+      {
+        id: upsert.id,
+        collection: "agent",
+        entityId: "a",
+        seq: 2,
+        _deleted: true,
+      },
+    ],
+    true,
+  );
+  assert.deepEqual(deleted.threads, []);
+  const stale = applyEntityRows(state, [upsert], true);
+  assert.deepEqual(stale.threads, []);
+});
+
+it("projects independent account limits and preserves them across workspace updates", () => {
+  const row = (collection, id, value, seq) => ({
+    id: `entity:${collection}:${id}`,
+    payload: "",
+    entity: { collection, id, value },
+    seq,
+  });
+  const state = emptyEntityProjection();
+  const alpha = { accountKey: "alpha", at: 100, data: { accountId: "A" } };
+  const initial = applyEntityRows(
+    state,
+    [
+      row("workspace", "current", { stateDir: "fixture" }, 1),
+      row("rateLimit", "alpha", alpha, 2),
+      row("rateLimit", "default", { accountKey: "default", at: 101 }, 3),
+    ],
+    true,
+  );
+  assert.deepEqual(initial.runtime.rateLimitsByAccount.alpha, alpha);
+  assert.equal(
+    initial.runtime.rateLimits,
+    initial.runtime.rateLimitsByAccount.default,
+  );
+  const next = applyEntityRows(
+    state,
+    [
+      row("workspace", "current", { stateDir: "updated" }, 4),
+      row("rateLimit", "alpha", alpha, 2),
+      row("rateLimit", "default", { accountKey: "default", at: 101 }, 3),
+    ],
+    true,
+  );
+  assert.equal(
+    next.runtime.rateLimitsByAccount,
+    initial.runtime.rateLimitsByAccount,
+  );
+  const withoutAlpha = applyEntityRows(
+    state,
+    [
+      row("workspace", "current", { stateDir: "updated" }, 4),
+      row("rateLimit", "default", { accountKey: "default", at: 101 }, 3),
+      { id: "entity:rateLimit:alpha", seq: 5, payload: "{}", _deleted: true },
+    ],
+    true,
+  );
+  assert.equal(withoutAlpha.runtime.rateLimitsByAccount.alpha, undefined);
+  assert.equal(withoutAlpha.runtime.rateLimits.accountKey, "default");
 });

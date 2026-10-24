@@ -1,0 +1,53 @@
+/* Shared geometry owners. All lengths are rem, relative to the root text size. */
+:root {
+  /* Fine separators between groups, not decorative card outlines. */
+  --studio-border-width: 0.0625rem;
+  /* Desktop icon control edge; coarse pointers use the touch target below. */
+  --studio-control-size: 2rem;
+  /* Minimum standalone control target for a coarse pointer. */
+  --studio-touch-target: 2.75rem;
+  /* Minimum hit area for secondary inline facts, WCAG 2.2 AA. */
+  --studio-secondary-touch-target: 1.5rem;
+  /* A title and optional live activity line on a dispatch strip. */
+  --studio-strip-min-height: 2.75rem;
+  /* One level of project or agent hierarchy. */
+  --studio-strip-indent: 0.375rem;
+  /* Keep a useful part of the conversation title visible in phone headers. */
+  --studio-conversation-title-min: 4rem;
+  /* Team dock width when the conversation has room for a second column. */
+  --studio-team-size: var(--layout-team-preferred);
+  /* Readable settings form column. */
+  --studio-form-max: 40rem;
+  /* Model picker column: 65% of the previous desktop form width, in rem. */
+  --studio-model-picker-size: calc(var(--studio-form-max) * 0.65);
+  /* New chat dialog outer width: model column plus its Mantine body padding. */
+  --studio-model-dialog-padding: var(--mantine-spacing-md);
+  --studio-model-dialog-size: calc(
+    var(--studio-model-picker-size) + var(--studio-model-dialog-padding) * 2
+  );
+  /* Compact Team dialog width, in rem; phone presentation fills the screen. */
+  --studio-team-dialog-size: 32rem;
+  /* Vertical settings section navigation. */
+  --studio-settings-nav-size: 12rem;
+  /* Messages room selector alongside the selected room. */
+  --studio-room-list-size: 16rem;
+  /* Technical notice details scroll limit and text alignment after the icon. */
+  --studio-notice-details-max: 11.25rem;
+  --studio-notice-indent: 1.5rem;
+  /* Voice overlay maximum height, input minimum, and compact label width. */
+  --studio-voice-max: 35rem;
+  --studio-voice-input-min: 7.5rem;
+  --studio-voice-label-min: 6.25rem;
+  /* Native voice actions share a target that grows on coarse pointers. */
+  --studio-voice-control-size: 2.5rem;
+  /* Minimum overlay menu width, constrained by the viewport on phones. */
+  --studio-menu-min: 13.75rem;
+  /* Compact context usage meter thickness. */
+  --studio-meter-size: 0.1875rem;
+  /* Keyboard focus ring stroke, and its gap inward from the control edge.
+     Inset rings stay inside scroll containers and clear the state rail. */
+  --studio-focus-ring-width: 0.125rem;
+  --studio-focus-ring-inset: 0.125rem;
+  /* Narrowest readable model name in a composer chip, in characters. */
+  --studio-composer-model-min: 6ch;
+}

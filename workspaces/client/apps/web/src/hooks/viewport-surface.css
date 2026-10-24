@@ -77,3 +77,7 @@ html[data-viewport-surface] .usage-footer {
   height: 100%;
   max-height: 100%;
 }
+
+.mantine-Drawer-content :is(#sidebar, #team) {
+  padding-block: 16px;
+}

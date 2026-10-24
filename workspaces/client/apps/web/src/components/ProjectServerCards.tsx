@@ -77,7 +77,6 @@ export default function ProjectServerCards({
     NewChatSettings,
     "workspaceMode"
   > | null>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [platformError, setPlatformError] = useState("");
   const knownSystem = !!server?.system;
   const disabled = !!server?.disabled;
@@ -108,7 +107,7 @@ export default function ProjectServerCards({
     <div
       className="project-server-choice"
       onKeyDown={(event) => {
-        if (event.key === "Escape" && !pickerOpen) {
+        if (event.key === "Escape") {
           event.preventDefault();
           event.stopPropagation();
           onCancel();
@@ -189,7 +188,6 @@ export default function ProjectServerCards({
           server={server.connection}
           projectId={project.id}
           path={location.path}
-          onOpenChange={setPickerOpen}
           onChange={setModels}
         />
       )}
@@ -197,7 +195,6 @@ export default function ProjectServerCards({
         <Button onClick={onCancel}>Cancel</Button>
         <Button
           variant="filled"
-          color="indigo"
           disabled={
             !location ||
             !models ||

@@ -107,7 +107,10 @@ async fn a_publication_before_a_later_write_in_the_same_transaction_is_redone() 
 
 #[tokio::test]
 async fn synced_agent_values_recompute_the_view_and_create_a_missing_entity() {
-    let (_dir, store) = store().await;
+    let dir = tempfile::tempdir().expect("isolated state");
+    let store = studio_runtime_store::RuntimeStore::open(Some(dir.path()))
+        .await
+        .expect("store");
     let worker = json!({
         "id":"sync-worker","rootId":CHAT,"parentId":CHAT,"epoch":1,"status":"running",
         "name":"Worker","provider":"codex","model":"gpt-6","prompt":"Task","cwd":"/fixture",
@@ -121,6 +124,8 @@ async fn synced_agent_values_recompute_the_view_and_create_a_missing_entity() {
         })
         .await
         .expect("the worker row is stored");
+    super::install(&store);
+    assert!(client_entity(&store, "agent", "sync-worker").is_none());
     store
         .transaction_with(|tx| {
             let mut agent = AgentRepository::get(tx, &"sync-worker".into())?.expect("worker");

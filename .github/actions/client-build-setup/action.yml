@@ -13,6 +13,9 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Select the shared compilation budget
+      shell: bash
+      run: echo "CARGO_BUILD_JOBS=$(node workspaces/tooling/apps/repository-checks/gate-config.mjs)" >> "$GITHUB_ENV"
     - if: inputs.native == 'true'
       uses: ./.github/actions/native-linux-deps
     - name: Read the binding generator version from its Rust owner

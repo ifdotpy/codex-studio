@@ -585,7 +585,6 @@ mod diagnostics_http_tests {
     use axum::extract::ConnectInfo;
     use axum::http::{Request, StatusCode};
     use rusqlite::Connection;
-    use serde_json::Value as JsonValue;
     use serde_json::{Value, json};
     use std::path::Path;
     use std::time::SystemTime;
@@ -849,7 +848,6 @@ mod diagnostics_http_tests {
     #[tokio::test]
     async fn diagnostics_route_validates_full_schema_with_both_ports() {
         let directory = tempfile::tempdir().expect("tmpfs test state");
-        create_python_schema_fixture(directory.path());
         let store = Arc::new(
             RuntimeStore::open(Some(directory.path()))
                 .await
@@ -932,7 +930,6 @@ mod diagnostics_http_tests {
     #[tokio::test]
     async fn missing_diagnostics_ports_are_named_and_leave_no_writes() {
         let directory = tempfile::tempdir().expect("tmpfs test state");
-        create_python_schema_fixture(directory.path());
         let store = Arc::new(
             RuntimeStore::open(Some(directory.path()))
                 .await
@@ -1055,48 +1052,6 @@ mod diagnostics_http_tests {
         visit(root, root, &mut entries);
         entries.sort_by(|left, right| left.0.cmp(&right.0));
         entries
-    }
-
-    fn create_python_schema_fixture(root: &Path) {
-        let schema: JsonValue = serde_json::from_str(include_str!(
-            "../../../runtime-store/tests/fixtures/live-state-schema.json"
-        ))
-        .expect("Python-written live schema snapshot");
-        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-            let db = Connection::open(root.join(name)).expect("fixture database");
-            db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN;")
-                .expect("fixture durability");
-            let mut objects = schema[name]["sqlite_master"]
-                .as_array()
-                .expect("Python schema objects")
-                .iter()
-                .filter(|object| {
-                    ![
-                        "runtime_search_next_config",
-                        "runtime_search_next_data",
-                        "runtime_search_next_docsize",
-                        "runtime_search_next_idx",
-                    ]
-                    .contains(&object["name"].as_str().expect("schema object name"))
-                })
-                .collect::<Vec<_>>();
-            objects.sort_by_key(|object| {
-                (
-                    match object["type"].as_str() {
-                        Some("table") => 0,
-                        Some("index") => 1,
-                        Some("view") => 2,
-                        _ => 3,
-                    },
-                    object["name"].as_str(),
-                )
-            });
-            for object in objects {
-                db.execute_batch(object["sql"].as_str().expect("Python schema DDL"))
-                    .expect("create Python schema object");
-            }
-            db.execute_batch("COMMIT").expect("commit fixture schema");
-        }
     }
 }
 

@@ -6,7 +6,7 @@ export const layoutTokens = {
     purpose: "Minimum viewport width for inline navigation",
   },
   "sidebar.preferred": {
-    value: 15,
+    value: 19.8,
     unit: "rem",
     purpose: "Preferred conversation navigation width",
   },
@@ -66,17 +66,17 @@ export const layoutTokens = {
     purpose: "Wide Workspace section drawer maximum",
   },
   "team.inlineMin": {
-    value: 1200,
+    value: 960,
     unit: "px",
     purpose: "Compatibility viewport floor for inline team",
   },
   "team.preferred": {
-    value: 15.5,
+    value: 20,
     unit: "rem",
     purpose: "Preferred inline team width",
   },
   "team.drawerMax": {
-    value: 18.75,
+    value: 20,
     unit: "rem",
     purpose: "Team drawer maximum width",
   },
@@ -236,24 +236,6 @@ export const layoutTokens = {
     purpose:
       "Retained appearance width threshold 600px, owned by slice1-contract",
   },
-  "legacy_appearance.dimension3": {
-    value: 44,
-    unit: "px",
-    purpose:
-      "Retained appearance width threshold 44px, owned by slice1-contract",
-  },
-  "legacy_appearance.dimension7": {
-    value: 14,
-    unit: "px",
-    purpose:
-      "Retained appearance width threshold 14px, owned by slice1-contract",
-  },
-  "legacy_appearance.dimension11": {
-    value: 240,
-    unit: "px",
-    purpose:
-      "Retained appearance width threshold 240px, owned by slice1-contract",
-  },
   "legacy_appearance.dimension12": {
     value: 16,
     unit: "px",
@@ -277,47 +259,17 @@ export const layoutTokens = {
     unit: "px",
     purpose: "Retained Usage width threshold 600px, owned by slice1-contract",
   },
-  "legacy_account_tiles.width760": {
-    value: 760,
-    unit: "px",
-    purpose:
-      "Retained account_tiles width threshold 760px, owned by slice1-contract",
-  },
-  "legacy_accounts.width600": {
-    value: 600,
-    unit: "px",
-    purpose:
-      "Retained accounts width threshold 600px, owned by slice1-contract",
-  },
-  "legacy_accounts.dimension28": {
-    value: 220,
-    unit: "px",
-    purpose:
-      "Retained accounts width threshold 220px, owned by slice1-contract",
-  },
   "legacy_ExecutionSettings.width760": {
     value: 760,
     unit: "px",
     purpose:
       "Retained ExecutionSettings width threshold 760px, owned by slice1-contract",
   },
-  "legacy_execution_settings.width760": {
-    value: 760,
-    unit: "px",
-    purpose:
-      "Retained execution_settings width threshold 760px, owned by slice1-contract",
-  },
   "legacy_session_activity.width760": {
     value: 760,
     unit: "px",
     purpose:
       "Retained session_activity width threshold 760px, owned by slice1-contract",
-  },
-  "legacy_subagent_concurrency_control.width760": {
-    value: 760,
-    unit: "px",
-    purpose:
-      "Retained subagent_concurrency_control width threshold 760px, owned by slice1-contract",
   },
   "legacy_chat_controls.width760": {
     value: 760,
@@ -336,12 +288,6 @@ export const layoutTokens = {
     unit: "px",
     purpose:
       "Retained claude_settings width threshold 420px, owned by slice1-contract",
-  },
-  "legacy_empty_chat_settings.width760": {
-    value: 760,
-    unit: "px",
-    purpose:
-      "Retained empty_chat_settings width threshold 760px, owned by slice1-contract",
   },
   "legacy_message_info.width761": {
     value: 761,
@@ -367,29 +313,11 @@ export const layoutTokens = {
     purpose:
       "Retained file_diff width threshold 480px, owned by slice1-contract",
   },
-  "legacy_message_queue.width600": {
-    value: 600,
-    unit: "px",
-    purpose:
-      "Retained message_queue width threshold 600px, owned by slice1-contract",
-  },
-  "legacy_model_picker.width360": {
-    value: 360,
-    unit: "px",
-    purpose:
-      "Retained model_picker width threshold 360px, owned by slice1-contract",
-  },
   "legacy_project_directory_picker.dimension59": {
     value: 220,
     unit: "px",
     purpose:
       "Retained project_directory_picker width threshold 220px, owned by slice1-contract",
-  },
-  "legacy_project_settings.width760": {
-    value: 760,
-    unit: "px",
-    purpose:
-      "Retained project_settings width threshold 760px, owned by slice1-contract",
   },
   "legacy_prompt_navigation.width760": {
     value: 760,
@@ -421,12 +349,6 @@ export const layoutTokens = {
     purpose:
       "Retained radio_chat width threshold 900px, owned by slice1-contract",
   },
-  "legacy_realtime_voice.dimension70": {
-    value: 100,
-    unit: "px",
-    purpose:
-      "Retained realtime_voice width threshold 100px, owned by slice1-contract",
-  },
   "legacy_rich_preview.width480": {
     value: 480,
     unit: "px",
@@ -457,59 +379,11 @@ export const layoutTokens = {
     purpose:
       "Retained Workspace width threshold 760px, owned by slice3-workspace-panel",
   },
-  "legacy_background_controls.width600": {
-    value: 600,
-    unit: "px",
-    purpose:
-      "Retained background_controls width threshold 600px, owned by slice3-workspace-panel",
-  },
-  "legacy_team_chats.width640": {
-    value: 640,
-    unit: "px",
-    purpose:
-      "Retained team_chats width threshold 640px, owned by slice3-workspace-panel",
-  },
-  "legacy_team_chats.width760": {
-    value: 760,
-    unit: "px",
-    purpose:
-      "Retained team_chats width threshold 760px, owned by slice3-workspace-panel",
-  },
-  "legacy_team_chats.dimension89": {
-    value: 850,
-    unit: "px",
-    purpose:
-      "Retained team_chats width threshold 850px, owned by slice3-workspace-panel",
-  },
-  "legacy_sidebar_projects.dimension94": {
-    value: 24,
-    unit: "px",
-    purpose:
-      "Retained sidebar_projects width threshold 24px, owned by slice2-sidebar",
-  },
-  "legacy_team_navigation.width760": {
-    value: 760,
-    unit: "px",
-    purpose:
-      "Retained team_navigation width threshold 760px, owned by slice1-contract",
-  },
-  "legacy_team_navigation.dimension97": {
-    value: 44,
-    unit: "px",
-    purpose:
-      "Retained team_navigation width threshold 44px, owned by slice1-contract",
-  },
   "legacy_terminal_dock.width650": {
     value: 650,
     unit: "px",
     purpose:
       "Retained terminal_dock width threshold 650px, owned by slice4-terminal",
-  },
-  "legacy_primitives.width760": {
-    value: 760,
-    unit: "px",
-    purpose:
-      "Retained primitives width threshold 760px, owned by slice1-contract",
   },
   "legacy_chatPrefetch.width760": {
     value: 760,
@@ -567,13 +441,364 @@ export const layoutTokens = {
     unit: "rem",
     purpose: "Pointer hit width of the navigation resize control",
   },
+  "legacy_main_App.query91b57f15": {
+    value: 60,
+    unit: "rem",
+    purpose: 'Main src/App.tsx query: useMediaQuery("(min-width: 60rem)"',
+  },
+  "legacy_main_App.query78cb11fd": {
+    value: 79.8,
+    unit: "rem",
+    purpose: 'Main src/App.tsx query: useMediaQuery("(min-width: 79.8rem)"',
+  },
+  "legacy_main_appearance.query0e42fa00": {
+    value: 760,
+    unit: "px",
+    purpose: "Main src/appearance.css query: @media (max-width: 760px) {",
+  },
+  "legacy_main_components_Analytics.dimensiond0f63a09": {
+    value: 320,
+    unit: "px",
+    purpose: "Main src/components/Analytics.css dimension: ; max-width: 320px",
+  },
+  "legacy_main_components_Analytics.dimensiondf2f2974": {
+    value: 320,
+    unit: "px",
+    purpose: "Main src/components/Analytics.css dimension: ; max-height: 320px",
+  },
+  "legacy_main_components_Usage.query92701797": {
+    value: 47.5,
+    unit: "em",
+    purpose:
+      "Main src/components/Usage.css query: @container conversation-footer (max-width: 47.5em) {",
+  },
+  "legacy_main_components_Usage.queryfcb67465": {
+    value: 28,
+    unit: "em",
+    purpose:
+      "Main src/components/Usage.css query: @container conversation-footer (max-width: 28em) {",
+  },
+  "legacy_main_components_account_tiles.query0bafbd4a": {
+    value: 47.5,
+    unit: "rem",
+    purpose:
+      "Main src/components/account-tiles.css query: @media (max-width: 47.5rem) {",
+  },
+  "legacy_main_components_accounts.query452cba01": {
+    value: 37.5,
+    unit: "rem",
+    purpose:
+      "Main src/components/accounts.css query: @media (max-width: 37.5rem) {",
+  },
+  "legacy_main_components_accounts.query0bafbd4a": {
+    value: 47.5,
+    unit: "rem",
+    purpose:
+      "Main src/components/accounts.css query: @media (max-width: 47.5rem) {",
+  },
+  "legacy_main_components_accounts.querya3ae2bbc": {
+    value: 22,
+    unit: "rem",
+    purpose:
+      "Main src/components/accounts.css query: @container account-list (max-width: 22rem) {",
+  },
+  "legacy_main_components_agents_ChatSettingsDialog.query7e044896": {
+    value: 48,
+    unit: "em",
+    purpose:
+      'Main src/components/agents/ChatSettingsDialog.tsx query: useMediaQuery("(max-width: 48em)"',
+  },
+  "legacy_main_components_agents_chat_settings_dialog.querye51eafe3": {
+    value: 26,
+    unit: "em",
+    purpose:
+      "Main src/components/agents/chat-settings-dialog.css query: @container (max-width: 26em) {",
+  },
+  "legacy_main_components_conversation_conversation_chrome.query8bab4189": {
+    value: 16,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/conversation-chrome.css query: @container conversation-start (max-width: 16em) {",
+  },
+  "legacy_main_components_conversation_conversation_chrome.query6c130e71": {
+    value: 47.5,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/conversation-chrome.css query: @container workspace (max-width: 47.5em) {",
+  },
+  "legacy_main_components_conversation_conversation_chrome.query5394e189": {
+    value: 22.5,
+    unit: "rem",
+    purpose:
+      "Main src/components/conversation/conversation-chrome.css query: @container workspace (max-width: 22.5rem) {",
+  },
+  "legacy_main_components_conversation_conversation_chrome.query0128cfe9": {
+    value: 70,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/conversation-chrome.css query: @container composer (max-width: 70em) {",
+  },
+  "legacy_main_components_conversation_conversation_chrome.querye8430685": {
+    value: 35,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/conversation-chrome.css query: @container composer (max-width: 35em) {",
+  },
+  "legacy_main_components_conversation_conversation_chrome.query81a3452d": {
+    value: 20,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/conversation-chrome.css query: @container composer (20em < width <= 35em) {",
+  },
+  "legacy_main_components_conversation_conversation_chrome.query7269dc35": {
+    value: 20,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/conversation-chrome.css query: @container composer (max-width: 20em) {",
+  },
+  "legacy_main_components_conversation_conversation_chrome.query77d11aa9": {
+    value: 24,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/conversation-chrome.css query: @container workspace (max-width: 24em) {",
+  },
+  "legacy_main_components_conversation_conversation_chrome.layerfb8580ce": {
+    value: 2,
+    unit: "layer",
+    purpose:
+      "Main src/components/conversation/conversation-chrome.css layer: z-index: 2",
+  },
+  "legacy_main_components_conversation_empty_chat_settings.query8f4fa78f": {
+    value: 60,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 60em) {",
+  },
+  "legacy_main_components_conversation_empty_chat_settings.querya4e09282": {
+    value: 45,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 45em) {",
+  },
+  "legacy_main_components_conversation_empty_chat_settings.query99ff479c": {
+    value: 32,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 32em) {",
+  },
+  "legacy_main_components_conversation_empty_chat_settings.query62cf757f": {
+    value: 25,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 25em) {",
+  },
+  "legacy_main_components_conversation_empty_chat_settings.query736651e9": {
+    value: 56.25,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/empty-chat-settings.css query: @container composer (min-width: 56.25em) {",
+  },
+  "legacy_main_components_conversation_empty_chat_settings.query7269dc35": {
+    value: 20,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 20em) {",
+  },
+  "legacy_main_components_conversation_empty_chat_settings.queryd3296c98": {
+    value: 30,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 30em) {",
+  },
+  "legacy_main_components_conversation_empty_chat_settings.queryeafc0baa": {
+    value: 22,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 22em) {",
+  },
+  "legacy_main_components_conversation_empty_chat_settings.query038ea2d3": {
+    value: 18,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 18em) {",
+  },
+  "legacy_main_components_conversation_empty_chat_settings.query7a8a99ac": {
+    value: 35,
+    unit: "em",
+    purpose:
+      "Main src/components/conversation/empty-chat-settings.css query: @container composer (min-width: 35em) {",
+  },
+  "legacy_main_components_message_queue.query452cba01": {
+    value: 37.5,
+    unit: "rem",
+    purpose:
+      "Main src/components/message-queue.css query: @media (max-width: 37.5rem) {",
+  },
+  "legacy_main_components_project_settings.query0bafbd4a": {
+    value: 47.5,
+    unit: "rem",
+    purpose:
+      "Main src/components/project-settings.css query: @media (max-width: 47.5rem) {",
+  },
+  "legacy_main_components_shell_background_controls.query452cba01": {
+    value: 37.5,
+    unit: "rem",
+    purpose:
+      "Main src/components/shell/background-controls.css query: @media (max-width: 37.5rem) {",
+  },
+  "legacy_main_components_shell_messages_team_chats.query2083ad3a": {
+    value: 40,
+    unit: "rem",
+    purpose:
+      "Main src/components/shell/messages/team-chats.css query: @container message-rooms (max-width: 40rem) {",
+  },
+  "legacy_main_components_sidebar_FleetFixtures.query1c9cc1e2": {
+    value: 47.5,
+    unit: "em",
+    purpose:
+      "Main src/components/sidebar/FleetFixtures.css query: @media (max-width: 47.5em) {",
+  },
+  "legacy_main_components_sidebar_projects.query1c9cc1e2": {
+    value: 47.5,
+    unit: "em",
+    purpose:
+      "Main src/components/sidebar-projects.css query: @media (max-width: 47.5em) {",
+  },
+  "legacy_main_components_studio_settings.query0bafbd4a": {
+    value: 47.5,
+    unit: "rem",
+    purpose:
+      "Main src/components/studio-settings.css query: @media (max-width: 47.5rem) {",
+  },
+  "legacy_main_components_supervisor_recovery_notice.query6c130e71": {
+    value: 47.5,
+    unit: "em",
+    purpose:
+      "Main src/components/supervisor-recovery-notice.css query: @container workspace (max-width: 47.5em) {",
+  },
+  "legacy_main_components_ui_primitives.query0bafbd4a": {
+    value: 47.5,
+    unit: "rem",
+    purpose:
+      "Main src/components/ui/primitives.css query: @media (max-width: 47.5rem) {",
+  },
+  "legacy_main_servers_MultiServerApp.query3b784b5e": {
+    value: 760,
+    unit: "px",
+    purpose:
+      'Main src/servers/MultiServerApp.tsx query: matchMedia("(max-width: 760px)"',
+  },
+  "legacy_main_servers_server_settings.query0bafbd4a": {
+    value: 47.5,
+    unit: "rem",
+    purpose:
+      "Main src/servers/server-settings.css query: @media (max-width: 47.5rem) {",
+  },
+  "legacy_main_servers_server_settings.query3e8f17d2": {
+    value: 22.5,
+    unit: "rem",
+    purpose:
+      "Main src/servers/server-settings.css query: @media (max-width: 22.5rem) {",
+  },
+  "legacy_main_servers_server_settings.query6d39bd72": {
+    value: 30,
+    unit: "rem",
+    purpose:
+      "Main src/servers/server-settings.css query: @media (max-width: 30rem) {",
+  },
+  "legacy_main_servers_servers.query0e42fa00": {
+    value: 760,
+    unit: "px",
+    purpose: "Main src/servers/servers.css query: @media (max-width: 760px) {",
+  },
+  "legacy_main_servers_servers.layere6065e37": {
+    value: 201,
+    unit: "layer",
+    purpose: "Main src/servers/servers.css layer: z-index: 201",
+  },
+  "legacy_main_servers_servers.layer34ae5ec1": {
+    value: 200,
+    unit: "layer",
+    purpose: "Main src/servers/servers.css layer: z-index: 200",
+  },
+  "legacy_main_servers_servers.dimension112ab710": {
+    value: 270,
+    unit: "px",
+    purpose: "Main src/servers/servers.css dimension: ; width: 270px",
+  },
+  "legacy_main_studio_preferences.query0e42fa00": {
+    value: 760,
+    unit: "px",
+    purpose:
+      "Main src/studio-preferences.css query: @media (max-width: 760px) {",
+  },
+  "legacy_main_studio_preferences.query54b57a2c": {
+    value: 761,
+    unit: "px",
+    purpose:
+      "Main src/studio-preferences.css query: @media (any-pointer: coarse), (width < 761px) {",
+  },
+  "legacy_main_style.query77c333e4": {
+    value: 761,
+    unit: "px",
+    purpose: "Main src/style.css query: @media (min-width: 761px) {",
+  },
+  "legacy_main_style.query0e42fa00": {
+    value: 760,
+    unit: "px",
+    purpose: "Main src/style.css query: @media (max-width: 760px) {",
+  },
+  "legacy_main_style.query3e49ac8b": {
+    value: 1199,
+    unit: "px",
+    purpose: "Main src/style.css query: @media (max-width: 1199px) {",
+  },
+  "legacy_main_style.query2823da6c": {
+    value: 761,
+    unit: "px",
+    purpose:
+      "Main src/style.css query: @media (min-width: 761px) and (hover: hover) and (pointer: fine) {",
+  },
+  "legacy_main_style.query54b57a2c": {
+    value: 761,
+    unit: "px",
+    purpose:
+      "Main src/style.css query: @media (any-pointer: coarse), (width < 761px) {",
+  },
+  "legacy_main_style.layere34829b4": {
+    value: 400,
+    unit: "layer",
+    purpose: "Main src/style.css layer: z-index: 400",
+  },
+  "legacy_main_style.dimension21ad4b4e": {
+    value: 320,
+    unit: "px",
+    purpose: "Main src/style.css dimension: { width: 320px",
+  },
+  "legacy_main_workspace_layout.query3686b719": {
+    value: 660,
+    unit: "px",
+    purpose:
+      "Main src/workspace-layout.css query: @container workspace (max-width: 660px) {",
+  },
+  "legacy_main_workspace_layout.query4348d9ef": {
+    value: 60,
+    unit: "rem",
+    purpose:
+      "Main src/workspace-layout.css query: @container workspace-frame (min-width: 60rem) {",
+  },
+  "legacy_main_workspace_layout.layer653d125a": {
+    value: 300,
+    unit: "layer",
+    purpose: "Main src/workspace-layout.css layer: z-index: 300",
+  },
 } as const;
 export const layoutValues = {
   navigation: {
     inlineMin: 761,
   },
   sidebar: {
-    preferred: 15,
+    preferred: 19.8,
     min: 13,
     drawerMax: 22.5,
     resizeHitWidth: 0.5,
@@ -596,9 +821,9 @@ export const layoutValues = {
     wideMax: 65,
   },
   team: {
-    inlineMin: 1200,
-    preferred: 15.5,
-    drawerMax: 18.75,
+    inlineMin: 960,
+    preferred: 20,
+    drawerMax: 20,
   },
   terminal: {
     preferred: 22.5,
@@ -651,9 +876,6 @@ export const layoutValues = {
   },
   legacy_appearance: {
     width600: 600,
-    dimension3: 44,
-    dimension7: 14,
-    dimension11: 240,
     dimension12: 16,
   },
   legacy_Analytics: {
@@ -663,23 +885,10 @@ export const layoutValues = {
   legacy_Usage: {
     width600: 600,
   },
-  legacy_account_tiles: {
-    width760: 760,
-  },
-  legacy_accounts: {
-    width600: 600,
-    dimension28: 220,
-  },
   legacy_ExecutionSettings: {
     width760: 760,
   },
-  legacy_execution_settings: {
-    width760: 760,
-  },
   legacy_session_activity: {
-    width760: 760,
-  },
-  legacy_subagent_concurrency_control: {
     width760: 760,
   },
   legacy_chat_controls: {
@@ -689,9 +898,6 @@ export const layoutValues = {
   legacy_claude_settings: {
     width420: 420,
   },
-  legacy_empty_chat_settings: {
-    width760: 760,
-  },
   legacy_message_info: {
     width761: 761,
     width760: 760,
@@ -700,17 +906,8 @@ export const layoutValues = {
   legacy_file_diff: {
     width480: 480,
   },
-  legacy_message_queue: {
-    width600: 600,
-  },
-  legacy_model_picker: {
-    width360: 360,
-  },
   legacy_project_directory_picker: {
     dimension59: 220,
-  },
-  legacy_project_settings: {
-    width760: 760,
   },
   legacy_prompt_navigation: {
     width760: 760,
@@ -722,9 +919,6 @@ export const layoutValues = {
   legacy_radio_chat: {
     width600: 600,
     dimension68: 900,
-  },
-  legacy_realtime_voice: {
-    dimension70: 100,
   },
   legacy_rich_preview: {
     width480: 480,
@@ -739,26 +933,8 @@ export const layoutValues = {
   legacy_Workspace: {
     width760: 760,
   },
-  legacy_background_controls: {
-    width600: 600,
-  },
-  legacy_team_chats: {
-    width640: 640,
-    width760: 760,
-    dimension89: 850,
-  },
-  legacy_sidebar_projects: {
-    dimension94: 24,
-  },
-  legacy_team_navigation: {
-    width760: 760,
-    dimension97: 44,
-  },
   legacy_terminal_dock: {
     width650: 650,
-  },
-  legacy_primitives: {
-    width760: 760,
   },
   legacy_chatPrefetch: {
     width760: 760,
@@ -777,12 +953,123 @@ export const layoutValues = {
     minInset: 44,
     statusReserve: 112,
   },
+  legacy_main_App: {
+    query91b57f15: 60,
+    query78cb11fd: 79.8,
+  },
+  legacy_main_appearance: {
+    query0e42fa00: 760,
+  },
+  legacy_main_components_Analytics: {
+    dimensiond0f63a09: 320,
+    dimensiondf2f2974: 320,
+  },
+  legacy_main_components_Usage: {
+    query92701797: 47.5,
+    queryfcb67465: 28,
+  },
+  legacy_main_components_account_tiles: {
+    query0bafbd4a: 47.5,
+  },
+  legacy_main_components_accounts: {
+    query452cba01: 37.5,
+    query0bafbd4a: 47.5,
+    querya3ae2bbc: 22,
+  },
+  legacy_main_components_agents_ChatSettingsDialog: {
+    query7e044896: 48,
+  },
+  legacy_main_components_agents_chat_settings_dialog: {
+    querye51eafe3: 26,
+  },
+  legacy_main_components_conversation_conversation_chrome: {
+    query8bab4189: 16,
+    query6c130e71: 47.5,
+    query5394e189: 22.5,
+    query0128cfe9: 70,
+    querye8430685: 35,
+    query81a3452d: 20,
+    query7269dc35: 20,
+    query77d11aa9: 24,
+    layerfb8580ce: 2,
+  },
+  legacy_main_components_conversation_empty_chat_settings: {
+    query8f4fa78f: 60,
+    querya4e09282: 45,
+    query99ff479c: 32,
+    query62cf757f: 25,
+    query736651e9: 56.25,
+    query7269dc35: 20,
+    queryd3296c98: 30,
+    queryeafc0baa: 22,
+    query038ea2d3: 18,
+    query7a8a99ac: 35,
+  },
+  legacy_main_components_message_queue: {
+    query452cba01: 37.5,
+  },
+  legacy_main_components_project_settings: {
+    query0bafbd4a: 47.5,
+  },
+  legacy_main_components_shell_background_controls: {
+    query452cba01: 37.5,
+  },
+  legacy_main_components_shell_messages_team_chats: {
+    query2083ad3a: 40,
+  },
+  legacy_main_components_sidebar_FleetFixtures: {
+    query1c9cc1e2: 47.5,
+  },
+  legacy_main_components_sidebar_projects: {
+    query1c9cc1e2: 47.5,
+  },
+  legacy_main_components_studio_settings: {
+    query0bafbd4a: 47.5,
+  },
+  legacy_main_components_supervisor_recovery_notice: {
+    query6c130e71: 47.5,
+  },
+  legacy_main_components_ui_primitives: {
+    query0bafbd4a: 47.5,
+  },
+  legacy_main_servers_MultiServerApp: {
+    query3b784b5e: 760,
+  },
+  legacy_main_servers_server_settings: {
+    query0bafbd4a: 47.5,
+    query3e8f17d2: 22.5,
+    query6d39bd72: 30,
+  },
+  legacy_main_servers_servers: {
+    query0e42fa00: 760,
+    layere6065e37: 201,
+    layer34ae5ec1: 200,
+    dimension112ab710: 270,
+  },
+  legacy_main_studio_preferences: {
+    query0e42fa00: 760,
+    query54b57a2c: 761,
+  },
+  legacy_main_style: {
+    query77c333e4: 761,
+    query0e42fa00: 760,
+    query3e49ac8b: 1199,
+    query2823da6c: 761,
+    query54b57a2c: 761,
+    layere34829b4: 400,
+    dimension21ad4b4e: 320,
+  },
+  legacy_main_workspace_layout: {
+    query3686b719: 660,
+    query4348d9ef: 60,
+    layer653d125a: 300,
+  },
 } as const;
 export const layoutQueries = {
   navigationCompact: "(width < 761px)",
   navigationInline: "(width >= 761px)",
-  teamCompact: "(width < 1200px)",
-  teamInline: "(width >= 1200px)",
+  teamCompact: "(width < 960px)",
+  teamInline: "(width >= 960px)",
   toolsCompact: "(width < 900px)",
   teamToggleCompact: "(width <= 660px)",
 } as const;

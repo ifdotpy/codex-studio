@@ -1,4 +1,6 @@
+@import "./layout/layout-contract.generated.css";
 :root {
+  /* Desktop fleet column; the closed terminal dock consumes the same width. */
   --studio-sidebar-width: var(--layout-sidebar-preferred);
 }
 
@@ -16,46 +18,6 @@
 
 /* layout-query: navigation.inlineMin >= */
 @media (width >= 761px) {
-  .workspace-header,
-  .workspace-header:has(.execution-menu) {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    align-items: center;
-    column-gap: 8px;
-    row-gap: 0;
-    height: auto;
-    min-height: 0;
-    padding: 4px var(--chat-gutter);
-  }
-  .conversation-heading {
-    grid-area: 1 / 1;
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    min-width: 0;
-    padding-block: 0;
-  }
-  #conversation-title {
-    min-width: 0;
-    flex: 1;
-    font-size: 15px;
-    line-height: 1.5;
-  }
-  #conversation-status {
-    flex-shrink: 0;
-    max-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    margin-top: 0;
-    font-size: var(--studio-text-meta);
-    line-height: 1.5;
-  }
-  .workspace-header #team-toggle {
-    grid-area: 1 / 2;
-    height: 30px;
-    min-width: 0;
-  }
   .workspace-shortcuts {
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -105,18 +67,9 @@
   #conversation .agent-phase {
     margin-block: 4px;
   }
-  #sidebar {
-    width: var(--studio-sidebar-width);
-    flex-basis: var(--studio-sidebar-width);
-    padding-inline: 16px;
-  }
-  .desktop-inset-titlebar .sidebar-header {
-    padding-inline: 0;
-  }
 }
 
-/* layout-query: tools.teamToggleContainerMax <= */
-@container workspace (width <= 660px) {
+@container workspace (max-width: 660px) {
   .workspace-header #team-toggle {
     padding-inline: 8px;
   }
@@ -125,7 +78,7 @@
 /* layout-query: navigation.inlineMin < */
 @media (width < 761px) {
   .workspace {
-    --chat-gutter: var(--layout-spacing-compact-gutter);
+    --chat-gutter: 14px;
   }
   #conversation :is(#composer, .message-queue) {
     width: calc(100% - 2 * var(--chat-gutter));
@@ -162,13 +115,6 @@
   )
   :is(#chat-settings-toggle, #team-toggle) {
   display: none;
-}
-/* layout-query: navigation.inlineMin < */
-@media (width < 761px) {
-  header.workspace-header.simple-workspace-header {
-    gap: 1px;
-    padding-inline: 6px;
-  }
 }
 .conversation-header-tools-menu {
   position: relative;
@@ -272,15 +218,12 @@
 .conversation-header-tools-menu[data-compact="yes"][open]
   > .conversation-header-tools-content {
   position: fixed;
-  z-index: var(--layout-layers-popover);
+  z-index: 300;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
-  width: min(
-    var(--layout-tools-menu-max),
-    calc(100vw - 2 * var(--layout-tools-menu-gutter))
-  );
+  width: min(360px, calc(100vw - 16px));
   max-height: min(620px, 78dvh);
   overflow: auto;
   padding: 8px;
@@ -302,12 +245,6 @@
 /* Routine activity changes within one toolbar slot, not the transcript. */
 .message-bottom .message-delivery-status {
   margin: 0;
-}
-/* layout-query: navigation.inlineMin >= */
-@media (width >= 761px) {
-  #conversation-status {
-    width: 120px;
-  }
 }
 /* layout-query: navigation.inlineMin < */
 @media (width < 761px) {
@@ -341,7 +278,7 @@
   top: 100%;
   right: 0;
   width: max-content;
-  max-width: min(var(--chat-text-width), calc(100% - 2 * var(--chat-gutter)));
+  max-width: min(680px, calc(100vw - 48px));
   height: 24px;
   margin: 0;
   line-height: 24px;
@@ -355,27 +292,41 @@
   font-size: inherit;
   line-height: inherit;
 }
-
-/* Keep navigation and status on one header row. */
-header.workspace-header.simple-workspace-header {
-  flex-wrap: nowrap;
-}
-.simple-workspace-header .conversation-meta {
-  flex-wrap: nowrap;
-  overflow: hidden;
-}
-.header-mode-summary {
-  flex-shrink: 0;
-  color: var(--muted);
-  font-size: var(--studio-text-meta);
-  white-space: nowrap;
-}
 .menu-action-help {
   display: block;
   color: var(--muted);
   font-size: var(--studio-text-meta);
   line-height: 1.4;
   white-space: normal;
+}
+
+/* Contains the conversation and Team without affecting the sidebar or terminal. */
+.workspace-frame {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  container: workspace-frame / inline-size;
+}
+
+/* Team is mounted as a Mantine modal sheet below the dock threshold.
+   The full content-width preference (--studio-content-column) remains owned
+   by studio-preferences.css and applies inside the remaining conversation. */
+.workspace-frame > #team {
+  display: none;
+  border-inline-start: var(--studio-border-width) solid var(--line);
+}
+
+/* 60rem = --studio-form-max + --studio-team-size. Container conditions
+   cannot consume custom properties; TeamPanel.layout.test.mjs checks parity. */
+@container workspace-frame (min-width: 60rem) {
+  .workspace-frame > #team {
+    display: flex;
+    position: static;
+    flex: 0 0 var(--studio-team-size);
+    inline-size: var(--studio-team-size);
+  }
 }
 
 /* The measured row excludes the navigation column exactly once. */

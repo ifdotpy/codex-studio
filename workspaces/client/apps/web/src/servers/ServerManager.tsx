@@ -1,4 +1,4 @@
-import { serverRows, relativeSeen, type ServerStatus } from "./serverRows";
+import { serverRows, relativeSeen } from "./serverRows";
 import { localDateTime } from "../local-time";
 import { ActionButton, SettingsSection } from "../components/ui/primitives";
 import DiscoveryPanel from "./DiscoveryPanel";
@@ -9,10 +9,11 @@ import type { ResourceConnectionState } from "../sync/resourceEvents";
 import { parseInvitation } from "./pairing";
 import {
   Badge,
+  CopyButton,
+  DataList,
   Group,
   Modal,
   Text,
-  Tooltip,
   TextInput,
   Textarea,
 } from "@mantine/core";
@@ -25,8 +26,9 @@ import {
   type StudioServer,
 } from "./registry";
 import { LOCAL_ALIAS_KEY, defaultServerAlias } from "./serverAliases";
-import ServerNameEditor from "./ServerNameEditor";
-import ServerAliasEditor from "./ServerAliasEditor";
+import ServerDetailsEditor from "./ServerDetailsEditor";
+import { Check, Copy } from "lucide-react";
+import "./server-settings.css";
 import { serverCredentialAdapter } from "./transport";
 import type { ServerNavigation, ServerAccount } from "./navigation";
 export default function ServerManager({
@@ -59,53 +61,58 @@ export default function ServerManager({
   const [revoke, setRevoke] = useState<{ id: string; label: string } | null>(
     null,
   );
-  const colors: Record<ServerStatus, string> = {
-    Active: "green",
-    Online: "green",
-    Paired: "blue",
-    Discovered: "blue",
-    Unreachable: "gray",
-    Offline: "gray",
-    Revoked: "red",
-    "Update required": "orange",
-  };
   const request = useRef<{ origin: string; code: string; id: string } | null>(
     null,
   );
   return (
-    <div className="studio-settings-panel" role="region" aria-label="Servers">
-      {localEnabled && (
-        <DiscoveryPanel
-          snapshot={discovery.snapshot}
-          busy={discovery.busy}
-          error={discovery.error}
-          actions={discovery.actions}
-        />
-      )}
-      {discovery.retry && (
-        <ActionButton
-          actionRole="secondary"
-          onClick={discovery.retry}
-          disabled={discovery.busy}
-        >
-          Retry saved request
-        </ActionButton>
-      )}
-      {localEnabled && !!discovery.snapshot?.identityAlerts?.length && (
-        <SettingsSection title="Server identity changes">
-          {discovery.snapshot.identityAlerts.map((alert) => (
-            <Group
-              key={`${alert.oldServerId}:${alert.newServerId}`}
-              justify="space-between"
-              wrap="nowrap"
-              role="alert"
-            >
-              <Text size="sm">{alert.detail}</Text>
-            </Group>
-          ))}
-        </SettingsSection>
-      )}
-      <SettingsSection title="Servers">
+    <div
+      className="studio-settings-panel server-settings"
+      role="region"
+      aria-label="Servers"
+    >
+      <SettingsSection
+        title="Servers"
+        action={
+          <ActionButton
+            actionRole="secondary"
+            onClick={() => setManual(!manual)}
+          >
+            {manual ? "Hide manual pairing" : "Add with an invitation"}
+          </ActionButton>
+        }
+      >
+        {localEnabled && (
+          <DiscoveryPanel
+            snapshot={discovery.snapshot}
+            busy={discovery.busy}
+            error={discovery.error}
+            actions={discovery.actions}
+          />
+        )}
+        {discovery.retry && (
+          <ActionButton
+            actionRole="secondary"
+            onClick={discovery.retry}
+            disabled={discovery.busy}
+          >
+            Retry saved request
+          </ActionButton>
+        )}
+        {localEnabled && !!discovery.snapshot?.identityAlerts?.length && (
+          <SettingsSection title="Server identity changes">
+            {discovery.snapshot.identityAlerts.map((alert) => (
+              <Group
+                key={`${alert.oldServerId}:${alert.newServerId}`}
+                justify="space-between"
+                wrap="nowrap"
+                role="alert"
+              >
+                <Text size="sm">{alert.detail}</Text>
+              </Group>
+            ))}
+          </SettingsSection>
+        )}
+
         <div className="server-card-grid">
           {serverRows(servers, discovery.snapshot?.servers || [], statuses).map(
             ({ server, peer, registered, status }) => {
@@ -115,7 +122,7 @@ export default function ServerManager({
                 (server.id === "local" ? discovery.checkedAt : null);
               const name =
                 server.id === "local" && discovery.snapshot?.localLabel
-                  ? `${discovery.snapshot.localLabel} (this computer)`
+                  ? discovery.snapshot.localLabel
                   : server.label;
               const summary = navigation[server.id];
               const accounts = accountsByServer[server.id] || [];
@@ -123,171 +130,209 @@ export default function ServerManager({
                 (account) => account.provider === "codex",
               ).length;
               const claudeCount = accounts.length - codexCount;
-              const displayStatus =
+              const state =
+                status === "Offline" ||
+                status === "Unreachable" ||
                 status === "Revoked"
-                  ? "Revoked"
-                  : status === "Discovered"
-                    ? "Discovered"
-                    : statuses[server.id] === "live" || server.id === "local"
-                      ? "Active"
-                      : status === "Update required"
-                        ? "Other version"
-                        : "Unreachable";
+                  ? "error"
+                  : status === "Update required" ||
+                      statuses[server.id] === "connecting"
+                    ? "paused"
+                    : status === "Active" || status === "Online"
+                      ? "working"
+                      : "none";
+              const displayStatus =
+                status === "Update required"
+                  ? "Other version"
+                  : server.id === "local" && state === "working"
+                    ? "This computer"
+                    : status;
               const system =
                 summary?.system === "Darwin"
                   ? "macOS"
                   : summary?.system || "OS unavailable";
-              const host = new URL(
+              const address =
                 server.id === "local"
                   ? discovery.snapshot?.localOrigin || server.origin
-                  : server.origin,
-              ).host;
+                  : server.origin;
+              const alias =
+                discovery.snapshot?.aliases?.[server.id] ||
+                registered?.alias ||
+                (server.id === "local" ? localServer().alias : undefined) ||
+                defaultServerAlias(server);
               return (
                 <article
                   key={server.id}
                   data-settings-server={server.id}
                   className="server-settings-card"
+                  data-studio-state={state}
                 >
                   <header className="server-settings-card-header">
                     <div>
-                      <h3>{name}</h3>
-                      <Badge size="xs" color={colors[status]} variant="light">
-                        {displayStatus}
+                      <h3 title={name}>{name}</h3>
+                      <Badge
+                        size="xs"
+                        variant="default"
+                        className="server-settings-alias"
+                      >
+                        {alias}
                       </Badge>
+                      <span className="server-settings-status">
+                        {displayStatus}
+                      </span>
                     </div>
-                    <Group gap="xs" justify="flex-end">
-                      {server.id !== "local" && registered && (
-                        <ActionButton
-                          actionRole="secondary"
-                          size="xs"
-                          aria-label="Remove from this UI"
-                          disabled={busy}
-                          onClick={() => {
-                            setError("");
-                            try {
-                              setServerExcluded(server.id, true);
-                            } catch (failure) {
-                              setError((failure as Error).message);
-                              return;
-                            }
-                            setBusy(true);
-                            void serverCredentialAdapter()
-                              .forget(registered)
-                              .then(() => remove(registered))
-                              .catch((failure) =>
-                                setError(
-                                  failure instanceof Error
-                                    ? failure.message
-                                    : String(failure),
-                                ),
-                              )
-                              .finally(() => setBusy(false));
-                          }}
+                    <div className="server-settings-seen">
+                      {seen == null ? (
+                        "Seen unavailable"
+                      ) : (
+                        <time
+                          title={localDateTime(new Date(seen * 1000))}
+                          dateTime={new Date(seen * 1000).toISOString()}
                         >
-                          Remove
-                        </ActionButton>
+                          <span className="server-settings-seen-label">
+                            Seen{" "}
+                          </span>
+                          {relativeSeen(seen)}
+                        </time>
                       )}
-                      {!registered && peer?.paired && localEnabled && (
-                        <ActionButton
-                          actionRole="secondary"
-                          size="xs"
-                          disabled={busy || discovery.busy}
-                          onClick={() => discovery.addAgain(peer.id)}
-                        >
-                          Add to this UI
-                        </ActionButton>
-                      )}
-                      {peer?.paired && localEnabled && (
-                        <ActionButton
-                          actionRole="secondary"
-                          color="red"
-                          size="xs"
-                          disabled={busy || discovery.busy}
-                          onClick={() =>
-                            setRevoke({ id: peer.id, label: peer.label })
-                          }
-                        >
-                          Revoke
-                        </ActionButton>
-                      )}
-                      {peer?.status === "revoked" &&
-                        !peer.replacedBy &&
-                        localEnabled && (
-                          <ActionButton
-                            actionRole="secondary"
-                            size="xs"
-                            disabled={busy || discovery.busy}
-                            onClick={() => discovery.allowAgain(peer.id)}
-                          >
-                            Allow again
-                          </ActionButton>
-                        )}
-                    </Group>
+                    </div>
                   </header>
-                  <dl className="server-settings-facts">
-                    <div>
-                      <dt>Host</dt>
-                      <dd>
-                        {system} · {host}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Accounts</dt>
-                      <dd>
-                        Codex {codexCount} · Claude {claudeCount}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Agents running</dt>
-                      <dd>
-                        {summary?.agentsRunning ?? (summary?.busy ? 1 : 0)}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Seen</dt>
-                      <dd>
-                        {seen == null ? (
-                          "Unavailable"
-                        ) : (
-                          <Tooltip label={localDateTime(new Date(seen * 1000))}>
-                            <time
-                              dateTime={new Date(seen * 1000).toISOString()}
+                  <DataList
+                    className="server-settings-facts"
+                    orientation="vertical"
+                    size="xs"
+                    gap="xs"
+                  >
+                    <DataList.Item className="server-settings-host">
+                      <DataList.ItemLabel>Host</DataList.ItemLabel>
+                      <DataList.ItemValue>
+                        <span className="server-settings-system">{system}</span>
+                        <span
+                          className="server-settings-address"
+                          title={address}
+                        >
+                          {address}
+                        </span>
+                        <CopyButton value={address}>
+                          {({ copied, copy }) => (
+                            <ActionButton
+                              size="compact-xs"
+                              onClick={copy}
+                              aria-label="Copy server address"
+                              title={copied ? "Copied" : "Copy server address"}
                             >
-                              {relativeSeen(seen)}
-                            </time>
-                          </Tooltip>
-                        )}
-                      </dd>
-                    </div>
-                  </dl>
-                  <small>
-                    {server.id === "local"
-                      ? discovery.snapshot?.localOrigin || server.origin
-                      : server.origin}
-                  </small>
-                  {(registered || (localEnabled && peer?.paired)) &&
-                    status !== "Revoked" && (
-                      <ServerNameEditor
-                        value={
-                          server.id === "local"
-                            ? discovery.snapshot?.localLabel || server.label
-                            : server.label
-                        }
-                        disabled={busy || discovery.busy}
-                        save={(label) => discovery.setName(server.id, label)}
-                      />
+                              {copied ? (
+                                <Check size={14} />
+                              ) : (
+                                <Copy size={14} />
+                              )}
+                            </ActionButton>
+                          )}
+                        </CopyButton>
+                      </DataList.ItemValue>
+                    </DataList.Item>
+                    <DataList.Item>
+                      <DataList.ItemLabel>Accounts</DataList.ItemLabel>
+                      <DataList.ItemValue className="server-settings-account-counts">
+                        <span>Codex {codexCount}</span>
+                        <span>Claude {claudeCount}</span>
+                      </DataList.ItemValue>
+                    </DataList.Item>
+                    <DataList.Item>
+                      <DataList.ItemLabel>Agents running</DataList.ItemLabel>
+                      <DataList.ItemValue>
+                        {summary?.agentsRunning ?? (summary?.busy ? 1 : 0)}
+                      </DataList.ItemValue>
+                    </DataList.Item>
+                  </DataList>
+                  <Group
+                    gap="xs"
+                    justify="flex-end"
+                    className="server-settings-actions"
+                  >
+                    {server.id !== "local" && registered && (
+                      <ActionButton
+                        actionRole="secondary"
+                        size="xs"
+                        aria-label="Remove from this UI"
+                        title="Removal affects this UI. Revoke a manual UI connection in that server's settings."
+                        disabled={busy}
+                        onClick={() => {
+                          setError("");
+                          try {
+                            setServerExcluded(server.id, true);
+                          } catch (failure) {
+                            setError((failure as Error).message);
+                            return;
+                          }
+                          setBusy(true);
+                          void serverCredentialAdapter()
+                            .forget(registered)
+                            .then(() => remove(registered))
+                            .catch((failure) =>
+                              setError(
+                                failure instanceof Error
+                                  ? failure.message
+                                  : String(failure),
+                              ),
+                            )
+                            .finally(() => setBusy(false));
+                        }}
+                      >
+                        Remove
+                      </ActionButton>
                     )}
+                    {!registered && peer?.paired && localEnabled && (
+                      <ActionButton
+                        actionRole="secondary"
+                        size="xs"
+                        disabled={busy || discovery.busy}
+                        onClick={() => discovery.addAgain(peer.id)}
+                      >
+                        Add to this UI
+                      </ActionButton>
+                    )}
+                    {peer?.paired && localEnabled && (
+                      <ActionButton
+                        actionRole="secondary"
+                        color="red"
+                        size="xs"
+                        disabled={busy || discovery.busy}
+                        onClick={() =>
+                          setRevoke({ id: peer.id, label: peer.label })
+                        }
+                      >
+                        Revoke
+                      </ActionButton>
+                    )}
+                    {peer?.status === "revoked" &&
+                      !peer.replacedBy &&
+                      localEnabled && (
+                        <ActionButton
+                          actionRole="secondary"
+                          size="xs"
+                          disabled={busy || discovery.busy}
+                          onClick={() => discovery.allowAgain(peer.id)}
+                        >
+                          Allow again
+                        </ActionButton>
+                      )}
+                  </Group>
                   {(registered || server.id === "local" || peer?.paired) && (
-                    <ServerAliasEditor
-                      value={
-                        discovery.snapshot?.aliases?.[server.id] ||
-                        registered?.alias ||
-                        (server.id === "local"
-                          ? localServer().alias
-                          : undefined) ||
-                        defaultServerAlias(server)
+                    <ServerDetailsEditor
+                      name={
+                        server.id === "local"
+                          ? discovery.snapshot?.localLabel || server.label
+                          : server.label
                       }
-                      used={[
+                      alias={alias}
+                      saveName={
+                        (registered || (localEnabled && peer?.paired)) &&
+                        status !== "Revoked"
+                          ? (label) => discovery.setName(server.id, label)
+                          : undefined
+                      }
+                      usedAliases={[
                         ...new Set([
                           ...servers
                             .filter((row) => row.id !== server.id)
@@ -303,7 +348,7 @@ export default function ServerManager({
                         ]),
                       ]}
                       disabled={busy || discovery.busy}
-                      save={async (alias) => {
+                      saveAlias={async (alias) => {
                         if (
                           localEnabled &&
                           (server.id === "local" || peer?.paired)
@@ -326,26 +371,12 @@ export default function ServerManager({
           )}
         </div>
       </SettingsSection>
-      <Text size="xs" c="dimmed">
-        Removal affects this UI. Revoke a manual UI connection in that server's
-        settings.
-      </Text>
       {error && (
         <p className="studio-preferences-error" role="alert">
           {error}
         </p>
       )}
-      <SettingsSection
-        title="Manual pairing"
-        action={
-          <ActionButton
-            actionRole="secondary"
-            onClick={() => setManual(!manual)}
-          >
-            {manual ? "Hide manual pairing" : "Add with an invitation"}
-          </ActionButton>
-        }
-      >
+      <section className="server-settings-pairing" aria-label="Manual pairing">
         {manual && (
           <>
             {servers.some((server) => server.id === "local") && (
@@ -458,7 +489,7 @@ export default function ServerManager({
             </form>
           </>
         )}
-      </SettingsSection>
+      </section>
       <Modal
         opened={!!revoke}
         onClose={() => setRevoke(null)}

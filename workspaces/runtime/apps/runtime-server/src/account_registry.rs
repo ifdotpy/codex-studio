@@ -286,13 +286,13 @@ struct EnsureRequest {
     >,
 }
 
-pub(crate) type LaunchFuture<'a> =
+pub type LaunchFuture<'a> =
     Pin<Box<dyn Future<Output = Result<AccountLaunch, WorkerError>> + Send + 'a>>;
 type WorkerCompletion = Pin<Box<dyn Future<Output = (String, u64)> + Send>>;
 type CommandCapacityWaiter = Pin<Box<dyn Future<Output = (String, bool)> + Send>>;
-pub(crate) type AccountTargetPage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
+pub type AccountTargetPage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
 
-pub(crate) struct AccountLaunch {
+pub struct AccountLaunch {
     pub factory: Arc<dyn ProviderTaskFactory>,
     pub options: OpenOptions,
     pub config: SessionTaskConfig,
@@ -303,11 +303,11 @@ pub(crate) struct AccountLaunch {
 
 /// Launch resolution runs outside transactions. A successful return owns the
 /// attachment until the worker consumes it; loss of a receipt never retries input.
-pub(crate) trait AccountLauncher: Send + Sync {
+pub trait AccountLauncher: Send + Sync {
     fn launch(&self, account: String) -> LaunchFuture<'_>;
 }
 
-pub(crate) struct AccountRegistry {
+pub struct AccountRegistry {
     store: Arc<RuntimeStore>,
     bridge: StoreBridge,
     launcher: Arc<dyn AccountLauncher>,
@@ -331,8 +331,8 @@ pub(crate) struct AccountRegistry {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct AccountRegistryConfig {
-    pub(crate) accepted_archive_tick_enabled: bool,
+pub struct AccountRegistryConfig {
+    pub accepted_archive_tick_enabled: bool,
 }
 
 impl Default for AccountRegistryConfig {
@@ -344,7 +344,7 @@ impl Default for AccountRegistryConfig {
 }
 
 #[derive(Clone)]
-pub(crate) struct AccountSessionBroker {
+pub struct AccountSessionBroker {
     sessions: Arc<
         RwLock<
             BTreeMap<
@@ -358,13 +358,19 @@ pub(crate) struct AccountSessionBroker {
     changes: AccountChangeSignal,
 }
 
+impl Default for AccountSessionBroker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AccountSessionBroker {
-    #[cfg(test)]
-    pub(crate) fn new() -> Self {
+    #[doc(hidden)]
+    pub fn new() -> Self {
         Self::new_with_change_signal(AccountChangeSignal::new())
     }
 
-    pub(crate) fn new_with_change_signal(changes: AccountChangeSignal) -> Self {
+    pub fn new_with_change_signal(changes: AccountChangeSignal) -> Self {
         let (ensure_sender, ensure_receiver) = mpsc::channel(32);
         Self {
             sessions: Arc::default(),
@@ -374,7 +380,7 @@ impl AccountSessionBroker {
         }
     }
 
-    pub(crate) fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+    pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.changes.subscribe()
     }
 
@@ -424,7 +430,7 @@ impl AccountSessionBroker {
             .map(|session| session.scope().clone())
     }
 
-    pub(crate) fn callback_reply_port(
+    pub fn callback_reply_port(
         &self,
     ) -> Arc<dyn studio_runtime_services::callback_runtime::CallbackReplyPort> {
         Arc::new(BrokerCallbackReplyPort {
@@ -891,8 +897,7 @@ async fn dispatch_request(
 }
 
 impl AccountRegistry {
-    #[cfg(test)]
-    #[allow(dead_code)] // Integration tests use this constructor from a separate crate.
+    #[doc(hidden)]
     pub async fn new(
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
@@ -951,21 +956,19 @@ impl AccountRegistry {
         })
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)] // Integration tests compile this module in a separate crate.
+    #[doc(hidden)]
     pub fn set_radio_clock_for_test(&mut self, clock: Arc<dyn Fn() -> f64 + Send + Sync>) {
         self.radio_clock = clock;
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)] // Integration tests compile this module in a separate crate.
+    #[doc(hidden)]
     pub async fn close_worker_for_test(&mut self, account: &str) -> Result<(), WorkerError> {
         let worker = self.workers.get_mut(account).ok_or(WorkerError::Closed)?;
         worker.cancel();
         worker.completion().await
     }
 
-    pub(crate) async fn start(&mut self, account: &str) -> Result<(), WorkerError> {
+    pub async fn start(&mut self, account: &str) -> Result<(), WorkerError> {
         if self.workers.contains_key(account) {
             return Ok(());
         }
@@ -1821,7 +1824,7 @@ async fn wake_page_after(
         .await?)
 }
 
-pub(crate) fn target_page(
+pub fn target_page(
     db: &rusqlite::Connection,
     after_account: &str,
     after_agent: &BTreeMap<String, String>,

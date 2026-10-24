@@ -1,63 +1,13 @@
-:root {
-  --raised: #26262e;
-  --inset: #141418;
-  --hover: #ffffff08;
-  --accent: #a5b4fc;
-}
-:root[data-mantine-color-scheme="light"] {
-  color-scheme: light;
-  --surface: #ffffff;
-  --sidebar: #eef0f5;
-  --studio-warning: #9c4b00;
-  --studio-warning-hover: #783900;
-  --raised: #eef0f5;
-  --inset: #f7f8fa;
-  --hover: #18244708;
-  --line: #18244724;
-  --muted: #596174;
-  --text: #222737;
-  --accent: #3b4fc4;
-}
-.workspace-header.simple-workspace-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 56px;
-  height: auto;
-  padding: 8px 16px;
-}
-.simple-workspace-header .conversation-heading {
-  display: block;
-  flex: 1;
-  min-width: 0;
-}
-.simple-workspace-header #conversation-status {
-  max-width: none;
-}
-.simple-workspace-header #sidebar-toggle,
-.simple-workspace-header #team-toggle,
 #team-close {
   display: inline-flex;
 }
-.simple-workspace-header > button {
+.chat-settings-panel
+  .execution-menu
+  .mantine-Button-section[data-position="right"] {
+  position: static;
+  width: 14px;
+  margin-left: 8px;
   flex-shrink: 0;
-}
-/* Status and agent mode share one line so the header stays one row high. */
-.conversation-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  margin-top: 2px;
-}
-.conversation-meta #conversation-status {
-  width: auto;
-  min-width: 0;
-  max-width: none;
-  margin-top: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .workspace-mode-badge {
   flex: 0 0 auto;
@@ -70,22 +20,6 @@
   letter-spacing: 0.04em;
   line-height: 1.4;
   white-space: nowrap;
-}
-.conversation-meta .agent-mode-control {
-  flex-wrap: wrap;
-  flex-shrink: 1;
-  margin-top: 0;
-}
-.conversation-meta .agent-mode-apply {
-  min-height: 20px;
-  margin-block: -4px;
-  padding: 2px 4px;
-  border: 0;
-  color: var(--muted);
-}
-.conversation-meta .agent-mode-apply:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--hover);
 }
 
 .chat-settings-panel {
@@ -175,62 +109,9 @@
   padding: 0 8px;
   margin-left: -8px;
 }
-.sidebar-nav {
-  display: grid;
-  gap: 2px;
-  flex-shrink: 0;
-}
-.sidebar-nav-button {
-  width: 100%;
-  height: auto;
-  min-height: 34px;
-  padding-block: 4px;
-  padding-inline: 10px;
-  color: var(--text);
-}
-.sidebar-nav-button .mantine-Button-inner {
-  justify-content: flex-start;
-}
-/* layout-query: navigation.inlineMin < */
-@media (width < 761px) {
-  .workspace-header.simple-workspace-header {
-    gap: 2px;
-    padding: 8px;
-    flex-wrap: wrap;
-  }
-  .workspace-header.simple-workspace-header {
-    flex-wrap: nowrap;
-  }
-  .simple-workspace-header .conversation-heading {
-    flex: 1 1 0;
-  }
-  .conversation-meta .agent-mode-apply {
-    min-height: 32px;
-    margin-block: -8px;
-  }
-  .conversation-meta .agent-mode-note {
-    display: none;
-  }
-  .simple-workspace-header #messages-toggle {
-    padding-inline: 8px;
-  }
-  .simple-workspace-header .messages-toggle-label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-  }
-  .simple-workspace-header #team-toggle {
-    min-height: 36px;
-  }
-}
 :root[data-mantine-color-scheme="light"] body {
   color: var(--text);
-  background: var(--surface);
-}
-:root[data-mantine-color-scheme="light"] a {
-  color: var(--accent);
+  background: var(--studio-page);
 }
 :root[data-mantine-color-scheme="light"]
   :is(
@@ -276,10 +157,10 @@
 :root[data-mantine-color-scheme="light"] :is(code, pre) {
   color: var(--text);
 }
-:root[data-mantine-color-scheme="light"]
-  :is(.attention-count, .team-button-count) {
+/* Counts name quantities; adjacent icons and labels carry their state. */
+:is(.attention-count, .team-button-count) {
   background: var(--raised);
-  color: var(--accent);
+  color: var(--studio-text-on-raised);
 }
 .chat-settings-panel #project {
   width: 100%;
@@ -307,22 +188,56 @@
   background: transparent;
 }
 
-/* Phone controls must work with a finger, including menus and disclosures. */
-/* layout-query: navigation.inlineMin < */
-@media (width < 761px) {
-  html
-    body
-    :is(button, summary, [role="option"], [role="tab"]):not(
-      .account-limits-dot-target
-    ) {
-    /* Compact component sizes cannot reduce the phone's minimum target. */
-    min-width: 44px !important;
-    min-height: 44px !important;
+/* Mantine owns compound controls: steppers remain half of the input height. */
+@media (pointer: coarse) {
+  :root {
+    --studio-action-size: var(--studio-touch-target);
+    --studio-voice-control-size: var(--studio-touch-target);
+  }
+  .mantine-Button-root {
+    --button-height-xs: var(--studio-touch-target);
+    --button-height-sm: var(--studio-touch-target);
+    --button-height-md: var(--studio-touch-target);
+    --button-height-compact-xs: var(--studio-touch-target);
+    --button-height-compact-sm: var(--studio-touch-target);
+    --button-height-compact-md: var(--studio-touch-target);
+    --button-height-compact-lg: var(--studio-touch-target);
+    --button-height-compact-xl: var(--studio-touch-target);
+    --button-height: var(--studio-touch-target);
+  }
+  .mantine-ActionIcon-root {
+    --ai-size-xs: var(--studio-touch-target);
+    --ai-size-sm: var(--studio-touch-target);
+    --ai-size-md: var(--studio-touch-target);
+    --ai-size-lg: var(--studio-touch-target);
+  }
+  .mantine-CloseButton-root {
+    --cb-size-xs: var(--studio-touch-target);
+    --cb-size-sm: var(--studio-touch-target);
+    --cb-size-md: var(--studio-touch-target);
+    --cb-size-lg: var(--studio-touch-target);
+    --cb-size: var(--studio-touch-target);
+    min-inline-size: var(--studio-touch-target);
+    min-block-size: var(--studio-touch-target);
+  }
+  /* Menu has no size variable; the hit region grows without scaling its icon. */
+  .mantine-Menu-item {
+    min-inline-size: var(--studio-touch-target);
+    min-block-size: var(--studio-touch-target);
+  }
+  .mantine-Input-wrapper {
+    --input-height-xs: var(--studio-touch-target);
+    --input-height-sm: var(--studio-touch-target);
+    --input-height-md: var(--studio-touch-target);
+    --input-height: var(--studio-touch-target);
+  }
+  :is(summary, [role="option"], [role="tab"]) {
+    min-block-size: var(--studio-touch-target);
     touch-action: manipulation;
   }
-  html body :is(input:not([type="checkbox"]):not([type="radio"]), select) {
-    min-height: 44px !important;
-  }
+}
+
+@media (max-width: 760px) {
   html body summary {
     align-content: center;
   }
@@ -339,37 +254,6 @@
   html body :is(.mantine-Modal-close, .mantine-Drawer-close) {
     flex-shrink: 0;
   }
-
-  /* The status keeps its space after the mode control moves to settings. */
-  .simple-workspace-header .conversation-meta {
-    gap: 0;
-  }
-  .simple-workspace-header #conversation-status {
-    flex: 1;
-  }
-  .simple-workspace-header #messages-toggle {
-    width: 44px;
-    padding: 0;
-    position: relative;
-  }
-  .simple-workspace-header #messages-toggle .mantine-Button-section {
-    margin: 0;
-  }
-  .simple-workspace-header #messages-toggle .attention-count {
-    position: absolute;
-    top: 1px;
-    right: 1px;
-    min-width: 14px;
-    padding-inline: 3px;
-    font-size: var(--studio-text-meta);
-  }
-  .simple-workspace-header #team-toggle {
-    width: 44px;
-  }
-  .workspace-header.simple-workspace-header:has(#back-lead) {
-    height: auto;
-    min-height: 100px;
-  }
   .chat-settings-panel .agent-mode-control {
     margin: 0;
   }
@@ -381,31 +265,6 @@
     min-width: 0;
     white-space: normal;
     overflow-wrap: anywhere;
-  }
-
-  /* Visible project actions need dedicated space instead of a hover overlay. */
-  #sidebar .projects-heading .mantine-ActionIcon-root,
-  #sidebar .project-tree-action,
-  #sidebar .project-chats .row-actions {
-    width: 44px;
-    height: 44px;
-  }
-  #sidebar .project-tree-action:has(+ .project-tree-action) {
-    right: 48px;
-  }
-  #sidebar .project-tree-toggle {
-    margin-right: 48px;
-  }
-  #sidebar
-    .project-tree-heading:has(.project-tree-action + .project-tree-action)
-    .project-tree-toggle {
-    margin-right: 92px;
-  }
-  #sidebar .project-chats .chat-row {
-    padding-right: 52px;
-  }
-  #sidebar .sidebar-nav-button {
-    height: 44px;
   }
 
   #team :is(.worker-heading, .team-filters) {
@@ -431,8 +290,6 @@
     flex-direction: column;
     height: 100%;
     max-height: 100%;
-    padding-top: var(--mobile-safe-area-top, env(safe-area-inset-top));
-    padding-bottom: var(--mobile-safe-area-bottom, env(safe-area-inset-bottom));
   }
   html body .mantine-Drawer-header {
     flex-shrink: 0;
@@ -450,21 +307,7 @@
     height: 100%;
   }
   html body .mantine-Modal-inner {
-    padding-top: max(
-      16px,
-      var(--mobile-safe-area-top, env(safe-area-inset-top))
-    );
-    padding-bottom: max(
-      16px,
-      var(--mobile-safe-area-bottom, env(safe-area-inset-bottom))
-    );
-  }
-  html body .mantine-Modal-content {
-    max-height: calc(
-      var(--mobile-viewport-height, 100dvh) -
-        max(16px, var(--mobile-safe-area-top, env(safe-area-inset-top))) -
-        max(16px, var(--mobile-safe-area-bottom, env(safe-area-inset-bottom)))
-    );
+    padding-block: 16px;
   }
   .execution-dropdown,
   .model-picker-options {
@@ -493,17 +336,6 @@
   }
   .workspace-messages .workspace-heading {
     padding-inline: 14px;
-  }
-}
-
-/* layout-query: navigation.inlineMin >= */
-@media (width >= 761px) {
-  .simple-workspace-header :is(.mantine-ActionIcon-root, .mantine-Button-root) {
-    height: var(--studio-action-size);
-    min-height: var(--studio-action-size);
-  }
-  .simple-workspace-header .mantine-ActionIcon-root {
-    width: var(--studio-action-size);
   }
 }
 
@@ -541,42 +373,6 @@
   color: var(--muted);
   margin-left: 12px;
 }
-.composer-context-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 8px 8px;
-  flex: 1 1 180px;
-  min-width: 0;
-  flex-wrap: nowrap;
-}
-.composer-context-row .execution-menu {
-  height: 28px;
-  padding: 0 6px;
-  font-size: 12px;
-  flex: 0 1 auto;
-  min-width: 0;
-}
-.composer-context-values {
-  display: flex;
-  flex: 1 1 0;
-  gap: 12px;
-  color: var(--muted);
-  font-size: 12px;
-  min-width: 0;
-}
-.composer-context-values > span {
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 240px;
-}
-.composer-timing {
-  font-size: 12px;
-  color: var(--muted);
-}
 .message-queue-preview:not(.expanded) {
   -webkit-line-clamp: 1;
 }
@@ -594,14 +390,6 @@
   gap: 8px;
 }
 @media (max-width: 600px) {
-  .composer-submit-actions {
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-  .composer-timing {
-    width: 100%;
-    text-align: right;
-  }
   .message-queue-row {
     flex-wrap: nowrap;
   }
@@ -619,18 +407,6 @@
   .message-queue-expand {
     font-size: 12px !important;
   }
-}
-
-.composer-tools {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 1 1 0;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-.composer-tools .attachment-list {
-  flex-basis: 100%;
 }
 .outbox-controls {
   display: flex;
@@ -691,43 +467,6 @@
 .chat-settings-panel #project {
   border: 0;
   background: transparent;
-}
-.composer-tools .composer-context-row {
-  margin: 0;
-  padding: 0;
-  gap: 8px;
-}
-.composer-tools .execution-menu {
-  padding: 0 6px;
-  height: 30px;
-  min-height: 30px;
-  border: 0;
-  background: transparent;
-}
-.composer-tools .execution-menu .mantine-Button-section {
-  display: flex;
-  margin-left: 4px;
-}
-.chat-settings-panel
-  .execution-menu
-  .mantine-Button-section[data-position="right"],
-.composer-tools .execution-menu .mantine-Button-section[data-position="right"] {
-  position: static;
-  width: 14px;
-  margin-left: 8px;
-  flex-shrink: 0;
-}
-
-.conversation-title-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sidebar-shared-chat .mantine-Button-label {
-  display: block;
-  min-width: 0;
-  text-overflow: ellipsis;
 }
 
 /* In Chat settings the agent setup trigger reads as one full-width field:
@@ -820,8 +559,7 @@
   color: var(--mantine-color-dimmed);
   padding: 8px 0;
 }
-/* layout-query: navigation.inlineMin < */
-@media (width < 761px) {
+@media (max-width: 760px) {
   .chat-settings-rows .execution-menu,
   .chat-settings-rows .agent-mode-limit-label input {
     min-height: 44px;

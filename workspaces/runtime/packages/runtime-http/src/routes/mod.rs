@@ -49,6 +49,7 @@ mod sync;
 mod sync_delta;
 mod sync_documents;
 mod sync_stream;
+pub(crate) use sync_stream::SyncSessions;
 mod system_reads;
 mod terminals;
 mod tool_requests;

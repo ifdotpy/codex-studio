@@ -14,6 +14,7 @@ import {
   readLayoutContract,
   validateContract,
   generateLayoutContract,
+  renderContract,
 } from "./generate-layout-contract.mjs";
 const contract = readLayoutContract();
 const check = (path, source) =>
@@ -42,7 +43,7 @@ test("rejects an added query consumer", () => {
 });
 test("rejects invalid units and duplicate generated owners", () => {
   const bad = structuredClone(contract);
-  bad.tokens["navigation.inlineMin"].unit = "em";
+  bad.tokens["navigation.inlineMin"].unit = "pt";
   assert.throws(() => validateContract(bad), /navigation.inlineMin/);
   const duplicate = structuredClone(contract);
   duplicate.tokens["workspace-panel.min"] =
@@ -112,10 +113,12 @@ test("the shell row does not share a class with Workspace list rows", () => {
     "utf8",
   );
   const shellClass = app.match(
-    /className="([\w-]+)" ref=\{rowLayout.rowRef\}/,
+    /className="([\w -]+)"\s+ref=\{rowLayout.rowRef\}/,
   )?.[1];
   assert.ok(shellClass, "The measured shell row exists");
-  assert.doesNotMatch(workspaceCss, new RegExp(`\\.${shellClass}(?![\\w-])`));
+  assert.ok(shellClass.split(" ").includes("workspace-layout-row"));
+  for (const name of shellClass.split(" "))
+    assert.doesNotMatch(workspaceCss, new RegExp(`\\.${name}(?![\\w-])`));
 });
 
 test("rejects duplicate JSON owner keys before parsing erases them", () => {
@@ -133,4 +136,18 @@ test("rejects duplicate JSON owner keys before parsing erases them", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("preserves font-relative component thresholds in generated metadata", () => {
+  const relative = structuredClone(contract);
+  relative.tokens["fixture.column"] = {
+    value: 47.5,
+    unit: "em",
+    purpose: "Font-relative component fit",
+  };
+  const output = renderContract(relative);
+  assert.match(
+    output["src/layout/layout-contract.generated.css"],
+    /--layout-fixture-column: 47.5em;/,
+  );
 });

@@ -1,29 +1,24 @@
 import { ActionButton } from "../ui/primitives";
 import { ArrowLeft } from "lucide-react";
-import type { ReactNode } from "react";
 import type { Agent } from "../../types";
-import ChatStatus from "../agents/ChatStatus";
-import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import WorkspaceBadge from "./WorkspaceBadge";
+import { ChatServerLine } from "../../servers/ProjectChatRows";
+import "../conversation/conversation-chrome.css";
 
 export type ConversationTitleProps = {
   title: string;
   agent?: Agent;
-  indicator?: ChatIndicator;
-  statusText: string;
-  projectPrefix?: string;
+  serverAlias?: string;
+  serverOffline?: boolean;
   onBack?: () => void;
-  modeControl?: ReactNode;
 };
 
 export default function ConversationTitle({
   title,
   agent,
-  indicator,
-  statusText,
-  projectPrefix = "",
+  serverAlias,
+  serverOffline = false,
   onBack,
-  modeControl,
 }: ConversationTitleProps) {
   return (
     <div className="conversation-heading">
@@ -33,26 +28,31 @@ export default function ConversationTitle({
           size="compact-xs"
           leftSection={<ArrowLeft size={13} />}
           id="back-lead"
+          aria-label="Back to main agent"
+          title="Back to main agent"
           onClick={onBack}
         >
-          Back to main agent
+          <span className="conversation-back-label">Back to main agent</span>
         </ActionButton>
       )}
       <h1 id="conversation-title" title={title}>
-        <ChatStatus
-          provider={agent?.provider ?? undefined}
-          model={agent?.model ?? undefined}
-          status={indicator}
-        />
         <span className="conversation-title-text">{title}</span>
       </h1>
       <div className="conversation-meta">
-        <span id="conversation-status" title={`${projectPrefix}${statusText}`}>
-          {projectPrefix}
-          {statusText}
-        </span>
+        {serverAlias && (
+          <span
+            className="conversation-server"
+            data-offline={serverOffline}
+            aria-label={serverOffline ? `${serverAlias} offline` : undefined}
+          >
+            <ChatServerLine
+              provider={agent?.provider ?? undefined}
+              alias={serverAlias}
+              offline={serverOffline}
+            />
+          </span>
+        )}
         <WorkspaceBadge agent={agent} />
-        {modeControl}
       </div>
     </div>
   );

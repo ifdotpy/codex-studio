@@ -45,15 +45,15 @@ fn complete_python_outputs_match_checked_snapshots() {
                 let request =
                     CompletedTurn::from_record(case.get("request").unwrap_or(&case["actor"]))
                         .expect("request");
-                // The constructor consumes the record read back by the real Python function harness.
+                // Eligibility uses the supplied actor independently of the frozen output.
                 let snapshot = CompletionSnapshot::from_record(
-                    &expected["actor"],
+                    &case["actor"],
                     case.get("committed")
                         .and_then(Value::as_bool)
                         .unwrap_or(true),
                 )
                 .expect("snapshot");
-                json!({"actor":expected["actor"],"eligible":snapshot.eligible(&request)})
+                json!({"actor":case["actor"],"eligible":snapshot.eligible(&request)})
             }
             "history" => {
                 let records = stored["checkpoints"].as_array().expect("checkpoints");
@@ -85,16 +85,20 @@ fn complete_python_outputs_match_checked_snapshots() {
                 }
             }
             "recovery" => {
-                if matches!(
-                    case["operations"][0]["phase"].as_str(),
-                    Some("completed" | "failed")
-                ) {
-                    continue;
-                }
                 let snapshot =
                     OperationSnapshot::from_records(&stored["operations"][0], &stored["actor"])
                         .expect("operation");
                 let writes = snapshot.recover(10.0);
+                if matches!(
+                    case["operations"][0]["phase"].as_str(),
+                    Some("completed" | "failed")
+                ) {
+                    // Terminal recovery now preserves both inputs; the frozen legacy
+                    // outputs interrupted the actor even for a terminal operation.
+                    assert_eq!(writes.operation, case["operations"][0], "{}", case["name"]);
+                    assert_eq!(writes.agent, case["actor"], "{}", case["name"]);
+                    continue;
+                }
                 json!({"operation":writes.operation,"agent":writes.agent})
             }
             "source" => CheckpointsRepository::workspace_source(&stored["actor"]),
@@ -180,25 +184,27 @@ struct Fixture {
     repo: PathBuf,
 }
 impl Fixture {
-    async fn new() -> Self {
+    async fn new(git_repository: bool) -> Self {
         let root = temporary();
         let repo = root.path().join("repo");
         std::fs::create_dir(&repo).expect("repo");
-        git(&repo, &["init", "-b", "main"]);
-        std::fs::write(repo.join("file"), "base\n").expect("file");
-        git(&repo, &["add", "file"]);
-        git(
-            &repo,
-            &[
-                "-c",
-                "user.name=Fixture",
-                "-c",
-                "user.email=fixture@example.invalid",
-                "commit",
-                "-m",
-                "base",
-            ],
-        );
+        if git_repository {
+            git(&repo, &["init", "-b", "main"]);
+            std::fs::write(repo.join("file"), "base\n").expect("file");
+            git(&repo, &["add", "file"]);
+            git(
+                &repo,
+                &[
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "commit",
+                    "-m",
+                    "base",
+                ],
+            );
+        }
         let state = root.path().join("state");
         std::fs::create_dir(&state).expect("state");
         let actor_json = include_str!("workspace_operations/actor.json");
@@ -290,7 +296,7 @@ fn git(cwd: &Path, args: &[&str]) -> String {
 
 #[tokio::test]
 async fn committed_turn_captures_once_preserving_user_index_and_files() {
-    let f = Fixture::new().await;
+    let f = Fixture::new(true).await;
     std::fs::write(f.repo.join("file"), "dirty\n").expect("dirty file");
     let index = std::fs::read(f.repo.join(".git/index")).expect("index");
     let request = CompletedTurn::from_record(&f.actor).expect("request");
@@ -321,7 +327,7 @@ async fn committed_turn_captures_once_preserving_user_index_and_files() {
 
 #[tokio::test]
 async fn late_completion_and_missing_receipt_write_nothing() {
-    let f = Fixture::new().await;
+    let f = Fixture::new(true).await;
     let request = CompletedTurn::from_record(&f.actor).expect("request");
     f.patch("epoch", json!(2)).await;
     let before = f.snapshot();
@@ -352,7 +358,7 @@ async fn late_completion_and_missing_receipt_write_nothing() {
 
 #[tokio::test]
 async fn failed_capture_and_restart_release_only_the_owned_reservation() {
-    let f = Fixture::new().await;
+    let f = Fixture::new(false).await;
     let snapshot =
         CheckpointsRepository::workspace_snapshot(&f.store.test_reader().expect("db"), f.id())
             .expect("snapshot")
@@ -393,7 +399,7 @@ async fn failed_capture_and_restart_release_only_the_owned_reservation() {
 
 #[tokio::test]
 async fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpoint() {
-    let f = Fixture::new().await;
+    let f = Fixture::new(true).await;
     let request = CompletedTurn::from_record(&f.actor).expect("request");
     // Every write transaction is forced to fail before its durable boundary.
     for (name, table, event, when) in [
@@ -458,7 +464,7 @@ async fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpo
 
 #[tokio::test]
 async fn stale_source_at_publication_cannot_attach_checkpoint() {
-    let f = Fixture::new().await;
+    let f = Fixture::new(false).await;
     let snapshot =
         CheckpointsRepository::workspace_snapshot(&f.store.test_reader().expect("db"), f.id())
             .expect("snapshot")
@@ -520,7 +526,7 @@ async fn restart_after_each_committed_capture_stage_never_repeats_git() {
             store,
             actor,
             repo,
-        } = Fixture::new().await;
+        } = Fixture::new(true).await;
         let request = CompletedTurn::from_record(&actor).expect("request");
         let id = format!("checkpoint:{}", request.checkpoint_id());
         let snapshot = CheckpointsRepository::workspace_snapshot(
@@ -595,7 +601,7 @@ async fn restart_after_each_committed_capture_stage_never_repeats_git() {
 
 #[tokio::test]
 async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_exact_result() {
-    let f = Fixture::new().await;
+    let f = Fixture::new(false).await;
     let mut expected = ticket();
     expected.agent = f.id().into();
     let operation = json!({"id":expected.operation,"kind":"branch","agent":f.id(),"phase":"provider_pending",

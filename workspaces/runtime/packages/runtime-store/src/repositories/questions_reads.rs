@@ -8,6 +8,8 @@ use crate::records::{
 use crate::schema::{SchemaRequirements, TableRequirement};
 use rusqlite::Connection;
 
+const AGENT_FAMILY_SQL: &str = "SELECT id,record FROM runtime_agents WHERE root_id=?1 ORDER BY id";
+
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_agents",
@@ -40,7 +42,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 
 #[cfg(test)]
 mod tests {
-    use super::{QuestionsReadsRepository, REQUIREMENTS};
+    use super::{AGENT_FAMILY_SQL, QuestionsReadsRepository, REQUIREMENTS};
     use crate::StoreResult;
     use rusqlite::Connection;
     use serde_json::json;
@@ -113,7 +115,7 @@ mod tests {
         assert_eq!(indexed, scanned);
         for (sql, index) in [
             (
-                "SELECT id,record FROM runtime_agents WHERE root_id=?1",
+                AGENT_FAMILY_SQL,
                 crate::repositories::agent_indexed_reads::ROOT_INDEX,
             ),
             (
@@ -212,9 +214,7 @@ impl QuestionsReadsRepository {
         let Some(owner) = table.get(&AgentId::from(agent_id.to_owned()))? else {
             return Ok(Vec::new());
         };
-        let mut statement = connection.prepare_cached(
-            "SELECT id,record FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 ORDER BY id",
-        )?;
+        let mut statement = connection.prepare_cached(AGENT_FAMILY_SQL)?;
         let rows = statement
             .query_map([owner.root_id.as_ref()], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))

@@ -1,6 +1,11 @@
 // @ts-check
 
 import { spawn } from "node:child_process";
+import { SYNC_PROTOCOL_VERSION } from "../src/generated/api.ts";
+import {
+  SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+  SYNC_STREAM_EVENT_MAX_BYTES,
+} from "../src/generated/sharedValues.ts";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { join, resolve, sep } from "node:path";
@@ -886,6 +891,7 @@ export { browserExecutablePath, waitForFixturePort };
 /** @typedef {import("../src/generated/api").components["schemas"]["SyncPullResponse"]} SyncPullResponse */
 /** @typedef {import("../src/generated/api").components["schemas"]["SyncPullResetResponse"]} SyncPullResetResponse */
 /** @typedef {import("../src/generated/api").components["schemas"]["SyncEntity"]} SyncEntity */
+/** @typedef {import("../src/generated/api").components["schemas"]["AccountRateLimitsDto"]} AccountRateLimitsDto */
 /** @typedef {import("../src/generated/api").components["schemas"]["TranscriptPageResponse"]} TranscriptPageResponse */
 /** @typedef {import("../src/generated/api").components["schemas"]["SyncIdentityResponse"]} SyncIdentityResponse */
 /** @typedef {import("../src/generated/api").components["schemas"]["SyncProtocolResponse"]} SyncProtocolResponse */
@@ -940,19 +946,19 @@ export { browserExecutablePath, waitForFixturePort };
 /** @typedef {Pick<TaskEntityDto, "id" | "turnId" | "agent" | "kind" | "status" | "created" | "finished" | "name" | "command" | "query" | "cwd" | "processId" | "durationMs" | "timeout_ms" | "interactive" | "stdinClosed" | "stdinCloseRequested" | "stdinError" | "cancelRequested" | "exitCode" | "bytes" | "log" | "outputTruncated">} TestTask */
 /** @typedef {Pick<ProjectEntityDto, "homeServerId" | "locations" | "locationsRevision" | "projectAliases" | "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams" | "workerBaseRef" | "workerBaseRevision" | "workerEnvironment" | "workerEnvironmentRevision">} TestProject */
 /** @typedef {Pick<ComplaintEntityDto, "id" | "leadId" | "author" | "authorName" | "leadName" | "title" | "status" | "needsUserResponse" | "created" | "readAt" | "recipient" | "version">} TestComplaint */
-/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], rateLimits: WorkspaceEntityDto["rateLimits"], rateLimitsByAccount: WorkspaceEntityDto["rateLimitsByAccount"], stateDir?: string }} TestRuntimeView */
+/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], rateLimits: AccountRateLimitsDto | null, rateLimitsByAccount: Record<string, AccountRateLimitsDto>, stateDir?: string }} TestRuntimeView */
 /** @typedef {{ token: string, stateDir?: string, chats: ChatEntityDto[], edges: EdgeEntityDto[], runtime: TestRuntimeView, threads: TestAgent[] }} TestStateView */
 /** @typedef {Omit<TestStateView, "token" | "threads">} EntityFixtureState */
 
 /** @typedef {Record<string, JsonValue>} JsonObject */
 /** @typedef {{ collection: string, id: string, value: JsonValue }} EntityEnvelope */
 
-/** @typedef {{ scope?: string, after?: number, limit?: number, fresh?: boolean, initialHigh?: number, reset?: boolean, floor?: number, maxSeq?: number, generation?: number, priorityId?: string, tombstones?: SyncEntity[], transcript?: TranscriptPageResponse, transcriptSeq?: number, drafts?: SyncEntity[], documents?: SyncEntity[] }} EntityPullFixtureOptions */
+/** @typedef {{ scope?: string, after?: number, limit?: number, fresh?: boolean, initialHigh?: number, reset?: boolean, floor?: number, maxSeq?: number, generation?: number, priorityId?: string, tombstones?: SyncEntity[], transcript?: TranscriptPageResponse, transcriptSeq?: number, drafts?: import("../src/generated/api").components["schemas"]["SyncDocument"][], documents?: SyncEntity[] }} EntityPullFixtureOptions */
 
 /** @type {number} */
 const ENTITY_PAGE_SIZE = 500;
 /** @type {ResourceChangeEvent["protocol"]} */
-const RESOURCE_STREAM_PROTOCOL = 3;
+const RESOURCE_STREAM_PROTOCOL = SYNC_PROTOCOL_VERSION;
 
 async function readJson(response, path) {
   if (!response.ok)
@@ -999,9 +1005,9 @@ export async function readTestState(origin) {
     } else {
       fresh = false;
       for (const document of page.documents) {
-        if (document._deleted) continue;
-        /** @type {JsonValue} */
-        const decoded = JSON.parse(document.payload);
+        if (!("op" in document)) throw new Error("Expected an entity change");
+        if (document.op === "delete") continue;
+        const decoded = document;
         if (
           !isJsonObject(decoded) ||
           typeof decoded.collection !== "string" ||
@@ -1094,15 +1100,14 @@ export async function readTestState(origin) {
         get("workspace", "current")?.sidebarOrder
       );
     },
-    get rateLimits() {
-      return /** @type {WorkspaceEntityDto["rateLimits"]} */ (
-        get("workspace", "current")?.rateLimits
+    // Rate limits are per-account `rateLimit` entities, as in the renderer projection.
+    get rateLimitsByAccount() {
+      return /** @type {Record<string, AccountRateLimitsDto>} */ (
+        Object.fromEntries(entities.get("rateLimit") ?? [])
       );
     },
-    get rateLimitsByAccount() {
-      return /** @type {WorkspaceEntityDto["rateLimitsByAccount"]} */ (
-        get("workspace", "current")?.rateLimitsByAccount
-      );
+    get rateLimits() {
+      return this.rateLimitsByAccount.default ?? null;
     },
     get stateDir() {
       return /** @type {string | undefined} */ (
@@ -1129,8 +1134,6 @@ const entityWorkspaceKeys = [
   "nativeNotices",
   "peerTeamsVersion",
   "projectOrganizationVersion",
-  "rateLimits",
-  "rateLimitsByAccount",
   "sidebarOrder",
   "stateDir",
   "tasksHistoryLimit",
@@ -1177,9 +1180,13 @@ function pickJsonKeys(value, keys) {
   return picked;
 }
 
-/** @param {SyncEntity} document @returns {SyncEntity} */
+/**
+ * The fixture projection selects fields by collection. The real-server parity
+ * witness validates these dynamically projected DTOs against the schema owner.
+ * @param {JsonObject} document @returns {SyncEntity}
+ */
 function generatedSyncEntity(document) {
-  return document;
+  return /** @type {SyncEntity} */ (document);
 }
 
 /** @param {SyncPullResponse | SyncPullResetResponse} response @returns {SyncPullResponse | SyncPullResetResponse} */
@@ -1328,6 +1335,14 @@ function entityValuesFromSnapshot(snapshot) {
   append("work", runtime.work);
   append("chat", snapshot.chats);
   append("edge", snapshot.edges);
+  const limits = isJsonObject(runtime.rateLimitsByAccount)
+    ? runtime.rateLimitsByAccount
+    : isJsonObject(runtime.rateLimits)
+      ? { default: runtime.rateLimits }
+      : {};
+  for (const [account, value] of Object.entries(limits))
+    if (isJsonObject(value))
+      values.push({ collection: "rateLimit", id: account, value });
   /** @type {Record<string, JsonValue>} */
   const workspaceSource = { ...runtime, stateDir: snapshot.stateDir };
   values.push({
@@ -1352,8 +1367,8 @@ export function syncIdentityFixture(
 /** @param {{ unixSocket?: boolean }} [options] @returns {SyncProtocolResponse} */
 export function syncProtocolFixture({ unixSocket = false } = {}) {
   return {
-    protocolVersion: 3,
-    supportedVersions: [3],
+    protocolVersion: SYNC_PROTOCOL_VERSION,
+    supportedVersions: [SYNC_PROTOCOL_VERSION],
     capabilities: [
       "pull",
       "stream",
@@ -1361,6 +1376,8 @@ export function syncProtocolFixture({ unixSocket = false } = {}) {
       "entityReset",
       "typedResources",
       "tokenRates",
+      "entitySeedExcluded:canvasAgentThreads",
+      "entitySeedExcluded:canvasSpawnEdges",
       ...(unixSocket ? ["unixSocket"] : []),
     ],
     scopes: ["state:entities:v1", "transcript:<agent-id>", "drafts"],
@@ -1368,8 +1385,8 @@ export function syncProtocolFixture({ unixSocket = false } = {}) {
     streamEndpoint: "/api/sync/stream",
     maxEntityPage: 500,
     maxOtherPage: 100,
-    maxStreamDocuments: 100,
-    maxStreamBytes: 1_048_576,
+    maxStreamDocuments: SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+    maxStreamBytes: SYNC_STREAM_EVENT_MAX_BYTES,
   };
 }
 
@@ -1400,7 +1417,7 @@ export async function readFixtureSyncContract(origin) {
   if (
     !/^[a-f0-9]{32}$/.test(identity.workspaceId) ||
     identity.syncProtocol !== 2 ||
-    protocol.protocolVersion !== 3
+    protocol.protocolVersion !== SYNC_PROTOCOL_VERSION
   )
     throw new Error("Fixture server returned an invalid sync contract");
   return { identity, protocol };
@@ -1410,6 +1427,8 @@ export async function readFixtureSyncContract(origin) {
 
 /** @type {WeakMap<EntityFixtureState, MutableEntityPullState>} */
 const nodeEntityPullStates = new WeakMap();
+/** @type {WeakMap<EntityFixtureState, Map<string, (update: import("../src/generated/api").components["schemas"]["SyncSubscriptionRequest"]) => void>>} */
+const nodeSyncSessions = new WeakMap();
 
 /** @returns {MutableEntityPullState} */
 function createMutableEntityPullState() {
@@ -1426,51 +1445,43 @@ function reconcileMutableEntityPullState(pullState, snapshot) {
   const nextById = new Map(
     entityValuesFromSnapshot(snapshot).map((entity) => [
       `entity:${entity.collection}:${entity.id}`,
-      entity,
+      structuredClone(entity),
     ]),
   );
-  for (const [id, previous] of pullState.documents) {
-    if (previous._deleted) continue;
-    const next = nextById.get(id);
+  for (const [key, previous] of pullState.documents) {
+    if (previous.op === "delete") continue;
+    const next = nextById.get(key);
     if (!next) {
-      const previousEntity = JSON.parse(previous.payload);
       pullState.documents.set(
-        id,
+        key,
         generatedSyncEntity({
-          ...previous,
+          op: "delete",
+          collection: previous.collection,
+          id: previous.id,
           seq: ++pullState.maxSeq,
-          payload: JSON.stringify({
-            collection: previousEntity.collection,
-            id: previousEntity.id,
-            value: {},
-          }),
-          _deleted: true,
         }),
       );
       continue;
     }
-    const payload = JSON.stringify(next);
-    if (payload !== previous.payload)
+    if (JSON.stringify(next.value) !== JSON.stringify(previous.value))
       pullState.documents.set(
-        id,
+        key,
         generatedSyncEntity({
-          ...previous,
+          op: "upsert",
+          ...next,
           seq: ++pullState.maxSeq,
-          payload,
-          _deleted: false,
         }),
       );
   }
-  for (const [id, entity] of nextById) {
-    const previous = pullState.documents.get(id);
-    if (!previous || previous._deleted)
+  for (const [key, entity] of nextById) {
+    const previous = pullState.documents.get(key);
+    if (!previous || previous.op === "delete")
       pullState.documents.set(
-        id,
+        key,
         generatedSyncEntity({
-          id,
+          op: "upsert",
+          ...entity,
           seq: ++pullState.maxSeq,
-          payload: JSON.stringify(entity),
-          _deleted: false,
         }),
       );
   }
@@ -1527,7 +1538,7 @@ export function accountTileButton(page, label, accountName) {
  * Serve the same sync routes from a small Node HTTP fixture backend.
  * @param {import("node:http").IncomingMessage} request
  * @param {import("node:http").ServerResponse} response
- * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, versionedResources?: boolean, epoch?: string, onPull?: () => void, onStreamReady?: (notify: (resources: ResourceRef[], reason?: "change" | "reconnect") => void, resources: ResourceRef[]) => (() => void) | void }} fixture
+ * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, versionedResources?: boolean, epoch?: string, onPull?: () => void, subscriptionUpdate?: import("../src/generated/api").components["schemas"]["SyncSubscriptionRequest"], onStreamReady?: (notify: (resources: ResourceRef[], reason?: "change" | "reconnect") => void, resources: ResourceRef[]) => (() => void) | void }} fixture
  * @returns {boolean} whether this was an /api/sync route
  */
 export function handleEntitySyncFixtureRequest(request, response, fixture) {
@@ -1539,6 +1550,29 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
     response.end(JSON.stringify(value));
   };
+  if (url.pathname === "/api/sync/subscriptions" && request.method === "POST") {
+    const apply = (update) => {
+      const session = nodeSyncSessions
+        .get(fixture.snapshot)
+        ?.get(update.sessionId);
+      if (!session) {
+        response.statusCode = 410;
+        json({ error: "Unknown sync session; reopen the stream" });
+        return;
+      }
+      session(update);
+      json({ gen: update.gen });
+    };
+    if (fixture.subscriptionUpdate) apply(fixture.subscriptionUpdate);
+    else {
+      let body = "";
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => apply(JSON.parse(body)));
+    }
+    return true;
+  }
   if (url.pathname === "/api/sync/identity") {
     json(identity);
     return true;
@@ -1599,8 +1633,10 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
       "X-Accel-Buffering": "no",
     });
+    const sessionId = randomUUID();
+    response.write(protocol3SseEvent("session", { sessionId }));
     response.write(apiSchemaHandshakeSse());
-    /** @param {string} name @param {ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent} value */
+    /** @param {string} name @param {ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent | import("../src/generated/api").components["schemas"]["SyncSubscriptionAck"]} value */
     const writeFrame = (name, value) => {
       eventId += 1;
       response.write(
@@ -1625,6 +1661,8 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     const rates = {
       epoch,
       protocol: RESOURCE_STREAM_PROTOCOL,
+      snapshot: true,
+      removed: [],
       records: [],
       revision,
       workspaceId: identity.workspaceId,
@@ -1644,6 +1682,35 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     const heartbeatTimer = setInterval(heartbeat, 5000);
     heartbeatTimer.unref?.();
     response.once("close", () => clearInterval(heartbeatTimer));
+    let sessions = nodeSyncSessions.get(fixture.snapshot);
+    if (!sessions)
+      nodeSyncSessions.set(fixture.snapshot, (sessions = new Map()));
+    sessions.set(sessionId, (update) => {
+      const removed = new Set(
+        update.remove.map((resource) => JSON.stringify(resource)),
+      );
+      const next = requestedResources.filter(
+        (resource) => !removed.has(JSON.stringify(resource)),
+      );
+      const keys = new Set(next.map((resource) => JSON.stringify(resource)));
+      for (const resource of update.add) {
+        if (!keys.has(JSON.stringify(resource))) next.push(resource);
+        keys.add(JSON.stringify(resource));
+      }
+      // Preserve the array observed by the caller's subscription assertions.
+      requestedResources.splice(0, requestedResources.length, ...next);
+      writeFrame("subscriptions", { gen: update.gen });
+      if (update.add.length)
+        writeFrame("resources", {
+          ...initial,
+          resources: update.add,
+          resourceVersions: fixture.versionedResources
+            ? withResourceVersions(update.add)
+            : [],
+          revision: ++revision,
+        });
+    });
+    response.once("close", () => sessions.delete(sessionId));
     const cleanup = fixture.onStreamReady?.((resources, reason = "change") => {
       if (response.destroyed) return;
       /** @type {ResourceChangeEvent} */
@@ -1720,12 +1787,12 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
       unavailable: null,
     };
     const availableDocuments = [
-      generatedSyncEntity({
+      {
         id: scope,
         seq: highWatermark,
         payload: JSON.stringify(transcript),
         _deleted: false,
-      }),
+      },
     ];
     const page = availableDocuments
       .filter((document) => document.seq > after)
@@ -1748,10 +1815,9 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
   const values = entityValuesFromSnapshot(snapshot);
   const baseDocuments = values.map((entity, index) =>
     generatedSyncEntity({
-      id: `entity:${entity.collection}:${entity.id}`,
+      op: "upsert",
+      ...entity,
       seq: index + 1,
-      payload: JSON.stringify(entity),
-      _deleted: false,
     }),
   );
   const tombstones = options.tombstones ?? [];
@@ -1773,13 +1839,17 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
   let eligible = documents.filter(
     (document) =>
       document.seq > after &&
-      (!document._deleted || document.seq > floor) &&
-      (!fresh || !document._deleted || document.seq > initialHigh),
+      (document.op !== "delete" || document.seq > floor) &&
+      (!fresh || document.op !== "delete" || document.seq > initialHigh),
   );
   if (after === 0 && fresh && options.priorityId) {
     eligible = eligible.sort((left, right) => {
-      const priority = `entity:agent:${options.priorityId}`;
-      return Number(right.id === priority) - Number(left.id === priority);
+      return (
+        Number(
+          right.collection === "agent" && right.id === options.priorityId,
+        ) -
+        Number(left.collection === "agent" && left.id === options.priorityId)
+      );
     });
   }
   const page = eligible.slice(0, limit);
@@ -1840,7 +1910,7 @@ export function validateSyncPullRequest(requestUrl) {
     return {
       ok: false,
       status: 400,
-      body: { error: "Invalid sync scope" },
+      body: { error: "Invalid request", location: ["query", "scope"] },
     };
   return {
     ok: true,
@@ -1892,7 +1962,7 @@ export async function stubEntityState(page, snapshot, contract) {
   if (
     !/^[a-f0-9]{32}$/.test(identityResponse.workspaceId) ||
     identityResponse.syncProtocol !== 2 ||
-    protocolResponse.protocolVersion !== 3
+    protocolResponse.protocolVersion !== SYNC_PROTOCOL_VERSION
   )
     throw new Error(
       "stubEntityState requires the fixture backend's generated sync contract",

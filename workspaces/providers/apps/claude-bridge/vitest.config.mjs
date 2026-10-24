@@ -1,4 +1,7 @@
 import { fileURLToPath } from "node:url";
+import { scrubAgentEnvironment } from "../../../tooling/apps/repository-checks/gate-config.mjs";
+
+scrubAgentEnvironment(process.env);
 
 export default {
   root: fileURLToPath(new URL(".", import.meta.url)),

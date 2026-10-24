@@ -323,7 +323,11 @@ mod tests {
     fn pull_zero_fills_on_underrun_and_reports_real_count() {
         let playback = Playback::new(8);
         playback.push(&[1.0, 2.0, 3.0]);
-        let mut out = [0.0f32; 5];
+        let mut out = [9.0f32; 5];
+        let guard = playback.samples.lock().expect("queue");
+        assert_eq!(playback.pull(&mut out), 0);
+        assert_eq!(out, [0.0; 5]);
+        drop(guard);
         let written = playback.pull(&mut out);
         assert_eq!(written, 3);
         assert_eq!(out, [1.0, 2.0, 3.0, 0.0, 0.0]);
@@ -368,34 +372,33 @@ mod tests {
     fn concurrent_push_and_pull_preserve_order_and_drop_no_samples_in_flight() {
         let playback = Playback::new(1 << 16);
         let total = 20_000usize;
+        let start = Arc::new(std::sync::Barrier::new(2));
         let producer = {
             let playback = playback.clone();
+            let start = start.clone();
             thread::spawn(move || {
+                start.wait();
                 for chunk in (0..total).collect::<Vec<_>>().chunks(37) {
                     let values: Vec<f32> = chunk.iter().map(|&n| n as f32).collect();
                     playback.push(&values);
                 }
             })
         };
+        start.wait();
         let mut collected = Vec::with_capacity(total);
-        let consumer = {
-            let playback = playback.clone();
-            thread::spawn(move || {
-                let mut out = [0.0f32; 41];
-                loop {
-                    let written = playback.pull(&mut out);
-                    collected.extend_from_slice(&out[..written]);
-                    if collected.len() >= total {
-                        break;
-                    }
-                }
-                collected
-            })
-        };
+        let mut out = [0.0f32; 41];
+        loop {
+            // Observe completion before pulling so an empty final drain cannot race a writer.
+            let finished = producer.is_finished();
+            let written = playback.pull(&mut out);
+            collected.extend_from_slice(&out[..written]);
+            if finished && written == 0 {
+                break;
+            }
+            thread::yield_now();
+        }
         producer.join().unwrap();
-        let collected = consumer.join().unwrap();
         assert_eq!(collected.len(), total);
-        let expected: Vec<f32> = (0..total).map(|n| n as f32).collect();
-        assert_eq!(collected, expected);
+        assert_eq!(collected, (0..total).map(|n| n as f32).collect::<Vec<_>>());
     }
 }

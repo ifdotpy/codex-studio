@@ -122,7 +122,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
         headers: apiSchemaHeaders(),
         body: apiSchemaHandshakeSse(
           protocol3SseEvent("resources", {
-            protocol: 3,
+            protocol: 4,
             workspaceId,
             epoch: "terminal-input",
             revision: 1,

@@ -1,24 +1,37 @@
 # Shared UI foundation
 
+## Change contract
+
+This directory provides presentation primitives. Preserve native controls, accessible
+names, callbacks, disabled states, and all caller behavior. `theme.ts` owns the
+Mantine palette, `studio-theme.css` owns type and surface aliases, and
+`design/layout.css` owns shared geometry. Check the Foundation Storybook stories
+and focused unit tests when changing these contracts.
+
 Import primitives from `./primitives.tsx`. Preserve each caller's
 labels, shortcuts, disabled states, and callbacks.
 
 ## Text and size tokens
 
-- `--studio-text-body`: 14px.
-- `--studio-text-meta`: 12px minimum for dates, status, help, and counts.
-- `--studio-text-code`: 13px for code and command output.
-- `--studio-action-size`: 32px for desktop header and icon buttons.
-- `--studio-warning` and `--studio-warning-hover`: theme-aware warning colors.
+Use the rem scale owned by [`studio-theme.css`](../../studio-theme.css):
+`--studio-text-meta`, `--studio-text-body`, `--studio-text-title`,
+`--studio-text-section`, and `--studio-text-code`. Use weights 400, 500, and 600.
+Apply `.studio-tabular` to counts, costs, limits, and times.
 
-Mantine `xs` is 12px; `sm` and `md` are 14px. Existing custom font preferences
-still apply. Mobile controls retain the existing 44px minimum touch target.
+[`design/layout.css`](../../design/layout.css) owns desktop control sizes and
+the coarse-pointer touch target. Mantine size variables enlarge standalone
+controls; compound NumberInput steppers retain their native proportions.
+`--studio-warning` and `--studio-warning-hover` are scheme-aware warning text.
+
+Mantine `xs` maps to meta; `sm` and `md` map to body. Explicit user font choices
+and sizes still apply. See the [redesign brief](../../../../../../../docs/design/redesign-brief.md)
+for the palette and state contract.
 
 ## Buttons
 
 Use `ActionButton` with `actionRole`:
 
-- `primary`: filled indigo, for one main completion action per surface.
+- `primary`: filled primary theme color, for one main completion action per surface.
 - `secondary`: bordered, opt-in for other form and dialog actions.
 - `quiet` (default): subtle text, for toolbars, headers, sidebars, and navigation.
 - `destructive`: filled red, for a confirmed destructive action.
@@ -57,7 +70,7 @@ PanelHeader uses an h3. Choose a parent heading that keeps the page hierarchy.
 
 ## Menus and dialogs
 
-Mantine Menu dropdowns have a 220px minimum width. Group related actions with
+Mantine Menu dropdowns use `--studio-menu-min` from the shared layout tokens. Group related actions with
 `Menu.Label` when useful. Put `Menu.Divider` between groups. Put destructive
 items in the final group. Keep item roles and accessible names.
 

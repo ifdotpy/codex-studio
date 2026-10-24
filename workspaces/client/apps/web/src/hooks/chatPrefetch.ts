@@ -20,6 +20,7 @@ export function useChatPrefetch(
   data: Snapshot | null,
   opened: string | null,
   workspaceId: string,
+  enabled = true,
 ) {
   const {
     prefetchTranscript,
@@ -39,7 +40,7 @@ export function useChatPrefetch(
   } | null>(null);
 
   useEffect(() => {
-    if (!workspaceId) return;
+    if (!workspaceId || !enabled) return;
     let stopped = false;
     let active = 0;
     let preferred: string | null = null;
@@ -85,6 +86,17 @@ export function useChatPrefetch(
       const stop = watchResourceChanges(
         { kind: "transcript", agentId: id },
         (version) => {
+          // Inline intervals are persisted before this notification is delivered.
+          if (
+            version?.transcriptSequence !== undefined &&
+            (peekTranscript(workspaceId, id)?.seq ?? 0) >=
+              version.transcriptSequence
+          ) {
+            pendingHistory.delete(id);
+            pendingVersions.delete(id);
+            failedHistory.delete(id);
+            return;
+          }
           // Reconnect can echo the cached revision while its refresh is active.
           // A newer revision still queues a followup pull below.
           if (refreshGate.shouldSuppress(id, version)) return;
@@ -276,7 +288,7 @@ export function useChatPrefetch(
       window.removeEventListener("online", stopVisibility);
       window.removeEventListener("offline", stopVisibility);
     };
-  }, [workspaceId, data?.stateDir]);
+  }, [workspaceId, data?.stateDir, enabled]);
 
   useEffect(() => {
     control.current?.changed();

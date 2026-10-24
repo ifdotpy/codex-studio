@@ -1,17 +1,11 @@
-import { createRequire } from "node:module";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect } from "../playwright.mjs";
+import { test, expect, createFixtureViteServer } from "../playwright.mjs";
 
 async function fixture(page) {
   page.on("pageerror", (error) =>
     console.error("Account fixture:", error.message),
   );
   const root = join(import.meta.dirname, "../../");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
-  const evidence = await mkdtemp(join(tmpdir(), "studio-account-names-"));
   const entry = join(root, "account-names-fixture.tsx");
   const accounts = [
     {
@@ -64,22 +58,10 @@ async function fixture(page) {
         path === "/api/accounts" || path === "/api/accounts/name" ? data() : {},
     });
   });
-  const server = await createServer({
+  const server = await createFixtureViteServer({
     configFile: false,
     root,
-    cacheDir: join(evidence, "cache"),
     server: { host: "127.0.0.1", port: 0 },
-    optimizeDeps: {
-      noDiscovery: false,
-      include: [
-        "react",
-        "react/jsx-runtime",
-        "react/jsx-dev-runtime",
-        "react-dom/client",
-        "react-dom",
-        "dexie",
-      ],
-    },
     plugins: [
       {
         name: "account-names-fixture",
@@ -105,10 +87,16 @@ return <MantineProvider theme={theme} forceColorScheme={color}><main style={{pad
       },
     ],
   });
-  await server.listen();
-  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/check`);
+  try {
+    await server.listen();
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/check`,
+    );
+  } catch (error) {
+    await server.close();
+    throw error;
+  }
   return {
-    evidence,
     bodies,
     loseNextResponse: () => {
       loseResponse = true;
@@ -119,11 +107,14 @@ return <MantineProvider theme={theme} forceColorScheme={color}><main style={{pad
 
 test("accounts names save, clear, keys, exact retry, and themes", async ({
   page,
-}) => {
+}, testInfo) => {
   test.setTimeout(90_000);
   const f = await fixture(page);
   try {
     const row = page.locator('[data-account="default"]');
+    await row
+      .getByRole("button", { name: "Limit details for personal@example.com" })
+      .click();
     await row
       .getByRole("button", { name: "Edit name for personal@example.com" })
       .click();
@@ -164,6 +155,9 @@ test("accounts names save, clear, keys, exact retry, and themes", async ({
     expect(f.bodies[1]).toEqual(f.bodies[2]);
     const claude = page.locator('[data-account="work"]');
     await claude
+      .getByRole("button", { name: "Limit details for work@example.com" })
+      .click();
+    await claude
       .getByRole("button", { name: "Edit name for work@example.com" })
       .click();
     await claude
@@ -202,10 +196,6 @@ test("accounts names save, clear, keys, exact retry, and themes", async ({
           () => document.documentElement.scrollWidth <= innerWidth,
         ),
       ).toBe(true);
-      await page.locator(".accounts-list").screenshot({
-        path: join(f.evidence, `accounts-${theme}-${width}.png`),
-        animations: "disabled",
-      });
       if (width === 390 && theme === "dark") {
         await claude
           .getByRole("button", { name: "Edit name for work@example.com" })
@@ -218,18 +208,21 @@ test("accounts names save, clear, keys, exact retry, and themes", async ({
             () => document.documentElement.scrollWidth <= innerWidth,
           ),
         ).toBe(true);
-        await page.locator(".accounts-list").screenshot({
-          path: join(f.evidence, "accounts-edit-dark-390.png"),
-          animations: "disabled",
-        });
         await claude
           .getByRole("button", { name: "Cancel", exact: true })
           .click();
       }
     }
-    console.log(`Account name screenshots: ${f.evidence}`);
   } finally {
-    await f.close();
+    try {
+      if (testInfo.status !== testInfo.expectedStatus)
+        await testInfo.attach("accounts", {
+          body: await page.screenshot(),
+          contentType: "image/png",
+        });
+    } finally {
+      await f.close();
+    }
   }
 });
 
@@ -240,6 +233,9 @@ test("accounts Name Escape keeps the inline manager visible", async ({
   const f = await fixture(page);
   try {
     const manager = page.locator(".accounts-manager-inline");
+    await manager
+      .getByRole("button", { name: "Limit details for personal@example.com" })
+      .click();
     await manager
       .getByRole("button", { name: "Edit name for personal@example.com" })
       .click();

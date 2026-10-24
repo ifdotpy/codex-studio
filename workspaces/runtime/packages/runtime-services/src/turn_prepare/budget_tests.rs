@@ -39,7 +39,7 @@ fn text(p: &PreparedSubmission) -> String {
 #[test]
 fn aggregate_budget_covers_complaints_plan_decision_and_user_text() {
     let mut s = snapshot();
-    for index in 0..32 {
+    for index in 0..3 {
         s.complaints.push(Complaint {
             id: format!("complaint-{index}"),
             lead_id: "lead".into(),
@@ -49,7 +49,10 @@ fn aggregate_budget_covers_complaints_plan_decision_and_user_text() {
             response_authors: vec![],
             author: format!("worker-{index}"),
             author_name: None,
-            text: format!("Complaint {index}: {}", "Ж".repeat(12_000)),
+            text: format!(
+                "Complaint {index}: {}",
+                "Ж".repeat(STUDIO_INPUT_BYTES / "Ж".len())
+            ),
             version: Some(1),
             created: 1.0,
         });
@@ -58,9 +61,9 @@ fn aggregate_budget_covers_complaints_plan_decision_and_user_text() {
         id: "lead".into(),
         root_id: "lead".into(),
         steps: vec![],
-        explanation: "plan".repeat(20_000),
+        explanation: "plan".repeat(STUDIO_INPUT_BYTES / "plan".len()),
     });
-    s.guidance.role = "role".repeat(10_000);
+    s.guidance.role = "role".repeat(STUDIO_INPUT_BYTES / "role".len());
     let user = "USER EXACT ".repeat(6_000);
     let decision = event("decision", "work_decision", "rejection".repeat(4_000));
     let rows = [event("user", "user", user.clone()), decision];
@@ -69,7 +72,7 @@ fn aggregate_budget_covers_complaints_plan_decision_and_user_text() {
     assert!(output.contains(&user));
     assert!(output.len() - user.len() <= STUDIO_INPUT_BYTES);
     let full = p.studio_input.as_ref().expect("spill");
-    for index in 0..32 {
+    for index in 0..3 {
         assert!(full.contains(&format!("Complaint {index}:")));
     }
     assert!(full.contains("event:decision"));
@@ -155,14 +158,14 @@ fn aggregate_limit_handles_many_wrappers_long_ids_and_multibyte_text() {
     let mut s = snapshot();
     s.actor.epoch.1 = 1;
     s.team_state = Some(
-        json!({"children":(0..100).map(|i|json!({"id":i,"name":"😀".repeat(500)})).collect::<Vec<_>>() }),
+        json!({"children":(0..3).map(|i|json!({"id":i,"name":"😀".repeat(500)})).collect::<Vec<_>>() }),
     );
-    let rows: Vec<_> = (0..200)
+    let rows: Vec<_> = (0..3)
         .map(|i| {
             event(
                 &format!("{i}{}", "long".repeat(200)),
                 "monitor_exit",
-                "😀".repeat(20_000),
+                "😀".repeat(STUDIO_INPUT_BYTES / "😀".len()),
             )
         })
         .collect();

@@ -45,6 +45,7 @@ export type SidebarFrameProps = {
   onCompactChange?: (compact: boolean) => void;
   children: ReactNode;
   drawerZIndex?: number;
+  onEntered?: () => void;
 };
 
 export function SidebarFrame(p: SidebarFrameProps) {
@@ -250,6 +251,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
   return (
     <Drawer
       opened={p.opened}
+      onEnterTransitionEnd={p.onEntered}
       onClose={close}
       zIndex={p.drawerZIndex}
       size={`min(${layoutValues.sidebar.drawerMax}rem, 100vw)`}

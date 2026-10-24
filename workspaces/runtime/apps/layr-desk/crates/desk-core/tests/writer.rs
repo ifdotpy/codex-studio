@@ -3,7 +3,7 @@
 
 use anyhow::{bail, Result};
 use desk_core::sign::Signer;
-use desk_core::writer::{self, Bucket, Layr, Summary, Writer, MAX_DEPTH};
+use desk_core::writer::{self, Bucket, Layr, Summary, Writer, FULL_TREE_EVERY, MAX_DEPTH};
 use desk_core::{keys, zst, Policy, Reader, Store, VaultInfo};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -369,27 +369,26 @@ async fn pushes_rebuild_every_state_with_small_deltas() {
 #[tokio::test]
 async fn chains_and_trees_start_again_from_full() {
     let t = Test::new("chains");
-    let writer = t.writer();
+    let writer = t.fake_writer();
     let mut content = source();
-    for n in 1..40 {
+    let last = FULL_TREE_EVERY as usize + 1;
+    for n in 1..=last {
         content.extend(format!("line {n}\n").as_bytes());
         t.layr
             .commit(&format!("s{n}"), &files(&[("a.txt", &content, "100644")]));
         writer.push(&format!("s{n}")).await.unwrap();
-    }
-    let reader = t.reader(false);
-    assert_eq!(
-        read(&reader, None).await,
-        files(&[("a.txt", &content, "100644")])
-    );
-    assert!(reader.files(None).await.unwrap()["a.txt"].3.len() <= MAX_DEPTH + 1);
-    let mut full = Vec::new();
-    for (seq, attempt) in reader.states() {
-        if reader.header(seq, &attempt).await.unwrap().tree == "full" {
-            full.push(seq);
+        if n == MAX_DEPTH + 1 || n == MAX_DEPTH + 2 || n == last {
+            let reader = t.reader(true);
+            assert_eq!(read(&reader, None).await["a.txt"].0, content);
+            let depth = (n - 1) % (MAX_DEPTH + 1) + 1;
+            assert_eq!(reader.files(None).await.unwrap()["a.txt"].3.len(), depth);
         }
     }
-    assert_eq!(full, [1, 33]);
+    let reader = t.reader(true);
+    for (seq, attempt) in reader.states() {
+        let full = reader.header(seq, &attempt).await.unwrap().tree == "full";
+        assert_eq!(full, seq == 1 || seq == FULL_TREE_EVERY + 1);
+    }
 }
 
 #[tokio::test]
@@ -616,7 +615,10 @@ async fn signed_writer_states_are_readable_with_odd_names_and_small_deltas() {
 
     // desk-core reads the same states.
     let reader = t.reader_with(true, Some(&key), Some(1));
-    for ((seq, attempt), want) in reader.states().into_iter().zip([&one, &two]) {
+    let states = reader.states();
+    assert_eq!(states.iter().map(|s| s.0).collect::<Vec<_>>(), [1, 2]);
+    assert_eq!(reader.latest().unwrap(), states[1]);
+    for ((seq, attempt), want) in states.into_iter().zip([&one, &two]) {
         assert_eq!(&read(&reader, Some((seq, attempt))).await, want);
     }
 }

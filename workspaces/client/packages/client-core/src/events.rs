@@ -236,6 +236,13 @@ mod tests {
             .await
             .unwrap()
         {
+            if event["value"]["type"] == "error" && event["value"]["closed"] == false {
+                // On this current-thread runtime, run() reaches its retry sleep
+                // in the same poll as the error send, before this receiver runs.
+                tokio::time::pause();
+                tokio::time::advance(Duration::from_millis(100)).await;
+                tokio::time::resume();
+            }
             events.push(event["value"].clone());
         }
         assert_eq!(

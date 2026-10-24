@@ -28,8 +28,26 @@ SHIM = Path(__file__).with_name("studio_browser.py")
 
 
 class _Server(ThreadingHTTPServer):
-    daemon_threads = True
+    daemon_threads = False
     owner: Any
+
+    def start(self) -> None:
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def serve(self) -> None:
+        while not self.stopped.is_set():
+            self.handle_request()
+
+    def shutdown(self) -> None:
+        self.stopped.set()
+        # Wake the blocking accept; the empty connection also lets its handler end.
+        with socket.create_connection(self.server_address, timeout=5):
+            pass
+        self.thread.join(timeout=5)
+        if self.thread.is_alive():
+            raise RuntimeError("fake HTTP server did not stop")
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -64,7 +82,7 @@ class FakeProvider:
         self.tokens: list[dict[str, list[str]]] = []
         self.codes: list[str] = []
         self.devices: list[str] = []
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.server.start()
 
     def authorize_url(self, redirect_uri: str, state: str) -> str:
         return f"http://{self.origin}/authorize?" + urlencode(
@@ -98,16 +116,6 @@ class FakeProvider:
         self.server.server_close()
 
 
-def free_port(preferred: int | None = None) -> int:
-    for port in ([preferred] if preferred else []) + [0]:
-        with socket.socket() as probe:
-            try:
-                probe.bind(("127.0.0.1", port))
-            except OSError:
-                continue
-            return int(probe.getsockname()[1])
-    raise OSError("No free port")
-
 
 class FakeTool:
     """A sign-in command: its loopback listener, its launcher call, and its token request."""
@@ -133,7 +141,7 @@ class FakeTool:
             self.redirect_uri = f"http://127.0.0.1:{self.port}/oauth/callback"
             self.callback_path = "/oauth/callback"
             self.open_url = provider.authorize_url(self.redirect_uri, self.state)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.server.start()
 
     def get(self, handler: _Handler) -> None:
         parts = urlsplit(handler.path)

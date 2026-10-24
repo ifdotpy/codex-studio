@@ -171,8 +171,22 @@ the factory validates launch configuration and wire size, then returns
 one supervisor-owned child; the account registry still owns attachment admission.
 
 The attachment exposes bounded `commands` and `journal` channels, a `status`
-watch, and cancellation-safe `completion()` / `shutdown()` futures. Both channels
-hold 16 entries with a 1 MiB serialized upper bound per entry (plus proportional
+watch, and cancellation-safe `completion()` / `shutdown()` futures. Completion
+half-closes both supervisor connections and waits for their EOF, which follows
+supervisor ownership release. This allows another backend identity to reattach
+without racing the old connections. Both detach waits run concurrently under
+the [`SUPERVISOR_DETACH_TIMEOUT`](src/provider_task.rs) bound, leaving time to
+report cleanup inside the backend's worker shutdown budget. This limits how
+long failure reporting waits; it does not guarantee a successful detach within
+that time. A supervisor busy with an in-flight child write can release ownership
+later, so an immediate restart may still receive an ownership refusal and retry.
+An unconfirmed detach is reported through `TaskExit::cleanup_error`, while the
+supervisor retains its child. If preparation fails before it returns an
+attachment, `AdapterError::PreparationCleanupUnconfirmed` carries both the
+preparation error and any cleanup failure to the startup caller. A confirmed
+detach preserves the original preparation error.
+
+Both channels hold 16 entries with a 1 MiB serialized upper bound per entry (plus proportional
 JSON allocation overhead). One outstanding RPC and at most 32 numeric response
 mappings are retained. Startup replay uses the same channel and no deferred queue.
 A receive slot is reserved before reading events.
@@ -184,7 +198,7 @@ Write/ACK receipts and shutdown never depend on journal capacity.
 `Stderr`, `Exit`, and future supervisor event kinds. `PreparedWrite::new` validates
 a frame before command admission. `AdapterCommand::write` and `::ack` return a
 command and `Receipt`; `Receipt::receive` distinguishes `Written`,
-`Acknowledged`, `CachedInitialize`, `NotSent`, and `Unknown`. Write operation IDs
+`Acknowledged`, `CachedInitialize`, `NotSent`, `WriteInterrupted`, and `Unknown`. Write operation IDs
 belong to the caller. Use `initialized_operation(&handle, generation)` for the shared
 generation-scoped initialized identity. A lost receipt terminates the attachment;
 there is no reconnect, flush, or automatic resend surface. A closed receipt is
@@ -232,6 +246,31 @@ caller supplies an absolute Tokio deadline and raw frame/total-output bounds.
 The task concurrently reads stdout, drains stderr, and writes commands; the
 single deadline also interrupts stalled writes. Cleanup runs before completion
 or status-channel closure. This adapter requires Unix process groups.
+After observing the leader's exit, the task drains stdout into the journal to
+EOF, bounded by the earlier of the caller's deadline and the cleanup grace owned
+by [`provider_stdio.rs`](src/provider_stdio.rs). Shutdown still interrupts this
+drain. ACKs remain served so session settlement can release the bounded journal;
+new writes settle as `NotSent` without touching stdin or waiting for observation.
+A full journal or an inherited pipe cannot delay process-group cleanup beyond
+that bound.
+
+The stdio owner retains an active write's receipt and accepted-byte count outside
+the cancellable writer future. Interruption returns
+`WriteInterrupted { bytes_written }`: this counts bytes the OS accepted on the
+stdin pipe, not bytes read by the child. The session reports zero as `NotSent`
+and a positive count as `Unknown`; neither outcome is replayed. This explicit
+receipt keeps journal reads and ACKs running, including during initialization.
+Writes refused while draining use the same receipt with zero accepted bytes.
+When draining finishes, the owner closes command admission and rejects every
+admitted command that never started as `NotSent` before cleanup begins.
+After reaping, a detached rejector retains only the closed command receiver so
+permits reserved before closure can still deliver a command and receive `NotSent`.
+It ends when those permits are sent or dropped; outstanding permits never delay
+process cleanup.
+
+A stdin `BrokenPipe` can precede child exit. It uses the same bounded stdout
+drain and ACK service before cleanup. The original write error remains the result
+unless shutdown, the exchange deadline, or an output bound intervenes.
 
 The model catalog consumes it through the accepted session task. Its cache is
 process-local, so consumed entries are settled without a durable journal.

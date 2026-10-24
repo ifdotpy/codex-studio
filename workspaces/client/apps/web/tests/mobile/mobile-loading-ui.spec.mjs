@@ -237,9 +237,23 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     const errors = [];
     const offlineNetworkErrors = [];
     let lastNavigation = 0;
+    const openSavedChat = async () => {
+      const selected = await page.evaluate(() =>
+        JSON.parse(localStorage.getItem("codex-mobile-opened") || "null"),
+      );
+      await page
+        .locator(
+          selected
+            ? `#sidebar .chat-row[data-chat="${selected}"]`
+            : "#sidebar .project-chats .chat-row",
+        )
+        .first()
+        .click();
+    };
     const reload = async () => {
       lastNavigation = Date.now();
       await page.reload({ waitUntil: "domcontentloaded" });
+      await openSavedChat();
     };
     page.on("pageerror", (error) => {
       if (
@@ -262,6 +276,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     });
     const start = Date.now();
     await page.goto(origin, { waitUntil: "domcontentloaded" });
+    await openSavedChat();
     await page.locator("textarea").first().waitFor({ timeout: 20000 });
     const coldMs = Date.now() - start;
     await page.evaluate(() => navigator.serviceWorker.ready);
@@ -395,6 +410,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     );
     page = await context.newPage();
     await page.goto(origin, { waitUntil: "domcontentloaded" });
+    await openSavedChat();
     await page.waitForFunction(
       async () => !(await navigator.serviceWorker.getRegistration()).waiting,
     );

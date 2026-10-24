@@ -15,6 +15,7 @@ use tower::ServiceExt;
 struct Session {
     calls: Mutex<Vec<Value>>,
     unknown: bool,
+    reconnect_gate: Mutex<Option<(Arc<tokio::sync::Notify>, tokio::sync::oneshot::Receiver<()>)>>,
 }
 fn scope() -> ConnectionScope {
     ConnectionScope {
@@ -37,6 +38,11 @@ impl AccountSessionPort for Session {
         Box::pin(async move {
             assert_eq!(request.expected_scope, Some(scope()));
             self.calls.lock().unwrap().push(json!({"method":request.method.as_str(),"params":request.params,"actor":request.actor,"operation":request.operation}));
+            let gate = self.reconnect_gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                entered.notify_one();
+                release.await.unwrap();
+            }
             let result = match request.method.as_str() {
                 "mcpServer/reconnect" => {
                     assert_eq!(request.actor.unwrap().agent, "agent");
@@ -104,6 +110,7 @@ async fn fixture(
     let session = Arc::new(Session {
         calls: Mutex::new(vec![]),
         unknown,
+        reconnect_gate: Mutex::new(None),
     });
     let mut state = HttpState::new(
         "token".into(),
@@ -351,13 +358,31 @@ async fn mcp_inventory_follows_cursor_and_returns_session_binding() {
 #[tokio::test]
 async fn mcp_reconnect_concurrent_replay_and_crash_receipt_never_resend() {
     let (_root, store, app, session) = fixture("claude", false).await;
-    let (a, b) = tokio::join!(
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let (release, held) = tokio::sync::oneshot::channel();
+    *session.reconnect_gate.lock().unwrap() = Some((entered.clone(), held));
+    let first = request(&app, "/api/mcp/reconnect", Some(body()), true);
+    tokio::pin!(first);
+    tokio::select! {
+        _ = entered.notified() => {},
+        result = &mut first => panic!("provider result must remain held: {result:?}"),
+    }
+    let retry = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
         request(&app, "/api/mcp/reconnect", Some(body()), true),
-        request(&app, "/api/mcp/reconnect", Some(body()), true)
-    );
-    assert_eq!(a.0, 200, "{a:?}");
-    assert_eq!(b.0, 200, "{b:?}");
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry.0, 200, "{retry:?}");
+    assert_eq!(retry.1["status"], "unknown");
     assert_eq!(session.calls.lock().unwrap().len(), 1);
+    release.send(()).unwrap();
+    let completed = first.await;
+    assert_eq!(completed.1["status"], "completed");
+    assert_eq!(
+        request(&app, "/api/mcp/reconnect", Some(body()), true).await,
+        completed
+    );
     let mut pending = body();
     pending["request_id"] = json!("c0981776-2200-48b2-b401-f21f711e5442");
     // The process stopped after the durable claim, before a result was saved.

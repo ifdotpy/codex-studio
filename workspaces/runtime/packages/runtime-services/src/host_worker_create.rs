@@ -1268,7 +1268,11 @@ mod tests {
 
         let (reference, commit) = freeze_base(directory.path()).expect("frozen HEAD");
         assert_eq!(reference, "HEAD");
-        assert!(COMMIT_HEX_LENGTHS.contains(&commit.len()));
-        assert!(commit.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let head = run(&["rev-parse", "--verify", "HEAD"]);
+        assert!(head.status.success());
+        assert_eq!(
+            commit,
+            String::from_utf8(head.stdout).expect("HEAD text").trim()
+        );
     }
 }

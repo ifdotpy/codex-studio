@@ -44,9 +44,15 @@ for (const viewport of [
       await expect(page.getByLabel("Studio server")).toHaveValue("local");
       await expect(page.locator(".server-sidebar")).toHaveCount(0);
       const localFrame = page.frameLocator('iframe[title="Studio on Local"]');
-      if (viewport.width < 760)
+      if (
+        viewport.width < 760 &&
+        !(await localFrame.locator("#sidebar").isVisible())
+      )
         await localFrame
-          .getByRole("button", { name: "Toggle conversations" })
+          .getByRole("button", {
+            name:
+              viewport.width <= 760 ? "Back to chats" : "Toggle conversations",
+          })
           .click();
       await expect(
         localFrame.getByRole("link", { name: "LAYR Studio" }),
@@ -85,9 +91,15 @@ for (const viewport of [
 
       await page.getByLabel("Studio server").selectOption("remote");
       const remoteFrame = page.frameLocator('iframe[title="Studio on Remote"]');
-      if (viewport.width < 760)
+      if (
+        viewport.width < 760 &&
+        !(await remoteFrame.locator("#sidebar").isVisible())
+      )
         await remoteFrame
-          .getByRole("button", { name: "Toggle conversations" })
+          .getByRole("button", {
+            name:
+              viewport.width <= 760 ? "Back to chats" : "Toggle conversations",
+          })
           .click();
       const remoteBrand = remoteFrame.getByRole("link", {
         name: "LAYR Studio",
@@ -105,7 +117,10 @@ for (const viewport of [
       );
       if (viewport.width < 760)
         await remoteFrame
-          .getByRole("button", { name: "Toggle conversations" })
+          .getByRole("button", {
+            name:
+              viewport.width <= 760 ? "Back to chats" : "Toggle conversations",
+          })
           .click();
       await expect(
         remoteFrame.getByRole("button", { name: /Remote chat/ }).first(),

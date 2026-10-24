@@ -14,11 +14,11 @@ test("Sync recovery browser", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(180_000);
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
     configFile: false,
+    optimizeDeps: { noDiscovery: true },
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
   });
@@ -60,7 +60,7 @@ test("Sync recovery browser", async ({
         nextStreamResourceEvent = false;
         streamRevision++;
         body = protocol3SseEvent("resources", {
-          protocol: 3,
+          protocol: 4,
           workspaceId,
           epoch: "recovery-fixture",
           revision: streamRevision,
@@ -90,17 +90,14 @@ test("Sync recovery browser", async ({
                 ? []
                 : [
                     {
-                      id: "entity:workspace:current",
+                      op: "upsert",
+                      collection: "workspace",
+                      id: "current",
+                      value: {
+                        stateDir: "fixture-workspace",
+                        marker: "replicated",
+                      },
                       seq: 1,
-                      payload: JSON.stringify({
-                        collection: "workspace",
-                        id: "current",
-                        value: {
-                          stateDir: "fixture-workspace",
-                          marker: "replicated",
-                        },
-                      }),
-                      _deleted: false,
                     },
                   ],
               checkpoint: { seq: 1 },

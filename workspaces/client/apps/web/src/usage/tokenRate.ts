@@ -33,7 +33,10 @@ function validIdentifier(value: unknown): value is string {
 }
 
 // One validation at the untrusted snapshot boundary, using generated types and limits.
-function isTokenRateSnapshot(value: unknown): value is WorkspaceRates {
+function isTokenRateSnapshot(
+  value: unknown,
+  agents = new Set<string>(),
+): value is WorkspaceRates {
   if (
     !value ||
     typeof value !== "object" ||
@@ -42,7 +45,6 @@ function isTokenRateSnapshot(value: unknown): value is WorkspaceRates {
     value.records.length > TOKEN_RATE_MAX_ENTRIES
   )
     return false;
-  const agents = new Set<string>();
   return value.records.every((record: unknown): record is TokenRate => {
     if (!record || typeof record !== "object" || Array.isArray(record))
       return false;
@@ -115,6 +117,8 @@ export function createTokenRateCache() {
   }
 
   let records = new Map<string, TokenRate>();
+  let baselineEpoch: string | undefined;
+  let baselineWorkspaceId: string | undefined;
   // A derived index contains identities only; every value belongs to records.
   let teamAgents = new Map<string, string>();
   const listeners = new Map<string, Set<(value: TokenRate | null) => void>>();
@@ -147,11 +151,76 @@ export function createTokenRateCache() {
   }
 
   function receiveResourceTokenRates(event: TokenRateEvent) {
-    return receiveWorkspaceTokenRates(event);
+    if (
+      !event.snapshot &&
+      (baselineEpoch !== event.epoch ||
+        baselineWorkspaceId !== event.workspaceId)
+    )
+      return false;
+    const changed = new Set<string>();
+    if (
+      typeof event.snapshot !== "boolean" ||
+      !Array.isArray(event.removed) ||
+      event.removed.length > TOKEN_RATE_MAX_ENTRIES ||
+      (event.snapshot && event.removed.length !== 0) ||
+      !isTokenRateSnapshot(event, changed)
+    )
+      return false;
+    if (event.snapshot) {
+      replaceWorkspaceTokenRates(event);
+      baselineEpoch = event.epoch;
+      baselineWorkspaceId = event.workspaceId;
+      return true;
+    }
+    const removed = new Set<string>();
+    let size = records.size;
+    for (const id of event.removed) {
+      if (!validIdentifier(id) || removed.has(id) || changed.has(id))
+        return false;
+      removed.add(id);
+      if (records.has(id)) size--;
+    }
+    for (const record of event.records)
+      if (!records.has(record.agentId)) size++;
+    if (size > TOKEN_RATE_MAX_ENTRIES) return false;
+    // Apply the entire frame before notifying: every observer sees the same batch.
+    for (const id of event.removed) {
+      const previous = records.get(id);
+      changed.add(id);
+      if (previous) {
+        const key = workerRateKey(previous.rootId, id);
+        teamAgents.delete(key);
+        changed.add(key);
+      }
+      records.delete(id);
+    }
+    for (const record of event.records) {
+      const previous = records.get(record.agentId);
+      if (previous) {
+        const key = workerRateKey(previous.rootId, record.agentId);
+        teamAgents.delete(key);
+        changed.add(key);
+      }
+      records.set(record.agentId, record);
+      const key = workerRateKey(record.rootId, record.agentId);
+      teamAgents.set(key, record.agentId);
+      changed.add(key);
+    }
+    for (const id of changed) notify(id);
+    return true;
+  }
+
+  // Materialize the merged baseline only when a late local or peer subscriber asks.
+  function getWorkspaceTokenRates(): WorkspaceRates {
+    return { records: Array.from(records.values()) };
   }
 
   function receiveWorkspaceTokenRates(value: unknown) {
     if (!isTokenRateSnapshot(value)) return false;
+    return replaceWorkspaceTokenRates(value);
+  }
+
+  function replaceWorkspaceTokenRates(value: WorkspaceRates) {
     records = new Map(value.records.map((record) => [record.agentId, record]));
     teamAgents = new Map(
       value.records.map((record) => [
@@ -165,6 +234,8 @@ export function createTokenRateCache() {
   }
 
   function clearWorkspaceTokenRates() {
+    baselineEpoch = undefined;
+    baselineWorkspaceId = undefined;
     receiveWorkspaceTokenRates({ records: [] });
   }
 
@@ -204,6 +275,7 @@ export function createTokenRateCache() {
     receiveResourceTokenRates,
     receiveWorkspaceTokenRates,
     clearWorkspaceTokenRates,
+    getWorkspaceTokenRates,
     subscribeTokenRate,
     getTokenRate,
     getWorkspaceTeamTokenRate,
@@ -216,6 +288,7 @@ export const {
   receiveResourceTokenRates,
   receiveWorkspaceTokenRates,
   clearWorkspaceTokenRates,
+  getWorkspaceTokenRates,
   subscribeTokenRate,
   getTokenRate,
   getWorkspaceTeamTokenRate,

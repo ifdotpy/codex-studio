@@ -60,24 +60,16 @@ fn shared_values_ts() -> String {
                 values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS.to_string(),
             ),
             (
-                "SYNC_TRANSCRIPT_STREAM_MAX_BYTES",
-                values::SYNC_TRANSCRIPT_STREAM_MAX_BYTES.to_string(),
+                "SYNC_STREAM_EVENT_MAX_BYTES",
+                values::SYNC_STREAM_EVENT_MAX_BYTES.to_string(),
             ),
             (
                 "SYNC_ENTITY_STREAM_MAX_DOCUMENTS",
                 values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS.to_string(),
             ),
             (
-                "SYNC_ENTITY_STREAM_MAX_BYTES",
-                values::SYNC_ENTITY_STREAM_MAX_BYTES.to_string(),
-            ),
-            (
                 "SYNC_DRAFT_STREAM_MAX_DOCUMENTS",
                 values::SYNC_DRAFT_STREAM_MAX_DOCUMENTS.to_string(),
-            ),
-            (
-                "SYNC_DRAFT_STREAM_MAX_BYTES",
-                values::SYNC_DRAFT_STREAM_MAX_BYTES.to_string(),
             ),
             (
                 "MAX_USER_ATTACHMENT_BYTES",
@@ -525,6 +517,19 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         &format!("{protocol}/supportedVersions/items/const"),
         version,
     )?;
+    for owner in [
+        "ResourceChangeEvent",
+        "ResourceHeartbeatEvent",
+        "ResourceTokenRatesEvent",
+    ] {
+        for bound in ["const", "minimum", "maximum"] {
+            expect_number(
+                openapi,
+                &format!("/components/schemas/{owner}/properties/protocol/{bound}"),
+                version,
+            )?;
+        }
+    }
     for owner in ["TokenRateSnapshot", "ResourceTokenRatesEvent"] {
         expect_number(
             openapi,
@@ -532,6 +537,18 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
             crate::TOKEN_RATE_MAX_ENTRIES as i64,
         )?;
     }
+    let removed = "/components/schemas/ResourceTokenRatesEvent/properties/removed";
+    expect_number(
+        openapi,
+        &format!("{removed}/maxItems"),
+        crate::TOKEN_RATE_MAX_ENTRIES as i64,
+    )?;
+    expect_number(openapi, &format!("{removed}/items/minLength"), 1)?;
+    expect_number(
+        openapi,
+        &format!("{removed}/items/maxLength"),
+        crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS as i64,
+    )?;
     for field in ["agentId", "rootId", "turnId"] {
         let path = format!("/components/schemas/TokenRateRecord/properties/{field}");
         expect_number(openapi, &format!("{path}/minLength"), 1)?;
@@ -820,8 +837,9 @@ mod tests {
     }
 
     #[test]
-    fn generated_contracts_do_not_recreate_the_removed_backend() {
-        let rendered = render(&repository_root(), false).expect("contracts render");
+    fn committed_contract_copies_match_the_rust_owners() {
+        let root = repository_root();
+        let rendered = render(&root, false).expect("contracts render");
         assert!(
             rendered
                 .iter()
@@ -833,12 +851,6 @@ mod tests {
                 .any(|file| file.path
                     == "workspaces/runtime/apps/vm-guest/shared_values_generated.py")
         );
-    }
-
-    #[test]
-    fn committed_contract_copies_match_the_rust_owners() {
-        let root = repository_root();
-        let rendered = render(&root, false).expect("contracts render");
         assert_eq!(
             stale(&root, &rendered),
             Vec::<String>::new(),

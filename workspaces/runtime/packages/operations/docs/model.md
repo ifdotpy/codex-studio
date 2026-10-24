@@ -113,7 +113,7 @@ identities and reconciliation (R-17).
 ## Checkable invariants
 
 - **R-14 — request identity:** For a request identity `(typed scope, request
-ID)`, equal content returns its saved operation/state or compacted settled
+  ID)`, equal content returns its saved operation/state or compacted settled
   tombstone without a second dispatch intent; unequal content is rejected
   before any effect intent.
   An absent receipt leaves outcome `Unknown`, never `NotApplied`.
@@ -136,27 +136,12 @@ Property tests check: settled states never regress; at most one `Dispatch`
 intent is emitted for one operation identity; and committed operation receipts
 do not incorrectly settle an unknown tool result as applied.
 
-## Existing Python scenarios replayed as neutral fixtures
+## Lifecycle scenario coverage
 
-`tests/fixtures/python-contract-cases.json` records inputs/expected states for
-cases from:
-
-- `tool-request-contract.py:93-111` — semantic retry returns one operation and
-  changed content is rejected.
-- `tool-request-contract.py:133-162` — queued cancellation is not applied,
-  running cancellation remains pending, failures/missing receipts stay unknown.
-- `tool-request-contract.py:175-188` — restart distinguishes queued,
-  dispatched, and cached result.
-- `tool-request-contract.py:242-255` — only one concurrent begin succeeds.
-- `tool-request-contract.py:227-240` — a delayed saved result reconciles before
-  status or cancellation is applied.
-- `request-reconciliation-contract.py:89-96` — committed operation evidence
-  prevents false `NotApplied` while preserving the request's unknown outcome.
-- `native-action-receipts-contract.py:32-89` — exact retry returns same receipt;
-  changed identity/content rejects; uncertain response/restart retains receipt.
-
-The fixture is declarative JSON with only named strings, integer epochs and
-generations, and expected enum names. It is not a wire-protocol definition.
+The named tests in [`tests/lifecycle.rs`](../tests/lifecycle.rs) cover exact retry,
+changed content, cancellation before and after dispatch, restart recovery,
+saved results, and missing or committed receipts. These Rust witnesses own the
+former Python replay scenarios and assert their decisions and effect intents.
 
 ## Confirmed divergences (AC-05)
 
@@ -226,11 +211,6 @@ this library.
 ## Verification and isolation evidence
 
 The Rust core's `transition` uses in-memory values and checked integer revision
-arithmetic. The PyO3 binding converts the typed persisted-record boundary to
-core values and catches Rust panics as Python exceptions. The Python shim only
-checks module import and protocol version; the caller serializes the stored
-record and applies returned persisted fields inside its existing transaction.
-It does no new I/O. The Python contract test reads
-`tests/fixtures/python-contract-cases.json` directly and replays it through the
-installed extension. The Rust fixture test embeds that same file at compile
-time.
+arithmetic. The lifecycle, reservation, and settlement tests exercise the typed
+core and in-memory persistence adapters without an external interpreter or
+extension. Caller integration tests own durable receipt and execution evidence.

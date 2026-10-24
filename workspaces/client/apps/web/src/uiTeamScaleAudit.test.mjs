@@ -352,17 +352,22 @@ describe("start order", () => {
 
 describe("helpers", () => {
   it("bounds concurrency and keeps the order", async () => {
-    let active = 0;
-    let peak = 0;
-    const results = await mapLimited([3, 1, 2, 0], 2, async (value) => {
-      active += 1;
-      peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, value));
-      active -= 1;
+    const pending = Array.from({ length: 4 }, () => Promise.withResolvers());
+    const started = [];
+    const results = mapLimited([3, 1, 2, 0], 2, async (value, index) => {
+      started.push(value);
+      await pending[index].promise;
       return value * 10;
     });
-    expect(results).toEqual([30, 10, 20, 0]);
-    expect(peak).toBe(2);
+    expect(started).toEqual([3, 1]);
+    pending[1].resolve();
+    await pending[1].promise;
+    await Promise.resolve();
+    expect(started).toEqual([3, 1, 2]);
+    pending[2].resolve();
+    pending[0].resolve();
+    pending[3].resolve();
+    expect(await results).toEqual([30, 10, 20, 0]);
   });
 
   it("summarises failures and anomalies by kind", () => {

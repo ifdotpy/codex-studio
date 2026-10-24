@@ -5,6 +5,7 @@ import {
   accountTileButton,
   accountTileGroup,
   handleEntitySyncFixtureRequest,
+  entityMutationFixtureResponse,
   syncIdentityFixture,
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
@@ -169,6 +170,7 @@ test("Account Transfer Ui", async ({
       rateLimitsByAccount: snapshotLimits,
     },
   };
+  const stateListeners = new Set();
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     let body = {};
@@ -181,14 +183,24 @@ test("Account Transfer Ui", async ({
     const json = (data) => {
       res.setHeader("Content-Type", "application/json");
       res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
-      res.end(JSON.stringify(data));
+      const reply =
+        req.method === "POST" && res.statusCode < 400 && !data._syncEntities
+          ? entityMutationFixtureResponse(stateForEntities, data)
+          : data;
+      res.end(JSON.stringify(reply));
+      if (reply._syncEntities?.length) {
+        for (const notify of stateListeners) notify([{ kind: "state" }]);
+      }
     };
     if (
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
+        subscriptionUpdate: body,
         onStreamReady: (notify) => {
           notifySync = notify;
+          stateListeners.add(notify);
+          return () => stateListeners.delete(notify);
         },
       })
     )
@@ -335,6 +347,11 @@ test("Account Transfer Ui", async ({
     if (url.pathname === "/api/voice/records")
       return json({ records: [], delivered: [], cursor: 0 });
 
+    if (url.pathname === "/api/retained-worktrees")
+      return json({
+        rootId: url.searchParams.get("agent") || "fixture",
+        retainedWorktrees: [],
+      });
     if (url.pathname.startsWith("/api/"))
       return json({ items: [], sessions: [] });
     try {

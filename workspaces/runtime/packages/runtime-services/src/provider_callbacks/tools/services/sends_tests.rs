@@ -3,17 +3,16 @@
 
 use super::*;
 use crate::managed_host_tools::{PostCommitPort, SendPort};
-use std::path::PathBuf;
 use studio_runtime_store::RuntimeStore;
 
 #[path = "../../../../tests/provider_callbacks/fixture.rs"]
 mod frozen;
 
-async fn template() -> (tempfile::TempDir, Value) {
-    let (root, store, mut value) = frozen::state().await;
-    drop(store);
-    value["template"] = json!(root.path());
-    (root, value)
+fn expectations() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../../tests/provider_callbacks/expected.json"
+    ))
+    .unwrap()
 }
 
 async fn send(
@@ -78,8 +77,7 @@ async fn try_send_args_with(
     RuntimeStore,
     Result<Value, crate::managed_host_tools::Error>,
 ) {
-    let (directory, oracle) = template().await;
-    let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+    let (directory, store, oracle) = frozen::state().await;
     store
         .transaction(move |tx| {
             for record in extra_agents {
@@ -143,8 +141,7 @@ async fn try_send_args_with(
 
 #[tokio::test]
 async fn production_release_notifies_the_registry_after_a_committed_send() {
-    let (directory, oracle) = template().await;
-    let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+    let (_directory, store, oracle) = frozen::state().await;
     let actor = oracle["agents"][0].clone();
     let context = CallbackContext {
         agent: actor["id"].as_str().unwrap().into(),
@@ -208,8 +205,7 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
 
 #[tokio::test]
 async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
-    let (directory, oracle) = template().await;
-    let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+    let (_directory, store, oracle) = frozen::state().await;
     let actor = oracle["agents"][0].clone();
     let context = CallbackContext {
         agent: actor["id"].as_str().unwrap().into(),
@@ -254,8 +250,7 @@ async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
 
 #[tokio::test]
 async fn complaint_submit_read_and_respond_share_the_notification_service() {
-    let (directory, oracle) = template().await;
-    let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+    let (_directory, store, oracle) = frozen::state().await;
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0].clone();
     let worker_for_submit = worker.clone();
@@ -316,7 +311,7 @@ async fn complaint_submit_read_and_respond_share_the_notification_service() {
 
 #[tokio::test]
 async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat() {
-    let (_template_directory, oracle) = template().await;
+    let oracle = expectations();
     let child = oracle["agents"][1]["id"].as_str().unwrap();
     let lead = oracle["agents"][0]["id"].as_str().unwrap();
 
@@ -377,7 +372,7 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
 #[tokio::test]
 async fn send_preserves_explicit_next_turn_for_followup_and_chat() {
     use studio_runtime_schema::DeliveryMoment;
-    let (_template_directory, oracle) = template().await;
+    let oracle = expectations();
     for (sender, target_index, event_prefix) in [(0, 1, ""), (1, 0, "chat:")] {
         let target = oracle["agents"][target_index]["id"].as_str().unwrap();
         let id = format!("explicit-next-{sender}");
@@ -419,8 +414,7 @@ async fn send_preserves_explicit_next_turn_for_followup_and_chat() {
 /// ancestor cancels a descendant's watch; any other agent is refused by name.
 #[tokio::test]
 async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name() {
-    let (directory, oracle) = template().await;
-    let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+    let (directory, store, oracle) = frozen::state().await;
     let log_root = store.state_dir().join("monitor-logs");
     let watch = |id: &str, owner: &Value| {
         json!({"id":id,"agent":owner["id"],"epoch":owner["epoch"],"turnId":null,
@@ -514,7 +508,7 @@ async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name()
 /// refused with its reason.
 #[tokio::test]
 async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {
-    let (_template_directory, oracle) = template().await;
+    let oracle = expectations();
     let child = oracle["agents"][1]["id"].as_str().unwrap();
 
     let (_root, store, value) = send(0, &child[..8], "send-child-prefix").await;
@@ -560,7 +554,7 @@ async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {
 /// does not refuse sends to other agents.
 #[tokio::test]
 async fn an_unusual_record_of_another_team_does_not_refuse_sends() {
-    let (_template_directory, oracle) = template().await;
+    let oracle = expectations();
     let lead = &oracle["agents"][0];
     let child = oracle["agents"][1]["id"].as_str().unwrap();
     let foreign = |id: &str, cwd: &str| {
@@ -618,7 +612,7 @@ async fn an_unusual_record_of_another_team_does_not_refuse_sends() {
 /// result, so a replay of the request reports the same members.
 #[tokio::test]
 async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_others() {
-    let (_template_directory, oracle) = template().await;
+    let oracle = expectations();
     let lead = &oracle["agents"][0];
     let lead_id = lead["id"].as_str().unwrap();
     let child = oracle["agents"][1]["id"].as_str().unwrap();
@@ -666,12 +660,10 @@ async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_other
 /// refusal names the stored-record location.
 #[tokio::test]
 async fn a_broadcast_with_no_member_that_can_be_checked_is_refused_by_location() {
-    let (_template_directory, oracle) = template().await;
+    let oracle = expectations();
     let lead = oracle["agents"][0]["id"].as_str().unwrap();
-    let template = PathBuf::from(oracle["template"].as_str().unwrap()).join("canvas.sqlite3");
-    let connection =
-        rusqlite::Connection::open_with_flags(template, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .unwrap();
+    let (_directory, store, _) = frozen::state().await;
+    let connection = store.test_reader().unwrap();
     let mut statement = connection
         .prepare("SELECT record FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 AND id!=?1 ORDER BY id")
         .unwrap();
@@ -724,8 +716,7 @@ fn a_stored_refusal_names_its_location() {
 /// refused only while its own shared reply turn is in flight.
 #[tokio::test]
 async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {
-    let (directory, oracle) = template().await;
-    let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+    let (_directory, store, oracle) = frozen::state().await;
     let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
     let worker = oracle["agents"][1].clone();
     let worker_id = worker["id"].as_str().unwrap().to_owned();
@@ -856,8 +847,8 @@ async fn callback_blob_case(race: BlobRace) {
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
     const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(10);
     const LARGE_RESULT_BYTES: usize = 128 * 1024;
-    let (directory, oracle) = template().await;
-    let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    let (directory, store, oracle) = frozen::state().await;
+    let store = Arc::new(store);
     let actor = &oracle["agents"][0];
     let context = CallbackContext {
         agent: actor["id"].as_str().unwrap().into(),
@@ -1058,6 +1049,12 @@ async fn callback_blob_case(race: BlobRace) {
             BlobRace::ActorEpoch => { tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',4,'$.turnEpoch',4) WHERE json_extract(record,'$.threadId')='thread-0'", [])?; }
             BlobRace::ResultReference => { tx.execute("UPDATE runtime_tool_results SET result=?1 WHERE id='thread-0:saved'", [alternate.unwrap().to_string()])?; }
             BlobRace::LateResult => { tx.execute("UPDATE runtime_tool_results SET result=?1 WHERE id='thread-0:saved'", [json!({"success":true,"contentItems":[{"type":"inputText","text":"late saved result"}]}).to_string()])?; }
+            BlobRace::RecoveryWrite => {
+                let saved = records::get(tx, "runtime_tool_requests", "thread-0:saved")?.unwrap();
+                assert_eq!(saved["stage"], "running", "the blob write must precede recovery commit");
+                assert!(saved.get("result").is_none());
+                assert!(saved.get("_payloadBlobs").is_none());
+            }
             _ => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id='thread-0:saved'", [])?; }
         }
         Ok(())
@@ -1134,7 +1131,7 @@ async fn callback_blob_late_result_refuses_stale_recovery() {
     callback_blob_case(BlobRace::LateResult).await;
 }
 #[tokio::test]
-async fn callback_blob_abandoned_response_does_not_replay() {
+async fn callback_blob_read_can_be_cancelled_while_io_is_blocked() {
     callback_blob_case(BlobRace::Abandoned).await;
 }
 #[tokio::test]
@@ -1164,8 +1161,8 @@ async fn callback_panel_returns_the_retired_progress_notice() {
         CallbackDecision, ManagedToolPortsConfig, dispatch_with_managed_tools,
     };
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
-    let (directory, oracle) = template().await;
-    let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    let (directory, store, oracle) = frozen::state().await;
+    let store = Arc::new(store);
     let context = CallbackContext {
         agent: oracle["agents"][0]["id"].as_str().unwrap().into(),
         account: "default".into(),

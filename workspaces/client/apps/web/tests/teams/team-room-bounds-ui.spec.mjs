@@ -92,7 +92,7 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
         headers: apiSchemaHeaders(),
         body: apiSchemaHandshakeSse(
           protocol3SseEvent("resources", {
-            protocol: 3,
+            protocol: 4,
             workspaceId,
             epoch: "room-bounds",
             revision: 1,

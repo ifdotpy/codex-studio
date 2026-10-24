@@ -7,7 +7,7 @@ use crate::provider_callbacks::{
     dispatch_with_managed_tools,
 };
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
 
 /// Far-future command output expiry shared with the fixture server.
@@ -22,47 +22,37 @@ const REMOTE: &str = "97118dce-786a-4bf7-b652-d545a80ffd0c";
 const MOVED: &str = "a313b5da-674e-43d0-86b8-c4204bc46ed8";
 const LINK: &str = "fixture-remote-link";
 
-struct Seed {
-    value: Value,
-}
-
-/// The four actors, the project folder and the ids that the tool cases share.
-fn seed() -> &'static Seed {
-    static SEED: OnceLock<Seed> = OnceLock::new();
-    SEED.get_or_init(|| {
-        let scratch = tempfile::tempdir().unwrap();
-        let cwd = scratch.path().to_string_lossy().into_owned();
-        let project = scratch.path().join("project");
-        std::fs::create_dir(&project).unwrap();
-        let base: Value =
+/// Bind the immutable actor shape to this test's live project directory.
+fn seed(directory: &std::path::Path) -> Value {
+    let project = directory.join("project");
+    std::fs::create_dir(&project).unwrap();
+    let cwd = project.to_string_lossy().into_owned();
+    let base: Value =
             serde_json::from_str(&"{\"accountKey\": \"default\", \"executionSettingsAccountKey\": \"default\", \"provider\": \"codex\", \"yoloMode\": true, \"prompt\": \"fixture\", \"cwd\": \"@cwd\", \"role\": \"orchestrator\", \"needsTitle\": false, \"subagentConcurrencyVersion\": 2, \"maxAgentsExplicit\": false, \"model\": \"gpt-6-astra\", \"effort\": \"medium\", \"fastMode\": false, \"daybreakEnabled\": false, \"cyberAccessProgram\": \"standard\", \"concurrency\": 32, \"maxAgents\": 64, \"tokenBudget\": null, \"status\": \"running\", \"autoWake\": true, \"epoch\": 3, \"inFlight\": false, \"turnEpoch\": 3, \"usageResumeEnabled\": true, \"tokensUsed\": 0, \"compactions\": 0, \"compactionsObservedOnly\": false, \"contextUsage\": null, \"events\": 0, \"error\": null, \"profileId\": null, \"profileInstructions\": \"\", \"tail\": \"\", \"worktree\": false, \"workspaceMode\": \"worktree\", \"executionMode\": \"native\", \"hostProjectPath\": \"@cwd\", \"layrReady\": false, \"workspaceBackend\": null, \"workspaceModeExplicit\": false, \"workspaceInGit\": false, \"worktreeReady\": false, \"environment\": \"host\", \"imageWorkspace\": false, \"imageWorkspaceReady\": false, \"imageWorkspacePhase\": null, \"imageWorkspaceRepo\": null, \"imageWorkspaceSubpath\": \".\", \"imageWorkspaceBaseRef\": null, \"imageWorkspaceHasGit\": false, \"imageWorkspaceCreatedAt\": null, \"imageWorkspaceError\": null, \"worktreeWarning\": null, \"workerBaseRef\": null, \"workerBaseCommit\": null, \"workerBaseBehindMain\": null, \"workerBaseMainRef\": null, \"workerDefaults\": {\"model\": \"gpt-6-luna\", \"effort\": \"high\", \"fastMode\": false, \"daybreakEnabled\": false, \"delegationDepth\": 1}, \"reviewDefaults\": {\"model\": null, \"effort\": null}, \"agentMode\": \"multi\", \"agentModeRevision\": 0, \"agentModeSupported\": true}".replace("@cwd", &cwd)).unwrap();
-        let actor = |index: usize, id: &str, name: &str, parent: Option<&str>, lead: bool| {
-            let mut record = base.clone();
-            record["id"] = json!(id);
-            record["name"] = json!(name);
-            record["isLead"] = json!(lead);
-            record["parentId"] = json!(parent);
-            record["rootId"] = json!(parent.unwrap_or(id));
-            record["threadId"] = json!(format!("thread-{index}"));
-            record["turnId"] = json!(format!("turn-{index}"));
-            record["created"] = json!(1_792_510_147.0 + index as f64);
-            record
-        };
-        let mut remote = actor(2, REMOTE, "Remote worker", None, false);
-        remote["remoteOrigin"] = json!({"home": PEER, "link": LINK});
-        let mut moved = actor(3, MOVED, "Moved worker", None, false);
-        moved["remoteOrigin"] = json!({"home": PEER, "link": LINK});
-        moved["movedFrom"] = json!(PEER);
-        let value = json!({
-            "lead": actor(0, LEAD, "Servers lead", None, true),
-            "worker": actor(1, WORKER, "Servers worker", Some(LEAD), false),
-            "remote": remote,
-            "moved": moved,
-            "projectId": project.to_string_lossy(),
-        });
-        Seed {
-            value,
-        }
+    let actor = |index: usize, id: &str, name: &str, parent: Option<&str>, lead: bool| {
+        let mut record = base.clone();
+        record["id"] = json!(id);
+        record["name"] = json!(name);
+        record["isLead"] = json!(lead);
+        record["parentId"] = json!(parent);
+        record["rootId"] = json!(parent.unwrap_or(id));
+        record["threadId"] = json!(format!("thread-{index}"));
+        record["turnId"] = json!(format!("turn-{index}"));
+        record["created"] = json!(1_792_510_147.0 + index as f64);
+        record["projectId"] = json!(cwd);
+        record
+    };
+    let mut remote = actor(2, REMOTE, "Remote worker", None, false);
+    remote["remoteOrigin"] = json!({"home": PEER, "link": LINK});
+    let mut moved = actor(3, MOVED, "Moved worker", None, false);
+    moved["remoteOrigin"] = json!({"home": PEER, "link": LINK});
+    moved["movedFrom"] = json!(PEER);
+    json!({
+        "lead": actor(0, LEAD, "Servers lead", None, true),
+        "worker": actor(1, WORKER, "Servers worker", Some(LEAD), false),
+        "remote": remote,
+        "moved": moved,
+        "projectId": project.to_string_lossy(),
     })
 }
 
@@ -146,12 +136,17 @@ impl PairedTransport for RecordingTransport {
     }
 }
 
-async fn seeded_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
-    let seed = &seed().value;
+async fn seeded_store() -> (tempfile::TempDir, Arc<RuntimeStore>, Value) {
+    seeded_store_with_identity(IDENTITY).await
+}
+
+async fn seeded_store_with_identity(
+    identity_record: &str,
+) -> (tempfile::TempDir, Arc<RuntimeStore>, Value) {
     let directory = tempfile::tempdir().unwrap();
     let identity = directory.path().join("multi-server");
     std::fs::create_dir(&identity).unwrap();
-    std::fs::write(identity.join("identity.json"), IDENTITY).unwrap();
+    std::fs::write(identity.join("identity.json"), identity_record).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -164,6 +159,7 @@ async fn seeded_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     }
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     let local = store.local_server_id().unwrap().unwrap();
+    let seed = seed(directory.path());
     let project = seed["projectId"].as_str().unwrap().to_owned();
     let agents: Vec<_> = ["lead", "worker", "remote", "moved"]
         .into_iter()
@@ -200,7 +196,7 @@ async fn seeded_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
         })
         .await
         .unwrap();
-    (directory, store)
+    (directory, store, seed)
 }
 
 fn context(actor: &Value) -> CallbackContext {
@@ -708,8 +704,12 @@ fn resolve(
 
 #[tokio::test]
 async fn servers_tool_sends_envelopes_keeps_receipts_and_project_locations() {
-    let seed = &seed().value;
-    let (_directory, store) = seeded_store().await;
+    let (_directory, store, seed) = seeded_store().await;
+    for role in ["lead", "worker", "remote", "moved"] {
+        for field in ["cwd", "hostProjectPath", "projectId"] {
+            assert!(std::path::Path::new(seed[role][field].as_str().unwrap()).is_dir());
+        }
+    }
     let transport = Arc::new(RecordingTransport::default());
     let driver = Arc::new(OrchestrationDriver::new(
         Arc::clone(&store),
@@ -791,8 +791,7 @@ async fn servers_tool_sends_envelopes_keeps_receipts_and_project_locations() {
 
 #[tokio::test]
 async fn servers_tool_names_its_dependency_until_the_driver_is_attached() {
-    let seed = &seed().value;
-    let (_directory, store) = seeded_store().await;
+    let (_directory, store, seed) = seeded_store().await;
     let result = call_tool(
         &store,
         &seed["lead"],
@@ -827,8 +826,7 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
             })
         }
     }
-    let seed = &seed().value;
-    let (_directory, store) = seeded_store().await;
+    let (_directory, store, seed) = seeded_store().await;
     let transport = Arc::new(Lost(Mutex::new(0)));
     let driver = Arc::new(OrchestrationDriver::new(
         Arc::clone(&store),
@@ -837,18 +835,29 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
     ));
     let tools: Arc<dyn MultiServerToolPort> =
         Arc::new(ServerTools::new(Arc::clone(&store), driver, false));
-    let args = json!({"action": "exec", "server": PEER, "cwd": "/peer/repo", "command": ["true"]});
+    let lead = &seed["lead"];
+    let args = json!({"action": "exec", "server": PEER, "cwd": "/peer/repo", "command": ["true"], "request_id":"lost-operation"});
     let first = call_tool(
         &store,
-        &seed["lead"],
+        lead,
         "lost",
         "call-lost",
         &args,
-        Some(Arc::clone(&tools)),
+        Some(tools.clone()),
     )
     .await;
     assert_eq!(first["success"], true, "{first}");
     assert_eq!(parsed(&first)["outcome"], "unknown");
+    let replay = call_tool(
+        &store,
+        lead,
+        "lost",
+        "call-lost",
+        &args,
+        Some(tools.clone()),
+    )
+    .await;
+    assert_eq!(replay, first);
     assert_eq!(*transport.0.lock().unwrap(), 1);
     // The command row is now in receipt form: a new call with the same
     // request identity can only probe for the receipt.
@@ -865,6 +874,9 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
     let body: Value = serde_json::from_str(&body).unwrap();
     assert!(body["payload"].get("command").is_none(), "{body}");
     assert!(body["payload"]["receiptDigest"].is_string(), "{body}");
+    let retry = call_tool(&store, lead, "retry", "new-call", &args, Some(tools)).await;
+    assert_eq!(retry, first);
+    assert_eq!(*transport.0.lock().unwrap(), 1);
 }
 
 /// A paired peer that answers with a real Rust receiver over the same store
@@ -915,14 +927,8 @@ fn run_git(directory: &std::path::Path, arguments: &[&str]) -> String {
 }
 
 async fn peer_store(home: &str) -> (tempfile::TempDir, Arc<RuntimeStore>) {
-    let (directory, store) = seeded_store().await;
-    drop(store);
-    std::fs::write(
-        directory.path().join("multi-server/identity.json"),
-        json!({"serverId": PEER}).to_string(),
-    )
-    .unwrap();
-    let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    let (directory, store, _) =
+        seeded_store_with_identity(&json!({"serverId": PEER}).to_string()).await;
     let record = json!({"id": home, "clientId": home, "serverId": home, "label": "Home",
         "kind": "server", "origin": "https://home.fixture.ts.net", "publicKey": "fixture-public-key",
         "tailscaleUser": "owner@example.test", "status": "paired", "created": 10,
@@ -944,8 +950,7 @@ async fn peer_store(home: &str) -> (tempfile::TempDir, Arc<RuntimeStore>) {
 #[tokio::test]
 #[allow(clippy::disallowed_methods)]
 async fn fetch_copies_a_remote_worker_branch_through_a_verified_bundle_once() {
-    let seed = &seed().value;
-    let (_home_directory, home) = seeded_store().await;
+    let (_home_directory, home, seed) = seeded_store().await;
     let home_id = home.local_server_id().unwrap().unwrap();
     let (peer_directory, peer) = peer_store(&home_id).await;
     let repositories = tempfile::tempdir().unwrap();
@@ -1150,8 +1155,7 @@ async fn ready_voice_session(store: &RuntimeStore, lead: &Value) {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sign_in_shows_one_card_through_the_chat_bridge() {
-    let seed = &seed().value;
-    let (directory, store) = seeded_store().await;
+    let (directory, store, seed) = seeded_store().await;
     let lead = &seed["lead"];
     let service = crate::browser_host::HostBridgeService::start(
         directory.path(),
@@ -1230,8 +1234,7 @@ async fn sign_in_shows_one_card_through_the_chat_bridge() {
 
 #[tokio::test]
 async fn speak_plays_once_in_the_ready_voice_session() {
-    let seed = &seed().value;
-    let (_directory, store) = seeded_store().await;
+    let (_directory, store, seed) = seeded_store().await;
     let lead = &seed["lead"];
     ready_voice_session(&store, lead).await;
     let voice = Arc::new(RecordingVoice::default());
@@ -1275,8 +1278,7 @@ async fn speak_plays_once_in_the_ready_voice_session() {
 
 #[tokio::test]
 async fn speak_refuses_before_saving_when_a_ready_session_has_no_provider() {
-    let seed = &seed().value;
-    let (_directory, store) = seeded_store().await;
+    let (_directory, store, seed) = seeded_store().await;
     let lead = &seed["lead"];
     ready_voice_session(&store, lead).await;
     let result = call_named_tool(
@@ -1308,8 +1310,7 @@ async fn speak_refuses_before_saving_when_a_ready_session_has_no_provider() {
 
 #[tokio::test]
 async fn a_remote_worker_keeps_its_local_tools_and_names_the_driver_for_forwarded_ones() {
-    let seed = &seed().value;
-    let (_directory, store) = seeded_store().await;
+    let (_directory, store, seed) = seeded_store().await;
     let remote = &seed["remote"];
     // Python runs a remote worker's request reads on its own server.
     let local = call_named_tool(
@@ -1411,8 +1412,7 @@ fn exit_events(store: &RuntimeStore) -> Vec<Value> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_exec_runs_once_with_output_input_cancel_and_exit_notices() {
-    let seed = &seed().value;
-    let (_directory, store) = seeded_store().await;
+    let (_directory, store, seed) = seeded_store().await;
     let local = store.local_server_id().unwrap().unwrap();
     let lead = &seed["lead"];
     let tools = local_tools(&store);
@@ -1581,7 +1581,7 @@ async fn local_exec_runs_once_with_output_input_cancel_and_exit_notices() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
-    let (_directory, store) = seeded_store().await;
+    let (_directory, store, _) = seeded_store().await;
     let driver = OrchestrationDriver::new(
         Arc::clone(&store),
         Arc::new(RecordingTransport::default()),
@@ -1653,8 +1653,7 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
 
 #[tokio::test]
 async fn a_command_without_a_final_record_after_a_restart_stays_unknown() {
-    let seed = &seed().value;
-    let (_directory, store) = seeded_store().await;
+    let (_directory, store, seed) = seeded_store().await;
     let lead = seed["lead"]["id"].as_str().unwrap().to_owned();
     let record = json!({"handle": "lost-command", "serverId": "x", "status": "running",
         "startedAt": crate::event_write::unix_time().unwrap(), "finishedAt": null, "exitCode": null,

@@ -17,7 +17,8 @@ import {
 import { orderPreferenceServers } from "./preferenceServerOrder";
 import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { useUiPreferenceSync } from "./useUiPreferenceSync";
-import StudioSettingsTabs, {
+import {
+  StudioSettingsLayout,
   isStudioSettingsTab,
   type StudioSettingsTab,
 } from "../components/StudioSettingsTabs";
@@ -219,7 +220,9 @@ function MultiServerShell({
   });
   const preferencesRef = useRef(preferences);
   preferencesRef.current = preferences;
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(
+    () => window.matchMedia("(max-width: 760px)").matches,
+  );
   const screens = useRef(new Map<string, ScreenChannel>());
   const screenEvents = useRef<
     (owner: string, data: ScreenMessage, channel: ScreenChannel) => void
@@ -675,7 +678,8 @@ function MultiServerShell({
         },
       }));
     } else if (data.kind === "studio-server-toggle-sidebar") {
-      toggleSidebar();
+      if (typeof data.opened === "boolean") setMobileOpen(data.opened);
+      else toggleSidebar();
     } else if (data.kind === "studio-server-search") setSearchOpen(true);
     else if (
       data.kind === "studio-server-search-results" &&
@@ -798,9 +802,8 @@ function MultiServerShell({
       onEnterTransitionEnd={restoreAccountFocus}
     >
       <div className="studio-settings-panel" data-testid="studio-settings">
-        <Tabs
+        <StudioSettingsLayout
           value={managerTab}
-          className="studio-settings-tabs"
           onChange={(tab) => {
             if (!isStudioSettingsTab(tab)) return;
             setManagerTab(tab);
@@ -809,7 +812,6 @@ function MultiServerShell({
             send(current, { action: "settings", tab });
           }}
         >
-          <StudioSettingsTabs />
           <Tabs.Panel value="accounts" pt="md">
             {discovery.error && <p role="alert">{discovery.error}</p>}
             <ServerAccountsPanel
@@ -847,7 +849,7 @@ function MultiServerShell({
           <Tabs.Panel value="servers" pt="md">
             {management}
           </Tabs.Panel>
-        </Tabs>
+        </StudioSettingsLayout>
       </div>
     </Modal>
   );
