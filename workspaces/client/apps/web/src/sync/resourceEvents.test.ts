@@ -2249,6 +2249,9 @@ describe("shared resource event transport", () => {
   });
 
   it("drops a recovery marker when its last local subscriber leaves", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const fetch = vi.fn().mockRejectedValue(new TypeError("Unexpected fetch"));
+    vi.stubGlobal("fetch", fetch);
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("navigator", {
       onLine: true,
@@ -2285,15 +2288,20 @@ describe("shared resource event transport", () => {
         { resource: b, revision: 7 },
       ],
     };
+    // An established stream opens before its baseline; otherwise onerror starts
+    // a real identity probe whose cleanup timer depends on network timing.
+    Source.instances[0]!.open();
     Source.instances[0]!.emit("resources", baseline);
     await vi.advanceTimersByTimeAsync(20);
     expect(onA).toHaveBeenCalledTimes(1);
     expect(onB).toHaveBeenCalledTimes(1);
 
     Source.instances[0]!.onerror?.();
+    expect(fetch).not.toHaveBeenCalled();
     stopA();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.open();
     Source.instances[1]!.emit("resources", {
       ...baseline,
       reason: "reconnect",
