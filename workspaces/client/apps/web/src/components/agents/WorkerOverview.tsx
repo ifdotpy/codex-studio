@@ -192,20 +192,26 @@ export function teamDispatchGroups(
   workers: Agent[],
   indicators: Map<string, ChatIndicator>,
 ) {
+  // A turn-limited worker stopped before finishing; it stays visible as Stopped.
+  const turnLimited = (agent: Agent) =>
+    agent.terminalReason === WORKER_TURN_LIMIT_REASON;
+  const kindOf = (agent: Agent) => {
+    const kind = indicators.get(agent.id)?.kind || "none";
+    return turnLimited(agent) && !["answer", "error", "working"].includes(kind)
+      ? "paused"
+      : kind;
+  };
   const finished = (agent: Agent) =>
     agent.status === "completed" &&
     !agent.stall &&
-    !["answer", "error", "working"].includes(
-      indicators.get(agent.id)?.kind || "none",
-    );
+    !turnLimited(agent) &&
+    !["answer", "error", "working"].includes(kindOf(agent));
   return {
     groups: CHAT_INDICATOR_URGENCY.map((kind) => ({
       kind,
       name: teamIndicatorLabels[kind],
       workers: workers.filter(
-        (agent) =>
-          !finished(agent) &&
-          (indicators.get(agent.id)?.kind || "none") === kind,
+        (agent) => !finished(agent) && kindOf(agent) === kind,
       ),
     })),
     completed: workers.filter(finished),

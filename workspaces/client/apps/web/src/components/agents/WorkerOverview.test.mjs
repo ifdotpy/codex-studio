@@ -61,6 +61,32 @@ it("orders actionable indicators before work and keeps completed results collaps
   );
 });
 
+it("keeps turn-limited workers out of Finished as stopped", async () => {
+  const { teamDispatchGroups } = await import("./WorkerOverview.tsx");
+  const { WORKER_TURN_LIMIT_REASON } =
+    await import("../../generated/sharedValues.ts");
+  const rows = [
+    {
+      id: "limited",
+      status: "completed",
+      autoWake: false,
+      terminalReason: WORKER_TURN_LIMIT_REASON,
+    },
+    { id: "done", status: "completed" },
+  ];
+  const { groups, completed } = teamDispatchGroups(rows, new Map());
+  assert.deepEqual(
+    completed.map((row) => row.id),
+    ["done"],
+  );
+  assert.deepEqual(
+    groups
+      .find((group) => group.kind === "paused")
+      .workers.map((row) => row.id),
+    ["limited"],
+  );
+});
+
 it("derives hierarchy from parent identities and terminates on cycles", async () => {
   const { workerDepth } = await import("./WorkerOverview.tsx");
   const agents = new Map([
