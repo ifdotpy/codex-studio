@@ -22,6 +22,51 @@ readonly KEPT_RELEASES=3
 
 repository=$(git rev-parse --show-toplevel)
 commit=$(git -C "$repository" rev-parse --verify "${1:-HEAD}^{commit}")
+# A service restart kills descendants of the old server, including its command
+# monitors. Hand off before taking the lock or building so the entire delivery
+# belongs to an independent service. Only disposable fixtures may bypass this.
+if [ "${CODEX_STUDIO_DELIVER_IN_UNIT:-}" != 1 ] &&
+   [ "${CODEX_STUDIO_DELIVER_TEST_IN_PROCESS:-}" != 1 ]; then
+  command -v systemd-run >/dev/null || {
+    echo "systemd-run is required to deliver outside the server's cgroup" >&2
+    exit 1
+  }
+  command -v journalctl >/dev/null || {
+    echo "journalctl is required to read delivery output" >&2
+    exit 1
+  }
+  # One owner for both the transient service identity and its journal lookup.
+  # The caller PID distinguishes repeated deliveries of the same commit.
+  readonly DELIVERY_UNIT=codex-studio-deliver-${commit:0:12}-$$.service
+  script=$(cd -- "$(dirname -- "$0")" && pwd)/${0##*/}
+  environment=(--setenv=CODEX_STUDIO_DELIVER_IN_UNIT=1)
+  # A user manager does not inherit the invoking shell's toolchain and paths.
+  # Pass variable names rather than exposing their values in the argument list.
+  for name in HOME PATH XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME \
+    XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS CODEX_STUDIO_SERVER_ROOT \
+    CARGO_HOME RUSTUP_HOME CARGO_BUILD_JOBS RUSTFLAGS CARGO_ENCODED_RUSTFLAGS \
+    CODEX_NODE PNPM_HOME TMPDIR HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
+    http_proxy https_proxy all_proxy no_proxy; do
+    if [[ -v $name ]]; then environment+=("--setenv=$name"); fi
+  done
+  echo "Delivery unit: $DELIVERY_UNIT"
+  echo "Delivery logs: journalctl --user --unit=$DELIVERY_UNIT --no-pager"
+  # Never use --pipe: the caller's death must not close the worker's output.
+  # systemd-run --wait propagates the service's exit status when the caller lives.
+  status=0
+  systemd-run --user --unit="$DELIVERY_UNIT" --collect --wait --same-dir \
+    --service-type=exec --expand-environment=no --property=StandardOutput=journal \
+    --property=StandardError=journal "${environment[@]}" \
+    -- "$BASH" "$script" "$commit" || status=$?
+  journalctl --user --unit="$DELIVERY_UNIT" --no-pager --output=cat || {
+    echo "could not replay delivery logs; use the journal command above" >&2
+  }
+  exit "$status"
+fi
+
+# The unit journal records an outcome even for a failed build, lock, or rollback.
+trap 'status=$?; echo "delivery $commit finished with exit code $status"' EXIT
+
 root=${CODEX_STUDIO_SERVER_ROOT:-$HOME/${layout[3]}}
 release=$root/releases/$commit
 binary=${layout[2]}

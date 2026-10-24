@@ -309,7 +309,9 @@ failure. Saved input and verified interrupted work recover automatically.
 See [restart recovery](restart-recovery.md) for the exact behavior and limits.
 Use `studio-runtime-server service install` to enable terminal-only backend
 startup without starting or restarting a service. On Linux, `just deliver-server`
-selects and restarts the server release. Preserve the existing state directory.
+selects and restarts the server release from a separate transient systemd user
+service, with durable delivery logs in its journal. Preserve the existing state
+directory.
 For systemd user services and Windows Subsystem for Linux, see
 [Linux and WSL server setup](linux-server-setup.md).
 

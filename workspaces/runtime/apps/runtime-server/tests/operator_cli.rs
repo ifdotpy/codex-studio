@@ -242,49 +242,215 @@ fn service_install_refuses_foreign_files_and_symlinks_before_manager_calls() {
     assert!(!root.path().join("calls").exists());
 }
 
+#[cfg(target_os = "linux")]
+struct DeliveryFixture {
+    root: tempfile::TempDir,
+    release_root: std::path::PathBuf,
+    release: std::path::PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl DeliveryFixture {
+    fn new() -> Self {
+        let root = tempfile::tempdir().unwrap();
+        fixture(root.path());
+        let tools = root.path().join("tools");
+        let release_root = root.path().join("release space $%\" path");
+        let release = release_root.join("releases/fixture-commit");
+        fs::create_dir_all(release.join("bin")).unwrap();
+        let binary = release.join("bin/studio-runtime-server");
+        fs::write(&binary, "fixture executable; not invoked").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let fixture = Self {
+            root,
+            release_root,
+            release,
+        };
+        for (name, script) in [
+            (
+                "git",
+                r#"#!/bin/sh
+case "$*" in
+  *--show-toplevel*) printf '%s\n' "$PROJECT";;
+  *--verify*) echo fixture-commit;;
+  *archive*) echo archive >> "$HOME/build-calls"; exit 97;;
+  *) exit 97;;
+esac
+"#,
+            ),
+            (
+                "systemctl",
+                r#"#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/calls"
+case "$*" in *NRestarts*) echo 0;; *MainPID*) echo 1234;; esac
+"#,
+            ),
+            (
+                "readlink",
+                r#"#!/bin/sh
+case "$1" in
+  -f) printf '%s\n' "${HEALTH_BINARY:-$RELEASE/bin/studio-runtime-server}";;
+  *) /usr/bin/readlink "$@";;
+esac
+"#,
+            ),
+            ("curl", "#!/bin/sh\nexit 0\n"),
+            ("sleep", "#!/bin/sh\nexit 0\n"),
+            (
+                "journalctl",
+                r#"#!/bin/sh
+printf '%s\n' "$@" > "$HOME/journal-args"
+[ ! -f "$HOME/journal" ] || /bin/cat "$HOME/journal"
+"#,
+            ),
+            (
+                "systemd-run",
+                r#"#!/bin/bash
+printf '%s\n' "$@" > "$HOME/run-args"
+if [ -n "${RUN_FAILURE:-}" ]; then
+  echo 'fixture unit failed' >&2
+  exit "$RUN_FAILURE"
+fi
+environment=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --setenv=*)
+      assignment=${1#--setenv=}
+      if [[ $assignment != *=* ]]; then assignment="$assignment=${!assignment}"; fi
+      environment+=("$assignment");;
+    --) shift; break;;
+    --*) ;;
+    *) break;;
+  esac
+  shift
+done
+/usr/bin/env -i "${environment[@]}" PROJECT="$PROJECT" RELEASE="$RELEASE" "$@" > "$HOME/journal" 2>&1
+exit $?
+"#,
+            ),
+        ] {
+            fixture.tool(name, script);
+        }
+        // Whitelist host utilities: a missing mock must never reach the real
+        // systemd-run, systemctl or journalctl, even on a host running Studio.
+        for name in [
+            "dirname", "mkdir", "flock", "rm", "tar", "cp", "mv", "ln", "ls", "tail", "date",
+        ] {
+            std::os::unix::fs::symlink(Path::new("/usr/bin").join(name), tools.join(name)).unwrap();
+        }
+        std::os::unix::fs::symlink(test_node(), tools.join("node")).unwrap();
+        fixture
+    }
+
+    fn tool(&self, name: &str, script: &str) {
+        let path = self.root.path().join("tools").join(name);
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new("/bin/bash");
+        command
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("deliver.sh"))
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .env_clear()
+            .env("HOME", self.root.path())
+            .env("XDG_CONFIG_HOME", self.root.path().join("config"))
+            .env("CODEX_STUDIO_SERVER_ROOT", &self.release_root)
+            .env("PROJECT", env!("CARGO_MANIFEST_DIR"))
+            .env("RELEASE", &self.release)
+            .env("PATH", self.root.path().join("tools"));
+        command
+    }
+
+    fn read(&self, name: &str) -> String {
+        fs::read_to_string(self.root.path().join(name)).unwrap()
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn delivery_runs_in_a_journalled_unit_before_building_and_returns_failure() {
+    let fixture = DeliveryFixture::new();
+    // Force the build path, where this fixture's git archive fails deterministically.
+    fs::remove_file(fixture.release.join("bin/studio-runtime-server")).unwrap();
+    let output = fixture.command().output().unwrap();
+    assert!(!output.status.success());
+    assert!(
+        fixture.root.path().join("run-args").exists(),
+        "delivery ran in its caller instead of a transient unit"
+    );
+    let args = fixture.read("run-args");
+    for required in [
+        "--user",
+        "--wait",
+        "--collect",
+        "--same-dir",
+        "--expand-environment=no",
+        "--property=StandardOutput=journal",
+        "--property=StandardError=journal",
+    ] {
+        assert!(
+            args.lines().any(|line| line == required),
+            "missing {required}: {args}"
+        );
+    }
+    assert!(
+        !args
+            .lines()
+            .any(|line| line == "--pipe" || line == "--scope")
+    );
+    let unit = args
+        .lines()
+        .find_map(|line| line.strip_prefix("--unit="))
+        .unwrap();
+    assert!(unit.starts_with("codex-studio-deliver-"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains(unit));
+    assert!(fixture.read("journal-args").contains(unit));
+    assert!(fixture.read("journal").contains("exit code"));
+    assert_eq!(fixture.read("build-calls"), "archive\n");
+    assert!(!fixture.root.path().join("calls").exists());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn delivery_propagates_failed_unit_status_and_refuses_missing_runner() {
+    let fixture = DeliveryFixture::new();
+    let output = fixture.command().env("RUN_FAILURE", "37").output().unwrap();
+    assert_eq!(output.status.code(), Some(37));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("fixture unit failed"));
+    assert!(!fixture.release_root.join("deliver.lock").exists());
+    fs::remove_file(fixture.root.path().join("tools/systemd-run")).unwrap();
+    let output = fixture.command().output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("systemd-run is required"));
+    assert!(!fixture.root.path().join("calls").exists());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn delivery_unit_refuses_another_delivery_holding_the_release_lock() {
+    let fixture = DeliveryFixture::new();
+    let lock = fs::File::create(fixture.release_root.join("deliver.lock")).unwrap();
+    lock.try_lock().unwrap();
+    let output = fixture.command().output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("another delivery is running"));
+    assert!(fixture.root.path().join("run-args").exists());
+    assert!(!fixture.root.path().join("calls").exists());
+}
+
 #[test]
 #[cfg(target_os = "linux")]
 fn delivery_and_service_install_share_the_same_escaped_release_command() {
-    let root = tempfile::tempdir().unwrap();
-    fixture(root.path());
-    let tools = root.path().join("tools");
-    let release_root = root.path().join("release space $%\" path");
-    let release = release_root.join("releases/fixture-commit");
-    fs::create_dir_all(release.join("bin")).unwrap();
-    let binary = release.join("bin/studio-runtime-server");
-    fs::write(&binary, "fixture executable; not invoked").unwrap();
-    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
-    for (name, script) in [
-        (
-            "git",
-            "#!/bin/sh\ncase \"$*\" in *--show-toplevel*) printf '%s\\n' \"$PROJECT\";; *--verify*) echo fixture-commit;; *) exit 97;; esac\n",
-        ),
-        (
-            "systemctl",
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/calls\"\ncase \"$*\" in *NRestarts*) echo 0;; *MainPID*) echo 1234;; esac\n",
-        ),
-        (
-            "readlink",
-            "#!/bin/sh\ncase \"$1\" in -f) printf '%s\\n' \"$RELEASE/bin/studio-runtime-server\";; *) exit 1;; esac\n",
-        ),
-        ("curl", "#!/bin/sh\nexit 0\n"),
-        ("sleep", "#!/bin/sh\nexit 0\n"),
-    ] {
-        fs::write(tools.join(name), script).unwrap();
-        fs::set_permissions(tools.join(name), fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    // deliver.sh reads the service layout with node. The delivery PATH below
-    // has only the fixture tools, /usr/bin and /bin, and CI installs Node
-    // elsewhere, so link the test's node into the fixture tools.
-    std::os::unix::fs::symlink(test_node(), tools.join("node")).unwrap();
+    let fixture = DeliveryFixture::new();
     let install = Command::new(env!("CARGO_BIN_EXE_studio-runtime-server"))
         .args(["service", "install"])
         .env_clear()
-        .env("HOME", root.path())
-        .env("PATH", &tools)
-        .env("XDG_CONFIG_HOME", root.path().join("config"))
-        .env("CODEX_STUDIO_SERVER_ROOT", &release_root)
-        .env("CODEX_AGENTS_PYTHON", "/nonexistent")
+        .env("HOME", fixture.root.path())
+        .env("PATH", fixture.root.path().join("tools"))
+        .env("XDG_CONFIG_HOME", fixture.root.path().join("config"))
+        .env("CODEX_STUDIO_SERVER_ROOT", &fixture.release_root)
         .output()
         .unwrap();
     assert!(
@@ -292,38 +458,14 @@ fn delivery_and_service_install_share_the_same_escaped_release_command() {
         "{}",
         String::from_utf8_lossy(&install.stderr)
     );
-    let unit =
-        fs::read_to_string(root.path().join("config/systemd/user/codex-studio.service")).unwrap();
-    let project = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../..")
-        .canonicalize()
-        .unwrap();
-    let delivery = Command::new("/bin/bash")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("deliver.sh"))
-        .env_clear()
-        .env("HOME", root.path())
-        .env("XDG_CONFIG_HOME", root.path().join("config"))
-        .env("CODEX_STUDIO_SERVER_ROOT", &release_root)
-        .env("PROJECT", project)
-        .env("RELEASE", &release)
-        .env("CODEX_AGENTS_PYTHON", "/nonexistent")
-        .env(
-            "PATH",
-            std::env::join_paths([tools.as_path(), Path::new("/usr/bin"), Path::new("/bin")])
-                .unwrap(),
-        )
-        .output()
-        .unwrap();
+    let unit = fixture.read("config/systemd/user/codex-studio.service");
+    let delivery = fixture.command().output().unwrap();
     assert!(
         delivery.status.success(),
         "{}",
         String::from_utf8_lossy(&delivery.stderr)
     );
-    let dropin = fs::read_to_string(
-        root.path()
-            .join("config/systemd/user/codex-studio.service.d/zz-delivery.conf"),
-    )
-    .unwrap();
+    let dropin = fixture.read("config/systemd/user/codex-studio.service.d/zz-delivery.conf");
     let command = unit
         .lines()
         .find(|line| line.starts_with("ExecStart="))
@@ -332,9 +474,114 @@ fn delivery_and_service_install_share_the_same_escaped_release_command() {
         dropin.lines().any(|line| line == command),
         "{dropin} != {command}"
     );
-    let calls = fs::read_to_string(root.path().join("calls")).unwrap();
-    assert!(calls.contains("--user restart codex-studio.service"));
-    assert!(!root.path().join(".local/state/codex-agents").exists());
+    assert!(
+        fixture
+            .read("calls")
+            .contains("--user restart codex-studio.service")
+    );
+    assert!(
+        !fixture
+            .root
+            .path()
+            .join(".local/state/codex-agents")
+            .exists()
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn delivery_test_mode_rolls_back_without_launching_a_unit() {
+    for has_previous in [false, true] {
+        let fixture = DeliveryFixture::new();
+        let previous = fixture.release_root.join("releases/previous");
+        if has_previous {
+            fs::create_dir(&previous).unwrap();
+            std::os::unix::fs::symlink(&previous, fixture.release_root.join("current")).unwrap();
+        }
+        // Fail only the final HTTP probe, after startup succeeded.
+        fixture.tool(
+            "curl",
+            r#"#!/bin/sh
+if [ -f "$HOME/first-probe" ]; then exit 1; fi
+: > "$HOME/first-probe"
+"#,
+        );
+        let output = fixture
+            .command()
+            .env("CODEX_STUDIO_DELIVER_TEST_IN_PROCESS", "1")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("rolling back"));
+        assert!(!fixture.root.path().join("run-args").exists());
+        assert_eq!(
+            fixture
+                .read("calls")
+                .lines()
+                .filter(|line| line.contains(" restart "))
+                .count(),
+            2
+        );
+        if has_previous {
+            assert_eq!(
+                fs::read_link(fixture.release_root.join("current")).unwrap(),
+                previous
+            );
+        } else {
+            assert!(!fixture.release_root.join("current").exists());
+            assert!(
+                !fixture
+                    .root
+                    .path()
+                    .join("config/systemd/user/codex-studio.service.d/zz-delivery.conf")
+                    .exists()
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn delivery_unit_finishes_health_checks_and_prunes_old_releases() {
+    let fixture = DeliveryFixture::new();
+    for (index, name) in ["previous", "discard", "keep"].iter().enumerate() {
+        let path = fixture.release_root.join("releases").join(name);
+        fs::create_dir(&path).unwrap();
+        fs::File::open(&path)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new().set_modified(
+                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(index as u64),
+                ),
+            )
+            .unwrap();
+    }
+    let previous = fixture.release_root.join("releases/previous");
+    std::os::unix::fs::symlink(&previous, fixture.release_root.join("current")).unwrap();
+    // Keep the previous release even when it is older than the retention cutoff.
+    let discard = fixture.release_root.join("releases/older-discard");
+    fs::create_dir(&discard).unwrap();
+    fs::File::open(&discard)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+        .unwrap();
+    let output = fixture.command().output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_link(fixture.release_root.join("current")).unwrap(),
+        fixture.release
+    );
+    assert!(previous.is_dir());
+    assert!(!discard.exists());
+    assert!(fixture.read("calls").contains("--user is-active --quiet"));
+    let journal = fixture.read("journal");
+    assert!(journal.contains("delivered fixture-commit"));
+    assert!(journal.contains("exit code 0"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("delivered fixture-commit"));
 }
 
 #[test]
