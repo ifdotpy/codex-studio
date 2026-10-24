@@ -785,6 +785,11 @@ describe("shared resource event transport", () => {
     expect(states).not.toContain("schema-mismatch");
     await vi.advanceTimersByTimeAsync(10_000);
     expect(Source.instances.length).toBeGreaterThan(1);
+    expect(
+      new URL(Source.instances[1]!.url, "http://studio.test").searchParams.get(
+        "reconnect",
+      ),
+    ).toBe("true");
     stop();
     stopStatus();
   });

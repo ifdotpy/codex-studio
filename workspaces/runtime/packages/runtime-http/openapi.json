@@ -80164,6 +80164,15 @@
             }
           },
           {
+            "description": "Marks a client initiated stream reopen for value-free recovery diagnostics.",
+            "in": "query",
+            "name": "reconnect",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "in": "query",
             "name": "apiSchema",
             "required": false,

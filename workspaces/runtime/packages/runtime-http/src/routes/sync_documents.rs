@@ -722,9 +722,11 @@ fn pull_entities(
         studio_runtime_services::diagnostics::record_sync_recovery(
             studio_runtime_services::diagnostics::SyncRecoveryKind::Reset,
         );
-        studio_runtime_services::diagnostics::record_sync_recovery(
-            studio_runtime_services::diagnostics::SyncRecoveryKind::Gap,
-        );
+        if after > 0 && after < page.tombstone_floor {
+            studio_runtime_services::diagnostics::record_sync_recovery(
+                studio_runtime_services::diagnostics::SyncRecoveryKind::Gap,
+            );
+        }
         let response = crate::generated::SyncPullResetResponse {
             sync_entities: None,
             sync_entities_after: None,

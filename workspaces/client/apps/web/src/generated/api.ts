@@ -36601,6 +36601,8 @@ export interface operations {
         after?: number;
         apiSchema?: string;
         protocol?: string;
+        /** @description Marks a client initiated stream reopen for value-free recovery diagnostics. */
+        reconnect?: boolean;
         resources?: string;
         scope?: string;
         /** @description Whether this stream includes token-rate snapshots. Omitted selectors preserve native and signed-client behavior. Browser owners send the aggregate interest of their tabs. */

@@ -246,6 +246,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   let channel: BroadcastChannel | undefined;
 
   let source: ServerEventSource | undefined;
+  let reconnecting = false;
 
   let sourceOpened = false;
   let sessionId: string | undefined;
@@ -1050,6 +1051,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       navigator.onLine === false
     )
       return;
+    reconnecting = true;
     setStatus("degraded");
     reconnectTimer = setTimeout(() => {
       reconnectTimer = undefined;
@@ -1098,6 +1100,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         protocol: String(SYNC_PROTOCOL_VERSION),
         resources: JSON.stringify(resources),
         tokenRates,
+        reconnect: reconnecting,
         [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
       };
       const query = new URLSearchParams(
@@ -1107,6 +1110,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         ]),
       );
       const connected = openServerEvents(`/api/sync/stream?${query}`);
+      reconnecting = false;
       source = connected;
       notifyConnectionListeners();
       let schemaHandshakeReceived = false;

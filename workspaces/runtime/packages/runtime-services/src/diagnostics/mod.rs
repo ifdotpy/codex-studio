@@ -69,9 +69,6 @@ const RUNTIME_STAGE_SLOW_THRESHOLD_MS: u128 = 100;
 /// The only writer of the `runtime_stage` line. Unit for `elapsed_ms`: milliseconds.
 fn log_runtime_stage(name: &'static str, elapsed: std::time::Duration) {
     let elapsed_ms = elapsed.as_millis();
-    if elapsed_ms < RUNTIME_STAGE_SLOW_THRESHOLD_MS && !runtime_stage_timings_enabled() {
-        return;
-    }
     log_stderr(format_args!(
         "runtime_stage name={name} elapsed_ms={elapsed_ms}"
     ));

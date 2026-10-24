@@ -268,7 +268,12 @@ async fn sync_stream(
             Ok((sequence, _)) => sequence,
             Err(error) => return error.into_response(),
         };
-    let reason = if headers.contains_key("last-event-id") {
+    let reconnect = headers.contains_key("last-event-id")
+        || query
+            .typed_value("reconnect")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    let reason = if reconnect {
         studio_runtime_services::diagnostics::record_sync_recovery(
             studio_runtime_services::diagnostics::SyncRecoveryKind::Reconnect,
         );
@@ -3991,14 +3996,14 @@ mod tests {
             .publish(floating_test_rates(1))
             .expect("initial rates");
         let app = crate::router(state.clone()).expect("router");
-        let request = || {
+        let request = |reconnect: bool| {
             Request::builder()
-            .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D&tokenRates=true"))
+            .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D&tokenRates=true&reconnect={reconnect}"))
             .header("host", "127.0.0.1:4321").header("x-canvas-token", "token")
             .extension(ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],12345))))
             .body(Body::empty()).expect("request")
         };
-        let response = app.clone().oneshot(request()).await.expect("response");
+        let response = app.clone().oneshot(request(false)).await.expect("response");
         assert_eq!(response.status(), StatusCode::OK);
         let mut body = response.into_body().into_data_stream();
         let session = document(&body.next().await.expect("session").expect("bytes"));
@@ -4016,12 +4021,22 @@ mod tests {
         assert_eq!(delta["snapshot"], false);
         assert_eq!(delta["records"], floating_test_rates(2)["records"]);
         drop(body);
-        let response = app.oneshot(request()).await.expect("reconnect");
+        let before_reconnects =
+            studio_runtime_services::diagnostics::sync_recovery_counters()["reconnect"]
+                .as_u64()
+                .expect("counter is numeric");
+        let response = app.oneshot(request(true)).await.expect("reconnect");
         let mut body = response.into_body().into_data_stream();
         let session = document(&body.next().await.expect("session").expect("bytes"));
         assert!(session["sessionId"].is_string());
         let resources = document(&body.next().await.expect("resources").expect("bytes"));
-        assert_eq!(resources["reason"], "initial");
+        assert_eq!(resources["reason"], "reconnect");
+        assert!(
+            studio_runtime_services::diagnostics::sync_recovery_counters()["reconnect"]
+                .as_u64()
+                .expect("counter is numeric")
+                >= before_reconnects + 1
+        );
         let reconnect = document(&body.next().await.expect("reconnect rates").expect("bytes"));
         assert_eq!(reconnect["snapshot"], true);
         assert_eq!(reconnect["records"], floating_test_rates(2)["records"]);
