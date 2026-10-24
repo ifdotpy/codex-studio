@@ -10,6 +10,7 @@ mod capacity_retry;
 mod claude_preparation;
 #[cfg(unix)]
 mod continuation_start;
+mod disconnected_unknown_start;
 mod exited_generation_callback;
 mod idle_unload;
 mod input_origin;

@@ -136,7 +136,7 @@ impl SchedulerRepository {
             if stored_attempt(&agent).unwrap_or(&Value::Null)["connectionGeneration"]
                 .as_u64()
                 .is_none_or(|g| g == generation)
-                && disconnect_agent(transaction, &mut agent, at, restart, restart)?
+                && disconnect_agent(transaction, &mut agent, at, restart, true)?
                 && agent.status == AgentStatus::Interrupted
             {
                 interrupted.push(agent.id.0);
@@ -2274,8 +2274,14 @@ pub(super) fn disconnect_agent(
         .filter(|turn| !turn.is_empty())
         .map(str::to_owned);
     let unknown = turn.is_none();
-    let restart_input_wait = restart
-        && auto_reconcile_unknown
+    // A submitted start without a turn waits for one native history check of
+    // its input. A backend restart holds every such start. A provider
+    // disconnect while the backend runs holds a start whose reply the worker
+    // already settled as unknown. Interrupted instead, its attempt stayed in
+    // the disconnect receipt, which no recovery pass checks, and its input
+    // stayed `uncertain` although the provider had applied it.
+    let restart_input_wait = auto_reconcile_unknown
+        && (restart || attempt["executionOutcome"] == "unknown")
         && !paused
         && agent.extra.get("autoWake").is_some_and(truthy)
         && attempt["submitted"] == true
@@ -2303,7 +2309,7 @@ pub(super) fn disconnect_agent(
         previous["turnId"] = receipt["turnId"].clone();
         previous["startAttempt"] = receipt["startAttempt"].clone();
     }
-    if restart {
+    if restart || restart_input_wait {
         if restart_input_wait {
             let mut marker = receipt.clone();
             if let Some(object) = marker.as_object_mut() {
