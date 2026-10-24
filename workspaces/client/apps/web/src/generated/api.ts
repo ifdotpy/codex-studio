@@ -23504,6 +23504,17 @@ export interface components {
       /** Workspaceid */
       workspaceId: string;
     };
+    /** SyncMessageReceiptEntityPayload */
+    SyncMessageReceiptEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "messageReceipt";
+      /** Id */
+      id: string;
+      value: components["schemas"]["MessageReceiptEntityDto"];
+    };
     /** SyncModelEntityPayload */
     SyncModelEntityPayload: {
       /**
@@ -39314,6 +39325,8 @@ export type ChatEntityDto = components["schemas"]["ChatEntityDto"];
 export type ComplaintEntityDto = components["schemas"]["ComplaintEntityDto"];
 export type EdgeEntityDto = components["schemas"]["EdgeEntityDto"];
 export type EventEntityDto = components["schemas"]["EventEntityDto"];
+export type MessageReceiptEntityDto =
+  components["schemas"]["MessageReceiptEntityDto"];
 export type ModelEntityDto = components["schemas"]["ModelEntityDto"];
 export type MonitorEntityDto = components["schemas"]["MonitorEntityDto"];
 export type PeerTeamEntityDto = components["schemas"]["PeerTeamEntityDto"];

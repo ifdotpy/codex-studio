@@ -42,7 +42,7 @@ pub const EVENT_WINDOW_ROWS: usize = 200;
 const SYNC_SEEDED_MARKER: &str = "seeded";
 const AGENT_ORGANIZATION_FIELDS_MARKER: &str = "agent_organization_fields";
 const AGENT_ORGANIZATION_FIELDS_VERSION: i64 = 3;
-const SUMMARY_ENTITIES_MARKER: &str = "summary_entities_v1";
+use studio_runtime_store::SUMMARY_ENTITIES_SEED_MARKER;
 
 /// Whether Python's durable seed and entity-view upgrade markers prove the
 /// persisted sync projection is complete. Legacy behavior: codex_sync_entities.seed.
@@ -70,7 +70,7 @@ pub fn has_complete_entity_seed(connection: &Connection) -> StoreResult<bool> {
     }
     complete &= connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
-        [SUMMARY_ENTITIES_MARKER],
+        [SUMMARY_ENTITIES_SEED_MARKER],
         |row| row.get::<_, bool>(0),
     )?;
     let table_exists = |name: &str| {
@@ -735,7 +735,7 @@ pub(crate) fn publish_summary_changes(
 fn seed_summary_entities(transaction: &Transaction<'_>) -> StoreResult<()> {
     if transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
-        [SUMMARY_ENTITIES_MARKER],
+        [SUMMARY_ENTITIES_SEED_MARKER],
         |r| r.get::<_, bool>(0),
     )? {
         return Ok(());
@@ -761,7 +761,7 @@ fn seed_summary_entities(transaction: &Transaction<'_>) -> StoreResult<()> {
     publish_summary_changes(transaction, &pending)?;
     transaction.execute(
         "INSERT INTO sync_entity_meta(key,value) VALUES(?1,'1')",
-        [SUMMARY_ENTITIES_MARKER],
+        [SUMMARY_ENTITIES_SEED_MARKER],
     )?;
     Ok(())
 }

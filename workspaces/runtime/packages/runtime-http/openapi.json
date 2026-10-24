@@ -53182,6 +53182,7 @@
             "complaint": "#/components/schemas/SyncComplaintEntityPayload",
             "edge": "#/components/schemas/SyncEdgeEntityPayload",
             "event": "#/components/schemas/SyncEventEntityPayload",
+            "messageReceipt": "#/components/schemas/SyncMessageReceiptEntityPayload",
             "model": "#/components/schemas/SyncModelEntityPayload",
             "monitor": "#/components/schemas/SyncMonitorEntityPayload",
             "peerTeam": "#/components/schemas/SyncPeerTeamEntityPayload",
@@ -53334,6 +53335,30 @@
           "syncProtocol"
         ],
         "title": "SyncIdentityResponse",
+        "type": "object"
+      },
+      "SyncMessageReceiptEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "messageReceipt",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/MessageReceiptEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncMessageReceiptEntityPayload",
         "type": "object"
       },
       "SyncModelEntityPayload": {

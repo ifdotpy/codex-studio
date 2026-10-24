@@ -8,6 +8,9 @@ pub use cached_sql::{CachedSql, STATEMENT_CACHE_CAPACITY};
 pub use entity_publication::{EntityPublisher, PendingEntities};
 mod feature_schema;
 mod fresh_state;
+
+/// Durable marker proving bounded summary entities have been seeded. Unit: metadata key.
+pub const SUMMARY_ENTITIES_SEED_MARKER: &str = "summary_entities_v1";
 mod multi_server_state_check;
 mod path;
 pub mod path_identity;

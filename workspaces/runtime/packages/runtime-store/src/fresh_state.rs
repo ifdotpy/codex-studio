@@ -396,6 +396,11 @@ fn seed_workspace(transaction: &rusqlite::Transaction<'_>, state_dir: &Path) -> 
         "INSERT OR IGNORE INTO sync_entity_meta(key,value) VALUES('task_window_migrated','1')",
         [],
     )?;
+    // New stores have no summary source rows; their empty projection is complete.
+    transaction.execute(
+        "INSERT OR IGNORE INTO sync_entity_meta(key,value) VALUES(?1,'1')",
+        [crate::SUMMARY_ENTITIES_SEED_MARKER],
+    )?;
     Ok(())
 }
 
