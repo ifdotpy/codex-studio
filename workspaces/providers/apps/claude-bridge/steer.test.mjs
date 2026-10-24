@@ -1,3 +1,4 @@
+import { waitForFile } from "./testing/file-signals.mjs";
 import {
   startBridge as startScriptedBridge,
   HANG_GUARD_MS,
@@ -7,7 +8,7 @@ import {
 import { afterEach, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 // Scenario by the turn's first input text:
@@ -22,7 +23,7 @@ export const tool=(name,description,schema,call)=>({name,description,schema,call
 export const createSdkMcpServer=value=>({...value});
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
 export const getSessionMessages=async()=>[];
-const until=async(file,signal)=>{while(!fs.existsSync(file)&&!signal.aborted)await new Promise(r=>setTimeout(r,5));};
+const until=(file,signal)=>waitForFile(file,{signal}).catch(()=>{});
 const usage={input_tokens:10,output_tokens:2};
 export function query({prompt,options}){
  const abort=new AbortController(),cwd=options.cwd;
@@ -94,6 +95,7 @@ afterEach(async () => {
 
 async function startBridge(env = {}, sdk = FAKE_SDK) {
   const bridge = await startScriptedBridge(sdk, "claude-steer-", {
+    clock: true,
     env: {
       STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "150",
       STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50",
@@ -106,7 +108,7 @@ async function startBridge(env = {}, sdk = FAKE_SDK) {
 
 const text = (value) => [{ type: "text", text: value }];
 const completed = (bridge, turn) =>
-  bridge.note(
+  bridge.advanceUntil(
     (n) => n.method === "turn/completed" && n.params.turn.id === turn,
   );
 const acks = (bridge, id) =>
@@ -224,13 +226,13 @@ test("an interrupt before Claude reads a steer reports it unapplied", async () =
   assert.deepEqual(await inputs(bridge), ["hold"]);
 });
 
-async function read(bridge, value) {
-  const deadline = Date.now() + HANG_GUARD_MS;
-  while (!(await inputs(bridge)).includes(value)) {
-    if (Date.now() > deadline) throw new Error(value + " was not read");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
+const read = (bridge, value) => {
+  const file = path.join(bridge.root, ".inputs");
+  return waitForFile(file, {
+    matches: () =>
+      readFileSync(file, "utf8").trim().split("\n").includes(value),
+  });
+};
 
 test("a steer read without an echo is neither acknowledged nor reported unapplied", async () => {
   const bridge = await startBridge();
@@ -303,15 +305,13 @@ for (const scenario of ["event-only", "user-only", "mixed"]) {
       })
     ).turn.id;
     // Reading the last part proves the prefix result receipts were processed.
-    const deadline = Date.now() + HANG_GUARD_MS;
-    let messages = [];
-    while (messages.length < input.length) {
-      if (Date.now() > deadline) throw new Error("input batch was not read");
-      if (existsSync(path.join(bridge.root, ".sdk-inputs")))
-        messages = await sdkInputs(bridge);
-      if (messages.length < input.length)
-        await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    await waitForFile(path.join(bridge.root, ".sdk-inputs"), {
+      matches: () =>
+        readFileSync(path.join(bridge.root, ".sdk-inputs"), "utf8")
+          .trim()
+          .split("\n").length >= input.length,
+    });
+    const messages = await sdkInputs(bridge);
     assert.equal(messages.length, input.length);
     assert.equal(
       bridge.notes.some((n) => n.method === "turn/completed"),
@@ -405,14 +405,7 @@ test("a failed split prefix closes its query without submitting the remaining pa
   assert.equal(messages[0].message.content[0].text, "prefix-fail");
 });
 
-async function nativeQueued(bridge) {
-  const deadline = Date.now() + HANG_GUARD_MS;
-  while (!existsSync(path.join(bridge.root, ".native-queued"))) {
-    if (Date.now() > deadline)
-      throw new Error("Native queue did not receive input");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
+const nativeQueued = (bridge) => marker(bridge, ".native-queued");
 
 test("Stop cancels input held in Claude's native queue without closing the query", async () => {
   const bridge = await startBridge();
@@ -556,13 +549,8 @@ for (const scenario of [
   });
 }
 
-async function marker(bridge, name) {
-  const deadline = Date.now() + HANG_GUARD_MS;
-  while (!existsSync(path.join(bridge.root, name))) {
-    if (Date.now() > deadline) throw new Error(name + " missing");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
+const marker = (bridge, name) =>
+  bridge.advanceUntil(() => existsSync(path.join(bridge.root, name)));
 const release = (bridge, name) =>
   fs.writeFile(path.join(bridge.root, name), "");
 const turnItems = async (bridge, turn) =>
@@ -604,11 +592,12 @@ test("Stop finalizes an idle Claude turn with a deferred successful result", asy
   await read(bridge, "steer text");
   await end(bridge);
   await marker(bridge, ".result-sent");
-  await bridge.call("turn/interrupt", {
+  const stopping = bridge.call("turn/interrupt", {
     threadId: bridge.thread,
     turnId: turn,
   });
   const done = await completed(bridge, turn);
+  await stopping;
   assert.equal(done.params.turn.status, "interrupted");
   assert.equal(done.params.turn.unappliedSteers, undefined);
 });
@@ -677,7 +666,7 @@ fsp.appendFile = async(file, data, ...args) => {
  const value = await append(file, data, ...args), cwd = process.cwd();
  if(fs.existsSync(cwd+'/.hold-final-save') && String(data).includes('completed') && !fs.existsSync(cwd+'/.final-save-held')) {
   fs.writeFileSync(cwd+'/.final-save-held','');
-  while(!fs.existsSync(cwd+'/.release-final-save'))await new Promise(r=>setTimeout(r,5));
+  await waitForFile(cwd+'/.release-final-save');
  }
  return value;
 };`,
@@ -712,7 +701,7 @@ fsp.appendFile = async(file, data, ...args) => {
   await completed(bridge, turn);
   await release(bridge, ".release");
   // Let the first turn's stale deadline expire before starting another turn.
-  await new Promise((resolve) => setTimeout(resolve, 250));
+  await bridge.advanceTime(250);
   await release(bridge, ".ignore-interrupt");
   const next = await running(bridge, "running-ignore");
   await read(bridge, "running-ignore");
@@ -925,7 +914,7 @@ fsp.appendFile = async(file, data, ...args) => {
  const value = await append(file, data, ...args), cwd = process.cwd();
  if(fs.existsSync(cwd+'/.hold-final-save') && String(data).includes('completed') && !fs.existsSync(cwd+'/.final-save-held')) {
   fs.writeFileSync(cwd+'/.final-save-held','');
-  while(!fs.existsSync(cwd+'/.release-final-save'))await new Promise(r=>setTimeout(r,5));
+  await waitForFile(cwd+'/.release-final-save');
  }
  return value;
 };
