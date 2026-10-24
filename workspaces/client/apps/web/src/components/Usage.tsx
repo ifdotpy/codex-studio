@@ -452,16 +452,23 @@ export default function Usage({
   const percent = known
     ? Math.round((contextTokens / contextWindow) * 100)
     : null;
-  const modelLimits = useLimitEligibility(
-    agent,
-    limits,
-    selectedAccountKey === fallbackKey,
+  // The current chat's model decision stays with its mounted account panel,
+  // including while another account is selected. Never request that decision
+  // using the selected account's unrelated limit snapshot.
+  const currentAccount = usageAccounts.find((item) => item.key === fallbackKey);
+  const currentLimits = accountLimits(
+    currentAccount?.limits,
+    fallbackKey,
+    currentAccount?.accountId,
   );
-  const eligibility = modelEligibility(accountAgent, modelLimits);
-  const recovered = useRecoveredLimit(accountAgent, modelLimits, now);
+  const modelLimits = useLimitEligibility(agent, currentLimits);
+  const eligibility = modelEligibility(agent, modelLimits);
+  const selectedLimits =
+    selectedAccountKey === fallbackKey ? modelLimits : limits;
+  const recovered = useRecoveredLimit(accountAgent, selectedLimits, now);
   const selectedRecovery = recovered
     ? null
-    : limitRecovery(accountAgent, modelLimits, now);
+    : limitRecovery(accountAgent, selectedLimits, now);
   useEffect(() => {
     autoReloadedAccounts.current.clear();
   }, [agent.id]);
@@ -847,7 +854,9 @@ export default function Usage({
                     ? selectedRecovery
                     : limitRecovery(
                         { ...agent, accountKey: activeAccount.key },
-                        limits,
+                        activeAccount.key === fallbackKey
+                          ? modelLimits
+                          : limits,
                         now,
                       );
                   const resetCredits = jsonObject(
@@ -910,8 +919,7 @@ export default function Usage({
                             <small>{activeAccount?.key || fallbackKey}</small>
                           )}
                       </div>
-                      {isSelected &&
-                        selectedAccountKey === fallbackKey &&
+                      {activeAccount.key === fallbackKey &&
                         !recovery?.eligibility && (
                           <ModelLimitEligibility
                             eligibility={eligibility}
