@@ -592,7 +592,7 @@ fn valid_settings_update(request: &SessionRequest) -> bool {
     })
 }
 
-pub(super) fn valid_actorless_request_shape(
+pub(crate) fn valid_actorless_request_shape(
     method: Method,
     params: &Value,
     operation: &str,
@@ -646,7 +646,12 @@ pub(super) fn valid_actorless_request_shape(
                 && params.get("includeTurns") == Some(&json!(false))
         }
         Method::ThreadTurnsList => {
-            only(&["threadId", "limit", "sortDirection", "itemsView"], &[])
+            only(
+                &["threadId", "limit", "sortDirection", "itemsView"],
+                &["cursor"],
+            ) && params
+                .get("cursor")
+                .is_none_or(|value| value.as_str().is_some_and(|cursor| !cursor.is_empty()))
                 && params
                     .get("threadId")
                     .and_then(Value::as_str)
@@ -1223,6 +1228,32 @@ mod validation_tests {
             validate(&turns_request("full", 21, false)),
             Err(PortError::Invalid)
         );
+    }
+
+    #[test]
+    fn actorless_transfer_turn_pages_accept_only_a_nonempty_cursor() {
+        let mut request = turns_request("full", 20, false);
+        request.operation = "account-transfer:transfer:member:turns:1".into();
+        request.params["cursor"] = json!("20");
+        assert!(
+            validate(&request).is_ok(),
+            "the next bounded source page must reach native admission"
+        );
+        for cursor in [Value::Null, json!(""), json!(20), json!([]), json!({})] {
+            request.params["cursor"] = cursor;
+            assert_eq!(validate(&request), Err(PortError::Invalid));
+        }
+        request.params["cursor"] = json!("20");
+        for (field, value) in [
+            ("limit", json!(21)),
+            ("sortDirection", json!("asc")),
+            ("itemsView", json!("notLoaded")),
+            ("extra", json!(true)),
+        ] {
+            let mut invalid = request.clone();
+            invalid.params[field] = value;
+            assert_eq!(validate(&invalid), Err(PortError::Invalid), "{field}");
+        }
     }
 
     #[test]

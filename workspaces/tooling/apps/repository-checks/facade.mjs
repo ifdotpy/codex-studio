@@ -1437,6 +1437,8 @@ function fastTierCommands(root) {
               "test(account_transfer_driver::request_tests::a_running_retained_monitor_does_not_block_its_owners_account_transfer)",
               "test(account_transfer_driver::request_tests::an_unproven_monitor_publishes_one_transfer_wait_without_repeated_writes)",
               "test(account_transfer_driver::background_read_compat_tests::)",
+              "test(account_worker::retained::validation_tests::actorless_transfer_turn_pages_)",
+              "test(account_transfer_executor::retained_executor_tests::startup_transfer_reads_registered_profiles_before_any_http_catalog_request)",
               "test(account_transfer_executor::reconnect_read_tests::)",
               "test(account_worker::retained::validation_tests::transfer_background_preflight_accepts_only_the_exact_bounded_source_shape)",
               "test(context_repair::native_queue_admission_tests::context_native_queue_reads_pass_the_real_retained_validator_before_effects)",

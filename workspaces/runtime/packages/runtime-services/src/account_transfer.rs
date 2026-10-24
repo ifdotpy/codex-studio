@@ -645,9 +645,10 @@ impl Snapshot {
         Ok(self.decision(op, self.agents.clone(), vec![]))
     }
 
-    /// Correct only the legacy background shape that retained admission refused.
+    /// Correct only legacy background or paginated history reads that retained
+    /// admission refused. History parameters and operation identity stay exact.
     /// The driver must prove no native transport evidence exists before commit.
-    pub(crate) fn correct_unsubmitted_background_read(
+    pub(crate) fn correct_unsubmitted_legacy_read(
         &self,
         agent: &str,
         operation: &str,
@@ -655,18 +656,35 @@ impl Snapshot {
     ) -> Result<Option<Decision>, TransferError> {
         let member = &self.operation["members"][agent];
         let thread = member["sourceThreadId"].as_str().unwrap_or_default();
-        if !self.pending()
-            || self.phase(agent)? != Phase::Reading
-            || operation != format!("transfer:{}:{agent}:background-before", self.identity.id)
-            || next["operation"] != operation
-            || next["account"] != member["sourceAccountKey"]
-            || !valid_read_scope(&next["scope"], &member["sourceAccountKey"])
-            || next["method"] != "thread/backgroundTerminals/list"
-            || !valid_source_preflight_params(
+        let background = operation
+            == format!("transfer:{}:{agent}:background-before", self.identity.id)
+            && next["method"] == "thread/backgroundTerminals/list"
+            && valid_source_preflight_params(
                 "thread/backgroundTerminals/list",
                 thread,
                 &next["params"],
-            )
+            );
+        let page_prefix = format!("account-transfer:{}:{agent}:turns:", self.identity.id);
+        let paginated_history = operation.strip_prefix(&page_prefix).is_some_and(|page| {
+            page.parse::<u64>()
+                .is_ok_and(|value| value > 0 && value.to_string() == page)
+        }) && next["method"] == "thread/turns/list"
+            && !thread.is_empty()
+            && next["params"]["threadId"] == thread
+            && next["params"]["cursor"]
+                .as_str()
+                .is_some_and(|cursor| !cursor.is_empty())
+            && crate::account_worker::retained::valid_actorless_request_shape(
+                studio_runtime_providers::Method::ThreadTurnsList,
+                &next["params"],
+                operation,
+            );
+        if !self.pending()
+            || self.phase(agent)? != Phase::Reading
+            || !(background || paginated_history)
+            || next["operation"] != operation
+            || next["account"] != member["sourceAccountKey"]
+            || !valid_read_scope(&next["scope"], &member["sourceAccountKey"])
             || member
                 .get("providerReadReceipts")
                 .and_then(|receipts| receipts.get(operation))
@@ -685,7 +703,9 @@ impl Snapshot {
             .and_then(|corrections| corrections.get(operation));
         let legacy = correction.unwrap_or(saved);
         let mut expected_legacy = next.clone();
-        expected_legacy["params"] = json!({"threadId":thread});
+        if background {
+            expected_legacy["params"] = json!({"threadId":thread});
+        }
         expected_legacy["scope"] = legacy["scope"].clone();
         if legacy != &expected_legacy
             || !valid_read_scope(&legacy["scope"], &member["sourceAccountKey"])
