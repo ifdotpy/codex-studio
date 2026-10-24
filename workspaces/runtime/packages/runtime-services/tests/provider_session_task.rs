@@ -259,12 +259,9 @@ fn assert_exited_stdio_session_tail(partial_write: bool) {
     const BLOCKED_REQUEST_BYTES: usize = 512 * 1024;
     let root = tempfile::tempdir().unwrap();
     let release = root.path().join("release");
-    rustix::fs::mknodat(
-        rustix::fs::CWD,
+    nix::unistd::mkfifo(
         &release,
-        rustix::fs::FileType::Fifo,
-        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-        0,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
     )
     .unwrap();
     let read_one_byte = if partial_write {
