@@ -19,6 +19,10 @@ use studio_runtime_store::{
 struct Session {
     calls: Mutex<Vec<Value>>,
     finished: tokio::sync::Notify,
+    /// The account worker exited after its idle deadline: no live scope until a
+    /// caller starts it again with `ensure_session`.
+    dormant: std::sync::atomic::AtomicBool,
+    ensured: std::sync::atomic::AtomicUsize,
 }
 impl Session {
     fn scope() -> ConnectionScope {
@@ -38,7 +42,14 @@ impl AccountSessionPort for Session {
         Box::pin(async { Ok(limits(idle::wall_now())) })
     }
     fn current_scope(&self, _: &str) -> Option<ConnectionScope> {
-        Some(Self::scope())
+        (!self.dormant.load(std::sync::atomic::Ordering::SeqCst)).then(Self::scope)
+    }
+    fn ensure_session<'a>(&'a self, _: &'a str) -> AccountSessionFuture<'a, ConnectionScope> {
+        self.ensured
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.dormant
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { Ok(Self::scope()) })
     }
     fn provider_request<'a>(
         &'a self,
@@ -192,6 +203,43 @@ async fn idle_claude_dispatches_once_and_restart_does_not_repeat() {
     assert_eq!(
         serde_json::from_str::<Value>(&receipt).unwrap()["status"],
         "acknowledged"
+    );
+}
+
+#[tokio::test]
+async fn a_dormant_account_worker_is_started_before_the_native_action() {
+    // The account worker exits after its idle deadline. A native action (idle
+    // compaction here, Compact or Review from /api/action through the same owner)
+    // must start it again instead of answering "Not implemented".
+    let root = tempfile::tempdir().unwrap();
+    let (store, episode) = fixture(root.path(), Mode::Compact).await;
+    let session = Arc::new(Session::default());
+    session
+        .dormant
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let host = HostPort {
+        store: store.clone(),
+        session: session.clone(),
+    };
+    idle::fire(
+        store.clone(),
+        "claude".into(),
+        episode,
+        limits(idle::wall_now()),
+        idle::wall_now(),
+        &host,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        session.ensured.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the worker is started once"
+    );
+    assert_eq!(
+        session.calls.lock().unwrap().len(),
+        1,
+        "the compaction is sent"
     );
 }
 
