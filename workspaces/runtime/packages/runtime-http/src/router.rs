@@ -661,6 +661,24 @@ impl HttpState {
         Arc::clone(&self.sync_changes)
     }
 
+    /// Publish progress of a Claude login whose transient URL is not in the account list.
+    pub fn claude_login_change_callback(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let notifications = Arc::clone(&self.resource_notifications);
+        let changes = Arc::clone(&self.sync_changes);
+        let wake = Arc::clone(&self.event_wake);
+        Arc::new(move || {
+            if let Err(error) = notifications.publish_once(&serde_json::json!({
+                "requestId": format!("claude-login:{}", uuid::Uuid::new_v4()),
+                "resources": [{"kind":"accounts"}],
+            })) {
+                eprintln!("Claude login resource publication failed: {error}");
+            }
+            // A completed login can also change models, costs, and desktop status.
+            changes.notify_one();
+            wake.notify_one();
+        })
+    }
+
     #[cfg(unix)]
     pub fn with_terminal_driver(mut self, driver: Arc<TerminalDriver<PtyTerminalSession>>) -> Self {
         self.terminal_driver = Some(driver);

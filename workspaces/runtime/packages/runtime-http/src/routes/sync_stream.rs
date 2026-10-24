@@ -268,7 +268,14 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
                 .ok()
         }
         ResourceRef::AccountsResource(_) => {
-            serde_json::to_vec(&super::catalog::accounts(State(state)).await.ok()?.0).ok()
+            // Claude login progress is transient and absent from the account list.
+            // Its targeted publication must still refresh the existing login dialog.
+            let publication = state
+                .resource_notifications
+                .published_revision(&json!({"kind":"accounts"}))
+                .ok()?;
+            let accounts = super::catalog::accounts(State(state)).await.ok()?.0;
+            serde_json::to_vec(&(accounts, publication)).ok()
         }
         ResourceRef::LimitsResource(resource) => {
             let snapshot = if let Some(port) = &state.account_session {
@@ -2031,6 +2038,69 @@ mod tests {
             .expect("changed cached snapshot");
         assert_eq!(changed.resources, vec![resources[0].clone()]);
         assert_eq!(changed.versions, vec![changed.cursor.revision]);
+    }
+
+    #[tokio::test]
+    async fn state_stream_claude_login_progress_refreshes_accounts_without_a_registry_change() {
+        use studio_runtime_services::account_policy::AccountPolicyState;
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let policy = AccountPolicyState::from_startup(
+            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{},"logins":{}}"#),
+            [],
+        )
+        .expect("policy");
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            Some(Arc::new(policy)),
+        );
+        let resources = [json!({"kind":"accounts"}), json!({"kind":"models"})];
+        let notifications = state.resource_notifications_handle();
+        let accounts = super::super::catalog::accounts(State(state.clone()))
+            .await
+            .expect("account list")
+            .0;
+        let initial = notifications
+            .changes_since_with_content(&resources, None, |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("baseline");
+        let changed = state.claude_login_change_callback();
+        let mut after = initial.cursor.revision;
+        for _ in 0..2 {
+            // The actor publishes starting, then a provider URL, before adding an account.
+            changed();
+            let progress = notifications
+                .changes_since_with_content(&resources, Some(after), |resource| {
+                    resource_content(state.clone(), resource)
+                })
+                .await
+                .expect("login progress");
+            assert_eq!(progress.resources, vec![resources[0].clone()]);
+            assert_eq!(
+                progress.cursor.resource_revision, progress.cursor.revision,
+                "the existing completion wake still reaches related account resources"
+            );
+            after = progress.cursor.revision;
+            assert_eq!(
+                serde_json::to_value(
+                    super::super::catalog::accounts(State(state.clone()))
+                        .await
+                        .expect("account list")
+                        .0
+                )
+                .expect("JSON"),
+                serde_json::to_value(&accounts).expect("JSON"),
+                "a pending login does not publish an account or its private URL"
+            );
+        }
     }
 
     #[tokio::test]
