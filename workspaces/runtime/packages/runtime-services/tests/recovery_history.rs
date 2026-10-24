@@ -1,6 +1,13 @@
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
-use std::{collections::VecDeque, time::Instant};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 use studio_runtime_services::{
     recovery::{self, RecoveryAction, RecoveryEffects, RecoveryError, RecoveryOutcome},
     recovery_history::*,
@@ -18,7 +25,7 @@ struct Reader {
     replies: VecDeque<Result<Value, HistoryError>>,
     methods: Vec<HistoryMethod>,
     calls: Vec<Value>,
-    barrier: bool,
+    barrier: Arc<AtomicBool>,
     foreign: bool,
 }
 impl RecoveryReader for Reader {
@@ -50,7 +57,7 @@ impl RecoveryReader for Reader {
     ) -> BoxFuture<'a, Result<HistoryReceipt, HistoryError>> {
         let mut scope = s.clone();
         Box::pin(async move {
-            assert!(!self.barrier);
+            assert!(!self.barrier.load(Ordering::SeqCst));
             self.methods.push(m);
             self.calls
                 .push(json!({"method":m.as_str(),"params":params}));
@@ -69,7 +76,7 @@ impl RecoveryReader for Reader {
         _: Instant,
     ) -> BoxFuture<'a, Result<(), HistoryError>> {
         Box::pin(async move {
-            self.barrier = true;
+            self.barrier.store(true, Ordering::SeqCst);
             Ok(())
         })
     }
@@ -191,6 +198,7 @@ async fn expired_read_does_not_call_provider() {
 }
 struct Effects {
     actions: Vec<RecoveryAction>,
+    barrier: Arc<AtomicBool>,
 }
 impl RecoveryEffects for Effects {
     fn apply<'a>(
@@ -201,6 +209,10 @@ impl RecoveryEffects for Effects {
     ) -> BoxFuture<'a, Result<studio_runtime_services::recovery::RecoveryEffectResult, RecoveryError>>
     {
         Box::pin(async move {
+            assert!(
+                self.barrier.load(Ordering::SeqCst),
+                "barrier completes before effects"
+            );
             self.actions.push(action);
             Ok(
                 studio_runtime_services::recovery::RecoveryEffectResult::plain(
@@ -220,7 +232,10 @@ async fn observed_turn_consumer_applies_after_barrier_and_never_submits_input() 
         replies: vec![Ok(idle.clone()), Ok(page(turn())), Ok(idle)].into(),
         ..Default::default()
     };
-    let mut effects = Effects { actions: vec![] };
+    let mut effects = Effects {
+        actions: vec![],
+        barrier: reader.barrier.clone(),
+    };
     assert!(matches!(
         recovery::recover_turn(&agent(), scope(), &mut reader, &mut effects)
             .await
@@ -230,7 +245,7 @@ async fn observed_turn_consumer_applies_after_barrier_and_never_submits_input() 
             ..
         }
     ));
-    assert!(reader.barrier);
+    assert!(reader.barrier.load(Ordering::SeqCst));
     assert_eq!(effects.actions.len(), 1);
     assert_eq!(
         reader.methods,
@@ -251,7 +266,10 @@ async fn unreadable_turn_retains_every_effect_and_active_turn_is_not_completion(
             replies: vec![result].into(),
             ..Default::default()
         };
-        let mut effects = Effects { actions: vec![] };
+        let mut effects = Effects {
+            actions: vec![],
+            barrier: reader.barrier.clone(),
+        };
         let outcome = recovery::recover_turn(&agent(), scope(), &mut reader, &mut effects).await;
         assert!(
             outcome.is_err()
@@ -449,7 +467,10 @@ async fn recover_exact_status(held: bool, status: &str) -> (RecoveryOutcome, Rea
         .into(),
         ..Default::default()
     };
-    let mut effects = Effects { actions: vec![] };
+    let mut effects = Effects {
+        actions: vec![],
+        barrier: reader.barrier.clone(),
+    };
     let result = recovery::recover_turn(&snapshot, scope(), &mut reader, &mut effects)
         .await
         .expect("exact start recovery");
@@ -474,7 +495,7 @@ async fn held_restart_start_accepts_only_confirmed_terminal_history() {
     for status in ["completed", "failed", "interrupted"] {
         let (outcome, reader, effects) = recover_exact_status(true, status).await;
         assert!(matches!(outcome, RecoveryOutcome::Applied(_)), "{status}");
-        assert!(reader.barrier);
+        assert!(reader.barrier.load(Ordering::SeqCst));
         assert!(
             matches!(&effects.actions[..], [RecoveryAction::AcceptStart { turn }] if turn["status"] == status)
         );
@@ -486,7 +507,7 @@ async fn held_restart_start_accepts_only_confirmed_terminal_history() {
 async fn ordinary_exact_start_still_accepts_delivered_in_progress_turn() {
     let (outcome, reader, effects) = recover_exact_status(false, "inProgress").await;
     assert!(matches!(outcome, RecoveryOutcome::Applied(_)));
-    assert!(reader.barrier);
+    assert!(reader.barrier.load(Ordering::SeqCst));
     assert!(
         matches!(&effects.actions[..], [RecoveryAction::AcceptStart { turn }] if turn["status"] == "inProgress")
     );

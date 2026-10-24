@@ -370,6 +370,7 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
             db.execute("DELETE FROM analytics_agents", [])
                 .expect("exercise insert");
             db.execute_batch(&format!("CREATE TRIGGER abort_capture {timing} INSERT ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END;")).expect("failpoint");
+            let before = common::actual(&db, &common::tables());
             drop(db);
             let batch = history::prepare(
                 HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
@@ -386,12 +387,7 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
             );
             assert!(checkpoint(&store).is_none());
             let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3")).expect("db");
-            assert_eq!(
-                db.query_row("SELECT COUNT(*) FROM analytics_turns", [], |r| r
-                    .get::<_, i64>(0))
-                    .expect("count"),
-                0
-            );
+            assert_eq!(common::actual(&db, &common::tables()), before);
             db.execute_batch("DROP TRIGGER abort_capture")
                 .expect("clear failure");
             drop(db);
@@ -399,6 +395,10 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
             let store = RuntimeStore::open(Some(root.path()))
                 .await
                 .expect("restart");
+            assert_eq!(
+                common::actual(&common::analytics(root.path()), &common::tables()),
+                before
+            );
             let batch = history::prepare(
                 HistorySnapshot::from_records(agent, None).expect("snapshot"),
                 root.path(),
@@ -423,6 +423,7 @@ async fn stale_agent_budget_failure_and_cancellation_write_nothing() {
     lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
     let path = file(root.path(), &lines, b"");
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    let before = common::actual(&common::analytics(root.path()), &common::tables());
     let batch = history::prepare(
         HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
         root.path(),
@@ -439,6 +440,10 @@ async fn stale_agent_budget_failure_and_cancellation_write_nothing() {
         Err(HistoryError::BudgetUnavailable)
     ));
     assert!(checkpoint(&store).is_none());
+    assert_eq!(
+        common::actual(&common::analytics(root.path()), &common::tables()),
+        before
+    );
     assert!(matches!(
         history::prepare(
             HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
@@ -471,6 +476,10 @@ async fn stale_agent_budget_failure_and_cancellation_write_nothing() {
         .expect("epoch advance");
     assert!(batch.commit(&store, &Budget, 200.).await.is_err());
     assert!(checkpoint(&store).is_none());
+    assert_eq!(
+        common::actual(&common::analytics(root.path()), &common::tables()),
+        before
+    );
 }
 
 #[tokio::test]
@@ -667,7 +676,8 @@ async fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
         4
     );
 
-    let _replay_advanced = collector
+    assert_eq!(checkpoint(&store).expect("checkpoint")["status"], "current");
+    let replay_advanced = collector
         .step(
             &store,
             |row| roster.get(usize::try_from(row).ok()?),
@@ -681,6 +691,7 @@ async fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
         )
         .await
         .expect("replay tick");
+    assert!(!replay_advanced, "idle poll does not advance history");
 
     assert_eq!(read_budget(), (1, 23));
     assert_eq!(read_analytics(), 1);
@@ -866,7 +877,7 @@ async fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_id
 #[test]
 fn active_import_quota_notification_waits_for_event() {
     use studio_runtime_services::analytics_history_schedule::HistorySchedule;
-    let (_, mut active) = fixture();
+    let mut active = common::agent();
     active["status"] = json!("running");
     let mut archive = active.clone();
     archive["id"] = json!("archive");
@@ -902,56 +913,6 @@ fn active_import_quota_notification_waits_for_event() {
         .completed(&active, &checkpoint, 11.)
         .expect("notified actor complete");
     assert!(!schedule.has_pending());
-}
-
-#[tokio::test]
-async fn background_consumer_imports_selected_roster_actor() {
-    let (root, agent) = fixture();
-    let session = root.path().join("sessions");
-    fs::create_dir(&session).expect("sessions");
-    file(&session, &records(), b"");
-    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
-    let mut collector = history::HistoryCollector::default();
-    collector
-        .schedule
-        .refresh(std::slice::from_ref(&agent))
-        .expect("ingest history roster");
-    assert!(
-        collector
-            .step(
-                &store,
-                |row| std::slice::from_ref(&agent).get(usize::try_from(row).ok()?),
-                {
-                    let profile_path = root.path().to_path_buf();
-                    move |_| Ok(profile_path)
-                },
-                history::HistoryClock {
-                    observed_at: 200.,
-                    monotonic: 10.
-                },
-                Arc::new(AtomicBool::new(false)),
-                &Budget
-            )
-            .await
-            .expect("background step")
-    );
-    assert_eq!(checkpoint(&store).expect("checkpoint")["status"], "current");
-    assert!(
-        !collector
-            .step(
-                &store,
-                |row| std::slice::from_ref(&agent).get(usize::try_from(row).ok()?),
-                |_| panic!("idle poll must not rediscover files"),
-                history::HistoryClock {
-                    observed_at: 201.,
-                    monotonic: 11.
-                },
-                Arc::new(AtomicBool::new(false)),
-                &Budget
-            )
-            .await
-            .expect("idle")
-    );
 }
 
 #[tokio::test]
@@ -1024,6 +985,28 @@ async fn terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices() {
         };
         repair_terminal_errors(&store).await.expect("Rust repair");
         let repaired = snapshot(&store);
+        let exact = thread == Some("thread");
+        assert_eq!(repaired["state"]["repaired"], u64::from(exact));
+        assert_eq!(
+            repaired["state"]["ambiguous"],
+            if exact {
+                0
+            } else if thread.is_none() {
+                2
+            } else {
+                1
+            }
+        );
+        for turn in repaired["turns"].as_array().expect("turn rows") {
+            assert_eq!(turn["status"], if exact { "failed" } else { "running" });
+            if exact {
+                assert_eq!(turn["error"], json!({"message":"native failure"}));
+                assert_eq!(turn["terminalSource"], "liveNoticeRepair");
+            } else {
+                assert!(turn["error"].is_null());
+                assert!(turn.get("terminalSource").is_none());
+            }
+        }
         let admissions = store.writer_admissions();
         repair_terminal_errors(&store).await.expect("second repair");
         assert_eq!(

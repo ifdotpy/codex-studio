@@ -1881,7 +1881,27 @@ async fn recovery_restores_every_request_without_holding_back_preparation() {
             .expect("every recovered request is restored");
     ready(&mut session, &mut peer).await;
     session.control.prepare(spec(1000, 1000)).await.unwrap();
-    session.checked_shutdown().await;
+    let exit = session.checked_shutdown().await;
+    let mut restored = exit
+        .outcomes
+        .iter()
+        .chain(exit.undelivered.iter().flat_map(|event| &event.outcomes))
+        .filter_map(|outcome| match outcome {
+            SessionOutcome::Resolved {
+                ticket,
+                outcome: RequestOutcome::Unknown,
+            } => Some(ticket.id.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    restored.sort_by_key(|id| match id {
+        RequestId::Number(id) => *id,
+        _ => panic!("numeric recovered identity"),
+    });
+    assert_eq!(
+        restored,
+        (2..602).map(RequestId::Number).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test(start_paused = true)]

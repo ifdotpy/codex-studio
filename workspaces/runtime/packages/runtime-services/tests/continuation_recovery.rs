@@ -7,7 +7,7 @@ use studio_runtime_services::{
 use studio_runtime_store::{ContinuationTable, RuntimeStore};
 /// A fresh state holding agent `a` with a scheduled usage resume; `capacity`
 /// adds a scheduled capacity retry and `wake` the events of a progress batch.
-async fn seeded(kind: &str) -> tempfile::TempDir {
+async fn seeded(kind: &str) -> (tempfile::TempDir, RuntimeStore) {
     let dir = tempfile::tempdir().expect("isolated state");
     let store = RuntimeStore::open(Some(dir.path()))
         .await
@@ -68,8 +68,7 @@ async fn seeded(kind: &str) -> tempfile::TempDir {
         })
         .await
         .expect("seed state");
-    drop(store);
-    dir
+    (dir, store)
 }
 fn read(store: &RuntimeStore) -> Value {
     let db = store.test_reader().expect("reader");
@@ -136,10 +135,7 @@ async fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup()
         {
             continue;
         }
-        let root = seeded("usage").await;
-        let store = RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("seeded state opens");
+        let (root, store) = seeded("usage").await;
         let before = read(&store);
         let result = continuation_driver::drive_with_fault(
             &store,
@@ -188,8 +184,7 @@ async fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup()
 }
 #[tokio::test]
 async fn changed_task_cancels_resume_and_notifies_parent_atomically() {
-    let root = seeded("usage").await;
-    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    let (_root, store) = seeded("usage").await;
     store.transaction(|tx|{
         let mut a:Value=serde_json::from_str(&tx.query_row("SELECT record FROM runtime_agents WHERE id='a'",[],|r|r.get::<_,String>(0))?)?;
         a["isLead"]=json!(false);a["parentId"]=json!("parent");a["rootId"]=json!("parent");
@@ -224,8 +219,7 @@ async fn changed_task_cancels_resume_and_notifies_parent_atomically() {
 
 #[tokio::test]
 async fn foreign_followup_identity_refuses_and_rolls_back() {
-    let root = seeded("usage").await;
-    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    let (_root, store) = seeded("usage").await;
     store.transaction(|tx|{tx.execute("INSERT INTO runtime_events VALUES('usage-resume:resume','foreign','followup','foreign payload','pending',1.0,2,NULL,NULL)",[])?;Ok(())}).await.expect("foreign event");
     let before = read(&store);
     let result = continuation_driver::drive(
@@ -276,8 +270,7 @@ async fn wakeup_event_and_metadata_writes_restart_atomically() {
         if !full && !matches!(boundary, Boundary::AfterEvent | Boundary::AfterMetadata) {
             continue;
         }
-        let root = seeded("wake").await;
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let (root, store) = seeded("wake").await;
         let before = wake_state(&store);
         let result = continuation_driver::drive_with_fault(
             &store,
@@ -323,10 +316,7 @@ async fn wakeup_event_and_metadata_writes_restart_atomically() {
 
 #[tokio::test]
 async fn corrupt_continuation_rows_name_the_table_and_identity() {
-    let template = seeded("capacity").await;
-    let store = RuntimeStore::open(Some(template.path()))
-        .await
-        .expect("seeded state");
+    let (_root, store) = seeded("capacity").await;
     let agent: String = store
         .test_reader()
         .expect("reader")
@@ -417,8 +407,7 @@ async fn capacity_claim_commits_record_agent_and_followup_together() {
         {
             continue;
         }
-        let root = seeded("capacity").await;
-        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let (root, store) = seeded("capacity").await;
         let before = capacity_state(&store);
         let result = continuation_driver::drive_with_fault(
             &store,
@@ -478,10 +467,7 @@ async fn capacity_claim_commits_record_agent_and_followup_together() {
 
 #[tokio::test]
 async fn automatic_capacity_retry_cancels_an_excluded_account_with_a_permanent_hold() {
-    let template = seeded("capacity").await;
-    let store = RuntimeStore::open(Some(template.path()))
-        .await
-        .expect("seeded state opens");
+    let (_root, store) = seeded("capacity").await;
     store
         .transaction_with(|tx| {
             let mut agent: Value = tx
@@ -532,10 +518,7 @@ fn followup(effects: &[studio_runtime_services::continuation::Effect]) -> bool {
 
 #[tokio::test]
 async fn a_due_capacity_retry_waits_while_the_disk_is_full_and_claims_after() {
-    let template = seeded("capacity").await;
-    let store = RuntimeStore::open(Some(template.path()))
-        .await
-        .expect("seeded state opens");
+    let (_root, store) = seeded("capacity").await;
     let before = capacity_state(&store);
     let staged = store
         .transaction_with(|tx| {
@@ -571,7 +554,7 @@ async fn a_due_capacity_retry_waits_while_the_disk_is_full_and_claims_after() {
     assert_eq!(held["agent"]["capacityRetry"], held["record"]);
     assert_eq!(held["events"], before["events"]);
 
-    store
+    let claimed = store
         .transaction_with(|tx| {
             studio_runtime_services::continuation_runtime::stage_capacity_retry_observed(
                 tx, "a", "retry", 1016.0, true, None,
@@ -582,20 +565,35 @@ async fn a_due_capacity_retry_waits_while_the_disk_is_full_and_claims_after() {
         .expect("claim after space returns");
     let resumed = capacity_state(&store);
     assert!(
-        !resumed["record"]["reason"]
-            .as_str()
-            .unwrap_or("")
-            .starts_with("Disk is full"),
-        "free space ends the disk wait: {resumed}"
+        matches!(claimed.effects(),
+            [studio_runtime_services::continuation::Effect::Followup { id, .. }]
+                if id == &format!("{}retry", studio_runtime_services::capacity_retry::CAPACITY_FOLLOWUP_PREFIX)
+        ),
+        "healthy disk claims exactly the retry followup"
     );
+    assert_eq!(resumed["record"]["status"], "starting");
+    assert_eq!(resumed["agent"]["status"], "queued");
+    assert_eq!(resumed["agent"]["capacityRetry"], resumed["record"]);
+    assert_eq!(
+        resumed["events"],
+        before["events"].as_i64().expect("count") + 1
+    );
+    let replay = store
+        .transaction_with(|tx| {
+            studio_runtime_services::continuation_runtime::stage_capacity_retry_observed(
+                tx, "a", "retry", 1017.0, true, None,
+            )
+            .map_err(|error| studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))
+        })
+        .await
+        .expect("claim replay");
+    assert!(!followup(replay.effects()));
+    assert_eq!(capacity_state(&store), resumed);
 }
 
 #[tokio::test]
 async fn a_disk_full_turn_failure_creates_a_free_space_retry() {
-    let root = seeded("usage").await;
-    let store = RuntimeStore::open(Some(root.path()))
-        .await
-        .expect("seeded state opens");
+    let (_root, store) = seeded("usage").await;
     let turn = json!({"id":"turn","status":"failed","error":{"message":INCIDENT}});
     let staged = store
         .transaction_with(move |tx| {

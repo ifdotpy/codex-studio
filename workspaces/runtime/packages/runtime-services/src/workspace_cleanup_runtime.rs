@@ -1281,7 +1281,7 @@ mod tests {
             let path = root.join(name);
             let connection = rusqlite::Connection::open(path).expect("fixture DB opens");
             connection
-                .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+                .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN;")
                 .expect("fixture pragmas apply");
             let mut statements = schema[name]["sqlite_master"]
                 .as_array()
@@ -1313,6 +1313,7 @@ mod tests {
                     connection.execute_batch(sql).expect("schema installs");
                 }
             }
+            connection.execute_batch("COMMIT;").expect("schema commits");
         }
         let store = RuntimeStore::open(Some(root))
             .await
@@ -1898,8 +1899,6 @@ mod tests {
 
     #[tokio::test]
     async fn archive_saves_a_fixture_repository_ref_before_removing_its_worktree() {
-        use std::process::Command;
-
         let (directory, store) = fixture().await;
         // Git reports the repository in its resolved form.
         let repository = studio_runtime_store::path_identity::resolve(directory.path())
@@ -1908,24 +1907,11 @@ mod tests {
         let root = repository.join(".worktrees/codex-agents/cleanup-agent");
         std::fs::create_dir_all(root.parent().expect("worktree parent creates"))
             .expect("fixture parent creates");
-        let init = Command::new("git")
-            .args(["init", "-q"])
-            .arg(&repository)
-            .output()
-            .expect("fixture git init starts");
-        assert!(init.status.success(), "fixture repository initializes");
-        let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&repository)
-                .args(args)
-                .output()
-                .expect("fixture Git starts");
-            assert!(output.status.success(), "fixture Git succeeds");
-            String::from_utf8_lossy(&output.stdout).trim().to_owned()
-        };
-        git(&["config", "user.name", "Cleanup Fixture"]);
-        git(&["config", "user.email", "cleanup@example.invalid"]);
+        fixture_git(
+            directory.path(),
+            &["init", "-q", repository.to_str().expect("repository path")],
+        );
+        let git = |args: &[&str]| fixture_git(&repository, args);
         std::fs::write(repository.join("README.md"), "fixture\n").expect("fixture file writes");
         git(&["add", "README.md"]);
         git(&["commit", "-q", "-m", "fixture"]);
@@ -1987,31 +1973,16 @@ mod tests {
 
     #[tokio::test]
     async fn archive_allows_a_verified_detached_worktree() {
-        use std::process::Command;
-
         let (directory, store) = fixture().await;
         let repository = directory.path().join("detached-project");
         let root = repository.join(".worktrees/codex-agents/cleanup-agent");
         std::fs::create_dir_all(root.parent().expect("worktree parent creates"))
             .expect("fixture parent creates");
-        let init = Command::new("git")
-            .args(["init", "-q"])
-            .arg(&repository)
-            .output()
-            .expect("fixture git init starts");
-        assert!(init.status.success(), "fixture repository initializes");
-        let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&repository)
-                .args(args)
-                .output()
-                .expect("fixture Git starts");
-            assert!(output.status.success(), "fixture Git succeeds");
-            String::from_utf8_lossy(&output.stdout).trim().to_owned()
-        };
-        git(&["config", "user.name", "Cleanup Fixture"]);
-        git(&["config", "user.email", "cleanup@example.invalid"]);
+        fixture_git(
+            directory.path(),
+            &["init", "-q", repository.to_str().expect("repository path")],
+        );
+        let git = |args: &[&str]| fixture_git(&repository, args);
         std::fs::write(repository.join("README.md"), "fixture\n").expect("fixture file writes");
         git(&["add", "README.md"]);
         git(&["commit", "-q", "-m", "fixture"]);
@@ -2023,13 +1994,7 @@ mod tests {
             "codex-agent/cleanup-agent",
             root.to_str().expect("fixture path is UTF-8"),
         ]);
-        let detached = Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(["switch", "--detach", "HEAD"])
-            .output()
-            .expect("fixture worktree can detach");
-        assert!(detached.status.success(), "worktree becomes detached");
+        fixture_git(&root, &["switch", "--detach", "HEAD"]);
         put_agent(
             &store,
             json!({
@@ -2051,32 +2016,17 @@ mod tests {
 
     #[tokio::test]
     async fn archive_keeps_parent_when_a_registered_nested_worktree_exists() {
-        use std::process::Command;
-
         let (directory, store) = fixture().await;
         let repository = directory.path().join("nested-project");
         let root = repository.join(".worktrees/codex-agents/cleanup-agent");
         let nested = root.join(".worktrees/nested");
         std::fs::create_dir_all(root.parent().expect("worktree parent creates"))
             .expect("fixture parent creates");
-        let init = Command::new("git")
-            .args(["init", "-q"])
-            .arg(&repository)
-            .output()
-            .expect("fixture git init starts");
-        assert!(init.status.success(), "fixture repository initializes");
-        let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&repository)
-                .args(args)
-                .output()
-                .expect("fixture Git starts");
-            assert!(output.status.success(), "fixture Git succeeds");
-            String::from_utf8_lossy(&output.stdout).trim().to_owned()
-        };
-        git(&["config", "user.name", "Cleanup Fixture"]);
-        git(&["config", "user.email", "cleanup@example.invalid"]);
+        fixture_git(
+            directory.path(),
+            &["init", "-q", repository.to_str().expect("repository path")],
+        );
+        let git = |args: &[&str]| fixture_git(&repository, args);
         std::fs::write(repository.join("README.md"), "fixture\n").expect("fixture file writes");
         git(&["add", "README.md"]);
         git(&["commit", "-q", "-m", "fixture"]);
@@ -2119,7 +2069,13 @@ mod tests {
     }
 
     fn fixture_git(directory: &std::path::Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
+        let mut command = std::process::Command::new("git");
+        for (key, _) in
+            std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("GIT_"))
+        {
+            command.env_remove(key);
+        }
+        let output = command
             .arg("-C")
             .arg(directory)
             .args(args)
