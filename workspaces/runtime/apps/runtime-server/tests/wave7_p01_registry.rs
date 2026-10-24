@@ -1467,6 +1467,118 @@ async fn shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_r
 #[path = "../src/runtime_shutdown.rs"]
 mod runtime_shutdown;
 
+/// Keep the ordinary account-worker setup, replacing only its provider port
+/// with the real supervisor adapter connected to a deterministic Unix peer.
+struct SupervisorDetachLauncher {
+    scripted: Arc<Scripted>,
+    root: PathBuf,
+}
+
+impl AccountLauncher for SupervisorDetachLauncher {
+    fn launch(&self, account: String) -> LaunchFuture<'_> {
+        Box::pin(async move {
+            let mut launch = self.scripted.launch(account).await?;
+            launch.options.expected_generation = None;
+            launch.factory = Arc::new(
+                studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(
+                    studio_runtime_process::BackendIdentity {
+                        backend_id: studio_runtime_process::BackendId("detach-budget".into()),
+                        state_dir: self.root.clone(),
+                    },
+                ),
+            );
+            Ok(launch)
+        })
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn backend_shutdown_reports_both_supervisor_detach_timeouts() {
+    use tokio::io::{AsyncReadExt, BufReader};
+
+    tokio::time::timeout(TEST_HANG_GUARD, async {
+        let fixture = Fixture::new().await;
+        fixture.enqueue(0, "detach-timeout").await;
+        let listener =
+            tokio::net::UnixListener::bind(fixture._root.path().join("supervisor.sock")).unwrap();
+        let (scripted, _writes) = scripted_with_unknown_writes(false);
+        let runtime = host_runtime::HostRuntime::with_launcher(
+            fixture.store.clone(),
+            Arc::new(SupervisorDetachLauncher {
+                scripted,
+                root: fixture._root.path().into(),
+            }),
+            Arc::new(Notify::new()),
+            test_registry_config(),
+        )
+        .await
+        .unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut control = BufReader::new(socket);
+        wire_read(&mut control).await;
+        wire_send(&mut control, json!({"ok":true,"protocol":2})).await;
+        let status = wire_read(&mut control).await;
+        assert_eq!(status["action"], "status");
+        wire_send(
+            &mut control,
+            json!({"requestId":status["requestId"],"error":"Unknown supervisor handle"}),
+        )
+        .await;
+        let open = wire_read(&mut control).await;
+        assert_eq!(open["action"], "open");
+        wire_send(
+            &mut control,
+            json!({"requestId":open["requestId"],"result":{"pid":1,"generation":7,"resumed":false,"sequence":0,"acknowledged":0}}),
+        )
+        .await;
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut events = BufReader::new(socket);
+        wire_read(&mut events).await;
+        wire_send(&mut events, json!({"ok":true,"protocol":2})).await;
+        assert_eq!(wire_read(&mut events).await["action"], "nextBatch");
+        let state = studio_runtime_http::HttpState::new(
+            "token".into(),
+            "fixture".into(),
+            fixture._root.path().display().to_string(),
+            4620,
+            None,
+            Some(fixture.store.clone()),
+            None,
+        );
+        let closing = tokio::spawn(async move {
+            runtime_shutdown::close(runtime, &state)
+                .await
+                .map_err(|error| error.to_string())
+        });
+        assert_eq!(events.read(&mut [0]).await.unwrap(), 0);
+        // Neither peer confirms ownership release. Advance past the intended
+        // detach budget, then resume the clock for real SQLite worker cleanup.
+        tokio::time::pause();
+        tokio::time::advance(
+            studio_runtime_process::provider_task::SUPERVISOR_DETACH_TIMEOUT * 2,
+        )
+        .await;
+        tokio::time::resume();
+        let error = closing.await.unwrap().unwrap_err();
+        assert!(
+            error.contains("supervisor detach was not confirmed"),
+            "backend lost the adapter cleanup receipt: {error}"
+        );
+        assert_eq!(
+            error.matches(&AdapterError::Timeout.to_string()).count(),
+            2,
+            "both socket detach timeouts must reach the backend: {error}"
+        );
+        // A command already in flight may precede the control FIN.
+        tokio::io::copy(&mut control, &mut tokio::io::sink())
+            .await
+            .unwrap();
+    })
+    .await
+    .expect("backend detach timeout regression hang guard");
+}
+
 #[tokio::test]
 async fn recovery_selection_matches_frozen_scheduler_roster_without_changing_stored_records() {
     let fixture = Fixture::build(crate::fixture_support::FixtureKind::Recovery).await;

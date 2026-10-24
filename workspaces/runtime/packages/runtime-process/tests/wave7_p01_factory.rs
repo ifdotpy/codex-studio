@@ -159,7 +159,7 @@ use crate::process_support as support;
 // Retained child environment verification is implemented only on Linux.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() {
+async fn shutdown_detaches_and_another_backend_reattaches_at_same_generation() {
     let (state, mut supervisor) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-process/tests/wave7_p01_factory",
         || {
@@ -175,7 +175,7 @@ async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() 
     let launch = || OpenOptions {
         clock: SessionClock::default(),
         launch: ProviderLaunchSpec::new(
-            support::shell_command("while IFS= read -r line; do :; done"),
+            support::shell_command("printf 'ready\\n' >&2; while IFS= read -r line; do :; done"),
             support::child_environment(&state.0),
             state.0.clone(),
         ),
@@ -194,12 +194,18 @@ async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() 
         .unwrap();
     let pid = attachment.status.borrow().info.as_ref().unwrap().pid;
     supervisor.own_child(pid);
-    let _exit = attachment.shutdown().await;
+    // Receiving an entry proves the event connection was attached as well.
+    let replay_cursor = attachment.journal.recv().await.unwrap().cursor;
+    let exit = attachment.shutdown().await;
+    assert!(exit.cleanup_error.is_none(), "{:?}", exit.cleanup_error);
     assert!(
         support::pid_exists(pid),
         "supervised child must survive backend attachment shutdown"
     );
-    let prepared = factory
+    let mut identity = state.identity();
+    identity.backend_id.0.push_str("-restarted");
+    let restarted_factory = SupervisorProviderTaskFactory::new(identity);
+    let prepared = restarted_factory
         .prepare(handle.clone(), launch(), Shutdown::default())
         .await
         .unwrap();
@@ -213,7 +219,13 @@ async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() 
     let info = attachment.status.borrow().info.clone().unwrap();
     assert!(info.resumed);
     assert_eq!(info.pid, pid);
-    let _exit = attachment.shutdown().await;
+    assert_eq!(info.generation, generation);
+    assert_eq!(
+        attachment.journal.recv().await.unwrap().cursor,
+        replay_cursor
+    );
+    let exit = attachment.shutdown().await;
+    assert!(exit.cleanup_error.is_none(), "{:?}", exit.cleanup_error);
     // Fixture teardown owns the supervisor and its surviving child.
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-process/tests/wave7_p01_factory",

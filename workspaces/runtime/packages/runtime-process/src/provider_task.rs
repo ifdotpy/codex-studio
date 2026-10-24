@@ -21,6 +21,10 @@ use tokio::{
 };
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
+/// Maximum wait for supervisor ownership release, in monotonic elapsed time.
+/// Both sockets close concurrently, leaving reporting time inside the backend's
+/// account-worker shutdown bound.
+pub const SUPERVISOR_DETACH_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct SupervisorProviderTaskFactory {
     identity: BackendIdentity,
@@ -265,7 +269,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
     /// A supervisor EOF follows its ownership detach, whereas dropping our
     /// socket only schedules that work. Bound cleanup even for a silent peer.
     async fn close(&mut self) -> Result<(), AdapterError> {
-        tokio::time::timeout(RPC_TIMEOUT, async {
+        tokio::time::timeout(SUPERVISOR_DETACH_TIMEOUT, async {
             self.stream
                 .get_mut()
                 .shutdown()
@@ -458,8 +462,24 @@ impl AdapterTask {
             started: false,
             received_at: Instant::now(),
         };
-        let result = self.attached(&mut rpc).await;
-        self.record_cleanup(rpc.close().await);
+        let (result, event_task) = match self.attached(&mut rpc).await {
+            Ok(pump) => {
+                let result = self.serve(&mut rpc, pump.messages, pump.cursor).await;
+                pump.shutdown.cancel();
+                (result, Some(pump.task))
+            }
+            Err(error) => (Err(error), None),
+        };
+        // Poll both half-closes together. Waiting for the event EOF before
+        // sending the control FIN would consume two detach budgets.
+        let (control, events) = tokio::join!(rpc.close(), async {
+            match event_task {
+                Some(task) => task.await.unwrap_or(Err(AdapterError::TaskFailed)),
+                None => Ok(()),
+            }
+        });
+        self.record_cleanup(control);
+        self.record_cleanup(events);
         result
     }
 
@@ -476,7 +496,7 @@ impl AdapterTask {
         }
     }
 
-    async fn attached(&mut self, rpc: &mut Rpc<UnixStream>) -> Result<(), AdapterError> {
+    async fn attached(&mut self, rpc: &mut Rpc<UnixStream>) -> Result<EventPump, AdapterError> {
         let handshake = serialize_frame(&handshake_request_v2(&self.identity))?;
         let reply = interruptible(&mut self.stop, rpc.exchange(&handshake)).await?;
         validate_handshake_v2(&reply)?;
@@ -610,8 +630,12 @@ impl AdapterTask {
             }
             event_rpc.close().await
         });
-        self.serve(rpc, pump_receiver, event_pump, event_shutdown, cursor)
-            .await
+        Ok(EventPump {
+            messages: pump_receiver,
+            task: event_pump,
+            shutdown: event_shutdown,
+            cursor,
+        })
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -699,14 +723,12 @@ impl AdapterTask {
         &mut self,
         rpc: &mut Rpc<S>,
         mut pump: mpsc::Receiver<Result<PumpMessage, AdapterError>>,
-        event_pump: tokio::task::JoinHandle<Result<(), AdapterError>>,
-        event_shutdown: Shutdown,
         mut cursor: EventCursor,
     ) -> Result<(), AdapterError> {
         let mut terminal = false;
         let mut pump_open = true;
         let mut pending_event: Option<(JournalEntry, oneshot::Sender<()>)> = None;
-        let result = loop {
+        loop {
             if terminal
                 && self
                     .info
@@ -771,10 +793,7 @@ impl AdapterTask {
                     }
                 }
             }
-        };
-        event_shutdown.cancel();
-        self.record_cleanup(event_pump.await.unwrap_or(Err(AdapterError::TaskFailed)));
-        result
+        }
     }
 
     async fn command<S: AsyncRead + AsyncWrite + Unpin>(
@@ -1024,6 +1043,13 @@ fn local_request_id(message: &Value) -> Option<RequestId> {
     message
         .get("id")
         .and_then(|id| RequestId::deserialize(id).ok())
+}
+
+struct EventPump {
+    messages: mpsc::Receiver<Result<PumpMessage, AdapterError>>,
+    task: tokio::task::JoinHandle<Result<(), AdapterError>>,
+    shutdown: Shutdown,
+    cursor: EventCursor,
 }
 
 enum PumpMessage {

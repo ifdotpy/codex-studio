@@ -174,8 +174,9 @@ The attachment exposes bounded `commands` and `journal` channels, a `status`
 watch, and cancellation-safe `completion()` / `shutdown()` futures. Completion
 half-closes both supervisor connections and waits for their EOF, which follows
 supervisor ownership release. This allows another backend identity to reattach
-without racing the old connections. Each detach wait uses the existing
-[`RPC_TIMEOUT`](src/provider_task.rs) bound; an unconfirmed detach is reported
+without racing the old connections. Both detach waits run concurrently under
+the [`SUPERVISOR_DETACH_TIMEOUT`](src/provider_task.rs) bound, leaving time to
+report cleanup inside the backend's worker shutdown budget. An unconfirmed detach is reported
 through `TaskExit::cleanup_error`, while the supervisor retains its child.
 
 Both channels hold 16 entries with a 1 MiB serialized upper bound per entry (plus proportional

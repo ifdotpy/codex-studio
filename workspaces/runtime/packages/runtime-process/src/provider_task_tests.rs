@@ -421,6 +421,28 @@ async fn shutdown_reports_control_detach_timeout() {
 }
 
 #[tokio::test]
+async fn shutdown_reports_both_detach_timeouts_within_one_budget() {
+    let (_root, mut attachment, mut control, mut events) = attachment_with_supervisor_peers().await;
+    let started = Instant::now();
+    let task = tokio::spawn(async move { attachment.shutdown().await });
+    assert_eq!(events.read(&mut [0]).await.unwrap(), 0);
+    // Both FINs must arrive before either peer sends EOF or a timer fires.
+    assert_eq!(control.read(&mut [0]).await.unwrap(), 0);
+    tokio::time::pause();
+    let exit = task.await.unwrap();
+    assert!(Instant::now() - started < SUPERVISOR_DETACH_TIMEOUT * 2);
+    assert!(matches!(exit.result, Err(AdapterError::Cancelled)));
+    assert_eq!(
+        exit.cleanup_error
+            .unwrap()
+            .matches(&AdapterError::Timeout.to_string())
+            .count(),
+        2
+    );
+    assert!(exit.provider_retained);
+}
+
+#[tokio::test]
 async fn shutdown_reports_event_detach_timeout() {
     let (_root, mut attachment, mut control, mut events) = attachment_with_supervisor_peers().await;
     // The control peer will confirm detach; only the event peer withholds EOF.
@@ -448,12 +470,6 @@ async fn idle_attachment_waits_for_events_without_periodic_next_requests() {
     let (socket, server) = tokio::io::duplex(4096);
     let mut server = BufReader::new(server);
     let (_pump_sender, pump) = mpsc::channel(1);
-    let event_shutdown = Shutdown::default();
-    let mut event_stop = event_shutdown.subscribe();
-    let event_pump = tokio::spawn(async move {
-        Shutdown::cancelled(&mut event_stop).await;
-        Ok(())
-    });
     let task = tokio::spawn(async move {
         let mut rpc = Rpc {
             stream: BufReader::new(socket),
@@ -461,9 +477,7 @@ async fn idle_attachment_waits_for_events_without_periodic_next_requests() {
             started: false,
             received_at: Instant::now(),
         };
-        actor
-            .serve(&mut rpc, pump, event_pump, event_shutdown, EventCursor(0))
-            .await
+        actor.serve(&mut rpc, pump, EventCursor(0)).await
     });
     let (ack, barrier) = AdapterCommand::ack(EventCursor(0));
     commands
@@ -549,13 +563,7 @@ async fn full_journal_lane_keeps_ack_commands_live_while_next_event_waits() {
             received_at: Instant::now(),
         };
         actor
-            .serve(
-                &mut rpc,
-                pump,
-                event_pump,
-                Shutdown::default(),
-                EventCursor(LANE_CAPACITY as u64),
-            )
+            .serve(&mut rpc, pump, EventCursor(LANE_CAPACITY as u64))
             .await
     });
 
@@ -596,6 +604,7 @@ async fn full_journal_lane_keeps_ack_commands_live_while_next_event_waits() {
     );
     shutdown.cancel();
     assert!(matches!(task.await.unwrap(), Err(AdapterError::Cancelled)));
+    let _pump_result = event_pump.await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
