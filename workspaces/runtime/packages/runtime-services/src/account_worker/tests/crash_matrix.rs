@@ -164,6 +164,54 @@ async fn finish_replacement_recovery(peer: &mut Peer, worker: &AccountHandle, la
     }
 }
 
+fn reconnect_peer(previous: &Peer) -> Peer {
+    let mut peer = Peer::identity(&previous.account, previous.generation.0, None);
+    // The provider journal continues across worker attachments in one generation.
+    peer.cursor = previous.cursor;
+    peer
+}
+
+#[tokio::test]
+async fn verification_reconnect_keeps_the_journal_tail_before_a_health_turn() {
+    let context = Arc::new(Context::default());
+    MATRIX
+        .scope(context.clone(), async {
+            let state = State::new().await;
+            let mut peer = Peer::new();
+            let mut worker = peer.worker(state.bridge.clone()).await;
+            worker_barrier(&worker).await;
+            let marker = peer
+                .frame(json!({"method":"test/barrier","params":{}}))
+                .await;
+            peer.acknowledged(marker).await;
+            // Recovery can append replies after the restart's initial marker.
+            for _ in 0..4 {
+                let cursor = peer
+                    .frame(json!({"method":"test/barrier","params":{}}))
+                    .await;
+                peer.acknowledged(cursor).await;
+            }
+            let tail = peer.cursor;
+            assert!(tail > marker);
+            worker.shutdown().await.expect("original worker shutdown");
+
+            let mut peer = reconnect_peer(&peer);
+            assert_eq!(peer.cursor, tail, "reconnect preserves the entire journal");
+            let mut worker = replacement_worker(&peer, state.bridge.clone()).await;
+            prove_ready_for_new_turn(&context, &state, &mut peer, &worker).await;
+            assert!(
+                peer.cursor > tail,
+                "fresh health frames follow the old tail"
+            );
+            worker
+                .shutdown()
+                .await
+                .expect("verification worker shutdown");
+            std::fs::remove_dir_all(&state.root).expect("owned fixture cleanup");
+        })
+        .await;
+}
+
 #[tokio::test]
 async fn a_replacement_waits_for_its_own_recovery_before_the_health_turn() {
     let context = Arc::new(Context::default());
@@ -410,14 +458,17 @@ async fn restart(context: &Context, label: &str) {
     }
     let (mut verification_peer, mut verification) =
         if let Some((callback_cursor, callback_frame)) = unresolved_callback {
-            let mut peer = Peer::identity("default", generation, None);
+            let mut peer = reconnect_peer(&peer);
             let worker = replacement_worker(&peer, bridge.clone()).await;
+            let tail = peer.cursor;
             peer.cursor = callback_cursor - 1;
             let redelivered_cursor = peer.frame(callback_frame).await;
             assert_eq!(
                 redelivered_cursor, callback_cursor,
                 "replay uses the exact callback cursor"
             );
+            // Only this replay uses its old cursor. New replies follow the tail.
+            peer.cursor = tail.max(redelivered_cursor);
             finish_replacement_recovery(&mut peer, &worker, label).await;
             assert!(
                 peer.writes.try_recv().is_err(),
@@ -430,8 +481,7 @@ async fn restart(context: &Context, label: &str) {
             );
             (peer, worker)
         } else {
-            let mut peer = Peer::identity("default", generation, None);
-            peer.cursor = marker;
+            let mut peer = reconnect_peer(&peer);
             let worker = replacement_worker(&peer, bridge.clone()).await;
             finish_replacement_recovery(&mut peer, &worker, label).await;
             (peer, worker)
