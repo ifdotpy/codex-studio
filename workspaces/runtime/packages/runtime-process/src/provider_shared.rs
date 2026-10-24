@@ -16,6 +16,8 @@ use std::path::Path;
 
 const BACKEND_ONLY_ENVIRONMENT: &[&str] = &[
     "CODEX_AGENTS_BACKEND_ID",
+    // The desktop launcher supplies the backend executable hash, not provider identity.
+    "CODEX_BACKEND_BUILD",
     "CODEX_RUNTIME_LOCK_METRICS",
     "CODEX_AGENTS_PROVIDER_CAPTURE",
     "CODEX_AGENTS_PROVIDER_CAPTURE_FILE",

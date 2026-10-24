@@ -852,7 +852,7 @@ function fastTierCommands(root) {
             "-p",
             "studio-runtime-process",
             "-E",
-            "binary(integration) & test(/^provider_task::(a_cancelled_attachment_leaves_its_supervised_child_retained|terminal_eof_serves_already_queued_final_ack_before_completion)$/)",
+            "(binary(integration) & test(/^provider_task::(a_cancelled_attachment_leaves_its_supervised_child_retained|terminal_eof_serves_already_queued_final_ack_before_completion)$/)) | test(/^provider_task::tests::retained_environment_/)",
           ],
         ],
       ],

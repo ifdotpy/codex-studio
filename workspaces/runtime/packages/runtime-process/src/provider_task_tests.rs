@@ -886,6 +886,57 @@ fn launch_environment() -> BTreeMap<String, String> {
     ])
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn retained_environment_ignores_only_the_backend_build_identity() {
+    let mut requested = launch_environment();
+    requested.insert("CODEX_BACKEND_BUILD".into(), "new-backend".into());
+    requested.insert(
+        "STUDIO_CLAUDE_CREDENTIAL_IDENTITY".into(),
+        "claude:a@example.test".into(),
+    );
+    let clean = clean_environment(&requested);
+    assert!(!clean.contains_key("CODEX_BACKEND_BUILD"));
+    for previous_build in [None, Some("old-backend"), Some("new-backend")] {
+        let mut original = requested.clone();
+        original.remove("CODEX_BACKEND_BUILD");
+        if let Some(build) = previous_build {
+            original.insert("CODEX_BACKEND_BUILD".into(), build.into());
+        }
+        let (read, _) = scripted_records(vec![Ok(original.clone())]);
+        let shutdown = Shutdown::default();
+        let settled = settled_environment(
+            &mut shutdown.subscribe(),
+            &Arc::new(Semaphore::new(1)),
+            &clean,
+            &RetainedLaunchValues::default(),
+            Duration::ZERO,
+            read,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            settled, original,
+            "the supervisor keeps its original launch"
+        );
+        for key in [
+            "HOME",
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "STUDIO_CLAUDE_CREDENTIAL_IDENTITY",
+            "OPENAI_API_KEY",
+            "UNCLASSIFIED_VARIABLE",
+        ] {
+            let mut foreign = original.clone();
+            foreign.insert(key.into(), "changed".into());
+            assert!(
+                verify_environment(&foreign, &clean, &RetainedLaunchValues::default()).is_err(),
+                "the backend build exception must not admit another {key}"
+            );
+        }
+    }
+}
+
 /// A reader that returns `records` in order, then the last one again.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn scripted_records(
