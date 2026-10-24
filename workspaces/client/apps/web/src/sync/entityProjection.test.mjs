@@ -806,29 +806,6 @@ it("keeps an empty chat list empty while unrelated entities update", () => {
   assert.deepEqual(updated.chats, []);
 });
 
-it("preserves work when an agent changes and the work row is unchanged", () => {
-  const state = emptyEntityProjection();
-  applyEntityRows(
-    state,
-    [
-      entityRow("work", "w1", { id: "w1" }, 1),
-      entityRow("agent", "a1", { id: "a1", name: "A" }, 1),
-      entityRow("chat", "c1", { id: "c1" }, 1),
-    ],
-    true,
-  );
-  const updated = applyEntityRows(
-    state,
-    [
-      entityRow("work", "w1", { id: "w1" }, 1),
-      entityRow("agent", "a1", { id: "a1", name: "A2" }, 2),
-      entityRow("chat", "c1", { id: "c1" }, 1),
-    ],
-    true,
-  );
-  assert.deepEqual(updated.runtime.work, [{ id: "w1" }]);
-});
-
 it("reuses unchanged work, request, and peer team arrays when agents change", () => {
   const state = emptyEntityProjection();
   const initial = applyEntityRows(
@@ -851,6 +828,7 @@ it("reuses unchanged work, request, and peer team arrays when agents change", ()
     ],
     true,
   );
+  assert.deepEqual(updated.runtime.work, [{ id: "w1" }]);
   assert.equal(updated.runtime.work, initial.runtime.work);
   assert.equal(updated.runtime.requests, initial.runtime.requests);
   assert.equal(updated.runtime.peerTeams, initial.runtime.peerTeams);

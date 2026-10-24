@@ -325,6 +325,7 @@ describe("entity pull dispatch gate", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.resetModules();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -591,6 +592,7 @@ describe("entity pull dispatch gate", () => {
     "dispatches exactly one fallback pull when a real held persister %s",
     async (mode) => {
       const { api, rows, storageInstance, stop, workspaceId } = await setup();
+      vi.useFakeTimers();
       const documents = installMutationResponse();
       const pulls: number[] = [];
       configurePulls(workspaceId, pulls, documents);
@@ -604,14 +606,17 @@ describe("entity pull dispatch gate", () => {
       const persisterEntered = new Promise<void>((resolve) => {
         entered = resolve;
       });
+      let held = false;
       storageInstance.bulkWrite.mockImplementation(async (writes) => {
         if (
+          !held &&
           writes.some(
             ({ document }) =>
               document.id ===
               `entity:${documents[0]?.collection}:${documents[0]?.id}`,
           )
         ) {
+          held = true;
           entered();
           await hold;
         }
@@ -624,19 +629,23 @@ describe("entity pull dispatch gate", () => {
       const readsBeforeFrame =
         storageInstance.findDocumentsById.mock.calls.length;
       mocks.invalidate?.({ epoch: "held", entitySequence: 101 });
-      await vi.waitFor(() =>
-        expect(
-          storageInstance.findDocumentsById.mock.calls.length,
-        ).toBeGreaterThan(readsBeforeFrame),
-      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        storageInstance.findDocumentsById.mock.calls.length,
+      ).toBeGreaterThan(readsBeforeFrame);
       expect(pulls).toEqual([]);
       if (mode === "reject") rejectWrite(new Error("test persistence failure"));
-      else await new Promise((resolve) => setTimeout(resolve, 300));
+      else {
+        await vi.advanceTimersByTimeAsync(249);
+        expect(pulls).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+      }
       await post;
-      await vi.waitFor(() => expect(pulls).toHaveLength(1));
+      await vi.advanceTimersByTimeAsync(0);
       expect(pulls).toHaveLength(1);
       release();
-      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pulls).toHaveLength(1);
       stop();
     },
   );

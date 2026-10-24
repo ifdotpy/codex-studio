@@ -1,11 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deleteOtherEntityProjectionDatabases,
   entityProjectionDatabaseName,
   isProjectionDatabaseClosedError,
 } from "./entityCacheStorage";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 function stubProjectionLocks(isHeld = (_name: string) => false) {
   const request = vi.fn(
@@ -30,6 +33,8 @@ function makeSuccessfulDeleteRequest() {
   queueMicrotask(() => request.onsuccess?.(new Event("success") as never));
   return request;
 }
+
+beforeEach(() => vi.useFakeTimers());
 
 describe("schema-keyed entity cache storage", () => {
   it("uses separate database names for different schema hashes", () => {
@@ -93,7 +98,8 @@ describe("schema-keyed entity cache storage", () => {
       { name: "rxdb-dexie-studio-unrelated--0--projections" },
       { name: "codex-studio-uploads" },
     ]);
-    await vi.waitFor(() => expect(deleteDatabase).toHaveBeenCalledTimes(4));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(deleteDatabase).toHaveBeenCalledTimes(4);
     expect(deleteDatabase.mock.calls.map(([name]) => name).sort()).toEqual([
       `rxdb-dexie-${entityProjectionDatabaseName(workspace, staleHash)}--0--_rxdb_internal`,
       `rxdb-dexie-${entityProjectionDatabaseName(workspace, staleHash)}--0--projections`,
@@ -106,6 +112,11 @@ describe("schema-keyed entity cache storage", () => {
     const databases = vi.fn(async () => []);
     const deleteDatabase = vi.fn();
     vi.stubGlobal("indexedDB", { databases, deleteDatabase });
+
+    stubProjectionLocks();
+    deleteOtherEntityProjectionDatabases("a".repeat(32), "1".repeat(64));
+    expect(databases).toHaveBeenCalledOnce();
+    databases.mockClear();
 
     deleteOtherEntityProjectionDatabases("a", "1".repeat(64));
     deleteOtherEntityProjectionDatabases("a".repeat(32), "invalid-hash");
@@ -139,7 +150,8 @@ describe("schema-keyed entity cache storage", () => {
     });
 
     deleteOtherEntityProjectionDatabases(workspace, currentHash);
-    await vi.waitFor(() => expect(lockRequests).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(20);
+    expect(lockRequests).toHaveBeenCalledOnce();
     await Promise.resolve();
 
     expect(lockRequests.mock.calls[0]?.[1]).toEqual({
@@ -162,7 +174,8 @@ describe("schema-keyed entity cache storage", () => {
     });
 
     deleteOtherEntityProjectionDatabases(workspace, currentHash);
-    await vi.waitFor(() => expect(deleteDatabase).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(20);
+    expect(deleteDatabase).toHaveBeenCalledOnce();
     expect(deleteDatabase).toHaveBeenCalledWith(staleName);
   });
 
@@ -212,9 +225,8 @@ it("cleans only the selected server when workspace ids overlap", async () => {
     deleteDatabase,
   });
   deleteOtherEntityProjectionDatabases(workspace, current, suffix);
-  await vi.waitFor(() =>
-    expect(deleteDatabase).toHaveBeenCalledExactlyOnceWith(names[1]),
-  );
+  await vi.advanceTimersByTimeAsync(20);
+  expect(deleteDatabase).toHaveBeenCalledExactlyOnceWith(names[1]);
 });
 
 it("deletes the legacy projection collection of the workspace database", async () => {
@@ -240,7 +252,6 @@ it("deletes the legacy projection collection of the workspace database", async (
     deleteDatabase,
   });
   deleteOtherEntityProjectionDatabases(workspace, current, suffix);
-  await vi.waitFor(() =>
-    expect(deleteDatabase).toHaveBeenCalledExactlyOnceWith(legacy),
-  );
+  await vi.advanceTimersByTimeAsync(20);
+  expect(deleteDatabase).toHaveBeenCalledExactlyOnceWith(legacy);
 });
