@@ -55,8 +55,10 @@ The APFS clone keeps file inode and ctime data from the base volume.
 
 ## Store
 
-The default store is `~/.local/state/codex-agents/workspaces`. Set
-`CODEX_WORKSPACE_STORE` to use another location. macOS excludes the store from Time Machine.
+The default store is the `workspaces` folder of the server's state folder:
+`~/.local/state/codex-agents/workspaces` for the default state folder. A server with
+another state folder (`CODEX_AGENTS_STATE_DIR`) keeps its own store and never uses the
+default state's store. Set `CODEX_WORKSPACE_STORE` to use another location. macOS excludes the store from Time Machine.
 
 - `bases/<folder-key>/` stores base versions and `base.json`.
 - `agents/<agent-id>/` stores the agent layer and `agent.json`.
