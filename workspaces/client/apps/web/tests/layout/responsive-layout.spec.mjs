@@ -2,11 +2,19 @@ import { test, expect } from "../playwright.mjs";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.mjs";
 import { detectTextClipping } from "./text-clipping.mjs";
 
+test.use({ hasTouch: true });
+
 for (const paired of [false, true]) {
   test(`conversation controls fit the measured column and large text (${paired ? "combined" : "direct"})`, async ({
     page,
     context,
+    browserName,
   }) => {
+    test.skip(
+      browserName !== "chromium",
+      "Safe-area fixtures use Chromium emulation",
+    );
+    const cdp = await context.newCDPSession(page);
     await page.setViewportSize({ width: 1200, height: 900 });
     const fixture = await sidebarParityFixture(context, { paired });
     try {
@@ -16,11 +24,43 @@ for (const paired of [false, true]) {
         .first()
         .click();
       await expect(page.locator("#message")).toBeVisible();
-      for (const width of [320, 360, 390, 430, 760, 761, 951, 1199, 1200]) {
+      for (const width of [
+        320, 360, 390, 430, 760, 761, 951, 1199, 1200, 1440,
+      ]) {
+        await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+          insets: {
+            top: 0,
+            right: width === 951 ? 84 : 0,
+            bottom: width === 951 ? 34 : 0,
+            left: 0,
+          },
+        });
         await page.setViewportSize({ width, height: 669 });
         await expect(
           page.getByRole("button", { name: "Chat actions", exact: true }),
         ).toBeVisible();
+        if (width === 951) {
+          const rail = page.getByRole("navigation", {
+            name: "Conversation actions",
+          });
+          await expect(rail).toBeVisible();
+          await expect
+            .poll(() =>
+              page
+                .locator(".workspace")
+                .evaluate((node) => node.getBoundingClientRect().right),
+            )
+            .toBeLessThanOrEqual(867);
+          const bounds = await rail.boundingBox();
+          expect(bounds.x).toBe(867);
+          expect(bounds.y).toBeGreaterThanOrEqual(112);
+          expect(bounds.y + bounds.height).toBeLessThanOrEqual(635);
+          const composer = await page.locator("#composer").boundingBox();
+          expect(composer.y + composer.height).toBeLessThanOrEqual(635);
+          await page.screenshot({
+            path: test.info().outputPath("duo-safe-layout.png"),
+          });
+        }
         const overflow = await page.evaluate(
           () =>
             document.documentElement.scrollWidth -
