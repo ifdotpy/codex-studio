@@ -55,6 +55,7 @@ export async function fixture(
   const accountLogins = new Map();
   // Claude login receipts have their own server store and are not Codex logins.
   const claudeLogins = new Map();
+  const claudeProgress = new Map();
   const savedAccounts = accountRows || [
     {
       id: "default",
@@ -246,6 +247,15 @@ export async function fixture(
         snapshot,
         workspaceId,
         subscriptionUpdate: body,
+        progress: (resource) =>
+          resource.kind === "auth-progress"
+            ? {
+                resource,
+                value: claudeProgress.has(resource.requestId)
+                  ? claudeProgress.get(resource.requestId)
+                  : claudeLogins.get(resource.requestId) || null,
+              }
+            : undefined,
         initialResources: options.resourceBaseline
           ? JSON.parse(url.searchParams.get("resources") || "[]")
           : undefined,
@@ -610,6 +620,10 @@ export async function fixture(
     accountWrites,
     accounts() {
       return savedAccounts;
+    },
+    setClaudeProgress(requestId, value) {
+      claudeProgress.set(requestId, value);
+      notify.forEach((send) => send([{ kind: "auth-progress", requestId }]));
     },
     pairs,
     accessRequests,

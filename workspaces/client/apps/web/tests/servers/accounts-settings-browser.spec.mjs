@@ -449,6 +449,14 @@ test("accounts settings show per-server state and provider choices", async ({
   let verificationReady = false;
   let finalStatusBarrier;
   const loginRequestId = addStarts[0]?.loginId;
+  // The provider has not acknowledged code delivery yet. Keep the stream's
+  // current receipt pending while the explicit recovery reads below are gated.
+  remote.setClaudeProgress(loginRequestId, {
+    requestId: loginRequestId,
+    accountKey: loginRequestId,
+    status: "pending",
+    codeSubmitted: false,
+  });
   const codeAttempts = [];
   await page.route("**/api/accounts/claude/login/code", async (route) => {
     const request = route.request();
@@ -548,8 +556,7 @@ test("accounts settings show per-server state and provider choices", async ({
   await expect(claudeSignIn).toContainText(
     "The full authorization response was submitted. Waiting for Claude to verify it; do not submit it again.",
   );
-  // An account event may schedule a read while Playwright waits for the button
-  // to settle. Keep that read pending until the manual refresh is dispatched.
+  // Keep the explicit recovery read pending until the manual refresh is dispatched.
   let releaseFinalStatus;
   finalStatusBarrier = new Promise((resolve) => {
     releaseFinalStatus = resolve;

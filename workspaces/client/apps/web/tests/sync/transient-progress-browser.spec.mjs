@@ -77,6 +77,12 @@ for (const flow of ["vault", "auth"]) {
           .getByRole("button", { name: "Show the paper key in Terminal" })
           .click();
       }
+      if (flow === "vault")
+        assert.equal(
+          await page.getByLabel("Vault name", { exact: true }).isDisabled(),
+          true,
+          "keep the subscribed prefix fixed while generating its paper key",
+        );
       const before = await page.evaluate(() => ({ ...window.reads }));
       await page.clock.fastForward(10_000);
       assert.deepEqual(await page.evaluate(() => window.reads), before);

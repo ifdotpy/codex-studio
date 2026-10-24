@@ -118,10 +118,11 @@ export default function VaultSetup({
 
   const showKeys = async () => {
     setError(null);
+    setWaitingForKeys(true);
     try {
       await showVaultKeys(prefix);
-      setWaitingForKeys(true);
     } catch (failure) {
+      setWaitingForKeys(false);
       setError(errorText(failure));
     }
   };
@@ -195,7 +196,7 @@ export default function VaultSetup({
               label="Vault name"
               description="The vault's address on Desk"
               value={prefix}
-              disabled={facts.keys || running}
+              disabled={facts.keys || waitingForKeys || running}
               onChange={(event) => setPrefix(event.currentTarget.value)}
               onBlur={() => prefix !== facts.prefix && void load(prefix)}
             />
