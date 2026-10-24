@@ -21880,13 +21880,6 @@ export interface components {
           collection: "queue";
           /** @constant */
           op: "upsert";
-          value: components["schemas"]["QueueView"];
-        }
-      | {
-          /** @constant */
-          collection: "queue";
-          /** @constant */
-          op: "upsert";
           value: components["schemas"]["QueueEntityDto"];
         }
       | {

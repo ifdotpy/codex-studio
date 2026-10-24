@@ -1008,6 +1008,14 @@ mod tests {
             })
             .collect();
         assert_eq!(
+            upserts.len(),
+            variants
+                .iter()
+                .filter(|variant| variant["properties"]["op"]["const"] == "upsert")
+                .count(),
+            "SyncEntity must have exactly one upsert variant for each collection"
+        );
+        assert_eq!(
             upserts, owner,
             "SyncEntity upserts must consume the SyncEntityPayload owner"
         );

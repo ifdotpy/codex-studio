@@ -48636,27 +48636,6 @@
                 "type": "string"
               },
               "value": {
-                "$ref": "#/components/schemas/QueueView"
-              }
-            },
-            "required": [
-              "op",
-              "collection",
-              "value"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "collection": {
-                "const": "queue",
-                "type": "string"
-              },
-              "op": {
-                "const": "upsert",
-                "type": "string"
-              },
-              "value": {
                 "$ref": "#/components/schemas/QueueEntityDto"
               }
             },
