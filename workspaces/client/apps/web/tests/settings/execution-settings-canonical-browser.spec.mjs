@@ -74,11 +74,11 @@ test("execution settings canonical browser", async ({ page }) => {
               { cwd: root, encoding: "utf8" },
             );
           if (id !== entry) return;
-          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';import {ModelCatalogReader} from '/src/components/agents/WorkerModelPicker.tsx';import {get,registerSyncEntityPersister} from '/src/api.ts';const fixtureModelRead=options=>get('/api/models',options);registerSyncEntityPersister(async(_workspace,documents)=>{for(const doc of documents){const row=doc;if(row.op==='upsert'&&row.collection==='agent'&&row.id===window.agent.id)window.setAgent(row.value)}});
+          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';import {ModelCatalogReader} from '/src/components/agents/WorkerModelPicker.tsx';import {watchResourceReads} from '/src/components/watchResourceReads.ts';import {get,registerSyncEntityPersister} from '/src/api.ts';const fixtureModelRead=options=>get('/api/models',options);registerSyncEntityPersister(async(_workspace,documents)=>{for(const doc of documents){const row=doc;if(row.op==='upsert'&&row.collection==='agent'&&row.id===window.agent.id)window.setAgent(row.value)}});
   const initial={id:'first',accountKey:'default',name:'First',source:'managed',model:'gpt-6-astra',effort:'low',fastMode:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true};
   const models=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-luna','gpt-6-luna'].map(model=>({model,supportedReasoningEfforts:['low','medium','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}],availableAccessPrograms:{cyber:['standard','daybreakBlue']}}));
   window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.transferHold=false;window.transferReply=null;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshHold=false;window.refreshCount=0;const fixtureResponse=(value,init={})=>new Response(JSON.stringify(value),{...init,headers:{'Content-Type':'application/json',...${JSON.stringify(apiSchemaHeaders())},...(init.headers||{})}});const nativeFetch=window.fetch;window.fetch=async(input,options)=>{const url=input instanceof Request?new URL(input.url).pathname+new URL(input.url).search:input;options=input instanceof Request?{method:input.method,body:input.method==='GET'?undefined:await input.clone().text()}:options;if(String(url).startsWith('/api/models?')){window.catalogRequests.push(url);if(window.catalogHold)await new Promise(resolve=>window.catalogRelease=resolve);return fixtureResponse({data:String(url).includes('account_key=claude')?[{model:'claude-opus-4-6',provider:'claude',displayName:'Claude Opus 4.6',isDefault:true,supportedReasoningEfforts:[{reasoningEffort:'high'}]}]:models})}if(url=='/api/agents/account-transfer'){const body=JSON.parse(options.body);window.transfers.push(body);if(window.transferHold)await new Promise(resolve=>window.transferRelease=resolve);if(window.transferFail)throw new TypeError('Connection lost');return fixtureResponse(window.transferReply||{id:body.request_id,leadId:'first',scope:body.scope,status:'completed',targetAccountKey:body.account_key,completed:2,moved:2,total:3,_syncEntities:[{op:'upsert',collection:'agent',id:'first',seq:1,value:{...window.agent,workerDefaults:{...window.agent.workerDefaults,accountKey:body.account_key}}}],leftOnSource:[{id:'w-claude',name:'Claude worker',provider:'claude',reason:'Uses claude'}]})}if(url!='/api/conversation')return nativeFetch(url,options);window.calls.push(JSON.parse(options.body));if(window.serverAccount && window.calls.at(-1).expected_account_key!==window.serverAccount)return fixtureResponse({error:'The account changed. Select the model again'},{status:409});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail==='network')throw new TypeError('Connection lost');return fixtureResponse(window.fail?{error:'Rejected'}:window.reply,{status:window.fail?409:200})};
-  function Fixture(){const[agent,setAgent]=useState(initial),[mount,setMount]=useState(0),[defaults,setDefaults]=useState(false);window.setAgent=value=>flushSync(()=>setAgent(value));window.agent=agent;window.reset=options=>flushSync(()=>{setAgent({...initial,...options?.agent});setDefaults(!!options?.defaults);setMount(value=>value+1);window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.transferHold=false;window.transferReply=null;window.catalogHold=false;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshHold=false;window.refreshCount=0;window.release=null;window.refreshRelease=null;window.transferRelease=null;window.serverAccount=null;});return <MantineProvider><ModelCatalogReader.Provider value={{scope:'settings-canonical-'+mount,read:fixtureModelRead}}><ExecutionSettings key={mount} agent={agent} teamDefaults={defaults} accounts={[{id:'default',label:'',email:'first@example.com',status:'ready'},{id:'second',label:'',email:'second@example.com',status:'ready'},{id:'claude',label:'Claude',provider:'claude',status:'ready'},{id:'offline',label:'Offline',status:'error'}]} team={[{id:'w1',name:'Codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w2',name:'Second codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w3',name:'Claude worker',rootId:'first',provider:'claude',accountKey:'claude'}]} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshHold)await new Promise(resolve=>window.refreshRelease=resolve);if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/>{!defaults && <ExecutionSettings key={"permissions:"+mount} permissionsOnly agent={agent} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshHold)await new Promise(resolve=>window.refreshRelease=resolve);if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/>}</ModelCatalogReader.Provider></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
+  function Fixture(){const[agent,setAgent]=useState(initial),[mount,setMount]=useState(0),[defaults,setDefaults]=useState(false);window.setAgent=value=>flushSync(()=>setAgent(value));window.agent=agent;window.reset=options=>flushSync(()=>{setAgent({...initial,...options?.agent});setDefaults(!!options?.defaults);setMount(value=>value+1);window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.transferHold=false;window.transferReply=null;window.catalogHold=false;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshHold=false;window.refreshCount=0;window.release=null;window.refreshRelease=null;window.transferRelease=null;window.serverAccount=null;});return <MantineProvider><ModelCatalogReader.Provider value={{scope:'settings-canonical-'+mount,read:fixtureModelRead,watchResourceReads}}><ExecutionSettings key={mount} agent={agent} teamDefaults={defaults} accounts={[{id:'default',label:'',email:'first@example.com',status:'ready'},{id:'second',label:'',email:'second@example.com',status:'ready'},{id:'claude',label:'Claude',provider:'claude',status:'ready'},{id:'offline',label:'Offline',status:'error'}]} team={[{id:'w1',name:'Codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w2',name:'Second codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w3',name:'Claude worker',rootId:'first',provider:'claude',accountKey:'claude'}]} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshHold)await new Promise(resolve=>window.refreshRelease=resolve);if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/>{!defaults && <ExecutionSettings key={"permissions:"+mount} permissionsOnly agent={agent} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshHold)await new Promise(resolve=>window.refreshRelease=resolve);if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/>}</ModelCatalogReader.Provider></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -99,7 +99,7 @@ test("execution settings canonical browser", async ({ page }) => {
       return route.fulfill({
         contentType: "text/event-stream",
         body: apiSchemaHandshakeSse(
-          `event: resources\ndata: ${JSON.stringify({ protocol: 4, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "fixture", revision: 1, reason: "initial", resources })}\n\n`,
+          `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "fixture", revision: 1, reason: "initial", resources })}\n\n`,
         ),
       });
     });
@@ -142,8 +142,12 @@ test("execution settings canonical browser", async ({ page }) => {
             ? "Default subagent reasoning"
             : "Main agent reasoning";
           return (
-            document
-              .querySelector(`[aria-label="${label}"]`)
+            [...document.querySelectorAll('[role="radiogroup"]')]
+              .find(
+                (node) =>
+                  document.getElementById(node.getAttribute("aria-labelledby"))
+                    ?.textContent === label,
+              )
               ?.getAttribute("data-value") === expected
           );
         },
@@ -246,7 +250,7 @@ test("execution settings canonical browser", async ({ page }) => {
           { field, target },
         );
         const model = page.getByLabel("Main agent model", { exact: true });
-        const toggle = page.getByRole("button", {
+        const toggle = page.getByRole("switch", {
           name: field === "fastMode" ? "Fast mode" : "Daybreak",
           exact: true,
         });
@@ -255,13 +259,13 @@ test("execution settings canonical browser", async ({ page }) => {
         await page.waitForFunction(() => !!window.release);
         if (field === "model")
           assert.equal(await modelValue(model), "gpt-6-astra");
-        else await expect(toggle).toHaveAttribute("aria-pressed", "false");
+        else await expect(toggle).not.toBeChecked();
         assert.equal(await page.evaluate(() => window.refreshCount), 0);
         await page.evaluate(() => window.release());
         await page.waitForFunction(() => !!window.refreshRelease);
         if (field === "model")
-          await expect(model).toHaveAttribute("data-value", target);
-        else await expect(toggle).toHaveAttribute("aria-pressed", "true");
+          await expect.poll(() => modelValue(model)).toBe(target);
+        else await expect(toggle).toBeChecked();
         await expect(model).not.toHaveAttribute("aria-disabled", "true");
         assert.equal(await effort().isDisabled(), false);
         await page.evaluate(() => window.refreshRelease());
@@ -269,7 +273,7 @@ test("execution settings canonical browser", async ({ page }) => {
     });
     await check("review-and-permissions-confirmation-required", async () => {
       await reset({ defaults: true });
-      await page.getByRole("button", { name: "Review", exact: true }).click();
+      await page.getByText("Review", { exact: true }).click();
       await page.evaluate(() => {
         window.hold = true;
         window.refreshHold = true;
@@ -288,7 +292,7 @@ test("execution settings canonical browser", async ({ page }) => {
       assert.equal(await modelValue(reviewModel), "__model_default__");
       await page.evaluate(() => window.release());
       await page.waitForFunction(() => !!window.refreshRelease);
-      await expect(reviewModel).toHaveAttribute("data-value", "gpt-5.6-sol");
+      await expect.poll(() => modelValue(reviewModel)).toBe("gpt-5.6-sol");
       await expect(reviewModel).not.toHaveAttribute("aria-disabled", "true");
       await page.evaluate(() => window.refreshRelease());
       await reset();
@@ -768,14 +772,14 @@ test("execution settings canonical browser", async ({ page }) => {
       await expect
         .poll(() =>
           model
-            .getByRole("option")
+            .getByRole("radio")
             .evaluateAll((rows) => rows.map((row) => row.dataset.value)),
         )
         .toEqual(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-luna"]);
       assert.equal(await modelValue(model), "gpt-5.6-luna");
       // The Claude main agent's model is no choice for a Codex account.
       assert.equal(
-        await model.getByRole("option", { name: /Same as main agent/ }).count(),
+        await model.getByRole("radio", { name: /Same as main agent/ }).count(),
         0,
       );
     });
@@ -827,7 +831,7 @@ test("execution settings canonical browser", async ({ page }) => {
     });
     await check("review-defaults", async () => {
       await reset({ defaults: true });
-      await page.getByRole("button", { name: "Review", exact: true }).click();
+      await page.getByText("Review", { exact: true }).click();
       const reviewModel = page.locator("#review-model");
       await page.evaluate(() => {
         window.reply = {
@@ -837,7 +841,7 @@ test("execution settings canonical browser", async ({ page }) => {
       });
 
       await page
-        .locator('[role="option"][data-value="gpt-5.6-luna"]:visible')
+        .locator('input[type="radio"][data-value="gpt-5.6-luna"]:visible')
         .click();
       await page.waitForFunction(() => window.calls.length === 1);
       assert.deepEqual(

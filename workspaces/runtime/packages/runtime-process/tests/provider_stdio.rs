@@ -158,7 +158,7 @@ async fn provider_stderr_is_written_to_the_state_directory_app_server_log() {
                 vec![
                     "/bin/sh".into(),
                     "-c".into(),
-                    r#"printf 'provider diagnostic\n' >&2; printf '\377\n' >&2; printf '{"jsonrpc":"2.0","method":"ready"}\n'"#.into(),
+                    r#"printf 'provider diagnostic\n' >&2; printf '\377\n' >&2"#.into(),
                 ],
                 BTreeMap::new(),
                 root.path().to_path_buf(),
@@ -168,12 +168,10 @@ async fn provider_stderr_is_written_to_the_state_directory_app_server_log() {
     )
     .await
     .expect("child starts");
-    let completion = tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, async {
-        attachment.journal.recv().await.expect("provider ready");
-        attachment.completion().await
-    })
-    .await
-    .expect("provider completion hang guard");
+    let completion =
+        tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, attachment.completion())
+            .await
+            .expect("provider completion hang guard");
     assert!(completion.cleanup_error.is_none());
     assert_eq!(
         std::fs::read(root.path().join("app-server.log")).expect("app-server log"),

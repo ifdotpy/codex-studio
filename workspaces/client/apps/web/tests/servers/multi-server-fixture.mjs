@@ -318,6 +318,11 @@ export async function fixture(
       json(invitation);
       return;
     }
+    if (url.pathname === "/api/retained-worktrees") {
+      assert.equal(url.searchParams.get("agent"), agent.id);
+      json({ rootId: agent.rootId, retainedWorktrees: [] });
+      return;
+    }
     if (url.pathname === "/api/multi-server") {
       if (request.method === "POST") accessRequests.push(body);
       if (

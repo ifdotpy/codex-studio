@@ -1,0 +1,395 @@
+/* Conversation chrome owns header hierarchy, project start and footer layout. */
+.workspace-header.simple-workspace-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--mantine-spacing-xs);
+  min-height: var(--studio-touch-target);
+  height: auto;
+  padding: 0 var(--chat-gutter);
+}
+.conversation-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  flex: 1;
+  min-width: 0;
+}
+#conversation-title {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--studio-text-title);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.conversation-title-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#back-lead {
+  justify-self: start;
+  padding: 0;
+  min-height: 0;
+}
+.conversation-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  flex: none;
+  gap: var(--mantine-spacing-xs);
+  min-width: 0;
+}
+.conversation-server {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.conversation-server .chat-server-line {
+  margin: 0;
+  font-size: var(--studio-text-meta);
+  white-space: nowrap;
+}
+.conversation-server .chat-server-line > svg {
+  display: none;
+}
+.conversation-server[data-offline="true"] {
+  --muted: var(--studio-state-error);
+  --warning: var(--studio-state-error);
+}
+.simple-workspace-header > button {
+  flex-shrink: 0;
+}
+.simple-workspace-header #sidebar-toggle,
+.simple-workspace-header #team-toggle {
+  display: inline-flex;
+}
+.empty-chat,
+.conversation-start {
+  display: grid;
+  align-content: start;
+  gap: var(--mantine-spacing-lg);
+  min-width: 0;
+  padding-block: var(--mantine-spacing-lg);
+  text-align: left;
+}
+.empty-chat h2,
+.conversation-start h2 {
+  margin: 0;
+  font-size: var(--studio-text-section);
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.empty-chat p,
+.conversation-start p {
+  margin: var(--mantine-spacing-xs) 0 0;
+  color: var(--muted);
+  font-size: var(--studio-text-body);
+}
+.conversation-start {
+  container: conversation-start / inline-size;
+}
+.conversation-start-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: var(--mantine-spacing-xs) var(--mantine-spacing-md);
+  margin: 0;
+  font-size: var(--studio-text-meta);
+}
+.conversation-start-facts dt {
+  color: var(--muted);
+}
+.conversation-start-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.conversation-start-facts .execution-menu {
+  min-width: 0;
+  max-width: 100%;
+}
+@container conversation-start (max-width: 16em) {
+  .conversation-start-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.conversation-recent {
+  min-width: 0;
+}
+.conversation-recent h3 {
+  margin: 0 0 var(--mantine-spacing-xs);
+  font-size: var(--studio-text-meta);
+  font-weight: 500;
+  color: var(--muted);
+}
+.conversation-recent-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-sm);
+  width: 100%;
+  min-width: 0;
+  min-height: var(--studio-touch-target);
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  border: 0;
+  border-bottom: var(--studio-border-width) solid var(--line);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: var(--studio-text-body);
+}
+.conversation-recent-strip:hover {
+  background: var(--hover);
+}
+.conversation-recent-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-recent-status {
+  flex: none;
+  max-inline-size: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+.conversation-composer-footer {
+  container: conversation-footer / inline-size;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-self: center;
+  gap: var(--mantine-spacing-xs) var(--mantine-spacing-md);
+  width: calc(100% - 2 * var(--chat-gutter));
+  max-width: var(--chat-width);
+  flex-shrink: 0;
+  min-width: 0;
+  margin-block: var(--mantine-spacing-xs);
+}
+.composer-tools {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+  min-width: 0;
+  flex-wrap: nowrap;
+  gap: var(--mantine-spacing-xs);
+}
+.composer-tools .attachment-list {
+  flex-basis: 100%;
+}
+.composer-timing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs);
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+/* Native tools disclosure is only exposed in narrow workspaces. */
+.composer-tools-inline {
+  display: contents;
+}
+.composer-tools-disclosure {
+  display: none;
+}
+.composer-tools-popover {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs);
+  width: var(--studio-team-size);
+  min-width: 0;
+  max-width: calc(100vw - 2 * var(--chat-gutter));
+  padding: var(--mantine-spacing-xs);
+  border: var(--studio-border-width) solid var(--line);
+  border-radius: var(--mantine-radius-sm);
+  background: var(--raised);
+}
+@container workspace (max-width: 47.5em) {
+  .workspace-header.simple-workspace-header {
+    padding: 0 var(--mantine-spacing-xs);
+    gap: 0;
+    min-height: var(--studio-touch-target);
+  }
+  .conversation-heading {
+    display: grid;
+    grid-template-columns: minmax(var(--studio-conversation-title-min), 1fr);
+    align-items: center;
+    column-gap: calc(var(--mantine-spacing-xs) / 2);
+    row-gap: 0;
+  }
+  .conversation-heading:has(#back-lead) {
+    grid-template-columns: var(--studio-touch-target) minmax(
+        var(--studio-conversation-title-min),
+        1fr
+      );
+  }
+  #back-lead {
+    grid-row: 1 / 3;
+    width: var(--studio-touch-target);
+    min-height: var(--studio-touch-target);
+  }
+  #back-lead .mantine-Button-section {
+    margin: 0;
+  }
+  .conversation-back-label {
+    display: none;
+  }
+  #conversation-title {
+    grid-column: -2;
+    min-width: var(--studio-conversation-title-min);
+  }
+  .conversation-meta {
+    grid-column: -2;
+  }
+  .conversation-meta .workspace-mode-badge,
+  .simple-workspace-header .messages-toggle-label {
+    display: none;
+  }
+  .simple-workspace-header #messages-toggle {
+    width: var(--studio-touch-target);
+    padding: 0;
+  }
+  .simple-workspace-header #messages-toggle .mantine-Button-section {
+    margin: 0;
+  }
+  #composer {
+    padding: calc(var(--mantine-spacing-xs) / 2);
+    margin-top: 0;
+  }
+  .conversation-composer-footer {
+    margin-block: 0;
+    gap: 0;
+  }
+  .conversation-start {
+    padding-block: var(--mantine-spacing-xs);
+    gap: var(--mantine-spacing-sm);
+  }
+}
+@container workspace (max-width: 22.5rem) {
+  .simple-workspace-header #sidebar-toggle {
+    width: var(--studio-touch-target);
+    padding: 0;
+  }
+  .simple-workspace-header #sidebar-toggle .mantine-Button-label {
+    display: none;
+  }
+  .simple-workspace-header #sidebar-toggle .mantine-Button-section {
+    margin: 0;
+  }
+}
+
+/* Toolbar decisions follow the actual content column, including Team overlays. */
+.composer-bar {
+  padding-top: calc(var(--mantine-spacing-xs) / 2);
+}
+/* Attach stays inline at every width; its chips take their own row. */
+.composer-tools:has(.attachment-list) {
+  flex-wrap: wrap;
+}
+.composer-bar:has(.attachment-list) {
+  align-items: flex-end;
+}
+.composer-bar:has(.attachment-list) .composer-submit-actions {
+  min-height: var(--studio-touch-target);
+}
+#composer {
+  container: composer / inline-size;
+  position: relative;
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+}
+.composer-queue-disclosure {
+  display: none;
+}
+@container composer (max-width: 70em) {
+  .composer-timing {
+    display: none;
+  }
+}
+@container composer (max-width: 35em) {
+  #message {
+    min-height: var(--studio-control-size);
+    padding-right: var(--studio-touch-target);
+  }
+  .composer-bar,
+  .composer-tools,
+  .composer-submit-actions {
+    gap: calc(var(--mantine-spacing-xs) / 5);
+    padding-top: 0;
+  }
+  .composer-tools-inline {
+    display: none;
+  }
+  .composer-tools-disclosure {
+    display: block;
+    position: absolute;
+    top: 0;
+    right: 0;
+  }
+  .composer-tools-disclosure > summary {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--studio-touch-target);
+    min-height: var(--studio-control-size);
+    list-style: none;
+    cursor: pointer;
+    color: var(--muted);
+    border-radius: var(--mantine-radius-sm);
+  }
+  .composer-tools-disclosure > summary::-webkit-details-marker {
+    display: none;
+  }
+  .composer-tools-disclosure > summary:hover,
+  .composer-tools-disclosure[open] > summary {
+    background: var(--hover);
+  }
+}
+/* Without voice, the disclosure only carries the queue from 20em down. */
+@container composer (20em < width <= 35em) {
+  .composer-tools-disclosure:not(
+    :has(.composer-tools-popover > :not(.composer-queue-disclosure))
+  ) {
+    display: none;
+  }
+}
+@container composer (max-width: 20em) {
+  .composer-queue-primary {
+    display: none;
+  }
+  .composer-queue-disclosure {
+    display: inline-flex;
+  }
+}
+
+@container workspace (max-width: 24em) {
+  .conversation-server .chat-server-offline-label {
+    display: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .composer-tools-disclosure > summary {
+    min-height: var(--studio-touch-target);
+  }
+  @container workspace (max-width: 47.5em) {
+    #composer {
+      padding-block: 0;
+    }
+  }
+}
+
+@media (pointer: coarse) {
+  @container composer (max-width: 35em) {
+    #message {
+      min-height: var(--studio-touch-target);
+    }
+  }
+}

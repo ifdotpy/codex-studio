@@ -33,12 +33,14 @@ export default function LimitRecoveryNotice({
   agentId,
   usageResume,
   inline = false,
+  tabIndex,
   onRefresh,
 }: {
   recovery?: LimitRecovery;
   agentId?: string;
   usageResume?: Agent["usageResume"];
   inline?: boolean;
+  tabIndex?: number;
   /** Read the account limits again. */
   onRefresh?: () => Promise<void> | void;
 }) {
@@ -137,6 +139,7 @@ export default function LimitRecoveryNotice({
                 size="compact-xs"
                 variant="light"
                 loading={refreshing}
+                tabIndex={tabIndex}
                 onClick={async () => {
                   setRefreshing(true);
                   try {
@@ -157,6 +160,7 @@ export default function LimitRecoveryNotice({
       )}
       {canToggle && (
         <Button
+          tabIndex={tabIndex}
           size="compact-xs"
           disabled={busy}
           onClick={() => void toggleResume(!scheduled)}
@@ -168,6 +172,7 @@ export default function LimitRecoveryNotice({
       {recovery?.action && (
         <>
           <Button
+            tabIndex={tabIndex}
             component="a"
             size="compact-xs"
             href={recovery.action.href}
@@ -182,6 +187,7 @@ export default function LimitRecoveryNotice({
       {recovery?.ownerRequest && (
         <>
           <Button
+            tabIndex={tabIndex}
             size="compact-xs"
             onClick={async () => {
               try {

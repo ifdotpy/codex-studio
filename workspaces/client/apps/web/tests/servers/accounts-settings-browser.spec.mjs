@@ -155,7 +155,9 @@ test("accounts settings show per-server state and provider choices", async ({
     await dialog
       .getByRole("button", { name: "Add with an invitation", exact: true })
       .click();
-    await dialog.getByLabel("Server address").fill(server.invitation.origin);
+    await dialog
+      .getByRole("textbox", { name: /^Server address/ })
+      .fill(server.invitation.origin);
     await dialog
       .getByLabel("Pairing invitation")
       .fill(JSON.stringify(server.invitation));
@@ -185,8 +187,11 @@ test("accounts settings show per-server state and provider choices", async ({
     '[data-account-identity="codex:person@example.test"]',
   );
   await expect(work).toBeVisible();
-  await expect(work.getByText("Default · Local")).toBeVisible();
-  await expect(work.locator(".account-start-throttle > summary")).toHaveText([
+  await expect(work.getByText(/^Default.*Local$/)).toBeVisible();
+  await work.getByRole("button", { name: /^Limit details for/ }).click();
+  await expect(
+    work.locator(".account-start-throttle > .disclosure-control"),
+  ).toHaveText([
     /^Turn start limits on Local: \d+ per burst · \d+ s pause · \d+ running$/,
   ]);
   // A read that returns no data ends; it does not stay "Reading limits…".
@@ -204,13 +209,17 @@ test("accounts settings show per-server state and provider choices", async ({
   await expect(shared.locator(".account-limit-summary")).toContainText(
     "33% left",
   );
+  await shared.getByRole("button", { name: /^Limit details for/ }).click();
   await expect(shared.locator(".account-limit-note")).toHaveText(
     /^Updated \d+ min ago on Remote$/,
   );
-  await expect(shared.locator(".account-start-throttle > summary")).toHaveText([
+  await expect(
+    shared.locator(".account-start-throttle > .disclosure-control"),
+  ).toHaveText([
     /^Turn start limits on Local: /,
     /^Turn start limits on Remote: /,
   ]);
+  await work.getByRole("button", { name: /^Limit details for/ }).click();
   await expect(work.getByRole("button", { name: "✓ Local" })).toBeVisible();
   await expect(
     work.getByRole("button", { name: /sign in again/ }),
@@ -220,7 +229,7 @@ test("accounts settings show per-server state and provider choices", async ({
   await expect(
     accounts
       .locator('[data-account-identity="claude:claude@example.test"]')
-      .getByText("Default · Remote"),
+      .getByText(/^Default.*Remote$/),
   ).toBeVisible();
 
   const profilePosts = [];
@@ -351,6 +360,12 @@ test("accounts settings show per-server state and provider choices", async ({
   await settings.screenshot({
     path: resolve(screenshots, "servers-cards-mobile.png"),
   });
+  if (
+    await settings
+      .getByRole("button", { name: "Back", exact: true })
+      .isVisible()
+  )
+    await settings.getByRole("button", { name: "Back", exact: true }).click();
   await settings.getByRole("tab", { name: "Accounts", exact: true }).click();
 
   await accounts
@@ -703,6 +718,7 @@ test("accounts settings show per-server state and provider choices", async ({
     .last()
     .click();
   await expect(settings).toBeVisible();
+  await work.getByRole("button", { name: /^Limit details for/ }).click();
   await work.getByRole("button", { name: /Remote · sign in again/ }).click();
   const reconnect = remoteFrame.getByRole("dialog", {
     name: /Sign in to Codex · person@example.test · Remote/,

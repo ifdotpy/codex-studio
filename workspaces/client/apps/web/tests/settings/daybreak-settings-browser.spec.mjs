@@ -152,7 +152,7 @@ test("Daybreak settings", async ({ context }) => {
         .click();
     };
     const mode = () =>
-      setupToggle(page.getByRole("button", { name: "Daybreak", exact: true }));
+      setupToggle(page.getByRole("switch", { name: "Daybreak", exact: true }));
     const model = (defaults = false) =>
       page.getByLabel(
         defaults ? "Default subagent model" : "Main agent model",
@@ -258,7 +258,7 @@ test("Daybreak settings", async ({ context }) => {
     await reset({ agent: { model: "gpt-5.6-terra" } });
     // Terra supports Red mode. Wait for that setting to render before toggling:
     // the generic enable helper can select the default model if called too early.
-    await page.getByRole("button", { name: "Daybreak", exact: true }).waitFor();
+    await page.getByRole("switch", { name: "Daybreak", exact: true }).waitFor();
     await mode().check();
     await settled();
     assert.equal(
@@ -277,7 +277,7 @@ test("Daybreak settings", async ({ context }) => {
     );
     assert.equal(
       await page
-        .getByRole("button", { name: "Fast mode", exact: true })
+        .getByRole("switch", { name: "Fast mode", exact: true })
         .count(),
       0,
     );
@@ -315,7 +315,7 @@ test("Daybreak settings", async ({ context }) => {
     );
 
     await reset({ agent: { status: "running" } });
-    await page.getByRole("button", { name: "Daybreak", exact: true }).waitFor();
+    await page.getByRole("switch", { name: "Daybreak", exact: true }).waitFor();
     await page.evaluate(() => (window.fail = "network"));
     await mode().check();
     await page
@@ -351,7 +351,7 @@ test("Daybreak settings", async ({ context }) => {
     );
 
     await reset({ agent: { status: "running" } });
-    await page.getByRole("button", { name: "Daybreak", exact: true }).waitFor();
+    await page.getByRole("switch", { name: "Daybreak", exact: true }).waitFor();
     await page.evaluate(() => (window.fail = "network"));
     await mode().check();
     await page

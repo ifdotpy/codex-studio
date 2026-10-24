@@ -1,4 +1,8 @@
 import { McpInventory } from "./McpInventory";
+import {
+  isModelWhitelisted,
+  useModelWhitelist,
+} from "../models/modelWhitelist";
 import Tasks from "./Tasks";
 import ClaudeCheckpointRestore from "../ClaudeCheckpointRestore";
 import { useServerApi } from "../../servers/ServerServicesContext";
@@ -45,7 +49,12 @@ import {
 } from "../../api";
 import type { Agent, Json, JsonValue, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
-import { ModelPicker, type ModelOption } from "../ModelPicker";
+import { ModelField } from "../models/ModelField";
+import {
+  modelDisplayName,
+  modelForValue,
+  toModelOptions,
+} from "../models/modelOption";
 import { useWorkerModels } from "../agents/WorkerModelPicker";
 import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import TeamChats from "./messages/TeamChats";
@@ -797,7 +806,6 @@ function GitCheckpoints(c: Context) {
         />
         <Button
           variant="filled"
-          color="indigo"
           type="submit"
           loading={busy}
           disabled={!!c.selected?.inFlight}
@@ -1071,21 +1079,28 @@ function Profiles(c: Context) {
   );
   // The profile model list comes from the selected lead's subagent catalog.
   const catalog = useWorkerModels(lead?.accountKey || "default", !!draft, true);
-  const profileModels: ModelOption[] = catalog.models.map((row) => ({
-    value: row.model,
-    label:
-      typeof row.displayName === "string" && row.displayName
-        ? row.displayName
-        : row.model,
-    description:
-      typeof row.description === "string" && row.description
-        ? row.description
-        : undefined,
-    isDefault: !!row.isDefault,
-  }));
-  const draftModel = typeof draft?.model === "string" ? draft.model : "";
-  if (draftModel && !profileModels.some((row) => row.value === draftModel))
-    profileModels.unshift({ value: draftModel, label: draftModel });
+  const allowedModels = useModelWhitelist();
+  const profileModels = toModelOptions(catalog.models);
+  const eligibleModels = catalog.models.filter(
+    (model) => !model.hidden && isModelWhitelisted(model, allowedModels),
+  );
+  const defaultModel =
+    (eligibleModels.find((model) => model.isDefault) || eligibleModels[0])
+      ?.model || "";
+  const draftModel =
+    (typeof draft?.model === "string" ? draft.model : "") ||
+    (draft?.isNew ? defaultModel : "");
+  const validModel =
+    !!draftModel &&
+    (!draft?.isNew ||
+      eligibleModels.some((model) => model.model === draftModel));
+  if (draftModel && !modelForValue(profileModels, draftModel))
+    profileModels.unshift({
+      value: draftModel,
+      label: modelDisplayName(draftModel),
+      provider: "codex",
+      badges: ["current"],
+    });
   return (
     <>
       <ResourceState state={state} />
@@ -1096,7 +1111,6 @@ function Profiles(c: Context) {
         <Button
           size="xs"
           variant="filled"
-          color="indigo"
           leftSection={<Plus size={14} />}
           onClick={() =>
             setDraft({
@@ -1104,7 +1118,7 @@ function Profiles(c: Context) {
               isNew: true,
               name: "",
               role: "implementer",
-              model: "gpt-5.6-sol",
+              model: "",
               effort: "high",
               instructions: "",
             })
@@ -1176,6 +1190,7 @@ function Profiles(c: Context) {
             className="workspace-form"
             onSubmit={async (e) => {
               e.preventDefault();
+              if (!validModel) return;
               setBusy(true);
               try {
                 await c.run("/api/profiles", {
@@ -1221,7 +1236,9 @@ function Profiles(c: Context) {
               data={["implementer", "reviewer"]}
             />
             {catalog.models.length ? (
-              <ModelPicker
+              <ModelField
+                retainCurrent={!draft.isNew}
+                presentation="select"
                 label="Model"
                 value={draftModel}
                 options={profileModels}
@@ -1252,7 +1269,12 @@ function Profiles(c: Context) {
                 setDraft({ ...draft, instructions: e.target.value })
               }
             />
-            <Button variant="filled" type="submit" loading={busy}>
+            <Button
+              variant="filled"
+              type="submit"
+              loading={busy}
+              disabled={!validModel}
+            >
               Save profile
             </Button>
           </form>
@@ -1346,7 +1368,6 @@ function Rules(c: Context) {
         <Button
           size="xs"
           variant="filled"
-          color="indigo"
           leftSection={<Plus size={14} />}
           onClick={() =>
             setDraft({

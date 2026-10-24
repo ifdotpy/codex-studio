@@ -18,6 +18,9 @@ import {
   expect,
 } from "../playwright.mjs";
 
+const leadChat = (page) =>
+  page.locator('[data-chat][title="Release lead"]').first();
+
 test.describe("legacy schema mismatch", () => {
   test.use({ apiSchemaFixtureHeaders: false });
 
@@ -279,13 +282,8 @@ test.describe("legacy schema mismatch", () => {
       appOrigin = origin;
       await page.goto(origin);
       await expect(page.locator(".startup")).toBeVisible({ timeout: 10_000 });
-      await expect(
-        page.getByRole("button", { name: /^Release lead/ }).first(),
-      ).toBeVisible({ timeout: 60_000 });
-      await page
-        .getByRole("button", { name: /^Release lead/ })
-        .first()
-        .click();
+      await expect(leadChat(page)).toBeVisible({ timeout: 60_000 });
+      await leadChat(page).click();
       await expect(page.locator("#message")).toBeVisible({ timeout: 60_000 });
       await page
         .locator("#message")
@@ -310,13 +308,8 @@ test.describe("legacy schema mismatch", () => {
         ).length;
       const initialStatePullCount = statePullCount();
       await page.reload();
-      await expect(
-        page.getByRole("button", { name: /^Release lead/ }).first(),
-      ).toBeVisible({ timeout: 30_000 });
-      await page
-        .getByRole("button", { name: /^Release lead/ })
-        .first()
-        .click();
+      await expect(leadChat(page)).toBeVisible({ timeout: 30_000 });
+      await leadChat(page).click();
       await expect(page.locator("#message")).toHaveValue(
         "Draft kept across the schema update",
       );
@@ -431,13 +424,8 @@ test.describe("legacy schema mismatch", () => {
       await expect(newPage.locator(".startup")).toBeVisible({
         timeout: 10_000,
       });
-      await expect(
-        newPage.getByRole("button", { name: /^Release lead/ }).first(),
-      ).toBeVisible({ timeout: 60_000 });
-      await newPage
-        .getByRole("button", { name: /^Release lead/ })
-        .first()
-        .click();
+      await expect(leadChat(newPage)).toBeVisible({ timeout: 60_000 });
+      await leadChat(newPage).click();
       await expect(newPage.locator("#message")).toBeVisible({
         timeout: 60_000,
       });
@@ -656,9 +644,7 @@ test.describe("legacy schema mismatch", () => {
         allowPendingChangeEventResolve = resolve;
       });
       await newPage.reload();
-      await expect(
-        newPage.getByRole("button", { name: /^Release lead/ }).first(),
-      ).toBeVisible();
+      await expect(leadChat(newPage)).toBeVisible();
       await expect(newPage.locator("#message")).toBeVisible();
       await expect
         .poll(readNewPageStateCheckpoint)

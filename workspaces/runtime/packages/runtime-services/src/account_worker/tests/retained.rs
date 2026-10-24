@@ -1193,7 +1193,15 @@ async fn restart_history_case(outcome: &str) {
                     assert_eq!(publications[0].1, "item/completed");
                     assert_eq!(publications[1].1, "turn/completed");
                 } else {
-                    assert_eq!(state.record().await["turnId"], "old-turn");
+                    let record = state.record().await;
+                    assert_eq!(record["restartRecovery"]["stage"], "held");
+                    assert_eq!(
+                        record["contextRepairWait"]["events"],
+                        json!(["annotation:input"])
+                    );
+                    assert_ne!(record["inFlight"], true);
+                    assert!(record["turnId"].is_null());
+                    assert_eq!(state.event_status("input").await, "uncertain");
                 }
             }
             assert!(

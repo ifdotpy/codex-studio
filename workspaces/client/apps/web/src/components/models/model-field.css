@@ -1,0 +1,61 @@
+.model-field,
+.model-select,
+.effort-scale,
+.model-picker-role-switch {
+  inline-size: min(100%, var(--studio-model-picker-size));
+  max-inline-size: var(--studio-model-picker-size);
+}
+.model-select {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.effort-scale .mantine-SegmentedControl-control {
+  flex: 1 0 auto;
+}
+.execution-profile .effort-scale .mantine-SegmentedControl-label {
+  white-space: nowrap;
+}
+/* Main's single model list, with a bounded native scroll area. */
+.setup-models {
+  display: grid;
+  gap: calc(var(--mantine-spacing-xs) / 5);
+  max-height: calc(var(--studio-touch-target) * 5);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.setup-models button {
+  justify-content: flex-start;
+  width: 100%;
+  height: var(--studio-control-size);
+  padding-inline: var(--mantine-spacing-xs);
+}
+@media (pointer: coarse) {
+  .setup-models button {
+    height: var(--studio-touch-target);
+  }
+}
+.setup-models .mantine-Button-inner,
+.setup-models .mantine-Button-label {
+  width: 100%;
+}
+.setup-models .mantine-Button-label {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+}
+.setup-models small {
+  color: var(--mantine-color-dimmed);
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 400;
+}
+.setup-models [data-selected] {
+  background: var(--mantine-primary-color-light);
+}
+.setup-model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.model-unavailable-reason {
+  margin-block-start: calc(var(--mantine-spacing-xs) / 2);
+}

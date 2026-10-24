@@ -205,7 +205,6 @@ export default function AccountSignIn({
         </div>
         <Button
           variant="filled"
-          color="indigo"
           leftSection={<Plus size={15} />}
           loading={busy === "start"}
           disabled={
@@ -264,9 +263,7 @@ export default function AccountSignIn({
                   </div>
                   <Button
                     variant="filled"
-                    color="indigo"
                     component="a"
-                    c="white"
                     href={url}
                     target="_blank"
                     rel="noopener noreferrer"

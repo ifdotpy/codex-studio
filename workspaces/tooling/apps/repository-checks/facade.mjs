@@ -1454,6 +1454,8 @@ function fastTierCommands(root) {
               "test(provider_callbacks_unjournaled_card_is_refused_without_writes)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
               "test(/^recovery_store::restart_continues_only_a_confirmed_interruption$/)",
+              "test(/^recovery_history::held_restart_start_/)",
+              "test(/^recovery_history::ordinary_exact_start_still_accepts_delivered_in_progress_turn$/)",
               "test(/^analytics_capture_corpus::uncertain_turn_keeps_its_outcome_and_reason_in_analytics$/)",
               "test(/^turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings$/)",
               "test(wave7_p10_lifecycle::committed_delete_)",

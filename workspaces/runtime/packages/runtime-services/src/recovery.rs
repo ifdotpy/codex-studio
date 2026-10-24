@@ -149,6 +149,16 @@ pub async fn recover_turn(
             .ok_or(HistoryError::Invalid("events"))?;
         match read.exact_start_outcome(thread, message).await {
             Ok(crate::recovery_history::ExactStart::Delivered(turn)) => {
+                // Restart history proves delivery, but not ownership of a live
+                // stream. Only a confirmed terminal turn can clear this hold.
+                if restart_input_wait
+                    && !matches!(
+                        turn["status"].as_str(),
+                        Some("completed" | "failed" | "interrupted")
+                    )
+                {
+                    return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
+                }
                 read.barrier().await?;
                 return effects
                     .apply(snapshot, &scope, RecoveryAction::AcceptStart { turn })

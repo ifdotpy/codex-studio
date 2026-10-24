@@ -30,6 +30,7 @@ exit 77
 /// in an argument, and never in the failure text.
 #[cfg(target_os = "macos")]
 #[test]
+#[cfg(target_os = "macos")]
 fn the_password_is_typed_on_the_terminal_of_mount_smbfs() {
     let folder = tempfile::tempdir().unwrap();
     let program = folder.path().join("mount_smbfs");

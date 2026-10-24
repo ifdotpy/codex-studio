@@ -38,16 +38,10 @@
   flex-shrink: 0;
 }
 .shared-create-picker {
-  max-width: calc(100vw - 40px);
-  max-height: min(560px, calc(100dvh - 160px));
-  padding: 12px;
-  gap: 10px;
-}
-.shared-create-picker .setup-roles:empty {
-  display: none;
-}
-.shared-create-picker .account-tiles {
-  margin: 0;
+  max-width: calc(100vw - var(--mantine-spacing-lg));
+  max-height: calc(100dvh - var(--mantine-spacing-xl));
+  padding: var(--mantine-spacing-sm);
+  gap: var(--mantine-spacing-xs);
 }
 .shared-create-footer {
   display: flex;
@@ -66,11 +60,5 @@
   }
   .shared-create-chip {
     min-height: 44px;
-  }
-  .shared-create-picker .setup-reasoning .mantine-SegmentedControl-label {
-    min-height: 44px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
   }
 }

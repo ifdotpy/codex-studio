@@ -1,5 +1,6 @@
 import { useServerApi } from "../../../servers/ServerServicesContext";
 import MessageDate from "../../conversation/transcript/MessageDate";
+import { localDateTime, localTime } from "../../../local-time";
 import AgentAvatar from "../../agents/AgentAvatar";
 import {
   ActionIcon,
@@ -21,6 +22,23 @@ import {
   useFollowState,
 } from "../../useConversationScroll";
 import "./team-chats.css";
+
+/** A compact room clock; its native tooltip retains the full local date. */
+function RoomDate({ at }: { at?: number | null }) {
+  if (!at || !Number.isFinite(at)) return <MessageDate at={at} />;
+  const date = new Date(at * 1000);
+  return (
+    <time
+      className="message-date"
+      dateTime={date.toISOString()}
+      title={localDateTime(date)}
+    >
+      {date.toDateString() === new Date().toDateString()
+        ? localTime(date, { hour: "2-digit", minute: "2-digit" })
+        : localDateTime(date, { month: "short", day: "numeric" })}
+    </time>
+  );
+}
 
 function firstQuestion(params: JsonValue | undefined): string | undefined {
   if (!params || typeof params !== "object" || Array.isArray(params))
@@ -195,6 +213,10 @@ export default function TeamChats({
   const { scroll, content, getFollow, subscribeFollow, setFollow, onScroll } =
     useConversationScroll(`${scope}:messages:${selected}`, loaded);
   const follow = useFollowState(subscribeFollow, getFollow);
+  const detailHeading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (selection.detail) detailHeading.current?.focus({ preventScroll: true });
+  }, [selection.detail, selected]);
   const events = [
     ...(showYou ? (runtime?.requests ?? []) : [])
       .filter((request) => request.status === "pending" || !request.status)
@@ -324,214 +346,246 @@ export default function TeamChats({
     }
   }, [loaded, selected, focusItemId, focusRequestId, focusRoomId]);
   return (
-    <section
-      className={`team-chats messages-chat-list ${selection.scope === scope && selection.detail ? "show-room" : ""}`}
-      aria-label="Messages"
-    >
-      <nav className="team-room-list" aria-label="Message chats">
-        <div className="team-room-search">
-          <TextInput
-            aria-label="Search chats"
-            placeholder="Search message rooms"
-            leftSection={<Search size={16} />}
-            value={query}
-            onChange={(event) => {
-              setQuery(event.currentTarget.value);
-              setLimit(60);
-            }}
-          />
-        </div>
-        <div className="team-room-rows">
-          {`For you ${personalPreview}`
-            .toLowerCase()
-            .includes(query.toLowerCase()) && (
-            <UnstyledButton
-              className={`team-room-row ${showYou ? "selected" : ""}`}
-              aria-pressed={showYou}
-              data-room="you"
-              onClick={() => choose("you")}
-            >
-              {icon()}
-              <div className="team-room-copy">
-                <div className="team-room-title">
-                  <strong>For you</strong>
-                  {latestPersonal && (
-                    <MessageDate at={latestPersonal.created} />
-                  )}
-                </div>
-                <div className="team-room-preview">
-                  <span>{personalPreview}</span>
-                  {attention.length > 0 && (
-                    <i
-                      className="team-room-unread"
-                      aria-label="Needs your reply"
-                    />
-                  )}
-                </div>
-              </div>
-            </UnstyledButton>
-          )}
-          {filteredRooms.slice(0, limit).map((item) => (
-            <UnstyledButton
-              key={item.id}
-              data-room={item.id}
-              className={`team-room-row ${room?.id === item.id ? "selected" : ""}`}
-              aria-pressed={room?.id === item.id}
-              onClick={() => choose(item.id)}
-            >
-              {icon(item)}
-              <div className="team-room-copy">
-                <div className="team-room-title">
-                  <strong>{name(item)}</strong>
-                  {item.lastMessage && (
-                    <MessageDate at={item.lastMessage.created} />
-                  )}
-                </div>
-                <div className="team-room-preview">
-                  <span>{item.lastMessage?.text || "No messages yet"}</span>
-                  {item.lastMessage &&
-                    (seen[item.id] || 0) < item.lastMessage.seq && (
+    <div className="team-chats-container">
+      <section
+        className={`team-chats messages-chat-list ${selection.scope === scope && selection.detail ? "show-room" : ""}`}
+        aria-label="Messages"
+        data-empty={(!rooms.length && !events.length) || undefined}
+      >
+        <nav className="team-room-list" aria-label="Message chats">
+          <div className="team-room-search">
+            <TextInput
+              aria-label="Search chats"
+              placeholder="Search message rooms"
+              leftSection={<Search size={16} />}
+              value={query}
+              onChange={(event) => {
+                setQuery(event.currentTarget.value);
+                setLimit(60);
+              }}
+            />
+          </div>
+          <div className="team-room-rows">
+            {`For you ${personalPreview}`
+              .toLowerCase()
+              .includes(query.toLowerCase()) && (
+              <UnstyledButton
+                className={`team-room-row ${showYou ? "selected" : ""}`}
+                aria-pressed={showYou}
+                data-room="you"
+                data-studio-state={attention.length ? "answer" : "none"}
+                onClick={() => choose("you")}
+              >
+                {icon()}
+                <div className="team-room-copy">
+                  <div className="team-room-title">
+                    <strong>For you</strong>
+                    {latestPersonal && <RoomDate at={latestPersonal.created} />}
+                  </div>
+                  <div className="team-room-preview">
+                    <span>{personalPreview}</span>
+                    {attention.length > 0 && (
                       <i
                         className="team-room-unread"
-                        aria-label="Unread messages"
+                        aria-label="Needs your reply"
                       />
                     )}
+                  </div>
                 </div>
-              </div>
-            </UnstyledButton>
-          ))}
-          {filteredRooms.length > limit && (
-            <Button
+              </UnstyledButton>
+            )}
+            {filteredRooms.slice(0, limit).map((item) => (
+              <UnstyledButton
+                key={item.id}
+                data-room={item.id}
+                data-studio-state={
+                  item.lastMessage &&
+                  (seen[item.id] || 0) < item.lastMessage.seq
+                    ? "unread"
+                    : "none"
+                }
+                className={`team-room-row ${room?.id === item.id ? "selected" : ""}`}
+                aria-pressed={room?.id === item.id}
+                onClick={() => choose(item.id)}
+              >
+                {icon(item)}
+                <div className="team-room-copy">
+                  <div className="team-room-title">
+                    <strong>{name(item)}</strong>
+                    {item.lastMessage && (
+                      <RoomDate at={item.lastMessage.created} />
+                    )}
+                  </div>
+                  <div className="team-room-preview">
+                    <span>{item.lastMessage?.text || "No messages yet"}</span>
+                    {item.lastMessage &&
+                      (seen[item.id] || 0) < item.lastMessage.seq && (
+                        <i
+                          className="team-room-unread"
+                          aria-label="Unread messages"
+                        />
+                      )}
+                  </div>
+                </div>
+              </UnstyledButton>
+            ))}
+            {filteredRooms.length > limit && (
+              <Button
+                variant="subtle"
+                fullWidth
+                onClick={() => setLimit((value) => value + 60)}
+              >
+                More chats
+              </Button>
+            )}
+            {query &&
+              !filteredRooms.length &&
+              !`For you ${personalPreview}`
+                .toLowerCase()
+                .includes(query.toLowerCase()) && (
+                <p className="team-chat-empty">
+                  No rooms match “{query}”. Try an agent or team name.
+                </p>
+              )}
+          </div>
+        </nav>
+        <div className="team-room-detail unified-messages">
+          <header className="team-room-header">
+            <ActionIcon
+              className="team-room-back"
               variant="subtle"
-              fullWidth
-              onClick={() => setLimit((value) => value + 60)}
+              aria-label="Back to chats"
+              onClick={() =>
+                setSelection({ scope, id: selected, detail: false })
+              }
             >
-              More chats
+              <ArrowLeft size={20} />
+            </ActionIcon>
+            {icon(showYou ? undefined : room)}
+            <div>
+              <h2 ref={detailHeading} tabIndex={-1}>
+                {showYou ? "For you" : name(room!)}
+              </h2>
+              <span className="team-room-kind">
+                {showYou
+                  ? "Questions, messages and replies"
+                  : room?.kind === "broadcast"
+                    ? "Team conversation"
+                    : room?.kind === "federated"
+                      ? `Remote room on ${room.peerLabel || "paired server"}`
+                      : "Conversation"}
+              </span>
+            </div>
+          </header>
+          <div
+            className="unified-message-scroll"
+            data-room-retained={!showYou ? items.length : undefined}
+            ref={scroll}
+            onScroll={handleScroll}
+          >
+            <div ref={content}>
+              {!showYou && before != null && (
+                <Button
+                  variant="subtle"
+                  size="xs"
+                  onClick={() => {
+                    setFollow(false);
+                    void older().catch((error) => notify(String(error)));
+                  }}
+                >
+                  Earlier messages
+                </Button>
+              )}
+              {!showYou && after != null && (
+                <Button
+                  variant="subtle"
+                  size="xs"
+                  onClick={() => {
+                    setFollow(false);
+                    void newer().catch((error) => notify(String(error)));
+                  }}
+                >
+                  Later messages
+                </Button>
+              )}
+              {!showYou && !loaded && <Loader size="sm" />}
+              {!showYou && notice && (
+                <p role="alert">
+                  {notice}{" "}
+                  <Button variant="subtle" onClick={() => void reload()}>
+                    Retry
+                  </Button>
+                </p>
+              )}
+              {showYou ? (
+                events.map((event) => (
+                  <div key={event.id} data-feed-item={event.id}>
+                    {event.content}
+                  </div>
+                ))
+              ) : (
+                <>
+                  <div
+                    aria-hidden="true"
+                    style={{ height: virtualRange.top }}
+                  />
+                  {items
+                    .slice(virtualRange.start, virtualRange.end)
+                    .map((message) => (
+                      <div key={message.id} data-room-row={message.id}>
+                        <article
+                          className="team-message"
+                          data-message={message.id}
+                        >
+                          <div className="chat-message-author">
+                            <AgentAvatar
+                              id={message.sender || "agent"}
+                              size={24}
+                            />
+                            <strong>{message.senderName || "Agent"}</strong>
+                          </div>
+                          <StreamingText
+                            text={message.text || ""}
+                            agentId={message.sender}
+                          />
+                          <MessageDate at={message.created} />
+                        </article>
+                      </div>
+                    ))}
+                  <div
+                    aria-hidden="true"
+                    style={{ height: virtualRange.bottom }}
+                  />
+                </>
+              )}
+              {(showYou || loaded) &&
+                !(showYou ? events.length : items.length) && (
+                  <div className="team-chat-empty">
+                    <Inbox aria-hidden="true" />
+                    <strong>No messages yet.</strong>
+                    <p>
+                      {showYou
+                        ? "Questions that need your answer and updates from your agents will appear here. Open a chat and give your team a task to get started."
+                        : "Messages between teammates will appear here as they coordinate their work. You can read their decisions and follow the handoffs."}
+                    </p>
+                  </div>
+                )}
+            </div>
+          </div>
+          {!follow && (
+            <Button
+              className="team-latest"
+              size="compact-xs"
+              onClick={() => {
+                showLatest();
+                setFollow(true);
+              }}
+            >
+              Latest messages
             </Button>
           )}
         </div>
-      </nav>
-      <div className="team-room-detail unified-messages">
-        <header className="team-room-header">
-          <ActionIcon
-            className="team-room-back"
-            variant="subtle"
-            aria-label="Back to chats"
-            onClick={() => setSelection({ scope, id: selected, detail: false })}
-          >
-            <ArrowLeft size={20} />
-          </ActionIcon>
-          {icon(showYou ? undefined : room)}
-          <div>
-            <strong>{showYou ? "For you" : name(room!)}</strong>
-            <span className="team-room-kind">
-              {showYou
-                ? "Questions, messages and replies"
-                : room?.kind === "broadcast"
-                  ? "Team conversation"
-                  : room?.kind === "federated"
-                    ? `Remote room · ${room.peerLabel || "paired server"}`
-                    : "Conversation"}
-            </span>
-          </div>
-        </header>
-        <div
-          className="unified-message-scroll"
-          data-room-retained={!showYou ? items.length : undefined}
-          ref={scroll}
-          onScroll={handleScroll}
-        >
-          <div ref={content}>
-            {!showYou && before != null && (
-              <Button
-                variant="subtle"
-                size="xs"
-                onClick={() => {
-                  setFollow(false);
-                  void older().catch((error) => notify(String(error)));
-                }}
-              >
-                Earlier messages
-              </Button>
-            )}
-            {!showYou && after != null && (
-              <Button
-                variant="subtle"
-                size="xs"
-                onClick={() => {
-                  setFollow(false);
-                  void newer().catch((error) => notify(String(error)));
-                }}
-              >
-                Later messages
-              </Button>
-            )}
-            {!showYou && !loaded && <Loader size="sm" />}
-            {!showYou && notice && (
-              <p role="alert">
-                {notice}{" "}
-                <Button variant="subtle" onClick={() => void reload()}>
-                  Retry
-                </Button>
-              </p>
-            )}
-            {showYou ? (
-              events.map((event) => (
-                <div key={event.id} data-feed-item={event.id}>
-                  {event.content}
-                </div>
-              ))
-            ) : (
-              <>
-                <div aria-hidden="true" style={{ height: virtualRange.top }} />
-                {items
-                  .slice(virtualRange.start, virtualRange.end)
-                  .map((message) => (
-                    <div key={message.id} data-room-row={message.id}>
-                      <article
-                        className="team-message"
-                        data-message={message.id}
-                      >
-                        <div className="chat-message-author">
-                          <AgentAvatar
-                            id={message.sender || "agent"}
-                            size={24}
-                          />
-                          <strong>{message.senderName || "Agent"}</strong>
-                        </div>
-                        <StreamingText
-                          text={message.text || ""}
-                          agentId={message.sender}
-                        />
-                        <MessageDate at={message.created} />
-                      </article>
-                    </div>
-                  ))}
-                <div
-                  aria-hidden="true"
-                  style={{ height: virtualRange.bottom }}
-                />
-              </>
-            )}
-            {(showYou || loaded) &&
-              !(showYou ? events.length : items.length) && (
-                <p className="team-chat-empty">No messages yet.</p>
-              )}
-          </div>
-        </div>
-        {!follow && (
-          <Button
-            className="team-latest"
-            size="compact-xs"
-            onClick={() => {
-              showLatest();
-              setFollow(true);
-            }}
-          >
-            Latest messages
-          </Button>
-        )}
-      </div>
-    </section>
+      </section>
+    </div>
   );
 }

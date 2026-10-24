@@ -3258,8 +3258,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     // Shutdown closes the bridge's query; whether the bridge persists the
     // aborted turn as interrupted before it exits is a race. Either outcome
     // is safe: an unknown turn is held, a confirmed interruption continues
-    // with a restart notice, and an exact native receipt adopts the original
-    // turn. None resends the interrupted input.
+    // with a restart notice. Neither resends the interrupted input.
     let recovered = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = fixture
@@ -3275,22 +3274,15 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
             let record: Value = serde_json::from_str(&raw).unwrap();
             let held = record["status"] == "queued"
                 && record["autoWake"] == true
+                && record["inFlight"] != true
                 && record["restartRecovery"]["stage"] == "held"
+                && record["contextRepairWait"]["scope"] == "native"
                 && record["contextRepairWait"]["events"]
                     == json!(["a19e61c8-6156-4874-b8d8-9111b0a49fc4"]);
             let continued = record["restartRecovery"]["stage"] == "continued"
                 && record["status"] == "completed"
                 && record["inFlight"] != true;
-            let adopted = record["restartRecovery"]["stage"] == "finished"
-                && record["status"] == "running"
-                && record["inFlight"] == true
-                && record["startAttempt"]["events"]
-                    == json!(["a19e61c8-6156-4874-b8d8-9111b0a49fc4"])
-                && record["startAttempt"]["turnId"]
-                    .as_str()
-                    .is_some_and(|id| !id.is_empty())
-                && record["contextRepairWait"].is_null();
-            if held || continued || adopted {
+            if held || continued {
                 break record;
             }
             restart_changes.changed().await.unwrap();
@@ -3299,7 +3291,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .await
     .unwrap_or_else(|_| {
         panic!(
-            "in-flight Claude turn should be held, continued or adopted: {}",
+            "in-flight Claude turn should be held or continued: {}",
             direct_agent_debug(&fixture.store, &agent_id)
         )
     });
@@ -3320,12 +3312,6 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     if recovered["restartRecovery"]["stage"] == "held" {
         assert_eq!(second_event_status, "uncertain");
         assert_eq!(queries_started, 2, "restart must not resend the turn");
-    } else if recovered["restartRecovery"]["stage"] == "finished" {
-        assert_eq!(second_event_status, "delivered");
-        assert_eq!(
-            queries_started, 2,
-            "adopting the original turn must not resend it"
-        );
     } else {
         assert_eq!(second_event_status, "delivered");
         let continued_events = recovered["startAttempt"]["events"].as_array().unwrap();
@@ -3808,12 +3794,14 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
                 )
                 .unwrap();
             let record: Value = serde_json::from_str(&raw).unwrap();
-            // A disconnected start already settled as unknown waits for a
-            // native history check, just like an unknown start after restart.
+            // Unknown starts use the native-history hold introduced in 1987a373:
+            // queued is a reconciliation state, not permission to resend input.
             if record["restartRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
                 && record["restartRecovery"]["stage"] == "held"
-                && record["contextRepairWait"]["events"] == json!([body["id"]])
-                && record["error"] == record["contextRepairWait"]["error"]
+                && record["status"] == "queued"
+                && record["error"].as_str().is_some_and(|error| {
+                    error.starts_with("Context repair waits for a confirmed input receipt")
+                })
             {
                 break record;
             }
@@ -3827,9 +3815,9 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
             direct_agent_debug(&fixture.store, agent_id)
         )
     });
-    assert_eq!(held["status"], "queued");
     assert_eq!(held["autoWake"], true);
-    assert!(held["disconnectRecovery"].is_null());
+    assert_eq!(held["inFlight"], false);
+    assert_eq!(held["contextRepairWait"]["events"], json!([body["id"]]));
     assert_eq!(
         fixture
             .store
