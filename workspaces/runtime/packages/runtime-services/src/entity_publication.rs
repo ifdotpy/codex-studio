@@ -28,7 +28,11 @@ impl EntityPublisher for DefaultPublisher {
             server_id.as_deref(),
             &|_, _, _, _| true,
         )?;
-        crate::sync_policy::publish_summary_changes(transaction, pending)
+        crate::sync_policy::publish_summary_changes(transaction, pending)?;
+        if pending.studio_errors {
+            crate::studio_errors::publish(transaction)?;
+        }
+        Ok(())
     }
 }
 

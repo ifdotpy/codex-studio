@@ -196,6 +196,24 @@ async fn a_raw_agent_row_write_reaches_the_client() {
 }
 
 #[tokio::test]
+async fn studio_error_rows_are_published_as_entities_with_their_source_write() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    write(
+        &store,
+        "UPDATE runtime_agents SET record=json_set(record,'$.status','failed','$.error','Codex disconnected. Review the transcript before resuming.') WHERE id=?1",
+        vec![CHAT.to_owned()],
+    )
+    .await;
+
+    let (deleted, value) = client_entity(&store, "studioError", "agent:published-chat:")
+        .expect("Studio error entity is published with its source row");
+    assert!(!deleted);
+    assert_eq!(value["agentId"], CHAT);
+    assert_eq!(value["kind"], "turn_disconnected");
+}
+
+#[tokio::test]
 async fn a_raw_request_row_write_reaches_the_client_and_a_closed_one_leaves_it() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;

@@ -48118,6 +48118,7 @@
             "request": "#/components/schemas/SyncRequestEntityPayload",
             "room": "#/components/schemas/SyncRoomEntityPayload",
             "rule": "#/components/schemas/SyncRuleEntityPayload",
+            "studioError": "#/components/schemas/SyncStudioErrorEntityPayload",
             "task": "#/components/schemas/SyncTaskEntityPayload",
             "uiPreferences": "#/components/schemas/SyncUiPreferencesEntityPayload",
             "work": "#/components/schemas/SyncWorkEntityPayload",
@@ -48185,6 +48186,9 @@
           },
           {
             "$ref": "#/components/schemas/SyncAnnotationEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncStudioErrorEntityPayload"
           }
         ]
       },
@@ -48751,6 +48755,30 @@
           "sessionId"
         ],
         "title": "SyncSessionEvent",
+        "type": "object"
+      },
+      "SyncStudioErrorEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "studioError",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/StudioError"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncStudioErrorEntityPayload",
         "type": "object"
       },
       "SyncSubscriptionAck": {

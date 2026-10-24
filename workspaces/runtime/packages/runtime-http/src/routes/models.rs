@@ -79,6 +79,16 @@ async fn account_catalog(
         std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     >,
 ) -> Result<Value, (StatusCode, Value)> {
+    if account_key == "default"
+        && !snapshot
+            .accounts
+            .iter()
+            .any(|row| row.get("id").and_then(Value::as_str) == Some("default"))
+    {
+        // Startup can ask for models before any default account exists. The
+        // catalog is not ready yet; expose the established pending response.
+        return Err(catalog_pending());
+    }
     let account = account_context(snapshot, account_key)?;
     if account.provider == "claude" && session.is_none() {
         return Err(catalog_pending());
@@ -199,6 +209,14 @@ async fn worker_catalog(
     >,
 ) -> Result<Value, (StatusCode, Value)> {
     let default_account = snapshot.default_account_key.as_str().unwrap_or("default");
+    if parent_account == "default"
+        && !snapshot
+            .accounts
+            .iter()
+            .any(|row| row.get("id").and_then(Value::as_str) == Some("default"))
+    {
+        return Err(catalog_pending());
+    }
     let mut order = Vec::new();
     for key in [parent_account, default_account].into_iter().chain(
         snapshot
@@ -444,6 +462,22 @@ mod tests {
             logins: Vec::new(),
             known_account_keys: HashSet::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn startup_model_catalog_without_a_configured_default_is_pending() {
+        let mut snapshot = snapshot(json!({}));
+        snapshot.accounts.clear();
+        let error = account_catalog(
+            &ModelCatalogService::new(),
+            &snapshot,
+            "default",
+            false,
+            None,
+        )
+        .await
+        .expect_err("an unconfigured account has no catalog yet");
+        assert_eq!(error, catalog_pending());
     }
 
     #[tokio::test]

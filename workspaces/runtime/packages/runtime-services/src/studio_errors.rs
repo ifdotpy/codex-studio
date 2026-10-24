@@ -303,6 +303,55 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
     Ok(json!({"items":rows}))
 }
 
+/// Publish the current server-owned error rows as sync entities in the same
+/// transaction as a source row or dismissal changes. Equal rows retain their
+/// existing entity sequence, while removed rows publish tombstones.
+pub fn publish(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
+        .as_secs_f64();
+    let value = list(tx, now)?;
+    let items = value
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| StoreError::SchemaMismatch("Studio error rows are invalid".into()))?;
+    let mut current = std::collections::BTreeSet::new();
+    for item in items {
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| StoreError::SchemaMismatch("Studio error id is missing".into()))?;
+        studio_runtime_store::SyncDocumentsRepository::put_entity(
+            tx,
+            "studioError",
+            id,
+            item.clone(),
+            false,
+        )?;
+        current.insert(id.to_owned());
+    }
+    let mut statement = tx.prepare_cached(
+        "SELECT id FROM sync_entities WHERE collection='studioError' AND deleted=0",
+    )?;
+    let existing = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    for id in existing {
+        if !current.contains(&id) {
+            studio_runtime_store::SyncDocumentsRepository::put_entity(
+                tx,
+                "studioError",
+                &id,
+                Value::Null,
+                true,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeSet<String>, StoreError> {
     let mut statement = tx.prepare_cached(
         "SELECT substr(id,?3) FROM runtime_operation_receipts WHERE id>=?1 AND id<?2",

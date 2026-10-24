@@ -18,6 +18,7 @@ import type {
 } from "../generated/api";
 import type { components } from "../generated/api";
 type AccountRateLimitsDto = components["schemas"]["AccountRateLimitsDto"];
+type StudioError = components["schemas"]["StudioError"];
 export type UiPreferencesDto = components["schemas"]["UiPreferencesDto"];
 import type { Snapshot } from "../types";
 
@@ -57,6 +58,7 @@ const ENTITY_COLLECTIONS = [
   "workspace",
   "rateLimit",
   "model",
+  "studioError",
   "uiPreferences",
   "messageReceipt",
   "plan",
@@ -115,6 +117,7 @@ function emptyEntityValues(): EntityValues {
     workspace: new Map<string, WorkspaceEntityDto>(),
     rateLimit: new Map<string, AccountRateLimitsDto>(),
     model: new Map<string, ModelEntityDto>(),
+    studioError: new Map<string, StudioError>(),
     uiPreferences: new Map<string, UiPreferencesDto>(),
   };
 }
@@ -218,6 +221,10 @@ function projectSnapshotCollections(
         (left, right) => left.catalogPosition - right.catalogPosition,
       );
   }
+  const studioErrors =
+    prior && !changed.has("studioError")
+      ? prior.runtime.studioErrors
+      : entityValues(values, "studioError");
   const runtime = {
     ...workspace,
     modelsByAccount,
@@ -235,6 +242,7 @@ function projectSnapshotCollections(
         : entityValues(values, "annotation"),
     rateLimitsByAccount,
     rateLimits: rateLimitsByAccount?.default ?? null,
+    studioErrors,
     agents,
     rooms,
     tasks,
@@ -404,6 +412,9 @@ export function applyEntityChanges(
         break;
       case "model":
         state.values.model.set(payload.id, payload.value);
+        break;
+      case "studioError":
+        state.values.studioError.set(payload.id, payload.value);
         break;
       case "workspace":
         state.values.workspace.set(payload.id, payload.value);

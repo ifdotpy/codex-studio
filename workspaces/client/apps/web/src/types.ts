@@ -46,6 +46,7 @@ type SnapshotRuntime = WorkspaceEntityDto & {
   messageReceipts?: components["schemas"]["MessageReceiptEntityDto"][];
   plans?: components["schemas"]["PlanSummaryEntityDto"][];
   annotations?: components["schemas"]["AnnotationEntityDto"][];
+  studioErrors: components["schemas"]["StudioError"][];
   agents: Agent[];
   rooms: Room[];
   tasks: BackgroundTask[];

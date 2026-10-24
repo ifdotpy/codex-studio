@@ -37,6 +37,8 @@ pub struct PendingEntities {
     pub plans: BTreeSet<String>,
     pub annotations: BTreeSet<String>,
     pub tasks: BTreeSet<String>,
+    /// Whether a source row changed the derived Studio error list.
+    pub studio_errors: bool,
 }
 
 impl PendingEntities {
@@ -48,6 +50,7 @@ impl PendingEntities {
             && self.plans.is_empty()
             && self.annotations.is_empty()
             && self.tasks.is_empty()
+            && !self.studio_errors
     }
 }
 
@@ -111,6 +114,8 @@ enum Event {
     Published(Source, String),
     /// A partial projection write needs a full publication.
     Stale(Source, String),
+    /// A source row or dismissal changed the derived Studio error list.
+    StudioErrors,
 }
 
 thread_local! {
@@ -147,6 +152,9 @@ pub(crate) fn active() -> bool {
 
 /// Journal a row write that the writer update hook reports.
 pub(crate) fn observe_row(table: &str, row_id: i64) {
+    if matches!(table, "runtime_agents" | "runtime_monitors" | "runtime_events" | "runtime_operation_receipts") {
+        push(Event::StudioErrors);
+    }
     if let Some(source) = Source::of_table(table) {
         push(Event::Row(source, row_id));
     }
@@ -189,6 +197,7 @@ pub(crate) fn pending(
     }
     let mut changed: BTreeMap<(Source, String), usize> = BTreeMap::new();
     let mut published: HashMap<(Source, String), usize> = HashMap::new();
+    let mut studio_errors = false;
     for (index, event) in events.into_iter().enumerate() {
         match event {
             Event::Row(source, row_id) => {
@@ -202,6 +211,7 @@ pub(crate) fn pending(
             Event::Published(source, id) => {
                 published.insert((source, id), index);
             }
+            Event::StudioErrors => studio_errors = true,
         }
     }
     let mut pending = PendingEntities::default();
@@ -222,5 +232,6 @@ pub(crate) fn pending(
             Source::Task => pending.tasks.insert(id),
         };
     }
+    pending.studio_errors = studio_errors;
     Ok(pending)
 }
