@@ -77,7 +77,14 @@ export function useRetainedWorktrees(
         const value = await get("/api/retained-worktrees", {
           query: { agent: leadId },
         });
-        if (current) setItems(value.retainedWorktrees);
+        // A paired server of another build may answer without the list; a missing list
+        // must not break the screen.
+        if (current)
+          setItems(
+            Array.isArray(value?.retainedWorktrees)
+              ? value.retainedWorktrees
+              : [],
+          );
       },
       () => {
         if (current) setItems([]);
