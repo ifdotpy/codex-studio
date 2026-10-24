@@ -268,7 +268,7 @@ export async function fixture(
                   ? claudeProgress.get(resource.requestId)
                   : claudeLogins.get(resource.requestId) || null,
               }
-            : undefined,
+            : options.progress?.(resource),
         initialResources: options.resourceBaseline
           ? JSON.parse(url.searchParams.get("resources") || "[]")
           : undefined,
@@ -640,6 +640,11 @@ export async function fixture(
       notify.forEach((send) => send([{ kind: "auth-progress", requestId }]));
     },
     pairs,
+    publishRename(agentId, requestId) {
+      notify.forEach((send) =>
+        send([{ kind: "rename-progress", agentId, requestId }]),
+      );
+    },
     accessRequests,
     aliases,
     setChats(rows) {

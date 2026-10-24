@@ -65,6 +65,8 @@ export type ResourceVersion = {
   entitySequence?: number;
   /** Transcript cursor persisted before this notification; readers verify local coverage. */
   transcriptSequence?: number;
+  /** A revision-only transcript change is the server's oversized-interval signal. */
+  transcriptReadRequired?: boolean;
   /** The server cannot enumerate the exact changed rows; clients must reconcile. */
   entitySequenceReset?: boolean;
 };
@@ -602,6 +604,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         epoch: event.epoch,
         revision: event.revision,
       };
+      if (resource.kind === "transcript") version.reason = event.reason;
       const revisionEntry =
         event.resourceVersions?.find(
           (entry) => entry.resource && resourceKey(entry.resource) === key,
@@ -615,6 +618,14 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         version.transcriptSequence = revisionEntry.transcriptChanges.through;
       if (resource.kind === "transcript" && revisionEntry?.transcriptSnapshot)
         version.transcriptSequence = revisionEntry.revision;
+      if (
+        resource.kind === "transcript" &&
+        event.reason === "change" &&
+        revisionEntry &&
+        !revisionEntry.transcriptChanges &&
+        !revisionEntry?.transcriptSnapshot
+      )
+        version.transcriptReadRequired = true;
       if (resource.kind === "drafts") {
         version.reason = event.reason;
         version.draftChanges = revisionEntry?.draftChanges ?? undefined;
@@ -788,7 +799,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       !resource ||
       (resource.kind !== "auth-progress" &&
         resource.kind !== "vault-readiness" &&
-        resource.kind !== "vault-job-progress")
+        resource.kind !== "vault-job-progress" &&
+        resource.kind !== "rename-progress")
     )
       throw new TypeError("Invalid progress resource");
     if (resource.kind === "auth-progress") {
@@ -804,6 +816,18 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             )))
       )
         throw new TypeError("Invalid auth progress");
+    } else if (resource.kind === "rename-progress") {
+      const receipt = candidate.value as Record<string, unknown> | null;
+      if (
+        typeof resource.requestId !== "string" ||
+        typeof resource.agentId !== "string" ||
+        (receipt !== null &&
+          (!receipt ||
+            receipt.id !== resource.agentId ||
+            receipt.request_id !== resource.requestId ||
+            !["pending", "applied", "failed"].includes(String(receipt.status))))
+      )
+        throw new TypeError("Invalid rename progress");
     } else if (resource.kind === "vault-job-progress") {
       const receipt = candidate.value as Record<string, unknown> | null;
       if (

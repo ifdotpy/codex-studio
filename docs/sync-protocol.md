@@ -96,6 +96,17 @@ sign-in codes and URLs never enter the entity stores. The start action retains
 its request identity for one bounded lost-response recovery. Terminal receipts
 release the subscription.
 
+Rename completion uses the agent entity for its title and the transient
+`rename-progress` resource for the exact request's receipt, including failure.
+The selector includes both the agent and request identity; subscription baselines
+replay the durable receipt after reconnect. Terminal receipts release the selector.
+Saved server names consume each owner's discovery snapshot through its existing
+stream. Startup credentials and workspace initialization share the finite
+[read-recovery budget](../workspaces/client/apps/web/src/sync/readRetry.ts);
+exhaustion stays visible until reconnect or an explicit retry. Transcript prefetch
+uses inline stream snapshots and intervals; a revision-only oversized interval
+retains its scoped recovery read.
+
 The existing native EventSource transport and RxDB projection cache remain in
 use. Adding a separate query cache is unnecessary for this contract. FastAPI
 owns SSE framing; the renderer and server compare the same generated schema

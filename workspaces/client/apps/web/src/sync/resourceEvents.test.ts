@@ -190,6 +190,35 @@ beforeEach(() => {
 });
 
 describe("shared resource event transport", () => {
+  it("delivers rename failure as transient progress for its exact agent and request", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const transport = await loadTransport();
+    const accept = vi.fn();
+    const resource = {
+      kind: "rename-progress" as const,
+      agentId: "agent",
+      requestId: "rename-one",
+    };
+    transport.watchResourceChanges(resource, accept);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const value = {
+      id: "agent",
+      request_id: "rename-one",
+      status: "failed",
+      error: "No title",
+    };
+    Source.instances[0]!.emit("resource-progress", {
+      protocol: 4,
+      workspaceId,
+      epoch: "rename",
+      revision: 1,
+      resource,
+      value,
+    });
+    await vi.waitFor(() => expect(accept).toHaveBeenCalledOnce());
+    expect(accept.mock.calls[0][0].progress).toEqual({ resource, value });
+  });
+
   it("delivers transient discovery and cursor voice payloads without entity persistence", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", {
