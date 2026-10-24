@@ -269,31 +269,32 @@ async fn acknowledged_monitor_input_is_persisted_through_http() {
         .collect()
     );
     assert!(response["_syncEntitiesAfter"].is_number());
-    let submitted = port.submitted.lock().expect("submitted effects");
-    assert_eq!(
-        submitted.len(),
-        1,
-        "one HTTP input submits one native effect"
-    );
-    let studio_runtime_services::monitor_policy::Effect::Native {
-        identity,
-        method,
-        params,
-    } = &submitted[0]
-    else {
-        panic!("input must submit a native effect");
-    };
-    assert!(identity.starts_with(&format!("monitor-input:{id}:")));
-    assert_eq!(*method, "command/exec/write");
-    assert_eq!(
-        params,
-        &json!({
-            "processId": id,
-            "deltaBase64": "Zml4dHVyZSBpbnB1dA==",
-            "closeStdin": false
-        })
-    );
-    drop(submitted);
+    {
+        let submitted = port.submitted.lock().expect("submitted effects");
+        assert_eq!(
+            submitted.len(),
+            1,
+            "one HTTP input submits one native effect"
+        );
+        let studio_runtime_services::monitor_policy::Effect::Native {
+            identity,
+            method,
+            params,
+        } = &submitted[0]
+        else {
+            panic!("input must submit a native effect");
+        };
+        assert!(identity.starts_with(&format!("monitor-input:{id}:")));
+        assert_eq!(*method, "command/exec/write");
+        assert_eq!(
+            params,
+            &json!({
+                "processId": id,
+                "deltaBase64": "Zml4dHVyZSBpbnB1dA==",
+                "closeStdin": false
+            })
+        );
+    }
 
     let saved = MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
         .expect("read monitor record")
