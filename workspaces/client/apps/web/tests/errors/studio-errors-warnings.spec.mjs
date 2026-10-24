@@ -37,6 +37,7 @@ for (const width of [1440, 390]) {
           }
         },
       });
+      server.snapshot.runtime.studioErrors = items;
       server.snapshot.runtime.nativeNotices = [
         {
           id: "provider-update:default",

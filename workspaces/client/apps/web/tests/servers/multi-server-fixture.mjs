@@ -119,6 +119,19 @@ export async function fixture(
       work: [],
       nativeNotices: [],
       sidebarOrder: null,
+      accountsSummary: {
+        accounts: savedAccounts.map((account) => ({
+          home: "/fixture",
+          source: "fixture",
+          label: account.id,
+          ...account,
+        })),
+        archivedAccounts: [],
+        defaultAccountKey: savedAccounts[0]?.id || "default",
+        defaultAccountGroups: [],
+        supportsDelete: true,
+        supportsDisconnect: true,
+      },
       rateLimits: null,
       rateLimitsByAccount: {},
     },
@@ -259,6 +272,7 @@ export async function fixture(
         initialResources: options.resourceBaseline
           ? JSON.parse(url.searchParams.get("resources") || "[]")
           : undefined,
+        versionedResources: !!options.entityFrames,
         onStreamReady: (send, resources) => {
           subscriptions.set(response, resources);
           notify.push(send);
@@ -665,6 +679,9 @@ export async function fixture(
         lastCompletedTurnStatus: "completed",
         tail: `${label} reply`,
       });
+      notify.forEach((send) => send([{ kind: "state" }]));
+    },
+    publishState() {
       notify.forEach((send) => send([{ kind: "state" }]));
     },
     mismatchSchema() {

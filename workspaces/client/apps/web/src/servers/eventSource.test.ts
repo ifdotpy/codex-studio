@@ -1,10 +1,11 @@
+/// <reference lib="es2024.promise" />
 import { expect, it, vi, afterEach } from "vitest";
 import { EventStreamParser } from "./eventSource";
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.resetModules();
 });
-it("parses signed stream frames across UTF-8, CRLF and blank-line chunk boundaries", () => {
+it("parses signed stream frames across BOM, CRLF and blank-line chunk boundaries", () => {
   const frames: [string, string][] = [];
   const parser = new EventStreamParser((type, data) =>
     frames.push([type, data]),
@@ -29,6 +30,8 @@ it.each(["", "&tokenRates=false", "&tokenRates=true"])(
     vi.stubGlobal("location", { origin: "http://studio.test", search: "" });
     const { SignedEventSource } = await import("./eventSource");
     let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const cancelled = Promise.withResolvers<void>();
+    const delivered = Promise.withResolvers<void>();
     const fetchRequest = vi.fn(async (request: Request) => {
       expect(new URL(request.url).search).toBe(`?protocol=3${selector}`);
       expect(request.headers.get("Accept")).toBe("text/event-stream");
@@ -38,6 +41,7 @@ it.each(["", "&tokenRates=false", "&tokenRates=true"])(
           start(controller) {
             stream = controller;
           },
+          cancel: () => cancelled.resolve(),
         }),
         { headers: { "Content-Type": "text/event-stream" } },
       );
@@ -47,21 +51,27 @@ it.each(["", "&tokenRates=false", "&tokenRates=true"])(
       fetchRequest,
     );
     const frames: string[] = [];
-    source.addEventListener("resources", (event) =>
-      frames.push((event as MessageEvent).data),
-    );
+    source.addEventListener("resources", (event) => {
+      frames.push((event as MessageEvent).data);
+      delivered.resolve();
+    });
     const errors = vi.fn();
     source.onerror = errors;
-    await vi.waitFor(() => expect(fetchRequest).toHaveBeenCalledOnce());
-    stream.enqueue(new TextEncoder().encode("event: resources\ndata: {}\n\n"));
-    await vi.waitFor(() => expect(frames).toEqual(["{}"]));
+    expect(fetchRequest).toHaveBeenCalledOnce();
+    const bytes = new TextEncoder().encode(
+      "event: resources\r\ndata: Привет 🦀\r\n\r\n",
+    );
+    // Single-byte chunks split both multibyte UTF-8 characters and CRLF.
+    for (const byte of bytes) stream.enqueue(Uint8Array.of(byte));
+    await delivered.promise;
+    expect(frames).toEqual(["Привет 🦀"]);
     source.close();
     expect(fetchRequest.mock.calls[0][0].signal.aborted).toBe(true);
     stream.enqueue(
       new TextEncoder().encode("event: resources\ndata: ignored\n\n"),
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(frames).toEqual(["{}"]);
+    await cancelled.promise;
+    expect(frames).toEqual(["Привет 🦀"]);
     expect(errors).not.toHaveBeenCalled();
   },
 );
@@ -76,9 +86,11 @@ it("cancels a rejected event response", async () => {
         headers: { "Content-Type": "text/html" },
       }),
   );
-  const error = vi.fn();
+  const rejected = Promise.withResolvers<void>();
+  const error = vi.fn(() => rejected.resolve());
   source.onerror = error;
-  await vi.waitFor(() => expect(error).toHaveBeenCalledOnce());
+  await rejected.promise;
+  expect(error).toHaveBeenCalledOnce();
   expect(cancel).toHaveBeenCalledOnce();
   source.close();
 });

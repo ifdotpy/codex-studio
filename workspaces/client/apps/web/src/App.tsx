@@ -69,10 +69,8 @@ import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import {
   accountLimits,
   limitsReadSucceeded,
-  limitsSnapshotIsFresh,
   shouldReplaceLimitsSnapshot,
 } from "./usage/accountUsage";
-import { usageAccountConnectionKey as usageConnectionKey } from "./usage/usageAccountRefresh";
 import type { AccountLimitsSnapshot } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { roomLeadIds, messageAttentionCount } from "./chatScope";
@@ -214,11 +212,6 @@ import {
 import Conversation from "./components/Conversation";
 const SelectedConversation = memo(Conversation);
 import type { UsageAccount } from "./components/Usage";
-import { useServerResourceReads } from "./servers/ServerServicesContext";
-import {
-  limitsBaselineReader,
-  type LimitsBaselineHydration,
-} from "./usage/limitsBaseline";
 import RadioChat from "./components/RadioChat";
 import SharedChatCreate, {
   sharedCreationKey,
@@ -264,9 +257,7 @@ export default function App({ active = true }: { active?: boolean }) {
     dismissChatCreation,
   } = useServerChatCreations();
   const { canRevealPath, revealPath } = useServerFileDialogs();
-  const { watchResourceChanges, watchResourceConnection } =
-    useServerResources();
-  const watchResourceReads = useServerResourceReads();
+  const { watchResourceConnection } = useServerResources();
   const sidebarServices = useServerSidebarServices();
   const serverAliases = useServerAliases(readServerAliases);
   const {
@@ -673,12 +664,6 @@ export default function App({ active = true }: { active?: boolean }) {
     },
     [cachedLimitsByAccount, cacheAccountLimits],
   );
-  useEffect(() => {
-    if (mobileClient || !data?.stateDir) return;
-    // Include terminals in the first typed subscription set; TerminalDock can
-    // mount later, and its watcher then shares this resource without a reopen.
-    return watchResourceChanges({ kind: "terminals" }, () => {});
-  }, [mobileClient, data?.stateDir]);
   useEffect(() => {
     if (data?.stateDir && saved(sharedCreationKey(data.stateDir), null))
       setSharedCreate({});
@@ -1132,13 +1117,6 @@ export default function App({ active = true }: { active?: boolean }) {
   }, [navigationTarget, data, agents, notify]);
   const limitsCache = useRef(limitsByAccount);
   limitsCache.current = limitsByAccount;
-  const limitsWatchers = useRef(new Map<string, () => void>());
-  const limitsCacheHydrations = useRef(
-    new Map<
-      string,
-      { token: object; promise: Promise<LimitsBaselineHydration> }
-    >(),
-  );
   const accountsForLimits = useRef(accounts.data.accounts);
   accountsForLimits.current = accounts.data.accounts;
   const reloadLimitsFor = useCallback(
@@ -1309,140 +1287,6 @@ export default function App({ active = true }: { active?: boolean }) {
     reloadLimitsFor,
   ]);
   const usageAccounts = useRetainedUsageAccounts(nextUsageAccounts);
-  // Only accounts that take part in this chat team get a dot and a cache read.
-  const usageAccountKeys = usageAccounts.map((item) => item.key).join("\n");
-  const usageAccountConnectionKey = usageConnectionKey(
-    usageAccountKeys,
-    accounts.data.accounts,
-  );
-  useEffect(() => {
-    if (!data?.stateDir || !usageAccountKeys) return;
-    for (const key of usageAccountKeys.split("\n")) {
-      const account = accountsForLimits.current.find((item) => item.id === key);
-      if (account?.disconnected) {
-        limitsCacheHydrations.current.delete(key);
-        continue;
-      }
-      if (limitsCacheHydrations.current.has(key)) continue;
-      const token = {};
-      const hydration = get("/api/limits", {
-        query: { account_key: key, cached: "1" },
-      })
-        .then((result) => {
-          if (limitsCacheHydrations.current.get(key)?.token !== token)
-            return false;
-          const currentAccount = accountsForLimits.current.find(
-            (item) => item.id === key,
-          );
-          const snapshot = accountLimits(
-            result,
-            key,
-            currentAccount?.accountId,
-          );
-          if (
-            currentAccount?.disconnected ||
-            !snapshot ||
-            !limitsSnapshotIsFresh(snapshot, key, currentAccount?.accountId)
-          )
-            return false;
-          const previousCurrent = accountLimits(
-            limitsCache.current[key],
-            key,
-            currentAccount?.accountId,
-          );
-          if (
-            !previousCurrent ||
-            (previousCurrent.at || 0) < (snapshot.at || 0)
-          )
-            limitsCache.current = {
-              ...limitsCache.current,
-              [key]: { ...snapshot, accountKey: key },
-            };
-          setLimitsByAccount((old) => {
-            const previous = accountLimits(
-              old[key],
-              key,
-              currentAccount?.accountId,
-            );
-            if (previous && (previous.at || 0) >= (snapshot.at || 0))
-              return old;
-            return { ...old, [key]: snapshot };
-          });
-          return { snapshot };
-        })
-        .catch(() => false);
-      limitsCacheHydrations.current.set(key, { token, promise: hydration });
-    }
-    // Account metadata validates this key through the ref above; the request
-    // identity depends only on workspace + usageAccountKeys. Replacing the
-    // accounts array during its initial load must not repeat the same read.
-  }, [data?.stateDir, usageAccountKeys, usageAccountConnectionKey]);
-  useEffect(() => {
-    if (!data?.stateDir) return;
-    return () => {
-      for (const stop of limitsWatchers.current.values()) stop();
-      limitsWatchers.current.clear();
-      limitsCacheHydrations.current.clear();
-    };
-  }, [data?.stateDir]);
-  useEffect(() => {
-    if (!data?.stateDir) return;
-    const keys = new Set(
-      active
-        ? [accountKey, ...usageAccountKeys.split("\n").filter(Boolean)]
-        : [],
-    );
-    for (const [key, stop] of limitsWatchers.current) {
-      if (keys.has(key)) continue;
-      stop();
-      limitsWatchers.current.delete(key);
-    }
-    for (const key of keys) {
-      if (limitsWatchers.current.has(key)) continue;
-      let active = true;
-      const stopWatching = watchResourceReads(
-        { kind: "limits", accountKey: key },
-        limitsBaselineReader(
-          () =>
-            limitsCacheHydrations.current.get(key)?.promise ??
-            Promise.resolve(false),
-          // A same-version reconnect baseline is covered by hydration; a newer
-          // resource version still forces a read despite a fresh cache entry.
-          () => reloadLimitsForRef.current(key, true),
-          () => {
-            const account = accountsForLimits.current.find(
-              (item) => item.id === key,
-            );
-            return active && !account?.disconnected;
-          },
-          (snapshot) => {
-            const account = accountsForLimits.current.find(
-              (item) => item.id === key,
-            );
-            return limitsSnapshotIsFresh(
-              snapshot ?? limitsCache.current[key],
-              key,
-              account?.accountId,
-            );
-          },
-        ),
-        () => {
-          // reloadLimitsFor stores errors in visible account state.
-        },
-      );
-      const stop = () => {
-        active = false;
-        stopWatching();
-      };
-      limitsWatchers.current.set(key, stop);
-    }
-  }, [
-    data?.stateDir,
-    accountKey,
-    usageAccountKeys,
-    watchResourceReads,
-    active,
-  ]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };
@@ -2462,7 +2306,7 @@ export default function App({ active = true }: { active?: boolean }) {
     publicAccounts,
     creating,
   );
-  const studioErrors = useStudioErrorsState(!!data);
+  const studioErrors = useStudioErrorsState(data?.runtime.studioErrors);
   if (!active) return null;
   // A server contract gate must not cover navigation to other server owners.
   if (screen && schemaMismatch)

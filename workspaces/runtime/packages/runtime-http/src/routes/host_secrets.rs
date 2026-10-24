@@ -1742,7 +1742,7 @@ mod tests {
         vault_project(state.path());
         let host_command = fake_host_command(
             state.path(),
-            "[ \"$1\" = pull ] && [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] && [ \"$4\" = --project ] && [ \"$5\" = project-one ] && [ \"$6\" = --to ] && [ \"$8\" = --json ] || exit 91\nprintf '%s\\n' '{\"seq\":7,\"files\":3,\"bytes\":1024}'",
+            "[ \"$1\" = pull ] && [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] && [ \"$4\" = --project ] && [ \"$5\" = project-one ] && [ \"$6\" = --to ] && [ \"$8\" = --json ] || exit 91\nprintf pull >> \"$0.calls\"\nprintf '%s\\n' '{\"seq\":7,\"files\":3,\"bytes\":1024}'",
         );
         let owner = VaultJobOwner::start();
         let client = owner.client();
@@ -1758,9 +1758,12 @@ mod tests {
         state_http = state_http.with_vm_state_dir(state.path().join("linux-vm"));
         state_http.vault_host_command = Some(host_command);
         state_http.vault_job_client = Some(client.clone());
+        let mut without_command = state_http.clone();
+        without_command.vault_host_command = None;
         let app = crate::router::router(state_http).expect("runtime HTTP router starts");
         let request = json!({"projectId":"p1","requestId":"pull-fixture","to":state.path().to_string_lossy()});
         let response = app
+            .clone()
             .oneshot(authorized_request_at("/api/vault/pull", request.clone()))
             .await
             .unwrap();
@@ -1785,23 +1788,8 @@ mod tests {
         .expect("fake pull job completes");
         assert_eq!(result["state"], "done");
         assert_eq!(result["seq"], 7);
-        let replay_app = crate::router::router({
-            let mut state_http = HttpState::new(
-                "test-token".to_owned(),
-                "test-workspace".to_owned(),
-                state.path().to_string_lossy().into_owned(),
-                TEST_HTTP_PORT,
-                None,
-                None,
-                None,
-            );
-            state_http = state_http.with_vm_state_dir(state.path().join("linux-vm"));
-            state_http.vault_job_client = Some(client.clone());
-            state_http
-        })
-        .expect("replay router starts");
-        let replay = replay_app
-            .oneshot(authorized_request_at("/api/vault/pull", request))
+        let replay = app
+            .oneshot(authorized_request_at("/api/vault/pull", request.clone()))
             .await
             .unwrap();
         let replay_body = axum::body::to_bytes(replay.into_body(), usize::MAX)
@@ -1810,6 +1798,21 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<Value>(&replay_body).unwrap(),
             result
+        );
+        let replay = super::pull(
+            axum::extract::State(without_command),
+            super::ApiJson(request),
+        )
+        .await
+        .expect("completed receipt replays without a host command");
+        assert_eq!(
+            replay.0, result,
+            "receipt replay precedes host dependency checks"
+        );
+        assert_eq!(
+            std::fs::read_to_string(state.path().join("layr-desk.calls"))
+                .expect("desk invocation count"),
+            "pull"
         );
         owner.shutdown().await.unwrap();
     }
@@ -1864,6 +1867,12 @@ mod tests {
     async fn project_secret_route_refuses_without_guest_and_writes_nothing() {
         let state = tempfile::tempdir().unwrap();
         let app = app(state.path(), None, None);
+        assert_eq!(
+            std::fs::read_dir(state.path())
+                .expect("isolated state tree")
+                .count(),
+            0
+        );
         let request = authorized_request(
             json!({"projectId":"p1","name":"TOKEN","value":"generated-test-value","requestId":"req-1"}),
         );
@@ -1882,7 +1891,12 @@ mod tests {
         let body = String::from_utf8_lossy(&body);
         assert!(body.contains("Linux VM guest RPC is unavailable"));
         assert!(!body.contains("generated-test-value"));
-        assert!(!state.path().join("layr-projects").exists());
+        assert_eq!(
+            std::fs::read_dir(state.path())
+                .expect("isolated state tree")
+                .count(),
+            0
+        );
     }
 
     #[cfg(unix)]

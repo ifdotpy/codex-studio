@@ -3378,13 +3378,14 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .unwrap();
     let mut restart_changes = restarted_state.sync_changes_handle().subscribe();
     // Shutdown closes the bridge's query; whether the bridge persists the
-    // aborted turn as interrupted before it exits is a race. Either outcome
-    // is safe: an unknown turn is held, a confirmed interruption continues
-    // with a restart notice. Shutdown also drains the bridge's stdout, so the
-    // `turn/start` reply can reach Studio before the exit. The start is then
-    // accepted, and a turn that native history shows as completed (this
-    // fixture's SDK finishes an aborted query successfully) is reconciled as
-    // finished. No outcome resends the interrupted input.
+    // aborted turn as interrupted before it exits is a race. An unknown input
+    // is held, a confirmed interruption continues with a restart notice, and
+    // an accepted turn without conclusive native history is paused. Shutdown
+    // also drains the bridge's stdout, so the `turn/start` reply can reach
+    // Studio before the exit; the start is then accepted, and a turn that
+    // native history shows as completed (this fixture's SDK finishes an
+    // aborted query successfully) is reconciled as finished. No outcome
+    // resends the interrupted input.
     let recovered = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = fixture
@@ -3405,6 +3406,12 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
                 && record["contextRepairWait"]["scope"] == "native"
                 && record["contextRepairWait"]["events"]
                     == json!(["a19e61c8-6156-4874-b8d8-9111b0a49fc4"]);
+            // A held input may also stop as interrupted without auto-wake when
+            // the restart notice reaches the agent before native repair starts.
+            let held_interrupted = record["status"] == "interrupted"
+                && record["autoWake"] == false
+                && record["inFlight"] != true
+                && record["restartRecovery"]["stage"] == "held";
             let continued = record["restartRecovery"]["stage"] == "continued"
                 && record["status"] == "completed"
                 && record["inFlight"] != true;
@@ -3413,7 +3420,13 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
                 && record["autoWake"] == true
                 && record["inFlight"] != true
                 && record["connectionRecovery"]["outcome"] == "completed";
-            if held || continued || finished {
+            let unconfirmed = record["restartRecovery"]["stage"] == "finished"
+                && record["status"] == "paused"
+                && record["autoWake"] == false
+                && record["inFlight"] != true
+                && record["nativeFailureHold"] == true
+                && record["lastCompletedTurnStatus"] == "uncertain";
+            if held || held_interrupted || continued || finished || unconfirmed {
                 break record;
             }
             restart_changes.changed().await.unwrap();
@@ -3422,7 +3435,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .await
     .unwrap_or_else(|_| {
         panic!(
-            "in-flight Claude turn should be held, continued, or finished: {}",
+            "in-flight Claude turn should be held, continued, finished, or paused as unconfirmed: {}",
             direct_agent_debug(&fixture.store, &agent_id)
         )
     });
@@ -3445,10 +3458,18 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         assert_eq!(queries_started, 2, "restart must not resend the turn");
     } else if recovered["restartRecovery"]["stage"] == "finished" {
         assert_eq!(second_event_status, "delivered");
-        assert_eq!(
-            queries_started, 2,
-            "a finished turn needs no continuation; the input is not resent"
-        );
+        assert_eq!(queries_started, 2, "restart must not resend the turn");
+        if recovered["status"] == "paused" {
+            assert_eq!(
+                recovered["error"]["message"],
+                "Studio could not confirm the Claude turn outcome. Review the native transcript before continuing."
+            );
+            assert_eq!(
+                recovered["nativeTurnError"]["turnId"],
+                recovered["lastCompletedTurn"]
+            );
+            assert!(recovered["startAttempt"].is_null());
+        }
     } else {
         assert_eq!(second_event_status, "delivered");
         let continued_events = recovered["startAttempt"]["events"].as_array().unwrap();

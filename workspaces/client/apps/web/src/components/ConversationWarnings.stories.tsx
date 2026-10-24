@@ -36,7 +36,7 @@ const meta = {
   decorators: [
     (Story) => (
       <ServerServicesProvider services={services}>
-        <StudioErrorsProvider>
+        <StudioErrorsProvider items={errors}>
           <Story />
         </StudioErrorsProvider>
       </ServerServicesProvider>

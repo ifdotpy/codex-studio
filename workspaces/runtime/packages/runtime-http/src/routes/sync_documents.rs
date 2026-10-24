@@ -1126,7 +1126,7 @@ mod vault_maintenance_tests {
             "initialHigh":9
         });
         let page: crate::generated::SyncPullResponse =
-            serde_json::from_value(page_json).expect("legacy page projects to DTO");
+            serde_json::from_value(page_json.clone()).expect("legacy page projects to DTO");
         let direct_page = crate::generated::SyncPullResponse {
             checkpoint: crate::generated::SyncCheckpoint { seq: 8 },
             documents: vec![
@@ -1146,17 +1146,19 @@ mod vault_maintenance_tests {
             reset: None,
             workspace_id: "workspace-1".to_owned(),
         };
-        assert_eq!(
-            serde_json::to_vec(&direct_page).expect("direct page serializes"),
-            serde_json::to_vec(&page).expect("legacy page serializes")
-        );
+        for value in [&page, &direct_page] {
+            assert_eq!(
+                serde_json::to_value(value).expect("page serializes"),
+                page_json
+            );
+        }
 
         let reset_json = json!({
             "workspaceId":"workspace-1", "generation":7,
             "reset":true, "floor":3, "maxSeq":10
         });
         let reset: crate::generated::SyncPullResetResponse =
-            serde_json::from_value(reset_json).expect("legacy reset projects to DTO");
+            serde_json::from_value(reset_json.clone()).expect("legacy reset projects to DTO");
         let direct_reset = crate::generated::SyncPullResetResponse {
             floor: 3,
             generation: 7,
@@ -1164,10 +1166,12 @@ mod vault_maintenance_tests {
             reset: true,
             workspace_id: "workspace-1".to_owned(),
         };
-        assert_eq!(
-            serde_json::to_vec(&direct_reset).expect("direct reset serializes"),
-            serde_json::to_vec(&reset).expect("legacy reset serializes")
-        );
+        for value in [&reset, &direct_reset] {
+            assert_eq!(
+                serde_json::to_value(value).expect("reset serializes"),
+                reset_json
+            );
+        }
     }
 
     async fn maintenance_fixture() -> (
@@ -1605,13 +1609,17 @@ mod vault_maintenance_tests {
                 .await
                 .expect("runtime store opens"),
         );
+        studio_runtime_services::entity_publication::install(&store)
+            .await
+            .expect("source publisher initialized");
         store
             .transaction(|transaction| {
                 transaction.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     rusqlite::params![
                         "agent-1",
-                        json!({"id":"agent-1","status":"idle"}).to_string()
+                        json!({"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
+                            .to_string()
                     ],
                 )?;
                 Ok(())
@@ -1660,13 +1668,19 @@ mod vault_maintenance_tests {
                 .await
                 .expect("runtime store opens"),
         );
+        studio_runtime_services::entity_publication::install(&store)
+            .await
+            .expect("source publisher initialized");
         store
             .transaction(|transaction| {
                 for index in 0..ENTITY_COUNT {
                     let id = format!("agent-{index:04}");
                     transaction.execute(
                         "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
-                        rusqlite::params![id, json!({"id":id,"status":"idle"}).to_string()],
+                        rusqlite::params![
+                            id,
+                            json!({"id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()
+                        ],
                     )?;
                     transaction.execute(
                         "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",

@@ -196,6 +196,50 @@ async fn a_raw_agent_row_write_reaches_the_client() {
 }
 
 #[tokio::test]
+async fn studio_error_rows_are_published_as_entities_with_their_source_write() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    write(
+        &store,
+        "UPDATE runtime_agents SET record=json_set(record,'$.status','failed','$.error',?2) WHERE id=?1",
+        vec![CHAT.to_owned(), studio_runtime_schema::shared_values::PROVIDER_DISCONNECTED_TURN_ERROR.to_owned()],
+    )
+    .await;
+
+    let (deleted, value) = client_entity(&store, "studioError", "agent:published-chat:")
+        .expect("Studio error entity is published with its source row");
+    assert!(!deleted);
+    assert_eq!(value["agentId"], CHAT);
+    assert_eq!(value["kind"], "turn_disconnected");
+    let sequence = store
+        .test_read_transaction(|tx| {
+            studio_runtime_store::SyncDocumentsRepository::entity_sequence(tx)
+        })
+        .expect("source publication sequence");
+    crate::studio_errors::refresh(&store)
+        .await
+        .expect("equal refresh");
+    assert_eq!(
+        store
+            .test_read_transaction(|tx| {
+                studio_runtime_store::SyncDocumentsRepository::entity_sequence(tx)
+            })
+            .expect("equal refresh sequence"),
+        sequence
+    );
+
+    store
+        .transaction_with(|tx| crate::studio_errors::dismiss(tx, "agent:published-chat:", 100.0))
+        .await
+        .expect("dismissal commits");
+    assert!(
+        client_entity(&store, "studioError", "agent:published-chat:")
+            .expect("tombstone")
+            .0
+    );
+}
+
+#[tokio::test]
 async fn a_raw_request_row_write_reaches_the_client_and_a_closed_one_leaves_it() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
@@ -256,7 +300,7 @@ async fn synced_agent_values_recompute_the_view_and_create_a_missing_entity() {
         })
         .await
         .expect("the worker row is stored");
-    super::install(&store);
+    super::install(&store).await.expect("publisher installed");
     assert!(client_entity(&store, "agent", "sync-worker").is_none());
     store
         .transaction_with(|tx| {
@@ -359,4 +403,53 @@ async fn a_claude_sign_in_repair_reaches_the_client() {
         "the repaired chat no longer shows failed"
     );
     assert_eq!(view["error"], Value::Null);
+}
+
+#[tokio::test]
+async fn queue_source_writes_publish_and_remove_items_without_http_reads() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    write(&store, "INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created) VALUES(?1,?2,1,'user','Queued text','pending',1)", vec!["queued-source".into(), CHAT.into()]).await;
+    let (deleted, view) = client_entity(&store, "queue", CHAT).expect("queue published at source");
+    assert!(!deleted);
+    assert_eq!(view["items"][0]["text"], "Queued text");
+    assert_eq!(view["capabilities"]["reorder"], true);
+    let revision = view["revision"].clone();
+    write(
+        &store,
+        "UPDATE runtime_events SET status='delivered' WHERE id=?1",
+        vec!["queued-source".into()],
+    )
+    .await;
+    let (_, view) = client_entity(&store, "queue", CHAT).expect("empty queue published");
+    assert_eq!(view["items"], json!([]));
+    assert_ne!(view["revision"], revision);
+}
+
+#[tokio::test]
+async fn terminal_source_writes_publish_summary_without_process_identity() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    let terminal = json!({"id":"terminal-source","agent":CHAT,"cwd":"/fixture","title":"Source shell","status":"running","created":1,"updated":1,"_processIdentity":{"pid":999}});
+    write(
+        &store,
+        "INSERT INTO user_terminals(id,record,output,offset) VALUES(?1,?2,'',0)",
+        vec!["terminal-source".into(), terminal.to_string()],
+    )
+    .await;
+    let (_, value) =
+        client_entity(&store, "terminal", "terminal-source").expect("terminal summary published");
+    assert_eq!(value["title"], "Source shell");
+    assert!(value.get("_processIdentity").is_none());
+    write(
+        &store,
+        "UPDATE user_terminals SET record=json_set(record,'$.status','closed') WHERE id=?1",
+        vec!["terminal-source".into()],
+    )
+    .await;
+    assert!(
+        client_entity(&store, "terminal", "terminal-source")
+            .expect("terminal removal published")
+            .0
+    );
 }

@@ -646,9 +646,11 @@ test.describe("legacy schema mismatch", () => {
       allowPendingChangeEvent = true;
       allowPendingChangeEventResolve?.();
       allowPendingChangeEventResolve = undefined;
+      // Other source owners may publish summaries after the mutation's agent
+      // row. The applied checkpoint must cover that row and may advance further.
       await expect
-        .poll(readNewPageStateCheckpoint)
-        .toMatchObject({ checkpoint: Number(mutationEntity.seq) });
+        .poll(async () => (await readNewPageStateCheckpoint()).checkpoint)
+        .toBeGreaterThanOrEqual(Number(mutationEntity.seq));
       pendingEntitySequence = undefined;
       pendingEntityChanges = undefined;
       assert.ok(

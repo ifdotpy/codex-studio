@@ -387,7 +387,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Arc::new(RuntimeStore::open_claiming(configured_state_dir.as_deref(), &owner).await?);
     // Before the first runtime write: every writer transaction publishes the chats and
     // cards it changed.
-    studio_runtime_services::entity_publication::install(&store);
+    studio_runtime_services::entity_publication::install(&store).await?;
     store
         .set_diagnostics_callback(Some(
             studio_runtime_services::diagnostics::observe_store_event,
@@ -884,6 +884,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let cost_scan_cancelled = state.cost_scan_cancellation_handle();
     let vault_job_owner = VaultJobOwner::start();
     state = state.with_vault_job_client(vault_job_owner.client());
+    state.initialize_bounded_entities().await?;
     let app = match router(state.clone()) {
         Ok(app) => {
             let app = app
@@ -993,6 +994,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let web_push_task = tokio::spawn(studio_runtime_services::web_push::run(
         Arc::clone(&store),
         state_root.to_path_buf(),
+        monitor_shutdown.subscribe(),
+    ));
+    let studio_errors_task = tokio::spawn(studio_runtime_services::studio_errors::run(
+        Arc::clone(&store),
         monitor_shutdown.subscribe(),
     ));
     let retention_task = tokio::spawn(studio_runtime_services::storage_retention::run(
@@ -1322,6 +1327,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         if let Some(service) = browser_host {
             shutdown_join("browser host bridge", service.stop()).await?;
         }
+        shutdown_join("Studio error publication task", studio_errors_task).await??;
         shutdown_join("storage retention task", retention_task).await??;
         shutdown_join("analytics projection task", analytics_projection_task).await??;
         if let Some(task) = orchestration_task {

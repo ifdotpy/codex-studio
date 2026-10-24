@@ -622,3 +622,27 @@ mod tests {
         assert_eq!(changes.snapshot().revision, 0);
     }
 }
+
+/// Source-owned process notifications for projections derived outside Canvas.
+/// Values are never carried here: login URLs and credentials stay in their owners.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundedSource {
+    Desktop,
+    Costs,
+}
+
+fn bounded_source_sender() -> &'static tokio::sync::broadcast::Sender<BoundedSource> {
+    static SENDER: OnceLock<tokio::sync::broadcast::Sender<BoundedSource>> = OnceLock::new();
+    SENDER.get_or_init(|| tokio::sync::broadcast::channel(MAX_NOTIFY_RECEIPTS).0)
+}
+
+pub fn bounded_source_changes() -> tokio::sync::broadcast::Receiver<BoundedSource> {
+    bounded_source_sender().subscribe()
+}
+
+pub fn publish_bounded_source(source: BoundedSource) {
+    // No HTTP owner is required during startup or isolated service tests.
+    if bounded_source_sender().receiver_count() > 0 {
+        let _receivers = bounded_source_sender().send(source);
+    }
+}

@@ -99,6 +99,7 @@ function mount(
       peerTeams: [],
       events: [],
       work: [],
+      studioErrors: [],
     },
   },
 ) {

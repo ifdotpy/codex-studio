@@ -303,6 +303,81 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
     Ok(json!({"items":rows}))
 }
 
+/// Server-owned refresh cadence for time-derived membership (stuck input and
+/// the error history window). Unit: time; clients never poll this collection.
+const TIME_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Seed persisted errors on startup and refresh time-derived membership.
+pub async fn refresh(store: &studio_runtime_store::RuntimeStore) -> Result<(), StoreError> {
+    store.transaction(publish).await
+}
+
+/// Source writes publish immediately through DefaultPublisher. Time alone may
+/// also change membership, so the same owner refreshes until server shutdown.
+pub async fn run(
+    store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    while !*shutdown.borrow() {
+        tokio::select! {
+            () = tokio::time::sleep(TIME_REFRESH_INTERVAL) => {},
+            _ = shutdown.changed() => return,
+        }
+        if let Err(error) = refresh(&store).await {
+            eprintln!("Studio error entity refresh failed: {error}");
+        }
+    }
+}
+
+/// Publish the current server-owned error rows as sync entities in the same
+/// transaction as a source row or dismissal changes. Equal rows retain their
+/// existing entity sequence, while removed rows publish tombstones.
+pub fn publish(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
+        .as_secs_f64();
+    let value = list(tx, now)?;
+    let items = value
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| StoreError::SchemaMismatch("Studio error rows are invalid".into()))?;
+    let mut current = std::collections::BTreeSet::new();
+    for item in items {
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| StoreError::SchemaMismatch("Studio error id is missing".into()))?;
+        studio_runtime_store::SyncDocumentsRepository::put_entity(
+            tx,
+            "studioError",
+            id,
+            item.clone(),
+            false,
+        )?;
+        current.insert(id.to_owned());
+    }
+    let mut statement = tx.prepare_cached(
+        "SELECT id FROM sync_entities WHERE collection='studioError' AND deleted=0",
+    )?;
+    let existing = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    for id in existing {
+        if !current.contains(&id) {
+            studio_runtime_store::SyncDocumentsRepository::put_entity(
+                tx,
+                "studioError",
+                &id,
+                Value::Null,
+                true,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeSet<String>, StoreError> {
     let mut statement = tx.prepare_cached(
         "SELECT substr(id,?3) FROM runtime_operation_receipts WHERE id>=?1 AND id<?2",

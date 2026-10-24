@@ -218,6 +218,7 @@ pub mod workspace_operations_effects;
 pub mod workspace_ready;
 pub mod workspace_ready_git;
 pub mod workspace_views;
+pub mod worktree_root;
 
 #[cfg(test)]
 mod registration_tests {

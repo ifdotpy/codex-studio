@@ -72,7 +72,7 @@ export function useRetainedWorktrees(
     if (!leadId) return;
     let current = true;
     const stop = watchResourceReads(
-      { kind: "costs" },
+      { kind: "workspace", agentId: leadId },
       async () => {
         const value = await get("/api/retained-worktrees", {
           query: { agent: leadId },

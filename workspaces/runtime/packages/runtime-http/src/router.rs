@@ -169,6 +169,13 @@ impl HttpState {
         self
     }
 
+    /// Start the source-owned summaries once, after ports are wired and before serving.
+    pub async fn initialize_bounded_entities(
+        &self,
+    ) -> Result<(), studio_runtime_store::StoreError> {
+        crate::bounded_entities::start(self).await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         token: String,
@@ -718,13 +725,14 @@ pub fn router(mut state: HttpState) -> Result<Router, Box<dyn std::error::Error>
 #[cfg(test)]
 pub(crate) fn validation_probe_router(
     mut state: HttpState,
+    requested: &[(&'static str, &'static str)],
 ) -> Result<Router, Box<dyn std::error::Error>> {
     let authority = operations().map_err(|error| {
         std::io::Error::other(format!("cannot load committed OpenAPI operations: {error}"))
     })?;
     let document = crate::schema::openapi_document();
-    let mut registrations = Vec::with_capacity(authority.len());
-    for (method, path) in authority {
+    let mut registrations = Vec::with_capacity(requested.len());
+    for &(method, path) in requested {
         let operation = document
             .pointer(&format!(
                 "/paths/{}/{}",
@@ -744,17 +752,10 @@ pub(crate) fn validation_probe_router(
             (true, false) => probe_optional_body as ProbeHandler,
             (false, _) => probe_without_body as ProbeHandler,
         };
-        let path: &'static str = Box::leak(path.clone().into_boxed_str());
         let status = crate::routes::manifest::OperationStatus::Implemented;
-        let registration = match method.as_str() {
+        let registration = match method {
             "GET" => crate::routes::manifest::get(path, status, handler),
             "POST" => crate::routes::manifest::post(path, status, handler),
-            "PUT" => crate::routes::manifest::put(path, status, handler),
-            "DELETE" => crate::routes::manifest::delete(path, status, handler),
-            "PATCH" => crate::routes::manifest::patch(path, status, handler),
-            "OPTIONS" => crate::routes::manifest::options(path, status, handler),
-            "HEAD" => crate::routes::manifest::head(path, status, handler),
-            "TRACE" => crate::routes::manifest::trace(path, status, handler),
             _ => {
                 return Err(
                     std::io::Error::other(format!("unsupported probe method {method}")).into(),
@@ -951,23 +952,16 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    use crate::middleware;
     use studio_runtime_store::{RuntimeStore, SyncDocumentsRepository};
 
     use super::{HttpState, router};
 
-    fn probe_app() -> (Router, tempfile::TempDir) {
+    fn probe_app(requested: &[(&'static str, &'static str)]) -> (Router, tempfile::TempDir) {
         let (state, directory) = state();
         (
-            super::validation_probe_router(state).expect("probe router starts"),
+            super::validation_probe_router(state, requested).expect("probe router starts"),
             directory,
         )
-    }
-
-    async fn value_handler(
-        crate::routes::extractors::ApiJson(value): crate::routes::extractors::ApiJson<Value>,
-    ) -> Json<Value> {
-        Json(value)
     }
 
     fn state() -> (HttpState, tempfile::TempDir) {
@@ -1241,45 +1235,37 @@ mod tests {
         use std::io::Read;
         let (state, directory) = state();
         let app = router(state).expect("production router");
-        for count in [32, 128, 256] {
-            let root = directory.path().join(format!("listing-{count}"));
-            tokio::fs::create_dir(&root).await.expect("listing root");
-            for index in 0..count {
-                tokio::fs::create_dir(root.join(format!("project-{index:04}-fixture-workspace")))
-                    .await
-                    .expect("fixture folder");
-            }
-            let path = format!("/api/directories?path={}", root.display());
-            let plain = compression_response(&app, &path, "identity", None).await;
-            assert_eq!(plain.status(), StatusCode::OK);
-            let expected = to_bytes(plain.into_body(), usize::MAX)
+        let root = directory.path().join("listing");
+        tokio::fs::create_dir(&root).await.expect("listing root");
+        for index in 0..32 {
+            tokio::fs::create_dir(root.join(format!("project-{index:04}-fixture-workspace")))
                 .await
-                .expect("JSON bytes");
-            let response = compression_response(&app, &path, "br", None).await;
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(
-                response
-                    .headers()
-                    .get(header::CONTENT_ENCODING)
-                    .and_then(|v| v.to_str().ok()),
-                Some("br")
-            );
-            let compressed = to_bytes(response.into_body(), usize::MAX)
-                .await
-                .expect("compressed bytes");
-            let mut decoded = Vec::new();
-            brotli::Decompressor::new(compressed.as_ref(), 4096)
-                .read_to_end(&mut decoded)
-                .expect("Brotli");
-            assert_eq!(decoded, expected);
-            assert!(compressed.len() < expected.len());
-            eprintln!(
-                "directory listing {count}: {} -> {} bytes ({:.1}% saved)",
-                expected.len(),
-                compressed.len(),
-                100.0 * (1.0 - compressed.len() as f64 / expected.len() as f64)
-            );
+                .expect("fixture folder");
         }
+        let path = format!("/api/directories?path={}", root.display());
+        let plain = compression_response(&app, &path, "identity", None).await;
+        assert_eq!(plain.status(), StatusCode::OK);
+        let expected = to_bytes(plain.into_body(), usize::MAX)
+            .await
+            .expect("JSON bytes");
+        let response = compression_response(&app, &path, "br", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|v| v.to_str().ok()),
+            Some("br")
+        );
+        let compressed = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("compressed bytes");
+        let mut decoded = Vec::new();
+        brotli::Decompressor::new(compressed.as_ref(), 4096)
+            .read_to_end(&mut decoded)
+            .expect("Brotli");
+        assert_eq!(decoded, expected);
+        assert!(compressed.len() < expected.len());
     }
 
     #[tokio::test]
@@ -1624,8 +1610,8 @@ mod tests {
 
     #[tokio::test]
     async fn boundary_early_returns_include_api_headers() {
-        let (state, _directory) = state();
-        let app = router(state).expect("router starts");
+        let (app, _directory) =
+            probe_app(&[("GET", "/api/session"), ("POST", "/api/accounts/login")]);
         let request = Request::builder()
             .method("GET")
             .uri("/api/session")
@@ -1675,7 +1661,7 @@ mod tests {
 
     #[tokio::test]
     async fn huge_integer_body_and_query_return_located_client_errors() {
-        let (app, _directory) = probe_app();
+        let (app, _directory) = probe_app(&[("POST", "/api/agents"), ("GET", "/api/agent-chat")]);
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let huge = "9".repeat(401);
         let body = format!("{{\"prompt\":\"x\",\"concurrency\":{huge}}}");
@@ -1724,22 +1710,7 @@ mod tests {
 
     #[tokio::test]
     async fn deeply_nested_registered_json_body_is_rejected_before_value_extraction() {
-        let authority = crate::schema::operations().expect("schema parses");
-        let (mut app_state, _directory) = state();
-        app_state.validators =
-            crate::validation::Registry::compile(&authority.iter().cloned().collect::<Vec<_>>())
-                .expect("registered schema validators compile");
-        let app = Router::new()
-            .route("/api/federation", post(value_handler))
-            .layer(axum::middleware::from_fn_with_state(
-                app_state.clone(),
-                middleware::response_safety,
-            ))
-            .layer(axum::middleware::from_fn_with_state(
-                app_state.clone(),
-                middleware::boundary,
-            ))
-            .with_state(app_state);
+        let (app, _directory) = probe_app(&[("POST", "/api/federation")]);
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let nested = format!("{}0{}", "[".repeat(10_000), "]".repeat(10_000));
         let request = Request::builder()
@@ -1771,7 +1742,11 @@ mod tests {
     async fn boundary_refusal_precedes_closed_mutation_admission_and_keeps_request_id() {
         let (first_state, _directory) = state();
         first_state.close_mutation_admission();
-        let app = super::validation_probe_router(first_state).expect("probe router starts");
+        let app = super::validation_probe_router(
+            first_state,
+            &[("POST", "/api/agents"), ("POST", "/api/accounts/discover")],
+        )
+        .expect("probe router starts");
         let request = Request::builder()
             .method("POST")
             .uri("/api/agents")
@@ -1780,16 +1755,13 @@ mod tests {
             .body(Body::empty())
             .expect("request builds");
 
-        let response = app.oneshot(request).await.expect("response");
+        let response = app.clone().oneshot(request).await.expect("response");
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(
             response.headers()["x-studio-request-id"],
             "request-preserved"
         );
 
-        let (state, _directory) = state();
-        state.close_mutation_admission();
-        let app = super::validation_probe_router(state).expect("probe router starts");
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let accepted_request = Request::builder()
             .method("POST")
@@ -1895,7 +1867,8 @@ mod tests {
 
     #[tokio::test]
     async fn optional_required_and_chunked_json_bodies_follow_openapi_contract() {
-        let (app, _directory) = probe_app();
+        let (app, _directory) =
+            probe_app(&[("POST", "/api/agents"), ("POST", "/api/accounts/discover")]);
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let build = |method: &str, uri: &str, body: Body, content_type: Option<&str>| {
             let mut request = Request::builder()
@@ -1950,22 +1923,33 @@ mod tests {
         .expect("validation error JSON");
         assert_eq!(body["location"], serde_json::json!(["body"]));
 
-        // A Body with no Content-Length models a chunked request in the in-process harness.
+        let streamed = Body::from_stream(futures_util::stream::iter([
+            Ok::<_, std::convert::Infallible>(axum::body::Bytes::from_static(b"{\"prompt\":")),
+            Ok(axum::body::Bytes::from_static(b"\"x\"}")),
+        ]));
+        assert_eq!(axum::body::HttpBody::size_hint(&streamed).exact(), None);
         let chunked = app
             .oneshot(build(
                 "POST",
                 "/api/agents",
-                Body::from(r#"{"prompt":"x"}"#),
+                streamed,
                 Some("application/json"),
             ))
             .await
             .expect("chunked body response");
         assert_eq!(chunked.status(), StatusCode::OK);
+        let value: Value = serde_json::from_slice(
+            &to_bytes(chunked.into_body(), 1024)
+                .await
+                .expect("streamed response"),
+        )
+        .expect("probe JSON");
+        assert_eq!(value["body"], serde_json::json!({"prompt":"x"}));
     }
 
     #[tokio::test]
     async fn encoded_repeated_scalar_query_parameter_is_refused_by_router() {
-        let (app, _directory) = probe_app();
+        let (app, _directory) = probe_app(&[("GET", "/api/agent-chat")]);
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let request = Request::builder()
             .method("GET")

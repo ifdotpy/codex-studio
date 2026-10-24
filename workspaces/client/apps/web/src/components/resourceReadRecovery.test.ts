@@ -131,10 +131,6 @@ vi.mock("../sync/localDraft", async (importOriginal) => ({
   },
 }));
 vi.mock("../sync/send", () => ({ reconcileOutboxReceipts: reconcile }));
-vi.mock("../sync/client", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../sync/client")>()),
-  subscribeStateProjection: vi.fn(() => () => {}),
-}));
 vi.mock("../sync/resume", () => ({ onResume: () => () => {} }));
 vi.mock("../sync/resourceEvents", () => ({
   watchResourceChanges: (
@@ -199,20 +195,14 @@ function mount<T>(action: () => T): T {
   return result;
 }
 
-function notify(resource: unknown, version?: unknown) {
-  const callback = watchers.get(JSON.stringify(resource));
-  if (!callback) throw new Error("The read callback was not registered");
-  callback(version);
-}
-
 describe("resource read callers", () => {
   beforeEach(() => {
+    projectionListeners.clear();
     vi.useFakeTimers();
     get.mockReset();
     post.mockReset();
     syncPost.mockReset();
     reconcile.mockClear();
-    projectionListeners.clear();
     contexts.clear();
     effects.length = 0;
     states.length = 0;
@@ -362,113 +352,49 @@ describe("resource read callers", () => {
     expect(reconcile).not.toHaveBeenCalled();
   });
 
-  it("reads accounts once at the baseline and once per invalidation", async () => {
+  it("applies safe account summaries without baseline or update GETs", async () => {
+    mount(() => useAccounts("workspace"));
     const initial = {
       accounts: [{ id: "connected", email: "person@example.test" }],
       archivedAccounts: [],
       defaultAccountKey: "connected",
-      logins: [],
+      defaultAccountGroups: [],
+      supportsDelete: true,
+      supportsDisconnect: true,
     };
-    const afterInvalidation = {
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountsSummary: initial } });
+    expect(states[0]?.value).toEqual({ ...initial, logins: [] });
+    const changed = {
       ...initial,
-      accounts: [
-        { id: "connected", email: "person@example.test", disconnected: true },
-      ],
+      accounts: [{ id: "connected", disconnected: true }],
     };
-    get.mockResolvedValueOnce(initial).mockResolvedValueOnce(afterInvalidation);
-    mount(() => useAccounts("workspace"));
-    expect(watchOptions.get(JSON.stringify({ kind: "accounts" }))).toEqual({
-      waitForBaseline: true,
-    });
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountsSummary: changed } });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(states[0]?.value).toEqual({ ...changed, logins: [] });
     expect(get).not.toHaveBeenCalled();
-
-    notify({ kind: "accounts" }, { epoch: "accounts", revision: 1 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(states[0]?.value).toEqual(initial);
-    expect(get).toHaveBeenCalledTimes(1);
-
-    notify({ kind: "accounts" }, { epoch: "accounts", revision: 1 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(1);
-
-    notify({ kind: "accounts" }, { epoch: "accounts", revision: 2 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(states[0]?.value).toEqual(afterInvalidation);
-    expect(get).toHaveBeenCalledTimes(2);
+    expect(watchers.size).toBe(0);
   });
 
-  it("reads a known baseline once when a watcher subscribes late", async () => {
-    resourceVersions.set(JSON.stringify({ kind: "accounts" }), {
-      epoch: "accounts",
-      revision: 1,
-    });
-    get.mockResolvedValueOnce({
-      accounts: [{ id: "connected" }],
-      archivedAccounts: [],
-      defaultAccountKey: "connected",
-      logins: [],
-    });
-
-    mount(() => useAccounts("workspace"));
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(get).toHaveBeenCalledTimes(1);
-  });
-
-  it("reads accounts once through the fallback when no stream is available", async () => {
-    connectionStream.value = "stopped";
-    get.mockResolvedValueOnce({
-      accounts: [{ id: "connected" }],
-      archivedAccounts: [],
-      defaultAccountKey: "connected",
-      logins: [],
-    });
-
-    mount(() => useAccounts("workspace"));
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(get).toHaveBeenCalledTimes(1);
-    expect(get).toHaveBeenCalledWith("/api/accounts");
-  });
-
-  it("resubscribes and reads once when the accounts state directory changes", async () => {
+  it("keeps explicit account recovery reads available", async () => {
     const response = {
-      accounts: [{ id: "connected" }],
+      accounts: [],
       archivedAccounts: [],
-      defaultAccountKey: "connected",
+      defaultAccountKey: "default",
       logins: [],
     };
     get.mockResolvedValue(response);
-    mount(() => useAccounts("workspace-one"));
-    notify({ kind: "accounts" }, { epoch: "accounts", revision: 1 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(1);
-
-    const stopFirstScope = cleanups.pop();
-    expect(stopFirstScope).toBeTypeOf("function");
-    stopFirstScope!();
-    expect(watchers.size).toBe(0);
-
-    states.length = 0;
-    mount(() => useAccounts("workspace-two"));
-    expect(watchers.size).toBe(1);
-    notify({ kind: "accounts" }, { epoch: "accounts", revision: 2 });
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(get).toHaveBeenCalledTimes(2);
-    expect(get.mock.calls.map(([path]) => path)).toEqual([
-      "/api/accounts",
-      "/api/accounts",
-    ]);
+    let accounts!: ReturnType<typeof useAccounts>;
+    mount(() => {
+      accounts = useAccounts("workspace");
+    });
+    await accounts.refresh();
+    expect(get).toHaveBeenCalledExactlyOnceWith("/api/accounts");
+    expect(states[0]?.value).toEqual(response);
   });
 
-  it("recovers a deferred queue read without repeating the queue mutation", async () => {
-    const old = {
-      items: [{ id: "message-one", text: "old" }],
-      revision: "v1",
-      capabilities: { reorder: true, receipts: true },
-    };
-    const fresh = { ...old, revision: "v2" };
+  it("applies queue projections without GETs at baseline, update, and idle", async () => {
     const props = {
       id: "lead",
       enabled: true,
@@ -476,50 +402,37 @@ describe("resource read callers", () => {
       workspaceId: "workspace",
       refresh: vi.fn(async () => {}),
     };
-    get.mockResolvedValueOnce(old);
     mount(() => useMessageQueue(props));
-    notify({ kind: "queue", agentId: "lead" });
+    const publish = (revision: string, text: string) => {
+      for (const accept of projectionListeners)
+        accept({
+          runtime: {
+            queuesByAgent: {
+              lead: {
+                items: [{ id: "message-one", text }],
+                revision,
+                capabilities: { reorder: true, receipts: true },
+              },
+            },
+          },
+        });
+    };
+    publish("v1", "old");
+    expect(
+      watchers.has(JSON.stringify({ kind: "queue", agentId: "lead" })),
+    ).toBe(false);
     await vi.advanceTimersByTimeAsync(0);
-    cursor.state = 0;
-    cursor.ref = 0;
-    cursor.memo = 0;
-    const queue = useMessageQueue(props);
-    effects.length = 0; // This render keeps the already registered effects.
-    let finish!: (value: unknown) => void;
-    get
-      .mockReturnValueOnce(
-        new Promise((resolve) => {
-          finish = resolve;
-        }),
-      )
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-      .mockResolvedValue(fresh);
-    syncPost.mockResolvedValue({ status: "updated" });
-    const mutation = queue.reorder(["message-one"]);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(syncPost).toHaveBeenCalledTimes(1);
-    expect(get).toHaveBeenCalledTimes(2);
-    notify({ kind: "queue", agentId: "lead" });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(2);
-    finish(old);
-    await mutation;
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(3);
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(get).toHaveBeenCalledTimes(4);
-    expect(syncPost).toHaveBeenCalledTimes(1);
-    expect(syncPost.mock.calls[0]![1]).toMatchObject({
-      action: "reorder",
-      agent: "lead",
-      expected_revision: "v1",
-      ordered_ids: ["message-one"],
+    expect(get).not.toHaveBeenCalled();
+    expect(states[0]!.value).toMatchObject({
+      view: { revision: "v1", items: [{ text: "old" }] },
     });
-    expect(typeof syncPost.mock.calls[0]![1].request_id).toBe("string");
-    expect(states[0]!.value).toMatchObject({ view: { revision: "v2" } });
+    publish("v2", "new");
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(get).toHaveBeenCalledTimes(4);
-    expect(syncPost).toHaveBeenCalledTimes(1);
+    expect(states[0]!.value).toMatchObject({
+      view: { revision: "v2", items: [{ text: "new" }] },
+    });
+    expect(get).not.toHaveBeenCalled();
+    expect(syncPost).not.toHaveBeenCalled();
   });
 
   it("projects account and worker model lists from streamed model entities without GETs", async () => {
@@ -668,22 +581,16 @@ describe("resource read callers", () => {
     expect(get).not.toHaveBeenCalled();
   });
 
-  it("recovers both cost display reads without repeating a reset-credit action", async () => {
-    const calls = new Map<string, number>();
+  it("applies both cost display projections without GETs", async () => {
     const session = {
       rootId: "lead",
       pricingState: "ready",
       totalUSD: 0.5,
       unknownModels: [],
       breakdown: {},
+      estimated: true,
     };
     const account = { accountKey: "default", totalUSD: 1 };
-    get.mockImplementation(async (path: string) => {
-      const count = (calls.get(path) || 0) + 1;
-      calls.set(path, count);
-      if (count === 1) throw new TypeError("Failed to fetch");
-      return path === "/api/session-cost" ? session : account;
-    });
     mount(() =>
       Usage({
         agent: { id: "lead", rootId: "lead", accountKey: "default" } as Agent,
@@ -692,30 +599,29 @@ describe("resource read callers", () => {
         reload: vi.fn(),
       }),
     );
-    notify({ kind: "session-cost", agentId: "lead" });
-    notify({ kind: "costs" });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(calls).toEqual(
-      new Map([
-        ["/api/session-cost", 1],
-        ["/api/costs", 1],
-      ]),
-    );
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(calls).toEqual(
-      new Map([
-        ["/api/session-cost", 2],
-        ["/api/costs", 2],
-      ]),
-    );
+    for (const accept of projectionListeners)
+      accept({
+        runtime: {
+          sessionCostsByAgent: { lead: session },
+          accountCostsByAccount: { default: account },
+        },
+      });
     expect(
       states.some(
         (entry) =>
           (entry.value as { value?: unknown } | null)?.value === session,
       ),
+    ).toBe(false);
+    expect(
+      states.some(
+        (entry) =>
+          (entry.value as { value?: { totalUSD?: number } } | null)?.value
+            ?.totalUSD === 0.5,
+      ),
     ).toBe(true);
     expect(states.some((entry) => entry.value === account)).toBe(true);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(get).toHaveBeenCalledTimes(4);
+    expect(get).not.toHaveBeenCalled();
+    expect(syncPost).not.toHaveBeenCalled();
   });
 });

@@ -1782,6 +1782,82 @@
         "title": "AccountCostData",
         "type": "object"
       },
+      "AccountCostEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "accountKey": {
+            "title": "Accountkey",
+            "type": "string"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "At"
+          },
+          "checkedAt": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "default": null,
+            "title": "Checkedat"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountCostData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Error"
+          },
+          "refreshing": {
+            "title": "Refreshing",
+            "type": "boolean"
+          },
+          "stale": {
+            "title": "Stale",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "at",
+          "error",
+          "data",
+          "refreshing",
+          "stale",
+          "accountKey"
+        ],
+        "title": "AccountCostEntityDto",
+        "type": "object"
+      },
       "AccountCostResponse": {
         "additionalProperties": false,
         "properties": {
@@ -3251,6 +3327,55 @@
           "supportsDelete"
         ],
         "title": "AccountsResponse",
+        "type": "object"
+      },
+      "AccountsSummaryDto": {
+        "additionalProperties": false,
+        "properties": {
+          "accounts": {
+            "items": {
+              "$ref": "#/components/schemas/Account"
+            },
+            "title": "Accounts",
+            "type": "array"
+          },
+          "archivedAccounts": {
+            "items": {
+              "$ref": "#/components/schemas/Account"
+            },
+            "title": "Archivedaccounts",
+            "type": "array"
+          },
+          "defaultAccountGroups": {
+            "description": "The default account order: group names that projects without their own order prefer, first to last.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Defaultaccountgroups",
+            "type": "array"
+          },
+          "defaultAccountKey": {
+            "title": "Defaultaccountkey",
+            "type": "string"
+          },
+          "supportsDelete": {
+            "title": "Supportsdelete",
+            "type": "boolean"
+          },
+          "supportsDisconnect": {
+            "title": "Supportsdisconnect",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accounts",
+          "archivedAccounts",
+          "defaultAccountKey",
+          "defaultAccountGroups",
+          "supportsDisconnect",
+          "supportsDelete"
+        ],
+        "title": "AccountsSummaryDto",
         "type": "object"
       },
       "ActionContext": {
@@ -22546,6 +22671,198 @@
         "title": "DeliveryMomentInput",
         "type": "string"
       },
+      "DesktopEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "application": {
+            "title": "Application",
+            "type": "string"
+          },
+          "backendBuild": {
+            "title": "Backendbuild",
+            "type": "string"
+          },
+          "browser": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BrowserStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diskSpace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiskSpaceStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "linuxVm": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LinuxVMStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "liveUpdate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LiveUpdateStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mobileProtocol": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Mobileprotocol",
+            "type": "integer"
+          },
+          "nativeRuntime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeRuntimeStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "peerUpdate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeerUpdateStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "pid": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Pid",
+            "type": "integer"
+          },
+          "protocol": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Protocol",
+            "type": "integer"
+          },
+          "providerVersions": {
+            "$ref": "#/components/schemas/ProviderVersions"
+          },
+          "publicOrigin": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Publicorigin"
+          },
+          "restartEnvironment": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/RestartEnvironmentKey"
+            },
+            "title": "Restartenvironment",
+            "type": "object"
+          },
+          "stateDir": {
+            "title": "Statedir",
+            "type": "string"
+          },
+          "supervisor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SupervisorError"
+              },
+              {
+                "$ref": "#/components/schemas/SupervisorHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supervisor"
+          },
+          "supervisorError": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Supervisorerror"
+          },
+          "supervisorFallback": {
+            "title": "Supervisorfallback",
+            "type": "boolean"
+          },
+          "supervisorMode": {
+            "title": "Supervisormode",
+            "type": "boolean"
+          },
+          "supervisorNotice": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Supervisornotice"
+          },
+          "supervisorRequired": {
+            "title": "Supervisorrequired",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "application",
+          "protocol",
+          "mobileProtocol",
+          "backendBuild",
+          "nativeRuntime",
+          "providerVersions",
+          "browser",
+          "liveUpdate",
+          "restartEnvironment",
+          "publicOrigin",
+          "pid",
+          "supervisorMode",
+          "supervisorRequired",
+          "supervisorError",
+          "supervisor",
+          "supervisorFallback",
+          "supervisorNotice",
+          "stateDir"
+        ],
+        "title": "DesktopEntityDto",
+        "type": "object"
+      },
       "DesktopResource": {
         "additionalProperties": false,
         "properties": {
@@ -37528,6 +37845,32 @@
         "title": "QueueEditBody",
         "type": "object"
       },
+      "QueueEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/QueueCapabilities"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/QueueItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "revision",
+          "capabilities"
+        ],
+        "title": "QueueEntityDto",
+        "type": "object"
+      },
       "QueueFirstBody": {
         "additionalProperties": false,
         "properties": {
@@ -44624,6 +44967,127 @@
         "title": "SessionCacheStats",
         "type": "object"
       },
+      "SessionCostEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "breakdown": {
+            "$ref": "#/components/schemas/CostBreakdown"
+          },
+          "cacheAgeSeconds": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Cacheageseconds"
+          },
+          "claudeHistoryIncomplete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claudehistoryincomplete"
+          },
+          "estimated": {
+            "title": "Estimated",
+            "type": "boolean"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Method"
+          },
+          "pricedSamples": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Pricedsamples",
+            "type": "integer"
+          },
+          "pricingState": {
+            "enum": [
+              "loading",
+              "ready"
+            ],
+            "title": "Pricingstate",
+            "type": "string"
+          },
+          "refreshing": {
+            "title": "Refreshing",
+            "type": "boolean"
+          },
+          "rootId": {
+            "title": "Rootid",
+            "type": "string"
+          },
+          "totalUSD": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Totalusd"
+          },
+          "unknownModels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknownmodels",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rootId",
+          "totalUSD",
+          "pricedSamples",
+          "breakdown",
+          "unknownModels",
+          "estimated",
+          "pricingState",
+          "cacheAgeSeconds",
+          "refreshing"
+        ],
+        "title": "SessionCostEntityDto",
+        "type": "object"
+      },
       "SessionCostResource": {
         "additionalProperties": false,
         "properties": {
@@ -47434,6 +47898,50 @@
         "title": "SupervisorRecovery",
         "type": "object"
       },
+      "SyncAccountCostEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "accountCost",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/AccountCostEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncAccountCostEntityPayload",
+        "type": "object"
+      },
+      "SyncAccountsEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "accounts",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/AccountsSummaryDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncAccountsEntityPayload",
+        "type": "object"
+      },
       "SyncAgentEntityPayload": {
         "additionalProperties": false,
         "properties": {
@@ -47544,6 +48052,28 @@
           "value"
         ],
         "title": "SyncComplaintEntityPayload",
+        "type": "object"
+      },
+      "SyncDesktopEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "desktop",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/DesktopEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncDesktopEntityPayload",
         "type": "object"
       },
       "SyncDocument": {
@@ -48025,6 +48555,27 @@
             "type": "object"
           },
           {
+            "properties": {
+              "collection": {
+                "const": "studioError",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/StudioError"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
             "not": {
               "required": [
                 "value"
@@ -48052,7 +48603,14 @@
                   "rateLimit",
                   "messageReceipt",
                   "plan",
-                  "annotation"
+                  "annotation",
+                  "studioError",
+                  "queue",
+                  "accounts",
+                  "accountCost",
+                  "sessionCost",
+                  "desktop",
+                  "terminal"
                 ],
                 "type": "string"
               },
@@ -48064,6 +48622,132 @@
             "required": [
               "op",
               "collection"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "queue",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/QueueEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "accounts",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/AccountsSummaryDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "accountCost",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/AccountCostEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "sessionCost",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/SessionCostEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "desktop",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/DesktopEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "terminal",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/TerminalEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
             ],
             "type": "object"
           }
@@ -48102,10 +48786,13 @@
       "SyncEntityPayload": {
         "discriminator": {
           "mapping": {
+            "accountCost": "#/components/schemas/SyncAccountCostEntityPayload",
+            "accounts": "#/components/schemas/SyncAccountsEntityPayload",
             "agent": "#/components/schemas/SyncAgentEntityPayload",
             "annotation": "#/components/schemas/SyncAnnotationEntityPayload",
             "chat": "#/components/schemas/SyncChatEntityPayload",
             "complaint": "#/components/schemas/SyncComplaintEntityPayload",
+            "desktop": "#/components/schemas/SyncDesktopEntityPayload",
             "edge": "#/components/schemas/SyncEdgeEntityPayload",
             "event": "#/components/schemas/SyncEventEntityPayload",
             "messageReceipt": "#/components/schemas/SyncMessageReceiptEntityPayload",
@@ -48114,11 +48801,15 @@
             "peerTeam": "#/components/schemas/SyncPeerTeamEntityPayload",
             "plan": "#/components/schemas/SyncPlanEntityPayload",
             "project": "#/components/schemas/SyncProjectEntityPayload",
+            "queue": "#/components/schemas/SyncQueueEntityPayload",
             "rateLimit": "#/components/schemas/SyncRateLimitEntityPayload",
             "request": "#/components/schemas/SyncRequestEntityPayload",
             "room": "#/components/schemas/SyncRoomEntityPayload",
             "rule": "#/components/schemas/SyncRuleEntityPayload",
+            "sessionCost": "#/components/schemas/SyncSessionCostEntityPayload",
+            "studioError": "#/components/schemas/SyncStudioErrorEntityPayload",
             "task": "#/components/schemas/SyncTaskEntityPayload",
+            "terminal": "#/components/schemas/SyncTerminalEntityPayload",
             "uiPreferences": "#/components/schemas/SyncUiPreferencesEntityPayload",
             "work": "#/components/schemas/SyncWorkEntityPayload",
             "workspace": "#/components/schemas/SyncWorkspaceEntityPayload"
@@ -48185,6 +48876,27 @@
           },
           {
             "$ref": "#/components/schemas/SyncAnnotationEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncStudioErrorEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncQueueEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncAccountsEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncAccountCostEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncSessionCostEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncDesktopEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncTerminalEntityPayload"
           }
         ]
       },
@@ -48598,6 +49310,28 @@
         "title": "SyncPullResponse",
         "type": "object"
       },
+      "SyncQueueEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "queue",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/QueueEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncQueueEntityPayload",
+        "type": "object"
+      },
       "SyncRateLimitEntityPayload": {
         "additionalProperties": false,
         "properties": {
@@ -48738,6 +49472,28 @@
         "title": "SyncRuleEntityPayload",
         "type": "object"
       },
+      "SyncSessionCostEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "sessionCost",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/SessionCostEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncSessionCostEntityPayload",
+        "type": "object"
+      },
       "SyncSessionEvent": {
         "additionalProperties": false,
         "properties": {
@@ -48751,6 +49507,30 @@
           "sessionId"
         ],
         "title": "SyncSessionEvent",
+        "type": "object"
+      },
+      "SyncStudioErrorEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "studioError",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/StudioError"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncStudioErrorEntityPayload",
         "type": "object"
       },
       "SyncSubscriptionAck": {
@@ -48828,6 +49608,28 @@
           "value"
         ],
         "title": "SyncTaskEntityPayload",
+        "type": "object"
+      },
+      "SyncTerminalEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "terminal",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/TerminalEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncTerminalEntityPayload",
         "type": "object"
       },
       "SyncUiPreferencesEntityPayload": {
@@ -49953,6 +50755,85 @@
           "agent"
         ],
         "title": "TerminalCreate",
+        "type": "object"
+      },
+      "TerminalEntityDto": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "description": "Known fields; terminal actions return the persisted user_terminal record.",
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "created": {
+            "title": "Created",
+            "type": "number"
+          },
+          "cwd": {
+            "title": "Cwd",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "exitCode": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Exitcode"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TerminalState"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "default": null,
+            "title": "Updated"
+          }
+        },
+        "required": [
+          "id",
+          "agent",
+          "title",
+          "cwd",
+          "status",
+          "created"
+        ],
+        "title": "TerminalEntityDto",
         "type": "object"
       },
       "TerminalInput": {

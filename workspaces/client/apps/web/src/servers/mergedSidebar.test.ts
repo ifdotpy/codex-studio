@@ -189,6 +189,19 @@ describe("complete multi-server sidebar projection", () => {
     const local = source("local");
     local.sidebar.sidebarOrder = { revision: 0, groups: null };
     local.sidebar.savedOrder = { projects: [path] };
+    local.sidebar.studioErrors = [
+      {
+        id: "event:local",
+        kind: "input_uncertain",
+        action: "resume",
+        agentId: "same",
+        agentName: "Local",
+        reason: "Delivery uncertain",
+        at: 100,
+        detail: "",
+        subject: "",
+      },
+    ];
     const model = mergeSidebar([local]);
     const original = backend(local);
     expect(model.data.threads).toEqual(local.sidebar.threads);
@@ -196,6 +209,7 @@ describe("complete multi-server sidebar projection", () => {
     expect(model.data.runtime.projects[0]).toBe(local.sidebar.projects[0]);
     expect(model.data.runtime.rooms[0]).toBe(local.sidebar.rooms[0]);
     expect(model.data.runtime.sidebarOrder).toBe(local.sidebar.sidebarOrder);
+    expect(model.data.runtime.studioErrors).toBe(local.sidebar.studioErrors);
     expect(model.data.stateDir).toBe(scope);
     expect(
       mergedSidebarPreferences(model, new Map([["local", original.backend]])),

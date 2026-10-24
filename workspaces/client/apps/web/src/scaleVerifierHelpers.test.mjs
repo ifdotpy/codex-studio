@@ -17,7 +17,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { once } from "node:events";
 import {
   DURABLE_INPUT_QUEUE_KEY,
   PARENT_NOTICE_INPUT_KIND,
@@ -145,6 +146,8 @@ it("joins the Linux and journald representations of one boot identity", () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
   await Promise.all(
     temporaryPaths
       .splice(0)
@@ -729,7 +732,7 @@ describe("scale verifier readiness markers", () => {
     }
   });
 
-  it("accepts a marker published before arming through the initial inspection", async () => {
+  it("accepts a marker published before arming exactly once through the initial inspection", async () => {
     const root = await newRoot();
     const directory = await createReadinessMarkerDirectory(join(root, "m"));
     const tokens = [randomUUID()];
@@ -737,22 +740,7 @@ describe("scale verifier readiness markers", () => {
     const watch = await watchReadinessMarkers(directory, tokens);
     try {
       expect(await watch.next(soon())).toBe(0);
-    } finally {
-      watch.close();
-    }
-  });
-
-  it("delivers each marker once when publication races the initial inspection", async () => {
-    const root = await newRoot();
-    const directory = await createReadinessMarkerDirectory(join(root, "m"));
-    const tokens = [randomUUID()];
-    await publish(directory, 0, `${tokens[0]}\n`);
-    const watch = await watchReadinessMarkers(directory, tokens);
-    try {
-      expect(await watch.next(soon())).toBe(0);
-      await expect(watch.next(performance.now() + 100)).rejects.toThrow(
-        /Timed out/,
-      );
+      await expect(watch.next(performance.now())).rejects.toThrow(/Timed out/);
     } finally {
       watch.close();
     }
@@ -809,10 +797,18 @@ describe("scale verifier readiness markers", () => {
     const directory = await createReadinessMarkerDirectory(join(root, "m"));
     const tokens = [randomUUID()];
     const timedOut = await watchReadinessMarkers(directory, tokens);
-    await expect(timedOut.next(performance.now() + 50)).rejects.toThrow(
+    const now = performance.now();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const clock = vi.spyOn(performance, "now").mockReturnValue(now);
+    const timeout = expect(timedOut.next(now + 50)).rejects.toThrow(
       /Timed out/,
     );
+    clock.mockReturnValue(now + 50);
+    await vi.advanceTimersByTimeAsync(50);
+    await timeout;
     timedOut.close();
+    clock.mockRestore();
+    vi.useRealTimers();
 
     const closed = await watchReadinessMarkers(directory, tokens);
     const pendingClose = closed.next(soon());
@@ -1571,23 +1567,38 @@ describe("staged run controls", () => {
     spawnSync("mkfifo", [path]);
     const token = randomUUID();
     expect(releaseBarriersNow([{ path, token }])[0].outcome).toBe("gone");
-    const reader = spawn("sh", ["-c", `exec 3<>${path}; read r <&3; echo $r`], {
-      stdio: ["ignore", "pipe", "ignore"],
-    });
+    const reader = spawn(
+      "sh",
+      ["-c", 'exec 3<>"$1"; echo READY; read r <&3; echo "$r"', "sh", path],
+      {
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
     let output = "";
     reader.stdout.on("data", (chunk) => (output += chunk));
     const closed = new Promise((resolve) => reader.on("close", resolve));
-    for (let i = 0; i < 100 && output === ""; i += 1) {
-      if (releaseBarriersNow([{ path, token }])[0].outcome === "released")
-        break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    try {
+      await Promise.race([
+        once(reader.stdout, "data"),
+        closed.then(() => {
+          throw new Error("FIFO reader exited before readiness");
+        }),
+        once(reader, "error").then(([error]) => {
+          throw error;
+        }),
+      ]);
+      expect(output).toBe("READY\n");
+      expect(releaseBarriersNow([{ path, token }])[0].outcome).toBe("released");
+      await closed;
+      expect(output.trim()).toBe(`READY\n${token}`);
+      expect(
+        releaseBarriersNow([{ path: join(directory, "missing"), token }])[0]
+          .outcome,
+      ).toBe("gone");
+    } finally {
+      if (reader.exitCode === null) reader.kill("SIGKILL");
+      await closed;
     }
-    await closed;
-    expect(output.trim()).toBe(token);
-    expect(
-      releaseBarriersNow([{ path: join(directory, "missing"), token }])[0]
-        .outcome,
-    ).toBe("gone");
   });
 
   it("samples provider processes below the backend from a proc table", () => {

@@ -30,7 +30,7 @@ async fn fixture_store(
     root: Option<&Path>,
 ) -> Result<RuntimeStore, studio_runtime_store::StoreError> {
     let store = RuntimeStore::open(root).await?;
-    studio_runtime_services::entity_publication::install(&store);
+    studio_runtime_services::entity_publication::install(&store).await?;
     Ok(store)
 }
 
@@ -851,7 +851,7 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
         .as_array()
         .expect("sync projection rows")
         .iter()
-        .filter(|row| row[0] != "workspace")
+        .filter(|row| row[0] != "workspace" && row[0] != "queue")
         // The frozen Python oracle predates receipt entities. Check their
         // source status separately below while preserving its legacy witness.
         .filter(|row| row[0] != "messageReceipt")
@@ -1293,7 +1293,9 @@ async fn production_child_notification_matches_python_corpus() {
         .as_array()
         .expect("sync rows")
         .iter()
-        .filter(|row| row[0] != "workspace")
+        // The frozen Python oracle predates the queue entity collection. Its
+        // source publication and removals have dedicated Rust witnesses.
+        .filter(|row| row[0] != "workspace" && row[0] != "queue")
         .map(|row| json!([row[0], row[1], row[4], row[5]]))
         .collect::<Vec<_>>();
     let mut expected_sync = case["expected"]["syncEntities"]

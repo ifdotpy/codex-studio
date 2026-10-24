@@ -76,7 +76,7 @@ impl Fixture {
         let journal =
             WorkspaceReadyRepository::journal(&self.store.test_reader().expect("test reader"), &id)
                 .expect("journal");
-        observe(snapshot, journal, &git()).expect("observe")
+        observe(snapshot, journal, self.store.state_dir(), &git()).expect("observe")
     }
     fn plan(&self) -> crate::workspace_ready::WorktreePlan {
         match self.context().decide() {
@@ -277,6 +277,61 @@ async fn repository_root_cwd_is_stored_without_a_trailing_separator() {
         .to_owned();
     assert_eq!(fixture.actor()["cwd"], json!(expected));
     assert_eq!(cwd.to_str(), Some(expected.as_str()));
+}
+
+/// `worktree-root.json` moves new worker worktrees out of the repository,
+/// reached through a symbolic link, and keeps the subproject cwd.
+#[tokio::test]
+async fn configured_root_places_the_worktree_outside_the_repository() {
+    let fixture = Fixture::new().await;
+    let disk = fixture.root.path().join("disk");
+    std::fs::create_dir(&disk).expect("configured root");
+    let link = fixture.root.path().join("disk-link");
+    std::os::unix::fs::symlink(&disk, &link).expect("root link");
+    std::fs::write(
+        fixture
+            .store
+            .state_dir()
+            .join(crate::worktree_root::WORKTREE_ROOT_FILE),
+        json!({ "root": link }).to_string(),
+    )
+    .expect("configuration");
+    let result = prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+        .await
+        .expect("prepare");
+    let cwd = admitted(&fixture, result).await;
+    let expected = CanonicalPath::existing(&disk)
+        .expect("canonical root")
+        .join("codex-agents")
+        .join(&fixture.id)
+        .join("project");
+    assert_eq!(cwd, expected);
+    assert_eq!(fixture.actor()["cwd"], json!(expected));
+    assert!(!fixture.repo.join(".worktrees").exists());
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("file")).expect("checkout"),
+        "base\n"
+    );
+}
+
+/// A configured root that does not exist refuses provisioning instead of
+/// falling back to the repository.
+#[tokio::test]
+async fn missing_configured_root_fails_closed() {
+    let fixture = Fixture::new().await;
+    std::fs::write(
+        fixture
+            .store
+            .state_dir()
+            .join(crate::worktree_root::WORKTREE_ROOT_FILE),
+        json!({ "root": fixture.root.path().join("absent") }).to_string(),
+    )
+    .expect("configuration");
+    let error = prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+        .await
+        .expect_err("missing root refuses");
+    assert!(matches!(error, WorkspaceError::WorktreeRoot(_)), "{error}");
+    assert!(!fixture.repo.join(".worktrees").exists());
 }
 
 #[tokio::test]
@@ -2105,9 +2160,10 @@ async fn reserve_provision(store: &std::sync::Arc<RuntimeStore>, id: &str) -> Pr
         &provision_id(&actor(&snapshot).expect("actor")),
     )
     .expect("journal");
-    let WorkspaceDecision::Provision(plan) = observe(snapshot.clone(), journal, &git())
-        .expect("observe")
-        .decide()
+    let WorkspaceDecision::Provision(plan) =
+        observe(snapshot.clone(), journal, store.state_dir(), &git())
+            .expect("observe")
+            .decide()
     else {
         panic!("{id} must plan a worktree");
     };

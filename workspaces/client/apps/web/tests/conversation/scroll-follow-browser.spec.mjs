@@ -315,6 +315,9 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       gap: e.scrollHeight - e.scrollTop - e.clientHeight,
     }));
 
+  let publishUpdate;
+  await page.exposeFunction("publishScrollUpdate", () => publishUpdate());
+
   for (const viewport of passes) {
     const width = viewport.width;
     if (viewport !== passes[0]) {
@@ -389,7 +392,6 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
     );
     // One growing reply plus agent activity changes, as a running turn sends.
     let streamed = 0;
-    let streaming = true;
     const live = transcripts.get(chat.id);
     const renderSentence = (sentence) =>
       page.waitForFunction(
@@ -401,8 +403,7 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
           ].some((reply) => reply.textContent?.includes(sentence)),
         sentence,
       );
-    const stream = streamTranscriptFixture({
-      running: () => streaming,
+    const nextRender = streamTranscriptFixture({
       publish: async () => {
         streamed++;
         live.items = [
@@ -427,12 +428,7 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       },
       rendered: renderSentence,
     });
-    // Observe a producer error immediately; the finally block below awaits and
-    // propagates it after stopping publication.
-    void stream.catch(() => {});
-    // Resolves after the renderer commits a stream update sent after this call.
-    const nextRender = () =>
-      renderSentence(`Streamed ${width} sentence ${streamed} `);
+    publishUpdate = nextRender;
     // The first paragraph whose top is inside the transcript viewport, else
     // the first such message.
     const readingPoint = () =>
@@ -494,8 +490,10 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
     // This deterministically exercises scrollTop changing before its event,
     // including content growth above the reader, without retrying frame races.
     const wheelStepInGap = async (deltaY, label, growAbove = 0) => {
+      await settle(true);
+      const sentence = `Streamed ${width} sentence ${streamed} `;
       const step = await root.evaluate(
-        (element, { deltaY, growAbove }) =>
+        (element, { deltaY, growAbove, sentence }) =>
           new Promise((resolve, reject) => {
             const offset = (node) =>
               node.getBoundingClientRect().top -
@@ -511,7 +509,6 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
                 reject(new Error("The streamed reply is not mounted."));
                 return;
               }
-              const text = reply.textContent;
               const before = element.scrollTop;
               const hold = (event) => {
                 if (event.target === element) event.stopImmediatePropagation();
@@ -549,8 +546,10 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
               if (grown) grown.style.paddingBottom = `${growAbove}px`;
               let during = null;
               const committed = new MutationObserver(() => {
-                if (during || (reply.isConnected && reply.textContent === text))
-                  return;
+                const current = element.querySelector(
+                  '[data-message="reply-live"]',
+                );
+                if (during || !current?.textContent.includes(sentence)) return;
                 during = {
                   top: element.scrollTop,
                   gap:
@@ -580,10 +579,11 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
                 subtree: true,
                 characterData: true,
               });
+              void window.publishScrollUpdate().catch(reject);
             };
             attempt();
           }),
-        { deltaY, growAbove },
+        { deltaY, growAbove, sentence },
       );
       assert.ok(
         step.before - step.moved.top > Math.abs(deltaY) * 0.75 &&
@@ -599,11 +599,11 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       );
     };
 
-    try {
+    {
       // At the bottom, stream updates keep the latest text in view.
       await nextRender();
       await nextRender();
-      await settle(false);
+      await settle(true);
       assert.ok(
         (await geometry()).gap < 2,
         `${width}px: the reader at the bottom follows the stream (${JSON.stringify(await geometry())})`,
@@ -616,7 +616,7 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       );
       const left = await readingPoint();
       await nextRender();
-      await settle(false);
+      await settle(true);
       await anchored(left, "the reader stays where the wheel step left it");
       await latest.waitFor();
 
@@ -628,7 +628,7 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       );
       const further = await readingPoint();
       await nextRender();
-      await settle(false);
+      await settle(true);
       await anchored(further, "the reader stays after a further step");
 
       // Trackpad-sized wheel steps, then more stream updates.
@@ -638,14 +638,14 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
         await page.mouse.wheel(0, -30);
         await page.waitForTimeout(16);
       }
-      await settle(false);
+      await settle(true);
       const reading = await readingPoint();
       assert.ok(
         reading.gap > 900 && reading.message,
         `${width}px: wheel steps move the reader up (${JSON.stringify(reading)})`,
       );
       for (let update = 0; update < 4; update++) await nextRender();
-      await settle(false);
+      await settle(true);
       // Rows that the window mounts above the reader can change scrollTop
       // by their measured height. The visible text must not move.
       await anchored(
@@ -658,7 +658,7 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       // top, which is also the window's own anchor, and a stream commit
       // is observed before this witness releases the growth operation.
       await root.evaluate(
-        (element) =>
+        (element, sentence) =>
           new Promise((resolve, reject) => {
             let attempts = 0;
             const attempt = () => {
@@ -670,7 +670,6 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
                 reject(new Error("The streamed reply is not mounted."));
                 return;
               }
-              const text = reply.textContent;
               const top = element.getBoundingClientRect().top;
               const above =
                 [...element.querySelectorAll("[data-history-row]")].find(
@@ -684,7 +683,10 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
                 );
               above.style.paddingTop = "240px";
               const observer = new MutationObserver(() => {
-                if (reply.isConnected && reply.textContent === text) return;
+                const current = element.querySelector(
+                  '[data-message="reply-live"]',
+                );
+                if (!current?.textContent.includes(sentence)) return;
                 clearTimeout(deadline);
                 observer.disconnect();
                 resolve(attempts);
@@ -702,12 +704,14 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
                 subtree: true,
                 characterData: true,
               });
+              void window.publishScrollUpdate().catch(reject);
             };
             attempt();
           }),
+        `Streamed ${width} sentence ${streamed} `,
       );
       await nextRender();
-      await settle(false);
+      await settle(true);
       await anchored(
         reading,
         "content growth above the reader keeps it anchored",
@@ -715,22 +719,19 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
 
       // The explicit Latest action returns to the bottom and follows again.
       await latest.click();
-      await settle(false);
+      await settle(true);
       assert.ok(
         (await geometry()).gap < 2,
         `${width}px: Latest returns to the bottom`,
       );
       await nextRender();
       await nextRender();
-      await settle(false);
+      await settle(true);
       assert.ok(
         (await geometry()).gap < 2,
         `${width}px: the stream follows after Latest (${JSON.stringify(await geometry())})`,
       );
       await latest.waitFor({ state: "detached" });
-    } finally {
-      streaming = false;
-      await stream;
     }
     assert.equal(
       transcriptPulls,

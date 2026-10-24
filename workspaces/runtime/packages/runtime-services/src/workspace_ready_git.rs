@@ -65,6 +65,8 @@ pub enum WorkspaceError {
     Lock,
     #[error("Workspace preparation worker failed")]
     Worker,
+    #[error(transparent)]
+    WorktreeRoot(#[from] crate::worktree_root::WorktreeRootError),
 }
 
 /// Call on a blocking preparation worker. Queued events belong to the caller and are never mutated.
@@ -292,6 +294,7 @@ async fn prepare_attempt(
         });
     }
     let journal = provision_journal(&store, provision_id(&actor)).await?;
+    let state_dir = store.state_dir().to_path_buf();
     let context = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
@@ -300,6 +303,7 @@ async fn prepare_attempt(
             observe(
                 initial,
                 journal,
+                &state_dir,
                 &Git {
                     deadline: Instant::now() + timeout,
                 },
@@ -329,12 +333,14 @@ async fn prepare_attempt(
             Ok::<_, WorkspaceError>((snapshot, journal))
         })
         .await?;
+    let state_dir = store.state_dir().to_path_buf();
     let (context, git_deadline) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
             // The locked phase starts its own Git budget.
             let deadline = Instant::now() + timeout;
-            observe(snapshot, journal, &Git { deadline }).map(|context| (context, deadline))
+            observe(snapshot, journal, &state_dir, &Git { deadline })
+                .map(|context| (context, deadline))
         },
     )
     .await
@@ -470,7 +476,10 @@ fn establish(
         &observed,
     );
     if !matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
-        || !confined(plan)
+        || !context
+            .workers
+            .as_deref()
+            .is_some_and(|workers| confined(plan, workers))
     {
         return Err(WorkspaceError::Git(
             "the created worktree does not match its provisioning plan".into(),
@@ -479,13 +488,11 @@ fn establish(
     Ok(git.checkpoint(plan).map_err(|error| error.to_string()))
 }
 
-fn confined(identity: &ProvisionIdentity) -> bool {
+/// `workers` is the worker worktree directory from `crate::worktree_root`.
+fn confined(identity: &ProvisionIdentity, workers: &Path) -> bool {
     CanonicalPath::existing(&identity.destination)
         .ok()
-        .is_some_and(|p| {
-            p == identity.destination
-                && p.starts_with(identity.repository.join(".worktrees/codex-agents"))
-        })
+        .is_some_and(|p| p == identity.destination && p.parent() == Some(workers))
         && CanonicalPath::existing(&identity.cwd).ok().as_deref() == Some(identity.cwd.as_path())
 }
 
@@ -507,9 +514,14 @@ async fn publish_verified(
         })
         .await?;
     let read_identity = identity.clone();
+    let state_dir = store.state_dir().to_path_buf();
     let (observed, confined, observed_cwd) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
+            // A root configuration changed since provisioning refuses publication.
+            let workers = crate::worktree_root::configured(&state_dir).map(|root| {
+                crate::worktree_root::workers_directory(root.as_deref(), &read_identity.repository)
+            });
             // Publication checks Git with its own budget.
             let git = Git {
                 deadline: Instant::now() + budget,
@@ -522,7 +534,7 @@ async fn publish_verified(
             });
             (
                 git.worktree(&read_identity).ok(),
-                confined(&read_identity),
+                workers.is_ok_and(|workers| confined(&read_identity, &workers)),
                 cwd,
             )
         },
@@ -575,6 +587,8 @@ struct Context {
     cwd: Option<CanonicalPath>,
     reservations: Vec<Reservation>,
     plan: Option<ProvisionIdentity>,
+    /// The worker worktree directory that `plan` was confined to.
+    workers: Option<PathBuf>,
     journaled: bool,
     observed: GitObservation,
 }
@@ -633,6 +647,7 @@ fn actor(snapshot: &WorkspaceSnapshot) -> Result<WorkspaceActor, WorkspaceError>
 fn observe(
     snapshot: WorkspaceSnapshot,
     journal: Option<Value>,
+    state_dir: &Path,
     git: &Git,
 ) -> Result<Context, WorkspaceError> {
     let actor = actor(&snapshot)?;
@@ -646,6 +661,7 @@ fn observe(
         cwd,
         reservations,
         plan: None,
+        workers: None,
         journaled: false,
         observed: GitObservation::default(),
     };
@@ -686,12 +702,11 @@ fn observe(
     let relative = cwd
         .strip_prefix(&repository)
         .map_err(|_| WorkspaceError::InvalidRecord)?;
-    let destination = path_identity::LexicalPath::new(
-        &repository
-            .join(".worktrees/codex-agents")
-            .join(&context.actor.id),
-    )
-    .ok_or(WorkspaceError::InvalidRecord)?;
+    let configured_root = crate::worktree_root::configured(state_dir)?;
+    let worktree_root = crate::worktree_root::root_for(configured_root.as_deref(), &repository);
+    let workers = crate::worktree_root::workers_directory(configured_root.as_deref(), &repository);
+    let destination = path_identity::LexicalPath::new(&workers.join(&context.actor.id))
+        .ok_or(WorkspaceError::InvalidRecord)?;
     let plan = if let Some(operation) = journal {
         context.journaled = true;
         serde_json::from_value(operation["plan"].clone())
@@ -738,10 +753,16 @@ fn observe(
     {
         return Err(WorkspaceError::InvalidRecord);
     }
+    // A configured root is canonical; only the directories below it are checked.
+    let ancestor_limit = if configured_root.is_some() {
+        worktree_root.as_path()
+    } else {
+        repository.as_path()
+    };
     for ancestor in destination
         .ancestors()
         .skip(1)
-        .take_while(|p| *p != repository)
+        .take_while(|p| *p != ancestor_limit)
     {
         if ancestor.symlink_metadata().is_ok()
             && CanonicalPath::existing(ancestor).ok().as_deref() != Some(ancestor)
@@ -751,6 +772,7 @@ fn observe(
     }
     context.observed = git.worktree(&plan)?;
     context.plan = Some(plan);
+    context.workers = Some(workers);
     Ok(context)
 }
 

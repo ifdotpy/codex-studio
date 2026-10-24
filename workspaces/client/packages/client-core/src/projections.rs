@@ -142,7 +142,45 @@ fn entity_snapshot(rows: &[Value]) -> Value {
     if let (Some(target), Some(extra)) = (runtime.as_object_mut(), workspace_entity.as_object()) {
         target.extend(extra.clone());
     }
+    let mut errors = list("studioError");
+    if let Some(rows) = errors.as_array_mut() {
+        rows.sort_by(|a, b| {
+            b["at"]
+                .as_f64()
+                .unwrap_or(0.0)
+                .total_cmp(&a["at"].as_f64().unwrap_or(0.0))
+                .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+        });
+    }
+    runtime["studioErrors"] = errors;
     let edges = list("edge");
+    for (collection, field) in [("accounts", "accountsSummary"), ("desktop", "desktop")] {
+        runtime[field] = collections
+            .get(collection)
+            .and_then(|rows| rows.get("current"))
+            .cloned()
+            .unwrap_or(Value::Null);
+    }
+    runtime["terminals"] = list("terminal");
+    for (collection, field) in [
+        ("accountCost", "accountCostsByAccount"),
+        ("sessionCost", "sessionCostsByAgent"),
+    ] {
+        runtime[field] = Value::Object(
+            collections
+                .remove(collection)
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+        );
+    }
+    runtime["queuesByAgent"] = Value::Object(
+        collections
+            .remove("queue")
+            .unwrap_or_default()
+            .into_iter()
+            .collect(),
+    );
     let limits = collections.remove("rateLimit").unwrap_or_default();
     runtime["rateLimits"] = limits.get("default").cloned().unwrap_or(Value::Null);
     runtime["rateLimitsByAccount"] = Value::Object(limits.into_iter().collect());
@@ -357,6 +395,34 @@ pub fn dispatch(connection: &Connection, request: &Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn studio_error_entities_reach_native_state_and_dismissal_removes_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let workspace = "a".repeat(32);
+        let apply = |changes| Request {
+            id: "studio-errors".into(),
+            method: "projection.applyEntities".into(),
+            params: json!({"workspace":workspace,"changes":changes,"replace":false}),
+        };
+        let item = json!({"id":"event:one","agentId":"one","at":100});
+        let first = store.dispatch(apply(json!([
+            {"op":"upsert","collection":"studioError","id":"event:one","seq":1,"value":item}
+        ])));
+        assert!(first.error.is_none(), "{:?}", first.error);
+        let snapshot: Value =
+            serde_json::from_str(first.result.unwrap()["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(snapshot["runtime"]["studioErrors"], json!([item]));
+        let removed = store.dispatch(apply(json!([
+            {"op":"delete","collection":"studioError","id":"event:one","seq":2}
+        ])));
+        assert!(removed.error.is_none(), "{:?}", removed.error);
+        let snapshot: Value =
+            serde_json::from_str(removed.result.unwrap()["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(snapshot["runtime"]["studioErrors"], json!([]));
+    }
+
     #[test]
     fn entity_batch_rolls_back_rows_cursors_and_state_on_failure() {
         let directory = tempfile::tempdir().unwrap();

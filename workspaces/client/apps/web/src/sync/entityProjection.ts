@@ -18,6 +18,7 @@ import type {
 } from "../generated/api";
 import type { components } from "../generated/api";
 type AccountRateLimitsDto = components["schemas"]["AccountRateLimitsDto"];
+type StudioError = components["schemas"]["StudioError"];
 export type UiPreferencesDto = components["schemas"]["UiPreferencesDto"];
 import type { Snapshot } from "../types";
 
@@ -57,6 +58,13 @@ const ENTITY_COLLECTIONS = [
   "workspace",
   "rateLimit",
   "model",
+  "studioError",
+  "accounts",
+  "accountCost",
+  "sessionCost",
+  "desktop",
+  "terminal",
+  "queue",
   "uiPreferences",
   "messageReceipt",
   "plan",
@@ -113,8 +121,21 @@ function emptyEntityValues(): EntityValues {
     event: new Map<string, EventEntityDto>(),
     work: new Map<string, WorkEntityDto>(),
     workspace: new Map<string, WorkspaceEntityDto>(),
+    accounts: new Map<string, components["schemas"]["AccountsSummaryDto"]>(),
+    accountCost: new Map<
+      string,
+      components["schemas"]["AccountCostResponse"]
+    >(),
+    sessionCost: new Map<
+      string,
+      components["schemas"]["SessionCostResponse"]
+    >(),
+    desktop: new Map<string, components["schemas"]["DesktopResponse"]>(),
+    terminal: new Map<string, components["schemas"]["TerminalRecord"]>(),
+    queue: new Map<string, components["schemas"]["QueueView"]>(),
     rateLimit: new Map<string, AccountRateLimitsDto>(),
     model: new Map<string, ModelEntityDto>(),
+    studioError: new Map<string, StudioError>(),
     uiPreferences: new Map<string, UiPreferencesDto>(),
   };
 }
@@ -218,6 +239,12 @@ function projectSnapshotCollections(
         (left, right) => left.catalogPosition - right.catalogPosition,
       );
   }
+  const studioErrors =
+    prior && !changed.has("studioError")
+      ? prior.runtime.studioErrors
+      : entityValues(values, "studioError").sort(
+          (a, b) => b.at - a.at || a.id.localeCompare(b.id),
+        );
   const runtime = {
     ...workspace,
     modelsByAccount,
@@ -233,8 +260,33 @@ function projectSnapshotCollections(
       prior && !changed.has("annotation")
         ? prior.runtime.annotations
         : entityValues(values, "annotation"),
+    queuesByAgent:
+      prior && !changed.has("queue")
+        ? prior.runtime.queuesByAgent
+        : Object.fromEntries(values.queue),
+    accountsSummary:
+      prior && !changed.has("accounts")
+        ? prior.runtime.accountsSummary
+        : values.accounts.get("current"),
+    accountCostsByAccount:
+      prior && !changed.has("accountCost")
+        ? prior.runtime.accountCostsByAccount
+        : Object.fromEntries(values.accountCost),
+    sessionCostsByAgent:
+      prior && !changed.has("sessionCost")
+        ? prior.runtime.sessionCostsByAgent
+        : Object.fromEntries(values.sessionCost),
+    desktop:
+      prior && !changed.has("desktop")
+        ? prior.runtime.desktop
+        : values.desktop.get("current"),
+    terminals:
+      prior && !changed.has("terminal")
+        ? prior.runtime.terminals
+        : entityValues(values, "terminal"),
     rateLimitsByAccount,
     rateLimits: rateLimitsByAccount?.default ?? null,
+    studioErrors,
     agents,
     rooms,
     tasks,
@@ -399,11 +451,32 @@ export function applyEntityChanges(
       case "uiPreferences":
         state.values.uiPreferences.set(payload.id, payload.value);
         break;
+      case "accounts":
+        state.values.accounts.set(payload.id, payload.value);
+        break;
+      case "accountCost":
+        state.values.accountCost.set(payload.id, payload.value);
+        break;
+      case "sessionCost":
+        state.values.sessionCost.set(payload.id, payload.value);
+        break;
+      case "desktop":
+        state.values.desktop.set(payload.id, payload.value);
+        break;
+      case "terminal":
+        state.values.terminal.set(payload.id, payload.value);
+        break;
+      case "queue":
+        state.values.queue.set(payload.id, payload.value);
+        break;
       case "rateLimit":
         state.values.rateLimit.set(payload.id, payload.value);
         break;
       case "model":
         state.values.model.set(payload.id, payload.value);
+        break;
+      case "studioError":
+        state.values.studioError.set(payload.id, payload.value);
         break;
       case "workspace":
         state.values.workspace.set(payload.id, payload.value);

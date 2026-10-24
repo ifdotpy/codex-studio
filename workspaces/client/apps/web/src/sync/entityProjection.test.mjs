@@ -1212,3 +1212,128 @@ it("projects independent account limits and preserves them across workspace upda
   assert.equal(withoutAlpha.runtime.rateLimitsByAccount.alpha, undefined);
   assert.equal(withoutAlpha.runtime.rateLimits.accountKey, "default");
 });
+
+it("projects Studio error entities and removes dismissed rows by tombstone", () => {
+  const row = (id, value, seq) => ({
+    id: `entity:studioError:${id}`,
+    payload: "",
+    entity: { collection: "studioError", id, value },
+    seq,
+  });
+  const state = emptyEntityProjection();
+  const item = {
+    id: "agent:worker:turn-1",
+    kind: "turn_disconnected",
+    reason: "The provider connection ended during the turn.",
+    action: "resume",
+    agentId: "worker",
+    agentName: "Worker",
+    detail: "disconnected",
+    subject: "",
+    at: 100,
+  };
+  const initial = applyEntityRows(
+    state,
+    [
+      {
+        id: "entity:workspace:current",
+        payload: "",
+        entity: {
+          collection: "workspace",
+          id: "current",
+          value: { stateDir: "fixture" },
+        },
+        seq: 1,
+      },
+      row(item.id, item, 2),
+    ],
+    true,
+  );
+  assert.deepEqual(initial.runtime.studioErrors, [item]);
+  const removed = applyEntityRows(
+    state,
+    [
+      {
+        id: "entity:workspace:current",
+        payload: "",
+        entity: {
+          collection: "workspace",
+          id: "current",
+          value: { stateDir: "fixture" },
+        },
+        seq: 1,
+      },
+      {
+        id: `entity:studioError:${item.id}`,
+        seq: 3,
+        payload: "{}",
+        _deleted: true,
+      },
+    ],
+    true,
+  );
+  assert.deepEqual(removed.runtime.studioErrors, []);
+});
+it("projects queue stream upserts and deletion without endpoint reads", () => {
+  const state = emptyEntityProjection();
+  const value = {
+    items: [{ id: "q", text: "Queued" }],
+    revision: "one",
+    capabilities: { reorder: true, receipts: true },
+  };
+  const row = {
+    id: "entity:queue:chat",
+    seq: 1,
+    payload: "",
+    entity: { collection: "queue", id: "chat", value },
+  };
+  const initial = applyEntityRows(state, [row], true);
+  assert.deepEqual(initial.runtime.queuesByAgent.chat, value);
+  const next = applyEntityRows(
+    state,
+    [row, { id: "entity:queue:chat", seq: 2, payload: "{}", _deleted: true }],
+    true,
+  );
+  assert.equal(next.runtime.queuesByAgent.chat, undefined);
+});
+
+for (const [collection, field, singleton] of [
+  ["accounts", "accountsSummary", true],
+  ["accountCost", "accountCostsByAccount", false],
+  ["sessionCost", "sessionCostsByAgent", false],
+  ["desktop", "desktop", true],
+  ["terminal", "terminals", false],
+])
+  it(`projects ${collection} source entities and deletion`, () => {
+    const state = emptyEntityProjection();
+    const value = { id: "record", marker: collection };
+    const id = singleton ? "current" : "record";
+    const row = {
+      id: `entity:${collection}:${id}`,
+      seq: 1,
+      payload: "",
+      entity: { collection, id, value },
+    };
+    const initial = applyEntityRows(state, [row], true);
+    assert.deepEqual(
+      singleton
+        ? initial.runtime[field]
+        : collection === "terminal"
+          ? initial.runtime[field][0]
+          : initial.runtime[field][id],
+      value,
+    );
+    const next = applyEntityRows(
+      state,
+      [row, { id: row.id, seq: 2, payload: "{}", _deleted: true }],
+      true,
+    );
+    assert.equal(
+      singleton
+        ? next.runtime[field]
+        : collection === "terminal"
+          ? next.runtime[field][0]
+          : next.runtime[field][id],
+      undefined,
+    );
+  });
