@@ -659,7 +659,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "SyncPullResponse",
         "TranscriptStreamDelta",
         "TaskEntityDto",
-        "TeamBudgetSummary",
+        "RetainedWorktreesResponse",
         "WorkEntityDto",
         "WorkspaceEntityDto",
         "DevicePairResponse",

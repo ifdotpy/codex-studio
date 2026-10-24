@@ -56,10 +56,6 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
-                "WORKER_TURN_LIMIT_REASON",
-                json_string(crate::worker_capabilities::TURN_LIMIT_REASON),
-            ),
-            (
                 "SYNC_TRANSCRIPT_STREAM_MAX_ITEMS",
                 values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS.to_string(),
             ),

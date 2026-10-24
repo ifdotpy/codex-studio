@@ -1,6 +1,5 @@
 mod account_login;
 mod account_transfer;
-mod agent_limits;
 mod agent_management;
 pub use agent_management::{IdleCompactionHost, NativeContextRepairPort};
 pub use agents_create::managed_creation_environment;
@@ -42,6 +41,7 @@ mod questions_write;
 mod queue_read;
 mod queue_write;
 mod recovery;
+mod retained_worktrees;
 mod rules;
 mod session;
 mod studio_errors;
