@@ -1563,7 +1563,9 @@ mod tests {
                 uncertain: true,
             },
         ];
+        tokio::time::pause();
         let event = session.next().await.unwrap().unwrap();
+        tokio::time::resume();
         assert_eq!(event.sequence, 1);
         assert_eq!(*guest.next_attempts.lock().unwrap(), 3);
         assert_eq!(*guest.writes.lock().unwrap(), 0);

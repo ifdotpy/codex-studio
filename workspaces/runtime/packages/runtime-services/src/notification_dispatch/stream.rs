@@ -993,6 +993,21 @@ mod tests {
             ));
             streams.close(&key);
             assert!(streams.entries.is_empty());
+            let retained = (index + 1).min(MAX_CLOSED_STREAMS);
+            assert_eq!(streams.closed.len(), retained);
+            assert_eq!(streams.indexes.closed.len(), retained);
+            assert!(matches!(
+                streams.enqueue_delta(key.clone(), "late", &Value::Null),
+                EnqueueResult::Closed
+            ));
+            if index == MAX_CLOSED_STREAMS {
+                let oldest = StreamKey {
+                    item: "0".into(),
+                    ..key
+                };
+                assert!(!streams.indexes.closed.contains(&oldest));
+                assert!(streams.closed.iter().all(|closed| **closed != oldest));
+            }
         }
         let key = StreamKey {
             agent_id: "agent".into(),

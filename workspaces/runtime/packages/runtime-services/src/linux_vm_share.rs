@@ -400,7 +400,16 @@ fn credential(state_dir: &Path, guest: &dyn GuestRpc) -> Result<String, String> 
 /// is unavailable: such a request has not reached the broker, so a repeat
 /// cannot run it twice.
 fn ensure_project(guest: &dyn GuestRpc, identity: &str) -> Result<Map<String, Value>, String> {
-    let deadline = Instant::now() + Duration::from_secs_f64(ADMIN_WAIT_SECONDS);
+    ensure_project_with_sources(guest, identity, Instant::now, pause)
+}
+
+fn ensure_project_with_sources(
+    guest: &dyn GuestRpc,
+    identity: &str,
+    now: impl Fn() -> Instant,
+    wait: impl Fn(Duration),
+) -> Result<Map<String, Value>, String> {
+    let deadline = now() + Duration::from_secs_f64(ADMIN_WAIT_SECONDS);
     loop {
         match guest.call(
             "project.ensure",
@@ -411,10 +420,10 @@ fn ensure_project(guest: &dyn GuestRpc, identity: &str) -> Result<Map<String, Va
             Ok(Value::Object(project)) => return Ok(project),
             Ok(_) => return Err("The guest returned an invalid project.".into()),
             Err(error @ GuestError::Rejected { .. })
-                if error.code() == Some("unavailable") && Instant::now() < deadline => {}
+                if error.code() == Some("unavailable") && now() < deadline => {}
             Err(error) => return Err(format!("The VM project is unavailable: {error}")),
         }
-        pause(Duration::from_secs_f64(ADMIN_RETRY_SECONDS));
+        wait(Duration::from_secs_f64(ADMIN_RETRY_SECONDS));
     }
 }
 

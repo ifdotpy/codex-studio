@@ -2,9 +2,7 @@ use super::*;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository};
 
 async fn spawn_permission_case(
-    provider: &str,
-    mode: Option<&str>,
-    yolo: bool,
+    mode: &str,
     role: &str,
     override_mode: Option<Value>,
     expected: &str,
@@ -18,35 +16,25 @@ async fn spawn_permission_case(
             .unwrap()
             .value()
     };
-    parent["provider"] = json!(provider);
-    parent["yoloMode"] = json!(yolo);
-    parent["claudeOptions"] = mode
-        .map(|mode| json!({"permissionMode": mode, "thinking": false}))
-        .unwrap_or(json!({}));
+    parent["provider"] = json!("claude");
+    parent["yoloMode"] = json!(mode == "bypassPermissions");
+    parent["claudeOptions"] = json!({"permissionMode": mode, "thinking": false});
     let saved = parent.clone();
     store
         .transaction_with::<_, StoreError>(move |tx| {
             let mut root = AgentRepository::get(tx, &AgentId::from(LEAD))?
                 .unwrap()
                 .value();
-            root["workerDefaults"] = json!({"model": "claude-haiku-4-5", "delegationDepth": 2});
             if !nested {
                 root = saved.clone();
-                root["workerDefaults"] = json!({"model": "claude-haiku-4-5", "delegationDepth": 2});
             } else {
                 AgentRepository::put(tx, &AgentRecord::from_value(saved).unwrap())?;
             }
+            root["workerDefaults"] = json!({"model": "claude-haiku-4-5", "delegationDepth": 2});
             AgentRepository::put(tx, &AgentRecord::from_value(root).unwrap())
         })
         .await
         .unwrap();
-    let parent = AgentRepository::get(
-        &store.test_reader().unwrap(),
-        &AgentId::from(parent["id"].as_str().unwrap()),
-    )
-    .unwrap()
-    .unwrap()
-    .value();
     let actor = Actor::from_record(&parent, parent["id"].as_str().unwrap(), context.epoch).unwrap();
     let mut spec =
         json!({"name": "Child", "prompt": "Do the task", "role": role, "workspace": "shared"});
@@ -112,8 +100,32 @@ async fn spawn_permission_case(
     assert_eq!(restored["claudeOptions"]["permissionMode"], expected);
 }
 
-#[tokio::test]
-async fn claude_child_inherits_auto_plan_accept_edits_and_default() {
+fn permission_case(
+    provider: &str,
+    mode: Option<&str>,
+    yolo: bool,
+    override_mode: Option<Value>,
+    expected: &str,
+) {
+    let parent = json!({"provider":provider,"yoloMode":yolo,"claudeOptions":mode.map(|mode| json!({"permissionMode":mode,"thinking":false})).unwrap_or(json!({}))});
+    let mut child = json!({"provider":"claude","role":"implementer"});
+    let mut spec = json!({});
+    if let Some(mode) = override_mode {
+        spec["permission_mode"] = mode;
+    }
+    let result =
+        crate::child_permissions::inherit_claude_permissions(&mut child, &parent, &parent, &spec);
+    if expected.is_empty() {
+        assert_eq!(result, Err("Invalid Claude permission_mode"));
+    } else {
+        result.unwrap();
+        assert_eq!(child["claudeOptions"], json!({"permissionMode":expected}));
+        assert_eq!(child["yoloMode"], expected == "bypassPermissions");
+    }
+}
+
+#[test]
+fn claude_child_inherits_auto_plan_accept_edits_and_default() {
     for mode in [
         "auto",
         "plan",
@@ -121,39 +133,25 @@ async fn claude_child_inherits_auto_plan_accept_edits_and_default() {
         "default",
         "bypassPermissions",
     ] {
-        spawn_permission_case(
+        permission_case(
             "claude",
             Some(mode),
             mode == "bypassPermissions",
-            "implementer",
             None,
             mode,
-            false,
-        )
-        .await;
+        );
     }
 }
 
 #[tokio::test]
 async fn claude_child_uses_immediate_parent_instead_of_root() {
-    spawn_permission_case(
-        "claude",
-        Some("plan"),
-        false,
-        "implementer",
-        None,
-        "plan",
-        true,
-    )
-    .await;
+    spawn_permission_case("plan", "implementer", None, "plan", true).await;
 }
 
 #[tokio::test]
 async fn claude_child_reviewer_stays_plan_even_with_bypass_override() {
     spawn_permission_case(
-        "claude",
-        Some("bypassPermissions"),
-        true,
+        "bypassPermissions",
         "reviewer",
         Some(json!("bypassPermissions")),
         "plan",
@@ -162,41 +160,35 @@ async fn claude_child_reviewer_stays_plan_even_with_bypass_override() {
     .await;
 }
 
-#[tokio::test]
-async fn claude_child_cannot_escalate_to_bypass() {
+#[test]
+fn claude_child_cannot_escalate_to_bypass() {
     for mode in ["auto", "plan", "acceptEdits", "default"] {
-        spawn_permission_case(
+        permission_case(
             "claude",
             Some(mode),
             true,
-            "implementer",
             Some(json!("bypassPermissions")),
             mode,
-            false,
-        )
-        .await;
+        );
     }
 }
 
-#[tokio::test]
-async fn claude_child_accepts_explicit_mode_override() {
-    spawn_permission_case(
+#[test]
+fn claude_child_accepts_explicit_mode_override() {
+    permission_case(
         "claude",
         Some("auto"),
         false,
-        "implementer",
         Some(json!("acceptEdits")),
         "acceptEdits",
-        false,
-    )
-    .await;
+    );
 }
 
-#[tokio::test]
-async fn claude_child_maps_legacy_and_codex_yolo() {
+#[test]
+fn claude_child_maps_legacy_and_codex_yolo() {
     for provider in ["claude", "codex"] {
         for (yolo, expected) in [(false, "default"), (true, "bypassPermissions")] {
-            spawn_permission_case(provider, None, yolo, "implementer", None, expected, false).await;
+            permission_case(provider, None, yolo, None, expected);
         }
     }
 }
@@ -204,17 +196,9 @@ async fn claude_child_maps_legacy_and_codex_yolo() {
 #[tokio::test]
 async fn claude_child_rejects_invalid_override_without_child_record() {
     for mode in [json!("unknown"), json!(true), Value::Null] {
-        spawn_permission_case(
-            "claude",
-            Some("auto"),
-            false,
-            "implementer",
-            Some(mode),
-            "",
-            false,
-        )
-        .await;
+        permission_case("claude", Some("auto"), false, Some(mode), "");
     }
+    spawn_permission_case("auto", "implementer", Some(json!("unknown")), "", false).await;
 }
 
 #[tokio::test]

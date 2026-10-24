@@ -149,9 +149,19 @@ fn a_remount_waits_while_the_admin_channel_restarts() {
         ]),
         calls: Mutex::default(),
     };
+    let began = Instant::now();
+    let clock = std::cell::Cell::new(began);
+    let wait = |duration| {
+        assert_eq!(duration, Duration::from_secs_f64(ADMIN_RETRY_SECONDS));
+        clock.set(clock.get() + duration);
+    };
     assert_eq!(
-        ensure_project(&guest, "p1").unwrap()["projectId"],
+        ensure_project_with_sources(&guest, "p1", || clock.get(), wait).unwrap()["projectId"],
         json!("p1")
+    );
+    assert_eq!(
+        clock.get() - began,
+        Duration::from_secs_f64(ADMIN_RETRY_SECONDS)
     );
     assert_eq!(guest.calls.lock().unwrap().len(), 2);
     let guest = ScriptedGuest {
@@ -165,8 +175,24 @@ fn a_remount_waits_while_the_admin_channel_restarts() {
         )]),
         calls: Mutex::default(),
     };
-    assert!(ensure_project(&guest, "p1").is_err());
+    assert!(ensure_project_with_sources(&guest, "p1", || clock.get(), wait).is_err());
     assert_eq!(guest.calls.lock().unwrap().len(), 1);
+    let retries = (ADMIN_WAIT_SECONDS / ADMIN_RETRY_SECONDS) as usize;
+    let guest = ScriptedGuest {
+        answers: Mutex::new(
+            (0..=retries)
+                .map(|_| ("project.ensure", Err(unavailable())))
+                .collect(),
+        ),
+        calls: Mutex::default(),
+    };
+    let began = clock.get();
+    assert!(ensure_project_with_sources(&guest, "p1", || clock.get(), wait).is_err());
+    assert_eq!(
+        clock.get() - began,
+        Duration::from_secs_f64(ADMIN_WAIT_SECONDS)
+    );
+    assert_eq!(guest.calls.lock().unwrap().len(), retries + 1);
 }
 
 #[derive(Default)]
