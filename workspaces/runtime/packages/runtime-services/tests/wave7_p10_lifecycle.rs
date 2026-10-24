@@ -817,8 +817,57 @@ async fn clone_store(base: &Path, root: &Path) -> RuntimeStore {
         .expect("open cloned fixture")
 }
 
+// These source-owned collections postdate the frozen Python oracle. Keep the
+// legacy row comparison exact and independently verify their current contracts.
+fn assert_conversation_detail_sources(snapshot: &Value) {
+    for row in snapshot["sync"].as_array().expect("sync rows") {
+        let collection = row[0].as_str().expect("collection");
+        if !matches!(collection, "questionHistory" | "retainedWorktree") || row[5] != 0 {
+            continue;
+        }
+        let payload: Value =
+            serde_json::from_str(row[4].as_str().expect("payload")).expect("entity JSON");
+        assert!(
+            studio_runtime_schema::validate_sync_entity_payload_strict(
+                collection,
+                row[1].as_str().expect("id"),
+                &payload,
+                false
+            )
+            .expect("entity validator")
+        );
+        let table = if collection == "questionHistory" {
+            "runtime_requests"
+        } else {
+            "runtime_agents"
+        };
+        let source = snapshot["tables"][table]
+            .as_array()
+            .expect("source rows")
+            .iter()
+            .find(|source| source["id"] == row[1])
+            .expect("live detail has its source");
+        assert_eq!(payload["value"]["id"], source["id"]);
+        if collection == "questionHistory" {
+            for field in ["agent", "method", "status", "decision", "answeredAt"] {
+                assert_eq!(
+                    payload["value"][field], source[field],
+                    "question source field {field}"
+                );
+            }
+        } else {
+            assert_eq!(payload["value"]["rootId"], source["rootId"]);
+            assert_eq!(
+                payload["value"]["cleanup"]["phase"],
+                source["workspaceCleanupIntent"]["phase"]
+            );
+        }
+    }
+}
+
 fn assert_records(store: &RuntimeStore, case: &Value) {
     let saved = state(store);
+    assert_conversation_detail_sources(&saved);
     for (table, expected) in case["expected"]["records"]["tables"]
         .as_object()
         .expect("tables")
@@ -851,7 +900,12 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
         .as_array()
         .expect("sync projection rows")
         .iter()
-        .filter(|row| row[0] != "workspace" && row[0] != "queue")
+        .filter(|row| {
+            row[0] != "workspace"
+                && row[0] != "queue"
+                && row[0] != "questionHistory"
+                && row[0] != "retainedWorktree"
+        })
         // The frozen Python oracle predates receipt entities. Check their
         // source status separately below while preserving its legacy witness.
         .filter(|row| row[0] != "messageReceipt")
@@ -1289,13 +1343,19 @@ async fn production_child_notification_matches_python_corpus() {
             );
         }
     }
+    assert_conversation_detail_sources(&actual);
     let actual_sync = actual["sync"]
         .as_array()
         .expect("sync rows")
         .iter()
         // The frozen Python oracle predates the queue entity collection. Its
         // source publication and removals have dedicated Rust witnesses.
-        .filter(|row| row[0] != "workspace" && row[0] != "queue")
+        .filter(|row| {
+            row[0] != "workspace"
+                && row[0] != "queue"
+                && row[0] != "questionHistory"
+                && row[0] != "retainedWorktree"
+        })
         .map(|row| json!([row[0], row[1], row[4], row[5]]))
         .collect::<Vec<_>>();
     let mut expected_sync = case["expected"]["syncEntities"]

@@ -2860,11 +2860,17 @@ mod tests {
         assert_eq!(first, second);
         assert!(matches!(
             left["open"],
-            TranscriptStreamUpdate::Changed { batch: None, .. }
+            TranscriptStreamUpdate::Snapshot {
+                snapshot: Some(_),
+                ..
+            }
         ));
         assert!(matches!(
             right["open"],
-            TranscriptStreamUpdate::Changed { batch: None, .. }
+            TranscriptStreamUpdate::Snapshot {
+                snapshot: Some(_),
+                ..
+            }
         ));
         store.transaction(|tx| {
             tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','after') WHERE id='answer'", [])?;
