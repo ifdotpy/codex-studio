@@ -17,6 +17,7 @@ mod input_origin;
 mod journal_cost;
 mod journal_publication;
 mod late_thread_reply;
+mod missing_session;
 mod unknown_thread_retry;
 mod limits_updates;
 mod login_completion;

@@ -212,6 +212,10 @@ pub const PROVIDER_RESUME_UNKNOWN_ERROR: &str =
 /// because a second thread start can create a second thread.
 pub const PROVIDER_THREAD_START_UNKNOWN_ERROR: &str =
     "Provider thread start outcome is unknown; input remains pending.";
+/// Agent and input error of a thread resume whose saved provider session is gone. The input
+/// was never sent, so it settles as failed and its owner may send it again.
+pub const PROVIDER_SESSION_MISSING_ERROR: &str =
+    "The saved Claude session of this chat is missing. Start a new thread to continue.";
 /// Refusal of a monitor whose owner stopped its turn: the owner ended it, not Studio.
 pub const MONITOR_OWNER_STOPPED_ERROR: &str = "The agent turn was stopped";
 /// Seconds that the host retries one idempotent Linux VM provider journal read (next,
