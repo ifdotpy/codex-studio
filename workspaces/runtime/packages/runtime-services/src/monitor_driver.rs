@@ -238,12 +238,32 @@ pub async fn cancel_checked(
                 let (snapshot, owner) = monitor_runtime::snapshot(tx, &id_for_reservation)?;
                 let owner =
                     serde_json::to_value(owner).map_err(studio_runtime_store::StoreError::from)?;
-                let process = crate::process_controls::project(
-                    "monitor",
+                let source = expected["_sourceGeneration"].as_u64().map(|generation| {
+                    crate::account_session_runtime::ConnectionScope {
+                        account: expected["_sourceAccountKey"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                        connection: expected["_sourceConnectionId"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                        generation,
+                    }
+                });
+                let process = crate::process_controls::project_monitor(
+                    tx,
                     snapshot.record(),
                     &owner,
                     expected["_sourceConnectionId"].as_str(),
-                );
+                    source.as_ref(),
+                )
+                .map_err(|error| match error {
+                    crate::process_controls::Error::Store(error) => MonitorError::Store(error),
+                    crate::process_controls::Error::Invalid(message) => {
+                        MonitorError::Refused(message)
+                    }
+                })?;
                 if !crate::process_controls::matches(&process, expected)
                     || process["capabilities"]["stop"] != true
                     || snapshot.record()["status"] != expected["_raw"]["status"]
