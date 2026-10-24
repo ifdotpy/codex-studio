@@ -66,7 +66,7 @@ fn start_publisher(
                 }
                 #[cfg(test)]
                 ModelPublication::Flush(done) => {
-                    let _ = done.send(());
+                    done.send(()).expect("flush receiver is waiting");
                 }
             }
         }
