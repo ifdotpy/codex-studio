@@ -21,3 +21,8 @@ export function subscriptionKey(ref: ResourceRef): string {
     Object.entries(ref).sort(([left], [right]) => left.localeCompare(right)),
   );
 }
+
+export type UseSubscription = <R extends ResourceRef>(
+  ref: R | null,
+  options?: SubscriptionOptions,
+) => SubscriptionState<ResourceData<R>>;
