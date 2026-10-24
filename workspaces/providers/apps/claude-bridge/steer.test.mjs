@@ -72,11 +72,16 @@ export function query({prompt,options}){
      }
      queueMode=false;continue;
     }
-    if(text==='dequeue'){
-     const next=await read();
+    if(text.startsWith('dequeue')){
+     let next=await read();
      yield {type:'result',subtype:'success',usage,result:'first',user_message_uuid:input.value.uuid,user_message_uuids:[input.value.uuid]};
+     while(next.value.shouldQuery===false){
+      if(text!=='dequeue-split-missing')yield {type:'result',subtype:'success',num_turns:0,user_message_uuid:next.value.uuid,usage};
+      next=await read();
+     }
      yield {type:'stream_event',event:{type:'message_start',message:{id:'message-steer'}}};
-     yield {type:'result',subtype:'success',usage,result:'second',user_message_uuid:next.value.uuid,user_message_uuids:[next.value.uuid]};
+     yield {type:'result',subtype:'success',usage,result:'second',user_message_uuid:next.value.uuid,...(text==='dequeue'?{user_message_uuids:[next.value.uuid]}:{})};
+     fs.writeFileSync(cwd+'/.native-queued','');
      continue;
     }
     let late=null;
@@ -281,6 +286,50 @@ test("a steer that Claude answers as its own prompt is delivered and ends the tu
   );
   assert.deepEqual(await inputs(bridge), ["dequeue", "steer text"]);
 });
+
+for (const missing of [false, true]) {
+  test(`a split steer needs exact prefix and final result receipts: missing=${missing}`, async () => {
+    const bridge = await startBridge();
+    const scenario = missing ? "dequeue-split-missing" : "dequeue-split";
+    const turn = await running(bridge, scenario);
+    const id = "split-dequeued";
+    await bridge.call("turn/steer", {
+      threadId: bridge.thread,
+      expectedTurnId: turn,
+      clientUserMessageId: id,
+      input: ["studio_event", "human", "studio_event"].map(
+        (inputOrigin, index) => ({
+          type: "text",
+          text: `split-part-${index}`,
+          inputOrigin,
+        }),
+      ),
+    });
+    await nativeQueued(bridge);
+    if (missing) {
+      assert.equal(ack(bridge, id), undefined);
+      assert.equal(
+        bridge.notes.some(
+          (note) =>
+            note.method === "turn/completed" && note.params.turn.id === turn,
+        ),
+        false,
+      );
+    } else {
+      assert.equal(
+        (await completed(bridge, turn)).params.turn.status,
+        "completed",
+      );
+      assert.ok(ack(bridge, id), "each split part has an exact result receipt");
+    }
+    assert.deepEqual(await inputs(bridge), [
+      scenario,
+      "split-part-0",
+      "split-part-1",
+      "split-part-2",
+    ]);
+  });
+}
 
 test("a steer for another turn is rejected before any input is written", async () => {
   const bridge = await startBridge();
