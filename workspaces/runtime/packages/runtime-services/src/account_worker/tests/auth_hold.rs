@@ -7,6 +7,8 @@ use studio_runtime_providers::ProviderKind;
 
 /// Bounds each wait for a held turn; unit: wall time.
 const HOLD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+/// Bounds each wait for the shared credential watcher; unit: wall time.
+const WATCHER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 /// Virtual interval that would expose a polling wake; unit: Tokio time.
 const NO_WAKE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 const SIGNED_IN: &str = "fixture@example.test";
@@ -467,6 +469,24 @@ async fn two_held_starts_of_one_account_start_once_in_order() {
     }
 }
 
+/// Why a wait for the credential watcher can end at its deadline: the watch set
+/// is process-wide and follows the account driver opened last, so another test
+/// in this process can unwatch this test's location.
+const WATCHER_UNAVAILABLE: &str = "the credential watcher did not handle this location; \
+    another account driver in this process replaced the shared watch set, so run this \
+    test in its own process (cargo nextest)";
+
+/// Wait, with real time running, until the shared credential watcher publishes
+/// the current identity of `location`.
+async fn watcher_published(
+    cache: &crate::account_driver::auth_cache::AuthCache,
+    location: &crate::account_driver::auth_cache::CredentialLocation,
+) {
+    tokio::time::timeout(WATCHER_DEADLINE, cache.watch_published(location))
+        .await
+        .expect(WATCHER_UNAVAILABLE);
+}
+
 /// While a start is held the release loop sleeps on account and auth change
 /// signals only: a week of paused time starts no release pass, and one
 /// account change starts exactly one.
@@ -491,15 +511,18 @@ async fn held_start_wakes_nothing_until_an_account_change() {
         let cache = crate::account_driver::auth_cache::shared();
         // Finish the initial sign-in before changing the identity again.
         tokio::time::resume();
-        cache.watch_published(&location).await;
+        watcher_published(cache, &location).await;
         let mut invalidation = cache.hold_invalidation(&location);
         account.sign_out();
-        (&mut invalidation.reached).await.unwrap();
+        tokio::time::timeout(WATCHER_DEADLINE, &mut invalidation.reached)
+            .await
+            .expect(WATCHER_UNAVAILABLE)
+            .unwrap();
         // A synchronous read settles status, but cannot finish the held watcher.
         account.driver.get("default").unwrap();
         // Settle the actual publication before the release loop subscribes.
         drop(invalidation);
-        cache.watch_published(&location).await;
+        watcher_published(cache, &location).await;
         let agent = state.agent.clone();
         let reason = account.sign_in_message();
         state
@@ -547,7 +570,7 @@ async fn held_start_wakes_nothing_until_an_account_change() {
         // The global auth signal also carries the login invalidation; finish it
         // before the next provider's no-wake interval.
         tokio::time::resume();
-        cache.watch_published(&location).await;
+        watcher_published(cache, &location).await;
         tokio::time::pause();
     }
 }
