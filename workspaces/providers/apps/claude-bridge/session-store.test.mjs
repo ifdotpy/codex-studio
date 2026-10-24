@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   createSessionStore,
   ephemeralSessionOptions,
+  SESSION_MISSING,
 } from "./session-store.mjs";
 
 const faultSessionId = "11111111-1111-4111-8111-111111111111";
@@ -363,6 +364,21 @@ test("session store persists, restores and coordinates cached writes", async () 
     const restored = await createSessionStore(root).get(id);
     assert.equal(restored.turns[1].error.message, "not submitted");
     assert.equal(restored.turns[1].status, "failed");
+  });
+});
+
+// Studio settles the input of a resume whose saved session is gone as not sent,
+// so the error names that cause in data, not only in its message.
+test("a thread without a saved session file is reported as missing", async () => {
+  const id = "33333333-3333-4333-8333-333333333333";
+  await withTemporaryRoot(async (root) => {
+    const store = createSessionStore(root);
+    await assert.rejects(store.get(id), (error) => {
+      assert.equal(error.code, "ENOENT");
+      assert.deepEqual(error.data, { [SESSION_MISSING]: true });
+      assert.match(error.message, /saved Claude session .+ is missing/);
+      return true;
+    });
   });
 });
 

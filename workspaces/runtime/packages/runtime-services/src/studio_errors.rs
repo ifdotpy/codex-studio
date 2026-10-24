@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{
     BACKEND_RESTARTED_TURN_ERROR, MONITOR_OWNER_STOPPED_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
     PROVIDER_RESUME_UNKNOWN_ERROR, PROVIDER_START_NOT_SENT_ERROR,
-    VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+    PROVIDER_THREAD_START_UNKNOWN_ERROR, VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 };
 use studio_runtime_store::{EventWriteRepository, StoreError, Transaction};
 
@@ -100,6 +100,7 @@ fn agent_kind(status: &str, error: &str) -> Option<Kind> {
         BACKEND_RESTARTED_TURN_ERROR,
         VM_PROVIDER_DISCONNECTED_TURN_ERROR,
         PROVIDER_RESUME_UNKNOWN_ERROR,
+        PROVIDER_THREAD_START_UNKNOWN_ERROR,
     ];
     if matches!(status, "failed" | "interrupted") && disconnected.contains(&error) {
         return Some(Kind::TurnDisconnected);
@@ -392,6 +393,16 @@ mod tests {
             agent_kind("paused", "workspace-readiness/token-stale"),
             Some(Kind::WorkspaceFailed)
         );
+        for error in [
+            PROVIDER_RESUME_UNKNOWN_ERROR,
+            PROVIDER_THREAD_START_UNKNOWN_ERROR,
+        ] {
+            assert_eq!(
+                agent_kind("failed", error),
+                Some(Kind::TurnDisconnected),
+                "{error}"
+            );
+        }
         assert_eq!(agent_kind("paused", "Stopped by user"), None);
         assert_eq!(agent_kind("failed", "This content was flagged"), None);
     }
