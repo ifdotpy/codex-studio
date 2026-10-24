@@ -3,6 +3,7 @@ use crate::protocol::{Request, Response};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashMap};
 use studio_client_domain::MAX_SAFE_INTEGER;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -102,6 +103,157 @@ pub fn valid_workspace(workspace: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn entity_snapshot(rows: &[Value]) -> Value {
+    let mut collections: HashMap<String, BTreeMap<String, Value>> = HashMap::new();
+    for doc in rows {
+        if doc["op"] == "delete" {
+            continue;
+        }
+        if let (Some(collection), Some(id), Some(value)) = (
+            doc["collection"].as_str(),
+            doc["id"].as_str(),
+            doc.get("value"),
+        ) {
+            collections
+                .entry(collection.into())
+                .or_default()
+                .insert(id.into(), value.clone());
+        }
+    }
+    let list = |name: &str| {
+        Value::Array(
+            collections
+                .get(name)
+                .into_iter()
+                .flat_map(|v| v.values().cloned())
+                .collect(),
+        )
+    };
+    let agents = list("agent");
+    let chats = list("chat");
+    let mut nodes = agents.as_array().cloned().unwrap_or_default();
+    nodes.extend(chats.as_array().cloned().unwrap_or_default());
+    let mut runtime = json!({"agents":agents,"rooms":list("room"),"tasks":list("task"),"monitors":list("monitor"),"complaints":list("complaint"),"requests":list("request"),"rules":list("rule"),"projects":list("project"),"peerTeams":list("peerTeam"),"events":list("event"),"work":list("work")});
+    let workspace_entity = collections
+        .get("workspace")
+        .and_then(|v| v.get("current"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if let (Some(target), Some(extra)) = (runtime.as_object_mut(), workspace_entity.as_object()) {
+        target.extend(extra.clone());
+    }
+    let edges = list("edge");
+    let limits = collections.remove("rateLimit").unwrap_or_default();
+    runtime["rateLimits"] = limits.get("default").cloned().unwrap_or(Value::Null);
+    runtime["rateLimitsByAccount"] = Value::Object(limits.into_iter().collect());
+    let state_dir = workspace_entity
+        .get("stateDir")
+        .cloned()
+        .unwrap_or_else(|| json!(""));
+    json!({"token":"","stateDir":state_dir,"threads":agents,"chats":chats,"nodes":nodes,"edges":edges,"runtime":runtime})
+}
+
+pub(crate) fn serialize_state(snapshot: &Value) -> Result<String, crate::protocol::CommandError> {
+    let payload = snapshot.to_string();
+    match crate::sync::projection_error(&payload) {
+        Some(failure) => Err(failure),
+        None => Ok(payload),
+    }
+}
+
+// One store command owns validation, entity writes, cursors and derived state.
+// The store worker serializes commands; the transaction also prevents readers
+// from observing a partially applied batch or a state built from older rows.
+fn apply_entities(
+    connection: &Connection,
+    workspace: &str,
+    params: &Value,
+) -> Result<Value, String> {
+    let changes = params["changes"]
+        .as_array()
+        .ok_or("Missing entity changes.")?;
+    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let previous = get(&transaction, workspace, "state")?.unwrap_or(Value::Null);
+    // This is a local materialization revision, never a server cursor. It also
+    // fences HTTP reads started before a newer application or reset committed.
+    let revision = previous["seq"].as_u64().unwrap_or(0);
+    if let Some(expected) = params.get("expectedRevision")
+        && expected.as_u64() != Some(revision)
+    {
+        return Err("Entity state changed during synchronization. Retry the pull.".into());
+    }
+    let replace = params["replace"].as_bool().unwrap_or(false);
+    if replace {
+        transaction.execute("DELETE FROM client_projections WHERE workspace=?1 AND (scope LIKE 'entity:%' OR scope LIKE 'state:entities:%')", [workspace]).map_err(|e| e.to_string())?;
+    }
+    let mut changed = false;
+    {
+        let mut insert = transaction
+            .prepare_cached(
+                "INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
+            ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq
+            WHERE excluded.seq>client_projections.seq",
+            )
+            .map_err(|e| e.to_string())?;
+        for change in changes {
+            let scope = entity_scope(change)?;
+            changed |= insert
+                .execute(params![
+                    workspace,
+                    scope,
+                    change.to_string(),
+                    change["seq"].as_u64().ok_or("Missing entity sequence.")? as i64
+                ])
+                .map_err(|e| e.to_string())?
+                != 0;
+        }
+    }
+    if let Some(checkpoint) = params.get("checkpoint") {
+        let seq = checkpoint
+            .as_u64()
+            .filter(|seq| *seq <= MAX_SAFE_INTEGER as u64)
+            .ok_or("Invalid entity checkpoint.")?;
+        for (scope, payload) in [
+            ("state:entities:checkpoint", "{}"),
+            ("state:entities:ready", "\"ready\""),
+        ] {
+            let document = Document {
+                id: scope.into(),
+                payload: payload.into(),
+                seq,
+                deleted: false,
+            };
+            transaction.execute("INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
+                ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq
+                WHERE excluded.seq>client_projections.seq", params![workspace, scope, serde_json::to_string(&document).map_err(|e| e.to_string())?, seq as i64]).map_err(|e| e.to_string())?;
+        }
+        transaction.execute("DELETE FROM client_projections WHERE workspace=?1 AND scope='state:entities:initial'", [workspace]).map_err(|e| e.to_string())?;
+    }
+    let result = if changed || replace || previous.is_null() {
+        let seq = revision
+            .checked_add(1)
+            .filter(|seq| *seq <= MAX_SAFE_INTEGER as u64)
+            .ok_or("Entity state revision exhausted.")?;
+        let payload = serialize_state(&entity_snapshot(&entities(&transaction, workspace)?))
+            .map_err(|e| e.message)?;
+        let document = Document {
+            id: "state".into(),
+            payload,
+            seq,
+            deleted: false,
+        };
+        let encoded = serde_json::to_string(&document).map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,'state',?2,?3)
+            ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq", params![workspace, encoded, seq as i64]).map_err(|e| e.to_string())?;
+        serde_json::to_value(document).map_err(|e| e.to_string())?
+    } else {
+        previous
+    };
+    transaction.commit().map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
 fn execute(connection: &Connection, request: &Request) -> Result<Value, String> {
     if request.method == "identity.get" {
         let value: Option<String> = connection
@@ -148,6 +300,9 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
         .ok_or("Missing workspace identity.")?;
     if !valid_workspace(workspace) {
         return Err("Invalid projection identity.".into());
+    }
+    if request.method == "projection.applyEntities" {
+        return apply_entities(connection, workspace, &request.params);
     }
     if request.method == "projection.putEntity" {
         let change = &request.params["change"];
@@ -202,6 +357,105 @@ pub fn dispatch(connection: &Connection, request: &Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn entity_batch_rolls_back_rows_cursors_and_state_on_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let workspace = "a".repeat(32);
+        let batch = |changes, replace, checkpoint, expected| Request {
+            id: "batch".into(),
+            method: "projection.applyEntities".into(),
+            params: json!({"workspace":workspace,"changes":changes,"replace":replace,"checkpoint":checkpoint,"expectedRevision":expected}),
+        };
+        let a = json!({"op":"upsert","collection":"task","id":"A","seq":5,"value":{"id":"A"}});
+        let mut store = crate::store::Store::open(&path).unwrap();
+        let first = store.dispatch(batch(json!([a]), false, 5, 0));
+        assert!(first.error.is_none(), "{:?}", first.error);
+        let original = first.result.unwrap();
+        let b = json!({"op":"upsert","collection":"task","id":"B","seq":8,"value":{"id":"B"}});
+        let invalid =
+            json!({"op":"upsert","collection":"task","id":"bad","seq":9,"value":"invalid"});
+        let failed = store.dispatch(batch(json!([b, invalid]), true, 9, 1));
+        assert!(failed.error.is_some());
+        // Fail after the rows and cursors have been written, at materialization.
+        store.connection.execute_batch("CREATE TEMP TRIGGER reject_state BEFORE UPDATE ON client_projections WHEN NEW.scope='state' BEGIN SELECT RAISE(ABORT, 'injected state failure'); END;").unwrap();
+        let failed = store.dispatch(batch(json!([b]), true, 9, 1));
+        assert!(failed.error.is_some());
+        drop(store);
+        let store = crate::store::Store::open(&path).unwrap();
+        assert_eq!(entities(&store.connection, &workspace).unwrap(), vec![a]);
+        assert_eq!(
+            get(&store.connection, &workspace, "state").unwrap(),
+            Some(original)
+        );
+        assert_eq!(
+            get(&store.connection, &workspace, "state:entities:checkpoint")
+                .unwrap()
+                .unwrap()["seq"],
+            5
+        );
+        assert_eq!(
+            get(&store.connection, &workspace, "state:entities:ready")
+                .unwrap()
+                .unwrap()["seq"],
+            5
+        );
+    }
+
+    #[test]
+    fn entity_batch_revision_fences_late_pulls_and_reset_replays() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let workspace = "a".repeat(32);
+        let batch = |changes, replace, checkpoint, expected| Request {
+            id: "batch".into(),
+            method: "projection.applyEntities".into(),
+            params: json!({"workspace":workspace,"changes":changes,"replace":replace,"checkpoint":checkpoint,"expectedRevision":expected}),
+        };
+        let a = json!({"op":"upsert","collection":"task","id":"A","seq":11,"value":{"id":"A"}});
+        let mut store = crate::store::Store::open(&path).unwrap();
+        let first = store
+            .dispatch(batch(json!([a]), false, 11, 0))
+            .result
+            .unwrap();
+        assert_eq!(first["seq"], 1, "state uses a local revision");
+        // Repeating a completed interval does not publish another revision.
+        assert_eq!(
+            store.dispatch(batch(json!([a]), false, 11, 1)).result,
+            Some(first)
+        );
+        let b = json!({"op":"upsert","collection":"task","id":"B","seq":10,"value":{"id":"B"}});
+        assert_eq!(
+            store
+                .dispatch(batch(json!([b]), false, 11, 1))
+                .result
+                .unwrap()["seq"],
+            2
+        );
+        assert!(store.dispatch(batch(json!([]), true, 0, 1)).error.is_some());
+        assert_eq!(entities(&store.connection, &workspace).unwrap().len(), 2);
+        drop(store);
+        let mut store = crate::store::Store::open(&path).unwrap();
+        let reset = store.dispatch(batch(json!([]), true, 0, 2)).result.unwrap();
+        assert_eq!(reset["seq"], 3, "reset cannot roll back the local revision");
+        assert!(entities(&store.connection, &workspace).unwrap().is_empty());
+        assert_eq!(
+            get(&store.connection, &workspace, "state:entities:checkpoint")
+                .unwrap()
+                .unwrap()["seq"],
+            0
+        );
+        assert!(
+            store
+                .dispatch(batch(json!([a]), false, 11, 2))
+                .error
+                .is_some()
+        );
+        assert!(entities(&store.connection, &workspace).unwrap().is_empty());
+        let snapshot: Value = serde_json::from_str(reset["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(snapshot["runtime"]["tasks"], json!([]));
+    }
+
     #[test]
     fn entity_v4_upsert_delete_and_stale_replay_survive_restart() {
         let directory = tempfile::tempdir().unwrap();

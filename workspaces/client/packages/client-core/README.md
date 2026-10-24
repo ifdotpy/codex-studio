@@ -21,3 +21,11 @@ adapters; compiling an unavailable-platform stub does not establish parity.
 
 This package is under integration. Its presence alone does not switch a caller
 or establish release readiness.
+
+Entity batches are applied and materialized atomically by
+[`projections.rs`](src/projections.rs). The derived state sequence is a durable
+local revision; entity sequences and the pull checkpoint remain server cursors.
+[`sync.rs`](src/sync.rs) stages complete pulls before committing, requests reset
+support, and replaces entity rows and cursors together after a tombstone reset.
+A pull whose local base revision changed fails without writing and can be retried.
+Focused regression checks: `just test studio-client-core entity_`.
