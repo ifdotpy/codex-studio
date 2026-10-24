@@ -1006,6 +1006,7 @@ impl AccountRegistry {
         }));
         self.worker_retry_at.remove(account);
         self.worker_retry_delay.remove(account);
+        session_started(Arc::clone(&self.store), account.to_owned()).await;
         Ok(())
     }
 
@@ -1088,6 +1089,12 @@ impl AccountRegistry {
             studio_runtime_services::account_start_gate::show_blocked(&self.store, waits).await?;
         }
         if let Err(error) = self.start(account).await {
+            session_start_failed(
+                Arc::clone(&self.store),
+                account.to_owned(),
+                error.to_string(),
+            )
+            .await;
             // A launch that only a sign-in can fix holds these starts with
             // their reason and action, instead of a silent provider wait.
             if let Some(reason) =
@@ -1474,6 +1481,12 @@ impl AccountRegistry {
                         studio_runtime_services::diagnostics::log_stderr(format_args!(
                             "account worker ended: {error}"
                         ));
+                        session_start_failed(
+                            Arc::clone(&self.store),
+                            account.clone(),
+                            format!("the account worker ended: {error}"),
+                        )
+                        .await;
                     }
                     if planned_idle_exit && clean_exit {
                         self.idle_dormant.insert(account.clone());
@@ -1537,7 +1550,13 @@ impl AccountRegistry {
                                     studio_runtime_services::diagnostics::log_stderr(format_args!(
                                         "account session for {} did not start: {error}",
                                         request.account
-                                    ))
+                                    ));
+                                    session_start_failed(
+                                        Arc::clone(&self.store),
+                                        request.account.clone(),
+                                        error.to_string(),
+                                    )
+                                    .await;
                                 }
                                 Ok(_) => {
                                     studio_runtime_services::diagnostics::log_stderr(format_args!(
@@ -2555,5 +2574,37 @@ mod tests {
         assert!(receipt.ticket.is_none());
         assert!(receipt.result.is_none());
         assert!(!changes.has_changed().expect("change watcher remains open"));
+    }
+}
+
+/// Keep the reason the session of `account` did not start, for the liveness
+/// row of the chats that wait for it.
+async fn session_start_failed(store: Arc<RuntimeStore>, account: String, reason: String) {
+    let now = studio_runtime_services::event_write::unix_time().unwrap_or_default();
+    if let Err(error) = store
+        .transaction(move |tx| {
+            studio_runtime_services::liveness::record_session_start_failure(
+                tx, &account, &reason, now,
+            )
+        })
+        .await
+    {
+        studio_runtime_services::diagnostics::log_stderr(format_args!(
+            "account session start error was not recorded: {error}"
+        ));
+    }
+}
+
+/// Forget the start error of `account` once its session runs.
+async fn session_started(store: Arc<RuntimeStore>, account: String) {
+    if let Err(error) = store
+        .transaction(move |tx| {
+            studio_runtime_services::liveness::clear_session_start_failure(tx, &account)
+        })
+        .await
+    {
+        studio_runtime_services::diagnostics::log_stderr(format_args!(
+            "account session start error was not cleared: {error}"
+        ));
     }
 }

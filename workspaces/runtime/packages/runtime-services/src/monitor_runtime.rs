@@ -21,7 +21,7 @@ pub const SESSION_DEPENDENCY: &str = "provider-session/monitor-commands";
 pub const RULE_DEPENDENCY: &str = "rule-driver/monitor-finish";
 pub const REMOTE_EVENTS_DEPENDENCY: &str = "cross-server/remote-events";
 const STARTUP_RECEIPT_BATCH: usize = 64;
-/// Maximum running monitor rows evaluated per keyset page.
+/// Maximum monitor rows evaluated per keyset page.
 pub(crate) const MONITOR_TICK_BATCH: usize = 64;
 const RESTART_EVENT_ERROR: &str = "Server restarted before delivery acknowledgement";
 
@@ -861,7 +861,12 @@ fn exit_event(
         .map_err(studio_runtime_store::StoreError::from)?;
     let owner: TerminalOwner =
         serde_json::from_value(monitor.clone()).map_err(studio_runtime_store::StoreError::from)?;
-    let event_id = format!("monitor:{}", payload.id);
+    // The late answer of a deadline loss is a second outcome for the owner.
+    let event_id = if monitor.get("lateAnswerAt").is_some_and(|at| !at.is_null()) {
+        format!("monitor:{}:late-answer", payload.id)
+    } else {
+        format!("monitor:{}", payload.id)
+    };
     let monitor_epoch = owner
         .epoch
         .or_else(|| owner.operation.map(|operation| operation.epoch));
@@ -999,6 +1004,68 @@ pub async fn reconcile_unknown(
         .await
 }
 
+/// Settle an unanswered retained command in one transaction. No intermediate
+/// recovery is visible to a monitor tick. A result that already committed wins.
+pub async fn settle_unanswered(
+    store: &RuntimeStore,
+    id: &str,
+    operation: &Operation,
+    reason: &str,
+    now: f64,
+) -> Result<(), MonitorError> {
+    let id = id.to_owned();
+    let operation = operation.clone();
+    let reason: String = reason.chars().take(12000).collect();
+    store
+        .transaction_with(move |tx| {
+            let (before, actor) = snapshot(tx, &id)?;
+            if before.operation() != Some(&operation) {
+                return Err(MonitorError::Refused("Monitor operation identity changed"));
+            }
+            if !before.active() {
+                return Ok(());
+            }
+            let recovery = policy::restart_recovery(&before, now)?;
+            let recovering = MonitorSnapshot::checked(
+                recovery.record,
+                serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?,
+            )?;
+            let loss = policy::restart_lost(&recovering, &reason, now)?;
+            apply(tx, &before, &actor, &loss, now)
+        })
+        .await
+}
+
+/// Deadline losses that may still be in their late-answer window at `now`.
+/// The policy (`awaits_late_answer`) decides; this query only narrows the rows.
+pub async fn late_answer_ids(
+    store: &RuntimeStore,
+    after: Option<&str>,
+    now: f64,
+) -> Result<Vec<String>, MonitorError> {
+    let after = after.unwrap_or_default().to_owned();
+    store
+        .read_async("runtime-services/monitor_late_answers", move |connection| {
+            let mut statement = connection.prepare_cached(
+                "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.proof')=?1 AND json_extract(record,'$.finished')>?2 AND id>?3 ORDER BY id LIMIT ?4",
+            )?;
+            let ids = statement
+                .query_map(
+                    (
+                        policy::DEADLINE_PASSED,
+                        now - policy::MONITOR_LATE_ANSWER_SECONDS,
+                        after,
+                        MONITOR_TICK_BATCH as i64,
+                    ),
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, studio_runtime_store::StoreError>(ids)
+        })
+        .await
+        .map_err(MonitorError::from)
+}
+
 /// Running commands with a native operation, no rule, no reattach in progress
 /// and no queued event, after `after` in ID order. These are the only commands
 /// whose exit depends on a live waiter in the monitor port.
@@ -1091,6 +1158,15 @@ pub async fn reattach(
     store
         .transaction_with(move |tx| {
             let (snapshot, actor) = snapshot(tx, &id)?;
+            // A provider read runs outside this transaction. Its exact proof
+            // can arrive after an exit or another reattach already committed.
+            if !snapshot.recovering()
+                && snapshot.operation() == Some(&proof.operation)
+                && proof.operation_id == format!("monitor:{}", snapshot.id())
+                && !proof.current_connection.is_empty()
+            {
+                return Ok(policy::ReattachDisposition::Superseded);
+            }
             let decision = policy::reattach(&snapshot, &proof)?;
             apply(tx, &snapshot, &actor, &decision, now)?;
             Ok(if decision.effects.contains(&Effect::Terminate) {

@@ -354,3 +354,157 @@ async fn repeated_failures_of_one_rule_or_command_are_one_row() {
     assert_eq!(again["count"], 1, "{again}");
     assert_eq!(again["monitorId"], "rule-6", "{again}");
 }
+
+/// Insert raw rows that their owners write: an event, a usage resume and an
+/// account transfer.
+fn seed_rows(tx: &studio_runtime_store::Transaction<'_>, now: f64) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES \
+         ('idle-message','idle','user','please continue','pending',?1,0), \
+         ('stopped-message','stopped','user','are you there','pending',?1,0), \
+         ('queued-message','queued','user','start now','pending',?1,0), \
+         ('young-message','young','user','just sent','pending',?2,0)",
+        rusqlite::params![now - 180.0, now - 30.0],
+    )?;
+    tx.execute(
+        "INSERT INTO runtime_usage_resumes(id,agent,record) VALUES ('resume-1','resuming',?1)",
+        [json!({"id":"resume-1","status":"scheduled","accountKey":"default","threadId":"t-resuming",
+            "epoch":0,"turnId":"turn-r","cause":"rate_limit","dueAt":now - 1200.0,
+            "updatedAt":now - 1300.0,"reason":"Waiting for the usage limit to reset"})
+        .to_string()],
+    )?;
+    tx.execute(
+        "INSERT INTO runtime_account_transfers(id,record) VALUES ('transfer-1',?1)",
+        [json!({"id":"transfer-1","leadId":"lead","targetAccountKey":"second","status":"pending",
+            "scope":"team","created":now - 7200.0,"updated":now - 7200.0,"requests":{},
+            "members":{"lead":{"phase":"blocked","sourceAccountKey":"default",
+                "error":"Model catalog is pending; no workers were created"}}})
+        .to_string()],
+    )?;
+    Ok(())
+}
+
+/// The liveness checker's invariants are rows of the list: a running chat
+/// whose provider sent nothing for 10 minutes, an owner message that waits
+/// more than 2 minutes while its chat is idle (or held, with the reason), an
+/// account session that did not start while chats wait for it, and a
+/// schedule that did not move 15 minutes after its due time.
+#[tokio::test]
+async fn liveness_rows_name_each_stuck_state() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    let now = studio_runtime_services::event_write::unix_time().unwrap();
+    let path = root.path().to_path_buf();
+    store
+        .transaction(move |tx| {
+            let agent = |id: &str, name: &str, fields: Value| {
+                let mut record = json!({"id":id,"rootId":id,"epoch":0,"status":"completed",
+                    "autoWake":true,"cwd":path.to_string_lossy(),"accountKey":"default",
+                    "provider":"codex","name":name});
+                for (key, value) in fields.as_object().unwrap() {
+                    record[key] = value.clone();
+                }
+                AgentRecord::from_value(record)
+            };
+            for record in [
+                agent("silent", "Silent chat", json!({"status":"running","provider":"claude",
+                    "accountKey":"claude-local","inFlight":true,"turnId":"turn-s","threadId":"t-silent",
+                    "activity":{"phase":"thinking","at":now - 700.0},"activeTools":[]}))?,
+                agent("silent-codex", "Silent Codex chat", json!({"status":"running",
+                    "inFlight":true,"turnId":"turn-c","threadId":"t-codex",
+                    "created":now - 900.0,
+                    "activity":{"phase":"thinking","at":now - 700.0},"activeTools":[]}))?,
+                agent("busy", "Busy chat", json!({"status":"running","provider":"claude",
+                    "accountKey":"claude-local","inFlight":true,"turnId":"turn-b","threadId":"t-busy",
+                    "activity":{"phase":"tool","at":now - 700.0},
+                    "activeTools":[{"id":"tool-1","name":"Bash"}]}))?,
+                agent("idle", "Idle chat", json!({}))?,
+                agent("stopped", "Stopped chat", json!({"status":"paused","autoWake":false,
+                    "error":"Stopped by user"}))?,
+                agent("young", "Young chat", json!({}))?,
+                agent("queued", "Queued chat", json!({"status":"queued","accountKey":"second",
+                    "startWait":{"reason":"provider_session","epoch":0}}))?,
+                agent("resuming", "Resuming chat", json!({"status":"waiting",
+                    "usageResume":{"id":"resume-1","status":"scheduled"}}))?,
+                agent("lead", "Transfer lead", json!({"isLead":true}))?,
+            ] {
+                AgentRepository::put(tx, &record)?;
+            }
+            seed_rows(tx, now)?;
+            studio_runtime_services::liveness::record_session_start_failure(
+                tx,
+                "second",
+                "the account is signed out",
+                now - 200.0,
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .unwrap();
+    let state = HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    );
+    let app = router(state).unwrap();
+    let (status, body) = call(&app, "GET", "/api/studio-errors", None).await;
+    assert_eq!(status, 200, "{body}");
+    let items = body["items"].as_array().unwrap();
+    let row = |kind: &str, agent: &str| {
+        items
+            .iter()
+            .find(|item| item["kind"] == kind && item["agentId"] == agent)
+            .unwrap_or_else(|| panic!("no {kind} row for {agent}: {body}"))
+            .clone()
+    };
+    let silent = row("turn_stalled", "silent");
+    assert_eq!(silent["action"], "check", "{silent}");
+    let codex = row("turn_stalled", "silent-codex");
+    for item in [&silent, &codex] {
+        let detail = item["detail"].as_str().unwrap();
+        for label in ["Account:", "Start:", "Last provider event:"] {
+            assert!(detail.contains(label), "missing {label}: {item}");
+        }
+    }
+    assert!(
+        items
+            .iter()
+            .all(|item| item["agentId"] != "busy" && item["agentId"] != "young"),
+        "a running tool and a young message are not stuck: {body}"
+    );
+    let idle = row("input_not_started", "idle");
+    assert_eq!(idle["eventId"], "idle-message", "{idle}");
+    let stopped = row("input_not_started", "stopped");
+    assert!(
+        stopped["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("stopped")),
+        "a held chat says why: {stopped}"
+    );
+    let session = row("session_not_started", "queued");
+    assert_eq!(session["subject"], "second", "{session}");
+    assert!(
+        session["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("signed out")),
+        "{session}"
+    );
+    let resume = row("schedule_stalled", "resuming");
+    assert!(
+        resume["subject"]
+            .as_str()
+            .is_some_and(|subject| subject.contains("Usage resume")),
+        "{resume}"
+    );
+    let transfer = row("schedule_stalled", "lead");
+    assert!(
+        transfer["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("Model catalog is pending")),
+        "{transfer}"
+    );
+}
