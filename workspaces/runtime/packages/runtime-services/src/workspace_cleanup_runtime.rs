@@ -532,9 +532,10 @@ fn worktree_identity(
     struct WorktreeOwner {
         id: String,
         cwd: PathBuf,
-        /// The canonical repository recorded when Studio provisioned the worktree.
-        #[serde(default, rename = "worktreeRepository")]
-        repository: Option<PathBuf>,
+        /// The canonical Git common directory recorded when Studio provisioned
+        /// the worktree.
+        #[serde(default, rename = "worktreeCommonDir")]
+        common_dir: Option<PathBuf>,
     }
     let owner: WorktreeOwner =
         serde_json::from_value(agent.clone()).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
@@ -568,13 +569,13 @@ fn worktree_identity(
     let root = owned.root();
     // Git registration proves repository membership, not Studio ownership: a
     // replaced ancestor can lead to another repository's registered worktree.
-    // Require the repository Studio provisioned. Records from before that field
-    // existed are accepted only in the `<repository>/.worktrees` layout of their
-    // recorded path.
-    let expected = match (&owner.repository, lexical_owned) {
+    // Require the Git common directory Studio provisioned from. Records from
+    // before that field existed are accepted only in the `<repository>/.worktrees`
+    // layout of their recorded path.
+    let expected = match (&owner.common_dir, lexical_owned) {
         (Some(recorded), _) => CanonicalPath::existing(recorded),
         (None, crate::worktree_root::OwnedRoot::Repository { repository, .. }) => {
-            CanonicalPath::existing(repository)
+            CanonicalPath::existing(repository.join(".git"))
         }
         (None, crate::worktree_root::OwnedRoot::Linked(_)) => {
             return Err(WorkspaceCleanupError::InvalidRecord);
@@ -582,7 +583,7 @@ fn worktree_identity(
     }
     .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
     let repo = owning_repository(root)?;
-    if repo.as_path() != expected.as_path() {
+    if repo.join(".git").as_path() != expected.as_path() {
         return Err(WorkspaceCleanupError::InvalidRecord);
     }
     let repo = repo.as_path();
@@ -2066,7 +2067,7 @@ mod tests {
             store,
             json!({
                 "cwd":root, "branch":"cleanup-agent", "worktreeReady":true,
-                "worktreeRepository":repository,
+                "worktreeCommonDir":repository.join(".git"),
                 "agentArchive":{"at":7,"epoch":7,"cleanupPending":true}
             }),
         )
@@ -2124,6 +2125,88 @@ mod tests {
         archive_fixture_worktree_at(&directory, &store, &repository, &root, &configured).await;
     }
 
+    fn fixture_repository(base: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let repository = base.join(name);
+        fixture_git(base, &["init", "-q", repository.to_str().expect("path")]);
+        std::fs::write(repository.join("README.md"), "fixture\n").expect("file writes");
+        fixture_git(&repository, &["add", "README.md"]);
+        fixture_git(&repository, &["commit", "-q", "-m", "fixture"]);
+        repository
+    }
+
+    /// A worker provisioned from a lead's linked worktree records the shared
+    /// common directory, which cleanup must accept.
+    #[test]
+    fn worker_provisioned_from_a_linked_source_stays_owned() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let base = studio_runtime_store::path_identity::resolve(directory.path())
+            .expect("resolved fixture folder");
+        let repository = fixture_repository(&base, "project");
+        let lead = base.join("lead-checkout");
+        fixture_git(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                lead.to_str().expect("lead path"),
+            ],
+        );
+        let root = base.join("configured/codex-agents/cleanup-agent");
+        std::fs::create_dir_all(root.parent().expect("workers")).expect("workers create");
+        fixture_git(
+            &lead,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "cleanup-agent",
+                root.to_str().expect("root path"),
+            ],
+        );
+        let common = fixture_git(
+            &lead,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        );
+        let agent = json!({"id": "cleanup-agent", "cwd": root, "worktreeCommonDir": common.trim()});
+        let identity = super::worktree_identity(&agent, &base)
+            .expect("linked-source worker is owned")
+            .expect("worker worktree identity");
+        assert_eq!(identity["repository"], json!(repository));
+    }
+
+    /// A legacy worker reached through a `.worktrees` link to another disk,
+    /// recorded before the common directory existed, stays owned.
+    #[test]
+    fn legacy_worker_under_a_linked_default_root_stays_owned() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let base = studio_runtime_store::path_identity::resolve(directory.path())
+            .expect("resolved fixture folder");
+        let repository = fixture_repository(&base, "project");
+        let disk = base.join("other-disk");
+        std::fs::create_dir_all(disk.join("codex-agents")).expect("disk root creates");
+        std::os::unix::fs::symlink(&disk, repository.join(".worktrees")).expect("root link");
+        let root = repository.join(".worktrees/codex-agents/cleanup-agent");
+        fixture_git(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "cleanup-agent",
+                root.to_str().expect("root path"),
+            ],
+        );
+        let agent = json!({"id": "cleanup-agent", "cwd": root});
+        let identity = super::worktree_identity(&agent, &base)
+            .expect("legacy linked-root worker is owned")
+            .expect("worker worktree identity");
+        assert_eq!(identity["repository"], json!(repository));
+    }
+
     /// A replaced `codex-agents` ancestor that leads to another repository's
     /// registered worktree must not pass ownership, with or without a record.
     #[test]
@@ -2160,7 +2243,7 @@ mod tests {
         .expect("substitute ancestor link creates");
         let cwd = configured.join("codex-agents/cleanup-agent");
         for agent in [
-            json!({"id": "cleanup-agent", "cwd": cwd, "worktreeRepository": repositories[0]}),
+            json!({"id": "cleanup-agent", "cwd": cwd, "worktreeCommonDir": repositories[0].join(".git")}),
             json!({"id": "cleanup-agent", "cwd": cwd}),
         ] {
             assert!(matches!(
