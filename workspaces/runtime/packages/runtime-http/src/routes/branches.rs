@@ -118,7 +118,12 @@ async fn branch(
     }
     // Match Python's read-only request validation before requiring a live native
     // consumer. Invalid branch inputs must not depend on provider availability.
-    port.current_scope(&account).ok_or_else(unavailable)?;
+    port.ensure_session(&account).await.map_err(|error| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("Could not ensure account session: {error}"),
+        )
+    })?;
     let operation = {
         let snapshot = snapshot.clone();
         let source = source.clone();
@@ -1171,10 +1176,14 @@ mod tests {
     struct HistoryPort {
         requests: Mutex<Vec<ProviderRequest>>,
         body_bytes: Mutex<usize>,
+        live: std::sync::atomic::AtomicBool,
     }
 
     impl AccountSessionPort for HistoryPort {
         fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            if !self.live.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
             Some(ConnectionScope {
                 account: account.into(),
                 connection: "fixture".into(),
@@ -1185,7 +1194,10 @@ mod tests {
             &'a self,
             account: &'a str,
         ) -> AccountSessionFuture<'a, ConnectionScope> {
-            Box::pin(async move { Ok(self.current_scope(account).expect("fixture scope")) })
+            Box::pin(async move {
+                self.live.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(self.current_scope(account).expect("fixture scope"))
+            })
         }
         fn provider_request<'a>(
             &'a self,
