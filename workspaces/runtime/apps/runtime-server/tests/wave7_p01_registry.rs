@@ -1077,7 +1077,9 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
     assert_eq!(held["status"], "paused");
     assert_eq!(held["error"], "workspace-state/image-execution");
     assert_eq!(held["nativeFailureHold"], true);
-    assert_eq!(held["autoWake"], false);
+    assert_eq!(held["autoWake"], true);
+    assert_eq!(held["inFlight"], false);
+    assert_eq!(held["contextRepairWait"]["events"], json!([body["id"]]));
     registry.shutdown().await.unwrap();
 
     let mut restarted = AccountRegistry::new(
@@ -3790,10 +3792,14 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
                 )
                 .unwrap();
             let record: Value = serde_json::from_str(&raw).unwrap();
-            // A provider crash while the backend runs is a disconnect, not a restart.
-            if record["disconnectRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
-                && record["error"] == "Codex disconnected. Review the transcript before resuming."
-                && record["restartRecovery"].is_null()
+            // Unknown starts use the native-history hold introduced in 1987a373:
+            // queued is a reconciliation state, not permission to resend input.
+            if record["restartRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
+                && record["restartRecovery"]["stage"] == "held"
+                && record["status"] == "queued"
+                && record["error"].as_str().is_some_and(|error| {
+                    error.starts_with("Context repair waits for a confirmed input receipt")
+                })
             {
                 break record;
             }
