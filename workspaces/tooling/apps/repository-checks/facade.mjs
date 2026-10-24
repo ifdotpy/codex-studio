@@ -1579,6 +1579,35 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "Studio error list witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--test",
+            "integration",
+            "-E",
+            "test(/^studio_errors::/)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "the Studio error list route",
+        reason:
+          "Studio-caused endings are listed with one safe action, a dismissed row stays hidden, and the failures of one rule or command and kind are one row.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
       label: "resource content invalidation witnesses",
       commands: [
         [

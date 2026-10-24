@@ -51505,10 +51505,16 @@
             "type": "string"
           },
           "at": {
-            "description": "Unix seconds of the failure.",
+            "description": "Unix seconds of the latest failure in this row.",
             "minimum": 0,
             "title": "At",
             "type": "number"
+          },
+          "count": {
+            "description": "Failures in this row: the failed runs of one rule or command of one kind are one row.",
+            "minimum": 1,
+            "title": "Count",
+            "type": "integer"
           },
           "detail": {
             "description": "The stored error.",
@@ -51527,8 +51533,14 @@
             "default": null,
             "title": "Eventid"
           },
+          "firstAt": {
+            "description": "Unix seconds of the first failure in this row.",
+            "minimum": 0,
+            "title": "Firstat",
+            "type": "number"
+          },
           "id": {
-            "description": "Row identity; dismissing it hides this row only.",
+            "description": "Row identity. Dismissing it hides this row; for a rule or a command it hides the failures so far, and a later failure returns.",
             "title": "Id",
             "type": "string"
           },
@@ -51563,6 +51575,19 @@
             "title": "Reason",
             "type": "string"
           },
+          "ruleId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The rule whose runs failed, if a rule ran them.",
+            "title": "Ruleid"
+          },
           "subject": {
             "description": "The command or the start of the message.",
             "title": "Subject",
@@ -51578,6 +51603,8 @@
           "agentName",
           "detail",
           "subject",
+          "count",
+          "firstAt",
           "at"
         ],
         "title": "StudioError",
