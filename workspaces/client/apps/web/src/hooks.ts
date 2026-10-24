@@ -1,3 +1,4 @@
+import { useSubscription } from "./sync/subscriptions";
 import { SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS } from "./generated/sharedValues";
 import {
   useServerApi,
@@ -521,9 +522,17 @@ export function useMessages(
   syncWorkspaceId = "",
 ) {
   const { syncGet } = useServerApi();
-  const { subscribeTranscriptProjection } = useServerSync();
   const { watchResourceChanges } = useServerResources();
-  const { peekTranscript, subscribeTranscript } = useServerTranscripts();
+  const { peekTranscript } = useServerTranscripts();
+  const transcript = useSubscription(
+    managed && kind === "agent" && id
+      ? {
+          kind: "transcript",
+          agentId: id,
+          tail: SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS,
+        }
+      : null,
+  );
 
   const scope = JSON.stringify([workspace, syncWorkspaceId, kind, managed, id]);
   const history = useRef(
@@ -925,7 +934,7 @@ export function useMessages(
     }
     let stopped = false;
     if (!id) return;
-    if (managed && kind === "agent" && syncWorkspaceId) return;
+    if (managed && kind === "agent") return;
     const resource =
       kind === "room"
         ? ({ kind: "room", roomId: id } as const)
@@ -940,47 +949,25 @@ export function useMessages(
     };
   }, [load, id, kind, managed, accept, syncId, scope, syncWorkspaceId]);
   useEffect(() => {
-    if (!id || kind !== "agent" || !managed) return;
-    let seen = false;
-    return subscribeTranscriptProjection(
-      `transcript:${id}`,
-      (next) => {
-        if (active.current !== scope) return;
-        if (next) {
-          seen = true;
-          syncActive.current = scope;
-          setSyncId(scope);
-          // The shared cache subscription owns transcript updates in this workspace.
-          if (!syncWorkspaceId) accept(next);
-        } else if (seen && !syncWorkspaceId) {
-          accept({
-            items: [],
-            unavailable: "This session is no longer available.",
-            truncated: false,
-          });
-        }
-      },
-      (error) => {
-        if (active.current === scope && seen)
-          setConnection(error === null ? "live" : "reconnecting");
-      },
-    );
-  }, [id, kind, managed, accept, scope, syncWorkspaceId]);
-  useEffect(() => {
-    if (!id || !managed || kind !== "agent" || !syncWorkspaceId) return;
-    return subscribeTranscript(syncWorkspaceId, id, (entry) => {
-      if (active.current !== scope) return;
+    if (!id || !managed || kind !== "agent") return;
+    if (transcript.data !== undefined) {
       syncActive.current = scope;
       setSyncId(scope);
-      accept(
-        entry.payload || {
-          items: [],
-          unavailable: "This session is no longer available.",
-        },
-        entry.seq,
-      );
-    });
-  }, [id, managed, kind, syncWorkspaceId, scope, accept]);
+      accept(transcript.data, peekTranscript(syncWorkspaceId, id)?.seq);
+    }
+    setConnection(transcript.status === "live" ? "live" : "reconnecting");
+    if (transcript.error) setNotice(errorText(transcript.error));
+  }, [
+    id,
+    managed,
+    kind,
+    syncWorkspaceId,
+    scope,
+    accept,
+    transcript.data,
+    transcript.status,
+    transcript.error,
+  ]);
   const fetchPage = async (query: {
     before?: string;
     after?: string;

@@ -2017,8 +2017,13 @@ export function createSyncClient(options: SyncClientOptions) {
     scope: `transcript:${string}`,
     accept: (payload: TranscriptProjectionPayload) => void,
     fail: (e: unknown) => void,
+    localOnly = false,
   ) {
-    const { db, workspaceId, state, release } = await acquireProjection(scope);
+    const { db, workspaceId, state, release } = await acquireProjection(
+      scope,
+      undefined,
+      localOnly,
+    );
     state.listeners.add(fail);
     const id = scope.slice("transcript:".length);
     const stopCache = subscribeTranscript(workspaceId, id, (entry) =>
@@ -2711,9 +2716,10 @@ export function createSyncClient(options: SyncClientOptions) {
     scope: `transcript:${string}`,
     accept: (payload: TranscriptProjectionPayload) => void,
     report: (error: unknown | null) => void,
+    localOnly = false,
   ) {
     return subscribeProjection(
-      (next, fail) => watchTranscriptProjection(scope, next, fail),
+      (next, fail) => watchTranscriptProjection(scope, next, fail, localOnly),
       accept,
       report,
     );

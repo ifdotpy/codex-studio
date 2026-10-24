@@ -1503,7 +1503,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       {
         sessionId,
         gen,
-        add: add.map((resource) => ({ resource })),
+        add,
         remove,
         tokenRates,
       },

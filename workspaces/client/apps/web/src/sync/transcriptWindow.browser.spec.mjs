@@ -133,10 +133,12 @@ test("a transcript window streams without pulls and older history uses one bound
     );
     await page.evaluate(
       async ({ workspaceId }) => {
-        const React = await import("/node_modules/.vite/deps/react.js");
-        const { createRoot } =
-          await import("/node_modules/.vite/deps/react-dom_client.js");
         const { useMessages } = await import("/src/hooks.ts");
+        const reactModule = await import("/node_modules/.vite/deps/react.js");
+        const domModule =
+          await import("/node_modules/.vite/deps/react-dom_client.js");
+        const React = reactModule.default || reactModule;
+        const { createRoot } = domModule.default || domModule;
         function History() {
           const history = useMessages(
             "open",
