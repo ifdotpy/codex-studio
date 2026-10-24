@@ -97,7 +97,7 @@ struct HistoryWake {
     #[cfg(test)]
     budget_failures: std::sync::atomic::AtomicU64,
     #[cfg(test)]
-    step_finished: Notify,
+    progressed: Notify,
 }
 
 impl HistoryWake {
@@ -204,6 +204,8 @@ impl HistoryWake {
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(test)]
+        self.progressed.notify_one();
         std::mem::take(&mut *pending)
     }
 }
@@ -791,7 +793,7 @@ async fn run_event_driven_with_wake(
                 );
                 wake.step_completions
                     .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                wake.step_finished.notify_one();
+                wake.progressed.notify_one();
             }
             continue;
         }
@@ -1531,10 +1533,10 @@ mod tests {
         }
         let root = tempdir().expect("temporary state");
         let home = root.path().join("profile");
-        for day in 0..40 {
+        for day in 0..8 {
             let folder = home.join(format!("sessions/2026/10/{day:02}"));
             std::fs::create_dir_all(&folder).expect("session folder");
-            for file in 0..50 {
+            for file in 0..32 {
                 std::fs::write(folder.join(format!("rollout-{file}.jsonl")), "{}\n")
                     .expect("session file");
             }
@@ -1547,7 +1549,7 @@ mod tests {
             .watch_profiles(BTreeMap::from([("account".to_owned(), home)]))
             .expect("profile watch");
         let held = open_descriptors().saturating_sub(before);
-        // 2,000 files and 40 folders; other tests may open a few descriptors meanwhile.
+        // 256 files exceed the bound even without counting the eight folders.
         assert!(held < 200, "the watcher holds {held} descriptors");
         drop(watcher);
     }
@@ -1588,15 +1590,16 @@ mod tests {
         .ok()?
     }
 
-    async fn wait_for_offset(state: &Path, offset: u64) -> Value {
+    async fn wait_for_offset(wake: &HistoryWake, state: &Path, offset: u64) -> Value {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
+                let notified = wake.progressed.notified();
                 if let Some(checkpoint) = read_history_checkpoint(state)
                     && checkpoint["offset"].as_u64() == Some(offset)
                 {
                     return checkpoint;
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                notified.await;
             }
         })
         .await
@@ -1606,7 +1609,7 @@ mod tests {
     async fn wait_for_step_completion(wake: &HistoryWake, count: u64) {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                let notified = wake.step_finished.notified();
+                let notified = wake.progressed.notified();
                 if wake.step_completions.load(Ordering::Acquire) >= count {
                     return;
                 }
@@ -1749,7 +1752,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), wake.initialized.notified())
             .await
             .expect("history runtime initialization deadline");
-        let first = wait_for_offset(&state, bytes.len() as u64).await;
+        let first = wait_for_offset(&wake, &state, bytes.len() as u64).await;
         assert_eq!(first["status"], "current");
         wait_for_step_completion(&wake, 1).await;
         let attempts_before_failure = wake.step_attempts.load(Ordering::Acquire);
@@ -1846,10 +1849,10 @@ mod tests {
             while wake
                 .pending
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .expect("pending history events")
                 .budget_dirty
             {
-                tokio::time::sleep(Duration::from_millis(1)).await;
+                wake.progressed.notified().await;
             }
         })
         .await
@@ -1945,7 +1948,8 @@ mod tests {
             .expect("open rollout for append")
             .write_all(&append_bytes)
             .expect("append rollout record");
-        let second = wait_for_offset(&state, (bytes.len() + append_bytes.len()) as u64).await;
+        let second =
+            wait_for_offset(&wake, &state, (bytes.len() + append_bytes.len()) as u64).await;
         assert_eq!(second["status"], "current");
         assert!(
             second["importedRecords"].as_u64().unwrap_or_default()
