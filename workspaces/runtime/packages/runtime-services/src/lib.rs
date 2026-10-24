@@ -102,6 +102,7 @@ pub mod managed_status_watch;
 pub mod message_admission;
 pub mod model_catalog;
 pub mod monitor_driver;
+pub(crate) mod monitor_http_input;
 pub mod monitor_event_queue;
 pub mod monitor_lifecycle;
 pub mod monitor_matches;

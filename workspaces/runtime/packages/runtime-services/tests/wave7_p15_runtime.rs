@@ -1,4 +1,4 @@
-//! P15 verifies monitor effects against frozen reference records.
+//! P15 checks frozen monitor effects and durable HTTP input replay.
 use crate::monitor_runtime_fixtures as fixtures;
 
 use base64::Engine;
@@ -1035,11 +1035,11 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
 }
 
 #[tokio::test]
-async fn http_input_retry_after_ack_matches_python_missing_identity_contract() {
+async fn http_input_retry_after_ack_replays_one_logical_input() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let store = Arc::new(fixtures::store(root.path(), "http-input-identity-gap").await);
+    let store = Arc::new(fixtures::store(root.path(), "http-input-replay").await);
     fixtures::seed(&store, &case).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     let mut monitor = record(&store, id);
@@ -1057,10 +1057,9 @@ async fn http_input_retry_after_ack_matches_python_missing_identity_contract() {
         cols: None,
         close_stdin: false,
     };
-    // The HTTP contract has no request ID, so after ack the retry gets a new
-    // ticket and behaves as a new input, exactly like Python's settled state.
+    // A lost HTTP success must not authorize another stdin write.
     runtime
-        .input_http(id, &input, 2000.0)
+        .input_http(id, "lost-http-success", &input, 2000.0)
         .await
         .expect("first input acknowledged");
     let first = record(&store, id)["lastInputAttempt"]["id"]
@@ -1068,23 +1067,172 @@ async fn http_input_retry_after_ack_matches_python_missing_identity_contract() {
         .expect("first ticket")
         .to_owned();
     runtime
-        .input_http(id, &input, 2001.0)
+        .input_http(id, "lost-http-success", &input, 2001.0)
         .await
-        .expect("same body has no HTTP identity to replay");
+        .expect("same logical input replays its acknowledgement");
     let second = record(&store, id)["lastInputAttempt"]["id"]
         .as_str()
         .expect("second ticket")
         .to_owned();
 
-    assert_ne!(first, second);
+    assert_eq!(first, second);
     let submissions = port.submitted.lock().expect("submissions");
-    assert_eq!(submissions.len(), 2);
-    assert_ne!(submissions[0], submissions[1]);
+    assert_eq!(submissions.len(), 1);
     assert!(submissions.iter().all(|effect| matches!(
         effect,
         Effect::Native { identity, method: "command/exec/write", .. }
             if identity.starts_with(&format!("monitor-input:{id}:"))
     )));
+}
+
+#[tokio::test]
+async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_content() {
+    for boundary in [
+        "acknowledged",
+        "unknown",
+        "written-unknown",
+        "rejected",
+        "not-sent",
+        "settlement-rollback",
+    ] {
+        let root = fixtures::tempdir();
+        let mut case = running(&fixtures::corpus(root.path()));
+        case["before"]["interactive"] = json!(true);
+        let store = Arc::new(fixtures::store(root.path(), boundary).await);
+        fixtures::seed(&store, &case).await;
+        let id = case["before"]["id"].as_str().expect("monitor id");
+        let port = Arc::new(Port::default());
+        *port.unknown.lock().expect("unknown") = boundary == "unknown";
+        *port.not_sent.lock().expect("not sent") = boundary == "not-sent";
+        if boundary == "written-unknown" {
+            *port.input_reply.lock().expect("input reply") = Some(
+                studio_runtime_services::monitor_runtime_wiring::InputReply::Unknown(
+                    "lost native reply".into(),
+                ),
+            );
+        } else if boundary == "rejected" {
+            *port.input_reply.lock().expect("input reply") = Some(
+                studio_runtime_services::monitor_runtime_wiring::InputReply::Rejected(
+                    "native refusal".into(),
+                ),
+            );
+        }
+        if boundary == "settlement-rollback" {
+            store.transaction(|tx| {
+                tx.execute_batch("CREATE TRIGGER refuse_input_receipt BEFORE UPDATE ON runtime_operation_receipts WHEN NEW.id LIKE 'monitor-http-input:%' BEGIN SELECT RAISE(ABORT,'fixture receipt failure'); END")?;
+                Ok(())
+            }).await.expect("inject exact settlement failure");
+        }
+        let input = Input {
+            text: "private input\n".into(),
+            rows: None,
+            cols: None,
+            close_stdin: false,
+        };
+        let result = runtime(&store, &port)
+            .input_http(id, "same-request", &input, 2000.0)
+            .await;
+        assert_eq!(
+            result.is_ok(),
+            boundary == "acknowledged",
+            "{boundary}: {result:?}"
+        );
+        assert_eq!(port.submitted.lock().expect("native writes").len(), 1);
+        let saved = record(&store, id);
+        if boundary == "settlement-rollback" {
+            assert_eq!(
+                saved["inputAttempt"]["status"], "submitted",
+                "monitor settlement shares receipt transaction"
+            );
+            assert!(saved.get("lastInputAttempt").is_none());
+        }
+        let path = store.root().to_owned();
+        drop(store);
+        let store = Arc::new(
+            RuntimeStore::open(Some(&path))
+                .await
+                .expect("restart store"),
+        );
+        let fresh_port = Arc::new(Port::default());
+        let restarted = runtime(&store, &fresh_port);
+        let replay = restarted
+            .input_http(id, "same-request", &input, 2001.0)
+            .await;
+        assert_eq!(
+            replay.is_ok(),
+            boundary == "acknowledged",
+            "{boundary}: {replay:?}"
+        );
+        if !matches!(boundary, "acknowledged" | "rejected" | "not-sent") {
+            assert!(matches!(
+                replay,
+                Err(studio_runtime_services::monitor_policy::MonitorError::InputOutcomeUnknown)
+            ));
+        }
+        let changed = Input {
+            text: "different input".into(),
+            ..input.clone()
+        };
+        assert!(
+            restarted
+                .input_http(id, "same-request", &changed, 2002.0)
+                .await
+                .is_err()
+        );
+        assert!(
+            fresh_port
+                .submitted
+                .lock()
+                .expect("no replay writes")
+                .is_empty()
+        );
+        if matches!(boundary, "acknowledged" | "rejected" | "not-sent") {
+            restarted
+                .input_http(id, "new-intentional-request", &input, 2003.0)
+                .await
+                .expect("fresh identity permits deliberate identical input");
+            assert_eq!(fresh_port.submitted.lock().expect("fresh write").len(), 1);
+        } else {
+            assert!(
+                restarted
+                    .input_http(id, "different-request", &input, 2003.0)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                fresh_port
+                    .submitted
+                    .lock()
+                    .expect("unknown blocks new write")
+                    .is_empty()
+            );
+        }
+        if matches!(boundary, "unknown" | "written-unknown") {
+            let operation = serde_json::from_value(case["before"]["operation"].clone())
+                .expect("original operation");
+            monitor_runtime::settle_input(
+                &store,
+                id,
+                &operation,
+                "http:same-request",
+                studio_runtime_services::monitor_policy::InputOutcome::Acknowledged,
+                2004.0,
+            )
+            .await
+            .expect("late exact native callback resolves the uncertainty");
+            restarted
+                .input_http(id, "same-request", &input, 2005.0)
+                .await
+                .expect("replay the late durable acknowledgement without native I/O");
+            assert!(
+                fresh_port
+                    .submitted
+                    .lock()
+                    .expect("late acknowledgement does not send")
+                    .is_empty()
+            );
+        }
+    }
 }
 
 #[tokio::test]

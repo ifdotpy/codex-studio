@@ -573,7 +573,7 @@ pub fn save(tx: &Transaction<'_>, record: &Value) -> Result<(), Error> {
 pub fn receipt(connection: &Connection, query: &Value) -> Result<Value, Error> {
     let exists:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_process_actions')",[],|r|r.get(0)).map_err(StoreError::from)?;
     if !exists {
-        return Ok(json!({"found":false,"result":null}));
+        return input_receipt(connection, query);
     }
     let record = raw(
         connection,
@@ -587,5 +587,11 @@ pub fn receipt(connection: &Connection, query: &Value) -> Result<Value, Error> {
     {
         return Ok(json!({"found":true,"result":record["result"]}));
     }
-    Ok(json!({"found":false,"result":null}))
+    input_receipt(connection, query)
+}
+fn input_receipt(connection: &Connection, query: &Value) -> Result<Value, Error> {
+    crate::monitor_http_input::read(connection, query).map_err(|error| match error {
+        crate::monitor_policy::MonitorError::Store(error) => Error::Store(error),
+        _ => Error::Invalid("Invalid monitor input receipt"),
+    })
 }

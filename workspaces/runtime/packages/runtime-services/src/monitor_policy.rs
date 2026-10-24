@@ -57,6 +57,8 @@ pub enum MonitorError {
     TaskFailed,
     #[error("{0}")]
     Refused(&'static str),
+    #[error("Monitor input outcome unknown; do not repeat it")]
+    InputOutcomeUnknown,
     #[error("Not implemented: requires {0}")]
     Unavailable(&'static str),
     #[error("{stage}: {source:?}")]
@@ -712,6 +714,17 @@ fn present_dimension<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Optio
     u16::deserialize(input).map(Some)
 }
 
+/// Native input effect identity, including the complete caller ticket.
+pub fn input_effect_identity(monitor: &str, ticket: &str) -> String {
+    format!("monitor-input:{monitor}:{ticket}")
+}
+
+pub fn input_effect_ticket<'a>(monitor: &str, identity: &'a str) -> Option<&'a str> {
+    identity
+        .strip_prefix(&input_effect_identity(monitor, ""))
+        .filter(|ticket| !ticket.is_empty())
+}
+
 pub fn begin_input(
     snapshot: &MonitorSnapshot,
     operation: &Operation,
@@ -789,7 +802,7 @@ pub fn begin_input(
         remove(&mut decision.record, "stdinError");
     }
     decision.effects.push(Effect::Native {
-        identity: format!("monitor-input:{}:{attempt_id}", f.id),
+        identity: input_effect_identity(&f.id, attempt_id),
         method,
         params,
     });

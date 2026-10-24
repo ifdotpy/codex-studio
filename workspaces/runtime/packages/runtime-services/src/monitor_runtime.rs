@@ -562,6 +562,7 @@ pub async fn settle_input(
     store
         .transaction_with(move |tx| {
             let (snapshot, actor) = snapshot(tx, &id)?;
+            crate::monitor_http_input::settle(tx, &id, &operation, &attempt_id, &outcome)?;
             let decision = policy::settle_input(&snapshot, &operation, &attempt_id, outcome, now)?;
             apply(tx, &snapshot, &actor, &decision, now)
         })
