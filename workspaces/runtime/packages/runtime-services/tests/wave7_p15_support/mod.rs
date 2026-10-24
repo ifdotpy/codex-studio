@@ -46,7 +46,9 @@ impl MonitorNative for Port {
                 .take();
             if let Some((entered, release)) = gate {
                 entered.notify_one();
-                let _ = release.await;
+                release
+                    .await
+                    .expect("the test releases the held input submission");
             }
             if *self.unknown.lock().expect("unknown") {
                 Submission::Unknown
