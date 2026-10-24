@@ -82,7 +82,8 @@ retry.
 is the streamed Studio Errors collection: `studio_errors::publish` is its named
 publication owner, invoked by the transaction entity publisher. It derives rows from
 the server-owned error sources in the source transaction, publishes upserts and
-tombstones. Startup seeds existing source rows before serving clients; the
+tombstones. `studio_errors::publish_changes` skips the rebuild when no changed
+source row can change the published rows. Startup seeds existing source rows before serving clients; the
 initial subscription snapshot supplies the current list. Server-owned time refreshes
 keep the stuck-input threshold and history window current; equal refreshes do
 not allocate a sequence. The native client and local combined sidebar project

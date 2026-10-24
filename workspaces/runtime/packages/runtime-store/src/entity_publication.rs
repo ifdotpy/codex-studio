@@ -37,8 +37,8 @@ pub struct PendingEntities {
     pub plans: BTreeSet<String>,
     pub annotations: BTreeSet<String>,
     pub tasks: BTreeSet<String>,
-    /// Whether a source row changed the derived Studio error list.
-    pub studio_errors: bool,
+    /// Source rows of the derived Studio error list that changed.
+    pub studio_errors: StudioErrorSources,
     pub queues: BTreeSet<String>,
     pub terminals: BTreeSet<String>,
 }
@@ -52,9 +52,35 @@ impl PendingEntities {
             && self.plans.is_empty()
             && self.annotations.is_empty()
             && self.tasks.is_empty()
-            && !self.studio_errors
+            && self.studio_errors.is_empty()
             && self.queues.is_empty()
             && self.terminals.is_empty()
+    }
+}
+
+/// Ids of the changed rows that the Studio error list reads. The list owner
+/// (`studio_errors` in runtime-services) decides which of them can change it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StudioErrorSources {
+    pub agents: BTreeSet<String>,
+    pub monitors: BTreeSet<String>,
+    pub events: BTreeSet<String>,
+    /// `runtime_operation_receipts` ids, which include dismissals.
+    pub receipts: BTreeSet<String>,
+    /// An agent, monitor or event row was deleted; its id is gone.
+    pub rows_removed: bool,
+    /// A receipt row was deleted; its id is gone.
+    pub receipts_removed: bool,
+}
+
+impl StudioErrorSources {
+    pub fn is_empty(&self) -> bool {
+        self.agents.is_empty()
+            && self.monitors.is_empty()
+            && self.events.is_empty()
+            && self.receipts.is_empty()
+            && !self.rows_removed
+            && !self.receipts_removed
     }
 }
 
@@ -70,6 +96,10 @@ enum Source {
     Task,
     QueueAsset,
     Terminal,
+    /// Read only by the Studio error list.
+    Monitor,
+    /// Read only by the Studio error list (dismissals).
+    Receipt,
 }
 
 impl Source {
@@ -85,6 +115,8 @@ impl Source {
             "runtime_tasks" => Some(Self::Task),
             "runtime_assets" => Some(Self::QueueAsset),
             "user_terminals" => Some(Self::Terminal),
+            "runtime_monitors" => Some(Self::Monitor),
+            "runtime_operation_receipts" => Some(Self::Receipt),
             _ => None,
         }
     }
@@ -112,6 +144,8 @@ impl Source {
             Self::Task => "runtime_tasks",
             Self::QueueAsset => "runtime_assets",
             Self::Terminal => "user_terminals",
+            Self::Monitor => "runtime_monitors",
+            Self::Receipt => "runtime_operation_receipts",
         }
     }
 }
@@ -124,8 +158,6 @@ enum Event {
     Published(Source, String),
     /// A partial projection write needs a full publication.
     Stale(Source, String),
-    /// A source row or dismissal changed the derived Studio error list.
-    StudioErrors,
 }
 
 thread_local! {
@@ -162,12 +194,6 @@ pub(crate) fn active() -> bool {
 
 /// Journal a row write that the writer update hook reports.
 pub(crate) fn observe_row(table: &str, row_id: i64) {
-    if matches!(
-        table,
-        "runtime_agents" | "runtime_monitors" | "runtime_events" | "runtime_operation_receipts"
-    ) {
-        push(Event::StudioErrors);
-    }
     if let Some(source) = Source::of_table(table) {
         push(Event::Row(source, row_id));
     }
@@ -255,9 +281,26 @@ pub(crate) fn pending(
             }
         }
     }
+    for ((source, _), id) in &ids {
+        let studio_errors = &mut pending.studio_errors;
+        match (source, id) {
+            (Source::Agent, Some(id)) => studio_errors.agents.insert(id.clone()),
+            (Source::Monitor, Some(id)) => studio_errors.monitors.insert(id.clone()),
+            (Source::Event, Some(id)) => studio_errors.events.insert(id.clone()),
+            (Source::Receipt, Some(id)) => studio_errors.receipts.insert(id.clone()),
+            (Source::Agent | Source::Monitor | Source::Event, None) => {
+                studio_errors.rows_removed = true;
+                false
+            }
+            (Source::Receipt, None) => {
+                studio_errors.receipts_removed = true;
+                false
+            }
+            _ => false,
+        };
+    }
     let mut changed: BTreeMap<(Source, String), usize> = BTreeMap::new();
     let mut published: HashMap<(Source, String), usize> = HashMap::new();
-    let mut studio_errors = false;
     for (index, event) in events.into_iter().enumerate() {
         match event {
             Event::Row(source, row_id) => {
@@ -271,7 +314,6 @@ pub(crate) fn pending(
             Event::Published(source, id) => {
                 published.insert((source, id), index);
             }
-            Event::StudioErrors => studio_errors = true,
         }
     }
     for ((source, id), index) in changed {
@@ -289,9 +331,8 @@ pub(crate) fn pending(
             Source::Plan => pending.plans.insert(id),
             Source::Annotation => pending.annotations.insert(id),
             Source::Task => pending.tasks.insert(id),
-            Source::QueueAsset | Source::Terminal => false,
+            Source::QueueAsset | Source::Terminal | Source::Monitor | Source::Receipt => false,
         };
     }
-    pending.studio_errors = studio_errors;
     Ok(pending)
 }

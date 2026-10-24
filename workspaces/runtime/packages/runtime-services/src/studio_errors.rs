@@ -6,13 +6,15 @@
 //! and never sends uncertain input again. `check` opens the agent, because
 //! only the owner can decide. Studio never runs a command or sends input from
 //! this list. A dismissed row stays hidden.
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use studio_runtime_schema::shared_values::{
     BACKEND_RESTARTED_TURN_ERROR, MONITOR_OWNER_STOPPED_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
     PROVIDER_RESUME_UNKNOWN_ERROR, PROVIDER_START_NOT_SENT_ERROR,
     VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 };
-use studio_runtime_store::{EventWriteRepository, StoreError, Transaction};
+use studio_runtime_store::{EventWriteRepository, StoreError, StudioErrorSources, Transaction};
 
 /// Oldest work the list reads. Unit: seconds.
 pub const WINDOW_SECONDS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
@@ -150,8 +152,21 @@ struct Agent {
 
 /// The current rows, newest first, without dismissed ones.
 pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
+    Ok(build(tx, now)?.0)
+}
+
+/// What a full list build saw beyond its rows: the owners that hide rows
+/// because they are missing or deleted, and the number of dismissals.
+struct Baseline {
+    hidden_owners: BTreeSet<String>,
+    dismissed: usize,
+}
+
+/// The list and its baseline.
+fn build(tx: &Transaction<'_>, now: f64) -> Result<(Value, Baseline), StoreError> {
     let since = now - WINDOW_SECONDS;
     let dismissed = dismissed(tx)?;
+    let mut hidden_owners = BTreeSet::new();
     // Many rows share an owner; each owner record is read and decoded once.
     let mut owners = std::collections::HashMap::<String, Option<Agent>>::new();
     let mut agent = |id: &str| -> Result<Option<Agent>, StoreError> {
@@ -191,12 +206,10 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
             continue;
         };
         let agent_id = record["agent"].as_str().unwrap_or_default();
-        let Some(owner) = agent(agent_id)? else {
+        let Some(owner) = agent(agent_id)?.filter(|owner| !owner.deleted) else {
+            hidden_owners.insert(agent_id.to_owned());
             continue;
         };
-        if owner.deleted {
-            continue;
-        }
         push(
             &mut rows,
             json!({
@@ -234,12 +247,10 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
         let Some(kind) = event_kind(&status, &error, now - created) else {
             continue;
         };
-        let Some(owner) = agent(&agent_id)? else {
+        let Some(owner) = agent(&agent_id)?.filter(|owner| !owner.deleted) else {
+            hidden_owners.insert(agent_id);
             continue;
         };
-        if owner.deleted {
-            continue;
-        }
         push(
             &mut rows,
             json!({
@@ -301,7 +312,11 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
             .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
     });
     rows.truncate(MAX_ROWS);
-    Ok(json!({"items":rows}))
+    let baseline = Baseline {
+        hidden_owners,
+        dismissed: dismissed.len(),
+    };
+    Ok((json!({"items":rows}), baseline))
 }
 
 /// Server-owned refresh cadence for time-derived membership (stuck input and
@@ -330,15 +345,30 @@ pub async fn run(
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Full list rebuilds on this writer thread, for tests that prove a write
+    /// did not rebuild the list.
+    static FULL_PUBLICATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Full list rebuilds on the calling writer thread so far.
+#[cfg(test)]
+pub(crate) fn full_publications() -> u64 {
+    FULL_PUBLICATIONS.with(std::cell::Cell::get)
+}
+
 /// Publish the current server-owned error rows as sync entities in the same
 /// transaction as a source row or dismissal changes. Equal rows retain their
 /// existing entity sequence, while removed rows publish tombstones.
 pub fn publish(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    #[cfg(test)]
+    FULL_PUBLICATIONS.with(|count| count.set(count.get() + 1));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
         .as_secs_f64();
-    let value = list(tx, now)?;
+    let (value, baseline) = build(tx, now)?;
     let items = value
         .get("items")
         .and_then(Value::as_array)
@@ -376,7 +406,182 @@ pub fn publish(tx: &Transaction<'_>) -> Result<(), StoreError> {
             )?;
         }
     }
+    BASELINE.with(|current| *current.borrow_mut() = Some(baseline));
     Ok(())
+}
+
+thread_local! {
+    /// The baseline of the last full publication on this writer thread. A store
+    /// runs all its writer transactions on one thread, so this is per store.
+    /// `None` until the first full publication, which `entity_publication::install`
+    /// runs at startup. A rollback after a publication can leave it newer than
+    /// the committed state; then a missed change waits for the next refresh of
+    /// `run`, at most `TIME_REFRESH_INTERVAL`.
+    static BASELINE: std::cell::RefCell<Option<Baseline>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Publish the list in the writer transaction that changed `sources`, unless
+/// no changed row can change it. A full build reads every candidate row of
+/// the window, so most writer transactions, which touch rows outside the list,
+/// must skip it.
+pub fn publish_changes(
+    tx: &Transaction<'_>,
+    sources: &StudioErrorSources,
+) -> Result<(), StoreError> {
+    if may_change(tx, sources)? {
+        publish(tx)?;
+    }
+    Ok(())
+}
+
+/// Whether the changed `sources` can change the published list. The published
+/// rows are the newest `MAX_ROWS` visible rows, so a row that is neither
+/// published nor a visible candidate now cannot change them. A deleted row has
+/// no id left; it matters only if a published row lost its source.
+fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool, StoreError> {
+    let Some(dismissed_count) = BASELINE.with(|baseline| {
+        baseline
+            .borrow()
+            .as_ref()
+            .map(|baseline| baseline.dismissed)
+    }) else {
+        return Ok(true);
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
+        .as_secs_f64();
+    let since = now - WINDOW_SECONDS;
+    if sources
+        .receipts
+        .iter()
+        .any(|id| id.starts_with(DISMISSED_PREFIX))
+        || (sources.receipts_removed && dismissed(tx)?.len() != dismissed_count)
+    {
+        return Ok(true);
+    }
+    if sources.rows_removed && published_source_missing(tx)? {
+        return Ok(true);
+    }
+    for id in &sources.monitors {
+        if is_published(tx, &format!("monitor:{id}"))? {
+            return Ok(true);
+        }
+        let candidate =
+            studio_runtime_store::MonitorsRepository::studio_error_candidate(tx, id, since)?;
+        if candidate
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .is_some_and(|record| monitor_kind(&record).is_some())
+        {
+            return Ok(true);
+        }
+    }
+    for id in &sources.events {
+        if is_published(tx, &format!("event:{id}"))? {
+            return Ok(true);
+        }
+        let event = tx
+            .prepare_cached(
+                "SELECT status,COALESCE(error,''),created FROM runtime_events WHERE id=?1 AND created>=?2",
+            )?
+            .query_row(rusqlite::params![id, since], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, f64>(2)?,
+                ))
+            })
+            .optional()?;
+        if event.is_some_and(|(status, error, created)| {
+            event_kind(&status, &error, now - created).is_some()
+        }) {
+            return Ok(true);
+        }
+    }
+    for id in &sources.agents {
+        if agent_may_change(tx, id)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether a write of agent `id` can change the list: through its own error
+/// row, the owner name or visibility of its published rows, or the
+/// visibility of rows it hid at the last full build.
+fn agent_may_change(tx: &Transaction<'_>, id: &str) -> Result<bool, StoreError> {
+    let own_prefix = format!("agent:{id}:");
+    let own_published: bool = tx
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='studioError' AND deleted=0 AND id>=?1 AND id<?2)",
+        )?
+        .query_row(
+            rusqlite::params![own_prefix, format!("agent:{id};")],
+            |row| row.get(0),
+        )?;
+    if own_published {
+        return Ok(true);
+    }
+    let own = tx
+        .prepare_cached(
+            "SELECT status,json_extract(record,'$.error') FROM runtime_agents WHERE id=?1 AND deleted_at IS NULL AND status IN ('failed','interrupted','paused') AND json_type(record,'$.error')='text'",
+        )?
+        .query_row([id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .optional()?;
+    if own.is_some_and(|(status, error)| agent_kind(&status, &error).is_some()) {
+        return Ok(true);
+    }
+    let owner =
+        studio_runtime_store::AgentRepository::get(tx, &studio_runtime_store::AgentId::from(id))?
+            .filter(|record| !studio_runtime_store::truthy(record.extra.get("deletedAt")))
+            .map(|record| {
+                record
+                    .extra
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Agent")
+                    .to_owned()
+            });
+    let mut statement = tx.prepare_cached(
+        "SELECT json_extract(payload,'$.value.agentName') FROM sync_entities WHERE collection='studioError' AND deleted=0 AND json_extract(payload,'$.value.agentId')=?1",
+    )?;
+    let names = statement
+        .query_map([id], |row| row.get::<_, Option<String>>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    if names.iter().any(|name| name.as_deref() != owner.as_deref()) {
+        return Ok(true);
+    }
+    Ok(owner.is_some()
+        && BASELINE.with(|baseline| {
+            baseline
+                .borrow()
+                .as_ref()
+                .is_none_or(|baseline| baseline.hidden_owners.contains(id))
+        }))
+}
+
+/// Whether row `id` of the list is published.
+fn is_published(tx: &Transaction<'_>, id: &str) -> Result<bool, StoreError> {
+    Ok(tx
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='studioError' AND id=?1 AND deleted=0)",
+        )?
+        .query_row([id], |row| row.get(0))?)
+}
+
+/// Whether a published row lost its monitor, event or owner row.
+fn published_source_missing(tx: &Transaction<'_>) -> Result<bool, StoreError> {
+    Ok(tx
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sync_entities e WHERE e.collection='studioError' AND e.deleted=0 AND (\
+             (e.id LIKE 'monitor:%' AND NOT EXISTS(SELECT 1 FROM runtime_monitors m WHERE m.id=substr(e.id,9))) OR \
+             (e.id LIKE 'event:%' AND NOT EXISTS(SELECT 1 FROM runtime_events v WHERE v.id=substr(e.id,7))) OR \
+             NOT EXISTS(SELECT 1 FROM runtime_agents a WHERE a.id=json_extract(e.payload,'$.value.agentId'))))",
+        )?
+        .query_row([], |row| row.get(0))?)
 }
 
 fn dismissed(tx: &Transaction<'_>) -> Result<std::collections::BTreeSet<String>, StoreError> {

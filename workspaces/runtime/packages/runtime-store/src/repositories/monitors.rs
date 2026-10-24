@@ -114,6 +114,22 @@ impl MonitorsRepository {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// The record of monitor `id` when it was created at or after `since`
+    /// (Unix seconds) and may be a Studio-caused ending.
+    pub fn studio_error_candidate(
+        connection: &Connection,
+        id: &str,
+        since: f64,
+    ) -> StoreResult<Option<String>> {
+        Ok(connection
+            .prepare_cached(&format!(
+                "SELECT record FROM runtime_monitors WHERE id=?1 AND {STUDIO_ERROR_PREDICATE} \
+                 AND {CREATED_EXPRESSION}>=?2"
+            ))?
+            .query_row(rusqlite::params![id, since], |row| row.get(0))
+            .optional()?)
+    }
+
     /// `(id, record)` of the first monitor, by id, whose durable result stream
     /// (`streamQueue`) holds an undelivered event, whatever its status. The
     /// queued-stream index bounds this to monitors with pending events.
