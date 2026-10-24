@@ -154,9 +154,16 @@ async fn update(
                         if action == "resume" && agent_value.get("autoWake").and_then(Value::as_bool) != Some(true) {
                             return Err(ApiError::new(StatusCode::BAD_REQUEST, "Resume the agent before its rules"));
                         }
-                        if let Some(object) = value.as_object_mut() { object.remove("restartCheck"); }
+                        // A manual pause or resume replaces a pause that the tick made
+                        // while the owner could not run, so the tick no longer resumes it.
+                        let owner_held = value.get("ownerHold").is_some_and(|hold| !hold.is_null());
+                        if let Some(object) = value.as_object_mut() {
+                            object.remove("restartCheck");
+                            object.remove("ownerHold");
+                        }
                         let desired = if action == "resume" { "active" } else { "paused" };
-                        if string(&value, "kind") == Some("low_workers")
+                        if !owner_held
+                            && string(&value, "kind") == Some("low_workers")
                             && string(&value, "status") == Some(desired)
                             && value.get("epoch") == agent_value.get("epoch")
                         {

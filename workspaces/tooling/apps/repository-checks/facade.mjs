@@ -1579,6 +1579,37 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "rule owner hold witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "-p",
+            "studio-runtime-http",
+            "--test",
+            "integration",
+            "-E",
+            "test(/^rules_tick_atomic::a_rule_pauses_while_its_owner_cannot_run_and_resumes_when_it_can$/) | test(/^rules_owner_hold::/)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "rules of an owner that cannot act on a wake",
+        reason:
+          "A rule starts no command while its owner is failed with held input, held after a failure, or archived, resumes by itself when the owner can run, and a manual pause or resume replaces that pause.",
+      },
+    },
+    {
       item: { name: "studio-runtime-http", ecosystem: "cargo" },
       label: "resource content invalidation witnesses",
       commands: [
