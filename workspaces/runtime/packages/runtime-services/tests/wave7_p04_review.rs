@@ -2,6 +2,7 @@
 #![allow(clippy::unwrap_used)]
 use crate::callback_fixtures as fixture;
 use fixture::*;
+use futures_util::{FutureExt, poll};
 use serde_json::json;
 use std::sync::{Arc, mpsc};
 use studio_runtime_providers::{Frame, RequestId};
@@ -217,27 +218,38 @@ async fn send_acceptance_and_resolution_are_serialized_without_holding_a_store_t
     delivery(&store, &reply.identity, DeliveryOutcome::Submitted)
         .await
         .unwrap();
-    let runtime = Arc::new(CallbackRuntime::new(
-        store.clone(),
-        Arc::new(Port::default()),
-    ));
-    assert_eq!(
+    let runtime = CallbackRuntime::new(store.clone(), Arc::new(Port::default()));
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let submit = runtime.submit_committed(&reply, || async {
+        // The store transaction ends, but transport acceptance still holds the lifecycle gate.
+        store
+            .transaction_with::<_, CallbackError>(|_| Ok(()))
+            .await?;
+        entered_tx.send(()).unwrap();
+        release_rx.await.unwrap();
+        Ok(())
+    });
+    tokio::pin!(submit);
+    tokio::select! {
+        biased;
+        _ = entered_rx => {},
+        result = &mut submit => panic!("submission completed before release: {result:?}"),
+    }
+    assert!(
         runtime
-            .submit_committed(&reply, || async {
-                // Taking a store transaction here proves the check released its transaction.
-                store
-                    .transaction_with::<_, CallbackError>(|_| Ok(()))
-                    .await?;
-                Ok(())
-            })
-            .await
-            .unwrap(),
-        Some(())
+            .with_lifecycle(|| async { Ok(()) })
+            .now_or_never()
+            .is_none()
     );
-    runtime
-        .resolve(&context, &RequestId::Number(42), 21.0)
-        .await
-        .unwrap();
+    let rpc = RequestId::Number(42);
+    let resolve = runtime.resolve(&context, &rpc, 21.0);
+    tokio::pin!(resolve);
+    assert!(poll!(&mut resolve).is_pending());
+    release_tx.send(()).unwrap();
+    let (submitted, resolved) = tokio::join!(submit, resolve);
+    assert_eq!(submitted.unwrap(), Some(()));
+    assert_eq!(resolved.unwrap(), 1);
     assert_eq!(stored(&store, &id)["status"], "resolved");
 }
 
