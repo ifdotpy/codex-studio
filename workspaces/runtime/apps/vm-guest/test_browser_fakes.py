@@ -116,16 +116,6 @@ class FakeProvider:
         self.server.server_close()
 
 
-def free_port(preferred: int | None = None) -> int:
-    for port in ([preferred] if preferred else []) + [0]:
-        with socket.socket() as probe:
-            try:
-                probe.bind(("127.0.0.1", port))
-            except OSError:
-                continue
-            return int(probe.getsockname()[1])
-    raise OSError("No free port")
-
 
 class FakeTool:
     """A sign-in command: its loopback listener, its launcher call, and its token request."""

@@ -242,11 +242,11 @@ class ShareBridgeTests(unittest.IsolatedAsyncioTestCase):
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             closed = probe.getsockname()[:2]
-        port = await self.bridge_port(Bridge(closed))
-        reader, writer = await asyncio.open_connection("127.0.0.1", port)
-        self.assertEqual(await asyncio.wait_for(reader.read(), 15), b"")
-        writer.close()
-        await writer.wait_closed()
+            port = await self.bridge_port(Bridge(closed))
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            self.assertEqual(await asyncio.wait_for(reader.read(), 15), b"")
+            writer.close()
+            await writer.wait_closed()
 
 
 class PolicyTests(unittest.IsolatedAsyncioTestCase):
