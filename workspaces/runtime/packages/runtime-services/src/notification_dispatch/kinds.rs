@@ -31,6 +31,11 @@ pub(super) fn apply(
         .provider_handle
         .strip_prefix("account:")
         .ok_or(NotificationDispatchError::InvalidNotification)?;
+    if method == "thread/idleCompaction/updated" {
+        crate::idle_compaction::observe(tx, agent, &p["report"])?;
+        persist_agent(tx, &id, agent)?;
+        return Ok(Some(DispatchOutcome::Written));
+    }
     if method == "command/exec/outputDelta" {
         let Some(process_id) = p
             .get("processId")
@@ -253,6 +258,23 @@ pub(super) fn apply(
                 put_task(tx, &task)?;
             }
             if decision.compacted {
+                if let Some(request_id) = agent["startAttempt"]["actionRequestId"].as_str()
+                    && request_id.starts_with(crate::idle_compaction::REQUEST_PREFIX)
+                {
+                    tx.execute_cached(
+                        "UPDATE runtime_operation_receipts SET result=json_set(result,'$.outcome','compacted','$.completedAt',?2) WHERE id=?1 AND signature='idle-compaction'",
+                        params![request_id, at],
+                    ).map_err(StoreError::from)?;
+                    write_item(
+                        tx,
+                        &id,
+                        &format!("{request_id}:notice"),
+                        ("system", "Idle compaction"),
+                        crate::idle_compaction::NOTICE,
+                        json!({"idleCompaction":true}),
+                        at,
+                    )?;
+                }
                 tx.execute_cached(
                     "INSERT OR IGNORE INTO runtime_compactions VALUES (?1,?2)",
                     params![task_key, id],

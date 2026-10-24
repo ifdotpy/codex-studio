@@ -13655,6 +13655,15 @@ export interface components {
       /** Origin */
       origin: null | string;
     };
+    IdleCompactionSettings: {
+      /** @default 200000 */
+      minTokens: number;
+      /**
+       * @default off
+       * @enum {string}
+       */
+      mode: "off" | "log" | "compact";
+    };
     /** IdRequest */
     IdRequest: {
       /** Id */
@@ -16494,6 +16503,7 @@ export interface components {
        * @description Seconds a lead's finished-subagent result waits for sibling subagents that are still running, so close results arrive in one turn; 0 delivers each at once.
        */
       childResultCoalesceSeconds: number;
+      idleCompaction?: components["schemas"]["IdleCompactionSettings"];
       /**
        * Idlesessionunloadminutes
        * @description Minutes a lead's or ordinary chat's idle Codex thread or Claude session stays loaded, and an account's provider process keeps running after its last thread unloaded. A managed worker without a running turn, pending input, or active monitor unloads at once. The next message resumes a thread. 0 never unloads.
@@ -24682,6 +24692,8 @@ export interface components {
       details?: components["schemas"]["JsonValue"] | null;
       /** Id */
       id: string;
+      /** @description The notice confirms a completed idle compaction of a Claude session. */
+      idleCompaction?: boolean;
       /**
        * Inputs
        * @default null

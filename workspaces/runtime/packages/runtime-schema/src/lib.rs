@@ -8,6 +8,7 @@ pub mod contracts;
 pub mod delivery;
 pub mod desktop;
 pub mod federation_limits;
+pub mod idle_compaction;
 pub mod multi_server_protocol;
 pub mod provider_input;
 pub mod shared_values;

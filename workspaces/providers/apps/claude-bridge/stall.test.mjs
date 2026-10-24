@@ -30,6 +30,7 @@ const GRACE_MS = 300;
 // In every scenario, the tool call starts only after the test removes its
 // .hold file; until then the CLI queues the steers it reads.
 const FAKE_SDK = String.raw`
+export const resolveSettings=async()=>({effective:{}});
 import fs from 'node:fs';
 import path from 'node:path';
 export const tool=(name,description,schema,call)=>({name,description,schema,call});
