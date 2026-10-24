@@ -924,9 +924,8 @@ fn create_from_live_schema(root: &Path) {
     let schema: Value = serde_json::from_str(LIVE_SCHEMA).expect("schema-only fixture parses");
     for database in ["canvas.sqlite3", "analytics.sqlite3"] {
         let mut connection = Connection::open(root.join(database)).expect("database file opens");
-        connection
-            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
-            .expect("WAL and FULL are enabled");
+        studio_runtime_store::sqlite_durability::configure_writer(&connection)
+            .expect("WAL and NORMAL are enabled");
         let mut objects = schema[database]["sqlite_master"]
             .as_array()
             .expect("fixture contains SQLite objects")

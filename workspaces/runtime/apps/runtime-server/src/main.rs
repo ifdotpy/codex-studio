@@ -1278,72 +1278,86 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         }
     })
     .await;
-    // Keep account/provider dependencies live while HTTP mutations and durable
-    // login/cancel work drain. The existing 20-second watchdog bounds this
-    // sequence; if it forces exit, existing receipt, unknown-outcome, and
-    // recovery rules remain authoritative without automatic request replay.
-    state.shutdown_mutations().await;
-    let durable_session_cleanup = shutdown_join(
-        "provider login and cancellation operations",
-        account_session.shutdown_durable_operations(),
-    )
-    .await?;
-    durable_session_cleanup.map_err(std::io::Error::other)?;
-    monitor_shutdown.send_replace(true);
-    #[cfg(unix)]
-    stop_runtime.cancel();
-    #[cfg(unix)]
-    if let Some(peer_link) = peer_link_runtime.as_mut() {
-        peer_link.shutdown().await;
-    }
-    federation_cancelled.store(true, std::sync::atomic::Ordering::Release);
-    let vault_jobs_cleanup = shutdown_join("vault job owner", vault_job_owner.shutdown()).await?;
-    vault_jobs_cleanup?;
-    #[cfg(unix)]
-    let history_cleanup = shutdown_join("history runtime task", history_task).await?;
-    #[cfg(unix)]
-    history_cleanup.map_err(std::io::Error::other)??;
-    shutdown_join("federation delivery task", federation_task).await??;
-    shutdown_join("continuation scheduler task", continuation_task).await??;
-    #[cfg(unix)]
-    if let Some(task) = idle_compaction_task {
-        shutdown_join("idle compaction scheduler task", task).await??;
-    }
+    let drained: Result<(), Box<dyn std::error::Error>> = async {
+        // Keep account/provider dependencies live while HTTP mutations and durable
+        // login/cancel work drain. The existing 20-second watchdog bounds this
+        // sequence; if it forces exit, existing receipt, unknown-outcome, and
+        // recovery rules remain authoritative without automatic request replay.
+        state.shutdown_mutations().await;
+        let durable_session_cleanup = shutdown_join(
+            "provider login and cancellation operations",
+            account_session.shutdown_durable_operations(),
+        )
+        .await?;
+        durable_session_cleanup.map_err(std::io::Error::other)?;
+        monitor_shutdown.send_replace(true);
+        #[cfg(unix)]
+        stop_runtime.cancel();
+        #[cfg(unix)]
+        if let Some(peer_link) = peer_link_runtime.as_mut() {
+            peer_link.shutdown().await;
+        }
+        federation_cancelled.store(true, std::sync::atomic::Ordering::Release);
+        let vault_jobs_cleanup =
+            shutdown_join("vault job owner", vault_job_owner.shutdown()).await?;
+        vault_jobs_cleanup?;
+        #[cfg(unix)]
+        let history_cleanup = shutdown_join("history runtime task", history_task).await?;
+        #[cfg(unix)]
+        history_cleanup.map_err(std::io::Error::other)??;
+        shutdown_join("federation delivery task", federation_task).await??;
+        shutdown_join("continuation scheduler task", continuation_task).await??;
+        #[cfg(unix)]
+        if let Some(task) = idle_compaction_task {
+            shutdown_join("idle compaction scheduler task", task).await??;
+        }
 
-    shutdown_join("held turn release task", auth_release_task).await??;
-    for task in browser_card_tasks {
-        shutdown_join("browser card poll", task).await??;
+        shutdown_join("held turn release task", auth_release_task).await??;
+        for task in browser_card_tasks {
+            shutdown_join("browser card poll", task).await??;
+        }
+        shutdown_join("sign-in message links", sign_in_task).await??;
+        shutdown_join("web push", web_push_task).await??;
+        #[cfg(unix)]
+        if let Some(service) = browser_host {
+            shutdown_join("browser host bridge", service.stop()).await?;
+        }
+        shutdown_join("storage retention task", retention_task).await??;
+        shutdown_join("analytics projection task", analytics_projection_task).await??;
+        if let Some(task) = orchestration_task {
+            shutdown_join("orchestration driver task", task).await??;
+        }
+        let monitor_result = shutdown_join("monitor runtime task", monitor_task).await?;
+        monitor_result.map_err(std::io::Error::other)??;
+        #[cfg(unix)]
+        {
+            let terminal_cleanup = shutdown_join(
+                "terminal IO runtime",
+                shutdown_io_runtime(Arc::clone(&io_runtime)),
+            )
+            .await?;
+            terminal_cleanup?;
+            let runtime_cleanup = shutdown_join(
+                "host workers and retained services",
+                runtime_shutdown::close(runtime, &state),
+            )
+            .await?;
+            runtime_cleanup?;
+        }
+        #[cfg(not(unix))]
+        shutdown_join("retained services", state.shutdown_services()).await??;
+        Ok(())
     }
-    shutdown_join("sign-in message links", sign_in_task).await??;
-    shutdown_join("web push", web_push_task).await??;
-    #[cfg(unix)]
-    if let Some(service) = browser_host {
-        shutdown_join("browser host bridge", service.stop()).await?;
+    .await;
+    // Every writer has stopped: flush both runtime databases and truncate their
+    // WAL files (docs/decisions/2026-10-24-sqlite-normal-with-periodic-flush.md).
+    // A failure is reported; commits then wait for the next start's checkpoint.
+    match shutdown_join("final SQLite WAL flush", store.flush_wal_for_shutdown()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => eprintln!("runtime server final WAL flush failed: {error}"),
+        Err(error) => eprintln!("{error}"),
     }
-    shutdown_join("storage retention task", retention_task).await??;
-    shutdown_join("analytics projection task", analytics_projection_task).await??;
-    if let Some(task) = orchestration_task {
-        shutdown_join("orchestration driver task", task).await??;
-    }
-    let monitor_result = shutdown_join("monitor runtime task", monitor_task).await?;
-    monitor_result.map_err(std::io::Error::other)??;
-    #[cfg(unix)]
-    {
-        let terminal_cleanup = shutdown_join(
-            "terminal IO runtime",
-            shutdown_io_runtime(Arc::clone(&io_runtime)),
-        )
-        .await?;
-        terminal_cleanup?;
-        let runtime_cleanup = shutdown_join(
-            "host workers and retained services",
-            runtime_shutdown::close(runtime, &state),
-        )
-        .await?;
-        runtime_cleanup?;
-    }
-    #[cfg(not(unix))]
-    shutdown_join("retained services", state.shutdown_services()).await??;
+    drained?;
     result?;
     Ok(())
 }

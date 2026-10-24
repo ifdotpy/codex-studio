@@ -1280,8 +1280,10 @@ mod tests {
         for name in ["canvas.sqlite3", "analytics.sqlite3"] {
             let path = root.join(name);
             let connection = rusqlite::Connection::open(path).expect("fixture DB opens");
+            studio_runtime_store::sqlite_durability::configure_writer(&connection)
+                .expect("fixture pragmas apply");
             connection
-                .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN;")
+                .execute_batch("BEGIN;")
                 .expect("fixture pragmas apply");
             let mut statements = schema[name]["sqlite_master"]
                 .as_array()

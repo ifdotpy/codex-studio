@@ -45,8 +45,10 @@ fn template(root: &Path) {
     .expect("runtime schema fixture");
     for database in ["canvas.sqlite3", "analytics.sqlite3"] {
         let connection = rusqlite::Connection::open(root.join(database)).expect("fixture database");
+        studio_runtime_store::sqlite_durability::configure_writer(&connection)
+            .expect("fixture durability");
         connection
-            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN;")
+            .execute_batch("BEGIN;")
             .expect("fixture durability");
         let mut objects = schema[database]["sqlite_master"]
             .as_array()

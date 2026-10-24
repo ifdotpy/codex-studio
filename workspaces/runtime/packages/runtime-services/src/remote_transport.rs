@@ -1763,8 +1763,10 @@ pub(crate) mod tests {
             let path = root.join(name);
             let connection =
                 studio_runtime_store::Connection::open(path).expect("fixture database opens");
+            studio_runtime_store::sqlite_durability::configure_writer(&connection)
+                .expect("fixture pragmas apply");
             connection
-                .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN;")
+                .execute_batch("BEGIN;")
                 .expect("fixture pragmas apply");
             let mut statements = snapshot[name]["sqlite_master"]
                 .as_array()

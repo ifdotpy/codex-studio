@@ -451,7 +451,7 @@ fn restore_snapshot(fixture: &Path, state: &Path, root: &Path) {
                 &root.to_string_lossy().replace('\'', "''"),
             );
         let db = rusqlite::Connection::open(state.join(name)).expect("snapshot database");
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+        studio_runtime_store::sqlite_durability::configure_writer(&db)
             .expect("snapshot durability");
         db.execute_batch(&sql).expect("restore frozen SQLite seed");
     }
