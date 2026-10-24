@@ -1561,9 +1561,72 @@ mod tests {
 
     #[tokio::test]
     async fn state_stream_progress_frames_are_transient_and_scoped() {
+        use studio_runtime_services::claude_login::{
+            LoginError,
+            ports::*,
+            receipts::FileReceipts,
+            service::{LoginConfig, LoginService},
+        };
+        struct Accounts;
+        impl LoginAccounts for Accounts {
+            fn profile(&self, _: &str) -> Result<Value, LoginError> {
+                Err(LoginError::Unavailable)
+            }
+            fn revalidate(&self, _: &str) -> Result<Value, LoginError> {
+                Err(LoginError::Unavailable)
+            }
+            fn find_config(&self, _: &str) -> Result<Option<Value>, LoginError> {
+                Ok(None)
+            }
+            fn register(
+                &self,
+                _: serde_json::Map<String, Value>,
+                _: &str,
+                _: &std::path::Path,
+                _: &studio_runtime_services::account_driver::AuthMetadata,
+            ) -> Result<Value, LoginError> {
+                Err(LoginError::Unavailable)
+            }
+            fn refresh(
+                &self,
+                _: &str,
+                _: &Value,
+                _: &studio_runtime_services::account_driver::AuthMetadata,
+            ) -> Result<Value, LoginError> {
+                Err(LoginError::Unavailable)
+            }
+        }
+        struct Chats;
+        impl LoginChats for Chats {
+            fn refresh<'a>(&'a self, _: &'a str) -> FutureResult<'a, ()> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        struct Child(tokio::sync::mpsc::Receiver<LoginEvent>);
+        impl LoginChild for Child {
+            fn next_event(&mut self) -> FutureResult<'_, Option<LoginEvent>> {
+                Box::pin(async { Ok(self.0.recv().await) })
+            }
+            fn write(&self, _: Vec<u8>) -> FutureResult<'_, ()> {
+                Box::pin(async { Ok(()) })
+            }
+            fn close(self: Box<Self>) -> FutureResult<'static, ()> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        struct Launcher(tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<LoginEvent>>>);
+        impl LoginLauncher for Launcher {
+            fn spawn(&self, _: LoginCommand) -> FutureResult<'_, Box<dyn LoginChild>> {
+                Box::pin(async {
+                    Ok(Box::new(Child(
+                        self.0.lock().await.take().ok_or(LoginError::Unavailable)?,
+                    )) as Box<dyn LoginChild>)
+                })
+            }
+        }
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-        let state = HttpState::new(
+        let mut state = HttpState::new(
             "token".into(),
             "workspace".into(),
             root.path().display().to_string(),
@@ -1572,38 +1635,86 @@ mod tests {
             Some(store.clone()),
             None,
         );
-        let resource = json!({"kind":"auth-progress","requestId":"login-one"});
+        let directory = root.path().join("logins");
+        let receipt_directory = directory.clone();
+        let receipts = studio_runtime_process::blocking_pool::spawn_blocking(
+            "test/login-receipts",
+            move || FileReceipts::new(receipt_directory),
+        )
+        .await
+        .expect("blocking task")
+        .expect("receipts");
+        let (output, input) = tokio::sync::mpsc::channel(2);
+        let changes = state.sync_changes.clone();
+        let login = LoginService::open(
+            LoginConfig {
+                directory: directory.clone(),
+                program: "/fixture/claude".into(),
+                cwd: root.path().into(),
+                environment: BTreeMap::from([("HOME".into(), root.path().as_os_str().to_owned())]),
+            },
+            Arc::new(Accounts),
+            Arc::new(Launcher(tokio::sync::Mutex::new(Some(input)))),
+            Arc::new(receipts),
+            Arc::new(Chats),
+            Arc::new(move || changes.notify_one()),
+        )
+        .await
+        .expect("login service");
+        state.claude_login = Some(login.clone());
+        let id = "e0166868-592a-4dca-8994-04d34a730af5";
+        let url = "https://claude.com/cai/oauth/authorize?secret=transient-fixture";
+        let mut changed = state.sync_changes.subscribe();
+        login
+            .start(id.into(), None, None, None)
+            .await
+            .expect("start once");
+        output
+            .send(LoginEvent::Output(format!("{url}\n").into_bytes()))
+            .await
+            .expect("scripted URL");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if login.progress(id).await.expect("progress")["verificationUrl"] == url {
+                    break;
+                }
+                changed.changed().await.expect("progress producer");
+            }
+        })
+        .await
+        .expect("URL notification");
+        let resource = json!({"kind":"auth-progress","requestId":id});
         let view = ResourceChanges {
             cursor: state.sync_changes.snapshot(),
             resources: vec![resource.clone()],
-            versions: vec![0],
+            versions: vec![1],
             entity_reset: false,
             overflow: false,
         };
         let mut frames = VecDeque::new();
         append_progress_frames(&state, &view, &mut frames).await;
         let frame = frame_bytes(frames.pop_front().expect("current progress on subscribe")).await;
-        assert!(String::from_utf8_lossy(&frame).starts_with("event: resource-progress\n"));
         let text = std::str::from_utf8(&frame).expect("UTF-8 frame");
-        let payload: Value = serde_json::from_str(
-            text.lines()
-                .find_map(|line| line.strip_prefix("data: "))
-                .expect("progress data"),
-        )
-        .expect("progress JSON");
-        assert_eq!(payload["resource"], resource);
+        assert!(text.starts_with("event: resource-progress\n"));
         assert!(
-            payload["value"].is_null(),
-            "unknown retained login requests recover explicitly"
+            text.contains(url),
+            "the subscribed client receives its transient URL"
         );
-        let sequence = store
-            .read_async(
-                "test/progress-is-transient",
-                SyncDocumentsRepository::entity_sequence,
-            )
+        assert_eq!(
+            store
+                .read_async(
+                    "test/progress-is-transient",
+                    SyncDocumentsRepository::entity_sequence
+                )
+                .await
+                .expect("sequence"),
+            0,
+            "progress never writes a SQLite entity"
+        );
+        let receipt = tokio::fs::read_to_string(directory.join(format!("{id}.json")))
             .await
-            .expect("sequence");
-        assert_eq!(sequence, 0, "progress never creates a durable entity");
+            .expect("durable receipt");
+        assert!(!receipt.contains(url), "the OAuth URL never reaches disk");
         let unselected = ResourceChanges {
             resources: vec![json!({"kind":"state"})],
             ..view
@@ -1613,6 +1724,7 @@ mod tests {
             frames.is_empty(),
             "only subscribed progress selectors receive data"
         );
+        login.shutdown().await.expect("owned child closed");
     }
 
     #[test]
