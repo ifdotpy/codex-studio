@@ -262,7 +262,7 @@ export default function ClaudeAddSignIn({
         );
       }
     };
-    const poll = async () => {
+    const readStatus = async () => {
       if (lock.current) return;
       const readGeneration = statusReadGeneration.current;
       try {
@@ -308,7 +308,7 @@ export default function ClaudeAddSignIn({
           applyProgress(progress.value);
         }
       },
-      poll,
+      readStatus,
       (failure) => {
         if (live) setError(errorText(failure));
       },
