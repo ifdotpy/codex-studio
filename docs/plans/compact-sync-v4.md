@@ -108,10 +108,12 @@ Server discovery snapshots and voice record batches (at most
 `SYNC_VOICE_STREAM_MAX_RECORDS`) travel as transient typed payloads in the
 stream; HTTP remains for recovery and explicit management.
 
-T18's integration contract covers accounts summary, costs, session cost,
-desktop, queue and terminals summary as entity collections published by their
-source owner; login data never enters entities. The table below tracks that
-work separately until it lands.
+Bounded summaries are entity collections published by their server source owner:
+`accountsSummary` (current; excludes login receipts), `accountCost` (per account),
+`sessionCost` (per lead), `desktop` (current), `queue` (per agent), `terminal`
+(per live terminal). OpenAPI owns the value DTOs. The stream initializes and
+updates projections; GETs remain only for explicit and recovery reads. Login
+progress is T22's transient auth-progress.
 
 The following inventory records the client read paths found during the T17 audit.
 The table names the implementation owner for work delivered alongside T17. These
