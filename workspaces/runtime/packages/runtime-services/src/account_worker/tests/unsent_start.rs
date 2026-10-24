@@ -109,3 +109,46 @@ async fn a_start_that_stays_unsent_fails_with_its_cause_and_keeps_its_input() {
     );
     worker.shutdown().await.unwrap();
 }
+
+/// The same limit for a `turn/start` that was marked submitted and then
+/// proven never written: the agent fails with the named cause and its input
+/// stays pending, as the reason states (22 October 2026: such inputs were
+/// shown as failed although the provider never received them).
+#[tokio::test]
+async fn a_submitted_turn_start_that_stays_unsent_keeps_its_input_pending() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    // Each attempt resumes the thread first. Only the `submitted` commit that
+    // follows the resume reply, the one of `turn/start`, outlives its deadline.
+    for _ in 0..=studio_runtime_store::START_RETURN_LIMIT {
+        let resume = peer.write("thread/resume").await;
+        *state.bridge.faults.pause_operation.lock().unwrap() = Some("submitted".into());
+        peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+            .await;
+        expire_held_submission(&state).await;
+        *state.bridge.faults.pause_operation.lock().unwrap() = None;
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while state.record().await["status"] != "failed" {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the start fails after its returns are used up");
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
+    let record = state.record().await;
+    assert_eq!(
+        record["error"],
+        "Provider did not send turn/start: its reply deadline elapsed before Studio wrote it. The input is kept.",
+        "{record}"
+    );
+    assert_eq!(record["startAttempt"]["submitted"], true, "{record}");
+    assert_eq!(state.event_status("input").await, "pending");
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "an expired request is never written"
+    );
+    worker.shutdown().await.unwrap();
+}

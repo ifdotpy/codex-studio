@@ -805,7 +805,7 @@ async fn bundled_delivery_tools_reach_current_actors_and_preserve_historical_cat
                                 json!({"dynamicTools":resources.legacy_tools});
                         }
                         let definitions =
-                            preparation::actor_tool_definitions(tx, &resources, &actor)?.unwrap();
+                            preparation::actor_tool_definitions(tx, &resources, &actor)?;
                         for name in ["orchestration_message", "orchestration_send"] {
                             let tool = definitions
                                 .as_array()

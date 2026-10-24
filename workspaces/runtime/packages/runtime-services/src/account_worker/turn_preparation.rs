@@ -255,6 +255,15 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
         steer::WakeClaim::Busy => return Ok(Err(Unclaimed::Nothing)),
         steer::WakeClaim::Idle => {}
     }
+    // The claim below refuses an agent that an account transfer holds.
+    if !Box::pin(stage(
+        "turn_preparation.account_transfer",
+        advance_transfer(wake),
+    ))
+    .await?
+    {
+        return Ok(Err(Unclaimed::Nothing));
+    }
     // A new turn waits for the account's start throttle before its claim, so
     // its input stays queued meanwhile; a slot not claimed below is freed. A
     // host without an account registry (fixtures; production hosts always
@@ -408,6 +417,101 @@ async fn prepare(
     };
     let result = Box::pin(ready(run, Some(selection), token)).await;
     Box::pin(settle(run, result)).await
+}
+
+fn transfer_error(error: crate::account_transfer::TransferError) -> WorkerError {
+    match error {
+        crate::account_transfer::TransferError::Store(error) => WorkerError::Store(error),
+        error => WorkerError::PreparationRefused(error.to_string()),
+    }
+}
+
+/// Advance the agent's account transfer at its wake, before its input is
+/// claimed. A member that was busy at the request is released to the
+/// destination account, whose worker then claims the input. A lazy member of
+/// this account moves its history here first. `false` leaves the input queued;
+/// the transfer record names the wait or the refusal.
+async fn advance_transfer(wake: &Wake) -> Result<bool, WorkerError> {
+    let Wake {
+        bridge,
+        account,
+        agent_id,
+        resources,
+        ..
+    } = wake;
+    let (g, a) = (agent_id.clone(), account.clone());
+    let hold = bridge
+        .worker_run("account_transfer_hold", move |store| async move {
+            store
+                .read_async("runtime-services/account_transfer_hold", move |db| {
+                    Ok::<_, WorkerError>(AgentRepository::get(db, &AgentId::from(g.as_str()))?.map(
+                        |agent| {
+                            let lazy = studio_runtime_store::truthy(
+                                agent.extra.get("lazyAccountTransfer"),
+                            );
+                            let here = agent
+                                .extra
+                                .get("accountKey")
+                                .and_then(Value::as_str)
+                                .unwrap_or("default")
+                                == a;
+                            (
+                                studio_runtime_store::truthy(agent.extra.get("accountTransferId")),
+                                lazy && here,
+                            )
+                        },
+                    ))
+                })
+                .await
+        })
+        .await?;
+    let Some((true, lazy)) = hold else {
+        return Ok(true);
+    };
+    if !lazy {
+        let g = agent_id.clone();
+        match bridge
+            .worker_run("account_transfer_release", move |store| async move {
+                crate::account_transfer_driver::release_waiting(&store, &g, now())
+                    .await
+                    .map_err(transfer_error)
+            })
+            .await
+        {
+            Ok(true) => bridge.event_wake().notify_one(),
+            Ok(false) => {}
+            Err(WorkerError::PreparationRefused(reason)) => {
+                eprintln!("account transfer of {agent_id} was not released: {reason}");
+            }
+            Err(error) => return Err(error),
+        }
+        return Ok(false);
+    }
+    let (g, r) = (agent_id.clone(), resources.clone());
+    let moved = bridge
+        .prepare_run("account_transfer_move", move |store| async move {
+            crate::account_transfer_executor::before_start(
+                store,
+                r.account_session.clone(),
+                &r.model_catalog,
+                &r,
+                &g,
+                now(),
+            )
+            .await
+            .map_err(transfer_error)
+        })
+        .await;
+    match moved {
+        Ok(agent) => Ok(!studio_runtime_store::truthy(
+            agent.get("accountTransferId"),
+        )),
+        Err(WorkerError::PreparationRefused(reason)) => {
+            eprintln!("account transfer of {agent_id} did not move: {reason}");
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Apply an account transfer requested before this turn starts.

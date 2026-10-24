@@ -11,6 +11,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -61,6 +62,7 @@ import {
 } from "./shell/messages/PeerTeams";
 
 import SidebarRow from "./SidebarRow";
+import { StudioErrorsButton } from "./StudioErrors";
 import {
   activeLayrReadiness,
   describeWithLayrReadiness,
@@ -232,6 +234,15 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     if (compact) closeSidebar();
     p.open(id);
   };
+  const inline = !compact && !p.collapsed;
+  useLayoutEffect(() => {
+    if (!inline) return;
+    const root = document.documentElement;
+    root.dataset.inlineSidebar = "true";
+    return () => {
+      delete root.dataset.inlineSidebar;
+    };
+  }, [inline]);
   const [query, setQuery] = useState(""),
     [renaming, setRenaming] = useState<string | null>(null),
     [name, setName] = useState(""),
@@ -1340,6 +1351,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             New shared chat
           </Button>
         )}
+        <StudioErrorsButton open={p.open} />
       </div>
       <TextInput
         id="chat-search"

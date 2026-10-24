@@ -696,6 +696,121 @@ test("recovery rejects an invalid saved launch environment before changing it", 
   }
 });
 
+// The shapes of two live background-recovery.json files that the deleted
+// Python backend wrote (one Mac still on Python, one already switched to Rust;
+// values replaced by fixture paths). Main refused both for CODEX_AGENTS_PYTHON.
+function pythonEraRecords(state) {
+  return [
+    {
+      version: 1,
+      enabled: true,
+      supervisorEnabled: true,
+      stateDir: state,
+      resources: "/Applications/Codex Studio.app/Contents/Resources/workspace",
+      python: "/opt/homebrew/bin/python3",
+      codex: "/opt/homebrew/bin/codex",
+      port: 4620,
+      environment: {
+        SHELL: "/bin/zsh",
+        PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+      },
+      unsetEnvironment: [
+        "CODEX_HOME",
+        "CODEX_CANVAS_CWD",
+        "CODEX_CANVAS_CONCURRENCY",
+        "CODEX_BIN",
+        "CODEX_AGENTS_PYTHON",
+        "LANG",
+        "LC_ALL",
+        "CODEX_AGENTS_SUPERVISOR_MODE",
+        "CODEX_AGENTS_SUPERVISOR_FALLBACK",
+      ],
+    },
+    {
+      version: 1,
+      enabled: true,
+      supervisorEnabled: true,
+      stateDir: state,
+      resources: "/Applications/Codex Studio.app/Contents/Resources/workspace",
+      python: "/opt/homebrew/bin/python3",
+      codex: "/opt/homebrew/bin/codex",
+      port: 4620,
+      environment: {
+        CODEX_BIN: "/usr/bin/true",
+        SHELL: "/bin/zsh",
+        LANG: "en_US.UTF-8",
+        LC_ALL: "en_US.UTF-8",
+        PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+      },
+      unsetEnvironment: [
+        "CODEX_HOME",
+        "CODEX_CANVAS_CWD",
+        "CODEX_CANVAS_CONCURRENCY",
+        "CODEX_AGENTS_PYTHON",
+        "CODEX_AGENTS_SUPERVISOR_MODE",
+        "CODEX_AGENTS_SUPERVISOR_FALLBACK",
+      ],
+      backend: "rust",
+      runtimeServer:
+        "/Applications/Codex Studio.app/Contents/Resources/workspace/bin/studio-runtime-server",
+      processSupervisor:
+        "/Applications/Codex Studio.app/Contents/Resources/workspace/bin/codex-process-supervisor",
+    },
+  ];
+}
+
+test("a Python-era saved launch environment is accepted without its retired keys", async () => {
+  const data = fixture();
+  const files = recoveryPaths(data.env, data.home);
+  try {
+    for (const saved of pythonEraRecords(files.state)) {
+      writeFileSync(files.config, JSON.stringify(saved));
+      await configureRecovery({ ...data, enabled: true, run: async () => {} });
+      const after = JSON.parse(readFileSync(files.config, "utf8"));
+      assert.equal(after.backend, "rust");
+      assert.ok(!after.unsetEnvironment.includes("CODEX_AGENTS_PYTHON"));
+      assert.equal(after.environment.CODEX_AGENTS_PYTHON, undefined);
+      assert.equal(after.environment.SHELL, "/bin/zsh");
+      assert.ok(after.unsetEnvironment.includes("CODEX_HOME"));
+    }
+    // A retired name with a saved value is accepted and not restored.
+    const [first] = pythonEraRecords(files.state);
+    writeFileSync(
+      files.config,
+      JSON.stringify({
+        ...first,
+        environment: {
+          ...first.environment,
+          CODEX_AGENTS_PYTHON: "/old/python",
+        },
+        unsetEnvironment: first.unsetEnvironment.filter(
+          (key) => key !== "CODEX_AGENTS_PYTHON",
+        ),
+      }),
+    );
+    await configureRecovery({ ...data, enabled: true, run: async () => {} });
+    const after = JSON.parse(readFileSync(files.config, "utf8"));
+    assert.equal(after.environment.CODEX_AGENTS_PYTHON, undefined);
+    // An unknown new name is still refused.
+    const before = JSON.stringify({
+      ...first,
+      unsetEnvironment: [...first.unsetEnvironment, "CODEX_UNKNOWN_SETTING"],
+    });
+    writeFileSync(files.config, before);
+    await assert.rejects(
+      configureRecovery({
+        ...data,
+        enabled: true,
+        run: async () => assert.fail("Invalid state must not reach launchctl"),
+      }),
+      /saved restart environment/i,
+    );
+    assert.equal(readFileSync(files.config, "utf8"), before);
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
+
 test("backend restart environment overrides the attaching desktop and preserves absent keys", async () => {
   const data = fixture();
   try {

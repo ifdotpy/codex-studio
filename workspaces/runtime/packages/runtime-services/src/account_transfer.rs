@@ -264,7 +264,8 @@ impl Snapshot {
                                 "lazy"
                             } else {
                                 "waiting"
-                            })
+                            });
+                            member["waiting"] = json!(WAITING_FOR_NEXT_TURN);
                         }
                         Phase::Submitted | Phase::LazySubmitted => {
                             member["phase"] = json!("unknown");
@@ -311,6 +312,9 @@ impl Snapshot {
                     } else {
                         "waiting"
                     });
+                    if member["phase"] != "ready" {
+                        member["waiting"] = json!(WAITING_FOR_NEXT_TURN);
+                    }
                     member["error"] = Value::Null;
                     member["nextCheck"] = json!(0);
                     if studio_runtime_store::truthy(member.get("interruptSubmittedAt")) {
@@ -411,6 +415,74 @@ impl Snapshot {
         Ok(decision)
     }
 
+    /// A member busy with a turn at the request waits. Once that turn has ended
+    /// it is enrolled again as an idle member: the lazy hold moves its account,
+    /// and its history moves at its next turn start. Saved provider journals
+    /// stay on the member. `None` when the member cannot be released now.
+    pub fn release_waiting(&self, agent: &str) -> Result<Option<Decision>, TransferError> {
+        let Some(current) = self.agents.get(agent) else {
+            return Ok(None);
+        };
+        let member = &self.operation["members"][agent];
+        if !self.pending()
+            || !member.is_object()
+            || self.phase(agent)? != Phase::Waiting
+            || flag(member, "lazy")
+            || current["accountTransferId"] != self.identity.id
+            || studio_runtime_store::truthy(current.get("lazyAccountTransfer"))
+            || studio_runtime_store::truthy(current.get("deletedAt"))
+            || flag(current, "inFlight")
+            || matches!(
+                current["status"].as_str(),
+                Some("running" | "starting" | "approval")
+            )
+            || ["submittedAt", "result", "transportTicket", "providerIntent"]
+                .iter()
+                .any(|key| studio_runtime_store::truthy(member.get(*key)))
+        {
+            return Ok(None);
+        }
+        let target_provider = self.operation["targetProvider"]
+            .as_str()
+            .ok_or_else(|| invalid("account transfer", "/targetProvider"))?;
+        let mut agents = self.agents.clone();
+        let value = agents
+            .get_mut(agent)
+            .ok_or(TransferError::Refused("Unknown transfer member"))?;
+        let enrolled = enroll(
+            value,
+            &self.identity.id,
+            &self.identity.target_account_key,
+            target_provider,
+            agent == self.identity.lead_id,
+        )?;
+        if enrolled["phase"] != "lazy" {
+            // Completed or blocked members hold no transfer pointer.
+            remove(value, &["accountTransferId"])?;
+        }
+        let mut op = self.operation.clone();
+        let saved = op["members"][agent]
+            .as_object_mut()
+            .ok_or_else(|| invalid("account transfer", "/members"))?;
+        for (key, field) in enrolled
+            .as_object()
+            .ok_or_else(|| invalid("account transfer", "/members"))?
+        {
+            saved.insert(key.clone(), field.clone());
+        }
+        if enrolled.get("waiting").is_none() {
+            saved.remove("waiting");
+        }
+        if op["members"].as_object().is_some_and(|members| {
+            members
+                .values()
+                .all(|m| matches!(m["phase"].as_str(), Some("completed" | "left")))
+        }) {
+            op["status"] = json!("completed");
+        }
+        Ok(Some(self.decision(op, agents, vec![])))
+    }
+
     pub fn begin_read(&self, agent: &str) -> Result<Decision, TransferError> {
         let a = self
             .agents
@@ -446,6 +518,8 @@ impl Snapshot {
             member[field] = a.get(field).cloned().unwrap_or(Value::Null);
         }
         member["error"] = Value::Null;
+        // The move has started; the card shows it as moving now.
+        remove(member, &["waiting"])?;
         Ok(self.decision(op, self.agents.clone(), vec![]))
     }
 
@@ -1001,6 +1075,160 @@ impl Snapshot {
         }
         Ok(())
     }
+}
+
+/// Why a `waiting` or `lazy` member has not moved yet: its move runs at the
+/// wake of its next turn, before that turn's input is claimed.
+pub const WAITING_FOR_NEXT_TURN: &str = "Moves when its next turn starts";
+
+/// The transfer member record for one agent, as a request enrolls it, and the
+/// agent's hold. A member on another provider stays on its source account. A
+/// member busy with a turn waits for its next turn. An idle member gets the lazy
+/// hold: its account changes now, and its history moves at its next turn start.
+pub(crate) fn enroll(
+    value: &mut Value,
+    operation_id: &str,
+    target: &str,
+    target_provider: &str,
+    lead: bool,
+) -> Result<Value, TransferError> {
+    let target_kind: studio_runtime_providers::ProviderKind = target_provider
+        .parse()
+        .map_err(|_| TransferError::Refused("Unknown destination provider"))?;
+    let source_account = value
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        .to_owned();
+    let provider = studio_runtime_providers::ProviderKind::of_record(value)
+        .map_err(|_| TransferError::Refused("Unknown agent provider"))?
+        .key()
+        .to_owned();
+    let source_thread = value
+        .get("threadId")
+        .cloned()
+        .filter(|thread| !thread.is_null());
+    if !lead && provider != target_provider {
+        return Ok(json!({"phase":"left","sourceAccountKey":source_account,
+            "sourceThreadId":source_thread,"provider":provider,"name":value.get("name"),
+            "reason":format!("Uses {provider}; the destination account uses {target_provider}")}));
+    }
+    let done = source_account == target;
+    let active = studio_runtime_store::truthy(value.get("inFlight"))
+        || matches!(
+            value["status"].as_str(),
+            Some("running" | "starting" | "approval")
+        );
+    let lazy = !done && !active;
+    let pending = value
+        .get("pendingSettings")
+        .filter(|settings| !settings.is_null())
+        .cloned();
+    let pending_mismatch = pending.is_some()
+        && value
+            .get("pendingSettingsAccountKey")
+            .and_then(Value::as_str)
+            .unwrap_or(&source_account)
+            != source_account;
+    let blocked = lazy && pending_mismatch;
+    let phase = if done {
+        "completed"
+    } else if blocked {
+        "blocked"
+    } else if active {
+        "waiting"
+    } else {
+        "lazy"
+    };
+    let mut member = json!({
+        "phase":phase,"sourceAccountKey":source_account,"sourceThreadId":source_thread,
+        "provider":provider,"name":value.get("name"),"lazy":lazy,
+        "pendingSettings":pending.clone().unwrap_or(Value::Null),
+        "sourcePendingSettings":pending.unwrap_or(Value::Null),
+        "sourceClaudeOptions":value.get("claudeOptions"),
+        "error":if blocked {json!("Queued settings belong to another account. Save them again before transfer")} else {Value::Null}
+    });
+    if matches!(phase, "waiting" | "lazy") {
+        member["waiting"] = json!(WAITING_FOR_NEXT_TURN);
+    }
+    if done || blocked {
+        return Ok(member);
+    }
+    value["accountTransferId"] = json!(operation_id);
+    if !lazy {
+        return Ok(member);
+    }
+    let source_state = [
+        "provider",
+        "model",
+        "effort",
+        "nativeEffort",
+        "fastMode",
+        "daybreakEnabled",
+        "cyberAccessProgram",
+        "workerDefaults",
+        "pendingSettings",
+        "pendingSettingsAccountKey",
+        "claudeOptions",
+        "executionSettingsAccountKey",
+        "status",
+        "error",
+        "nativeFailureHold",
+    ]
+    .into_iter()
+    .map(|key| {
+        (
+            key.to_owned(),
+            value.get(key).cloned().unwrap_or(Value::Null),
+        )
+    })
+    .collect::<serde_json::Map<_, _>>();
+    value["lazyAccountTransfer"] = json!({"id":operation_id,"sourceAccountKey":source_account,
+        "sourceThreadId":source_thread,"sourceState":source_state});
+    value["accountKey"] = json!(target);
+    if provider != target_provider {
+        value["provider"] = json!(target_provider);
+        value["model"] = json!(crate::provider_adapter::default_model(target_kind));
+        value["effort"] = Value::Null;
+        value["nativeEffort"] = json!("medium");
+        value["fastMode"] = json!(false);
+        value["daybreakEnabled"] = json!(false);
+        value["cyberAccessProgram"] = json!("standard");
+        remove(
+            value,
+            &[
+                "claudeOptions",
+                "pendingSettings",
+                "pendingSettingsAccountKey",
+            ],
+        )?;
+    }
+    let mut defaults = value
+        .get("workerDefaults")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if provider != target_provider {
+        defaults.insert("model".into(), Value::Null);
+        defaults.insert("effort".into(), json!("medium"));
+        defaults.insert("fastMode".into(), json!(false));
+        defaults.insert("daybreakEnabled".into(), json!(false));
+        defaults.insert("cyberAccessProgram".into(), json!("standard"));
+    }
+    defaults.insert("accountKey".into(), json!(target));
+    value["workerDefaults"] = Value::Object(defaults);
+    value["pendingSettingsAccountKey"] = if value
+        .get("pendingSettings")
+        .is_some_and(|settings| !settings.is_null())
+    {
+        json!(target)
+    } else {
+        Value::Null
+    };
+    if value.get("pendingSettings").is_none_or(Value::is_null) {
+        value["executionSettingsAccountKey"] = json!(source_account);
+    }
+    Ok(member)
 }
 
 pub fn before_start(agent: &Value) -> Result<(), TransferError> {

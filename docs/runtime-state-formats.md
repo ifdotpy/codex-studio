@@ -44,7 +44,7 @@ The snapshot is generated from a disposable state directory using the real start
 
 The schema is assembled by `Canvas.__init__`, `Runtime.__init__`, and the focused owners (`codex_execution.py`, `codex_federation.py`, `codex_sync_entities.py`, `codex_analytics.py`, `codex_analytics_history.py`, `codex_payloads.py`, and others). A fresh startup observed 93 user tables in `canvas.sqlite3` and 13 in `analytics.sqlite3`. The committed JSON snapshot is the authoritative fresh-start schema and the Python schema-drift guard input; it is not a catalog of every optional table or migration phase.
 
-`runtime_payload_migrations` is a progress record, not a universal schema version. It contains `name TEXT PRIMARY KEY`, `cursor INTEGER`, `complete INTEGER`, `status TEXT`, `updated REAL`, and nullable `error TEXT`; key `payload-v1:tasks` tracks bounded retention of old task tails in `runtime_tasks.record` by replacing oversized tails with a preview and truncation flags. It does not externalize task tails to blobs. The analytics legacy-file gate checks for legacy `analytics_*` tables in `canvas.sqlite3` and `analytics_meta.fileMigrationV1` in `analytics.sqlite3`. On a fresh disposable start `PRAGMA user_version` was zero for both files and both feature markers were absent/empty.
+`runtime_payload_migrations` is a progress record, not a universal schema version. It contains `name TEXT PRIMARY KEY`, `cursor INTEGER`, `complete INTEGER`, `status TEXT`, `updated REAL`, and nullable `error TEXT`; key `payload-v1:tasks` records the progress of the removed task-output trim, which replaced oversized tails of old finished tasks in `runtime_tasks.record` with a preview and truncation flags; no current release writes it. It does not externalize task tails to blobs. The analytics legacy-file gate checks for legacy `analytics_*` tables in `canvas.sqlite3` and `analytics_meta.fileMigrationV1` in `analytics.sqlite3`. On a fresh disposable start `PRAGMA user_version` was zero for both files and both feature markers were absent/empty.
 
 The disposable `UsageIndex` has no migration version and may be deleted/rebuilt. Its schema from `codex_cost_usage.py` is `meta(key TEXT PRIMARY KEY,value TEXT)`, `rows(id TEXT PRIMARY KEY,seq,agent,thread,turn,at,record_agent,record_thread,record_turn,has_response,model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached,log_account TEXT,response_id TEXT,excluded INTEGER NOT NULL DEFAULT 0,group_key TEXT)`, `groups(key TEXT PRIMARY KEY,model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached,count INTEGER NOT NULL)`, and `receipts(account_key TEXT,thread_id TEXT,response_id TEXT,PRIMARY KEY(account_key,thread_id,response_id)) WITHOUT ROWID`. Unspecified declarations intentionally use SQLite's dynamic typing. Named indexes: `rows_turn(agent,thread,turn)`, `rows_record_turn(record_agent,record_turn,at DESC,seq DESC)`, `rows_record_thread(record_agent,record_thread,at DESC,seq DESC)`, partial `rows_model_turn(record_agent,record_turn,at DESC,seq DESC) WHERE model IS NOT NULL AND NOT excluded`, partial `rows_model_thread(record_agent,record_thread,at DESC,seq DESC) WHERE model IS NOT NULL AND NOT excluded`, and `rows_receipt(log_account,thread,response_id)`. It sets `cache_size=-8192` and `temp_store=FILE`; its default journal is SQLite's non-WAL mode. These are cache implementation details, not an in-place migration promise.
 
@@ -67,6 +67,21 @@ The supervisor does not set `PRAGMA user_version`; migrations inspect existing c
 The Rust supervisor reserves a `handles` row with `pid` 0 before it starts a child. If the start fails and no child remains, it closes that row with the `closed_reason` that `START_FAILED_REASON` in [`supervisor_journal.rs`](../workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs) owns. A later open of that handle then proceeds with any launch settings. A row that stays open with `pid` 0 means that a start can have reached the operating system, so recovery reports `missing-identity`. The Python supervisor reads the closed row as closed: it opens the handle again with the same launch settings and asks for recovery proof for different ones.
 
 Python writes JSON with `json.dumps`; some writers use compact separators and `ensure_ascii=False`, while ordinary record writes use their local defaults. No reader should depend on whitespace, escaping choice, or object key order. `codex_time.py` also emits UTC RFC 3339-like strings with millisecond precision and `Z`; other externally sourced date strings may carry offsets. SQLite's primary persisted runtime timestamps are numeric Unix seconds, not Python `datetime` objects.
+
+### Compressed text columns
+
+[`stored_text.rs`](../workspaces/runtime/packages/runtime-store/src/stored_text.rs)
+owns the stored form of `runtime_item_fulltext.body`. The column keeps its
+declared `TEXT` type, but a value is either plain TEXT, as older releases wrote
+it, or a BLOB in stored format 1: the version byte `0x01` and then exactly one
+zstd frame (RFC 8878) that declares its content size and carries a content
+checksum, without a dictionary. The decoded text is byte-identical to the text
+that was written. Readers accept both forms and refuse an unknown version
+byte, a damaged frame, a missing checksum or content size, and a declared size
+above `STORED_TEXT_MAX_DECODED_BYTES`. A release that only reads plain TEXT
+refuses a compressed body as an invalid stored object; it does not misread it.
+`length(body)` and `typeof(body)` therefore describe the stored form, not the
+text.
 
 ### Connection recovery request receipt
 

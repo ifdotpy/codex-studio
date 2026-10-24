@@ -1,3 +1,4 @@
+import TeamBudget from "./components/agents/TeamBudget";
 import { EdgeRail } from "./components/edge-rail/EdgeRail";
 import { useEdgeRail } from "./components/edge-rail/useEdgeRail";
 import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
@@ -143,6 +144,7 @@ import {
   type StudioPreferences,
 } from "./studioPreferences";
 import { type OutgoingMessage } from "./sync/send";
+import { mergeOutgoing } from "./components/message-delivery/messageDelivery";
 import { useServerDrafts as useSyncedDrafts } from "./servers/ServerServicesContext";
 import {
   ChatWaitSource,
@@ -203,6 +205,7 @@ import { useWorkerModels } from "./components/agents/WorkerModelPicker";
 import { UnifiedAgentSettings } from "./components/agents/UnifiedAgentSettings";
 import { FederationSettings } from "./components/FederationSettings";
 import { LinuxVMSettings } from "./components/LinuxVMSettings";
+import { SignInPushSettings } from "./components/SignInPushSettings";
 import { OrchestrationSettings } from "./components/OrchestrationSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import ProviderUpdateSettings from "./components/ProviderUpdateSettings";
@@ -342,23 +345,10 @@ export default function App({ active = true }: { active?: boolean }) {
     );
     void editOutboxDisplay(id, text).catch(() => {});
   }, []);
-  const outgoingMessages = useMemo(() => {
-    const visibleSends = new Map(
-      outbox.entries
-        .filter(
-          (entry) =>
-            entry.displayPending === true ||
-            (entry.displayPending !== false && entry.status !== "accepted"),
-        )
-        .map((entry) => [entry.id, entry as OutgoingMessage]),
-    );
-    for (const entry of Object.values(outgoing))
-      if (entry.status === "sending" || !visibleSends.has(entry.id))
-        visibleSends.set(entry.id, entry);
-    return [...visibleSends.values()].filter(
-      (entry) => !observedSends.current.has(entry.id),
-    );
-  }, [outbox.entries, outgoing]);
+  const outgoingMessages = useMemo(
+    () => mergeOutgoing(outbox.entries, outgoing, observedSends.current),
+    [outbox.entries, outgoing],
+  );
   const [livePhase, setLivePhase] = useState<{
     id: string | null;
     label: string;
@@ -2572,6 +2562,7 @@ export default function App({ active = true }: { active?: boolean }) {
             <X size={16} />
           </ActionIcon>
         </div>
+        {lead && <TeamBudget key={lead.id} lead={lead} members={workers} />}
         <TeamSummary
           workers={workers}
           answers={answerIds}
@@ -2728,7 +2719,7 @@ export default function App({ active = true }: { active?: boolean }) {
       >
         Chat settings
       </Menu.Item>
-      {!!workers.length && (
+      {!!lead && (
         <Menu.Item
           id="chat-actions-team"
           aria-label="Team"
@@ -2878,7 +2869,7 @@ export default function App({ active = true }: { active?: boolean }) {
       <EdgeRail
         geometry={railGeometry}
         team={
-          workers.length
+          lead
             ? {
                 busy: workers.filter((worker) => busy.has(worker.status ?? ""))
                   .length,
@@ -3009,7 +3000,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 <Settings2 size={18} />
               </ActionIcon>
             )}
-            {!railGeometry && !!workers.length && (
+            {!railGeometry && !!lead && (
               <Button
                 leftSection={<Users size={16} />}
                 id="team-toggle"
@@ -3317,7 +3308,7 @@ export default function App({ active = true }: { active?: boolean }) {
           data-ready={workspacePanelSlot ? "yes" : "no"}
           data-layout-mode={rowLayout.panelLayout.mode}
         />
-        {!!workers.length &&
+        {!!lead &&
           (narrowTeam ? (
             <Drawer
               opened={teamOpen}
@@ -3828,6 +3819,9 @@ export default function App({ active = true }: { active?: boolean }) {
             </Tabs.Panel>
             <Tabs.Panel value="linux-vm" pt="md">
               <LinuxVMSettings active={studioSettingsOpen} />
+            </Tabs.Panel>
+            <Tabs.Panel value="phone-alerts" pt="md" keepMounted={false}>
+              <SignInPushSettings active={studioSettingsOpen} />
             </Tabs.Panel>
             <Tabs.Panel value="hotkeys" pt="md">
               <section className="settings-group" aria-label="Sidebar shortcut">

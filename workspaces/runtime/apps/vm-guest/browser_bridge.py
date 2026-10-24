@@ -25,9 +25,15 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 import uuid
 
 from browser_policy import PolicyError, Provider, StartPage, classify, provider
+from shared_values_generated import (SIGN_IN_JOINED_SIGNED_IN_REASON, SIGN_IN_JOINED_STATE, SIGN_IN_NOT_SENT_CODE,
+                                     SIGN_IN_OPEN_LIMIT_SECONDS)
 
 SOCKET = Path("/run/codex-studio-browser/open.sock")
 TTL_SECONDS = 600
+# A pending request whose command still listens gets a new deadline when its current one is at
+# most this many seconds away: one request time from now, at most SIGN_IN_OPEN_LIMIT_SECONDS
+# from its creation (docs/vm-browser-bridge.md, "Card lifetime").
+EXTEND_BEFORE_SECONDS = TTL_SECONDS / 2
 KEEP_SECONDS = 3600
 LIMIT_WINDOW_SECONDS = 600
 LIMIT_COUNT = 6
@@ -39,7 +45,11 @@ MAX_RELAYS = 5
 BODY_LIMIT = 256 * 1024
 HEAD_LIMIT = 64 * 1024
 SENT_HEADERS = ("user-agent", "accept", "accept-language")
-OPEN_STATES = frozenset({"pending", "approved"})
+# A joined request waits on the open request of another chat with the same Linux user, sign-in
+# host and client (its `joinedTo`) instead of a card of its own (docs/vm-browser-bridge.md,
+# "One card for the same sign-in").
+OPEN_STATES = frozenset({"pending", "approved", SIGN_IN_JOINED_STATE})
+CARD_STATES = frozenset({"pending", "approved"})
 # States after which the same link of a chat can queue again.
 REOPEN_STATES = frozenset({"stale", "expired", "replaced"})
 # The listener addresses that a connection to 127.0.0.1 or ::1 can reach.
@@ -94,13 +104,28 @@ def parse_listeners(text: str) -> list[Listener]:
     return rows
 
 
-def proc_listeners(root: Path = Path("/proc/net")) -> list[Listener]:
+def proc_listeners(root: Path = Path("/proc/net")) -> list[Listener] | None:
+    """The listeners of the guest, or None when /proc could not be read: the listeners are
+    unknown, which is not the same as no listener."""
     rows: list[Listener] = []
     for name in ("tcp", "tcp6"):
         try:
             rows += parse_listeners((root / name).read_text())
+        except FileNotFoundError:
+            if name == "tcp":
+                return None
+            # A guest without IPv6 has no tcp6 table.
         except OSError:
-            continue
+            return None
+    return rows
+
+
+def known(rows: list[Listener] | None) -> list[Listener]:
+    """The listeners for a step that must not guess: unknown listeners refuse with a
+    retryable error, and the request stays open."""
+    if rows is None:
+        raise BridgeError(SIGN_IN_NOT_SENT_CODE,
+                          "Studio could not read the listening ports of this computer. Try again")
     return rows
 
 
@@ -174,9 +199,30 @@ def _clean_headers(headers: object) -> dict[str, str]:
     return result
 
 
+def listening_deadline(item: dict[str, Any], now: float) -> float | None:
+    """The new deadline of a pending request whose command still listens, or None to keep it:
+    one request time from now, at most SIGN_IN_OPEN_LIMIT_SECONDS from its creation."""
+    limit = item["createdAt"] + SIGN_IN_OPEN_LIMIT_SECONDS
+    rolled = min(now + TTL_SECONDS, limit)
+    if rolled > item["expiresAt"] and (rolled - item["expiresAt"] >= EXTEND_BEFORE_SECONDS or rolled >= limit):
+        return rolled
+    return None
+
+
+def _signed_in(item: dict[str, Any]) -> bool:
+    """Whether the sign-in of a request that ended finished: the command took a relayed result,
+    a device page opened, or the person approved the card and its command then stopped
+    listening."""
+    if item["state"] == "closed":
+        return item.get("closeReason") == "completed"
+    if item["state"] == "opened":
+        return True
+    return item["state"] == "stale" and isinstance(item.get("lease"), dict)
+
+
 class BrowserBridge:
     def __init__(self, state: Path, context: Context, *,
-                 listeners: Callable[[], list[Listener]] = proc_listeners,
+                 listeners: Callable[[], list[Listener] | None] = proc_listeners,
                  http_providers: frozenset[str] = frozenset(),
                  clock: Callable[[], float] = time.time):
         self.context, self.listeners, self.http_providers, self.clock = context, listeners, http_providers, clock
@@ -243,7 +289,8 @@ class BrowserBridge:
             if not isinstance(value, dict) or value.get("v") != 1:
                 raise BridgeError("invalid_request", "Use protocol version 1")
             item = await self.open(uid, value.get("url"), value.get("session"))
-            return {"ok": True, "id": item["id"], "host": item["host"]}
+            return {"ok": True, "id": item["id"], "host": item["host"],
+                    "joined": item["state"] == SIGN_IN_JOINED_STATE}
         except BridgeError as error:
             return {"ok": False, "code": error.code, "message": str(error)}
         except PolicyError as error:
@@ -292,6 +339,17 @@ class BrowserBridge:
                 return item
         return None
 
+    def _leader(self, uid: int, agent: str, final: Provider, now: float) -> str | None:
+        """The oldest open request of another chat with the same Linux user, sign-in host and
+        client, while it can still answer. A device code page has no client and never joins."""
+        if final.client_id is None:
+            return None
+        open_requests = [item for item in self.items.values()
+                         if item["state"] in CARD_STATES and item["agentId"] != agent and item["uid"] == uid
+                         and item["host"] == final.host and item.get("clientId") == final.client_id
+                         and now <= item["expiresAt"]]
+        return min(open_requests, key=lambda item: item["createdAt"])["id"] if open_requests else None
+
     async def queue(self, uid: int, url: object, agent: str, context: dict[str, Any]) -> dict[str, Any]:
         # A native chat names itself by its session; the context gives its Studio chat.
         agent = str(context.get("agentId") or agent)
@@ -309,7 +367,7 @@ class BrowserBridge:
         if isinstance(checked, StartPage):
             start_url = checked.url
             parts = urlsplit(checked.url)
-            address = connect_address(uid, checked.port, self.listeners())
+            address = connect_address(uid, checked.port, known(self.listeners()))
             target = (parts.path or "/") + ("?" + parts.query if parts.query else "")
             reply = await asyncio.to_thread(fetch, address, checked.port, target,
                                             {"Host": parts.netloc, "Accept": "text/html"},
@@ -321,20 +379,23 @@ class BrowserBridge:
         else:
             final = checked
         if final.redirect is not None:
-            connect_address(uid, final.redirect.port, self.listeners())
+            connect_address(uid, final.redirect.port, known(self.listeners()))
         async with self.changed:
             existing = self._existing(agent, url, now)
             if existing is not None:
                 return existing
-            # The latest link of a chat replaces its earlier pending link.
+            leader = self._leader(uid, agent, final, now)
+            # The latest link of a chat replaces its earlier pending or joined link.
             for item in self.items.values():
-                if item["agentId"] == agent and item["state"] == "pending":
+                if item["agentId"] == agent and item["state"] in {"pending", SIGN_IN_JOINED_STATE}:
                     self._update(item, state="replaced")
             item = {"id": uuid.uuid4().hex, "agentId": agent, "projectId": context.get("projectId"),
                     "uid": uid, "linuxUser": context.get("owner"), "url": final.url, "startUrl": start_url,
                     "host": final.host, "redirect": final.redirect.record() if final.redirect else None,
                     "clientId": final.client_id, "scope": final.scope, "state": "pending",
                     "createdAt": now, "expiresAt": now + TTL_SECONDS, "relays": 0, "lease": None}
+            if leader is not None:
+                item.update(state=SIGN_IN_JOINED_STATE, joinedTo=leader)
             self.items[item["id"]] = item
             self._update(item)
             self._save()
@@ -415,8 +476,9 @@ class BrowserBridge:
             self._update(item, state="opened")
             self._save()
             return {"state": "opened", "lease": None}
+        rows = known(self.listeners())
         try:
-            connect_address(item["uid"], redirect["port"], self.listeners())
+            connect_address(item["uid"], redirect["port"], rows)
         except BridgeError as error:
             self._update(item, state="stale")
             self._save()
@@ -439,7 +501,7 @@ class BrowserBridge:
                 or (parts.path or "/") != lease["path"] or len(target) > 8192:
             raise BridgeError("invalid_params", "Only the sign-in redirect path can pass")
         port = int(lease["port"])
-        address = connect_address(item["uid"], port, self.listeners())
+        address = connect_address(item["uid"], port, known(self.listeners()))
         host = ("[::1]" if lease["host"] == "::1" else lease["host"]) + ":" + str(port)
         headers = {"Host": host, **_clean_headers(params.get("headers")), "Connection": "close"}
         async with self.changed:
@@ -456,27 +518,64 @@ class BrowserBridge:
                 "body": base64.b64encode(reply.body).decode(), "done": done}
 
     async def check(self) -> None:
-        """Mark requests whose time ran out or whose tool stopped listening."""
+        """Mark requests whose time ran out or whose tool stopped listening. A pending request
+        whose tool still listens stays open up to SIGN_IN_OPEN_LIMIT_SECONDS."""
         async with self.changed:
-            now, rows, changed = self.clock(), None, False
+            now, rows, probed, changed = self.clock(), None, False, False
             for item in self.items.values():
                 if item["state"] not in OPEN_STATES:
                     continue
                 expires = (item.get("lease") or {}).get("expiresAt", item["expiresAt"])
+                # None: no loopback redirect, or unknown listeners (the probe failed). Unknown
+                # listeners neither make a request stale nor move its deadline.
+                redirect, listening = item.get("redirect"), None
+                if redirect is not None:
+                    if not probed:
+                        rows, probed = self.listeners(), True
+                    if rows is not None:
+                        try:
+                            connect_address(item["uid"], redirect["port"], rows)
+                            listening = True
+                        except BridgeError:
+                            listening = False
+                if item["state"] in {"pending", SIGN_IN_JOINED_STATE} and listening:
+                    deadline = listening_deadline(item, now)
+                    if deadline is not None:
+                        self._update(item, expiresAt=deadline)
+                        changed, expires = True, deadline
                 if now > expires:
                     self._update(item, state="expired")
                     changed = True
-                    continue
-                redirect = item.get("redirect")
-                if redirect is not None:
-                    rows = self.listeners() if rows is None else rows
-                    try:
-                        connect_address(item["uid"], redirect["port"], rows)
-                    except BridgeError:
-                        self._update(item, state="stale")
-                        changed = True
+                elif listening is False:
+                    self._update(item, state="stale")
+                    changed = True
+            changed |= self._settle_joined()
             if changed:
                 self._save()
+
+    def _settle_joined(self) -> bool:
+        """End the joined requests whose card ended: closed as signed in when its sign-in
+        finished, else the oldest joined request becomes the card and the others wait on it."""
+        waiting: dict[str, list[dict[str, Any]]] = {}
+        for item in self.items.values():
+            if item["state"] == SIGN_IN_JOINED_STATE:
+                waiting.setdefault(item.get("joinedTo") or "", []).append(item)
+        changed = False
+        for leader_id, joined in waiting.items():
+            leader = self.items.get(leader_id)
+            if leader is not None and leader["state"] in OPEN_STATES:
+                continue
+            changed = True
+            if leader is not None and _signed_in(leader):
+                for item in joined:
+                    self._update(item, state="closed", closeReason=SIGN_IN_JOINED_SIGNED_IN_REASON)
+                continue
+            joined.sort(key=lambda item: item["createdAt"])
+            card, rest = joined[0], joined[1:]
+            self._update(card, state="pending", joinedTo=None)
+            for item in rest:
+                self._update(item, joinedTo=card["id"])
+        return changed
 
     async def check_loop(self) -> None:
         while True:

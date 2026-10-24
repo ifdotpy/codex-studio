@@ -347,6 +347,75 @@ async fn a_lost_relay_reply_is_unknown_and_never_sent_again() {
 }
 
 #[tokio::test]
+async fn a_relay_that_the_bridge_did_not_send_keeps_the_card_waiting_for_a_retry() {
+    let (_dir, store, id) = store(LINK, redirect()).await;
+    let refused_once = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let first = Arc::clone(&refused_once);
+    let guest = approve_then(move |params| {
+        if first.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            signed_in(params)
+        } else {
+            // The host bridge could not read its listeners and forwarded nothing.
+            Err(GuestError::Rejected {
+                code: Some(crate::browser_host::NOT_SENT_CODE.into()),
+                detail: Some("Studio could not read the listening ports of this computer".into()),
+                uncertain: false,
+            })
+        }
+    });
+    open_in_paste_mode(&store, &id, &guest).await;
+    let pasted = json!({"decision":"answer","result":"http://localhost:8000/?code=x&state=S1"});
+    let refused = answer(&store, &id, &pasted, context(Arc::clone(&guest), false)).await;
+    assert_eq!(
+        refusal(refused),
+        "Studio could not check the sign-in command now. Nothing was sent. Paste the address again."
+    );
+    let waiting = record(&store, &id);
+    assert_eq!(waiting["status"], "pending");
+    assert_eq!(waiting["params"]["phase"], "waiting");
+    assert!(
+        waiting["params"].get("paste").is_none(),
+        "a retry may paste"
+    );
+    assert!(waiting["params"].get("outcome").is_none());
+    let retried = answer(&store, &id, &pasted, context(Arc::clone(&guest), false))
+        .await
+        .expect("test step")
+        .expect("test step");
+    assert_eq!(retried.response, json!({"status":"answered"}));
+    assert_eq!(record(&store, &id)["params"]["outcome"], "signed-in");
+    assert_eq!(
+        guest.methods(),
+        vec!["browser.answer", "browser.callback", "browser.callback"],
+        "the refused relay closes nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_relay_that_failed_after_the_forward_started_stays_unknown() {
+    let (_dir, store, id) = store(LINK, redirect()).await;
+    // The command did not answer after the bridge sent the request to it.
+    let guest = approve_then(|_| {
+        Err(GuestError::Rejected {
+            code: Some("unavailable".into()),
+            detail: Some("The sign-in command did not answer on port 8000".into()),
+            uncertain: false,
+        })
+    });
+    open_in_paste_mode(&store, &id, &guest).await;
+    let pasted = json!({"decision":"answer","result":"http://localhost:8000/?code=x&state=S1"});
+    let failed = answer(&store, &id, &pasted, context(Arc::clone(&guest), false)).await;
+    assert!(refusal(failed).starts_with("The result of the sign-in is unknown."));
+    let unknown = record(&store, &id);
+    assert_eq!(unknown["status"], "uncertain");
+    assert_eq!(unknown["params"]["outcome"], "unknown");
+    assert_eq!(
+        guest.methods(),
+        vec!["browser.answer", "browser.callback", "browser.close"]
+    );
+}
+
+#[tokio::test]
 async fn decline_while_waiting_cancels_the_sign_in() {
     let (_dir, store, id) = store(LINK, redirect()).await;
     let guest = approve_then(signed_in);

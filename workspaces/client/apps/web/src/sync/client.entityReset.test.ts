@@ -90,6 +90,8 @@ vi.mock("./entityCacheStorage", () => ({
   holdEntityProjectionDatabaseLock: mocks.holdProjectionDatabaseLock,
   entityProjectionDatabaseName: (workspace: string, hash: string) =>
     `studio-entity-projection-${workspace}-${hash}`,
+  workspaceDatabaseName: (workspace: string, suffix = "") =>
+    `studio${workspace}${suffix}`,
 }));
 
 describe("entity pull reset wiring", () => {
@@ -113,6 +115,154 @@ describe("entity pull reset wiring", () => {
     mocks.transcriptInvalidation = undefined;
     mocks.connectionListener = undefined;
     mocks.invalidation = undefined;
+  });
+
+  it("reads a stored transcript only when the cache stays behind its own write", async () => {
+    const workspaceId = "6".repeat(32);
+    const rows = new Map<string, Record<string, unknown>>();
+    rows.set("transcript:agent", {
+      id: "transcript:agent",
+      seq: 1,
+      payload: JSON.stringify({
+        format: 2,
+        epoch: "epoch",
+        metadata: { truncated: false },
+        order: ["first", "second", "tool"],
+        itemRevisions: {},
+      }),
+    });
+    for (const [id, item] of [
+      ["first", { id: "first", role: "user" }],
+      ["second", { id: "second", role: "assistant" }],
+      ["tool", { id: "tool", toolStatus: "running" }],
+    ] as const)
+      rows.set(`transcript:item:agent:${id}`, {
+        id: `transcript:item:agent:${id}`,
+        seq: 1,
+        payload: JSON.stringify(item),
+      });
+    // RxDB delivers change events to collection subscribers during the write.
+    const listeners: ((event: { documentData: unknown }) => void)[] = [];
+    const storageInstance = {
+      findDocumentsById: vi.fn(async (ids: string[]) =>
+        ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
+      ),
+      bulkWrite: vi.fn(
+        async (writes: { document: Record<string, unknown> }[]) => {
+          for (const { document } of writes) {
+            rows.set(String(document.id), document);
+            for (const listener of listeners)
+              listener({ documentData: document });
+          }
+          return { error: [] };
+        },
+      ),
+    };
+    const projections = {
+      database: { name: "transcript-test" },
+      storageInstance,
+      $: {
+        subscribe: vi.fn(
+          (listener: (event: { documentData: unknown }) => void) => {
+            listeners.push(listener);
+            return { unsubscribe: vi.fn() };
+          },
+        ),
+      },
+    };
+    mocks.createRxDatabase
+      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+      .mockResolvedValueOnce({
+        addCollections: vi.fn(async () => ({ projections })),
+      });
+    mocks.syncGet.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (_key: string, callback: () => Promise<unknown>) => callback(),
+      },
+    });
+    const client = await import("./client");
+    const cache = await import("./transcriptCache");
+    const stored = [
+      { id: "first", role: "user" },
+      { id: "second", role: "assistant" },
+    ];
+    cache.cacheTranscriptValue(
+      workspaceId,
+      "agent",
+      {
+        truncated: false,
+        items: [...stored, { id: "tool", toolStatus: "running" }],
+      },
+      1,
+    );
+    const event = (
+      after: number,
+      items: Record<string, unknown>[],
+    ): ResourceChangeEvent => ({
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch",
+      revision: after + 1,
+      reason: "change",
+      resources: [{ kind: "transcript", agentId: "agent" }],
+      resourceVersions: [
+        {
+          revision: after + 1,
+          transcriptChanges: {
+            after,
+            through: after + 1,
+            delta: {
+              delta: true,
+              items: items as never,
+              removed: [],
+              itemRevisions: {},
+              truncated: false,
+            },
+          },
+        },
+      ],
+    });
+    const fullReads = () =>
+      storageInstance.findDocumentsById.mock.calls.filter(
+        ([ids]) =>
+          ids.length === 3 &&
+          ids.every((id) => id.startsWith("transcript:item:agent:")),
+      ).length;
+    const settle = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    };
+
+    // The writer patches its own cache entry, so no full read is needed.
+    await client.persistResourceEntityChanges(
+      event(1, [{ id: "tool", toolStatus: "completed" }]),
+      () => true,
+    );
+    await settle();
+    expect(fullReads()).toBe(0);
+    expect(cache.peekTranscript(workspaceId, "agent")).toEqual({
+      seq: 2,
+      payload: {
+        truncated: false,
+        items: [...stored, { id: "tool", toolStatus: "completed" }],
+      },
+    });
+
+    // A write that stops before its cache update is still read back once.
+    await client.persistResourceEntityChanges(
+      event(2, [{ id: "tool", toolStatus: "failed" }]),
+      () => rows.get("transcript:agent")?.seq !== 3,
+    );
+    await settle();
+    expect(fullReads()).toBe(1);
+    expect(cache.peekTranscript(workspaceId, "agent")?.seq).toBe(3);
+    expect(cache.peekTranscript(workspaceId, "agent")?.payload.items).toEqual([
+      ...stored,
+      { id: "tool", toolStatus: "failed" },
+    ]);
   });
 
   it("starts stale-cache cleanup only after matching schema confirmation", async () => {
@@ -407,6 +557,119 @@ describe("entity pull reset wiring", () => {
     },
   );
 
+  it("rebuilds a cached transcript that a stopped write left behind its durable base", async () => {
+    const workspaceId = "7".repeat(32);
+    const rows = new Map<string, Record<string, unknown>>();
+    rows.set("transcript:agent", {
+      id: "transcript:agent",
+      seq: 1,
+      payload: JSON.stringify({
+        format: 2,
+        epoch: "epoch",
+        metadata: { truncated: false },
+        order: ["tool"],
+        itemRevisions: {},
+      }),
+    });
+    rows.set("transcript:item:agent:tool", {
+      id: "transcript:item:agent:tool",
+      seq: 1,
+      payload: JSON.stringify({ id: "tool", toolStatus: "running" }),
+    });
+    const storageInstance = {
+      findDocumentsById: vi.fn(async (ids: string[]) =>
+        ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
+      ),
+      bulkWrite: vi.fn(
+        async (writes: { document: Record<string, unknown> }[]) => {
+          for (const { document } of writes)
+            rows.set(String(document.id), document);
+          return { error: [] };
+        },
+      ),
+    };
+    const projections = {
+      database: { name: "transcript-test" },
+      storageInstance,
+      $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
+    };
+    mocks.createRxDatabase
+      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+      .mockResolvedValueOnce({
+        addCollections: vi.fn(async () => ({ projections })),
+      });
+    mocks.syncGet.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (_key: string, callback: () => Promise<unknown>) => callback(),
+      },
+    });
+    const client = await import("./client");
+    const cache = await import("./transcriptCache");
+    cache.cacheTranscriptValue(
+      workspaceId,
+      "agent",
+      { truncated: false, items: [{ id: "tool", toolStatus: "running" }] },
+      1,
+    );
+    const event = (
+      after: number,
+      items: Record<string, unknown>[],
+    ): ResourceChangeEvent => ({
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch",
+      revision: after + 1,
+      reason: "change",
+      resources: [{ kind: "transcript", agentId: "agent" }],
+      resourceVersions: [
+        {
+          revision: after + 1,
+          transcriptChanges: {
+            after,
+            through: after + 1,
+            delta: {
+              delta: true,
+              items: items as never,
+              removed: [],
+              itemRevisions: {},
+              truncated: false,
+            },
+          },
+        },
+      ],
+    });
+    // The stream deadline expires after the durable write of revision 2 and
+    // before its cache update.
+    await client.persistResourceEntityChanges(
+      event(1, [
+        { id: "tool", toolStatus: "completed" },
+        { id: "steer", role: "user", clientMessageId: "steer" },
+      ]),
+      () => rows.get("transcript:agent")?.seq !== 2,
+    );
+    expect(rows.get("transcript:agent")?.seq).toBe(2);
+    expect(cache.peekTranscript(workspaceId, "agent")?.seq).toBe(1);
+
+    await client.persistResourceEntityChanges(
+      event(2, [{ id: "answer", role: "assistant" }]),
+      () => true,
+    );
+    expect(cache.peekTranscript(workspaceId, "agent")).toEqual({
+      seq: 3,
+      payload: {
+        truncated: false,
+        items: [
+          { id: "tool", toolStatus: "completed" },
+          { id: "steer", role: "user", clientMessageId: "steer" },
+          { id: "answer", role: "assistant" },
+        ],
+      },
+    });
+  });
+
   it.each([
     { liveBeforeConflict: false, stopDuringBackoff: false },
     { liveBeforeConflict: true, stopDuringBackoff: false },
@@ -429,14 +692,26 @@ describe("entity pull reset wiring", () => {
         ),
       };
       const subscription = { unsubscribe: vi.fn() };
+      // Explicit signals replace polling: under load a wall-clock timeout can
+      // expire before the next step, and fake time decides every retry delay.
+      const signal = () => {
+        let resolve!: () => void;
+        const promise = new Promise<void>((done) => (resolve = done));
+        return { promise, resolve };
+      };
+      const projectionWatched = signal();
+      const transcriptWatched = signal();
       const projections = {
         database: { name: `studio-entity-projection-${workspaceId}` },
         storageInstance,
         $: { subscribe: vi.fn(() => subscription) },
-        findOne: vi.fn(() => ({
-          exec: vi.fn(async () => null),
-          $: { subscribe: vi.fn(() => subscription) },
-        })),
+        findOne: vi.fn(() => {
+          projectionWatched.resolve();
+          return {
+            exec: vi.fn(async () => null),
+            $: { subscribe: vi.fn(() => subscription) },
+          };
+        }),
       };
       mocks.createRxDatabase
         .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
@@ -520,8 +795,10 @@ describe("entity pull reset wiring", () => {
       });
       mocks.watchResourceChanges.mockImplementation(
         (resource: unknown, listener: typeof mocks.invalidation) => {
-          if ((resource as { kind?: string }).kind === "transcript")
+          if ((resource as { kind?: string }).kind === "transcript") {
             mocks.transcriptInvalidation = listener;
+            transcriptWatched.resolve();
+          }
           return () => {};
         },
       );
@@ -536,111 +813,124 @@ describe("entity pull reset wiring", () => {
 
       const client = await import("./client");
       const accepted: Array<TranscriptPageData | null> = [];
+      const delivered = () =>
+        accepted.some((payload) =>
+          payload?.items.some((item) => item.text === "STUDIO_RUST_LUNA_OK"),
+        );
+      // The bound is fake time, so a slow machine cannot fail this wait.
+      const advanceUntil = async (condition: () => boolean) => {
+        for (let elapsed = 0; !condition(); elapsed += 10) {
+          if (elapsed >= 60_000)
+            throw new Error("The condition did not hold in 60 s of fake time.");
+          await vi.advanceTimersByTimeAsync(10);
+        }
+      };
       const failures: unknown[] = [];
       let resolveConflictReported!: () => void;
       const conflictReported = new Promise<void>((resolve) => {
         resolveConflictReported = resolve;
       });
-      const stop = client.subscribeTranscriptProjection(
-        "transcript:agent",
-        (payload) => {
-          accepted.push(payload);
-        },
-        (error) => {
+      const stops: Array<() => void> = [];
+      let restoreSetTimeout: (() => void) | undefined;
+      const subscribe = (
+        report: (error: unknown | null) => void = (error) =>
+          failures.push(error),
+      ) => {
+        const stopSubscription = client.subscribeTranscriptProjection(
+          "transcript:agent",
+          (payload) => {
+            accepted.push(payload);
+          },
+          report,
+        );
+        let stopped = false;
+        const stopOnce = () => {
+          if (stopped) return;
+          stopped = true;
+          stopSubscription();
+        };
+        stops.push(stopOnce);
+        return stopOnce;
+      };
+      try {
+        const stop = subscribe((error) => {
           failures.push(error);
           if (error instanceof mocks.ApiError && error.status === 409)
             resolveConflictReported();
-        },
-      );
-      await vi.waitFor(() => {
-        expect(mocks.transcriptInvalidation).toBeTypeOf("function");
+        });
+        await transcriptWatched.promise;
+        await projectionWatched.promise;
         expect(mocks.connectionListener).toBeTypeOf("function");
         expect(projections.findOne).toHaveBeenCalledWith("transcript:agent");
-      });
-      mocks.transcriptInvalidation?.();
-      await vi.waitFor(() => expect(pullCount).toBe(1), {
-        interval: 1,
-        timeout: 100,
-      });
-      await firstPull;
-      if (liveBeforeConflict) mocks.connectionListener?.("live");
-      vi.useFakeTimers();
-      if (stopDuringBackoff) {
-        const originalSetTimeout = globalThis.setTimeout;
-        vi.spyOn(globalThis, "setTimeout").mockImplementation(
-          (handler, timeout, ...args) => {
-            if (timeout === readRetryDelay(0)) retryTimerScheduled();
-            return originalSetTimeout(handler, timeout, ...args);
-          },
-        );
-      }
-      releaseFirstPull();
-      if (stopDuringBackoff) {
-        await retryTimer;
-        stop();
-        await vi.advanceTimersByTimeAsync(readRetryDelay(0));
-        expect(pullCount).toBe(1);
-
-        const stopReopened = client.subscribeTranscriptProjection(
-          "transcript:agent",
-          (payload) => accepted.push(payload),
-          (error) => failures.push(error),
-        );
-        await vi.waitFor(() =>
-          expect(projections.findOne).toHaveBeenCalledTimes(2),
-        );
         mocks.transcriptInvalidation?.();
-        await secondPull;
-        await vi.waitFor(() =>
-          expect(
-            accepted.some((payload) =>
-              payload?.items.some(
-                (item) => item.text === "STUDIO_RUST_LUNA_OK",
-              ),
-            ),
-          ).toBe(true),
-        );
-        expect(pullCount).toBe(2);
-        stopReopened();
-        return;
-      }
-      if (liveBeforeConflict) {
-        await vi.advanceTimersByTimeAsync(readRetryDelay(0));
-      } else {
-        await conflictReported;
-        mocks.connectionListener?.("live");
-      }
-      await livePull;
-      releaseLivePull();
-      await vi.advanceTimersByTimeAsync(
-        readRetryDelay(liveBeforeConflict ? 1 : 0),
-      );
-      await thirdPull;
-      await vi.waitFor(
-        () =>
-          expect(
-            accepted.some((payload) =>
-              payload?.items.some(
-                (item) => item.text === "STUDIO_RUST_LUNA_OK",
-              ),
-            ),
-          ).toBe(true),
-        { interval: 1, timeout: 100 },
-      );
+        await firstPull;
+        expect(pullCount).toBe(1);
+        if (liveBeforeConflict) mocks.connectionListener?.("live");
+        vi.useFakeTimers();
+        if (stopDuringBackoff) {
+          // Wrap the fake setTimeout by hand. A vi.spyOn restore would run
+          // again in afterEach and put this fake back after the clock is gone.
+          const fakeSetTimeout = globalThis.setTimeout;
+          restoreSetTimeout = () => {
+            globalThis.setTimeout = fakeSetTimeout;
+          };
+          globalThis.setTimeout = ((
+            handler: () => void,
+            timeout?: number,
+            ...args: unknown[]
+          ) => {
+            if (timeout === readRetryDelay(0)) retryTimerScheduled();
+            return fakeSetTimeout(handler, timeout, ...args);
+          }) as typeof setTimeout;
+        }
+        releaseFirstPull();
+        if (stopDuringBackoff) {
+          await retryTimer;
+          stop();
+          await vi.advanceTimersByTimeAsync(readRetryDelay(0));
+          expect(pullCount).toBe(1);
 
-      expect(pullCount).toBe(3);
-      expect(
-        accepted.some((payload) =>
-          payload?.items.some((item) => item.text === "STUDIO_RUST_LUNA_OK"),
-        ),
-      ).toBe(true);
-      expect(
-        failures.some(
-          (error) => error instanceof mocks.ApiError && error.status === 409,
-        ),
-      ).toBe(!liveBeforeConflict);
-      expect(failures.at(-1)).toBeNull();
-      stop();
+          const stopReopened = subscribe();
+          await advanceUntil(() => projections.findOne.mock.calls.length === 2);
+          mocks.transcriptInvalidation?.();
+          await secondPull;
+          await advanceUntil(delivered);
+          expect(pullCount).toBe(2);
+          stopReopened();
+          return;
+        }
+        if (liveBeforeConflict) {
+          await vi.advanceTimersByTimeAsync(readRetryDelay(0));
+        } else {
+          await conflictReported;
+          mocks.connectionListener?.("live");
+        }
+        await livePull;
+        releaseLivePull();
+        await vi.advanceTimersByTimeAsync(
+          readRetryDelay(liveBeforeConflict ? 1 : 0),
+        );
+        await thirdPull;
+        await advanceUntil(delivered);
+
+        expect(pullCount).toBe(3);
+        expect(delivered()).toBe(true);
+        expect(
+          failures.some(
+            (error) => error instanceof mocks.ApiError && error.status === 409,
+          ),
+        ).toBe(!liveBeforeConflict);
+        expect(failures.at(-1)).toBeNull();
+        stop();
+      } finally {
+        // A failed case must not leave pulls that use the next case's mocks.
+        releaseFirstPull();
+        releaseLivePull();
+        for (const stopSubscription of stops) stopSubscription();
+        // Remove the wrapper while the fake clock is installed, then the clock.
+        restoreSetTimeout?.();
+        vi.useRealTimers();
+      }
     },
   );
 

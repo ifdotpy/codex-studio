@@ -586,19 +586,12 @@ fn run_claude_status_with_timeout(
             terminate_claude_process_group(child);
             return Err("parser");
         }
-        let pid = rustix::process::Pid::from_raw(child.id() as i32).ok_or("spawn")?;
-        let exited = match rustix::process::waitid(
-            rustix::process::WaitId::Pid(pid),
-            rustix::process::WaitIdOptions::EXITED
-                | rustix::process::WaitIdOptions::NOHANG
-                | rustix::process::WaitIdOptions::NOWAIT,
-        ) {
-            Ok(status) => status.is_some(),
-            Err(rustix::io::Errno::INTR) => continue,
-            Err(_) => {
-                terminate_claude_process_group(child);
-                return Err("spawn");
-            }
+        // The leader stays unreaped, so its group can still be signalled. When
+        // its exit cannot be read, it may be reaped already: signal nothing.
+        let Ok(exited) =
+            studio_runtime_process::owned_process_group::exited_unreaped_now(child.id())
+        else {
+            return Err("spawn");
         };
         if exited && finished.load(std::sync::atomic::Ordering::Acquire) {
             break child

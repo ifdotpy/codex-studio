@@ -379,6 +379,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/agents/continue": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Post Message */
+    post: operations["continue_worker_api_agents_continue_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/agents/finder-view": {
     parameters: {
       query?: never;
@@ -1155,6 +1172,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/mcp/reconnect": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Reconnect one MCP server in one agent session */
+    post: operations["mcp_reconnect_api_mcp_reconnect_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/messages": {
     parameters: {
       query?: never;
@@ -1252,6 +1286,23 @@ export interface paths {
     get: operations["monitor_log_api_monitor_log_get"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/monitor/restart": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Confirm a monitor restart with narrower output patterns */
+    post: operations["restart_monitor_api_monitor_restart_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1853,6 +1904,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/studio-errors": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Studio Errors Read */
+    get: operations["studio_errors_read_api_studio_errors_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio-errors/dismiss": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Studio Errors Dismiss */
+    post: operations["studio_errors_dismiss_api_studio_errors_dismiss_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/sync/drafts": {
     parameters: {
       query?: never;
@@ -1981,6 +2066,40 @@ export interface paths {
     };
     /** Task Detail */
     get: operations["task_detail_api_task_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/task/output": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read bounded task output within its owner workspace */
+    get: operations["task_output_api_task_output_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/team-budget": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Processes */
+    get: operations["team_budget_api_team_budget_get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -2529,6 +2648,57 @@ export interface paths {
     put?: never;
     /** Submit */
     post: operations["submit_api_voice_submit_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/web-push": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Web Push State */
+    get: operations["web_push_state_api_web_push_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/web-push/remove": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Web Push Remove */
+    post: operations["web_push_remove_api_web_push_remove_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/web-push/subscriptions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Web Push Subscribe */
+    post: operations["web_push_subscribe_api_web_push_subscriptions_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -3914,8 +4084,10 @@ export interface components {
       archived?: boolean | null;
       /** Autowake */
       autoWake?: boolean | null;
+      budgetBlocked?: string | null;
       /** Cansend */
       canSend?: boolean | null;
+      capabilityProfile?: components["schemas"]["WorkerCapabilitiesDto"] | null;
       capacityRetry?:
         | components["schemas"]["AgentEntityCapacityRetryDto"]
         | null;
@@ -3936,6 +4108,7 @@ export interface components {
       commandProgress?: components["schemas"]["AgentCommandProgress"][];
       /** Compactions */
       compactions?: number | null;
+      completedWorkerTurns?: number | null;
       /** Concurrency */
       concurrency?: number | null;
       connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
@@ -4117,10 +4290,13 @@ export interface components {
       subagentConcurrencyVersion?: number | null;
       /** Tail */
       tail?: null | string;
+      terminalReason?: string | null;
       /** Threadid */
       threadId?: null | string;
+      tokenBudget?: number | null;
       /** Tokensused */
       tokensUsed?: number | null;
+      tokenUsageAccounting?: string | null;
       /** Turnid */
       turnId?: null | string;
       turnStatus?: components["schemas"]["AgentStatus"] | null;
@@ -4133,6 +4309,9 @@ export interface components {
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
       /** Workspacebackend */
       workspaceBackend?: ("asif" | "vm") | null;
+      workspaceCleanupIntent?:
+        | components["schemas"]["WorkspaceCleanupSummaryDto"]
+        | null;
       /** Workspacemode */
       workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
@@ -9000,6 +9179,8 @@ export interface components {
       managed: components["schemas"]["JsonValue"][];
       /** Mcp */
       mcp: components["schemas"]["JsonValue"][];
+      /** @default null */
+      mcpSession?: components["schemas"]["McpSessionBinding"] | null;
       /** Model */
       model: string;
       /** Nativeinventory */
@@ -14361,11 +14542,16 @@ export interface components {
        * @default null
        */
       output?: null | string;
+      outputFile?: string | null;
+      outputPatterns?: string[];
       /**
        * Outputtruncated
        * @default false
        */
       outputTruncated?: boolean;
+      outputWakeBudget?:
+        | components["schemas"]["MonitorOutputWakeBudget"]
+        | null;
       /**
        * Source
        * @enum {string}
@@ -14388,6 +14574,25 @@ export interface components {
        * @default null
        */
       stdinError?: null | string;
+    };
+    McpReconnectRequest: {
+      id: string;
+      name: string;
+      /** Format: uuid */
+      request_id: string;
+      session: components["schemas"]["McpSessionBinding"];
+    };
+    McpReconnectResponse: {
+      message: string;
+      /** @enum {string} */
+      status: "completed" | "failed" | "unknown";
+    };
+    McpSessionBinding: {
+      account: string;
+      connection: string;
+      epoch: number;
+      generation: number;
+      thread: string;
     };
     /** MessageHistory */
     MessageHistory: components["schemas"]["MessageRecord"][];
@@ -14648,11 +14853,15 @@ export interface components {
        * @default null
        */
       name?: null | string;
+      outputPatterns?: string[];
       /**
        * Outputtruncated
        * @default null
        */
       outputTruncated?: boolean | null;
+      outputWakeBudget?:
+        | components["schemas"]["MonitorOutputWakeBudget"]
+        | null;
       /**
        * Processid
        * @default null
@@ -14747,6 +14956,12 @@ export interface components {
        * @default
        */
       text?: string;
+    };
+    /** @description Public output wake budget. The monitor matcher owns the stored budget. Tokens count available output wake batches. */
+    MonitorOutputWakeBudget: {
+      paused: boolean;
+      tokens: number;
+      totalSuppressedMatches: number;
     };
     /** MonitorRecordResponse */
     MonitorRecordResponse: {
@@ -14931,6 +15146,14 @@ export interface components {
       wakeOn?: string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
+    };
+    MonitorRestartRequest: {
+      accountKey: string;
+      agent: string;
+      epoch: number;
+      id: string;
+      outputPatterns: string[];
+      requestId: string;
     };
     /**
      * MonitorState
@@ -19283,27 +19506,55 @@ export interface components {
      */
     RequestParamsDto: {
       changes?: components["schemas"]["JsonValue"] | null;
+      /** Clientid */
+      clientId?: null | string;
       /** Command */
       command?: string[] | null | string;
       /** Cwd */
       cwd?: null | string;
+      /** Expiresat */
+      expiresAt?: null | number;
+      /** Host */
+      host?: null | string;
+      /** Linuxuser */
+      linuxUser?: null | string;
       /** Message */
       message?: null | string;
+      /** Paste */
+      paste?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       /** Permissions */
       permissions?: {
         [key: string]: components["schemas"]["JsonValue"];
       } | null;
+      /** Phase */
+      phase?: null | string;
       /** Questions */
       questions?: components["schemas"]["RequestQuestionDto"][] | null;
       /** Reason */
       reason?: null | string;
+      /** Redirect */
+      redirect?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       requestedSchema?: components["schemas"]["RequestSchemaDto"] | null;
+      /** Scope */
+      scope?: null | string;
+      /** Source */
+      source?: null | string;
       /** Threadid */
       threadId?: null | string;
       /** Turnid */
       turnId?: null | string;
       /** Url */
       url?: null | string;
+      /** Usercode */
+      userCode?: null | string;
+      /** Waiting */
+      waiting?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -22445,6 +22696,85 @@ export interface components {
       /** Waitingfor */
       waitingFor?: components["schemas"]["JsonValue"][] | null;
     };
+    /**
+     * StudioError
+     * @description One agent work item that ended because of a Studio error, not because of the agent's own work.
+     */
+    StudioError: {
+      /**
+       * Action
+       * @description resume runs connection recovery for the agent; check opens the agent for the owner.
+       * @enum {string}
+       */
+      action: "resume" | "check";
+      /** Agentid */
+      agentId: string;
+      /** Agentname */
+      agentName: string;
+      /**
+       * At
+       * @description Unix seconds of the failure.
+       */
+      at: number;
+      /**
+       * Detail
+       * @description The stored error.
+       */
+      detail: string;
+      /**
+       * Eventid
+       * @default null
+       */
+      eventId?: string | null;
+      /**
+       * Id
+       * @description Row identity; dismissing it hides this row only.
+       */
+      id: string;
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind:
+        | "monitor_outcome_lost"
+        | "monitor_not_recorded"
+        | "input_not_sent"
+        | "input_unconfirmed"
+        | "input_uncertain"
+        | "input_stuck"
+        | "turn_disconnected"
+        | "workspace_failed";
+      /**
+       * Monitorid
+       * @default null
+       */
+      monitorId?: string | null;
+      /**
+       * Reason
+       * @description The reason in plain words.
+       */
+      reason: string;
+      /**
+       * Subject
+       * @description The command or the start of the message.
+       */
+      subject: string;
+    };
+    /** StudioErrorsResponse */
+    StudioErrorsResponse: {
+      /**
+       * Syncentities
+       * @default null
+       */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
+      /** Items */
+      items: components["schemas"]["StudioError"][];
+    };
     /** SummaryAccount */
     SummaryAccount: {
       /**
@@ -23166,6 +23496,7 @@ export interface components {
        * @default null
        */
       name?: null | string;
+      outputFile?: string | null;
       /**
        * Outputtruncated
        * @default null
@@ -23257,6 +23588,7 @@ export interface components {
       log?: null | string;
       /** Name */
       name?: null | string;
+      outputFile?: string | null;
       /** Outputtruncated */
       outputTruncated?: boolean | null;
       /** Processid */
@@ -23304,6 +23636,12 @@ export interface components {
      * @enum {string}
      */
     TaskKind: "monitor" | "command" | "tool";
+    TaskOutputResponse: {
+      id: string;
+      outputFile: string;
+      text: string;
+      truncated: boolean;
+    };
     /** TaskResource */
     TaskResource: {
       /**
@@ -23349,6 +23687,21 @@ export interface components {
       /** @constant */
       limit: 3;
       retryAllowed: boolean;
+    };
+    TeamBudgetSummary: {
+      incomplete: {
+        agentId: string;
+        reason: string;
+      }[];
+      reached: boolean;
+      retainedWorktrees?: {
+        cleanup: components["schemas"]["WorkspaceCleanupSummaryDto"];
+        id: string;
+        name?: string | null;
+      }[];
+      rootId: string;
+      tokenBudget: number | null;
+      tokensUsed?: number;
     };
     /** TerminalClose */
     TerminalClose: {
@@ -26101,6 +26454,60 @@ export interface components {
       canvas: components["schemas"]["WalCheckpoint"] | null;
     };
     /**
+     * WebPushRemoveRequest
+     * @description Stop the sign-in pushes of one device.
+     */
+    WebPushRemoveRequest: {
+      /** Id */
+      id: string;
+    };
+    /** WebPushRemoveResponse */
+    WebPushRemoveResponse: {
+      /** Removed */
+      removed: boolean;
+    };
+    /**
+     * WebPushState
+     * @description The server's VAPID public key for PushManager.subscribe and the subscribed devices (docs/web-push.md).
+     */
+    WebPushState: {
+      /** Publickey */
+      publicKey: string;
+      /**
+       * Ready
+       * @description The server has an https remote access origin, so a push can name its contact.
+       */
+      ready: boolean;
+      /** Subscriptions */
+      subscriptions: components["schemas"]["WebPushSubscription"][];
+    };
+    /**
+     * WebPushSubscribeRequest
+     * @description A PushSubscription of this device: its endpoint and keys (base64url), and a device name.
+     */
+    WebPushSubscribeRequest: {
+      /** Auth */
+      auth: string;
+      /** Device */
+      device: string;
+      /** Endpoint */
+      endpoint: string;
+      /** P256Dh */
+      p256dh: string;
+    };
+    /**
+     * WebPushSubscription
+     * @description One device of the owner that gets sign-in pushes. The endpoint and keys stay on the server.
+     */
+    WebPushSubscription: {
+      /** Created */
+      created: number;
+      /** Device */
+      device: string;
+      /** Id */
+      id: string;
+    };
+    /**
      * WhoisStatus
      * @enum {string}
      */
@@ -26436,6 +26843,17 @@ export interface components {
         | null;
       /** Title */
       title?: null | string;
+    };
+    WorkerCapabilitiesDto: {
+      allowedTools?: string[] | null;
+      disallowedTools?: string[] | null;
+      maxTurns?: number | null;
+      mcpServers?: string[] | null;
+      skills?: string[] | null;
+    };
+    WorkerContinueRequest: {
+      id: string;
+      request_id: string;
     };
     /** WorkerDefaults */
     WorkerDefaults: {
@@ -26807,6 +27225,11 @@ export interface components {
       text: string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
+    };
+    WorkspaceCleanupSummaryDto: {
+      path: string | null;
+      phase: string;
+      reason: string | null;
     };
     /** WorkspaceEntityDto */
     WorkspaceEntityDto: {
@@ -29148,6 +29571,69 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
+  continue_worker_api_agents_continue_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["WorkerContinueRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["studio_api__work__models__MessageReceipt"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
   finder_view_api_agents_finder_view_get: {
     parameters: {
       query: {
@@ -29567,6 +30053,8 @@ export interface operations {
     parameters: {
       query?: {
         agent?: string;
+        fresh?: boolean;
+        serversCursor?: string;
       };
       header?: never;
       path?: never;
@@ -31935,6 +32423,79 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
+  mcp_reconnect_api_mcp_reconnect_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["McpReconnectRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          ETag: components["headers"]["ETag"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["McpReconnectResponse"];
+        };
+      };
+      /** @description Not Modified */
+      304: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          ETag: components["headers"]["ETag"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
   messages_api_messages_get: {
     parameters: {
       query?: {
@@ -32367,6 +32928,69 @@ export interface operations {
       429: components["responses"]["ApiError429"];
       /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  restart_monitor_api_monitor_restart_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["MonitorRestartRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MonitorActionResult"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
@@ -35407,6 +36031,114 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
+  studio_errors_read_api_studio_errors_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StudioErrorsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  studio_errors_dismiss_api_studio_errors_dismiss_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["IdRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StudioErrorsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
   push_drafts_api_sync_drafts_post: {
     parameters: {
       query?: never;
@@ -35789,6 +36521,101 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["TaskDetailResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  task_output_api_task_output_get: {
+    parameters: {
+      query: {
+        agent: string;
+        id?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TaskOutputResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  team_budget_api_team_budget_get: {
+    parameters: {
+      query: {
+        agent: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TeamBudgetSummary"];
         };
       };
       /** @description Bad Request */
@@ -37629,6 +38456,177 @@ export interface operations {
       403: components["responses"]["ApiError403"];
       /** @description Not Found */
       404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  web_push_state_api_web_push_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WebPushState"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  web_push_remove_api_web_push_remove_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["WebPushRemoveRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WebPushRemoveResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  web_push_subscribe_api_web_push_subscriptions_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["WebPushSubscribeRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WebPushSubscription"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
       /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
       /** @description Conflict */

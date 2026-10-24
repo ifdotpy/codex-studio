@@ -9,6 +9,10 @@ Use these environment variables for output outside the source folder:
 - `HOST_EXEC_PACKAGE_CACHE`: the slot's stable package folder.
 - `HOST_EXEC_ARTIFACTS`: files to return to the agent.
 
+A command also gets `BROWSER`, `STUDIO_BROWSER_SOCKET` and `STUDIO_BROWSER_SESSION`. A sign-in
+that the command opens in a browser then shows a card in the calling chat, and its result
+goes to the command on the Mac ([VM browser bridge](vm-browser-bridge.md), "Native chats").
+
 `HOST_EXEC_STATE` is the ID of the layr state that the slot holds: the guest saves the line
 and writes that state into the slot before the command. The `.git` folder of the slot is the
 line's git layer and can name an older commit; use this ID to identify the sources.

@@ -93,6 +93,7 @@ import {
 import {
   deleteOtherEntityProjectionDatabases,
   entityProjectionDatabaseName,
+  workspaceDatabaseName,
   holdEntityProjectionDatabaseLock,
 } from "./entityCacheStorage";
 
@@ -308,7 +309,7 @@ export function createSyncClient(options: SyncClientOptions) {
     };
     setWorkspace(workspaceId);
     const db = await createRxDatabase({
-      name: `studio${workspaceId}${serverDatabaseSuffix}`,
+      name: workspaceDatabaseName(workspaceId, serverDatabaseSuffix),
       storage: getRxStorageDexie(),
       multiInstance: true,
     });
@@ -365,7 +366,12 @@ export function createSyncClient(options: SyncClientOptions) {
     db.projections.$.subscribe((event) => {
       const doc = event.documentData;
       if (doc.id.startsWith("transcript:") && doc.id.split(":").length === 2)
-        void cacheStoredTranscript(db.projections, workspaceId, doc.id, doc);
+        cacheStoredTranscriptAfterWrite(
+          db.projections,
+          workspaceId,
+          doc.id,
+          doc,
+        );
     });
     return { db, workspaceId, verifyWorkspace, draftConflicts };
   }
@@ -935,6 +941,20 @@ export function createSyncClient(options: SyncClientOptions) {
     cacheTranscriptValue(workspaceId, id, { ...meta.metadata, items }, doc.seq);
   }
 
+  /** A store subscriber can see a meta row before its writer updates the
+   * cache. Check after that write settles, so a patched cache skips the read. */
+  function cacheStoredTranscriptAfterWrite(
+    collection: RxCollection<SyncDocument>,
+    workspaceId: string,
+    scope: string,
+    doc: SyncDocument & { _deleted?: boolean },
+  ) {
+    setTimeout(
+      () => void cacheStoredTranscript(collection, workspaceId, scope, doc),
+      0,
+    );
+  }
+
   async function persistTranscriptProjection(
     collection: RxCollection<SyncDocument>,
     scope: string,
@@ -1067,15 +1087,19 @@ export function createSyncClient(options: SyncClientOptions) {
         );
       } else if (incoming !== null) {
         const cacheMetadata = transcriptMetadata(incoming);
-        const patched = patchTranscriptValue(
-          workspaceId,
-          id,
-          cacheMetadata,
-          document.seq,
-          changedItems,
-          removed,
-          delta?.order ? order : undefined,
-        );
+        // Patch only a cache entry at this delta's durable base. A write that
+        // stopped after its durable update can leave the cache behind it.
+        const patched =
+          peekTranscript(workspaceId, id)?.seq === previous?.seq &&
+          patchTranscriptValue(
+            workspaceId,
+            id,
+            cacheMetadata,
+            document.seq,
+            changedItems,
+            removed,
+            delta?.order ? order : undefined,
+          );
         if (!patched)
           await cacheStoredTranscript(
             collection,
@@ -1778,7 +1802,12 @@ export function createSyncClient(options: SyncClientOptions) {
     );
     const subscription = db.projections.findOne(scope).$.subscribe((doc) => {
       if (doc)
-        void cacheStoredTranscript(db.projections, workspaceId, scope, doc);
+        cacheStoredTranscriptAfterWrite(
+          db.projections,
+          workspaceId,
+          scope,
+          doc,
+        );
       else if (!peekTranscript(workspaceId, id)) accept(null);
     });
     return () => {
@@ -1855,7 +1884,7 @@ export function createSyncClient(options: SyncClientOptions) {
           .findOne(`transcript:${id}`)
           .$.subscribe((doc) => {
             if (doc)
-              void cacheStoredTranscript(
+              cacheStoredTranscriptAfterWrite(
                 handle.db.projections,
                 workspaceId,
                 `transcript:${id}`,

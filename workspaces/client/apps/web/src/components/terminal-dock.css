@@ -322,29 +322,40 @@
   .terminal-dock[data-shell-terminal]:not(.is-open) {
     display: none;
   }
-  html body #root:has(#sidebar):has(.terminal-dock:not(.is-open)) {
-    height: 100dvh;
+  html[data-inline-sidebar][data-terminal-dock="closed"]:not(
+      [data-terminal-shell]
+    )
+    body
+    #root {
+    height: var(--mobile-viewport-height, 100dvh);
   }
-  #root:has(.terminal-dock:not(.is-open)) #sidebar {
+  html[data-terminal-dock="closed"] #root #sidebar {
     height: calc(
       100% - var(--terminal-dock-height, var(--layout-terminal-closed-bar))
     );
   }
-  #root:has(#sidebar) .terminal-dock:not(.is-open) {
+  html[data-inline-sidebar] #root .terminal-dock:not(.is-open) {
     right: auto;
     width: var(--studio-sidebar-width, var(--layout-sidebar-preferred));
     background: var(--sidebar);
     border-right: 1px solid var(--line);
   }
-  #root:has(#sidebar) .terminal-dock:not(.is-open) .terminal-dock-bar {
+  html[data-inline-sidebar]
+    #root
+    .terminal-dock:not(.is-open)
+    .terminal-dock-bar {
     padding-inline: 16px;
     gap: 8px;
   }
-  #root:has(#sidebar) .terminal-dock:not(.is-open) .terminal-dock-toggle {
+  html[data-inline-sidebar]
+    #root
+    .terminal-dock:not(.is-open)
+    .terminal-dock-toggle {
     flex: 1;
     min-width: 0;
   }
-  #root:has(#sidebar)
+  html[data-inline-sidebar]
+    #root
     .terminal-dock:not(.is-open)
     :is(
       .terminal-dock-running,
@@ -354,7 +365,8 @@
     ) {
     display: none;
   }
-  #root:has(#sidebar)
+  html[data-inline-sidebar]
+    #root
     .terminal-dock:not(.is-open)
     .terminal-dock-bar
     > .mantine-Button-root {
@@ -363,7 +375,10 @@
     height: 28px;
     padding: 0;
   }
-  #root:has(#sidebar) .terminal-dock:not(.is-open) .mantine-Button-section {
+  html[data-inline-sidebar]
+    #root
+    .terminal-dock:not(.is-open)
+    .mantine-Button-section {
     margin: 0;
   }
 }
@@ -435,15 +450,15 @@
   }
   html[data-server-view]:not(
       [data-server-navigation="classic"]
-    )[data-shell-sidebar]
+    )[data-shell-sidebar][data-terminal-dock="closed"]
     body
-    #root:has(.terminal-dock:not(.is-open)) {
-    height: 100dvh;
+    #root {
+    height: var(--mobile-viewport-height, 100dvh);
   }
   html[data-server-view]:not(
       [data-server-navigation="classic"]
-    )[data-shell-sidebar]
-    #root:has(.terminal-dock.is-open) {
+    )[data-shell-sidebar][data-terminal-dock="open"]
+    #root {
     box-sizing: border-box;
     padding-left: var(--shell-sidebar-width, 0px);
   }

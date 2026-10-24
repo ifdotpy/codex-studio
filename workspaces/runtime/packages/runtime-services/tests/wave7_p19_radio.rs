@@ -43,6 +43,8 @@ impl RadioIngress for Ingress {
 struct RadioCorpus {
     databases: Vec<(String, Vec<u8>)>,
     cases: Vec<Value>,
+    /// Holds the project folder that the `create` case makes.
+    _projects: tempfile::TempDir,
 }
 fn corpus() -> RadioCorpus {
     let bytes =
@@ -52,8 +54,11 @@ fn corpus() -> RadioCorpus {
     } else {
         include_str!("wave7_p19/expected.json")
     };
+    let projects = tempfile::tempdir().expect("radio project root");
     let mut cases: Vec<Value> = serde_json::from_str(expected).expect("frozen radio corpus");
-    cases.iter_mut().for_each(relocate_project);
+    for case in &mut cases {
+        relocate_project(case, projects.path());
+    }
     RadioCorpus {
         databases: ["canvas.sqlite3", "analytics.sqlite3"]
             .into_iter()
@@ -61,6 +66,7 @@ fn corpus() -> RadioCorpus {
             .map(|(name, bytes)| (name.to_owned(), bytes))
             .collect(),
         cases,
+        _projects: projects,
     }
 }
 /// The Python oracle ran on Linux, where its temporary project path is
@@ -68,12 +74,43 @@ fn corpus() -> RadioCorpus {
 /// folders below `/private`), so the stored rows, drafts and results of a case
 /// use this host's key for that path. The request body keeps the path as the
 /// client sent it.
-fn relocate_project(case: &mut Value) {
+///
+/// The `create` case makes its project folder, so its path moves below
+/// `projects`. Its request receipt signs the body: the frozen signature must
+/// match the frozen body, and the expected receipt then signs the moved body.
+fn relocate_project(case: &mut Value, projects: &Path) {
     let frozen = case["body"]["path"]
         .as_str()
         .expect("case project path")
         .to_owned();
-    let key = host_key(&frozen);
+    let key = if case["mode"] == "create" {
+        let frozen_path = Path::new(&frozen);
+        let oracle_folder = frozen_path
+            .ancestors()
+            .nth(2)
+            .expect("frozen project below its oracle folder");
+        let moved = projects.join(
+            frozen_path
+                .strip_prefix(oracle_folder)
+                .expect("frozen project tail"),
+        );
+        let signature = |body: &Value| {
+            studio_runtime_services::event_write::request_signature(
+                &json!({"operation":"radio","body":body}),
+            )
+        };
+        let frozen_signature = signature(&case["body"]);
+        assert!(
+            case["after"].to_string().contains(&frozen_signature),
+            "the frozen create receipt signs the frozen body"
+        );
+        case["body"]["path"] = json!(moved);
+        let moved_signature = signature(&case["body"]);
+        replace_text(&mut case["after"], &frozen_signature, &moved_signature);
+        host_key(&moved.to_string_lossy())
+    } else {
+        host_key(&frozen)
+    };
     if key == frozen {
         return;
     }
@@ -307,7 +344,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             vec![json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
         ).await,
         "create" => {
-            // Recreate the oracle project below the corpus owner for this test.
+            // Recreate the oracle project below the corpus's temporary root.
             {
                 let path = case["body"]["path"].as_str().expect("project path");
                 fs::create_dir_all(path).expect("project directory");

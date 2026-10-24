@@ -12,6 +12,7 @@ use thiserror::Error;
 use crate::event_write::{EventWriteError, enqueue_recovery_event};
 use crate::rules_engine::{
     CheckResult, RuleCheck, RuleDecision, RuleError, RuleSnapshot, TickObservation, active_workers,
+    tick_can_change,
 };
 
 #[derive(Debug, Error)]
@@ -171,6 +172,11 @@ pub async fn tick_batch(
     };
     for row in rows {
         let rule = row.rule;
+        // Most stored rules are paused or completed. Skip them before the owner
+        // record, which can hold hundreds of kilobytes, is read and decoded.
+        if !tick_can_change(rule.value())? {
+            continue;
+        }
         let sampled = store
             .read_async("runtime-services/rules_tick", move |tx| {
                 load_snapshot(tx, rule)

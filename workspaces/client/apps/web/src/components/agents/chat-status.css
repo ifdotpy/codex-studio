@@ -21,6 +21,7 @@
   color: light-dark(#956000, #f0bb60);
 }
 .chat-status-dot {
+  position: relative;
   display: block;
   width: 7px;
   height: 7px;
@@ -29,6 +30,16 @@
 }
 .chat-status-answer .chat-status-dot {
   animation: chat-status-breathe 2s ease-in-out infinite;
+}
+/* The halo grows and fades through transform and opacity. The compositor runs
+   them, so the page is not restyled and repainted on every frame. */
+.chat-status-answer .chat-status-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 16%, transparent);
+  animation: chat-status-halo 2s ease-in-out infinite;
 }
 @keyframes chat-status-spin {
   to {
@@ -39,17 +50,30 @@
   0%,
   100% {
     opacity: 1;
-    box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 16%, transparent);
   }
   50% {
     opacity: 0.45;
-    box-shadow: 0 0 0 4px transparent;
+  }
+}
+/* At its widest the halo reaches 4px past the dot, as before. */
+@keyframes chat-status-halo {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0;
+    transform: scale(1.36);
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-status-working svg,
   .chat-status-answer .chat-status-dot {
     animation: none;
+  }
+  .chat-status-answer .chat-status-dot::after {
+    content: none;
   }
 }
 

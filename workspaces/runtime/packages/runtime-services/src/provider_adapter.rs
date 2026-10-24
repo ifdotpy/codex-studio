@@ -64,6 +64,11 @@ pub struct Capabilities {
     /// An unready image workspace gets a writable temporary sandbox root
     /// (otherwise it runs read-only).
     pub writable_sandbox_roots: bool,
+    /// The turn takes no `turn/steer` input after the time it reports as its
+    /// `completedAt`: every steer it took is recorded in that turn, and a later
+    /// steer is refused (`expectedTurnId`). A steer written after that time was
+    /// never applied.
+    pub turn_end_closes_steer: bool,
 }
 
 pub trait ProviderAdapter: Send + Sync + 'static {
@@ -221,6 +226,7 @@ impl ProviderAdapter for CodexAdapter {
             voice_and_review_tools: true,
             daybreak: true,
             writable_sandbox_roots: true,
+            turn_end_closes_steer: true,
         }
     }
 
@@ -344,6 +350,7 @@ impl ProviderAdapter for ClaudeAdapter {
             voice_and_review_tools: false,
             daybreak: false,
             writable_sandbox_roots: false,
+            turn_end_closes_steer: false,
         }
     }
 
@@ -492,6 +499,11 @@ impl ProviderAdapter for ClaudeAdapter {
     }
 }
 
+/// Refusal code of a Claude launch whose account row has no saved identity.
+/// `claude auth status` writes that identity once it reads the login, so an
+/// account without a readable login cannot launch until it signs in.
+pub const CLAUDE_ACCOUNT_IDENTITY_REFUSAL: &str = "claude/account-identity";
+
 fn refused(code: &str) -> WorkerError {
     WorkerError::PreparationRefused(code.into())
 }
@@ -505,16 +517,16 @@ fn claude_launch(
     let text = |key: &str| profile.get(key).and_then(Value::as_str);
     let account_id = text("accountId")
         .filter(|value| value.starts_with("claude:"))
-        .ok_or_else(|| refused("claude/account-identity"))?;
+        .ok_or_else(|| refused(CLAUDE_ACCOUNT_IDENTITY_REFUSAL))?;
     let email = text("email")
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| refused("claude/account-identity"))?;
+        .ok_or_else(|| refused(CLAUDE_ACCOUNT_IDENTITY_REFUSAL))?;
     let credential_identity =
-        text("_credentialIdentity").ok_or_else(|| refused("claude/account-identity"))?;
+        text("_credentialIdentity").ok_or_else(|| refused(CLAUDE_ACCOUNT_IDENTITY_REFUSAL))?;
     if account_id != format!("claude:{email}")
         || !crate::account_driver::claude_identity::belongs_to(credential_identity, email)
     {
-        return Err(refused("claude/account-identity"));
+        return Err(refused(CLAUDE_ACCOUNT_IDENTITY_REFUSAL));
     }
     let options = profile.get("claudeOptions").unwrap_or(&Value::Null);
     let path = environment.get("PATH").map(String::as_str);

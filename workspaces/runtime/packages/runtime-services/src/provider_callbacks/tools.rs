@@ -123,6 +123,8 @@ enum ToolKind {
     SignIn,
     #[serde(rename = "host_exec")]
     HostExec,
+    #[serde(rename = "layr_read")]
+    LayrRead,
     #[serde(other)]
     Unknown,
 }

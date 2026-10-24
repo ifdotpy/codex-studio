@@ -1725,7 +1725,7 @@ p {
 }
 
 /* Reserve space only in the document that contains the terminal dock. */
-html body #root:has(.terminal-dock):not(:has(> .multi-server-shell)) {
+html[data-terminal-dock]:not([data-terminal-shell]) body #root {
   height: calc(
     var(--mobile-viewport-height, 100dvh) -
       var(--terminal-dock-height, var(--layout-terminal-closed-bar))

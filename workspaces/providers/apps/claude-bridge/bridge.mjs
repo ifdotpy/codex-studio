@@ -968,6 +968,26 @@ function finishItem(s, turn, item, tokenRateUsage, receiptTimes) {
 function notice(s, turn, text, id = randomUUID()) {
   finishItem(s, turn, { id, type: "agentMessage", phase: "commentary", text });
 }
+// Claude refused the turn at a subscription limit. The turn error carries the
+// provider's reset time when Claude gave one, so Studio plans the resume for it.
+function limitReached(s, turn, info) {
+  turn.limitError = {
+    codexErrorInfo: "rateLimitExceeded",
+    ...(Number.isFinite(info.resetsAt) ? { resetsAt: info.resetsAt } : {}),
+  };
+  notice(
+    s,
+    turn,
+    "Claude usage limit reached (" +
+      (info.rateLimitType || "unknown") +
+      "). " +
+      (info.resetsAt
+        ? "Resets at " + new Date(info.resetsAt * 1000).toISOString() + ". "
+        : "") +
+      "The turn waits. You can pause it.",
+    "limit:" + turn.id + ":" + info.rateLimitType + ":" + info.resetsAt,
+  );
+}
 const permissionMode = (s, p = {}) =>
   s.claude?.permissionMode ||
   ((p.approvalPolicy || s.approvalPolicy) === "never"
@@ -1624,28 +1644,8 @@ async function startSession(s, active, p) {
           info.status === "rejected" &&
           limitApplies(info, active.lastModel || s.model) &&
           !overageAllowed(info)
-        ) {
-          turn.limitError = {
-            codexErrorInfo: "rateLimitExceeded",
-            ...(Number.isFinite(info.resetsAt)
-              ? { resetsAt: info.resetsAt }
-              : {}),
-          };
-          notice(
-            s,
-            turn,
-            "Claude usage limit reached (" +
-              (info.rateLimitType || "unknown") +
-              "). " +
-              (info.resetsAt
-                ? "Resets at " +
-                  new Date(info.resetsAt * 1000).toISOString() +
-                  ". "
-                : "") +
-              "The turn waits. You can pause it.",
-            "limit:" + turn.id + ":" + info.rateLimitType + ":" + info.resetsAt,
-          );
-        }
+        )
+          limitReached(s, turn, info);
         continue;
       }
       if (m.type === "system") {
@@ -1849,6 +1849,16 @@ async function startSession(s, active, p) {
             .map((b) => b.text)
             .join("\n");
           turn.apiErrorInfo = claudeErrorInfo(m.error, errorText);
+          // A turn that Claude starts itself has no Studio turn when its
+          // rate_limit_event arrives. The refused request names the limit.
+          const info = m.api_error_params?.rate_limit_info;
+          if (
+            m.error === "rate_limit" &&
+            info?.status === "rejected" &&
+            !m.parent_tool_use_id &&
+            !turn.limitError
+          )
+            limitReached(s, turn, info);
         }
         active.lastModel = m.message.model || active.lastModel;
         active.lastMessageId = m.message.id || active.lastMessageId;

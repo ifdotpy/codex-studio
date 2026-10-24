@@ -167,6 +167,10 @@ const RESTART_KEYS: &[&str] = &[
     "CODEX_AGENTS_SUPERVISOR_MODE",
     "CODEX_AGENTS_SUPERVISOR_FALLBACK",
 ];
+// Names that the deleted Python backend saved (`retiredRestartKeys` of
+// desktop/restart-environment.cjs, the owner; backend.test.mjs checks parity).
+// They are accepted, never restored, and removed from the launch environment.
+const RETIRED_RESTART_KEYS: &[&str] = &["CODEX_AGENTS_PYTHON"];
 
 fn saved_environment(
     mut environment: Environment,
@@ -186,19 +190,23 @@ fn saved_environment(
     {
         return Err(invalid());
     }
+    let known = |key: &str| RESTART_KEYS.contains(&key) || RETIRED_RESTART_KEYS.contains(&key);
     for key in values.keys() {
-        if key != "PATH" && !RESTART_KEYS.contains(&key.as_str()) {
+        if key != "PATH" && !known(key) {
             return Err(invalid());
         }
     }
     for key in unset {
-        if !RESTART_KEYS.contains(&key.as_str()) || values.contains_key(key) {
+        if !known(key) || values.contains_key(key) {
             return Err(invalid());
         }
         environment.remove(std::ffi::OsStr::new(key));
     }
     for (key, value) in values {
         environment.insert(key.into(), value.into());
+    }
+    for key in RETIRED_RESTART_KEYS {
+        environment.remove(std::ffi::OsStr::new(key));
     }
 
     Ok(environment)
@@ -410,6 +418,64 @@ async fn ensure_with_environment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_python_era_saved_launch_environment_is_accepted_without_its_retired_keys() {
+        // The shapes of two live background-recovery.json files that the
+        // deleted Python backend wrote (values replaced by fixture paths).
+        let records = [
+            serde_json::json!({"version":1, "enabled":true, "supervisorEnabled":true, "stateDir":"/state",
+                "resources":"/Applications/Codex Studio.app/Contents/Resources/workspace",
+                "python":"/opt/homebrew/bin/python3", "codex":"/opt/homebrew/bin/codex", "port":4620,
+                "environment":{"SHELL":"/bin/zsh", "PATH":"/opt/homebrew/bin:/usr/bin:/bin"},
+                "unsetEnvironment":["CODEX_HOME", "CODEX_CANVAS_CWD", "CODEX_CANVAS_CONCURRENCY", "CODEX_BIN",
+                    "CODEX_AGENTS_PYTHON", "LANG", "LC_ALL", "CODEX_AGENTS_SUPERVISOR_MODE",
+                    "CODEX_AGENTS_SUPERVISOR_FALLBACK"]}),
+            serde_json::json!({"version":1, "enabled":true, "supervisorEnabled":true, "stateDir":"/state",
+                "resources":"/Applications/Codex Studio.app/Contents/Resources/workspace",
+                "python":"/opt/homebrew/bin/python3", "codex":"/opt/homebrew/bin/codex", "port":4620,
+                "environment":{"CODEX_BIN":"/usr/bin/true", "SHELL":"/bin/zsh", "LANG":"en_US.UTF-8",
+                    "LC_ALL":"en_US.UTF-8", "PATH":"/opt/homebrew/bin:/usr/bin:/bin",
+                    "CODEX_AGENTS_PYTHON":"/old/python"},
+                "unsetEnvironment":["CODEX_HOME", "CODEX_CANVAS_CWD", "CODEX_CANVAS_CONCURRENCY",
+                    "CODEX_AGENTS_SUPERVISOR_MODE", "CODEX_AGENTS_SUPERVISOR_FALLBACK"],
+                "backend":"rust",
+                "runtimeServer":"/Applications/Codex Studio.app/Contents/Resources/workspace/bin/studio-runtime-server",
+                "processSupervisor":"/Applications/Codex Studio.app/Contents/Resources/workspace/bin/codex-process-supervisor"}),
+        ];
+        let environment = Environment::from([
+            ("CODEX_AGENTS_PYTHON".into(), "/inherited/python".into()),
+            ("CODEX_HOME".into(), "inherited".into()),
+        ]);
+        for saved in &records {
+            let restored = saved_environment(
+                environment.clone(),
+                &serde_json::from_value(saved.clone()).unwrap(),
+                Path::new("/state"),
+            )
+            .unwrap_or_else(|error| panic!("{error}: {saved}"));
+            assert!(!restored.contains_key(std::ffi::OsStr::new("CODEX_AGENTS_PYTHON")));
+            assert!(!restored.contains_key(std::ffi::OsStr::new("CODEX_HOME")));
+            assert_eq!(
+                restored.get(std::ffi::OsStr::new("SHELL")).unwrap(),
+                "/bin/zsh"
+            );
+        }
+        // An unknown new name is still refused.
+        let mut unknown = records[0].clone();
+        unknown["unsetEnvironment"]
+            .as_array_mut()
+            .unwrap()
+            .push("CODEX_UNKNOWN_SETTING".into());
+        assert!(
+            saved_environment(
+                environment,
+                &serde_json::from_value(unknown).unwrap(),
+                Path::new("/state")
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn saved_launch_environment_preserves_identity_and_explicit_unsets() {
         let environment = Environment::from([

@@ -216,7 +216,6 @@ fn session_cost_inner(
 
 // Session identifier and state-file byte caps for local cost scans.
 const MAX_SESSION_ID_BYTES: usize = 100;
-const MAX_SESSION_STATE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// One assistant response of a Claude session log.
 #[derive(Clone, Debug)]
@@ -357,11 +356,38 @@ fn valid_session_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
+/// The snapshot format of the Claude bridge session store. The bridge owns it, so it
+/// is read from the bridge source instead of being copied here.
+fn claude_session_format() -> &'static str {
+    static FORMAT: LazyLock<&'static str> = LazyLock::new(|| {
+        include_str!("../../../../providers/apps/claude-bridge/session-store.mjs")
+            .split_once("const FORMAT = \"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(format, _)| format)
+            .expect("Claude session store format")
+    });
+    *FORMAT
+}
+
 /// The native ids a Studio session state file names. Studio writes this file, so a
 /// file of another shape is an error, not something to skip.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionState {
+    native_id: Option<String>,
+    #[serde(default)]
+    history_branches: Vec<NativeIdOf>,
+    #[serde(default)]
+    control_requests: BTreeMap<String, ControlRequest>,
+}
+
+/// A saved session file: the bridge snapshot `{format, sequence, session}`, or the
+/// earlier file that is the session object itself.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionFile {
+    format: Option<String>,
+    session: Option<SessionState>,
     native_id: Option<String>,
     #[serde(default)]
     history_branches: Vec<NativeIdOf>,
@@ -383,12 +409,25 @@ struct ControlRequest {
 }
 
 /// The valid native ids of one session state file; `Err` when the file does not decode.
+/// The file holds every turn, so it is read as a stream: the turns are skipped, not kept.
 fn read_session_native_ids(path: &Path) -> Option<Result<Vec<String>, ()>> {
-    if fs::metadata(path).ok()?.len() > MAX_SESSION_STATE_BYTES {
+    let file = File::open(path).ok()?;
+    let Ok(saved) =
+        serde_json::from_reader::<_, SessionFile>(BufReader::with_capacity(1 << 16, file))
+    else {
         return Some(Err(()));
-    }
-    let Ok(state) = serde_json::from_slice::<SessionState>(&fs::read(path).ok()?) else {
-        return Some(Err(()));
+    };
+    let state = match saved.format {
+        Some(format) if format == claude_session_format() => match saved.session {
+            Some(session) => session,
+            None => return Some(Err(())),
+        },
+        Some(_) => return Some(Err(())),
+        None => SessionState {
+            native_id: saved.native_id,
+            history_branches: saved.history_branches,
+            control_requests: saved.control_requests,
+        },
     };
     let ids = std::iter::once(state.native_id)
         .chain(
@@ -588,8 +627,19 @@ mod tests {
         serde_json::from_value(record).expect("agent cost members")
     }
 
+    /// The skipped line count is one process-wide counter, and tests run in parallel
+    /// threads. Tests that assert on it hold this lock, so they cannot count each other.
+    static SKIPPED_LINE_COUNTER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn hold_skipped_line_counter() -> std::sync::MutexGuard<'static, ()> {
+        SKIPPED_LINE_COUNTER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn local_claude_session_usage_is_thread_scoped_deduplicated_and_uses_account_history() {
+        let _counter = hold_skipped_line_counter();
         let temp = tempdir().expect("temporary fixture directory");
         let state = temp.path().join("state");
         let current_profile = temp.path().join("current-claude");
@@ -730,6 +780,7 @@ mod tests {
     /// not an assistant response is not an error. A Studio state file of another shape fails.
     #[test]
     fn malformed_log_lines_are_skipped_and_counted_and_bad_state_files_fail() {
+        let _counter = hold_skipped_line_counter();
         let temp = tempdir().expect("temporary fixture directory");
         let state = temp.path().join("state");
         let profile = temp.path().join("claude");
@@ -769,6 +820,91 @@ mod tests {
             r#"{"nativeId": 5}"#,
         )
         .expect("write bad state");
+        assert!(matches!(
+            read_local_claude_usage(&state, &members, &accounts),
+            Err(CostsError::InvalidSessionState)
+        ));
+    }
+
+    /// The Claude bridge saves a snapshot envelope whose session holds every turn, so the
+    /// file can pass 16 MiB. Its native ids still select that session's logs.
+    #[test]
+    fn bridge_session_snapshots_are_read_at_any_size() {
+        let temp = tempdir().expect("temporary fixture directory");
+        let state = temp.path().join("state");
+        let profile = temp.path().join("claude");
+        let project = profile.join("projects/project");
+        fs::create_dir_all(&project).expect("create project");
+        fs::create_dir_all(state.join("account-servers/acct/sessions")).expect("sessions");
+        let row = |id: &str| {
+            json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z",
+                "message":{"id":id,"model":"claude-sonnet-4-5",
+                    "usage":{"input_tokens":1,"output_tokens":2}}})
+        };
+        fs::write(
+            project.join("native-small.jsonl"),
+            format!("{}\n", row("r-small")),
+        )
+        .expect("write small native log");
+        fs::write(
+            project.join("native-large.jsonl"),
+            format!("{}\n", row("r-large")),
+        )
+        .expect("write large native log");
+        let accounts = BTreeMap::from([(
+            "acct".to_owned(),
+            json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+        )]);
+        let snapshot = |thread: &str, native: &str, turn_bytes: usize| {
+            json!({
+                "format": super::claude_session_format(),
+                "sequence": 3,
+                "session": {
+                    "id": thread,
+                    "nativeId": native,
+                    "turns": [{"text": "x".repeat(turn_bytes)}]
+                }
+            })
+            .to_string()
+        };
+        for (thread, native, bytes) in [
+            ("thread-small", "native-small", 1_024),
+            ("thread-large", "native-large", 17 * 1024 * 1024),
+        ] {
+            fs::write(
+                state.join(format!("account-servers/acct/sessions/{thread}.json")),
+                snapshot(thread, native, bytes),
+            )
+            .expect("write session snapshot");
+            let members = vec![(
+                "agent".to_owned(),
+                member(json!({"accountKey":"acct","threadId":thread})),
+            )];
+            let rows =
+                read_local_claude_usage(&state, &members, &accounts).expect("snapshot usage");
+            assert_eq!(
+                rows.iter()
+                    .map(|row| row.usage.id.as_str())
+                    .collect::<Vec<_>>(),
+                [if thread == "thread-small" {
+                    "r-small"
+                } else {
+                    "r-large"
+                }]
+            );
+        }
+
+        // A snapshot of another format is still an error, not an empty session.
+        fs::write(
+            state.join("account-servers/acct/sessions/thread-small.json"),
+            json!({"format":"studio-claude-session-v0","session":{"nativeId":"native-small"}})
+                .to_string(),
+        )
+        .expect("write unknown snapshot format");
+        let members = vec![(
+            "agent".to_owned(),
+            member(json!({"accountKey":"acct","threadId":"thread-small"})),
+        )];
         assert!(matches!(
             read_local_claude_usage(&state, &members, &accounts),
             Err(CostsError::InvalidSessionState)

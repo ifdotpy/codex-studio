@@ -299,6 +299,35 @@ pub(super) fn verify_group(pid: u32, pgid: u32) -> Result<Pid> {
     Ok(process)
 }
 
+/// Whether `value` is a start token of the deleted Python supervisor on macOS:
+/// `<secs>.<usecs:06>` of the same libproc `PROC_PIDTBSDINFO` start instant as
+/// a native macOS identity, without its boot session UUID. Such a token never
+/// authorizes ownership or a signal. It can only show that its process ended.
+pub(super) fn legacy_python_start(value: &str) -> bool {
+    decimal_start(value)
+}
+
+/// Whether the process that a legacy Python start token names has ended: its
+/// PID is gone, or the PID runs with another start instant. A live process with
+/// the same start instant has not ended.
+#[cfg(target_os = "macos")]
+pub(super) fn legacy_start_ended(pid: u32, legacy: &str) -> Result<bool> {
+    if !legacy_python_start(legacy) {
+        return Ok(false);
+    }
+    Ok(match start_time(pid, false)? {
+        None => true,
+        Some(actual) => actual.rsplit_once(':').map(|(_, start)| start) != Some(legacy),
+    })
+}
+
+/// The Python supervisor recorded `ps -o lstart` text on other platforms, so a
+/// bare epoch token there cannot prove that its process ended.
+#[cfg(not(target_os = "macos"))]
+pub(super) fn legacy_start_ended(_pid: u32, _legacy: &str) -> Result<bool> {
+    Ok(false)
+}
+
 pub(super) fn valid_start(value: &str) -> bool {
     let boot_uuid =
         |boot: &str| boot.len() == 36 && boot.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-');
@@ -345,6 +374,18 @@ mod tests {
         assert!(!valid_start(&format!("macos:{boot}:1790895321.19014")));
         assert!(!valid_start("macos:short:1790895321.190147"));
         assert!(!valid_start(&format!("macos:{boot}:1234")));
+    }
+
+    #[test]
+    fn legacy_python_start_is_only_the_bare_macos_start_instant() {
+        let boot = "1CCC2169-B973-447A-B702-3F226EECA807";
+        assert!(legacy_python_start("1790895321.190147"));
+        assert!(!legacy_python_start(&format!(
+            "macos:{boot}:1790895321.190147"
+        )));
+        assert!(!legacy_python_start("Fri Oct  2 00:55:21 2026"));
+        assert!(!legacy_python_start("1790895321.19014"));
+        assert!(!legacy_python_start("0.190147"));
     }
 
     /// A child in its own group that blocks until the test kills it.

@@ -88,6 +88,7 @@ pub struct RustHostExecService {
     program: PathBuf,
     vm_state_dir: PathBuf,
     build: fn() -> std::io::Result<String>,
+    browser_host: Option<PathBuf>,
 }
 
 impl RustHostExecService {
@@ -102,13 +103,23 @@ impl RustHostExecService {
             program,
             vm_state_dir,
             build,
+            browser_host: None,
         }
+    }
+
+    /// Give the commands the host bridge in `folder` (`<state>/browser-host`) for their
+    /// sign-in links.
+    #[must_use]
+    pub fn with_browser_host(mut self, folder: PathBuf) -> Self {
+        self.browser_host = Some(folder);
+        self
     }
 }
 
 impl HostExecService for RustHostExecService {
     fn ensure(&self) -> BoxFuture<'_, Result<String, String>> {
         let (program, state, build) = (self.program.clone(), self.vm_state_dir.clone(), self.build);
+        let browser_host = self.browser_host.clone();
         Box::pin(async move {
             studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-services/host-exec-service",
@@ -116,7 +127,12 @@ impl HostExecService for RustHostExecService {
                     let build = build().map_err(|error| {
                         format!("The backend build identity is unknown: {error}")
                     })?;
-                    crate::host_exec_service::lifecycle::ensure_service(&state, &program, &build)
+                    crate::host_exec_service::lifecycle::ensure_service(
+                        &state,
+                        &program,
+                        &build,
+                        browser_host.as_deref(),
+                    )
                 },
             )
             .await
@@ -319,7 +335,7 @@ pub(crate) async fn run(
 /// Run one guest exchange on its own thread. A command can run for hours, so
 /// it must not hold a thread of the runtime's blocking pool, which serves
 /// store reads (`browser_cards::guest_call` follows the same rule).
-async fn on_guest_thread<T: Send + 'static>(
+pub(crate) async fn on_guest_thread<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, GuestError> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -460,7 +476,7 @@ fn guest_error_text(error: &GuestError) -> String {
     }
 }
 
-fn refused(message: String) -> DispatchedOperation {
+pub(crate) fn refused(message: String) -> DispatchedOperation {
     DispatchedOperation {
         result: OperationResult {
             value: json!(message),
@@ -471,7 +487,7 @@ fn refused(message: String) -> DispatchedOperation {
     }
 }
 
-fn unknown(message: String) -> DispatchedOperation {
+pub(crate) fn unknown(message: String) -> DispatchedOperation {
     DispatchedOperation {
         result: OperationResult {
             value: json!(message),

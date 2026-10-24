@@ -75,6 +75,8 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     /active_barrier_holds_new_requests_but_not_callback_answers/,
   );
   assert.match(fast.command, /test:unit:fast/);
+  assert.match(fast.command, /vm-guest\/run-guest-suite\.mjs/);
+  assert.match(fast.command, /vm-guest\/run-guest-suite\.test\.mjs/);
   for (const witness of [
     "restart-reconcile.test.mjs",
     "journal-repair.test.mjs",
@@ -100,6 +102,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   }
   assert.match(fast.command, /test\(\/\^sql_callback_guard::\/\)/);
   assert.match(fast.command, /test\(\/\^project_preparation::\/\)/);
+  assert.match(fast.command, /test\(\/\^agent_limits::\/\)/);
   assert.match(fast.command, /test\(\/\^monitor_start_preparation::\/\)/);
   assert.match(fast.command, /test\(\/\^monitor_wake_guarantees::\/\)/);
   assert.match(fast.command, /test\(monitor_completion_\)/);
@@ -293,6 +296,7 @@ test("pnpm Node test selection uses the native test-name filter", () => {
           "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs",
           "workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.mjs",
           "workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.mjs",
+          "workspaces/tooling/apps/installed-smoke/tests/smoke.test.mjs",
         ],
       ],
     ],

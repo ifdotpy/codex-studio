@@ -258,6 +258,12 @@ fn eligibility(a: &Value) -> Eligibility {
             && has(t, "id")
             && t["submitted"] == true
             && (t["executionOutcome"] == "unknown"
+                // A process stop can end a submitted start before its response
+                // records an outcome; a held restart marker keeps that attempt
+                // without one, which is unknown too.
+                || (restart_input_wait
+                    && !has(a, "startAttempt")
+                    && t.get("executionOutcome").is_none_or(Value::is_null))
                 || a["error"] == "turn/start response timed out; outcome unknown")
             && t["epoch"] == a["epoch"]
             && account_equal(t, a)

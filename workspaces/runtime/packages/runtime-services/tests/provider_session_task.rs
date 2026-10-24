@@ -127,6 +127,7 @@ fn fake_with_stop_barrier(
                 generation: Some(Generation(1)),
                 phase: InitializationStatus::AwaitingReply,
             }),
+            provider_retained: false,
         }
     });
     let attachment = ProviderAttachment::from_task(commands, journal, receiver, shutdown, task);

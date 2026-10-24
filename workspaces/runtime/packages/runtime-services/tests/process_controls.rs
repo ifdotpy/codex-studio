@@ -10,12 +10,16 @@ fn corpus() -> Value {
 #[test]
 fn python_process_identities_and_capabilities_match() {
     for case in corpus()["processes"].as_array().unwrap() {
-        let actual = process_controls::project(
+        let mut actual = process_controls::project(
             case["source"].as_str().unwrap(),
             &case["raw"],
             &case["owner"],
             case["connection"].as_str(),
         );
+        // These additive renderer fields have no legacy Python projection.
+        for field in ["outputWakeBudget", "outputPatterns", "outputFile"] {
+            actual.as_object_mut().unwrap().remove(field);
+        }
         assert_eq!(actual, case["expected"], "{}", case["source"]);
     }
 }

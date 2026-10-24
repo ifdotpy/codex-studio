@@ -615,7 +615,10 @@ fn only_vm_writers_get_the_host_exec_definition() {
     };
     assert_eq!(names(VmRole::of(true, Role::Orchestrator)), vec![TOOL]);
     assert_eq!(names(VmRole::of(true, Role::Implementer)), vec![TOOL]);
-    assert!(names(VmRole::of(true, Role::Reviewer)).is_empty());
+    assert_eq!(
+        names(VmRole::of(true, Role::Reviewer)),
+        vec![crate::layr_read::TOOL]
+    );
     assert!(names(VmRole::of(false, Role::Orchestrator)).is_empty());
 }
 

@@ -1102,13 +1102,31 @@ fn agent_commit_needs_tick_in(
     full: bool,
     rows: String,
 ) -> Result<bool, MonitorError> {
-    let rules: bool = connection
-        .query_row(
+    // A rule tick reads its owner, and a low-worker rule also the agents whose
+    // root is that owner. Any other agent commit cannot change a rule decision or
+    // deadline. A hinted row that no longer exists is a deleted agent, which may
+    // have owned a rule. Without hints every active rule counts.
+    let rules: bool = if full {
+        connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM runtime_rules WHERE json_extract(record,'$.status')='active')",
             [],
             |row| row.get(0),
         )
-        .map_err(studio_runtime_store::StoreError::from)?;
+    } else {
+        connection
+            .prepare_cached(
+                "WITH changed(row) AS (SELECT value FROM json_each(?1)) \
+                 SELECT EXISTS(SELECT 1 FROM runtime_rules r \
+                 WHERE json_extract(r.record,'$.status')='active' AND ( \
+                   json_extract(r.record,'$.agent') IN \
+                     (SELECT id FROM runtime_agents WHERE rowid IN (SELECT row FROM changed)) \
+                   OR (json_extract(r.record,'$.kind')='low_workers' AND json_extract(r.record,'$.agent') IN \
+                     (SELECT root_id FROM runtime_agents WHERE rowid IN (SELECT row FROM changed))) \
+                   OR EXISTS(SELECT 1 FROM changed WHERE row NOT IN (SELECT rowid FROM runtime_agents))))",
+            )
+            .and_then(|mut statement| statement.query_row([&rows], |row| row.get(0)))
+    }
+    .map_err(studio_runtime_store::StoreError::from)?;
     if rules {
         return Ok(true);
     }
@@ -1953,6 +1971,60 @@ mod tests {
                 .agent_commit_needs_tick()
                 .await
                 .expect("rule present")
+        );
+        // A rule reads only its owner: another agent's commit costs no tick.
+        commit_agent(&store, "claude-agent", "claude").await;
+        assert!(
+            !runtime
+                .agent_commit_needs_tick()
+                .await
+                .expect("other agent of a rule")
+        );
+        // A low-worker rule also counts the agents whose root is its owner.
+        store
+            .transaction_with(|tx| {
+                tx.execute(
+                    "UPDATE runtime_rules SET record=json_set(record,'$.kind','low_workers')",
+                    [],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES ('worker',?1)",
+                    [
+                        serde_json::json!({"id":"worker","rootId":"codex-agent","epoch":0,
+                        "status":"idle","provider":"codex"})
+                        .to_string(),
+                    ],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("team worker");
+        assert!(
+            runtime
+                .agent_commit_needs_tick()
+                .await
+                .expect("team worker of a low-worker rule")
+        );
+        commit_agent(&store, "claude-agent", "claude").await;
+        assert!(
+            !runtime
+                .agent_commit_needs_tick()
+                .await
+                .expect("agent outside the team")
+        );
+        // A deleted agent may have owned a rule.
+        store
+            .transaction_with(|tx| {
+                tx.execute("DELETE FROM runtime_agents WHERE id='claude-agent'", [])?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("delete agent");
+        assert!(
+            runtime
+                .agent_commit_needs_tick()
+                .await
+                .expect("deleted agent")
         );
         store
             .transaction_with(|tx| {

@@ -115,6 +115,21 @@ struct Rule {
     #[serde(default)]
     event_text: String,
 }
+impl Rule {
+    /// Only an active rule without a check in flight can change in a tick.
+    fn can_tick(&self) -> bool {
+        self.status == Status::Active && !self.in_flight
+    }
+}
+
+/// Whether a tick can change the stored rule `rule`, which is validated as in
+/// [`RuleSnapshot::from_records`]. [`RuleSnapshot::tick`] decides nothing for
+/// any other rule, so its owner record need not be read.
+pub fn tick_can_change(rule: &Value) -> Result<bool, RuleError> {
+    let parsed: Rule = checked("rules", "PersistedRuleRecord", rule)?;
+    Ok(parsed.can_tick())
+}
+
 fn minus_one() -> i64 {
     -1
 }
@@ -352,7 +367,7 @@ impl RuleSnapshot {
     pub fn tick(&self, now: f64, observation: TickObservation) -> Result<RuleDecision, RuleError> {
         finite_time(now)?;
         let r = &self.rule;
-        if r.status != Status::Active || r.in_flight {
+        if !r.can_tick() {
             return Ok(RuleDecision::default());
         }
         if !self.owner.deleted()

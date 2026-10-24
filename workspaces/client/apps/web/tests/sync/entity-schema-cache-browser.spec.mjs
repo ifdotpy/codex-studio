@@ -520,15 +520,38 @@ test.describe("legacy schema mismatch", () => {
         }, oldBuildNames),
         "cleanup preserves the stale-hash database held by the old-build tab",
       );
+      // Before the projection cache moved to its own database (2026-10-07), the
+      // workspace database held a projections collection. Its pull checkpoint
+      // and ready marker were rows of that collection, and the only RxDB
+      // replication of that database was for drafts. So deleting it gives an
+      // old build an empty cache that pulls in full. No current build opens it,
+      // and an old build cannot sync with this server (see the old-build tab
+      // below). Cleanup deletes it and keeps the drafts and outbox.
+      await expect
+        .poll(() =>
+          newPage.evaluate(
+            async (name) =>
+              (await indexedDB.databases()).some(
+                (database) => database.name === name,
+              ),
+            legacyName,
+          ),
+        )
+        .toBe(false);
       assert.ok(
         await newPage.evaluate(
-          async (name) =>
-            (await indexedDB.databases()).some(
-              (database) => database.name === name,
-            ),
-          legacyName,
+          async (names) => {
+            const existing = new Set(
+              (await indexedDB.databases()).map(({ name }) => name),
+            );
+            return names.every((name) => existing.has(name));
+          },
+          [
+            `rxdb-dexie-studio${workspaceId}--0--drafts`,
+            `rxdb-dexie-studio${workspaceId}--0--outbox`,
+          ],
         ),
-        "the legacy stable projections collection is preserved",
+        "cleanup keeps the drafts and outbox of the workspace database",
       );
 
       // Reopen the old build after the server hash changes. It is now rejected;

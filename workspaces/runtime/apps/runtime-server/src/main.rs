@@ -384,6 +384,9 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let owner = studio_runtime_store::state_owner::StateOwnerClaim { backend_build };
     let store =
         Arc::new(RuntimeStore::open_claiming(configured_state_dir.as_deref(), &owner).await?);
+    // Before the first runtime write: every writer transaction publishes the chats and
+    // cards it changed.
+    studio_runtime_services::entity_publication::install(&store);
     store
         .set_diagnostics_callback(Some(
             studio_runtime_services::diagnostics::observe_store_event,
@@ -953,7 +956,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Arc::new(studio_runtime_services::browser_host::StoreChats {
             store: Arc::clone(&store),
         }),
-        Default::default(),
+        studio_runtime_services::browser_host::HostBridgeOptions::for_this_host(),
         env::current_exe().ok().as_deref(),
     ) {
         Ok(service) => Some(service),
@@ -983,6 +986,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let sign_in_task = tokio::spawn(studio_runtime_services::sign_in::run_messages(
         Arc::clone(&store),
         sign_in_sources,
+        monitor_shutdown.subscribe(),
+    ));
+    // Sign-in alerts on the owner's phones (docs/web-push.md).
+    let web_push_task = tokio::spawn(studio_runtime_services::web_push::run(
+        Arc::clone(&store),
+        state_root.to_path_buf(),
         monitor_shutdown.subscribe(),
     ));
     let retention_task = tokio::spawn(studio_runtime_services::storage_retention::run(
@@ -1286,6 +1295,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         shutdown_join("browser card poll", task).await??;
     }
     shutdown_join("sign-in message links", sign_in_task).await??;
+    shutdown_join("web push", web_push_task).await??;
     #[cfg(unix)]
     if let Some(service) = browser_host {
         shutdown_join("browser host bridge", service.stop()).await?;

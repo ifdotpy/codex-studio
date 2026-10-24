@@ -19,10 +19,12 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from browser_bridge import (BridgeError, BrowserBridge, Listener, connect_address,  # noqa: E402
-                            parse_listeners)
+from browser_bridge import (CHECK_SECONDS, KEEP_SECONDS, TTL_SECONDS, BridgeError,  # noqa: E402
+                            BrowserBridge, Listener, connect_address, parse_listeners, proc_listeners)
 from browser_policy import (USER_CODE_LIMIT, PolicyError, Provider, StartPage, classify, pasted,  # noqa: E402
                             provider, sign_in_links)
+from shared_values_generated import (SIGN_IN_JOINED_SIGNED_IN_REASON, SIGN_IN_JOINED_STATE,  # noqa: E402
+                                     SIGN_IN_NOT_SENT_CODE, SIGN_IN_OPEN_LIMIT_SECONDS)
 from test_browser_fakes import SHIM, FakeProvider, FakeTool, install_shim  # noqa: E402
 
 AGENT = str(uuid.uuid4())
@@ -378,6 +380,75 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
             await self.bridge.call("browser.submit", {"agentId": AGENT, "url": "file:///etc/passwd"})
         self.assertEqual(scheme.exception.code, "invalid_url")
 
+    async def test_a_listening_command_keeps_its_request_open_up_to_the_open_limit(self) -> None:
+        # The final state of a request at the limit must still be in the queue for the server.
+        self.assertLess(SIGN_IN_OPEN_LIMIT_SECONDS + TTL_SECONDS, KEEP_SECONDS)
+        tool = self.tool("aws")
+        await self.launch(tool)
+        [item] = (await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0}))["items"]
+        created, limit = item["createdAt"], item["createdAt"] + SIGN_IN_OPEN_LIMIT_SECONDS
+        # One check every 5 s, as the check loop runs.
+        while self.now <= limit:
+            await self.bridge.check()
+            current = self.bridge.items[item["id"]]
+            self.assertEqual(current["state"], "pending", self.now)
+            self.assertGreaterEqual(current["expiresAt"], self.now)
+            self.assertLessEqual(current["expiresAt"], limit)
+            if self.now == created + 2 * TTL_SECONDS:
+                # The person can still approve after the request time.
+                approved = await self.bridge.call("browser.answer", {"id": item["id"], "decision": "approve"})
+                self.assertEqual(approved["state"], "approved")
+                break
+            self.now += CHECK_SECONDS
+        self.assertEqual(self.now, created + 2 * TTL_SECONDS)
+        other = self.tool("aws")
+        await self.launch(other)
+        [second] = [row for row in (await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0}))["items"]
+                    if row["id"] != item["id"]]
+        self.now = second["createdAt"] + SIGN_IN_OPEN_LIMIT_SECONDS + 1
+        await self.bridge.check()
+        self.assertEqual(self.bridge.items[second["id"]]["state"], "expired")
+
+    async def test_an_unreadable_listener_table_is_unknown_not_stale(self) -> None:
+        tool = self.tool("aws")
+        await self.launch(tool)
+        [item] = (await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0}))["items"]
+        readable = self.bridge.listeners
+        self.bridge.listeners = lambda: None
+        await self.bridge.check()
+        self.assertEqual(self.bridge.items[item["id"]]["state"], "pending", "an unknown probe is not stale")
+        with self.assertRaises(BridgeError) as unknown:
+            await self.bridge.call("browser.answer", {"id": item["id"], "decision": "approve"})
+        self.assertEqual(unknown.exception.code, SIGN_IN_NOT_SENT_CODE)
+        self.assertEqual(self.bridge.items[item["id"]]["state"], "pending", "the card stays for a retry")
+        # Expiry by time still applies while the probe fails.
+        self.now += 601
+        await self.bridge.check()
+        self.assertEqual(self.bridge.items[item["id"]]["state"], "expired")
+        # A relay needs known listeners and counts nothing when they are unknown.
+        self.bridge.listeners = readable
+        again = self.tool("aws")
+        await self.launch(again)
+        fresh = [row for row in (await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0}))["items"]
+                 if row["state"] == "pending"][-1]
+        await self.bridge.call("browser.answer", {"id": fresh["id"], "decision": "approve"})
+        self.bridge.listeners = lambda: None
+        with self.assertRaises(BridgeError) as relay:
+            await self.bridge.call("browser.callback", {"id": fresh["id"], "target": "/oauth/callback?code=x"})
+        self.assertEqual(relay.exception.code, SIGN_IN_NOT_SENT_CODE)
+        self.assertEqual(self.bridge.items[fresh["id"]]["relays"], 0)
+
+    def test_the_proc_probe_is_unknown_when_the_tcp_table_cannot_be_read(self) -> None:
+        empty = self.root / "proc-empty"
+        empty.mkdir()
+        self.assertIsNone(proc_listeners(empty))
+        ipv4_only = self.root / "proc-ipv4"
+        ipv4_only.mkdir()
+        (ipv4_only / "tcp").write_text(
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid\n"
+            "   0: 0100007F:1F40 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1010 0 1 1\n")
+        self.assertEqual(proc_listeners(ipv4_only), [Listener("127.0.0.1", 8000, 1010)])
+
     async def test_decline_close_expiry_and_device_links(self) -> None:
         tool = self.tool("aws")
         await self.launch(tool)
@@ -398,7 +469,11 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.contexts[OTHER]["uid"] = UID
         await self.launch(aws, session=OTHER)
         last = (await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0}))["items"][-1]
+        # The command still listens, so only the open limit ends its request.
         self.now += 601
+        await self.bridge.check()
+        self.assertEqual(self.bridge.items[last["id"]]["state"], "pending")
+        self.now = last["createdAt"] + SIGN_IN_OPEN_LIMIT_SECONDS + 1
         await self.bridge.check()
         self.assertEqual(self.bridge.items[last["id"]]["state"], "expired")
         self.assertEqual((await self.bridge.call("browser.close", {"id": last["id"]}))["state"], "expired")
@@ -407,6 +482,84 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
             raise LookupError(agent)
         again = BrowserBridge(self.root / "state", nobody)
         self.assertEqual(set(again.items), set(self.bridge.items))
+
+    # One card for one sign-in (docs/vm-browser-bridge.md, "One card for the same sign-in").
+
+    def chats(self, count: int) -> list[str]:
+        agents = [str(uuid.uuid4()) for _ in range(count)]
+        for agent in agents:
+            self.contexts[agent] = {"uid": UID, "projectId": "p1", "owner": "studio-a-test"}
+        return agents
+
+    async def submit(self, agent: str, tool: FakeTool) -> dict[str, object]:
+        return await self.bridge.call("browser.submit", {"agentId": agent, "url": tool.open_url})
+
+    async def test_a_second_chat_with_the_same_user_host_and_client_joins_the_open_request(self) -> None:
+        first_chat, second_chat = self.chats(2)
+        first = await self.submit(first_chat, self.tool("aws"))
+        self.assertEqual(first["state"], "pending")
+        self.now += 1
+        tool = self.tool("aws")
+        environment = {"STUDIO_BROWSER_SOCKET": str(self.socket), "LAYR_SESSION": second_chat}
+        result = await asyncio.to_thread(tool.launch, self.root / "bin", environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Another chat already asks the person to sign in", result.stderr)
+        [second] = [item for item in self.bridge.items.values() if item["agentId"] == second_chat]
+        self.assertEqual((second["state"], second["joinedTo"]), (SIGN_IN_JOINED_STATE, first["id"]))
+        # The server sees the joined request: the card names its chat.
+        waited = await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0})
+        self.assertIn(second["id"], [item["id"] for item in waited["items"]])
+        # Another Linux user or another client gets its own card.
+        self.contexts[OTHER]["uid"] = UID + 1
+        stranger = self.tool("aws")
+        self.owners[stranger.port] = UID + 1
+        self.assertEqual((await self.submit(OTHER, stranger))["state"], "pending")
+        device = self.tool("device")
+        self.assertEqual((await self.submit(second_chat, device))["state"], "pending")
+        # The same chat with a newer link still replaces its own link.
+        again = await self.submit(first_chat, self.tool("aws"))
+        self.assertEqual(again["state"], "pending")
+        self.assertEqual(self.bridge.items[first["id"]]["state"], "replaced")
+
+    async def test_a_finished_sign_in_ends_every_joined_request_as_signed_in(self) -> None:
+        first_chat, second_chat, third_chat = self.chats(3)
+        leader_tool = self.tool("aws")
+        first = await self.submit(first_chat, leader_tool)
+        second = await self.submit(second_chat, self.tool("aws"))
+        third = await self.submit(third_chat, self.tool("aws"))
+        self.assertEqual(third["joinedTo"], first["id"])
+        await self.bridge.check()
+        self.assertEqual(self.bridge.items[second["id"]]["state"], SIGN_IN_JOINED_STATE, "it waits on the card")
+        # The person signs in on the card: the command takes the relayed result.
+        await self.bridge.call("browser.answer", {"id": first["id"], "decision": "approve"})
+        location = await asyncio.to_thread(self.follow_provider, str(first["url"]))
+        target = location[location.index("/oauth/callback"):]
+        relayed = await self.bridge.call("browser.callback", {"id": first["id"], "target": target})
+        self.assertTrue(relayed["done"])
+        await self.bridge.check()
+        for joined in (second, third):
+            item = self.bridge.items[joined["id"]]
+            self.assertEqual((item["state"], item["closeReason"]), ("closed", SIGN_IN_JOINED_SIGNED_IN_REASON))
+
+    async def test_a_card_that_ends_without_a_sign_in_gives_the_oldest_joined_request_the_card(self) -> None:
+        first_chat, second_chat, third_chat = self.chats(3)
+        first = await self.submit(first_chat, self.tool("aws"))
+        self.now += 1
+        second = await self.submit(second_chat, self.tool("aws"))
+        self.now += 1
+        third = await self.submit(third_chat, self.tool("aws"))
+        await self.bridge.call("browser.answer", {"id": first["id"], "decision": "decline"})
+        await self.bridge.check()
+        promoted = self.bridge.items[second["id"]]
+        self.assertEqual(promoted["state"], "pending")
+        self.assertIsNone(promoted.get("joinedTo"))
+        self.assertEqual(self.bridge.items[third["id"]]["joinedTo"], second["id"])
+
+    async def test_a_device_code_link_without_a_client_never_joins(self) -> None:
+        first_chat, second_chat = self.chats(2)
+        first = await self.submit(first_chat, self.tool("device"))
+        second = await self.submit(second_chat, self.tool("device"))
+        self.assertEqual((first["state"], second["state"]), ("pending", "pending"))
 
 
 if __name__ == "__main__":

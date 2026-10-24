@@ -103,6 +103,12 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
                 if !retained_question(tx, &value)? && !retained_monitor_approval(tx, &value)? =>
             {
                 value["status"] = json!("expired");
+                // A sign-in request lives in its bridge across the restart; the card poll gives
+                // the card back while that request is open (`browser_cards::apply`).
+                if value.get("method").and_then(Value::as_str) == Some(crate::browser_cards::METHOD)
+                {
+                    value["closeReason"] = json!(crate::browser_cards::RESTART_CLOSE_REASON);
+                }
             }
             _ => continue,
         }
@@ -947,6 +953,11 @@ pub async fn reserve_start(
     store
         .transaction_with(move |tx| {
             let (snapshot, actor) = snapshot(tx, &id)?;
+            if !restart_ready(tx, snapshot.record())? {
+                return Err(MonitorError::Refused(
+                    "Wait for the previous command to exit before restarting",
+                ));
+            }
             let current_actor = actor.value();
             if snapshot.record() != &prepared.monitor
                 || MONITOR_START_ACTOR_INPUTS
@@ -1174,7 +1185,9 @@ pub fn create_in_transaction(
         return Ok(previous.value().clone());
     }
     if actor.epoch != epoch || actor.extra.get("autoWake") != Some(&json!(true)) {
-        return Err(MonitorError::Refused("The agent turn was stopped"));
+        return Err(MonitorError::Refused(
+            studio_runtime_schema::shared_values::MONITOR_OWNER_STOPPED_ERROR,
+        ));
     }
     workspace.check(tx, &actor)?;
     if repository::active_count(tx)? >= 64 {
@@ -1195,6 +1208,118 @@ pub fn create_in_transaction(
     let after = MonitorSnapshot::checked(record.clone(), actor_value)?;
     crate::sync_policy::publish_monitor_change(tx, None, &after)?;
     Ok(record)
+}
+
+/// A confirmed restart admits one replacement and requests cancellation atomically.
+/// The replacement cannot start until the source has a confirmed terminal state.
+pub fn restart_in_transaction(
+    tx: &Transaction<'_>,
+    body: &Value,
+    workspace: &dyn WorkspaceAdmission,
+    log_root: &str,
+    now: f64,
+) -> Result<Value, MonitorError> {
+    let id = body["id"]
+        .as_str()
+        .ok_or(MonitorError::Refused("Supply a monitor"))?;
+    let owner = body["agent"]
+        .as_str()
+        .ok_or(MonitorError::Refused("Supply an agent"))?;
+    let epoch = body["epoch"]
+        .as_i64()
+        .ok_or(MonitorError::Refused("Supply an owner epoch"))?;
+    let request_id = format!(
+        "monitor-restart:{owner}:{}",
+        body["requestId"]
+            .as_str()
+            .ok_or(MonitorError::Refused("Supply a request identity"))?
+    );
+    let replacement_id =
+        uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, request_id.as_bytes()).to_string();
+    let actor = event_write::checked_agent(tx, owner)?;
+    if actor.epoch != epoch
+        || actor
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            != body["accountKey"]
+    {
+        return Err(MonitorError::Refused("The monitor owner changed"));
+    }
+    let signature = crate::process_controls::digest(body);
+    if let Some(previous) = MonitorsRepository::get(tx, &replacement_id)? {
+        if previous.value()["restartSignature"] != signature {
+            return Err(MonitorError::Refused(
+                "This restart request has different content",
+            ));
+        }
+        return Ok(previous.value().clone());
+    }
+    let (source, _) = snapshot(tx, id)?;
+    let old = source.record();
+    if old["agent"] != owner
+        || old["epoch"] != epoch
+        || old["cancelRequested"] == true
+        || !matches!(
+            old["status"].as_str(),
+            Some("running" | "starting" | "approval")
+        )
+    {
+        return Err(MonitorError::Refused(
+            "The monitor changed or finished. Refresh its details",
+        ));
+    }
+    let patterns = crate::monitor_matches::patterns(body.get("outputPatterns"))?;
+    if json!(patterns) == old["outputPatterns"] {
+        return Err(MonitorError::Refused(
+            "Use narrower output patterns before restarting",
+        ));
+    }
+    let mut request = json!({"command":old["command"],"output_patterns":patterns});
+    for (saved, input) in [
+        ("timeout_ms", "timeout_ms"),
+        ("interactive", "interactive"),
+        ("wakeOn", "wake_on"),
+        ("successExitCodes", "success_exit_codes"),
+        ("stallTimeoutSeconds", "stall_timeout_seconds"),
+        ("livenessCommand", "liveness_command"),
+    ] {
+        if let Some(value) = old.get(saved) {
+            request[input] = value.clone();
+        }
+    }
+    let admission = MonitorAdmission {
+        actor_id: owner,
+        epoch,
+        request_id: &request_id,
+        request: &request,
+        log_root,
+    };
+    let mut replacement = create_in_transaction(tx, &admission, workspace, now)?;
+    replacement["restartAfter"] = json!(id);
+    replacement["restartSignature"] = json!(signature);
+    repository::put(tx, replacement.clone())?;
+    cancel_in_transaction(tx, id, Some(owner), now)?;
+    Ok(replacement)
+}
+
+/// Missing or uncertain source outcomes never authorize a replacement command.
+pub fn restart_ready(
+    connection: &studio_runtime_store::Connection,
+    record: &Value,
+) -> Result<bool, MonitorError> {
+    let Some(id) = record["restartAfter"].as_str() else {
+        return Ok(true);
+    };
+    Ok(
+        MonitorsRepository::get(connection, id)?.is_some_and(|source| {
+            matches!(
+                source.value()["status"].as_str(),
+                Some("completed" | "failed" | "cancelled")
+            )
+        }),
+    )
 }
 
 /// Attach a rule-check identity and retained account to a monitor admitted by

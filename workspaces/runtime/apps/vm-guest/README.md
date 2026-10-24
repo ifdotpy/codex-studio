@@ -11,6 +11,15 @@ owned by this app's installer and service unit. Focused check:
 `python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_service.py -v`
 from the repository root.
 
+`just test-fast` runs the whole suite with `node workspaces/runtime/apps/vm-guest/run-guest-suite.mjs`
+after `cargo build -p studio-process-supervisor --locked`. The runner needs Python 3.11 or newer
+(`STUDIO_GUEST_PYTHON` selects one), sets `STUDIO_SUPERVISOR_BINARY` to the built supervisor, and
+on macOS gives the suite a short temporary folder, because a macOS Unix socket path has at most
+104 bytes. After the suite, also after a failure or a timeout, it stops every process that
+still names the suite's folder or works in it, and fails the run: a test must stop what it
+starts. Use it for a full run on a Mac. The native supervisor tests run on Linux only: the
+supervisor lease names its owner with the Linux process identity of the guest.
+
 The layr parts (the root broker `layr_admin.py`, `layr_projects.py`, `layr_agents.py` and
 the host_exec slots) have their own focused checks:
 `python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p 'test_*layr*.py' -v`

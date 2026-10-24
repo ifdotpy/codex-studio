@@ -181,11 +181,12 @@ states through layr, with its own Linux user:
 
 - A Codex reviewer turn has no network access, so the Codex Linux sandbox refuses `connect` on
   every socket, also on `/run/layr/layr.sock` ("Operation not permitted"). Studio gives each VM
-  reviewer the `layr_read` tool (`codex_vm_agents.py`): it runs one read command of
-  `LAYR_READ_COMMANDS` (`status`, `diff`, `show`, `log`, `rev-parse`, `merge-base`, `blame`, `grep`,
+  reviewer the `layr_read` tool (`layr_read.rs` in `runtime-services`): it runs one read command
+  of `COMMANDS` (`status`, `diff`, `show`, `log`, `rev-parse`, `merge-base`, `blame`, `grep`,
   `ls-files`), optionally after `--line <line>`, in the reviewer's line, as the reviewer's user,
   outside the sandbox (guest method `layr.exec`). `--project`, `-C` and `layr try` stay out:
-  `try` runs any command.
+  `try` runs any command. The guest request ID comes from the agent and the tool request, so a
+  retry gets the first answer and the command does not run again.
 - Every reviewer user is in the `studio-reviewers` group. Before a reviewer joins it, the broker
   adds the project's layr deny rule for that group (`REVIEWER_DENY` in `layr_agents.py`):
   `line.create`, `merge`, `line.manage`, `tag`, `push`, `config`, `gc` and `fsck`. A change inside a

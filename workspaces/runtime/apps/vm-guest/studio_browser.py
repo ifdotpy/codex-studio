@@ -45,6 +45,10 @@ def main(arguments: list[str]) -> int:
         message = reply.get("message") if isinstance(reply, dict) else None
         print(f"studio-browser: {message or 'Studio refused the link'}", file=sys.stderr)
         return 1
+    if reply.get("joined") is True:
+        print(f"studio-browser: Another chat already asks the person to sign in at {reply.get('host')}. "
+              "This command waits on that card; Studio tells this chat when the sign-in ends.", file=sys.stderr)
+        return 0
     print(f"studio-browser: Studio asks the person to open {reply.get('host')}. "
           "The sign-in continues in the browser on the Mac after the approval.", file=sys.stderr)
     return 0

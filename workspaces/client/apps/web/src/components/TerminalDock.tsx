@@ -150,6 +150,16 @@ export default function TerminalDock({
       stop();
     };
   }, [load, watchResourceReads]);
+  // Page layout rules read this flag instead of #root:has(.terminal-dock).
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.dataset.terminalDock = opened ? "open" : "closed";
+    if (shellTerminal) root.dataset.terminalShell = "true";
+    return () => {
+      delete root.dataset.terminalDock;
+      delete root.dataset.terminalShell;
+    };
+  }, [opened]);
   useEffect(() => {
     if (!opened) setEndTarget(null);
     save("codex.terminal.open", opened);

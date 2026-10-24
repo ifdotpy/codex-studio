@@ -226,6 +226,9 @@ struct Scripted {
     /// the registry retries, so a retry timer cannot change the outcome.
     unavailable: std::sync::OnceLock<fn(&str) -> bool>,
     unavailable_attempts: AtomicUsize,
+    /// Every launch is refused because the account has no readable Claude
+    /// login, so its saved account identity is missing.
+    identity_refused: std::sync::atomic::AtomicBool,
     launch_attempts: std::sync::OnceLock<mpsc::UnboundedSender<String>>,
     stops: Arc<Mutex<Vec<Shutdown>>>,
     opened_notice: Arc<Notify>,
@@ -259,6 +262,12 @@ impl AccountLauncher for Scripted {
             {
                 self.unavailable_attempts.fetch_add(1, Ordering::SeqCst);
                 return Err(WorkerError::TaskFailed);
+            }
+            if self.identity_refused.load(Ordering::SeqCst) {
+                return Err(WorkerError::PreparationRefused(
+                    studio_runtime_services::provider_adapter::CLAUDE_ACCOUNT_IDENTITY_REFUSAL
+                        .into(),
+                ));
             }
             if self
                 .failures
@@ -522,6 +531,7 @@ impl ProviderTaskFactory for WireFactory {
                     result: Ok(()),
                     cleanup_error: None,
                     recovery_needed: None,
+                    provider_retained: false,
                 }
             });
             Ok(ProviderAttachment::from_task(
@@ -548,6 +558,23 @@ fn scripted_with_unknown_first_launch() -> (Arc<Scripted>, mpsc::UnboundedReceiv
 {
     scripted_with_policy(true, false, true)
 }
+/// Drain the recorded provider writes. A start whose outcome is unknown when its
+/// provider connection closes gets one native history check of `thread` by the
+/// next account worker, so such reads are allowed (the scripted provider does
+/// not answer them). Any other write fails with `context`. Returns the reads.
+fn drain_history_reads(
+    writes: &mut mpsc::UnboundedReceiver<(String, Value)>,
+    thread: &Value,
+    context: &str,
+) -> usize {
+    let mut reads = 0;
+    while let Ok((_, write)) = writes.try_recv() {
+        assert_eq!(write["method"], "thread/turns/list", "{context}: {write}");
+        assert_eq!(&write["params"]["threadId"], thread, "{context}: {write}");
+        reads += 1;
+    }
+    reads
+}
 fn scripted_with_policy(
     unknown_writes: bool,
     record_resumes: bool,
@@ -566,6 +593,7 @@ fn scripted_with_policy(
             failures: AtomicUsize::new(0),
             unavailable: std::sync::OnceLock::new(),
             unavailable_attempts: AtomicUsize::new(0),
+            identity_refused: std::sync::atomic::AtomicBool::new(false),
             launch_attempts: std::sync::OnceLock::new(),
             stops: Arc::default(),
             opened_notice: Arc::default(),
@@ -844,15 +872,30 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     assert!(event_id.starts_with("radio-turn:"));
     assert!(matches!(status.as_str(), "dispatching" | "uncertain"));
     drop(db);
-    // The unknown write closes the scripted session. Reconcile after its
-    // settlement so the radio tick prepares from the settled agent row.
-    wait_for_durable_agent_status(&fixture, "a", "interrupted").await;
+    // The unknown write closes the scripted session. Its turn/start outcome is
+    // unknown, so the disconnect holds the agent for one native history check
+    // of that input, as a backend restart does, instead of interrupting it.
+    // Reconcile after its settlement so the radio tick prepares from the
+    // settled agent row.
+    wait_for_durable_agent_status(&fixture, "a", "queued").await;
+    let error: String = fixture
+        .store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT json_extract(record,'$.error') FROM runtime_agents WHERE id='a'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        error.starts_with("Context repair waits for a confirmed input receipt"),
+        "{error}"
+    );
+    let thread = write["params"]["threadId"].clone();
 
     registry.reconcile(None).await.unwrap();
-    assert!(
-        writes.try_recv().is_err(),
-        "radio queue event was sent twice"
-    );
+    drain_history_reads(&mut writes, &thread, "radio queue event was sent twice");
     // The worker ends on the closed session unless shutdown reaches it first.
     let shutdown = registry.shutdown().await;
     assert!(
@@ -899,11 +942,12 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
         )
         .unwrap();
     assert_eq!(status_after_recovery, status_before_restart);
-    assert!(
-        writes.try_recv().is_err(),
-        "unknown radio turn must not be resent after worker restart"
-    );
     restarted.shutdown().await.unwrap();
+    drain_history_reads(
+        &mut writes,
+        &thread,
+        "unknown radio turn must not be resent after worker restart",
+    );
 }
 
 #[tokio::test]
@@ -1243,6 +1287,45 @@ async fn start_failure_preserves_input_and_post_commit_notify_dispatches_it() {
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
 }
 
+/// A Claude account without a readable login has no saved account identity,
+/// so its provider cannot launch and no account worker can reach the sign-in
+/// gate. The queued agent must not wait for a provider session without a
+/// message: it shows the sign-in reason and action, keeps its input, and the
+/// held-turn release requeues it once the account is ready.
+#[tokio::test]
+async fn claude_account_without_a_readable_login_holds_its_start_for_sign_in() {
+    let fixture = Fixture::new().await;
+    fixture.enqueue(0, "needs-login").await;
+    let (launcher, _writes) = scripted_with_unknown_writes(false);
+    launcher.identity_refused.store(true, Ordering::SeqCst);
+    let mut registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
+    assert!(registry.reconcile(None).await.is_err());
+    let agent_id = fixture.agents[0]["id"].as_str().unwrap();
+    let (status, error, wait): (String, Option<String>, Option<String>) = fixture
+        .store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT json_extract(record,'$.status'),json_extract(record,'$.error'),json_extract(record,'$.startWait.reason') FROM runtime_agents WHERE id=?1",
+            [agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (status.as_str(), error.as_deref(), wait.as_deref()),
+        ("failed", Some("Sign in with claude auth login first"), None),
+        "the owner sees why the agent does not start and what to do"
+    );
+    assert_eq!(fixture.event_status("annotation:needs-login"), "pending");
+    assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test]
 async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not_send_again() {
     use axum::{
@@ -1387,7 +1470,7 @@ pub(crate) mod host_runtime;
 #[path = "../src/provider_ports.rs"]
 #[allow(dead_code)]
 pub(crate) mod provider_ports;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "../src/runtime_shutdown.rs"]
 mod runtime_shutdown;
 
@@ -1460,10 +1543,22 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
     .expect("replacement worker hang guard");
     fixture.enqueue(1, "new-input-after-disconnect").await;
     wake.notify_one();
-    let second = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
-        .await
-        .expect("post-disconnect provider write hang guard")
-        .unwrap();
+    // The first turn/start lost its acceptance, so its outcome is unknown when
+    // the provider exits. The replacement worker checks that exact input in
+    // native history once, as after a backend restart; the scripted provider
+    // leaves the read unanswered, so the input stays uncertain and unsent.
+    let mut history_reads = 0;
+    let second = loop {
+        let write = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
+            .await
+            .expect("post-disconnect provider write hang guard")
+            .unwrap();
+        if write.1["method"] != "thread/turns/list" {
+            break write;
+        }
+        assert_eq!(write.1["params"]["threadId"], first.1["params"]["threadId"]);
+        history_reads += 1;
+    };
     assert_eq!(second.0, "account:default");
     assert_eq!(second.1["method"], "turn/start");
     assert_ne!(
@@ -1490,9 +1585,18 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
         .unwrap();
     assert_eq!(launcher.opened.lock().unwrap().len(), 2);
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
+    history_reads += drain_history_reads(
+        &mut writes,
+        &first.1["params"]["threadId"],
+        "unknown input must not be resent on replacement",
+    );
     assert!(
-        writes.try_recv().is_err(),
-        "unknown input must not be resent on replacement"
+        history_reads > 0,
+        "the replacement worker checks the unknown input in native history"
+    );
+    assert_eq!(
+        fixture.event_status("annotation:unknown-before-disconnect"),
+        "uncertain"
     );
 }
 
@@ -1763,6 +1867,10 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
             .expect("registry retains the launcher");
         assert_eq!(account, format!("page-{index:06}"));
     }
+    // The pass stores a blocked start for each of 128 accounts before it reaches
+    // the tail, which takes 13 to 21 s in a debug build on a loaded host. No
+    // timer can open the tail instead: a retry pass begins at the first page
+    // again. So this wait is only the hang guard.
     let (account, request) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
         .expect("strict account continuation reaches the eligible tail")
@@ -3903,7 +4011,7 @@ fn direct_generation(store: &RuntimeStore) -> u64 {
     serde_json::from_str(&raw).unwrap()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn make_direct_agent_runnable(store: &RuntimeStore, agent_id: &str, account: &str) {
     let agent_id = agent_id.to_owned();
     let account = account.to_owned();
@@ -4029,4 +4137,341 @@ async fn wait_for_direct_completion<T: Clone + Send + Sync + 'static>(
             direct_agent_debug(store, agent_id)
         )
     })
+}
+
+/// Requests that the restart witness provider recorded, in order.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn restart_provider_requests(root: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(root.join("requests.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn restart_provider_count(root: &std::path::Path, method: &str, thread: &str) -> usize {
+    restart_provider_requests(root)
+        .iter()
+        .filter(|request| request["method"] == method && request["params"]["threadId"] == thread)
+        .count()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn restart_agent(store: &RuntimeStore, id: &str) -> Value {
+    let raw: String = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+/// The recovery fields of an agent record, for a failure message.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn restart_summary(agent: &Value) -> Value {
+    json!({
+        "status":agent["status"], "epoch":agent["epoch"], "autoWake":agent["autoWake"],
+        "inFlight":agent["inFlight"], "turnId":agent["turnId"], "error":agent["error"],
+        "startAttempt":agent["startAttempt"], "disconnectRecovery":agent["disconnectRecovery"],
+        "restartRecovery":agent["restartRecovery"], "connectionRecovery":agent["connectionRecovery"],
+        "lastCompletedTurn":agent["lastCompletedTurn"],
+    })
+}
+
+/// Wait for `ready`, polling, or panic with `state` after the hang guard.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn restart_wait(label: &str, mut ready: impl FnMut() -> bool, state: impl Fn() -> String) {
+    let waited = tokio::time::timeout(TEST_HANG_GUARD, async {
+        while !ready() {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    if waited.is_err() {
+        panic!("{label} hang guard\n{}", state());
+    }
+}
+
+/// Every install restarts the backend while the process supervisor keeps
+/// each account's provider process. One witness for the restart fixes
+/// together, with the real supervisor and a scripted Codex app-server: agents
+/// A and B run turns, the backend stops, the owner stops B while no backend
+/// runs, and a new backend process attaches to the same provider generation.
+/// A's turn keeps running without a false disconnect and completes on the new
+/// backend, B's turn gets one interrupt and one command cleanup, and no input
+/// is sent twice.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture; `which` prints one line and exits at once"
+)]
+async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
+    use std::os::unix::fs::PermissionsExt;
+    if std::env::var_os("STUDIO_RESTART_FIXES_CHILD").is_none() {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "wave7_p01_registry::backend_restart_keeps_live_work_and_ends_the_stopped_turn_once",
+                "--nocapture",
+            ])
+            .env("STUDIO_RESTART_FIXES_CHILD", "1")
+            .env("CODEX_AGENTS_SUPERVISOR_MODE", "1")
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let started = std::time::Instant::now();
+    let directory = tempfile::Builder::new().prefix("rr-").tempdir().unwrap();
+    // The supervisor compares the handshake state directory with its
+    // resolved root; macOS temporary directories sit behind a symlink.
+    let root = CanonicalPath::existing(directory.path())
+        .unwrap()
+        .to_path_buf();
+    let (store, _changes) = store_with_change_signal(&root).await;
+    let agents =
+        crate::fixture_support::seed(&store, &root, crate::fixture_support::FixtureKind::Dispatch)
+            .await;
+    let a = agents[0]["id"].as_str().unwrap().to_owned();
+    let b = agents[1]["id"].as_str().unwrap().to_owned();
+    make_direct_agent_runnable(&store, &b, "default").await;
+    // B runs on A's account, with that account's execution settings.
+    let settings_agent = b.clone();
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.executionSettingsAccountKey','default') WHERE id=?1",
+                [&settings_agent],
+            )?;
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .unwrap();
+    let fixture = Fixture {
+        _root: directory,
+        store: store.clone(),
+        agents: agents.clone(),
+        changes: _changes,
+    };
+    fixture.enqueue(0, "a-input").await;
+    fixture.enqueue(1, "b-input").await;
+    let (accounts, home) = account_driver(&root);
+    std::fs::write(
+        home.join("auth.json"),
+        json!({"OPENAI_API_KEY":"fixture-host-key"}).to_string(),
+    )
+    .unwrap();
+    // A non-platform interpreter path: macOS hides the launch environment of
+    // platform binaries such as /usr/bin/env, so their reattach is unverifiable.
+    let node = std::process::Command::new("which")
+        .arg("node")
+        .output()
+        .unwrap();
+    assert!(node.status.success());
+    let node = String::from_utf8(node.stdout).unwrap().trim().to_owned();
+    let script = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/restart-provider.mjs"),
+    )
+    .unwrap();
+    let body = script.split_once('\n').map_or("", |(_, body)| body);
+    let executable = root.join("provider");
+    std::fs::write(&executable, format!("#!{node}\n{body}")).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let supervisor_root = root.clone();
+    let mut supervisor = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/tests/wave7_p01_registry",
+        move || {
+            let stderr = supervisor_root.join("supervisor.log");
+            let child = spawn_rust_supervisor(&supervisor_root, &stderr);
+            let mut fixture = SupervisorFixture {
+                child,
+                native: Vec::new(),
+            };
+            supervisor_ready::wait(
+                &mut fixture.child,
+                studio_runtime_process::BackendIdentity {
+                    backend_id: studio_runtime_process::BackendId("restart-fixture".into()),
+                    state_dir: supervisor_root,
+                },
+                &stderr,
+            );
+            fixture
+        },
+    )
+    .await
+    .unwrap();
+    let state_text = |store: &RuntimeStore, root: &std::path::Path, a: &str, b: &str| {
+        format!(
+            "A: {}\nB: {}\nrequests: {:?}",
+            restart_summary(&restart_agent(store, a)),
+            restart_summary(&restart_agent(store, b)),
+            restart_provider_requests(root)
+                .iter()
+                .map(|request| format!("{} {}", request["method"], request["params"]["threadId"]))
+                .collect::<Vec<_>>()
+        )
+    };
+    let mut state = studio_runtime_http::HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        root.to_string_lossy().into_owned(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    )
+    .with_account_driver(accounts.clone());
+
+    // The first backend starts both turns.
+    let runtime = host_runtime::HostRuntime::start(
+        &mut state,
+        store.clone(),
+        accounts.clone(),
+        Some(executable.to_string_lossy().into_owned()),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
+    restart_wait(
+        "both turns start",
+        || {
+            restart_provider_count(&root, "turn/start", "fake-thread-0") == 1
+                && restart_provider_count(&root, "turn/start", "fake-thread-1") == 1
+                && restart_agent(&store, &a)["status"] == "running"
+                && restart_agent(&store, &b)["status"] == "running"
+        },
+        || state_text(&store, &root, &a, &b),
+    )
+    .await;
+    let now = studio_runtime_services::event_write::unix_time().unwrap();
+
+    // The backend stops; the supervisor keeps the provider and its work.
+    runtime_shutdown::close(runtime, &state).await.unwrap();
+    let pids = std::fs::read_to_string(root.join("provider-pids")).unwrap();
+    supervisor
+        .native
+        .extend(pids.lines().map(|pid| pid.parse::<u32>().unwrap()));
+    assert_eq!(pids.lines().count(), 1, "one provider process");
+
+    // The owner stops B while no backend runs.
+    let detached = Arc::new(
+        studio_runtime_services::account_session_runtime::AccountSessionRuntime::new(
+            accounts.clone(),
+            None,
+            tokio::runtime::Handle::current(),
+            root.join("accounts"),
+            home.clone(),
+            home.clone(),
+        ),
+    );
+    let ports = Arc::new(
+        studio_runtime_services::lifecycle_effects::ProductionLifecyclePorts::new(
+            store.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+            detached,
+            None,
+        ),
+    );
+    ports
+        .execute(
+            &studio_runtime_services::agent_management::Action::Stop {
+                target: b.clone(),
+                descendants: false,
+                reason: None,
+                sender: None,
+                sender_epoch: None,
+            },
+            now + 1.0,
+        )
+        .await
+        .unwrap();
+    assert_eq!(restart_agent(&store, &b)["status"], "paused");
+
+    // A new backend process attaches to the same provider generation.
+    let runtime = host_runtime::HostRuntime::start(
+        &mut state,
+        store.clone(),
+        accounts,
+        Some(executable.to_string_lossy().into_owned()),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
+    restart_wait(
+        "the stopped turn gets its interrupt and command cleanup",
+        || {
+            restart_provider_count(&root, "turn/interrupt", "fake-thread-1") >= 1
+                && restart_provider_count(
+                    &root,
+                    "thread/backgroundTerminals/clean",
+                    "fake-thread-1",
+                ) >= 1
+        },
+        || state_text(&store, &root, &a, &b),
+    )
+    .await;
+    let live = restart_agent(&store, &a);
+    assert_eq!(live["status"], "running", "A's turn keeps running: {live}");
+    assert!(live["error"].is_null(), "no false disconnect: {live}");
+
+    std::fs::write(root.join("complete-fake-thread-0"), "1").unwrap();
+    restart_wait(
+        "A's continued turn completes",
+        || restart_agent(&store, &a)["lastCompletedTurn"] == "turn-fake-thread-0",
+        || state_text(&store, &root, &a, &b),
+    )
+    .await;
+
+    for thread in ["fake-thread-0", "fake-thread-1"] {
+        assert_eq!(
+            restart_provider_count(&root, "turn/start", thread),
+            1,
+            "{thread}: one turn start"
+        );
+    }
+    assert_eq!(
+        restart_provider_count(&root, "turn/interrupt", "fake-thread-1"),
+        1
+    );
+    assert_eq!(
+        restart_provider_count(&root, "thread/backgroundTerminals/clean", "fake-thread-1"),
+        1
+    );
+    assert_eq!(
+        restart_provider_count(&root, "turn/interrupt", "fake-thread-0"),
+        0
+    );
+    let disconnects: i64 = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_events WHERE text LIKE '%disconnected%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(disconnects, 0, "no parent notice of a false disconnect");
+    runtime_shutdown::close(runtime, &state).await.unwrap();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/tests/wave7_p01_registry",
+        move || drop(supervisor),
+    )
+    .await
+    .unwrap();
+    drop(fixture);
+    eprintln!("restart witness ran in {:?}", started.elapsed());
 }

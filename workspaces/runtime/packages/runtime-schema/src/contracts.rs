@@ -56,6 +56,10 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
+                "WORKER_TURN_LIMIT_REASON",
+                json_string(crate::worker_capabilities::TURN_LIMIT_REASON),
+            ),
+            (
                 "SYNC_TRANSCRIPT_STREAM_MAX_ITEMS",
                 values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS.to_string(),
             ),
@@ -106,6 +110,14 @@ fn shared_values_ts() -> String {
             (
                 "ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS",
                 values::ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS.to_string(),
+            ),
+            (
+                "SIGN_IN_ALERT_GRACE_SECONDS",
+                values::SIGN_IN_ALERT_GRACE_SECONDS.to_string(),
+            ),
+            (
+                "SIGN_IN_REMINDER_SECONDS",
+                values::SIGN_IN_REMINDER_SECONDS.to_string(),
             ),
             (
                 "CHILD_RESULT_COALESCE_DEFAULT_SECONDS",
@@ -306,7 +318,7 @@ fn api_types_tail() -> String {
 
 fn vm_guest_py() -> String {
     format!(
-        "# {HEADER}\nMAX_PROJECT_SECRET_VALUE_BYTES = {}\nPROJECT_SECRET_VALUE_LIMIT_LABEL = {}\nGUEST_UPDATE_KEY_PATH = {}\nGUEST_PAYLOAD_RECORD_PATH = {}\nGUEST_UPDATE_PART_BYTES = {}\nLINUX_VM_ROSETTA_TAG = {}\nLINUX_VM_PROVIDER_HANDLE_PREFIX = {}\n",
+        "# {HEADER}\nMAX_PROJECT_SECRET_VALUE_BYTES = {}\nPROJECT_SECRET_VALUE_LIMIT_LABEL = {}\nGUEST_UPDATE_KEY_PATH = {}\nGUEST_PAYLOAD_RECORD_PATH = {}\nGUEST_UPDATE_PART_BYTES = {}\nLINUX_VM_ROSETTA_TAG = {}\nLINUX_VM_PROVIDER_HANDLE_PREFIX = {}\nSIGN_IN_OPEN_LIMIT_SECONDS = {}\nSIGN_IN_NOT_SENT_CODE = {}\nSIGN_IN_JOINED_STATE = {}\nSIGN_IN_JOINED_SIGNED_IN_REASON = {}\n",
         values::MAX_PROJECT_SECRET_VALUE_BYTES,
         json_string(values::PROJECT_SECRET_VALUE_LIMIT_LABEL),
         json_string(values::GUEST_UPDATE_KEY_PATH),
@@ -314,6 +326,10 @@ fn vm_guest_py() -> String {
         values::GUEST_UPDATE_PART_BYTES,
         json_string(values::LINUX_VM_ROSETTA_TAG),
         json_string(values::LINUX_VM_PROVIDER_HANDLE_PREFIX),
+        values::SIGN_IN_OPEN_LIMIT_SECONDS,
+        json_string(values::SIGN_IN_NOT_SENT_CODE),
+        json_string(values::SIGN_IN_JOINED_STATE),
+        json_string(values::SIGN_IN_JOINED_SIGNED_IN_REASON),
     )
 }
 

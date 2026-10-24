@@ -31,6 +31,20 @@ fn cli(root: &Path, args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
+/// The node of the test tooling: `CODEX_NODE` as the test recipes set it,
+/// else the first `node` on this process's PATH.
+#[cfg(target_os = "linux")]
+fn test_node() -> std::path::PathBuf {
+    std::env::var_os("CODEX_NODE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::split_paths(&std::env::var_os("PATH")?)
+                .map(|directory| directory.join("node"))
+                .find(|candidate| candidate.is_file())
+        })
+        .expect("node is on PATH or in CODEX_NODE")
+}
+
 #[test]
 #[cfg(target_os = "linux")]
 fn service_status_uses_only_the_selected_user_manager_without_python() {
@@ -265,6 +279,10 @@ fn delivery_and_service_install_share_the_same_escaped_release_command() {
         fs::write(tools.join(name), script).unwrap();
         fs::set_permissions(tools.join(name), fs::Permissions::from_mode(0o755)).unwrap();
     }
+    // deliver.sh reads the service layout with node. The delivery PATH below
+    // has only the fixture tools, /usr/bin and /bin, and CI installs Node
+    // elsewhere, so link the test's node into the fixture tools.
+    std::os::unix::fs::symlink(test_node(), tools.join("node")).unwrap();
     let install = Command::new(env!("CARGO_BIN_EXE_studio-runtime-server"))
         .args(["service", "install"])
         .env_clear()

@@ -40,6 +40,11 @@ test("combined shell reserves terminal height inside the safe content rectangle"
   await page.setContent(
     `<style>${css}</style><div id="root" style="--terminal-dock-height:180px"><div class="multi-server-shell" data-shell-terminal="open" style="--shell-sidebar-width:240px;--shell-terminal-height:180px"><aside id="sidebar">Navigation</aside><main class="server-views"><div class="workspace-layout-row"><main class="workspace">Conversation</main></div><div class="terminal-dock" hidden></div></main><div class="shell-terminal-bar">Terminal</div></div></div>`,
   );
+  await page.evaluate(() => {
+    document.documentElement.dataset.terminalDock = "open";
+    document.documentElement.dataset.terminalShell = "true";
+    document.documentElement.dataset.inlineSidebar = "true";
+  });
   expect(await rect(".multi-server-shell")).toEqual({
     left: 0,
     right: 867,
@@ -57,6 +62,7 @@ test("combined shell reserves terminal height inside the safe content rectangle"
   expect(await rect("#sidebar")).toMatchObject({ bottom: 455 });
   await page.locator(".multi-server-shell").evaluate((node) => {
     node.dataset.shellTerminal = "closed";
+    document.documentElement.dataset.terminalDock = "closed";
     node.style.setProperty("--shell-terminal-height", "38px");
   });
   await page

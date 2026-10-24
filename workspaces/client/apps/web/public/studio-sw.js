@@ -216,3 +216,40 @@ if (self.STUDIO_SHELL) {
     );
   });
 }
+
+// Sign-in alerts through Web Push (docs/web-push.md). The server encrypts a payload with
+// only the alert text and the card tag. Show only those fields: never a link from a push.
+self.addEventListener("push", (event) => {
+  let alert = {};
+  try {
+    alert = event.data?.json() ?? {};
+  } catch {
+    alert = {};
+  }
+  const text = (value, fallback) =>
+    typeof value === "string" && value ? value.slice(0, 200) : fallback;
+  event.waitUntil(
+    self.registration.showNotification(text(alert.title, "Sign-in needed"), {
+      body: text(alert.body, "Open Studio to sign in."),
+      tag: text(alert.tag, "studio-sign-in"),
+      icon: "/apple-touch-icon.png",
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    (async () => {
+      const windows = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+      const studio = windows.find(
+        (client) => new URL(client.url).origin === self.location.origin,
+      );
+      if (studio) await studio.focus();
+      else await self.clients.openWindow("/");
+    })(),
+  );
+});
