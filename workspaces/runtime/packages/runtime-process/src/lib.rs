@@ -15,6 +15,8 @@ pub mod provider_direct;
 mod provider_launch;
 pub mod provider_seam;
 mod provider_shared;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use provider_shared::retained_environment_accepted;
 #[cfg(unix)]
 pub mod provider_stdio;
 #[cfg(unix)]
