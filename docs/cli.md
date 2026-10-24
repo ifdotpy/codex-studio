@@ -4,6 +4,35 @@ Studio installs Rust commands for the local server, process supervisor, and
 diagnostics. Managed agent work uses the application's orchestration tools.
 Keep runtime state outside the checkout and preserve its existing identity.
 
+## Deliver an update
+
+Use `just deliver-server COMMIT` from a checkout at the requested commit.
+Run `just test-fast` and `just test-comprehensive` on that exact commit first.
+Linux uses the source release and systemd owner described in [Linux setup](linux-server-setup.md).
+
+On macOS, the command builds and checks a signed native package. It verifies the
+existing backend, state directory, recovery configuration, and app signature.
+It runs the upgrade canary before it submits one staged update to the existing
+recovery owner. It does not stop agents, monitors, or the process supervisor.
+Completion requires the matching install receipt, bundle, backend, and retained
+provider process identifiers (PIDs) and generations. A timeout leaves the result unknown.
+
+For an existing package, use:
+
+```sh
+just deliver-server COMMIT --app '/absolute/package/Codex Studio.app' --dry-run
+just deliver-server COMMIT --app '/absolute/package/Codex Studio.app'
+```
+
+`--dry-run` checks the target without a package build, canary, or state write.
+`--url` selects another loopback origin. `--receipts` selects the local receipt
+directory. The default receipt directory is `~/.cache/codex-studio/deliveries/COMMIT`.
+Retry with the same commit, package, and receipt directory after a lost response.
+A saved submission never starts another install. A changed package is refused.
+The command keeps partial copies and uncertain receipts for inspection.
+The state directory keeps a separate journal for each request in `local-deliveries`.
+Loss of the receipt cache does not permit another install request.
+
 ## Install commands
 
 From the repository root, with the pinned Rust toolchain and Node.js available:

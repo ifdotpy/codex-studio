@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import os from "node:os";
+import path from "node:path";
 
 import {
   FAILURE_LINES,
@@ -38,11 +40,11 @@ test("the failure lines match both outage messages", () => {
 
 test("every canary sandbox keeps the live side, the Keychain and the network out", () => {
   const text = profiles({
-    root: "/tmp/studio-canary-x",
-    tmp: "/var/folders/t",
+    root: path.join(os.tmpdir(), "studio-canary-x"),
+    tmp: os.tmpdir(),
     home: "/Users/owner",
     liveState: "/Users/owner/.local/state/codex-agents",
-    app: "/tmp/studio-canary-x/apps/Codex Studio.app",
+    app: path.join(os.tmpdir(), "studio-canary-x/apps/Codex Studio.app"),
     port: 4800,
     proxyPort: 4900,
     readable: ["/Users/owner/.codex/auth.json"],

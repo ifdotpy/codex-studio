@@ -21,7 +21,7 @@
     "check:staged": "node workspaces/tooling/apps/repository-checks/check-code.mjs staged",
     "test:pre-commit": "node workspaces/tooling/apps/repository-checks/tests/pre-commit-hook.mjs",
     "check:tooling": "pnpm run test:tooling",
-    "test:tooling": "node --test workspaces/tooling/apps/repository-checks/tests/facade.test.mjs workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.mjs workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.mjs workspaces/tooling/apps/installed-smoke/tests/smoke.test.mjs workspaces/tooling/apps/upgrade-canary/tests/canary.test.mjs"
+    "test:tooling": "node --test workspaces/tooling/apps/repository-checks/tests/facade.test.mjs workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.mjs workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.mjs workspaces/tooling/apps/repository-checks/tests/delivery.test.mjs workspaces/tooling/apps/installed-smoke/tests/smoke.test.mjs workspaces/tooling/apps/upgrade-canary/tests/canary.test.mjs"
   },
   "devDependencies": {
     "openapi-typescript": "7.13.0",
