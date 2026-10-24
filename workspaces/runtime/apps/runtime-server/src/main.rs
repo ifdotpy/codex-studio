@@ -384,6 +384,9 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let owner = studio_runtime_store::state_owner::StateOwnerClaim { backend_build };
     let store =
         Arc::new(RuntimeStore::open_claiming(configured_state_dir.as_deref(), &owner).await?);
+    // Before the first runtime write: every writer transaction publishes the chats and
+    // cards it changed.
+    studio_runtime_services::entity_publication::install(&store);
     store
         .set_diagnostics_callback(Some(
             studio_runtime_services::diagnostics::observe_store_event,
