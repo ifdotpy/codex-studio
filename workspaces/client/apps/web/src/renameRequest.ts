@@ -8,10 +8,55 @@ export async function submitRename(
   post: (path: "/api/rename", body: RenameBody) => Promise<RenameReceipt>,
   recover: () => Promise<unknown>,
 ): Promise<RenameReceipt> {
-  void recover;
-  const result = await post("/api/rename", body);
-  if (result.status === "pending") {
-    window.setTimeout(() => void submitRename(body, post, recover), 1000);
+  try {
+    // Success (including pending) is completed by the agent entity upsert.
+    return await post("/api/rename", body);
+  } catch (error) {
+    // A lost write response permits one projection recovery, never another write.
+    if (error instanceof TypeError) await recover().catch(() => {});
+    throw error;
   }
-  return result;
+}
+
+/** The server replays this durable receipt inside the subscription baseline,
+ * including after reconnect. A progress hint never starts an HTTP read. */
+export function watchRenameResult(
+  events: Pick<typeof import("./sync/resourceEvents"), "watchResourceChanges">,
+  agentId: string,
+  requestId: string,
+  accept: (receipt: RenameReceipt) => void,
+) {
+  let active = true;
+  const stop = events.watchResourceChanges(
+    { kind: "rename-progress", agentId, requestId },
+    (version) => {
+      const progress = version?.progress;
+      if (
+        !active ||
+        progress?.resource.kind !== "rename-progress" ||
+        progress.resource.agentId !== agentId ||
+        progress.resource.requestId !== requestId ||
+        !progress.value
+      )
+        return;
+      const receipt = (
+        progress as Extract<
+          import("./sync/resourceEvents").ResourceProgress,
+          { resource: { kind: "rename-progress" } }
+        >
+      ).value;
+      if (
+        !receipt ||
+        receipt.id !== agentId ||
+        receipt.request_id !== requestId ||
+        receipt.status === "pending"
+      )
+        return;
+      accept(receipt);
+    },
+  );
+  return () => {
+    active = false;
+    stop();
+  };
 }

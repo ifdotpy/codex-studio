@@ -7,7 +7,6 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import "../sync/client";
 import type { ResourceVersion } from "../sync/resourceEvents";
 import "../sync/transcriptCache";
-import { onResume } from "../sync/resume";
 import type { Snapshot } from "../types";
 import {
   foregroundTranscriptPending,
@@ -97,6 +96,14 @@ export function useChatPrefetch(
             failedHistory.delete(id);
             return;
           }
+          // Ordinary stream frames carry their data. Only a reported recovery
+          // boundary permits an HTTP interval read.
+          if (
+            !version?.reason ||
+            (version.reason === "change" && !version.transcriptReadRequired) ||
+            version.transcriptSequence !== undefined
+          )
+            return;
           // Reconnect can echo the cached revision while its refresh is active.
           // A newer revision still queues a followup pull below.
           if (refreshGate.shouldSuppress(id, version)) return;
@@ -259,7 +266,6 @@ export function useChatPrefetch(
     };
     schedule(1000);
     const stopInvalidations = watchSyncInvalidations("state", () => schedule());
-    const stopResume = onResume(() => schedule());
     const stopVisibility = () => {
       if (document.hidden || navigator.onLine === false) {
         for (const controller of running.values()) controller.abort();
@@ -268,7 +274,10 @@ export function useChatPrefetch(
           refreshGate.forget(id);
         }
         transcriptStops.clear();
+        pendingHistory.clear();
+        pendingVersions.clear();
       }
+      // Returning only restores subscriptions; their stream baseline owns data.
       schedule();
     };
     document.addEventListener("visibilitychange", stopVisibility);
@@ -283,7 +292,6 @@ export function useChatPrefetch(
       for (const stop of transcriptStops.values()) stop();
       transcriptStops.clear();
       stopInvalidations();
-      stopResume();
       document.removeEventListener("visibilitychange", stopVisibility);
       window.removeEventListener("online", stopVisibility);
       window.removeEventListener("offline", stopVisibility);

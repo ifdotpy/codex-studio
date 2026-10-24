@@ -18103,6 +18103,36 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /**
+     * RenameProgressEvent
+     * @description Transient rename receipt scoped by agent and request identity; replayed from durable operation receipts.
+     */
+    RenameProgressEvent: {
+      /** Epoch */
+      epoch: string;
+      /**
+       * Protocol
+       * @constant
+       */
+      protocol: 4;
+      resource: components["schemas"]["RenameProgressResource"];
+      /** Revision */
+      revision: number;
+      value: components["schemas"]["RenameResponse"] | null;
+      /** Workspaceid */
+      workspaceId: string;
+    };
+    /** RenameProgressResource */
+    RenameProgressResource: {
+      /** Id */
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "rename-progress";
+      requestId: string;
+    };
     /** RenameRequest */
     RenameRequest: {
       /** Id */
@@ -18675,7 +18705,8 @@ export interface components {
     ResourceProgressEvent:
       | components["schemas"]["AuthProgressEvent"]
       | components["schemas"]["VaultReadinessEvent"]
-      | components["schemas"]["VaultJobProgressEvent"];
+      | components["schemas"]["VaultJobProgressEvent"]
+      | components["schemas"]["RenameProgressEvent"];
     /**
      * ResourceRef
      * @description Closed discriminated union of all typed UI resource identities.
@@ -18703,7 +18734,8 @@ export interface components {
       | components["schemas"]["WorkspaceResource"]
       | components["schemas"]["AuthProgressResource"]
       | components["schemas"]["VaultReadinessResource"]
-      | components["schemas"]["VaultJobProgressResource"];
+      | components["schemas"]["VaultJobProgressResource"]
+      | components["schemas"]["RenameProgressResource"];
     /**
      * ResourceRevisionEntry
      * @description Per-resource revision; StateResource uses the entity sequence.

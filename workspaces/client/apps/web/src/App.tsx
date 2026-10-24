@@ -1,3 +1,4 @@
+import { submitRename, watchRenameResult } from "./renameRequest";
 import {
   StudioErrorsScope,
   useStudioErrorsState,
@@ -11,6 +12,7 @@ import { DeliveryMoment } from "./generated/deliveryMoment";
 import { useScreenEnvironment } from "./servers/ScreenContext";
 import {
   useServerApi,
+  useServerSync,
   useServerStorage,
   useServerStorageEventKey,
   useServerChatCreations,
@@ -257,7 +259,9 @@ export default function App({ active = true }: { active?: boolean }) {
     dismissChatCreation,
   } = useServerChatCreations();
   const { canRevealPath, revealPath } = useServerFileDialogs();
-  const { watchResourceConnection } = useServerResources();
+  const { refreshProjection: recoverRenameProjection } = useServerSync();
+  const renameEvents = useServerResources();
+  const { watchResourceConnection } = renameEvents;
   const sidebarServices = useServerSidebarServices();
   const serverAliases = useServerAliases(readServerAliases);
   const {
@@ -791,6 +795,11 @@ export default function App({ active = true }: { active?: boolean }) {
     renameRequests = useRef<Record<string, { text: string; id: string }>>({}),
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSendKey = `studio-pending-sends:${data?.stateDir || ""}`;
+  const [renameVersion, setRenameVersion] = useState(0);
+  const persistRenames = () => {
+    save(pendingRenameKey, renameRequests.current);
+    setRenameVersion((version) => version + 1);
+  };
   const pendingRenameKey = `studio-pending-renames:${data?.stateDir || ""}`;
   useEffect(() => {
     if (data?.stateDir) sends.current = saved(pendingSendKey, {});
@@ -798,6 +807,20 @@ export default function App({ active = true }: { active?: boolean }) {
   useEffect(() => {
     if (data?.stateDir) renameRequests.current = saved(pendingRenameKey, {});
   }, [pendingRenameKey, data?.stateDir]);
+  useEffect(() => {
+    if (!data?.stateDir) return;
+    const stops = Object.entries(renameRequests.current).map(
+      ([agentId, request]) =>
+        watchRenameResult(renameEvents, agentId, request.id, (receipt) => {
+          if (renameRequests.current[agentId]?.id !== request.id) return;
+          delete renameRequests.current[agentId];
+          persistRenames();
+          if (receipt.status === "failed")
+            notify(receipt.error || "The title could not be generated.");
+        }),
+    );
+    return () => stops.forEach((stop) => stop());
+  }, [pendingRenameKey, renameVersion, renameEvents]);
   const persistSends = () => save(pendingSendKey, sends.current);
   useEffect(() => {
     if (!data?.stateDir) return;
@@ -1641,42 +1664,25 @@ export default function App({ active = true }: { active?: boolean }) {
             throw new Error("A name must have 1 to 80 characters.");
           if (renameRequests.current[id]?.text !== text) {
             renameRequests.current[id] = { text, id: crypto.randomUUID() };
-            save(pendingRenameKey, renameRequests.current);
+            persistRenames();
           }
           const request_id = renameRequests.current[id].id;
           const body = { id, name, request_id };
-          const result = await post("/api/rename", body);
-          const finishRename = async (receipt: typeof result, attempts = 0) => {
-            if (receipt.status === "pending") {
-              if (attempts >= 90) {
-                notify(
-                  "The rename outcome is unknown. Use /rename again to check this request.",
-                );
-                return;
-              }
-              window.setTimeout(async () => {
-                try {
-                  await finishRename(
-                    await post("/api/rename", body),
-                    attempts + 1,
-                  );
-                } catch (error) {
-                  notify(errorText(error));
-                }
-              }, 1000);
-              return;
-            }
-            if (receipt.status === "failed") {
-              delete renameRequests.current[id];
-              save(pendingRenameKey, renameRequests.current);
-              notify(receipt.error || "The title could not be generated.");
-              return;
-            }
+          const result = await submitRename(body, post, () =>
+            recoverRenameProjection(),
+          );
+          if (result.status === "failed") {
             delete renameRequests.current[id];
-            save(pendingRenameKey, renameRequests.current);
-            await refresh();
-          };
-          void finishRename(result);
+            persistRenames();
+            notify(result.error || "The title could not be generated.");
+          } else if (result.status !== "pending") {
+            delete renameRequests.current[id];
+            persistRenames();
+          } else if (renameRequests.current[id]?.id === request_id) {
+            notify(
+              "Rename requested. Waiting for live updates. Use /rename again to check this request.",
+            );
+          }
         } else if (command === "/stop" || command === "/stop-team")
           await post("/api/stop", {
             id: command === "/stop-team" ? (agent.rootId ?? id) : id,

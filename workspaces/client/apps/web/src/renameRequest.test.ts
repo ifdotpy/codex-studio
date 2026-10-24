@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { submitRename } from "./renameRequest";
+import { submitRename, watchRenameResult } from "./renameRequest";
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -25,4 +25,39 @@ it("a lost response performs one recovery read and preserves the uncertain resul
   ).rejects.toBe(lost);
   expect(post).toHaveBeenCalledTimes(1);
   expect(recover).toHaveBeenCalledTimes(1);
+});
+
+it("delivers rename failure from the request-scoped stream without HTTP", () => {
+  let deliver!: (
+    version?: import("./sync/resourceEvents").ResourceVersion,
+  ) => void;
+  const release = vi.fn();
+  const events = {
+    watchResourceChanges: vi.fn((_resource, callback) => {
+      deliver = callback;
+      return release;
+    }),
+  };
+  const accept = vi.fn();
+  const stop = watchRenameResult(events, "agent", "request", accept);
+  expect(events.watchResourceChanges).toHaveBeenCalledTimes(1);
+  const resource = {
+    kind: "rename-progress",
+    agentId: "agent",
+    requestId: "request",
+  };
+  const value = {
+    id: "agent",
+    request_id: "request",
+    status: "failed",
+    error: "No title",
+  };
+  deliver({
+    epoch: "owner",
+    revision: 1,
+    progress: { resource, value },
+  } as import("./sync/resourceEvents").ResourceVersion);
+  expect(accept).toHaveBeenCalledWith(value);
+  stop();
+  expect(release).toHaveBeenCalledTimes(1);
 });

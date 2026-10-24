@@ -129,4 +129,12 @@ it("does not answer ordinary transcript notifications with HTTP reads", async ()
   changed({ epoch: "live", revision: 12 });
   await vi.advanceTimersByTimeAsync(0);
   expect(mocks.prefetch).not.toHaveBeenCalled();
+  changed({
+    epoch: "live",
+    revision: 13,
+    reason: "change",
+    transcriptReadRequired: true,
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.prefetch).toHaveBeenCalledTimes(1);
 });

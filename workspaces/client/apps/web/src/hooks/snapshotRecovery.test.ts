@@ -60,7 +60,7 @@ it.each(["credentials", "database"])(
     h.session.mockResolvedValue({ token: "token" });
     const read = boundary === "credentials" ? h.session : h.database;
     read.mockRejectedValue(new TypeError("unreachable"));
-    useSnapshot();
+    const hook = useSnapshot();
     stops = h.effects.flatMap((effect) => {
       const stop = effect();
       return stop ? [stop] : [];
@@ -79,5 +79,8 @@ it.each(["credentials", "database"])(
     h.connection?.("live");
     await vi.advanceTimersByTimeAsync(5 * 60_000);
     expect(read).toHaveBeenCalledTimes(READ_RECOVERY_MAX_ATTEMPTS * 2);
+    await hook.refresh(true);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(read).toHaveBeenCalledTimes(READ_RECOVERY_MAX_ATTEMPTS * 3);
   },
 );
