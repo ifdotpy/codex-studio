@@ -39,6 +39,8 @@ export default function SupervisorRecoveryNotice() {
       key={notice.id}
       className="supervisor-recovery-notice"
       data-level={notice.level}
+      title={notice.text}
+      aria-label={notice.text}
       role="alert"
     >
       {notice.text}

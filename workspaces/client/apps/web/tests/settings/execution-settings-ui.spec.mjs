@@ -12,7 +12,7 @@ import {
 } from "../fixtures/setup-controls.mjs";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -150,49 +150,145 @@ test("execution settings ui", async ({ browser: _browser }) => {
       }
       throw Error("Timed out: " + predicate.toString() + " " + log);
     };
-    const openSettings = async (name) => {
-      const settings = page.getByRole("dialog", {
-        name: "Chat settings",
-        exact: true,
-      });
-      if (!(await settings.isVisible()))
-        await page
-          .getByRole("button", { name: "Chat settings", exact: true })
-          .click();
-      if (name === "Main agent settings") {
-        await settings.getByText("Browser", { exact: true }).waitFor();
-        assert.deepEqual(
-          await settings.locator(".ui-row-label").allTextContents(),
-          ["Model", "Workers", "Review", "Parallel", "Permissions", "Browser"],
-        );
-        assert.equal(
-          await settings.locator(".chat-settings-more").getAttribute("open"),
-          null,
-        );
-        assert.equal(await settings.locator("h3").count(), 0);
-        assert.equal(
-          await settings
-            .getByRole("button", { name: "Review settings", exact: true })
-            .count(),
-          1,
-        );
+    const picker = page.locator(".execution-dropdown");
+    const chatSettingsDialog = page.getByRole("dialog", {
+      name: "Chat settings",
+      exact: true,
+    });
+    const openTeam = async () => {
+      if (await picker.isVisible()) {
+        await page.keyboard.press("Escape");
+        await expect(picker).toBeHidden();
       }
-      const trigger = settings.getByRole("button", { name, exact: true });
-      if ((await trigger.getAttribute("aria-expanded")) !== "true")
-        await trigger.click();
-      const role = name === "Subagent defaults" ? "Worker" : "Orchestrator";
-      assert.equal(
-        await page
-          .getByRole("button", { name: role, exact: true })
-          .getAttribute("aria-pressed"),
-        "true",
-      );
+      if (!(await chatSettingsDialog.isVisible())) {
+        const toggle = page.locator("#chat-settings-toggle");
+        if (await toggle.isVisible()) await toggle.click();
+        else {
+          await page
+            .getByRole("button", { name: "Chat actions", exact: true })
+            .click();
+          await page
+            .getByRole("menuitem", { name: "Chat settings", exact: true })
+            .click();
+        }
+      }
+      await expect(chatSettingsDialog.getByRole("tablist")).toHaveCount(0);
+      await expect(chatSettingsDialog.getByRole("listbox")).toHaveCount(0);
+    };
+    const openSettings = async (name) => {
+      if (await chatSettingsDialog.isVisible()) {
+        await page.keyboard.press("Escape");
+        await expect(chatSettingsDialog).toBeHidden();
+      }
+      if (!(await picker.isVisible()))
+        await page.locator("#composer .execution-summary-trigger").click();
+      const role =
+        name === "Subagent defaults" || name === "Subagent settings"
+          ? "Workers"
+          : "Lead";
+      for (const roleName of ["Lead", "Workers", "Review"])
+        await expect(
+          picker.getByRole("radio", { name: roleName, exact: true }),
+        ).toHaveCount(1);
+      await picker
+        .getByRole("radiogroup", { name: "Agent role", exact: true })
+        .getByText(role, { exact: true })
+        .click();
     };
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Release lead" })
       .click();
     const lead = (await state()).find((a) => a.name === "Release lead");
+    await page.locator("#message").fill("/model");
+    await page.locator("#message").press("Enter");
+    await expect(picker).toBeVisible();
+    await expect(picker).toHaveClass(/mantine-Popover-dropdown/);
+    await expect(chatSettingsDialog).toBeHidden();
+    await expect(page.locator("#message")).toHaveValue("");
+    await page.keyboard.press("Escape");
+    await expect(picker).toBeHidden();
+    await expect(
+      page.locator("#composer .execution-summary-trigger"),
+    ).toBeFocused();
+    await openTeam();
+    const parallelInput = chatSettingsDialog.getByRole("textbox", {
+      name: "Subagent parallelism",
+      exact: true,
+    });
+    const applyLimit = chatSettingsDialog.locator(".agent-mode-apply");
+    await expect(applyLimit).toHaveCount(0);
+    await parallelInput.fill(String(lead.concurrency + 1));
+    await applyLimit.scrollIntoViewIfNeeded();
+    const inputBox = await parallelInput.boundingBox();
+    const applyBox = await applyLimit.boundingBox();
+    expect(applyBox.x).toBeGreaterThan(inputBox.x + inputBox.width);
+    expect(
+      Math.abs(applyBox.y + applyBox.height - inputBox.y - inputBox.height),
+    ).toBeLessThan(1);
+    await parallelInput.fill(String(lead.concurrency));
+    await expect(applyLimit).toHaveCount(0);
+    const screenshotDirectory = process.env.EXECUTION_COMPACT_SCREENSHOTS;
+    if (screenshotDirectory)
+      await mkdir(screenshotDirectory, { recursive: true });
+    const layoutMeasurements = [];
+    for (const [width, height] of [
+      [1440, 900],
+      [390, 844],
+    ]) {
+      for (const scheme of ["light", "dark"]) {
+        await page.setViewportSize({ width, height });
+        await page.emulateMedia({ colorScheme: scheme });
+        await expect(page.locator("html")).toHaveAttribute(
+          "data-mantine-color-scheme",
+          scheme,
+        );
+        for (const surface of ["composer-picker", "compact-team"]) {
+          if (surface === "composer-picker")
+            await openSettings("Main agent settings");
+          else await openTeam();
+          const visible =
+            surface === "composer-picker" ? picker : chatSettingsDialog;
+          await expect(visible).toBeVisible();
+          const geometry = await visible.evaluate((node) => {
+            const bounds = node.getBoundingClientRect();
+            return {
+              left: bounds.left,
+              right: bounds.right,
+              top: bounds.top,
+              bottom: bounds.bottom,
+              content: node.scrollWidth,
+              width: node.clientWidth,
+            };
+          });
+          expect(geometry.left).toBeGreaterThanOrEqual(0);
+          expect(geometry.right).toBeLessThanOrEqual(width);
+          expect(geometry.content).toBeLessThanOrEqual(geometry.width);
+          layoutMeasurements.push({
+            width,
+            height,
+            scheme,
+            surface,
+            ...geometry,
+          });
+          if (screenshotDirectory)
+            await page.screenshot({
+              animations: "disabled",
+              path: join(
+                screenshotDirectory,
+                `${surface}-${width}-${scheme}.png`,
+              ),
+            });
+        }
+        if (screenshotDirectory)
+          await writeFile(
+            join(screenshotDirectory, "layout-measurements.json"),
+            JSON.stringify(layoutMeasurements, null, 2),
+          );
+      }
+    }
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.emulateMedia({ colorScheme: "light" });
     await openSettings("Main agent settings");
     // Model rows use short names, one recommendation tag, and a selected state.
     const leadModel = page.getByLabel("Main agent model", { exact: true });
@@ -202,25 +298,22 @@ test("execution settings ui", async ({ browser: _browser }) => {
       await rows.evaluateAll((nodes) =>
         nodes.map((node) => [
           node.getAttribute("data-value"),
-          node.querySelector(".setup-model-name").textContent,
-          !!node.querySelector("small"),
+          node.textContent,
+          node.textContent.includes("recommended"),
         ]),
       ),
       [
         ["gpt-6-astra", "Astra 6", false],
-        ["gpt-5.6-sol", "Sol 5.6", true],
+        ["gpt-5.6-sol", "Sol 5.6recommended", true],
         ["gpt-6-luna", "Luna 6", false],
         ["gpt-5.6-luna", "Luna 5.6", false],
         ["test-slow", "Standard only", false],
       ],
     );
-    assert.equal(
-      await page
-        .locator(`[role="option"][data-value="${lead.model}"]`)
-        .getAttribute("aria-selected"),
-      "true",
-    );
-    const listBox = page.locator('[role="listbox"]:visible');
+    await expect(
+      leadModel.locator(`[role="option"][data-value="${lead.model}"]`),
+    ).toHaveAttribute("aria-selected", "true");
+    const listBox = leadModel;
     assert.ok(
       await listBox.evaluate(
         (node) => node.getBoundingClientRect().right <= innerWidth,
@@ -231,8 +324,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       lead.id,
       (body) => typeof body.model === "string" && body.model !== lead.model,
     );
-    await leadModel.focus();
-    await leadModel.press("ArrowDown");
+    await leadModel.getByRole("option", { selected: true }).focus();
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
     assert.ok(
@@ -245,13 +337,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
     });
     await page.keyboard.press("Escape");
     await listBox.waitFor({ state: "hidden" });
-    assert.equal(
-      await page.evaluate(() =>
-        document.activeElement?.classList.contains("execution-menu"),
-      ),
-      true,
-      "Escape returns focus to the picker trigger",
-    );
+    await expect(
+      page.locator("#composer .execution-summary-trigger"),
+    ).toBeFocused();
     await openSettings("Main agent settings");
     const originalModelSaved = settingsResponse(
       lead.id,
@@ -282,7 +370,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
         (await state()).find((a) => a.id === lead.id).effort === "high",
     );
     await waitFor(() => leadReasoning.isEnabled());
-    await page.getByText("Permissions", { exact: true }).click();
+    await openTeam();
     const yolo = page.getByRole("radio", {
       name: "Full",
       exact: true,
@@ -306,7 +394,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await waitFor(() => yolo.isEnabled());
     await openSettings("Main agent settings");
     const leadFastMode = setupToggle(
-      page.getByRole("button", { name: "Fast mode", exact: true }),
+      page.getByRole("switch", { name: "Fast mode", exact: true }),
     );
     const leadFastModeSaved = settingsResponse(
       lead.id,
@@ -320,69 +408,50 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await waitFor(() => leadFastMode.isEnabled());
     await page.keyboard.press("Escape");
-    await page
-      .getByRole("dialog", { name: "Main agent settings", exact: true })
-      .waitFor({ state: "hidden" });
-    assert.ok(
-      await page
-        .getByRole("dialog", { name: "Chat settings", exact: true })
-        .isVisible(),
-      "Escape closes only the model detail section",
-    );
+    await expect(picker).toBeHidden();
     await openSettings("Subagent defaults");
-    const dialog = page.getByRole("dialog", {
-      name: "Subagent defaults",
-      exact: true,
-    });
-    await dialog
-      .getByRole("group", { name: "Agent role", exact: true })
-      .getByRole("button", { name: "Review", exact: true })
+    const dialog = picker;
+    await picker
+      .getByRole("radiogroup", { name: "Agent role", exact: true })
+      .getByText("Review", { exact: true })
       .click();
-    const reviewDialog = page.getByRole("dialog", {
-      name: "Review settings",
-      exact: true,
-    });
-    await expect(reviewDialog).toBeVisible();
+    const reviewDialog = picker;
     await expect(
       reviewDialog.getByRole("listbox", {
         name: "Default review model",
         exact: true,
       }),
     ).toBeVisible();
-    await reviewDialog
-      .getByRole("group", { name: "Agent role", exact: true })
-      .getByRole("button", { name: "Worker", exact: true })
-      .click();
-    await dialog.waitFor({ state: "visible" });
-    const delegationDepth = dialog.getByRole("combobox", {
+    await openTeam();
+    const delegationDepth = page.getByRole("combobox", {
       name: "Delegation depth",
     });
-    assert.equal(await delegationDepth.inputValue(), "Lead only (1)");
+    assert.equal(await delegationDepth.inputValue(), "1");
     assert.equal(
-      await dialog
-        .getByText(
-          "New worker sessions use this depth. Lowering blocks new delegation immediately; existing descendants keep running.",
-        )
-        .isVisible(),
+      await page.getByText("Existing workers keep their depth.").isVisible(),
       true,
     );
     const nestedDelegationSaved = settingsResponse(
       lead.id,
       (body) => body.worker_defaults?.delegation_depth === 2,
     );
-    await delegationDepth.click();
-    await page.getByRole("option", { name: "One nested level (2)" }).click();
+    await delegationDepth.selectOption("2");
     assert.ok((await nestedDelegationSaved).ok());
     await waitFor(
       async () =>
         (await state()).find((a) => a.id === lead.id).workerDefaults
           .delegationDepth === 2,
     );
+    await openSettings("Subagent defaults");
     const defaultModel = dialog.getByLabel("Default subagent model", {
       exact: true,
     });
     assert.match(
-      await (await openModelList(defaultModel)).first().innerText(),
+      await (
+        await openModelList(defaultModel)
+      )
+        .first()
+        .evaluate((node) => node.textContent),
       /^Same as main agent$/,
     );
     assert.equal(await modelValue(defaultModel), "gpt-6-luna");
@@ -412,7 +481,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.ok((await inheritedReasoningSaved).ok());
     await waitFor(() => defaultReasoning.isEnabled());
     const defaultFastMode = setupToggle(
-      dialog.getByRole("button", { name: "Fast mode", exact: true }),
+      dialog.getByRole("switch", { name: "Fast mode", exact: true }),
     );
     const inheritedFastModeSaved = settingsResponse(
       lead.id,
@@ -430,7 +499,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       );
       // The open model list stays inside the window at every width.
       await openModelList(defaultModel);
-      const box = await listBox.boundingBox();
+      const box = await defaultModel.boundingBox();
       assert.ok(
         box.x >= 0 && box.x + box.width <= width + 1,
         `model list fits ${width}`,
@@ -488,7 +557,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await selectModel(defaultModel, "test-slow");
     assert.ok((await slowModelSaved).ok());
     await dialog
-      .getByRole("button", { name: "Fast mode", exact: true })
+      .getByRole("switch", { name: "Fast mode", exact: true })
       .waitFor({ state: "hidden" });
     await dialog
       .getByRole("status")
@@ -547,12 +616,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
       return defaults.model === "gpt-5.6-sol" && defaults.effort === "low";
     });
     await waitFor(() => defaultReasoning.isEnabled());
-    assert.equal(
-      (await dialog
-        .getByRole("button", { name: "Fast mode", exact: true })
-        .getAttribute("aria-pressed")) === "true",
-      false,
-    );
+    await expect(
+      dialog.getByRole("switch", { name: "Fast mode", exact: true }),
+    ).not.toBeChecked();
     await waitFor(async () => {
       const defaults = (await state()).find(
         (a) => a.id === lead.id,
@@ -603,7 +669,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await page.reload();
     await page.locator(`[data-chat="${fresh.id}"]`).click();
     await openSettings("Main agent settings");
-    await page.getByText("Permissions", { exact: true }).click();
+    await openTeam();
     const freshYolo = page.getByRole("radio", {
       name: "Full",
       exact: true,
@@ -654,6 +720,24 @@ test("execution settings ui", async ({ browser: _browser }) => {
     };
     await openWorker();
     await openSettings("Subagent settings");
+    const workerDialog = picker;
+    for (const roleName of ["Lead", "Review"]) {
+      await workerDialog.getByText(roleName, { exact: true }).click();
+      await expect(
+        workerDialog.getByText(
+          "Inherited from the lead. Open the lead chat to change these settings.",
+        ),
+      ).toBeVisible();
+      const models = workerDialog.getByRole("listbox");
+      await expect(models).toHaveCount(1);
+      await expect(
+        models.locator('[role="option"]:not(:disabled)'),
+      ).toHaveCount(0);
+    }
+    await workerDialog.getByText("Workers", { exact: true }).click();
+    await expect(
+      workerDialog.getByLabel("Subagent reasoning", { exact: true }),
+    ).toBeVisible();
     const pendingBodies = [];
     await page.route("**/api/conversation", async (route) => {
       const body = route.request().postDataJSON();

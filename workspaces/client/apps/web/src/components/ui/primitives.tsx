@@ -1,4 +1,9 @@
-import { Button, type ButtonProps, type ElementProps } from "@mantine/core";
+import {
+  Button,
+  useMantineTheme,
+  type ButtonProps,
+  type ElementProps,
+} from "@mantine/core";
 import type { ReactNode } from "react";
 import "./primitives.css";
 
@@ -12,6 +17,7 @@ export function ActionButton({
   actionRole = "quiet",
   ...props
 }: ActionButtonProps) {
+  const theme = useMantineTheme();
   const variant =
     actionRole === "quiet"
       ? "subtle"
@@ -22,7 +28,7 @@ export function ActionButton({
     actionRole === "destructive"
       ? "red"
       : actionRole === "primary"
-        ? "indigo"
+        ? theme.primaryColor
         : "gray";
   return <Button variant={variant} color={color} {...props} />;
 }
@@ -57,16 +63,18 @@ export function SettingsRow({
   help,
   children,
   stacked,
+  className,
 }: {
   label: ReactNode;
   help?: ReactNode;
   children: ReactNode;
   /** Put the label above a wide control, such as account tiles. */
   stacked?: boolean;
+  className?: string;
 }) {
   return (
     <div
-      className={`ui-settings-row${stacked ? " ui-settings-row-stacked" : ""}`}
+      className={`ui-settings-row${stacked ? " ui-settings-row-stacked" : ""}${className ? ` ${className}` : ""}`}
     >
       <div className="ui-label">
         <div className="ui-row-label">{label}</div>

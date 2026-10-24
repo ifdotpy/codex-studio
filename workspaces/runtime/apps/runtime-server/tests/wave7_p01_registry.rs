@@ -3794,14 +3794,14 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
                 )
                 .unwrap();
             let record: Value = serde_json::from_str(&raw).unwrap();
-            // A submitted input with an unknown outcome keeps its native receipt wait.
-            if record["restartRecovery"]["stage"] == "held"
-                && record["restartRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
-                && record["contextRepairWait"]["scope"] == "native"
-                && record["contextRepairWait"]["events"] == json!([body["id"]])
+            // Unknown starts use the native-history hold introduced in 1987a373:
+            // queued is a reconciliation state, not permission to resend input.
+            if record["restartRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
+                && record["restartRecovery"]["stage"] == "held"
                 && record["status"] == "queued"
-                && record["autoWake"] == true
-                && record["disconnectRecovery"].is_null()
+                && record["error"].as_str().is_some_and(|error| {
+                    error.starts_with("Context repair waits for a confirmed input receipt")
+                })
             {
                 break record;
             }
@@ -3815,7 +3815,9 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
             direct_agent_debug(&fixture.store, agent_id)
         )
     });
-    assert_eq!(held["error"], held["contextRepairWait"]["error"]);
+    assert_eq!(held["autoWake"], true);
+    assert_eq!(held["inFlight"], false);
+    assert_eq!(held["contextRepairWait"]["events"], json!([body["id"]]));
     assert_eq!(
         fixture
             .store

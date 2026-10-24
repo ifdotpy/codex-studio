@@ -41,8 +41,13 @@ test("Mobile client ui", async ({
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(url);
+    await page
+      .locator("#sidebar .project-chats .chat-row")
+      .filter({ hasText: "Release lead" })
+      .first()
+      .click();
     await page.locator("#message").waitFor();
-    await page.getByLabel("Toggle conversations").click();
+    await page.getByLabel("Back to chats").click();
     await page
       .getByRole("button", { name: "New shared chat", exact: true })
       .click();
@@ -56,7 +61,7 @@ test("Mobile client ui", async ({
       .getByRole("dialog", { name: "New shared chat" })
       .getByRole("button", { name: "Close" })
       .click();
-    await page.getByLabel("Toggle conversations").click();
+    await page.getByLabel("Back to chats").click();
     await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
     const openChatActions = async () => {
       await page
@@ -77,41 +82,26 @@ test("Mobile client ui", async ({
       });
       await chatSettings.waitFor();
       await chatSettings
-        .getByRole("button", { name: "Main agent settings", exact: true })
+        .getByRole("tab", { name: "Models", exact: true })
         .click();
-      await page
-        .getByRole("dialog", { name: "Main agent settings", exact: true })
-        .waitFor();
+      await chatSettings
+        .getByRole("radiogroup", { name: "Agent role", exact: true })
+        .getByText("Lead", { exact: true })
+        .click();
     };
     const closeChatSettings = async () => {
-      const mainSettings = page.getByRole("dialog", {
-        name: "Main agent settings",
-        exact: true,
-      });
-      if (await mainSettings.isVisible()) {
-        await page.keyboard.press("Escape");
-        await mainSettings.waitFor({ state: "hidden" });
-      }
-      const chatSettings = page.getByRole("dialog", {
+      const dialog = page.getByRole("dialog", {
         name: "Chat settings",
         exact: true,
       });
-      if (await chatSettings.isVisible()) {
-        await chatSettings
-          .getByRole("button", { name: "Close", exact: true })
-          .click();
-        await chatSettings.waitFor({ state: "hidden" });
-      }
+      await dialog.getByRole("button", { name: "Close", exact: true }).click();
+      await expect(dialog).not.toBeVisible();
     };
-    const closeMainAgentSettings = async () => {
-      const mainSettings = page.getByRole("dialog", {
-        name: "Main agent settings",
-        exact: true,
-      });
-      if (await mainSettings.isVisible()) {
-        await page.keyboard.press("Escape");
-        await mainSettings.waitFor({ state: "hidden" });
-      }
+    const showProjectActions = async () => {
+      await page
+        .getByRole("dialog", { name: "Chat settings", exact: true })
+        .getByRole("tab", { name: /^Team/ })
+        .click();
     };
     const startProjectChat = async (name) => {
       await page.getByRole("button", { name, exact: true }).click();
@@ -126,7 +116,7 @@ test("Mobile client ui", async ({
     };
     const selectedAccount = () =>
       page
-        .getByRole("dialog", { name: "Main agent settings", exact: true })
+        .locator('.execution-profile-body[data-role="orchestrator"]')
         .locator('.setup-account[data-selected="true"]');
     const inspectConversationTools = async (hasUsage) => {
       const menu = page.locator(".conversation-header-tools-menu");
@@ -203,7 +193,7 @@ test("Mobile client ui", async ({
           composer.x >= 0 && composer.x + composer.width <= width + 1,
           `Composer is outside ${width}px viewport: ${JSON.stringify(composer)}`,
         );
-      await page.getByLabel("Toggle conversations").click();
+      await page.getByLabel("Back to chats").click();
       await page
         .getByRole("button", { name: "Search chats", exact: true })
         .waitFor();
@@ -222,7 +212,11 @@ test("Mobile client ui", async ({
       assert.ok(
         (await page.getByRole("button", { name: /^New chat in / }).count()) > 0,
       );
-      await page.getByLabel("Close conversations", { exact: true }).click();
+      await page
+        .locator("#sidebar .project-chats .chat-row")
+        .filter({ hasText: "Release lead" })
+        .first()
+        .click();
       await page.locator("#sidebar").waitFor({ state: "hidden" });
     }
     await page.setViewportSize({ width: 390, height: 844 });
@@ -238,22 +232,18 @@ test("Mobile client ui", async ({
     await closeChatSettings();
     const mainSettingsTrigger = page
       .locator(".composer-context-row")
-      .getByRole("button", { name: "Main agent settings", exact: true });
-    await mainSettingsTrigger.waitFor({ state: "visible" });
+      .getByRole("button", { name: /^Execution settings:/ });
     await mainSettingsTrigger.click();
     const mainSettings = page.getByRole("dialog", {
-      name: "Main agent settings",
+      name: "Chat settings",
       exact: true,
     });
-    const rolePicker = mainSettings.getByRole("group", { name: "Agent role" });
-    await rolePicker
-      .getByRole("button", { name: "Worker", exact: true })
-      .click();
-    const subagentSettings = page.getByRole("dialog", {
-      name: "Subagent defaults",
-      exact: true,
+    const rolePicker = mainSettings.getByRole("radiogroup", {
+      name: "Agent role",
     });
-    const workerModel = subagentSettings.getByRole("listbox", {
+    await rolePicker.getByText("Workers", { exact: true }).click();
+    const subagentSettings = mainSettings;
+    const workerModel = subagentSettings.getByRole("radiogroup", {
       name: "Default subagent model",
       exact: true,
     });
@@ -284,7 +274,7 @@ test("Mobile client ui", async ({
       mobileComposerFontSize >= 16,
       `Mobile composer font size should stay at least 16px (got ${mobileComposerFontSize}px)`,
     );
-    await closeMainAgentSettings();
+    await showProjectActions();
     let originalBody, created;
     let confirmServerCreation;
     const serverCreated = new Promise((resolve) => {
@@ -305,6 +295,11 @@ test("Mobile client ui", async ({
       .waitFor();
     await page.unroute("**/api/leads");
     await page.reload();
+    await page
+      .locator("#sidebar .project-chats .chat-row")
+      .filter({ hasText: "Release lead" })
+      .first()
+      .click();
     await page
       .getByRole("button", { name: "Retry chat request", exact: true })
       .waitFor();
@@ -381,13 +376,16 @@ test("Mobile client ui", async ({
       expected_revision: project?.accountRevision || 0,
     });
     await page.reload();
+    await page
+      .locator(`#sidebar .project-chats .chat-row[data-chat="${created.id}"]`)
+      .click();
     await openChatSettings();
     await selectedAccount().waitFor();
     await expect(selectedAccount()).toHaveAttribute(
       "data-account-key",
       alternate.id,
     );
-    await closeMainAgentSettings();
+    await showProjectActions();
     const nextResponse = page.waitForResponse(
       (response) =>
         response.url() === url + "/api/leads" &&
@@ -424,7 +422,10 @@ test("Mobile client ui", async ({
     );
     await post("/api/projects", { path: profile, account_key: alternate.id });
     await page.reload();
-    await page.getByLabel("Toggle conversations").click();
+    await page
+      .locator(`#sidebar .project-chats .chat-row[data-chat="${nextChat.id}"]`)
+      .click();
+    await page.getByLabel("Back to chats").click();
     const otherResponse = page.waitForResponse(
       (response) =>
         response.url() === url + "/api/leads" &&
@@ -505,11 +506,16 @@ async function setupMobile320Composer(testBrowser) {
     ownedContext = page.context();
     await stubSessionCost(page);
     await page.goto(`http://127.0.0.1:${port}`);
+    await page
+      .locator("#sidebar .project-chats .chat-row")
+      .filter({ hasText: "Release lead" })
+      .first()
+      .click();
     await page.locator("#message").waitFor();
     // Match the original mobile flow up to its 320px geometry assertion:
     // open and close the shared-chat dialog, reopen Release lead, inspect its
     // chat actions and conversation tools, then measure the composer.
-    await page.getByLabel("Toggle conversations").click();
+    await page.getByLabel("Back to chats").click();
     await page
       .getByRole("button", { name: "New shared chat", exact: true })
       .click();
@@ -519,7 +525,7 @@ async function setupMobile320Composer(testBrowser) {
       .getByRole("dialog", { name: "New shared chat" })
       .getByRole("button", { name: "Close" })
       .click();
-    await page.getByLabel("Toggle conversations").click();
+    await page.getByLabel("Back to chats").click();
     await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
     await page.setViewportSize({ width: 320, height: 844 });
     await page
@@ -584,10 +590,13 @@ async function setupMobile320Composer(testBrowser) {
         state: "visible",
       });
     if (managed) {
-      // The 320px layout intentionally hides the timing hint; the action stays available.
-      await actionRow
+      // The narrowest layout keeps queue available in the native tools disclosure.
+      const tools = page.locator(".composer-tools-disclosure > summary");
+      await tools.click();
+      await page
         .getByRole("button", { name: "Queue for next turn", exact: true })
         .waitFor({ state: "visible" });
+      await tools.click();
     }
     return { page, managed };
   } catch (error) {
@@ -610,6 +619,10 @@ test("Mobile composer 320px setup renders the settled action row", async ({
         const rect = child.getBoundingClientRect();
         return {
           name: child.getAttribute("aria-label") || child.textContent.trim(),
+          timingHint: child.classList.contains("composer-timing"),
+          queueInTools:
+            child.classList.contains("composer-queue-primary") &&
+            getComputedStyle(child).display === "none",
           width: rect.width,
           height: rect.height,
         };
@@ -618,9 +631,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
     assert.ok(rendered.length > 0, "Composer action row has rendered controls");
     assert.ok(
       rendered
-        .filter(
-          (item) => item.name !== "Send to current turn · Queue for next turn",
-        )
+        .filter((item) => !item.timingHint && !item.queueInTools)
         .every((item) => item.width > 0 && item.height > 0),
       `Every action row child is laid out: ${JSON.stringify(rendered)}`,
     );
@@ -636,12 +647,21 @@ test("Mobile composer 320px setup renders the settled action row", async ({
         await actionRow.locator(".composer-timing").isVisible(),
         false,
       );
+      const disclosure = page.locator(".composer-tools-disclosure > summary");
+      await disclosure.click();
       assert.equal(
-        await actionRow
-          .getByRole("button", { name: "Queue for next turn" })
-          .isVisible(),
+        await page.locator(".composer-queue-primary").isVisible(),
+        false,
+      );
+      assert.equal(
+        await page.locator(".composer-queue-disclosure").isVisible(),
         true,
       );
+      const queueBounds = await page
+        .locator(".composer-queue-disclosure")
+        .boundingBox();
+      assert.ok(queueBounds.width >= 44 && queueBounds.height >= 44);
+      await disclosure.click();
       assert.equal(
         await page
           .locator("#usage-footer .session-cost-summary")
@@ -657,10 +677,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
 test("Mobile composer fits a 320px viewport", async ({
   browser: testBrowser,
 }) => {
-  test.fixme(
-    true,
-    "Composer overflow is intermittent after the settled 320px action-row setup; see c3-shell-known-failures.md",
-  );
+  test.setTimeout(90_000);
   const { page } = await setupMobile320Composer(testBrowser);
   try {
     const composer = await page.locator("#composer").boundingBox();

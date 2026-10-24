@@ -1,3 +1,4 @@
+import Disclosure from "./ui/Disclosure";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime } from "../local-time";
 import { useEffect, useState } from "react";
@@ -112,8 +113,7 @@ export default function NativeRuntimeStatus({
           Some runtime checks need attention. See the details below.
         </p>
       )}
-      <details>
-        <summary>Version details</summary>
+      <Disclosure summary="Version details">
         {data && (
           <section className="native-runtime-status" aria-label="Codex runtime">
             <div className="native-runtime-heading">
@@ -287,7 +287,7 @@ export default function NativeRuntimeStatus({
             </ul>
           )}
         </section>
-      </details>
+      </Disclosure>
     </section>
   );
 }

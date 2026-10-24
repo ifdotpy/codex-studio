@@ -1,3 +1,4 @@
+import { isModelWhitelisted, useModelWhitelist } from "./models/modelWhitelist";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { accountCanStart } from "../accountName";
 import { ProviderMark, setupAccountName } from "./AccountTiles";
@@ -7,7 +8,13 @@ import { ApiError, errorText, type PostBody } from "../api";
 import type { Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
-import { AgentSetupPicker, setupModelName } from "./agents/AgentSetupPicker";
+import { AgentSetupPicker, type SetupRole } from "./agents/AgentSetupPicker";
+import {
+  INHERITED_MODEL,
+  modelDisplayName,
+  modelForValue,
+  toModelOptions,
+} from "./models/modelOption";
 import "./agents/execution-settings.css";
 import "./shared-chat-create.css";
 
@@ -47,6 +54,11 @@ function ParticipantFields({
   onOpenedChange: (opened: boolean) => void;
   valid: (ready: boolean) => void;
 }) {
+  const [role, setRole] = useState<SetupRole>("orchestrator");
+  const readOnlyReason =
+    role === "orchestrator"
+      ? undefined
+      : "Shared chat participants manage their own worker and review defaults. These settings are inherited and cannot be changed here.";
   const catalog = useWorkerModels(value.account_key, !!value.account_key);
   const readyAccounts = accounts.accounts.filter((account) =>
     accountCanStart(account),
@@ -64,14 +76,24 @@ function ParticipantFields({
     if (account_key && account_key !== value.account_key)
       change({ account_key, model: "" });
   };
-  const info = catalog.models.find((row) => row.model === value.model);
+  const allowed = useModelWhitelist();
+  const availableModels = catalog.models.filter((row) =>
+    isModelWhitelisted({ ...row, provider: row.provider || provider }, allowed),
+  );
+  const info = modelForValue(catalog.models, value.model);
+  const enabledModel =
+    !!info &&
+    isModelWhitelisted(
+      { ...info, provider: info.provider || provider },
+      allowed,
+    );
   const reasoningEfforts =
     info?.supportedReasoningEfforts.map((item) => item.reasoningEffort) ?? [];
   useEffect(() => {
-    valid(!!info && !catalog.loading && !catalog.error);
-    if (!frozen && !value.model && catalog.models.length) {
+    valid(enabledModel && !catalog.loading && !catalog.error);
+    if (!frozen && !value.model && availableModels.length) {
       const preferred =
-        catalog.models.find((row) => row.isDefault) || catalog.models[0];
+        availableModels.find((row) => row.isDefault) || availableModels[0];
       change({ ...value, model: preferred.model });
     }
   }, [
@@ -79,12 +101,13 @@ function ParticipantFields({
     value.model,
     catalog.loading,
     catalog.error,
-    !!info,
+    enabledModel,
+    allowed,
     frozen,
   ]);
   const effort = value.effort || info?.defaultReasoningEffort || "Default";
   const summary = [
-    setupModelName(info, value.model) ||
+    modelDisplayName(info, value.model) ||
       (catalog.loading ? "Loading models…" : "Select a model"),
     effort[0].toUpperCase() + effort.slice(1),
     setupAccountName(account),
@@ -104,7 +127,6 @@ function ParticipantFields({
         opened={opened && !frozen}
         onChange={onOpenedChange}
         position={index === 0 ? "top-end" : "bottom-end"}
-        width={360}
         closeOnEscape
         trapFocus
         returnFocus
@@ -124,9 +146,10 @@ function ParticipantFields({
         </Popover.Target>
         <Popover.Dropdown className="execution-dropdown shared-create-picker">
           <AgentSetupPicker
-            role="orchestrator"
-            roles={[]}
-            onRole={() => {}}
+            retainCurrentModel={false}
+            role={role}
+            onRole={setRole}
+            readOnlyReason={readOnlyReason}
             provider={browsedProvider}
             providers={providers}
             onProvider={setBrowsedProvider}
@@ -134,16 +157,23 @@ function ParticipantFields({
             accountKey={value.account_key}
             accountLabel={`Account for agent ${index + 1}`}
             onAccount={chooseAccount}
-            models={catalog.models.map((row) => ({
-              value: row.model,
-              label: setupModelName(row),
-              isDefault: row.isDefault,
-            }))}
-            model={value.model}
+            models={
+              readOnlyReason
+                ? [
+                    {
+                      value: INHERITED_MODEL,
+                      label: "Inherited",
+                      provider,
+                      badges: [],
+                    },
+                  ]
+                : toModelOptions(catalog.models, { provider })
+            }
+            model={readOnlyReason ? INHERITED_MODEL : value.model}
             modelLabel={`Model for agent ${index + 1}`}
             onModel={(model) => change({ ...value, model, effort: undefined })}
             efforts={
-              reasoningEfforts.length
+              !readOnlyReason && reasoningEfforts.length
                 ? [
                     { value: "", label: "Default" },
                     ...reasoningEfforts.map((item) => ({
@@ -396,7 +426,6 @@ export default function SharedChatCreate({
       <div className="shared-create-footer">
         <Button
           variant="filled"
-          color="indigo"
           aria-label={attempt ? undefined : "Create"}
           type="submit"
           loading={pending}

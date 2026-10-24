@@ -75,7 +75,13 @@ export const forkSession = async () => ({
   sessionId: "22222222-2222-4222-8222-222222222222",
 });
 export const getSessionMessages = async () => [];
-export const resolveSettings = async () => ({ effective: {} });
+// No user or project settings participate in the scripted bridge fixture.
+// Match the SDK's async ResolvedSettings envelope consumed by the bridge.
+export const resolveSettings = async () => ({
+  effective: {},
+  provenance: {},
+  sources: [],
+});
 export function query({ prompt, options }) {
   if (
     options.systemPrompt &&

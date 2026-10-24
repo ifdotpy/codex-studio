@@ -571,7 +571,13 @@ test("one UI routes overlapping chats to two and three signed servers without re
     });
     if (!(await shellSettingsButton.isVisible())) {
       await page
-        .getByRole("button", { name: "Toggle conversations", exact: true })
+        .getByRole("button", {
+          name:
+            page.viewportSize().width <= 760
+              ? "Back to chats"
+              : "Toggle conversations",
+          exact: true,
+        })
         .click();
       await expect(shellSettingsButton).toBeVisible();
     }
@@ -622,7 +628,13 @@ test("one UI routes overlapping chats to two and three signed servers without re
       page.getByRole("complementary", { name: "Conversations" }),
     ).not.toBeVisible();
     await remoteFrame
-      .getByRole("button", { name: "Toggle conversations", exact: true })
+      .getByRole("button", {
+        name:
+          page.viewportSize().width <= 760
+            ? "Back to chats"
+            : "Toggle conversations",
+        exact: true,
+      })
       .click();
     await expect(
       page.getByRole("complementary", { name: "Conversations" }),

@@ -11,7 +11,7 @@ import ComposerAutocomplete from "../ComposerAutocomplete";
 import { useSkillAutocomplete } from "../useSkillAutocomplete";
 import type { DraftReader, DraftWriter } from "./PromptComposer";
 
-const INPUT_ROWS = 2;
+const INPUT_ROWS = 1;
 
 type InputHandlers = Pick<
   TextareaProps,

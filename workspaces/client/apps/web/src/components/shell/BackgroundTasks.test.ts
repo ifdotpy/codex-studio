@@ -114,3 +114,26 @@ describe("monitor wake budget", () => {
     expect(task?.outputPatterns).toEqual(["ready"]);
   });
 });
+
+describe("dispatch strip states", () => {
+  it("prioritizes approvals and keeps the existing command projection", async () => {
+    const { backgroundTaskState } = await import("./BackgroundTasks");
+    const task = {
+      id: "monitor",
+      agent: "worker",
+      kind: "monitor",
+      created: 1,
+      command: "pnpm test",
+      status: "approval",
+    };
+    expect(backgroundTaskState(task)).toBe("answer");
+    expect(backgroundTaskState({ ...task, status: "running" })).toBe("working");
+    expect(backgroundTaskState({ ...task, status: "lost" })).toBe("error");
+    expect(backgroundTaskState({ ...task, status: "completed" })).toBe(
+      "unread",
+    );
+    expect(backgroundTaskState({ ...task, status: "cancelled" })).toBe(
+      "paused",
+    );
+  });
+});

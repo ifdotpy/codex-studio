@@ -124,7 +124,6 @@ export default memo(function QuestionCard({
           <Button
             size="compact-sm"
             variant="filled"
-            color="indigo"
             onClick={() => onAnswer(card.requestId!)}
           >
             Answer

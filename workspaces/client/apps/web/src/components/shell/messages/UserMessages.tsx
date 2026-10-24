@@ -190,7 +190,6 @@ function MessageResponse({
       <Button
         type="submit"
         variant="filled"
-        color="indigo"
         loading={sending}
         disabled={!text.trim() || text.length > 12000}
       >

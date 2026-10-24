@@ -22,6 +22,7 @@ export function retainUsageAccounts(
         old.label === value.label &&
         old.email === value.email &&
         old.provider === value.provider &&
+        old.plan === value.plan &&
         old.accountId === value.accountId &&
         old.signedOut === value.signedOut &&
         old.limits === value.limits &&

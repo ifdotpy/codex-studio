@@ -1,369 +1,508 @@
-.projects-heading,
-.project-tree-heading {
+/* Fleet owns sidebar layout. Shared state rails/colors live in design/state.css. */
+#sidebar {
   display: flex;
-  align-items: center;
-  min-width: 0;
-  gap: 2px;
-}
-.projects-heading {
-  margin: 0;
-  color: var(--muted);
-}
-.projects-heading-label {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 8px;
-  font-size: 12px;
-}
-.projects-heading .mantine-ActionIcon-root {
-  width: 26px;
-  min-width: 26px;
-  height: 26px;
-}
-.sidebar-project {
-  margin: 0 0 12px;
-}
-.project-tree-heading {
-  padding: 0 4px;
-}
-#sidebar .project-tree-heading[data-folder-drop="true"] {
-  border-radius: 8px;
-  background: var(--mantine-primary-color-light);
-  box-shadow: inset 0 0 0 1px var(--mantine-primary-color-filled);
-}
-.project-tree-toggle {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  flex: 1;
-  min-width: 0;
-  padding: 7px 4px;
+  flex: 0 0 var(--studio-sidebar-width);
+  flex-direction: column;
+  inline-size: var(--studio-sidebar-width);
+  min-inline-size: 0;
+  min-block-size: 0;
+  gap: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-md);
   color: var(--text);
-  font-size: 13px;
+  background: var(--sidebar);
+  border-inline-end: var(--studio-border-width) solid var(--line);
 }
-.project-tree-toggle svg {
-  flex-shrink: 0;
+/* Keep keyboard focus inside each control, clear of the strip's state rail.
+   Portal menus share this treatment with controls in the navigation. */
+#sidebar
+  :is(button, a, input, textarea, select, summary, [tabindex]):focus-visible,
+.fleet-menu
+  :is(button, a, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: var(--studio-focus-ring-width) solid
+    var(--mantine-primary-color-filled);
+  outline-offset: calc(
+    -1 * (var(--studio-focus-ring-width) + var(--studio-focus-ring-inset))
+  );
+  box-shadow: none;
+}
+#chat-search {
+  --input-bd-focus: var(--mantine-color-default-border);
+}
+.sidebar-header,
+.sidebar-primary-actions,
+.projects-heading,
+.project-tree-heading,
+.project-tree-toggle,
+.fleet-chat-heading {
+  display: flex;
+  align-items: center;
+  min-inline-size: 0;
+  gap: var(--mantine-spacing-xs);
+}
+.sidebar-header {
+  flex: none;
+}
+.brand {
+  flex: 1;
+  color: var(--text);
+  text-decoration: none;
+  font-size: var(--mantine-font-size-lg);
+  font-weight: 600;
+}
+.brand-name strong {
+  font: inherit;
+}
+.sidebar-nav {
+  display: grid;
+  gap: var(--mantine-spacing-xs);
+  flex: none;
+}
+.sidebar-primary-actions .sidebar-search {
+  flex: 1;
+  min-inline-size: 0;
+}
+.sidebar-nav-button {
+  min-inline-size: 0;
+  color: var(--text);
+  font-size: var(--mantine-font-size-sm);
+}
+.sidebar-search .mantine-Button-inner {
+  justify-content: flex-start;
+}
+.sidebar-search .mantine-Button-label {
+  flex: 1;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+}
+.sidebar-search kbd {
   color: var(--muted);
+  font: inherit;
+  font-size: var(--mantine-font-size-xs);
 }
-.project-tree-toggle span {
+.sidebar-new-chat {
+  flex: none;
+  color: var(--studio-state-working);
+}
+.sidebar-shared-chat .mantine-Button-label {
+  min-inline-size: 0;
   overflow: hidden;
-  white-space: nowrap;
   text-overflow: ellipsis;
 }
-/* The project name keeps room before the chip. */
-.project-tree-toggle > span {
-  flex: 0 1 auto;
-  min-width: min(6em, 45%);
+#chat-search {
+  font-size: var(--mantine-font-size-sm);
 }
-.project-tree-action {
-  opacity: 0;
-  width: 24px;
-  min-width: 24px;
-  height: 24px;
+/* Chat rows reach closer to the sidebar edge than the header controls;
+   headings inside the list stay aligned with the sidebar header. */
+.chat-scroll {
+  --fleet-list-outset: calc(0.625 * var(--mantine-spacing-md));
+  margin-inline: calc(-1 * var(--fleet-list-outset));
+  flex: 1;
+  min-block-size: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
-.project-tree-heading:hover .project-tree-action,
-.project-tree-heading:focus-within .project-tree-action {
-  opacity: 1;
+.fleet-attention {
+  margin-block-end: var(--mantine-spacing-md);
 }
-/* The LAYR chip matches .workspace-mode-badge; the dot tells the VM import state. It sits on
-   a second line under the project name, so the name keeps the whole width, and opens the
-   project's layr menu. */
-.project-tree-heading:has(> .project-tree-layr) {
-  flex-wrap: wrap;
-}
-.project-tree-layr {
-  flex: 1 0 100%;
-  margin-top: -5px;
-  padding: 0 0 4px 31px;
-}
-.project-tree-layr .project-layr-readiness {
-  cursor: pointer;
-  background: none;
-  font-family: inherit;
-}
-.project-tree-layr .project-layr-readiness:hover,
-.project-tree-layr .project-layr-readiness[aria-expanded="true"] {
-  border-color: var(--muted);
-}
-.project-tree-layr .project-layr-readiness:focus-visible {
-  outline: 2px solid var(--mantine-primary-color-filled);
-  outline-offset: 1px;
-}
-.project-tree-layr .project-layr-readiness {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 1px 6px;
+.fleet-lane-heading,
+.projects-heading-label {
+  flex: 1;
+  min-inline-size: 0;
+  margin: 0;
+  padding: var(--mantine-spacing-xs) 0;
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 500;
   color: var(--muted);
-  font-size: 9px;
+}
+.fleet-lane-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text);
   font-weight: 600;
-  letter-spacing: 0.04em;
-  line-height: 1.4;
+}
+.fleet-lane-heading > span,
+.project-state-counts {
+  font-variant-numeric: tabular-nums;
+}
+.fleet-lane-heading > span {
+  color: var(--studio-state-answer);
+}
+.sidebar-project {
+  margin-block-end: var(--mantine-spacing-md);
+}
+.projects-heading,
+.fleet-lane-heading,
+.project-tree-heading {
+  padding-inline-start: var(--fleet-list-outset);
+}
+.project-tree-heading {
+  position: relative;
+  gap: 0;
+}
+.project-tree-toggle {
+  flex: 1;
+  padding: var(--mantine-spacing-xs) 0;
+  color: var(--text);
+  font-size: var(--mantine-font-size-sm);
+  font-weight: 600;
+  text-align: start;
+}
+.project-tree-toggle > svg {
+  flex: none;
+  color: var(--muted);
+  inline-size: var(--mantine-font-size-sm);
+}
+.project-tree-name,
+.project-tree-toggle > span:first-of-type {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.project-layr-readiness::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
+.project-tree-name {
+  flex: 1;
 }
-.project-layr-readiness[data-state="ready"]::before {
-  color: light-dark(#18713a, #6ed491);
+.project-tree-action {
+  flex: none;
+  color: var(--muted);
+  inline-size: 0;
+  min-inline-size: 0;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
 }
-.project-layr-readiness[data-state="importing"]::before {
-  color: var(--accent);
-  animation: project-layr-importing 2s ease-in-out infinite;
+.project-tree-heading:is(
+    :hover,
+    :focus-within,
+    :has(> .project-tree-action[aria-expanded="true"])
+  )
+  > .project-tree-action {
+  inline-size: var(--studio-control-size);
+  opacity: 1;
+  pointer-events: auto;
 }
-.project-layr-readiness[data-state="not_imported"]::before {
-  background: transparent;
-  box-shadow: inset 0 0 0 1px currentColor;
+.project-state-counts {
+  display: inline-flex;
+  flex: none;
+  gap: var(--mantine-spacing-xs);
+  margin-inline-start: auto;
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 400;
+  color: var(--muted);
 }
-.project-layr-readiness[data-state="failed"]::before {
-  color: light-dark(#956000, #f0bb60);
+.project-state-count {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--mantine-spacing-xs) / 2);
 }
-/* A project with a vault shows a cloud instead of the dot. */
-.project-layr-readiness[data-vault]::before {
-  display: none;
-}
-.project-layr-readiness[data-vault] svg {
-  flex: 0 0 auto;
-  color: light-dark(#18713a, #6ed491);
-}
-.project-layr-readiness[data-vault="error"] svg,
-.project-layr-readiness[data-attention="true"] svg {
-  color: light-dark(#956000, #f0bb60);
-}
-/* A Mac folder sync that needs the user: a conflict, a failure or deletions to confirm. */
-.project-layr-readiness[data-attention="true"],
-.project-layr-readiness[data-attention="true"]::before {
-  color: light-dark(#956000, #f0bb60);
-}
-.mac-sync-conflict-path {
-  flex: 1 1 12em;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-family: var(--mantine-font-family-monospace);
-}
-@keyframes project-layr-importing {
-  50% {
-    opacity: 0.35;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .project-layr-readiness[data-state="importing"]::before {
-    animation: none;
-  }
+.project-tree-toggle > .project-state-counts {
+  overflow: visible;
 }
 .project-chats {
-  padding-left: 24px;
+  padding-inline-start: calc(var(--studio-strip-indent) / 2);
 }
 .project-folder {
-  margin: 4px 0;
+  margin-block: var(--mantine-spacing-xs);
 }
 .project-folder-chats {
-  padding-left: 14px;
+  padding-inline-start: calc(var(--studio-strip-indent) / 2);
+}
+.sidebar-row {
+  display: flex;
+  align-items: center;
+  position: relative;
+  min-inline-size: 0;
+  border-radius: 0;
+  margin: 0;
+}
+.sidebar-row:hover {
+  background: var(--hover);
+}
+.sidebar-row.selected {
+  background: var(--raised);
+}
+.chat-row {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  inline-size: 100%;
+  min-inline-size: 0;
+  /* Sidebar strips are 15% denser than the shared strip; phones keep the
+     touch target below. */
+  min-block-size: calc(0.85 * var(--studio-strip-min-height));
+  gap: var(--mantine-spacing-xs);
+  padding: calc(0.85 * var(--mantine-spacing-xs))
+    calc(0.85 * var(--mantine-spacing-xs))
+    calc(0.85 * var(--mantine-spacing-xs))
+    calc(0.85 * var(--mantine-spacing-sm));
+  border-radius: 0;
+  text-align: start;
+}
+.fleet-strip[data-studio-state="answer"] {
+  background: var(--studio-state-answer-soft);
+}
+.fleet-strip[data-studio-state="error"] {
+  background: var(--studio-state-error-soft);
+}
+.row-copy {
+  flex: 1;
+  min-inline-size: 0;
+}
+.row-copy strong {
+  display: block;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--mantine-font-size-sm);
+  font-weight: 400;
+}
+.fleet-chat-heading > .chat-status {
+  --agent-activity-color: var(--studio-state);
+  color: var(--studio-state);
+}
+.fleet-chat-heading > strong {
+  flex: 1;
+}
+.fleet-strip[data-studio-state="unread"] strong {
+  font-weight: 600;
+}
+.fleet-chat-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  min-inline-size: 0;
+  color: var(--muted);
+  font-size: var(--mantine-font-size-xs);
+}
+.fleet-server-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--mantine-spacing-xs) / 2);
+  flex: none;
+  color: var(--muted);
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 400;
+  text-transform: none;
+}
+.fleet-server-badge[data-offline] {
+  color: var(--studio-state-error);
+  border-color: currentColor;
+}
+.chat-pin {
+  margin-inline-end: calc(var(--mantine-spacing-xs) / 2);
+  color: var(--muted);
+}
+/* Hidden actions consume no title width, but remain keyboard focusable. */
+.row-actions {
+  position: absolute;
+  inset-inline-end: 0;
+  opacity: 0;
+  pointer-events: none;
+  color: var(--muted);
+}
+.fleet-strip:is(
+    :hover,
+    :focus-within,
+    .selected,
+    :has(.row-actions[data-expanded])
+  )
+  > .chat-row {
+  padding-inline-end: calc(
+    var(--ai-size, var(--studio-control-size)) + var(--mantine-spacing-xs)
+  );
+}
+.sidebar-row:is(:hover, :focus-within, .selected) .row-actions,
+.row-actions:focus-visible,
+.row-actions[data-expanded] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.inline-rename {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  flex: 1;
+  min-inline-size: 0;
+  gap: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-xs);
+  background: var(--sidebar);
+}
+.inline-rename > :first-child {
+  flex-basis: 100%;
+  min-inline-size: 0;
+}
+.sidebar-row:has(.inline-rename) > .chat-row {
+  display: none;
+}
+.project-empty,
+.project-show-more,
+.project-show-all {
+  display: block;
+  margin: 0;
+  padding: var(--mantine-spacing-xs);
+  color: var(--muted);
+  font-size: var(--mantine-font-size-xs);
+}
+.project-show-more:hover,
+.project-show-all:hover {
+  color: var(--text);
 }
 .project-directory {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
-#sidebar .project-tree-toggle span {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-overflow: clip;
-}
-.project-chats .sidebar-row {
-  margin: 1px 0;
-}
-.project-chats .chat-row {
-  min-height: 34px;
-  padding: 7px 44px 7px 8px;
-}
-.project-chats .row-actions {
-  right: 4px;
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-}
-@media (max-width: 760px) {
-  .project-chats .chat-row {
-    padding-right: 56px;
-  }
-}
-.project-chats .row-copy strong {
-  font-weight: 400;
-}
-.project-empty,
-.project-show-more {
-  display: block;
-  margin: 0;
-  padding: 8px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.project-show-more:hover {
-  color: var(--text);
-}
-@media (hover: none) {
-  .project-tree-action {
-    opacity: 1;
-  }
-}
-
-/* Titles own the row until pointer or keyboard interaction reveals controls. */
-#sidebar .project-chats .chat-row {
-  padding-right: 8px;
-}
-#sidebar .project-chats .row-actions,
-#sidebar .row-pin-action {
-  position: absolute;
-  width: 26px;
-  min-width: 26px;
-  height: 26px;
-  opacity: 0;
-  pointer-events: none;
-}
-#sidebar .row-pin-action {
-  right: 31px;
-}
-#sidebar .project-chats .row-actions {
-  right: 3px;
-}
-#sidebar
-  .sidebar-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
-  .chat-row {
-  padding-right: 62px;
-}
-#sidebar
-  .sidebar-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
-  :is(.row-actions, .row-pin-action) {
-  opacity: 1;
-  pointer-events: auto;
-}
-.chat-pin {
-  margin-right: 5px;
-  vertical-align: -1px;
-  color: var(--muted);
-}
-#sidebar .project-tree-heading {
-  position: relative;
-}
-#sidebar .project-tree-action {
-  z-index: 1;
-  position: absolute;
-  right: 2px;
-  opacity: 0;
-  pointer-events: none;
-}
-#sidebar .project-tree-action:has(+ .project-tree-action) {
-  right: 28px;
-}
-#sidebar
-  .project-tree-heading:is(
-    :hover,
-    :has(:focus-visible),
-    :has(.project-tree-action[aria-expanded="true"])
-  )
-  .project-tree-toggle {
-  margin-right: 28px;
-}
-#sidebar
-  .project-tree-heading:has(.project-tree-action + .project-tree-action):is(
-    :hover,
-    :has(:focus-visible),
-    :has(.project-tree-action[aria-expanded="true"])
-  )
-  .project-tree-toggle {
-  margin-right: 54px;
-}
-#sidebar
-  .project-tree-heading:is(
-    :hover,
-    :has(:focus-visible),
-    :has(.project-tree-action[aria-expanded="true"])
-  )
-  .project-tree-action {
-  opacity: 1;
-  pointer-events: auto;
-}
-#sidebar [draggable="true"] {
-  position: relative;
+.project-tree-heading[data-folder-drop="true"],
+.chat-row[data-folder-drop="true"] {
+  background: var(--mantine-primary-color-light);
+  outline: var(--studio-rail-size) solid var(--mantine-primary-color-filled);
+  outline-offset: calc(-1 * var(--studio-rail-size));
 }
 #sidebar [data-drop-edge]::after {
   content: "";
   position: absolute;
-  left: 3px;
-  right: 3px;
-  height: 2px;
-  border-radius: 2px;
+  inset-inline: 0;
+  block-size: var(--studio-rail-size);
   background: var(--mantine-primary-color-filled);
   pointer-events: none;
 }
 #sidebar [data-drop-edge="before"]::after {
-  top: 0;
+  inset-block-start: 0;
 }
 #sidebar [data-drop-edge="after"]::after {
-  bottom: 0;
+  inset-block-end: 0;
 }
-@media (hover: none), (max-width: 760px) {
-  #sidebar .row-pin-action {
-    display: none;
-  }
-  #sidebar .project-chats .chat-row,
+.project-tree-heading:has(> .project-tree-layr) {
+  flex-wrap: wrap;
+}
+.project-tree-layr {
+  flex: 1 0 100%;
+  padding: 0 0 var(--mantine-spacing-xs) var(--mantine-spacing-lg);
+}
+.project-tree-layr .project-layr-readiness {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--mantine-spacing-xs) / 2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 400;
+  cursor: pointer;
+}
+.project-layr-readiness::before {
+  content: "";
+  inline-size: var(--studio-dot-size);
+  block-size: var(--studio-dot-size);
+  border-radius: 50%;
+  background: currentColor;
+}
+.project-layr-readiness[data-state="ready"]::before,
+.project-layr-readiness[data-vault] svg {
+  color: var(--studio-state-unread);
+}
+.project-layr-readiness[data-state="importing"]::before {
+  color: var(--studio-state-working);
+}
+.project-layr-readiness[data-state="not_imported"]::before {
+  background: transparent;
+  outline: var(--studio-border-width) solid currentColor;
+}
+.project-layr-readiness[data-vault]::before {
+  display: none;
+}
+.project-layr-readiness[data-state="failed"]::before,
+.project-layr-readiness[data-vault="error"] svg,
+.project-layr-readiness[data-attention="true"] {
+  color: var(--studio-state-answer);
+}
+.mac-sync-conflict-path {
+  flex: 1;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--mantine-font-family-monospace);
+}
+.desktop-inset-titlebar .sidebar-header {
+  -webkit-app-region: drag;
+  padding-block: var(--mantine-spacing-md) var(--mantine-spacing-xs);
+}
+.desktop-inset-titlebar .sidebar-header :is(button, a) {
+  -webkit-app-region: no-drag;
+}
+/* Retain the existing user-selected sidebar typography contract. */
+:root:not([data-studio-typography="original"]) #sidebar {
+  font-family: var(--studio-font-family);
+  font-size: var(--studio-sidebar-font-size);
+}
+:root:not([data-studio-typography="original"])
   #sidebar
-    .sidebar-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
-    .chat-row {
-    padding-right: 46px;
+  :is(
+    .chat-row,
+    .row-copy strong,
+    .row-copy small,
+    .row-meta,
+    #chat-search,
+    .sidebar-nav-button,
+    .sidebar-footer,
+    .load-more,
+    #open-complaints
+  ) {
+  font-size: var(--studio-sidebar-font-size);
+}
+:root:not([data-studio-typography="original"])
+  #sidebar
+  :is(button, input, textarea, select) {
+  font-family: var(--studio-font-family);
+}
+@media (max-width: 47.5em) {
+  #sidebar {
+    inline-size: 100%;
+    flex-basis: 100%;
+    block-size: 100%;
+    padding-block: var(--mantine-spacing-md);
   }
-  #sidebar .project-chats .row-actions,
-  #sidebar .project-tree-action {
+  .chat-row {
+    min-block-size: var(--studio-touch-target);
+  }
+  .row-actions,
+  .project-tree-action,
+  .projects-heading .mantine-ActionIcon-root {
+    --ai-size: var(--studio-touch-target);
+  }
+  .fleet-strip:is(
+      :hover,
+      :focus-within,
+      .selected,
+      :has(.row-actions[data-expanded])
+    )
+    > .chat-row {
+    padding-inline-end: calc(
+      var(--studio-touch-target) + var(--mantine-spacing-xs)
+    );
+  }
+  .sidebar-nav-button {
+    min-block-size: var(--studio-touch-target);
+  }
+  #chat-search {
+    font-size: var(--mantine-font-size-md);
+  }
+}
+
+@media (hover: none) {
+  .project-tree-heading > .project-tree-action,
+  .project-tree-heading:is(
+      :hover,
+      :focus-within,
+      :has(> .project-tree-action[aria-expanded="true"])
+    )
+    > .project-tree-action {
+    inline-size: var(--studio-touch-target);
     opacity: 1;
     pointer-events: auto;
-    width: 40px;
-    height: 40px;
   }
-  #sidebar .project-tree-toggle {
-    margin-right: 42px;
-  }
-  #sidebar .project-tree-action:has(+ .project-tree-action) {
-    right: 44px;
-  }
-  #sidebar
-    .project-tree-heading:has(.project-tree-action + .project-tree-action)
-    .project-tree-toggle {
-    margin-right: 84px;
-  }
-}
-
-/* Project and team menus remain reachable without a prior pointer hover. */
-#sidebar .project-tree-action[aria-haspopup="menu"] {
-  opacity: 1;
-  pointer-events: auto;
-}
-#sidebar
-  .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
-  .project-tree-toggle {
-  margin-right: 28px;
-}
-@media (hover: none), (max-width: 760px) {
-  #sidebar
-    .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
-    .project-tree-toggle {
-    margin-right: 84px;
-  }
-}
-
-#sidebar .chat-row[data-folder-drop="true"] {
-  background: var(--mantine-primary-color-light);
-  box-shadow: inset 0 0 0 1px var(--mantine-primary-color-filled);
-}
-.project-show-all {
-  display: block;
-  padding: 8px;
-  color: var(--muted);
-  font-size: 12px;
 }
