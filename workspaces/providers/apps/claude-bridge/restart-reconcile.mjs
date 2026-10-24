@@ -2,7 +2,8 @@ import { readNativeHistory, nativeUuid } from "./native-history.mjs";
 
 // A native user UUID binds the mirror turn to one transcript chain. Text and
 // timestamps alone cannot distinguish an earlier reply or a different branch.
-function outcome(session, turn, records) {
+// Restart reconciliation and Studio's liveness reconcile share this decision.
+export function nativeTurnOutcome(session, turn, records) {
   const userId = turn.items.find(
     (item) => item.type === "userMessage",
   )?.nativeId;
@@ -133,7 +134,7 @@ export async function reconcileRestartTurns(session, options) {
   if (!stale.length) return;
   const records = await readNativeHistory(session, options).catch(() => null);
   for (const turn of stale) {
-    const result = outcome(session, turn, records);
+    const result = nativeTurnOutcome(session, turn, records);
     turn.status = result?.status || "uncertain";
     if (result?.status === "completed") {
       const existing = turn.items.findIndex(

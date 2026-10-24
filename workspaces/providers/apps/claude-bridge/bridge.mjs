@@ -17,6 +17,8 @@ import { createAccountCheck } from "./account-identity.mjs";
 import { inputGroups, sdkInputMessages } from "./input-messages.mjs";
 // Claude Agent SDK adapter for Studio's existing local session protocol.
 import { interruptInputQueue } from "./stop-inputs.mjs";
+import { readNativeHistory } from "./native-history.mjs";
+import { nativeTurnOutcome } from "./restart-reconcile.mjs";
 import { browserEnvironment } from "./browser-environment.mjs";
 import {
   query,
@@ -294,6 +296,13 @@ const commands = createCommandTransport({ root, emit });
 const limits = stallLimits();
 // Outstanding Studio requests per thread. While Studio owns a wait (an
 // approval, a question, a Studio tool call), no Claude tool call can stall.
+// How long the CLI must be silent before a liveness reconcile may end its
+// turn from native history, in milliseconds. Studio asks only after minutes of
+// silence; this guard keeps a reconcile away from a stream that just moved.
+const RECONCILE_QUIET_MS =
+  Number(process.env.STUDIO_CLAUDE_RECONCILE_QUIET_MS) > 0
+    ? Number(process.env.STUDIO_CLAUDE_RECONCILE_QUIET_MS)
+    : 60_000;
 const studioWaits = new Map();
 function studioWait(threadId) {
   if (!threadId) return () => {};
@@ -2991,6 +3000,67 @@ async function handle(method, p) {
         },
       );
     return receipt;
+  }
+  // Studio's liveness check of a turn that the provider left silent for
+  // minutes (studio_errors turn_stalled). Claude can end a turn while the
+  // bridge keeps it open, for example a result deferred for a steer that
+  // Claude answered without a replay echo. Native history decides: when it
+  // ends with Claude's final answer for this turn (no unresolved tool call)
+  // and records every submitted steer, the steers are delivered and the turn
+  // completes once. Nothing is sent to Claude. A busy or unconfirmed turn
+  // stays open; a later check can ask again.
+  if (method === "turn/reconcile") {
+    const active = queries.get(p.threadId);
+    const turn = active?.turn;
+    const s = sessions.get(p.threadId);
+    if (!turn || !s || (p.turnId && p.turnId !== turn.id))
+      return { status: "notActive" };
+    const busy = () =>
+      active.turn !== turn ||
+      finishingTurns.has(turn) ||
+      active.toolClocks.size > 0 ||
+      active.reservingInput ||
+      Boolean(studioWaits.get(p.threadId)) ||
+      Date.now() - active.lastEventAt < RECONCILE_QUIET_MS;
+    if (busy()) return { status: "busy" };
+    const records = await readNativeHistory(s).catch(() => null);
+    const ended = nativeTurnOutcome(s, turn, records);
+    const recorded = new Set(
+      (records || []).flatMap(({ row }) =>
+        row?.type === "user" && typeof row.uuid === "string" ? [row.uuid] : [],
+      ),
+    );
+    const steers = turn.items.filter(
+      (item) =>
+        item.type === "userMessage" &&
+        item.delivery === "steer" &&
+        item.deliveryStatus === "submitted",
+    );
+    if (
+      ended?.status !== "completed" ||
+      !steers.every((item) =>
+        (item.nativeIds || [item.nativeId]).every((id) => recorded.has(id)),
+      )
+    )
+      return { status: "unconfirmed" };
+    // The history read awaited; the turn may have moved meanwhile.
+    if (busy()) return { status: "busy" };
+    for (const item of steers) {
+      item.deliveryStatus = "delivered";
+      active.pendingSteers.delete(item.id);
+      turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
+    }
+    if (!turn.items.some((item) => item.id === ended.item.id))
+      finishItem(s, turn, ended.item);
+    const result = active.deferredResult || {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: ended.item.text,
+    };
+    active.deferredResult = null;
+    await finishTurn(s, active, result);
+    return { status: "completed" };
   }
   if (method === "thread/name/set") {
     const s = await session(p.threadId);
