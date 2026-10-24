@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
@@ -13,6 +14,7 @@ const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../../../..",
 );
+const fixtureApp = path.join(os.tmpdir(), "checked", "Codex Studio.app");
 
 test("Linux keeps its existing delivery owner and exact commit argument", () => {
   const plan = deliveryPlan({
@@ -26,11 +28,7 @@ test("Linux keeps its existing delivery owner and exact commit argument", () => 
 });
 
 test("Mac runs the canary before the only live write through the recovery owner", () => {
-  const options = parseDeliveryArguments([
-    "HEAD",
-    "--app",
-    "/tmp/checked/Codex Studio.app",
-  ]);
+  const options = parseDeliveryArguments(["HEAD", "--app", fixtureApp]);
   const plan = deliveryPlan({
     ...options,
     platform: "darwin",
@@ -57,7 +55,7 @@ test("Mac dry run cannot build, start a canary, or stage an update", () => {
   const options = parseDeliveryArguments([
     "HEAD",
     "--app",
-    "/tmp/checked/Codex Studio.app",
+    fixtureApp,
     "--dry-run",
   ]);
   const plan = deliveryPlan({
