@@ -283,13 +283,26 @@ impl StdioProviderTaskFactory {
                     tokio::spawn(async move { drain_stderr(&mut stderr, log.as_ref()).await })
                 });
                 let stderr_available = stderr_drain.is_some();
-                // Pipes belong to the exchange, while this owner keeps the child
-                // available to wait independently of blocked writes or journal delivery.
+                // Keep the reader's buffered bytes, cursor, and pending journal send
+                // alive when exit cancels the exchange's writer.
                 let stdin = child.stdin().take();
                 let stdout = child.stdout().take();
+                let reader = async {
+                    let stdout = stdout.ok_or(AdapterError::InvalidConfiguration)?;
+                    read_entries(
+                        stdout,
+                        entries,
+                        options.clock,
+                        generation,
+                        frame_limit,
+                        output_limit,
+                        reply_witness,
+                    )
+                    .await
+                };
+                tokio::pin!(reader);
                 let exchange = async {
                     let stdin = stdin.ok_or(AdapterError::InvalidConfiguration)?;
-                    let stdout = stdout.ok_or(AdapterError::InvalidConfiguration)?;
                     if !stderr_available {
                         return Err(AdapterError::InvalidConfiguration);
                     }
@@ -301,15 +314,7 @@ impl StdioProviderTaskFactory {
                             generation,
                             pending_replies
                         ),
-                        read_entries(
-                            stdout,
-                            entries,
-                            options.clock,
-                            generation,
-                            frame_limit,
-                            output_limit,
-                            reply_witness,
-                        )
+                        &mut reader,
                     )?;
                     Ok(())
                 };
@@ -337,7 +342,7 @@ impl StdioProviderTaskFactory {
                     // A full journal must never prevent observing and reaping the child.
                     result = bounded => (result, false),
                     exited = leader_exit => match exited {
-                        Ok(()) => (Err(SupervisorError::ConnectionLost.into()), false),
+                        Ok(()) => (drain_stdout_after_exit(&mut reader, &mut stop, deadline).await, false),
                         Err(error) => (Err(process_error(error)), true),
                     },
                 };
@@ -409,6 +414,31 @@ impl StdioProviderTaskFactory {
                 commands, journal, status, shutdown, task,
             ))
         })
+    }
+}
+
+async fn drain_stdout_after_exit(
+    reader: impl std::future::Future<Output = Result<(), AdapterError>>,
+    stop: &mut watch::Receiver<bool>,
+    deadline: Option<Instant>,
+) -> Result<(), AdapterError> {
+    // A full journal or a descendant holding stdout open must not prevent
+    // signalling and reaping the still-owned group. Never extend the caller's
+    // deadline, and preserve shutdown's priority and successful result.
+    let grace_deadline = Instant::now() + REAP_GRACE;
+    let drain_deadline = deadline.map_or(grace_deadline, |end| end.min(grace_deadline));
+    tokio::select! {
+        biased;
+        _ = Shutdown::cancelled(stop) => Ok(()),
+        result = tokio::time::timeout_at(drain_deadline, reader) => {
+            result.unwrap_or_else(|_| {
+                if deadline.is_some_and(|end| end <= grace_deadline) {
+                    Err(AdapterError::Timeout)
+                } else {
+                    Err(SupervisorError::ConnectionLost.into())
+                }
+            })
+        }
     }
 }
 
@@ -668,6 +698,90 @@ async fn read_stdout_line<R: AsyncRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn stdout_exit_drain_bounds_a_full_journal_and_preserves_the_exchange_deadline() {
+        for has_deadline in [false, true] {
+            let deadline = has_deadline.then(|| Instant::now() + REAP_GRACE / 2);
+            let (entries, mut journal) = mpsc::channel(1);
+            let shutdown = Shutdown::default();
+            let started = Instant::now();
+            let result = drain_stdout_after_exit(
+                read_entries(
+                    &b"first\nsecond\n"[..],
+                    entries,
+                    SessionClock::default(),
+                    Generation(1),
+                    1024,
+                    None,
+                    None,
+                ),
+                &mut shutdown.subscribe(),
+                deadline,
+            )
+            .await;
+            if let Some(deadline) = deadline {
+                assert!(matches!(result, Err(AdapterError::Timeout)));
+                assert_eq!(Instant::now(), deadline);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(AdapterError::Supervisor(SupervisorError::ConnectionLost))
+                ));
+                assert_eq!(Instant::now() - started, REAP_GRACE);
+            }
+            let retained = journal.recv().await.expect("first entry retained");
+            assert_eq!(retained.cursor, EventCursor(1));
+            assert!(journal.recv().await.is_none());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stdout_exit_drain_bounds_an_inherited_pipe_and_honors_shutdown() {
+        for cancel in [false, true] {
+            let (mut writer, stdout) = tokio::io::duplex(1024);
+            writer.write_all(b"final\n").await.expect("final line");
+            // Keep the writer alive, like a descendant inheriting stdout.
+            let (entries, mut journal) = mpsc::channel(1);
+            let shutdown = Shutdown::default();
+            let mut stop = shutdown.subscribe();
+            let started = Instant::now();
+            let (result, ()) = tokio::join!(
+                drain_stdout_after_exit(
+                    read_entries(
+                        stdout,
+                        entries,
+                        SessionClock::default(),
+                        Generation(1),
+                        1024,
+                        None,
+                        None,
+                    ),
+                    &mut stop,
+                    None,
+                ),
+                async {
+                    let entry = journal.recv().await.expect("final line drained");
+                    assert_eq!(entry.cursor, EventCursor(1));
+                    if cancel {
+                        shutdown.cancel();
+                    }
+                },
+            );
+            if cancel {
+                assert!(result.is_ok());
+                assert_eq!(Instant::now(), started);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(AdapterError::Supervisor(SupervisorError::ConnectionLost))
+                ));
+                assert_eq!(Instant::now() - started, REAP_GRACE);
+            }
+            assert!(journal.recv().await.is_none());
+            drop(writer);
+        }
+    }
 
     /// A group signal after the leader is reaped could reach another group that
     /// reuses the ID. Here the leader exits while a descendant keeps stdout open,

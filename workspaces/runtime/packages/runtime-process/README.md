@@ -232,6 +232,11 @@ caller supplies an absolute Tokio deadline and raw frame/total-output bounds.
 The task concurrently reads stdout, drains stderr, and writes commands; the
 single deadline also interrupts stalled writes. Cleanup runs before completion
 or status-channel closure. This adapter requires Unix process groups.
+After observing the leader's exit, the task drains stdout into the journal to
+EOF, bounded by the earlier of the caller's deadline and the cleanup grace owned
+by [`provider_stdio.rs`](src/provider_stdio.rs). Shutdown still interrupts this
+drain. A full journal or an inherited pipe cannot delay process-group cleanup
+beyond that bound.
 
 The model catalog consumes it through the accepted session task. Its cache is
 process-local, so consumed entries are settled without a durable journal.

@@ -1,7 +1,7 @@
 #![cfg(unix)]
 use std::{collections::BTreeMap, time::Duration};
 use studio_runtime_process::{
-    Generation, ProviderHandle, ProviderLaunchSpec, provider_seam::*,
+    EventCursor, Generation, ProviderHandle, ProviderLaunchSpec, provider_seam::*,
     provider_stdio::StdioProviderTaskFactory,
 };
 use tokio::time::Instant;
@@ -10,6 +10,63 @@ const PROVIDER_STDERR_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bounds real-process progress in the independent exit witness; unit: wall time.
 #[cfg(target_os = "linux")]
 const PROVIDER_EXIT_HANG_GUARD: Duration = Duration::from_secs(10);
+
+#[test]
+fn final_stdout_is_journaled_when_the_child_exits_before_the_owner_is_polled() {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    use studio_runtime_providers::{Frame, RequestId, ResponseBody};
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread provider runtime");
+    let mut attachment = runtime.block_on(child(
+        r#"printf '{"id":1,"result":{}}\n'; printf 'final diagnostic\n' >&2; printf '{"id":2,"result":{}}\n'"#,
+    ));
+    let child_pid = pid(&attachment);
+    // Opening only spawns the owner task. With its runtime stopped, wait for
+    // the fixture's exit without reaping, before any stdout readiness is polled.
+    let owned_pid = Pid::from_raw(child_pid as i32).expect("owned pid");
+    waitid(
+        WaitId::Pid(owned_pid),
+        WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+    )
+    .expect("fixture exited without reaping");
+
+    runtime.block_on(async {
+        tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, async {
+            for (cursor, id) in [(1, 1), (2, 2)] {
+                let entry = attachment
+                    .journal
+                    .recv()
+                    .await
+                    .expect("final reply retained");
+                assert_eq!(entry.cursor, EventCursor(cursor));
+                assert_eq!(entry.generation, Generation(1));
+                assert!(matches!(
+                    entry.payload,
+                    JournalPayload::Frame(Frame::Response {
+                        id: RequestId::Number(actual),
+                        body: ResponseBody::Result(_),
+                        ..
+                    }) if actual == id
+                ));
+            }
+            assert!(attachment.journal.recv().await.is_none());
+            let exit = attachment.completion().await;
+            assert!(matches!(
+                exit.result,
+                Err(AdapterError::Supervisor(
+                    studio_runtime_process::SupervisorError::ConnectionLost
+                ))
+            ));
+            assert!(exit.cleanup_error.is_none());
+            assert_reaped(child_pid);
+        })
+        .await
+        .expect("final stdout drain hang guard");
+    });
+}
 
 #[cfg(target_os = "linux")]
 #[tokio::test]

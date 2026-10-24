@@ -852,7 +852,11 @@ function fastTierCommands(root) {
             "-p",
             "studio-runtime-process",
             "-E",
-            "binary(integration) & test(/^provider_task::(a_cancelled_attachment_leaves_its_supervised_child_retained|terminal_eof_serves_already_queued_final_ack_before_completion)$/)",
+            nextestAnyOf([
+              "binary(integration) & test(/^provider_task::(a_cancelled_attachment_leaves_its_supervised_child_retained|terminal_eof_serves_already_queued_final_ack_before_completion)$/)",
+              "binary(studio_runtime_process) & test(/^provider_stdio::tests::stdout_exit_drain_bounds_a_full_journal_and_preserves_the_exchange_deadline$/)",
+              "binary(studio_runtime_process) & test(/^provider_stdio::tests::stdout_exit_drain_bounds_an_inherited_pipe_and_honors_shutdown$/)",
+            ]),
           ],
         ],
       ],
@@ -1502,6 +1506,7 @@ function fastTierCommands(root) {
                   "integration",
                   "-E",
                   nextestAnyOf([
+                    "test(/^provider_stdio::final_stdout_is_journaled_when_the_child_exits_before_the_owner_is_polled$/)",
                     "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
                     "test(/^provider_stdio::cancellation_stops_the_entire_owned_process_group$/)",
                     "test(/^wave7_p01_factory::running_child_started_with_a_previous_command_reattaches$/)",
