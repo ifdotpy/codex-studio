@@ -9,7 +9,8 @@ use crate::notification_dispatch::{
 };
 use rusqlite::{OptionalExtension, params};
 use studio_runtime_schema::shared_values::{
-    PROVIDER_RESUME_UNKNOWN_ERROR, PROVIDER_THREAD_START_UNKNOWN_ERROR,
+    PROVIDER_RESUME_UNKNOWN_ERROR, PROVIDER_SESSION_MISSING_ERROR,
+    PROVIDER_THREAD_START_UNKNOWN_ERROR,
 };
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::{EventWriteRepository, NotificationDispatchRepository};
@@ -1200,6 +1201,17 @@ fn settle_outcome(
                     // preparation already finished. It neither prepares nor
                     // settles the attempt a second time.
                 }
+                Method::ThreadResume | Method::ThreadStart if matches!(&body, ResponseBody::Error(error) if session_missing(error)) =>
+                {
+                    // The saved session is gone, so no retry can resume it. The input
+                    // was never sent: it settles as not sent, and the transcript stays.
+                    SchedulerRepository::settle_start_outcome(
+                        tx,
+                        &i.identity(),
+                        "failed",
+                        Some(PROVIDER_SESSION_MISSING_ERROR),
+                    )?;
+                }
                 Method::ThreadResume | Method::ThreadStart => {
                     // Name the provider's own error; a rejected reply names
                     // the check that failed. The input is never sent here.
@@ -1456,6 +1468,28 @@ fn not_sent_reason(
         method.as_str(),
         cause.map_or("Studio did not write it", |cause| cause.describe())
     )
+}
+
+/// The error data flag of a missing saved session. The Claude bridge owns the
+/// name, so it is read from the bridge source instead of being copied here.
+fn session_missing_flag() -> &'static str {
+    static FLAG: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(|| {
+        include_str!("../../../../../providers/apps/claude-bridge/session-store.mjs")
+            .split_once("export const SESSION_MISSING = \"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(flag, _)| flag)
+            .expect("Claude bridge session missing flag")
+    });
+    *FLAG
+}
+
+/// Whether a provider error reply says that the thread's saved session is gone.
+fn session_missing(error: &Value) -> bool {
+    error
+        .get("data")
+        .and_then(|data| data.get(session_missing_flag()))
+        .and_then(Value::as_bool)
+        == Some(true)
 }
 
 /// The stored reason of a thread/resume whose input went back to the queue.

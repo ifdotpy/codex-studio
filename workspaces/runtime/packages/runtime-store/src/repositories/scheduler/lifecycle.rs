@@ -23,6 +23,9 @@ impl SchedulerRepository {
         });
         let reach = match outcome {
             "uncertain" => StartReach::Provider,
+            // The provider refused the start for good (its saved session is gone).
+            // The input was never sent: it settles as failed, and its owner may send it again.
+            "failed" => StartReach::Provider,
             // Callers settle `pending` only for a request proven never written.
             "pending" => StartReach::NotWritten,
             _ => StartReach::Preparation,
