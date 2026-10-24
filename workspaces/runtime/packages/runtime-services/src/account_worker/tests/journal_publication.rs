@@ -267,3 +267,64 @@ async fn changed_agents_decode_once_through_final_publication() {
         "replay does no decoding"
     );
 }
+
+/// Recovery may commit while the account worker still holds an older cache.
+/// The next journal must build on the committed buffer, preserving its receipts.
+#[tokio::test]
+async fn journal_uses_committed_streams_after_recovery_advances_publications() {
+    let (_directory, store) = running_store().await;
+    let stale = NotificationStreamBuffer::default();
+    let committed = journal(
+        &store,
+        stale.clone(),
+        vec![entry(
+            1,
+            json!({"method":"item/agentMessage/delta","params":{"threadId":"thread",
+            "turnId":"turn","itemId":"answer","delta":"before"}}),
+        )],
+    )
+    .await;
+    let updated = journal(
+        &store,
+        stale,
+        vec![entry(
+            2,
+            json!({"method":"item/agentMessage/delta","params":{"threadId":"thread",
+            "turnId":"turn","itemId":"answer","delta":"after"}}),
+        )],
+    )
+    .await;
+    assert!(updated.changed_from(&committed));
+    store::flush_streams(Arc::clone(&store), "default", Vec::new())
+        .await
+        .expect("flush preserved text");
+    let (record, _) = store
+        .transaction(|tx| {
+            studio_runtime_store::NotificationDispatchRepository::transcript_item(
+                tx,
+                "agent",
+                "agent:answer",
+            )
+        })
+        .await
+        .expect("transcript read")
+        .expect("answer transcript");
+    assert_eq!(record["text"], "beforeafter");
+    // Exact journal replay leaves the committed buffer untouched even with stale cache input.
+    let replay = journal(
+        &store,
+        committed,
+        vec![entry(
+            2,
+            json!({"method":"item/agentMessage/delta","params":{"threadId":"thread",
+            "turnId":"turn","itemId":"answer","delta":"after"}}),
+        )],
+    )
+    .await;
+    assert_eq!(
+        replay,
+        store::restore_streams(&store, "default")
+            .await
+            .expect("durable streams")
+    );
+}

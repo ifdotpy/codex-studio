@@ -1582,11 +1582,15 @@ pub(super) async fn journal_batch(
     let journal_scope = journal_scope.to_owned();
     let claude_account_pin = claude_account_pin.clone();
     let expected_vm_actor = expected_vm_actor.map(|(actor, epoch)| (actor.to_owned(), epoch));
-    let streams = streams.clone();
     let state_root = store.root().to_path_buf();
     let server_id = store.local_server_id()?;
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let server_id = server_id.as_deref();
+        // Recovery commits streams from a background task. Its cache handoff
+        // can arrive after newer journal entries, so the writer transaction
+        // owns the baseline, including the publication sequence and pending text.
+        // A stale cache would reuse a receipt identity with different effects.
+        let streams = load_streams(tx, &account)?;
         let mut faults = Vec::new();
         // Before this batch's receipts are counted against their bound.
         delete_delivered_publications(tx, &delivered)?;
