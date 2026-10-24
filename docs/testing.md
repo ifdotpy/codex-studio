@@ -236,8 +236,9 @@ The canary supports two explicit sources:
 
 - File mode: an existing private `.credentials.json` in `~/.config/codex-studio/canary-claude`, or a directory below it.
   This mode still denies Keychain access.
-- Keychain mode: a new full native login in `~/.config/codex-studio/canary-claude-keychain/native`.
-  Use `--claude-keychain`, or set `CANARY_CLAUDE_KEYCHAIN=1` for the command that invokes the canary.
+- Keychain mode: a fresh native profile from the existing Studio Add Claude dialog.
+  The canary requires a reservation from before that profile exists.
+  Use `--claude-keychain` with `--claude-reservation`, or set both environment variables in the example below.
   `CANARY_CLAUDE_KEYCHAIN=0`, or an unset variable, keeps Keychain access disabled.
   Profile existence never enables this mode.
 
@@ -247,35 +248,59 @@ This permission does not restrict Keychain access to one service label.
 The native CLI selects its separate service from the exact private profile path.
 Do not treat this mode as Keychain isolation from a provider process.
 
-Prepare the private profile without starting a login:
+Create the reservation before you start Add Claude:
 
 ```sh
-node workspaces/tooling/apps/upgrade-canary/claude-login.mjs --prepare
+node workspaces/tooling/apps/upgrade-canary/claude-login.mjs --reserve \
+  --record "$HOME/.config/codex-studio/canary-claude-keychain/studio-add.json"
 ```
 
-Start a fresh full subscription login with the absolute native Claude executable path:
+1. Open Studio Settings, Accounts, Add account.
+2. Select Claude.
+3. Enter a separate test name, such as `Upgrade canary`.
+4. Complete the existing sign-in flow with the intended subscription.
+5. Wait for `Signed in as` and a ready Add receipt.
+6. Record the Add receipt's `requestId` as `LOGIN_UUID`.
+7. Delete only this fresh profile from the Studio account list.
+
+Studio stores the Add receipt in `<live-state>/claude-logins/<LOGIN_UUID>.json`.
+The account-list deletion preserves native credentials and history.
+It excludes this profile from new chats and the account auth watcher.
+Studio can start an SDK process for account metadata before any chat exists.
+A closed metadata handle does not prove model input.
+Admission still refuses every chat, execution, usage, or transfer footprint and every active matching handle.
+
+Bind the exact fresh profile after its metadata process exits:
 
 ```sh
-node workspaces/tooling/apps/upgrade-canary/claude-login.mjs --login --claude /absolute/path/to/claude
+node workspaces/tooling/apps/upgrade-canary/claude-login.mjs --bind \
+  --login-id LOGIN_UUID \
+  --record "$HOME/.config/codex-studio/canary-claude-keychain/studio-add.json"
 ```
 
-The native CLI can open the browser for authorization. The login sandbox permits an ephemeral local OAuth callback.
-Its outbound traffic still uses the canary allowlist proxy. The helper never reads credential values or changes global Keychain settings.
-It does not run `setup-token`, copy a login, or pass a token through command arguments.
-After a lost login result, inspect the canary result before starting another login. The helper does not retry authentication automatically.
+If Studio uses another state directory, pass its exact path with `--live-state` to both commands.
+The helper reads only application metadata.
+It does not start authentication, read credentials, copy a profile, or change Keychain settings.
+A repeated reservation keeps its original baseline.
+An incomplete baseline or changed identity refuses admission.
+The helper checks indexed metadata and bounded new rows, not historical transcript bodies.
 
 Run the upgrade check with the explicit mode:
 
 ```sh
-CANARY_CLAUDE_KEYCHAIN=1 just upgrade-canary --to /absolute/path/to/Build.app
+CANARY_CLAUDE_KEYCHAIN=1 \
+CANARY_CLAUDE_RESERVATION="$HOME/.config/codex-studio/canary-claude-keychain/studio-add.json" \
+  just upgrade-canary --to /absolute/path/to/Build.app
 ```
 
-Use the same environment opt-in for `just deliver-server` when it runs the upgrade canary.
+Use both environment variables for `just deliver-server` when it runs the upgrade canary.
 The helper, registry, and provider environment use the same exact path for `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR`.
 Do not copy, rename, or alias the profile. Native Keychain service identity depends on this path text.
-The helper creates `canary-auth.json` with its version, owner ID, exact path, and `native-keychain` source.
-An existing unmarked directory, symbolic link, another owner, or nonprivate profile directory is refused.
-Custom `--config` and `--claude-config` paths must stay inside the corresponding canary namespace.
+The reservation binds the state directory, Add receipt, profile, account, and native executable.
+The canary checks this evidence again before it starts.
+Only this exact profile can receive writes inside the live state directory.
+Existing profiles, symbolic links, another owner, or nonprivate profile directories refuse admission.
+File-mode `--claude-config` paths must stay inside the separate file-mode namespace.
 The runtime still requires native account email and subscription proof before it submits model input.
 
 ## Add or move a test
