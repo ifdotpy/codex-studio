@@ -212,20 +212,30 @@ impl ResourceNotifications {
             } else {
                 state.resource_revision(&key)
             };
-            let version = match scope.kind {
-                // Discovery reads refresh volatile access timestamps; only its
-                // explicit publications may advance this semantic cursor.
-                ResourceKind::MultiServer => explicit,
-                ResourceKind::State
-                | ResourceKind::Transcript
-                | ResourceKind::Transcripts
-                | ResourceKind::Room
-                | ResourceKind::Task
-                | ResourceKind::Tasks
-                | ResourceKind::Workspace => explicit
+            let entity_view = resource["kind"].as_str().is_some_and(|kind| {
+                studio_runtime_schema::sync_protocol::subscription_entity_scopes()
+                    .contains_key(kind)
+            });
+            let version = if entity_view {
+                explicit
                     .max(cursor.resource_revision)
-                    .max(state.entity_revision),
-                ResourceKind::Other => explicit.max(cursor.resource_revision),
+                    .max(state.entity_revision)
+            } else {
+                match scope.kind {
+                    // Discovery reads refresh volatile access timestamps; only its
+                    // explicit publications may advance this semantic cursor.
+                    ResourceKind::MultiServer => explicit,
+                    ResourceKind::State
+                    | ResourceKind::Transcript
+                    | ResourceKind::Transcripts
+                    | ResourceKind::Room
+                    | ResourceKind::Task
+                    | ResourceKind::Tasks
+                    | ResourceKind::Workspace => explicit
+                        .max(cursor.resource_revision)
+                        .max(state.entity_revision),
+                    ResourceKind::Other => explicit.max(cursor.resource_revision),
+                }
             };
             if after.is_none_or(|revision| version > revision) || overflow {
                 selected.push(resource.clone());

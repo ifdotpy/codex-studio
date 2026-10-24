@@ -9,6 +9,60 @@ pub const SYNC_PROTOCOL_VERSION_TEXT: &str = "4";
 /// Scope name of the sync entity stream.
 pub const SYNC_ENTITY_SCOPE: &str = "state:entities:v1";
 
+/// One resource's entity selection, owned by OpenAPI resource schema extensions.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionEntityScope {
+    pub collections: Vec<String>,
+    pub id_field: Option<String>,
+    pub agent_field: Option<String>,
+}
+
+/// Parse the same generated scope metadata used by renderer snapshot replacement.
+pub fn subscription_entity_scopes()
+-> &'static std::collections::BTreeMap<String, SubscriptionEntityScope> {
+    static SCOPES: std::sync::OnceLock<
+        std::collections::BTreeMap<String, SubscriptionEntityScope>,
+    > = std::sync::OnceLock::new();
+    SCOPES.get_or_init(|| {
+        let document: serde_json::Value =
+            serde_json::from_slice(crate::OPENAPI).expect("committed OpenAPI parses");
+        entity_scopes_from_document(&document).expect("committed subscription scopes are valid")
+    })
+}
+
+pub(crate) fn entity_scopes_from_document(
+    document: &serde_json::Value,
+) -> Result<std::collections::BTreeMap<String, SubscriptionEntityScope>, String> {
+    let schemas = &document["components"]["schemas"];
+    let mapping = schemas["ResourceRef"]["discriminator"]["mapping"]
+        .as_object()
+        .ok_or("ResourceRef mapping missing")?;
+    let mut scopes = std::collections::BTreeMap::new();
+    for (kind, reference) in mapping {
+        let name = reference
+            .as_str()
+            .and_then(|v| v.rsplit('/').next())
+            .ok_or("resource schema missing")?;
+        if let Some(scope) = schemas[name].get("x-studio-entity-scope") {
+            scopes.insert(
+                kind.clone(),
+                serde_json::from_value(scope.clone()).map_err(|error| error.to_string())?,
+            );
+        }
+    }
+    Ok(scopes)
+}
+
+/// Serialized global collection set. SQL readers filter before LIMIT.
+pub fn global_entity_collections_json() -> &'static str {
+    static COLLECTIONS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    COLLECTIONS.get_or_init(|| {
+        serde_json::to_string(&subscription_entity_scopes()["state"].collections)
+            .expect("collections serialize")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

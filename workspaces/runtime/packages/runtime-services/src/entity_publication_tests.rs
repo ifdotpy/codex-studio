@@ -26,7 +26,24 @@ async fn agent_projections_publish_together_and_summary_skips_detail_changes() {
     assert!(summary.get("tail").is_none());
     assert!(summary.get("commandProgress").is_none());
     assert_eq!(detail["lastAnswer"], "Answer");
-    write(&store, "UPDATE runtime_agents SET record=json_set(record,'$.lastAnswer','New answer','$.tail','New output') WHERE id=?1", vec![CHAT.into()]).await;
+    store
+        .transaction_with(|tx| {
+            let mut record = AgentRepository::get(tx, &studio_runtime_store::AgentId::from(CHAT))?
+                .expect("agent exists")
+                .value();
+            record["lastAnswer"] = json!("New answer");
+            record["tail"] = json!("New output");
+            AgentRepository::put(tx, &AgentRecord::from_value(record)?)?;
+            crate::agents_create::publish_agent(
+                tx,
+                &AgentRepository::get(tx, &studio_runtime_store::AgentId::from(CHAT))?
+                    .expect("agent")
+                    .value(),
+            )?;
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .expect("volatile output published through caller");
     assert_eq!(
         client_entity(&store, "agentSummary", CHAT)
             .expect("summary")

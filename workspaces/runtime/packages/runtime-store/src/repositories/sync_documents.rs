@@ -171,6 +171,50 @@ impl SyncDocumentsRepository {
         reset_support: bool,
         priority_id: Option<&str>,
     ) -> StoreResult<EntityPage> {
+        Self::pull_entity_view(
+            transaction,
+            after,
+            limit,
+            fresh,
+            initial_high,
+            reset_support,
+            priority_id,
+            None,
+        )
+    }
+
+    /// The global list view; panels enter the cache only through scoped subscriptions.
+    pub fn pull_global_entities(
+        transaction: &Transaction<'_>,
+        after: i64,
+        limit: i64,
+        fresh: bool,
+        initial_high: i64,
+        reset_support: bool,
+        priority_id: Option<&str>,
+    ) -> StoreResult<EntityPage> {
+        Self::pull_entity_view(
+            transaction,
+            after,
+            limit,
+            fresh,
+            initial_high,
+            reset_support,
+            priority_id,
+            Some(studio_runtime_schema::sync_protocol::global_entity_collections_json()),
+        )
+    }
+
+    fn pull_entity_view(
+        transaction: &Transaction<'_>,
+        after: i64,
+        limit: i64,
+        fresh: bool,
+        initial_high: i64,
+        reset_support: bool,
+        priority_id: Option<&str>,
+        collections: Option<&str>,
+    ) -> StoreResult<EntityPage> {
         let tombstone_floor = Self::entity_tombstone_floor(transaction)?;
         let stored_max = transaction.query_row_cached(
             "SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection NOT LIKE 'transcript:%'",
@@ -210,6 +254,7 @@ impl SyncDocumentsRepository {
             initial_high,
             priority_id,
             limit,
+            collections,
         )?;
         let checkpoint = if rows.len() as i64 == limit {
             rows.last().map_or(after, |row| row.sequence)
@@ -237,6 +282,26 @@ impl SyncDocumentsRepository {
         id: Option<&str>,
         limit: i64,
     ) -> StoreResult<EntityPage> {
+        Self::resume_entity_scope(
+            transaction,
+            since,
+            collection.map(|c| json!([c]).to_string()).as_deref(),
+            id,
+            None,
+            limit,
+        )
+    }
+
+    /// Read a view's selected collections and optional row/agent identity. Scope
+    /// filters run in SQL before the page bound, including for tombstones.
+    pub fn resume_entity_scope(
+        transaction: &Transaction<'_>,
+        since: Option<i64>,
+        collections_json: Option<&str>,
+        id: Option<&str>,
+        agent: Option<&str>,
+        limit: i64,
+    ) -> StoreResult<EntityPage> {
         let tombstone_floor = Self::entity_tombstone_floor(transaction)?;
         let max_sequence = Self::entity_sequence(transaction)?.max(tombstone_floor);
         let reset = since.is_none_or(|seq| seq < tombstone_floor || seq > max_sequence || seq < 0);
@@ -245,18 +310,20 @@ impl SyncDocumentsRepository {
         let mut statement = transaction.prepare_cached(
             "SELECT collection,id,seq,payload,deleted FROM sync_entities \
              WHERE collection NOT LIKE 'transcript:%' AND seq>?1 AND seq<=?2 \
-               AND (?3 IS NULL OR collection=?3) AND (?4 IS NULL OR id=?4) \
-               AND (?5=0 OR deleted=0) ORDER BY seq LIMIT ?6",
+               AND (?3 IS NULL OR collection IN (SELECT value FROM json_each(?3))) AND (?4 IS NULL OR id=?4) \
+               AND (?5=0 OR deleted=0) AND (?7 IS NULL OR json_extract(payload,'$.value.agent')=?7 \
+                    OR json_extract(payload,'$.value.rootId')=?7 OR deleted=1) ORDER BY seq LIMIT ?6",
         )?;
         let mut rows = statement
             .query_map(
                 params![
                     after,
                     max_sequence,
-                    collection,
+                    collections_json,
                     id,
                     i64::from(reset),
-                    limit + 1
+                    limit + 1,
+                    agent
                 ],
                 entity_row,
             )?
@@ -635,12 +702,13 @@ fn read_entity_page(
     initial_high: i64,
     priority_id: Option<&str>,
     limit: i64,
+    collections: Option<&str>,
 ) -> StoreResult<Vec<EntityRow>> {
     let mut statement = transaction.prepare_cached(
         "SELECT collection,id,seq,payload,deleted FROM sync_entities \
-         WHERE collection NOT LIKE 'transcript:%' AND seq>?1 \
+         WHERE collection NOT LIKE 'transcript:%' AND (?7 IS NULL OR collection IN (SELECT value FROM json_each(?7))) AND seq>?1 \
            AND (deleted=0 OR seq>?2) AND (?3=0 OR deleted=0 OR seq>?4) \
-         ORDER BY CASE WHEN ?5 IS NOT NULL AND collection='agent' AND id=?5 THEN 0 ELSE 1 END,seq LIMIT ?6",
+         ORDER BY CASE WHEN ?5 IS NOT NULL AND collection='agentSummary' AND id=?5 THEN 0 ELSE 1 END,seq LIMIT ?6",
     )?;
     statement
         .query_map(
@@ -650,7 +718,8 @@ fn read_entity_page(
                 i64::from(fresh),
                 initial_high,
                 priority_id,
-                limit
+                limit,
+                collections
             ],
             entity_row,
         )?

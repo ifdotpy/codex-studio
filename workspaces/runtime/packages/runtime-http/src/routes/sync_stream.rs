@@ -675,13 +675,44 @@ async fn read_entity_changes(
             if !(0..=MAX_SAFE_REVISION).contains(&sequence) {
                 return Err(ApiError::internal());
             }
-            let batch = entity_change_batch(connection, after, floor, sequence);
+            let batch = match after {
+                Some(after) if after >= floor && after < sequence => {
+                    SyncDocumentsRepository::resume_entity_scope(
+                        connection,
+                        Some(after),
+                        Some(
+                            studio_runtime_schema::sync_protocol::global_entity_collections_json(),
+                        ),
+                        None,
+                        None,
+                        SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+                    )
+                    .ok()
+                    .and_then(|page| {
+                        if page.checkpoint < page.max_sequence {
+                            return None;
+                        }
+                        let documents = page
+                            .rows
+                            .iter()
+                            .map(super::sync_documents::entity_document)
+                            .collect::<Option<Vec<_>>>()?;
+                        Some(EntityChangeBatch {
+                            after,
+                            through: sequence,
+                            documents,
+                        })
+                    })
+                }
+                _ => None,
+            };
             Ok((sequence, batch))
         })
         .await
 }
 
 /// Convert the complete record interval; final SSE serialization owns the byte limit.
+#[cfg(test)]
 fn entity_change_batch(
     connection: &Connection,
     after: Option<i64>,

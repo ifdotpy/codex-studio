@@ -1041,6 +1041,54 @@ mod tests {
     }
 
     #[test]
+    fn view_scopes_cover_every_collection_and_keep_detail_out_of_global() {
+        let openapi: serde_json::Value = serde_json::from_slice(super::OPENAPI).expect("OpenAPI");
+        let scopes = super::sync_protocol::subscription_entity_scopes();
+        let global = &scopes["state"].collections;
+        assert!(global.iter().any(|value| value == "agentSummary"));
+        for collection in [
+            "agent",
+            "agentDetail",
+            "task",
+            "monitor",
+            "sessionCost",
+            "accountCost",
+            "desktop",
+            "terminal",
+        ] {
+            assert!(
+                !global.iter().any(|value| value == collection),
+                "{collection} must be scoped"
+            );
+        }
+        for collection in
+            openapi["components"]["schemas"]["SyncEntityPayload"]["discriminator"]["mapping"]
+                .as_object()
+                .expect("owner")
+                .keys()
+        {
+            assert!(
+                collection == "agent"
+                    || scopes
+                        .values()
+                        .any(|scope| scope.collections.contains(collection)),
+                "{collection} has no subscription owner"
+            );
+        }
+        let summary = &openapi["components"]["schemas"]["AgentSummaryEntityDto"]["properties"];
+        for field in [
+            "lastAnswer",
+            "tail",
+            "overview",
+            "commandProgress",
+            "contextUsage",
+            "tokensUsed",
+        ] {
+            assert!(summary.get(field).is_none(), "{field} is detail");
+        }
+    }
+
+    #[test]
     fn preparing_named_schemas_does_not_compile_validators() {
         let mut schemas = super::prepare_schemas().expect("registry prepares");
         assert!(

@@ -299,6 +299,33 @@ pub(crate) fn pending(
             _ => false,
         };
     }
+    // Request attention belongs in summaries even when an explicit request
+    // publisher has already consumed the card's own pending publication.
+    for ((source, _), id) in &ids {
+        if *source != Source::Request {
+            continue;
+        }
+        if let Some(id) = id {
+            if let Some(agent) = transaction
+                .query_row(
+                    "SELECT json_extract(record,'$.agent') FROM runtime_requests WHERE id=?1",
+                    [id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten()
+            {
+                pending.agents.insert(agent);
+            }
+        } else {
+            let mut statement = transaction.prepare(
+                "SELECT id FROM sync_entities WHERE collection='agentSummary' AND deleted=0",
+            )?;
+            for row in statement.query_map([], |row| row.get::<_, String>(0))? {
+                pending.agents.insert(row?);
+            }
+        }
+    }
     let mut changed: BTreeMap<(Source, String), usize> = BTreeMap::new();
     let mut published: HashMap<(Source, String), usize> = HashMap::new();
     for (index, event) in events.into_iter().enumerate() {

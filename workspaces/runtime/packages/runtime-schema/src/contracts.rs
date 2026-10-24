@@ -729,7 +729,15 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         }
     }
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
+    let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: web("subscriptionEntities.ts"),
+            text: format!(
+                "// {HEADER}\nexport const SUBSCRIPTION_ENTITY_SCOPES = {} as const;\n",
+                serde_json::to_string_pretty(&scopes).map_err(|error| error.to_string())?
+            ),
+        },
         Rendered {
             path: web("taskReview.ts"),
             text: format!(

@@ -706,7 +706,7 @@ fn pull_entities(
             },
         )?;
     }
-    let mut page = SyncDocumentsRepository::pull_entities(
+    let mut page = SyncDocumentsRepository::pull_global_entities(
         transaction,
         after,
         limit,
@@ -779,7 +779,7 @@ fn pull_entities(
             break;
         }
         scan_after = next_after;
-        page = SyncDocumentsRepository::pull_entities(
+        page = SyncDocumentsRepository::pull_global_entities(
             transaction,
             next_after,
             limit,

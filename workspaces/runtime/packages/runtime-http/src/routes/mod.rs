@@ -45,6 +45,7 @@ mod retained_worktrees;
 mod rules;
 mod session;
 mod studio_errors;
+mod subscription_entities;
 mod subscriptions;
 mod sync;
 mod sync_delta;

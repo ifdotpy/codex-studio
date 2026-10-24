@@ -314,6 +314,8 @@ pub struct AgentViewContext {
     pub project_server_id: Option<String>,
     pub launcher_alive: bool,
     pub empty_lead: bool,
+    pub has_question: bool,
+    pub has_approval: bool,
     pub latest_work_result_file: Option<String>,
     pub command_progress: Vec<studio_runtime_schema::agent_progress::AgentCommandProgress>,
     pub stall: Option<studio_runtime_schema::agent_progress::AgentStall>,
@@ -445,6 +447,12 @@ pub fn agent_entity_view(record: &Value, context: &AgentViewContext) -> Option<V
     );
     view.insert("nextTurnSettingsSupported".to_owned(), Value::Bool(true));
     view.insert("readStateSupported".to_owned(), Value::Bool(true));
+    view.insert("hasQuestion".to_owned(), Value::Bool(context.has_question));
+    view.insert("hasApproval".to_owned(), Value::Bool(context.has_approval));
+    view.insert(
+        "hasBackgroundWork".to_owned(),
+        Value::Bool(!context.command_progress.is_empty()),
+    );
     if let Some(block) = block {
         view.insert("nativeThreadBlock".to_owned(), block);
     } else {
