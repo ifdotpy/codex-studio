@@ -196,11 +196,12 @@ async fn installed_binary_starts_without_python_or_a_source_tree() {
         .unwrap()
         .parse::<u16>()
         .unwrap();
+    let protocol = studio_runtime_schema::sync_protocol::SYNC_PROTOCOL_VERSION;
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     stream
         .write_all(
             format!(
-                "GET /api/sync/stream?protocol=3&resources=%5B%7B%22kind%22%3A%22accounts%22%7D%5D HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n"
+                "GET /api/sync/stream?protocol={protocol}&resources=%5B%7B%22kind%22%3A%22accounts%22%7D%5D HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n"
             )
             .as_bytes(),
         )
