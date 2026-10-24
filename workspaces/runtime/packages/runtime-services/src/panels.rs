@@ -31,6 +31,5 @@ pub fn make_profile(
         model: model.to_owned(),
         effort,
         instructions: instructions.trim().to_owned(),
-        capabilities: Default::default(),
     })
 }

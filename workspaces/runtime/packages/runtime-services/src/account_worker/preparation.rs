@@ -54,15 +54,6 @@ pub(crate) struct PreparedReviewThread {
     attempt: Box<crate::thread_prepare::PreparedAttempt>,
 }
 impl PreparedReviewThread {
-    pub(crate) fn mcp_servers(&self) -> Option<Vec<String>> {
-        self.attempt
-            .snapshot
-            .guidance
-            .thread_config
-            .get("mcp_servers")
-            .and_then(serde_json::Value::as_object)
-            .map(|servers| servers.keys().cloned().collect())
-    }
     pub(crate) fn cwd(&self) -> &str {
         &self.attempt.snapshot.actor.cwd
     }

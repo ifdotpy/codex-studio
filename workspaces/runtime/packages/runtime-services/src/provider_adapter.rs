@@ -383,12 +383,6 @@ impl ProviderAdapter for ClaudeAdapter {
             options.insert("env".into(), json!(environment));
         }
         params.insert("claude".into(), json!(options));
-        if s.settings.capability_profile != Default::default() {
-            params.insert(
-                "capabilityProfile".into(),
-                json!(s.settings.capability_profile),
-            );
-        }
         // A managed worker (a child agent) runs without the user's MCP servers.
         if s.actor.parent_id.is_some() {
             params.insert("userMcp".into(), json!(false));

@@ -68,8 +68,6 @@ pub struct Settings {
     pub fast_mode: bool,
     pub yolo_mode: Option<bool>,
     pub profile_instructions: String,
-    #[serde(default)]
-    pub capability_profile: studio_runtime_schema::worker_capabilities::WorkerCapabilities,
     pub role: Role,
     pub is_lead: bool,
     pub needs_title: bool,

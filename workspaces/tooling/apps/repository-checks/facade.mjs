@@ -1812,7 +1812,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "task authority, worker limits, and Claude input witnesses",
+      label: "task authority and Claude input witnesses",
       commands: [
         [
           "cargo",
@@ -1832,15 +1832,15 @@ function fastTierCommands(root) {
             "studio-runtime-schema",
             "--lib",
             "-E",
-            "test(authenticated_task_caller_) | test(acceptance_gate_) | test(task_result_schema) | test(capability_) | test(claude_child_) | test(workspace_fence) | test(input_origin) | test(stop_receipt_) | test(live_limits_) | test(archive_keeps_submodule) | test(turn_prepare::budget_tests::)",
+            "test(authenticated_task_caller_) | test(acceptance_gate_) | test(task_result_schema) | test(claude_child_) | test(workspace_fence) | test(input_origin) | test(stop_receipt_) | test(live_limits_) | test(archive_keeps_submodule) | test(turn_prepare::budget_tests::)",
           ],
         ],
       ],
       options: {
         selector:
-          "task authority, acceptance gates, worker capability limits, and Claude input provenance",
+          "task authority, acceptance gates, and Claude input provenance",
         reason:
-          "Check that workers cannot act as the lead, gates and limits hold, and Claude input keeps its origin and queue receipts.",
+          "Check that workers cannot act as the lead, gates hold, and Claude input keeps its origin and queue receipts.",
       },
     },
     {
