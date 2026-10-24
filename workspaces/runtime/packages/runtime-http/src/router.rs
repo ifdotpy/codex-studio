@@ -1444,7 +1444,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_compiles_registered_validators_and_matches_python_methods() {
+    async fn startup_compiles_registered_validators_and_enforces_documented_methods() {
         let (state, _directory) = state();
         let app = router(state).expect("router and registered OpenAPI validators start");
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
@@ -1970,7 +1970,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn boundary_accepts_each_python_body_limit_and_rejects_the_next_byte() {
+    async fn boundary_accepts_each_route_body_limit_and_rejects_the_next_byte() {
         let cases = [
             ("/api/agents", r#"{"prompt":"x"}"#, 256 * 1024),
             (
@@ -1996,11 +1996,8 @@ mod tests {
         ];
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         for (path, valid_json, limit) in cases {
-            let (state, _directory) = state();
-            let app = router(state).expect("router starts");
-            // At the exact limit, assert the size layer accepts the body and let
-            // the route return its fixture-dependent status. One byte above the
-            // limit must be rejected by the size layer with 413.
+            let (app, _directory) = probe_app(&[("POST", path)]);
+            // The probe must return the validated body at the exact limit.
             for (length, over_limit) in [(limit, false), (limit + 1, true)] {
                 let opaque_scans_before = crate::validation::opaque_body_scan_count();
                 let mut body = Vec::with_capacity(length);
@@ -2028,10 +2025,14 @@ mod tests {
                         "{path} with {length} bytes"
                     );
                 } else {
-                    assert_ne!(
-                        response.status(),
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "size layer rejected {path} at its {limit}-byte limit"
+                    assert_eq!(response.status(), StatusCode::OK, "{path} at {limit} bytes");
+                    let bytes = to_bytes(response.into_body(), 4096)
+                        .await
+                        .expect("probe response");
+                    let value: Value = serde_json::from_slice(&bytes).expect("probe JSON");
+                    assert_eq!(
+                        value["body"],
+                        serde_json::from_str::<Value>(valid_json).expect("valid fixture JSON")
                     );
                 }
                 if path == "/api/assets" && length == limit {

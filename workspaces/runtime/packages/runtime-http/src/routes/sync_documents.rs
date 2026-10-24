@@ -1344,6 +1344,7 @@ mod vault_maintenance_tests {
 
     #[tokio::test]
     async fn canceled_maintenance_response_keeps_the_projection_lock_until_commit_and_mark() {
+        use futures_util::FutureExt;
         let (_directory, store, _project, validators, state_dir) = maintenance_fixture().await;
         let state = Arc::new(crate::router::HttpState::new(
             "token".to_owned(),
@@ -1417,55 +1418,38 @@ mod vault_maintenance_tests {
             Err(error) if error.is_cancelled()
         ));
 
-        let (second_started_tx, second_started_rx) = tokio::sync::oneshot::channel();
-        let (second_reached_tx, second_reached_rx) = tokio::sync::oneshot::channel();
-        let second_store = store.clone();
-        let second_validators = validators.clone();
-        let second_state_dir = state_dir.clone();
-        let second = tokio::spawn(async move {
-            second_started_tx
-                .send(())
-                .expect("test waits for second maintenance start");
-            let mut second_reached_tx = Some(second_reached_tx);
-            pull_with_maintenance(
-                second_store,
-                second_state_dir,
-                second_validators,
-                0,
-                100,
-                false,
-                0,
-                false,
-                None,
-                0,
-                move || -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-                    let reached = second_reached_tx.take();
-                    Box::pin(async move {
-                        if let Some(reached) = reached {
-                            reached
-                                .send(())
-                                .expect("test waits for the second preparation gate");
-                        }
-                    })
-                },
-            )
-            .await
-        });
-        second_started_rx
-            .await
-            .expect("second maintenance starts while the first is retained");
+        // The first tracked operation is held inside maintenance. Poll the
+        // actual mutex, so Pending proves retention at that boundary.
         assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), second_reached_rx)
-                .await
-                .is_err(),
-            "second preparation must not pass the lock while the first commit is pending"
+            store
+                .lock_entity_projection_maintenance()
+                .now_or_never()
+                .is_none(),
+            "cancelling the response must retain the projection lock"
+        );
+        let second = pull_with_maintenance(
+            store.clone(),
+            state_dir,
+            validators,
+            0,
+            100,
+            false,
+            0,
+            false,
+            None,
+            0,
+            || Box::pin(async {}),
+        );
+        tokio::pin!(second);
+        assert!(
+            second.as_mut().now_or_never().is_none(),
+            "second preparation waits for the retained lock"
         );
         release_first_tx
             .send(())
             .expect("first maintenance is still waiting");
         second
             .await
-            .expect("second maintenance task completes")
             .expect("second pull succeeds after the first maintenance commits");
         state.shutdown_mutations().await;
     }

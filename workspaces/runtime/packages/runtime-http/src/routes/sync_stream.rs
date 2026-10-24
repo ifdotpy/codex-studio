@@ -2801,19 +2801,28 @@ mod tests {
         assert_eq!(batch["through"], event["resourceVersions"][0]["revision"]);
         state.next_resources_frame_at = None;
         http.resource_notifications.publish_once(&json!({"requestId":"preflush-empty","resources":[{"kind":"transcript","agentId":"open"}]})).expect("scoped preflush hint");
-        let mut pending = Box::pin(next_frame(state));
+        let updates = read_transcript_changes(
+            Some(store.clone()),
+            &state.resources,
+            &mut state.transcript_sequences,
+            true,
+        )
+        .await;
+        assert!(matches!(updates["open"], TranscriptStreamUpdate::Unchanged));
+        let mut unchanged_event: ResourceChangeEvent =
+            serde_json::from_value(event).expect("event DTO");
+        attach_transcript_changes(&mut unchanged_event, updates);
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), pending.as_mut())
-                .await
-                .is_err(),
-            "a proven unchanged transcript must emit no pull hint"
+            unchanged_event.resources.is_empty(),
+            "an unchanged transcript emits no pull hint"
         );
+        assert!(unchanged_event.resource_versions.is_empty());
         store.transaction(|tx| {
             tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','flushed after hint') WHERE id='open:answer'", [])?;
             Ok(())
         }).await.expect("later stored flush");
         http.sync_changes.notify_one();
-        let (event, _) = pending.await.expect("later changed transcript");
+        let (event, _) = next_frame(state).await.expect("later changed transcript");
         assert_eq!(
             event_document(event).await["resourceVersions"][0]["transcriptChanges"]["delta"]["items"]
                 [0]["text"],
