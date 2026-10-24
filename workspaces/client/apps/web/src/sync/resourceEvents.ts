@@ -51,6 +51,8 @@ export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
 
 export type ResourceVersion = {
+  /** Transient subscribed value; never sent through the entity persister. */
+  progress?: ResourceProgress;
   epoch: string;
   revision: number;
   reason?: ResourceChangeEvent["reason"];
@@ -63,6 +65,11 @@ export type ResourceVersion = {
   entitySequenceReset?: boolean;
 };
 
+export type ResourceProgressEvent =
+  components["schemas"]["ResourceProgressEvent"];
+export type ResourceProgress =
+  | Pick<components["schemas"]["AuthProgressEvent"], "resource" | "value">
+  | Pick<components["schemas"]["VaultReadinessEvent"], "resource" | "value">;
 type Version = ResourceVersion;
 
 export type ResourceConnectionState =
@@ -128,6 +135,12 @@ type TabMessage = (
   | TabSubscriptions
   | TabEvent
   | TabTokenRates
+  | {
+      kind: "resource-progress";
+      workspaceId: string;
+      tabId: string;
+      event: unknown;
+    }
   | TabHeartbeat
   | LeaderHeartbeat
   | TabStatus
@@ -143,6 +156,7 @@ type OutgoingMessage =
     }
   | { kind: "resource-event"; event: ResourceChangeEvent }
   | { kind: "token-rates"; event: ResourceTokenRatesEvent }
+  | { kind: "resource-progress"; event: ResourceProgressEvent }
   | { kind: "tab-heartbeat" }
   | { kind: "leader-heartbeat" }
   | { kind: "discover-subscriptions" }
@@ -319,6 +333,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   let pendingBaselines = new Set<string>();
 
   let pendingReset = false;
+  const progressValues = new Map<string, ResourceProgressEvent>();
 
   let currentStatus: ResourceConnectionState = "connecting";
 
@@ -551,6 +566,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       lastTokenRevision = undefined;
       lastTokenEvent = undefined;
       resourceValues.clear();
+      progressValues.clear();
       deliveredEntitySequenceBatches.clear();
     }
     const staleRevision =
@@ -697,9 +713,16 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   }
 
   function flushResourceChanges() {
+    // Detach this event before invoking listeners: a listener may synchronously
+    // deliver another frame, which must retain its own publication and order.
+    const reset = pendingReset;
+    const resources = pendingResources;
+    const baselines = pendingBaselines;
+    pendingReset = false;
+    pendingResources = new Set();
+    pendingBaselines = new Set();
     try {
-      if (pendingReset) {
-        pendingReset = false;
+      if (reset) {
         const subscribed = new Set(aggregateResources().map(resourceKey));
         for (const [key, listeners] of subscribers) {
           if (subscribed.has(key)) {
@@ -707,25 +730,21 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             for (const listener of listeners) listener(version);
           }
         }
-        pendingResources = new Set();
-        pendingBaselines = new Set();
       } else {
         const delivered = new Set<string>();
-        for (const key of pendingResources) {
+        for (const key of resources) {
           const version = resourceValues.get(key);
           if (!version) continue;
           for (const listener of subscribers.get(key) || []) listener(version);
           delivered.add(key);
         }
-        for (const key of pendingBaselines) {
+        for (const key of baselines) {
           if (delivered.has(key)) continue;
           const version = resourceValues.get(key);
           if (!version) continue;
           for (const listener of baselineSubscribers.get(key) || [])
             listener(version);
         }
-        pendingResources = new Set();
-        pendingBaselines = new Set();
       }
       retryCount = 0;
     } catch (error) {
@@ -743,6 +762,62 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         generation === subscriptionGeneration,
     );
   }, dispatchEvent);
+
+  function receiveResourceProgress(value: unknown, fromPeer = false) {
+    if (!hasRevisionFrame(value))
+      throw new TypeError("Invalid resource progress frame");
+    const candidate = value as unknown as Record<string, unknown>;
+    const resource = candidate.resource as ResourceRef | undefined;
+    if (
+      !resource ||
+      (resource.kind !== "auth-progress" && resource.kind !== "vault-readiness")
+    )
+      throw new TypeError("Invalid progress resource");
+    if (resource.kind === "auth-progress") {
+      const receipt = candidate.value as Record<string, unknown> | null;
+      if (
+        typeof resource.requestId !== "string" ||
+        (receipt !== null &&
+          (!receipt ||
+            receipt.requestId !== resource.requestId ||
+            typeof receipt.accountKey !== "string" ||
+            !["starting", "pending", "ready", "error", "cancelled"].includes(
+              String(receipt.status),
+            )))
+      )
+        throw new TypeError("Invalid auth progress");
+    } else if (
+      typeof resource.prefix !== "string" ||
+      typeof candidate.value !== "boolean"
+    ) {
+      throw new TypeError("Invalid vault readiness");
+    }
+    const event = value as ResourceProgressEvent;
+    if (
+      event.workspaceId !== workspaceId ||
+      (lastEpoch && event.epoch !== lastEpoch)
+    )
+      return;
+    if (fromPeer && (owner || independent)) return;
+    const key = resourceKey(resource);
+    const active = new Set(aggregateResources().map(resourceKey));
+    if (!active.has(key) || (!fromPeer && !acceptedResources.has(key))) return;
+    const previous = progressValues.get(key);
+    if (previous?.epoch === event.epoch && previous.revision > event.revision)
+      return;
+    progressValues.set(key, event);
+    const version: ResourceVersion = {
+      epoch: event.epoch,
+      revision: event.revision,
+      progress: {
+        resource: event.resource,
+        value: event.value,
+      } as ResourceProgress,
+    };
+    for (const listener of subscribers.get(key) ?? []) listener(version);
+    if (!fromPeer) refreshHeartbeatTimeout();
+    if (owner || independent) broadcast({ kind: "resource-progress", event });
+  }
 
   function receiveResourceEvent(value: unknown, fromPeer = false) {
     if (!hasRevisionFrame(value) || !Array.isArray(value.resources))
@@ -868,6 +943,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       announceSubscriptions(true);
     } else if (record.kind === "resource-event") {
       receiveResourceEvent(record.event, true);
+    } else if (record.kind === "resource-progress") {
+      receiveResourceProgress(record.event, true);
     } else if (record.kind === "token-rates") {
       receiveTokenRateEvent(record.event, true);
     } else if (
@@ -891,6 +968,10 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   }
 
   function replayResourceBaseline(resources: ResourceRef[]) {
+    for (const resource of resources) {
+      const event = progressValues.get(resourceKey(resource));
+      if (event) broadcast({ kind: "resource-progress", event });
+    }
     if (!lastEpoch || lastRevision === undefined) return;
     const groups = new Map<
       string,
@@ -955,6 +1036,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         acceptedResources.delete(key);
         blockedResources.set(key, resource);
         resourceValues.delete(key);
+        progressValues.delete(key);
         subscriptionGeneration++;
         removed = true;
       }
@@ -1234,6 +1316,14 @@ export function createResourceEvents(options: ResourceEventsOptions) {
               throw new TypeError("Invalid resource frame");
             receiveResourceEvent(parsed);
           },
+          false,
+          SYNC_STREAM_EVENT_MAX_BYTES,
+        );
+      });
+      connected.addEventListener("resource-progress", (message: Event) => {
+        applyFrame(
+          message,
+          receiveResourceProgress,
           false,
           SYNC_STREAM_EVENT_MAX_BYTES,
         );
@@ -1543,6 +1633,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     lastTokenRevision = undefined;
     lastTokenEvent = undefined;
     resourceValues.clear();
+    progressValues.clear();
     baselineReconciliations.clear();
     deliveredEntitySequenceBatches.clear();
     resourceRefs.clear();
@@ -1602,7 +1693,17 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       if (!baselines) baselineSubscribers.set(key, (baselines = new Set()));
       baselines.add(callback);
     }
-    const known = resourceValues.get(key);
+    const progress = progressValues.get(key);
+    const known = progress
+      ? {
+          epoch: progress.epoch,
+          revision: progress.revision,
+          progress: {
+            resource: progress.resource,
+            value: progress.value,
+          } as ResourceProgress,
+        }
+      : resourceValues.get(key);
     // A known version is the most recent baseline/change observed on this
     // shared stream and can be replayed immediately to a late resource reader.
     if (known) callback(known);
@@ -1628,6 +1729,10 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           entityDelivery.invalidate();
         }
       }
+      if (
+        !aggregateResources().some((resource) => resourceKey(resource) === key)
+      )
+        progressValues.delete(key);
       announceSubscriptions();
       if (!subscribers.size && !tokenRateListeners.size) {
         cancelIdentityProbe();

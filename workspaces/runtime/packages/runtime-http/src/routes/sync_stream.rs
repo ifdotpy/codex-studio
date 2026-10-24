@@ -251,6 +251,10 @@ async fn sync_stream(
         Ok(resources) => resources,
         Err(error) => return error.into_response(),
     };
+    let vault_readiness = match readiness_source(&state, &resources).await {
+        Ok(source) => source,
+        Err(error) => return error.into_response(),
+    };
     let store = match state.store.clone() {
         Some(store) => store,
         None => return ApiError::internal().into_response(),
@@ -346,6 +350,7 @@ async fn sync_stream(
         subscription_snapshot.revision,
         initial_event,
     ));
+    append_progress_frames(&state, &view, &mut initial).await;
     // OpenAPI owns the omitted-selector compatibility default; the HTTP witness
     // keeps this native/signed-client behavior in parity with that contract.
     let token_interest = match query
@@ -366,6 +371,7 @@ async fn sync_stream(
 
     let stream_state = ResourceStream {
         http_state: Some(state.clone()),
+        vault_readiness,
         subscription: Some(subscription),
         initial,
         workspace_id: state.workspace_id,
@@ -430,6 +436,25 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
                 )
                 .await
                 .ok()
+        }
+        ResourceRef::AuthProgressResource(resource) => serde_json::to_vec(
+            &state
+                .claude_login?
+                .progress(&resource.request_id)
+                .await
+                .ok()?,
+        )
+        .ok(),
+        ResourceRef::VaultReadinessResource(resource) => {
+            let settings = super::host_secrets::settings_dir(&state.state_dir);
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/vault-readiness",
+                move || studio_runtime_services::vault::keys_ready(&settings, &resource.prefix),
+            )
+            .await
+            .ok()?
+            .ok()
+            .and_then(|ready| serde_json::to_vec(&ready).ok())
         }
         ResourceRef::AccountsResource(_) => {
             serde_json::to_vec(&super::catalog::accounts(State(state)).await.ok()?.0).ok()
@@ -532,6 +557,76 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
             .flatten()
         }
         _ => None,
+    }
+}
+
+/// Only sessions with a live readiness selector own a filesystem source. Dropping
+/// the stream or removing that selector drops its OS watcher as well.
+async fn readiness_source(
+    state: &HttpState,
+    resources: &[Value],
+) -> Result<Option<studio_runtime_services::vault::VaultReadinessWatcher>, ApiError> {
+    if !resources
+        .iter()
+        .any(|resource| resource["kind"] == "vault-readiness")
+    {
+        return Ok(None);
+    }
+    let settings = super::host_secrets::settings_dir(&state.state_dir);
+    let changes = Arc::clone(&state.sync_changes);
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/vault-readiness-source",
+        move || {
+            studio_runtime_services::vault::watch_readiness(
+                &settings,
+                Arc::new(move || changes.notify_one()),
+            )
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map(Some)
+    .map_err(|_| ApiError::internal())
+}
+
+/// Progress is deliberately separate from resources/entityChanges: OAuth links
+/// must never enter SQLite, RxDB, entity replay, or durable checkpoints.
+async fn append_progress_frames(
+    state: &HttpState,
+    view: &ResourceChanges,
+    frames: &mut VecDeque<Event>,
+) {
+    for (resource, revision) in view.resources.iter().zip(&view.versions) {
+        let value = match resource["kind"].as_str() {
+            Some("auth-progress") => match (&state.claude_login, resource["requestId"].as_str()) {
+                (Some(login), Some(id)) => login.progress(id).await.unwrap_or(Value::Null),
+                _ => Value::Null,
+            },
+            Some("vault-readiness") => {
+                let Some(bytes) = resource_content(state.clone(), resource.clone()).await else {
+                    continue;
+                };
+                let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+                    continue;
+                };
+                value
+            }
+            _ => continue,
+        };
+        let payload = json!({
+            "protocol": SYNC_PROTOCOL_VERSION,
+            "workspaceId": state.workspace_id,
+            "epoch": view.cursor.epoch,
+            "revision": revision,
+            "resource": resource,
+            "value": value,
+        });
+        if state
+            .validators
+            .validate_component("ResourceProgressEvent", &payload)
+        {
+            frames.push_back(sse_event("resource-progress", None, payload));
+        }
     }
 }
 
@@ -860,6 +955,7 @@ fn attach_transcript_changes(
 struct ResourceStream {
     subscription: Option<LiveSubscription>,
     http_state: Option<HttpState>,
+    vault_readiness: Option<studio_runtime_services::vault::VaultReadinessWatcher>,
     initial: VecDeque<Event>,
     workspace_id: String,
     epoch: String,
@@ -893,6 +989,15 @@ async fn next_subscription_change(
 
 async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChange) -> Option<()> {
     state.resources = update.resources;
+    let readiness_interest = state
+        .resources
+        .iter()
+        .any(|resource| resource["kind"] == "vault-readiness");
+    if readiness_interest != state.vault_readiness.is_some() {
+        if let Some(http) = &state.http_state {
+            state.vault_readiness = readiness_source(http, &state.resources).await.ok()?;
+        }
+    }
     state.transcript_sequences.retain(|id, _| {
         state
             .resources
@@ -958,6 +1063,7 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         state
             .initial
             .push_back(resource_sse_event(view.cursor.revision, event));
+        append_progress_frames(http_state, &view, &mut state.initial).await;
     }
     if let Some(interest) = update.token_rates {
         if interest && state.token_rates.is_none() {
@@ -1094,6 +1200,9 @@ async fn next_frame(
                 continue;
             }
             state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
+            if let Some(http) = &state.http_state {
+                append_progress_frames(http, &view, &mut state.initial).await;
+            }
             return Some((Ok(resource_sse_event(view.cursor.revision, event)), state));
         }
         if heartbeat {
@@ -1449,6 +1558,94 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[tokio::test]
+    async fn state_stream_progress_frames_are_transient_and_scoped() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let resource = json!({"kind":"auth-progress","requestId":"login-one"});
+        let view = ResourceChanges {
+            cursor: state.sync_changes.snapshot(),
+            resources: vec![resource.clone()],
+            versions: vec![0],
+            entity_reset: false,
+            overflow: false,
+        };
+        let mut frames = VecDeque::new();
+        append_progress_frames(&state, &view, &mut frames).await;
+        let frame = frame_bytes(frames.pop_front().expect("current progress on subscribe")).await;
+        assert!(String::from_utf8_lossy(&frame).starts_with("event: resource-progress\n"));
+        let text = std::str::from_utf8(&frame).expect("UTF-8 frame");
+        let payload: Value = serde_json::from_str(
+            text.lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("progress data"),
+        )
+        .expect("progress JSON");
+        assert_eq!(payload["resource"], resource);
+        assert!(
+            payload["value"].is_null(),
+            "unknown retained login requests recover explicitly"
+        );
+        let sequence = store
+            .read_async(
+                "test/progress-is-transient",
+                SyncDocumentsRepository::entity_sequence,
+            )
+            .await
+            .expect("sequence");
+        assert_eq!(sequence, 0, "progress never creates a durable entity");
+        let unselected = ResourceChanges {
+            resources: vec![json!({"kind":"state"})],
+            ..view
+        };
+        append_progress_frames(&state, &unselected, &mut frames).await;
+        assert!(
+            frames.is_empty(),
+            "only subscribed progress selectors receive data"
+        );
+    }
+
+    #[test]
+    fn state_stream_vault_prefix_contract_matches_its_runtime_owner() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let state = HttpState::new(
+            "".into(),
+            "".into(),
+            root.path().display().to_string(),
+            0,
+            None,
+            None,
+            None,
+        );
+        for prefix in [
+            "".to_owned(),
+            "a".into(),
+            "Project_1".into(),
+            "../other".into(),
+            "-bad".into(),
+            "a".repeat(44),
+            "a".repeat(45),
+        ] {
+            assert_eq!(
+                state.validators.validate_component(
+                    "ResourceRef",
+                    &json!({"kind":"vault-readiness","prefix":prefix})
+                ),
+                studio_runtime_services::vault::valid_prefix(&prefix),
+                "vault::valid_prefix owns the prefix contract: {prefix}"
+            );
+        }
+    }
 
     #[test]
     fn state_stream_moves_owned_batch_allocations() {
@@ -3446,6 +3643,7 @@ mod tests {
         let baseline = changes.borrow_and_update().clone();
         let state = ResourceStream {
             http_state: None,
+            vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".to_owned(),
@@ -3493,6 +3691,7 @@ mod tests {
         let baseline = changes.borrow().clone();
         let state = ResourceStream {
             http_state: None,
+            vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".to_owned(),
@@ -3617,6 +3816,7 @@ mod tests {
         let baseline = changes.borrow().clone();
         ResourceStream {
             http_state: None,
+            vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".into(),
@@ -3833,6 +4033,7 @@ mod tests {
         let baseline = changes.borrow().clone();
         let state = ResourceStream {
             http_state: None,
+            vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".to_owned(),

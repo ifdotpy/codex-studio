@@ -8221,6 +8221,34 @@ export interface components {
      * @enum {string}
      */
     AttributionOperation: "ps" | "resident" | "nativeStatus" | "lockSample";
+    /**
+     * AuthProgressEvent
+     * @description Transient subscribed progress; never persisted to the server or client entity store.
+     */
+    AuthProgressEvent: {
+      /** Epoch */
+      epoch: string;
+      /**
+       * Protocol
+       * @constant
+       */
+      protocol: 4;
+      resource: components["schemas"]["AuthProgressResource"];
+      /** Revision */
+      revision: number;
+      value: components["schemas"]["ClaudeLoginResponse"] | null;
+      /** Workspaceid */
+      workspaceId: string;
+    };
+    /** AuthProgressResource */
+    AuthProgressResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "auth-progress";
+      requestId: string;
+    };
     /** AutoPairRequest */
     AutoPairRequest: {
       /** Label */
@@ -19946,6 +19974,10 @@ export interface components {
       /** Resources */
       resources: components["schemas"]["ResourceRef"][];
     };
+    /** ResourceProgressEvent */
+    ResourceProgressEvent:
+      | components["schemas"]["AuthProgressEvent"]
+      | components["schemas"]["VaultReadinessEvent"];
     /**
      * ResourceRef
      * @description Closed discriminated union of all typed UI resource identities.
@@ -19970,7 +20002,9 @@ export interface components {
       | components["schemas"]["TranscriptResource"]
       | components["schemas"]["TranscriptsResource"]
       | components["schemas"]["VoiceResource"]
-      | components["schemas"]["WorkspaceResource"];
+      | components["schemas"]["WorkspaceResource"]
+      | components["schemas"]["AuthProgressResource"]
+      | components["schemas"]["VaultReadinessResource"];
     /**
      * ResourceRevisionEntry
      * @description Per-resource revision; StateResource uses the entity sequence.
@@ -26088,6 +26122,34 @@ export interface components {
        * @enum {string}
        */
       state: "running" | "done" | "failed";
+    };
+    /**
+     * VaultReadinessEvent
+     * @description Transient subscribed progress; never persisted to the server or client entity store.
+     */
+    VaultReadinessEvent: {
+      /** Epoch */
+      epoch: string;
+      /**
+       * Protocol
+       * @constant
+       */
+      protocol: 4;
+      resource: components["schemas"]["VaultReadinessResource"];
+      /** Revision */
+      revision: number;
+      value: boolean;
+      /** Workspaceid */
+      workspaceId: string;
+    };
+    /** VaultReadinessResource */
+    VaultReadinessResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "vault-readiness";
+      prefix: string;
     };
     /**
      * VaultSetupFactsRequest
@@ -36636,7 +36698,8 @@ export interface operations {
             | components["schemas"]["ResourceHeartbeatEvent"]
             | components["schemas"]["ResourceTokenRatesEvent"]
             | components["schemas"]["SyncSessionEvent"]
-            | components["schemas"]["SyncSubscriptionAck"];
+            | components["schemas"]["SyncSubscriptionAck"]
+            | components["schemas"]["ResourceProgressEvent"];
         };
       };
       /** @description Bad Request */

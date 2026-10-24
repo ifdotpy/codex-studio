@@ -873,7 +873,7 @@ async fn run_setup_job(job: SetupJob) {
     }
 }
 
-fn settings_dir(state_dir: &str) -> std::path::PathBuf {
+pub(crate) fn settings_dir(state_dir: &str) -> std::path::PathBuf {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(state_dir))

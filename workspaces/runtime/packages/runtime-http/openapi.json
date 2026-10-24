@@ -44304,7 +44304,9 @@
             "transcript": "#/components/schemas/TranscriptResource",
             "transcripts": "#/components/schemas/TranscriptsResource",
             "voice": "#/components/schemas/VoiceResource",
-            "workspace": "#/components/schemas/WorkspaceResource"
+            "workspace": "#/components/schemas/WorkspaceResource",
+            "auth-progress": "#/components/schemas/AuthProgressResource",
+            "vault-readiness": "#/components/schemas/VaultReadinessResource"
           },
           "propertyName": "kind"
         },
@@ -44368,6 +44370,12 @@
           },
           {
             "$ref": "#/components/schemas/WorkspaceResource"
+          },
+          {
+            "$ref": "#/components/schemas/AuthProgressResource"
+          },
+          {
+            "$ref": "#/components/schemas/VaultReadinessResource"
           }
         ],
         "title": "ResourceRef"
@@ -64581,6 +64589,155 @@
         ],
         "title": "MessageReceipt",
         "type": "object"
+      },
+      "AuthProgressResource": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "auth-progress"
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "kind",
+          "requestId"
+        ],
+        "title": "AuthProgressResource"
+      },
+      "VaultReadinessResource": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "vault-readiness"
+          },
+          "prefix": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 44,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          }
+        },
+        "required": [
+          "kind",
+          "prefix"
+        ],
+        "title": "VaultReadinessResource"
+      },
+      "AuthProgressEvent": {
+        "additionalProperties": false,
+        "description": "Transient subscribed progress; never persisted to the server or client entity store.",
+        "properties": {
+          "epoch": {
+            "minLength": 1,
+            "title": "Epoch",
+            "type": "string"
+          },
+          "protocol": {
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
+            "title": "Protocol",
+            "type": "integer"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "workspaceId": {
+            "minLength": 1,
+            "title": "Workspaceid",
+            "type": "string"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/AuthProgressResource"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaudeLoginResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "protocol",
+          "workspaceId",
+          "epoch",
+          "revision",
+          "resource",
+          "value"
+        ],
+        "title": "AuthProgressEvent",
+        "type": "object"
+      },
+      "ResourceProgressEvent": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/AuthProgressEvent"
+          },
+          {
+            "$ref": "#/components/schemas/VaultReadinessEvent"
+          }
+        ],
+        "title": "ResourceProgressEvent"
+      },
+      "VaultReadinessEvent": {
+        "additionalProperties": false,
+        "description": "Transient subscribed progress; never persisted to the server or client entity store.",
+        "properties": {
+          "epoch": {
+            "minLength": 1,
+            "title": "Epoch",
+            "type": "string"
+          },
+          "protocol": {
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
+            "title": "Protocol",
+            "type": "integer"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "workspaceId": {
+            "minLength": 1,
+            "title": "Workspaceid",
+            "type": "string"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/VaultReadinessResource"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "protocol",
+          "workspaceId",
+          "epoch",
+          "revision",
+          "resource",
+          "value"
+        ],
+        "title": "VaultReadinessEvent",
+        "type": "object"
       }
     }
   },
@@ -80222,6 +80379,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/SyncSubscriptionAck"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ResourceProgressEvent"
                     }
                   ],
                   "x-sse-events": {
@@ -80230,7 +80390,8 @@
                     "resources": "ResourceChangeEvent",
                     "session": "SyncSessionEvent",
                     "subscriptions": "SyncSubscriptionAck",
-                    "token-rates": "ResourceTokenRatesEvent"
+                    "token-rates": "ResourceTokenRatesEvent",
+                    "resource-progress": "ResourceProgressEvent"
                   }
                 }
               }
