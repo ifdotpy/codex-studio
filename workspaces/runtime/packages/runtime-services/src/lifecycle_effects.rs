@@ -144,6 +144,17 @@ pub struct TerminalCleanup {
 const INTERRUPT_OPERATION_PREFIX: &str = "lifecycle-interrupt:";
 const TERMINALS_OPERATION_PREFIX: &str = "lifecycle-terminals:";
 
+/// The command cleanup operation of the stop whose interrupt ticket is
+/// `ticket`, or `None` when the ticket is not a stop's. A worker that sends a
+/// stop's unsettled requests later uses these exact operation ids, so the
+/// retained ledger sends each of them at most once.
+pub(crate) fn stop_terminals_operation(ticket: &str) -> Option<String> {
+    ticket
+        .strip_prefix(INTERRUPT_OPERATION_PREFIX)
+        .filter(|signature| !signature.is_empty())
+        .map(|signature| format!("{TERMINALS_OPERATION_PREFIX}{signature}"))
+}
+
 /// Production LifecyclePorts constructor used by stop/delete callers.
 pub struct ProductionLifecyclePorts {
     store: Arc<RuntimeStore>,
