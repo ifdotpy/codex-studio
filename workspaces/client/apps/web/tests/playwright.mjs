@@ -886,6 +886,7 @@ export { browserExecutablePath, waitForFixturePort };
 /** @typedef {import("../src/generated/api").components["schemas"]["SyncPullResponse"]} SyncPullResponse */
 /** @typedef {import("../src/generated/api").components["schemas"]["SyncPullResetResponse"]} SyncPullResetResponse */
 /** @typedef {import("../src/generated/api").components["schemas"]["SyncEntity"]} SyncEntity */
+/** @typedef {import("../src/generated/api").components["schemas"]["AccountRateLimitsDto"]} AccountRateLimitsDto */
 /** @typedef {import("../src/generated/api").components["schemas"]["TranscriptPageResponse"]} TranscriptPageResponse */
 /** @typedef {import("../src/generated/api").components["schemas"]["SyncIdentityResponse"]} SyncIdentityResponse */
 /** @typedef {import("../src/generated/api").components["schemas"]["SyncProtocolResponse"]} SyncProtocolResponse */
@@ -940,7 +941,7 @@ export { browserExecutablePath, waitForFixturePort };
 /** @typedef {Pick<TaskEntityDto, "id" | "turnId" | "agent" | "kind" | "status" | "created" | "finished" | "name" | "command" | "query" | "cwd" | "processId" | "durationMs" | "timeout_ms" | "interactive" | "stdinClosed" | "stdinCloseRequested" | "stdinError" | "cancelRequested" | "exitCode" | "bytes" | "log" | "outputTruncated">} TestTask */
 /** @typedef {Pick<ProjectEntityDto, "homeServerId" | "locations" | "locationsRevision" | "projectAliases" | "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams" | "workerBaseRef" | "workerBaseRevision" | "workerEnvironment" | "workerEnvironmentRevision">} TestProject */
 /** @typedef {Pick<ComplaintEntityDto, "id" | "leadId" | "author" | "authorName" | "leadName" | "title" | "status" | "needsUserResponse" | "created" | "readAt" | "recipient" | "version">} TestComplaint */
-/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], rateLimits: WorkspaceEntityDto["rateLimits"], rateLimitsByAccount: WorkspaceEntityDto["rateLimitsByAccount"], stateDir?: string }} TestRuntimeView */
+/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], rateLimits: AccountRateLimitsDto | null, rateLimitsByAccount: Record<string, AccountRateLimitsDto>, stateDir?: string }} TestRuntimeView */
 /** @typedef {{ token: string, stateDir?: string, chats: ChatEntityDto[], edges: EdgeEntityDto[], runtime: TestRuntimeView, threads: TestAgent[] }} TestStateView */
 /** @typedef {Omit<TestStateView, "token" | "threads">} EntityFixtureState */
 
@@ -1094,15 +1095,14 @@ export async function readTestState(origin) {
         get("workspace", "current")?.sidebarOrder
       );
     },
-    get rateLimits() {
-      return /** @type {WorkspaceEntityDto["rateLimits"]} */ (
-        get("workspace", "current")?.rateLimits
+    // Rate limits are per-account `rateLimit` entities, as in the renderer projection.
+    get rateLimitsByAccount() {
+      return /** @type {Record<string, AccountRateLimitsDto>} */ (
+        Object.fromEntries(entities.get("rateLimit") ?? [])
       );
     },
-    get rateLimitsByAccount() {
-      return /** @type {WorkspaceEntityDto["rateLimitsByAccount"]} */ (
-        get("workspace", "current")?.rateLimitsByAccount
-      );
+    get rateLimits() {
+      return this.rateLimitsByAccount.default ?? null;
     },
     get stateDir() {
       return /** @type {string | undefined} */ (
@@ -1129,8 +1129,6 @@ const entityWorkspaceKeys = [
   "nativeNotices",
   "peerTeamsVersion",
   "projectOrganizationVersion",
-  "rateLimits",
-  "rateLimitsByAccount",
   "sidebarOrder",
   "stateDir",
   "tasksHistoryLimit",
@@ -1332,6 +1330,14 @@ function entityValuesFromSnapshot(snapshot) {
   append("work", runtime.work);
   append("chat", snapshot.chats);
   append("edge", snapshot.edges);
+  const limits = isJsonObject(runtime.rateLimitsByAccount)
+    ? runtime.rateLimitsByAccount
+    : isJsonObject(runtime.rateLimits)
+      ? { default: runtime.rateLimits }
+      : {};
+  for (const [account, value] of Object.entries(limits))
+    if (isJsonObject(value))
+      values.push({ collection: "rateLimit", id: account, value });
   /** @type {Record<string, JsonValue>} */
   const workspaceSource = { ...runtime, stateDir: snapshot.stateDir };
   values.push({
