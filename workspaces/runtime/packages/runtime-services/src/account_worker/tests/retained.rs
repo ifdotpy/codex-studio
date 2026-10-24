@@ -322,7 +322,181 @@ async fn manual_recovery_accepts_a_live_exact_start_and_tracks_its_terminal_noti
 
 #[tokio::test]
 async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_notice() {
-    manual_active_start_case(true).await;
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    let port = worker.retained_session();
+    let auth = manual_start_authorization(&state, port.scope(), true).await;
+    state.enqueue("new-input").await;
+    let sender = port.clone();
+    let active_auth = auth.clone();
+    let active = tokio::spawn(async move { sender.recover_managed_agent(active_auth).await });
+    let history = peer.write("thread/turns/list").await;
+    let mut turn = json!({"id":"manual-running-turn","threadId":"fake-thread-0",
+        "clientUserMessageId":"annotation:input","status":"inProgress",
+        "items":[{"id":"input","type":"userMessage","clientId":"annotation:input","text":"input"}]});
+    peer.reply(&history, json!({"data":[turn],"nextCursor":null}))
+        .await;
+    let unconfirmed = active
+        .await
+        .expect("active check task")
+        .expect("active check");
+    worker_barrier(&worker).await;
+    let held = state.record().await;
+    assert_eq!(unconfirmed["status"], "unconfirmed");
+    assert_eq!(held["restartRecovery"], auth.target["restartRecovery"]);
+    assert_eq!(held["contextRepairWait"], auth.target["contextRepairWait"]);
+    assert!(
+        held["turnId"].is_null(),
+        "history does not prove a live stream owner"
+    );
+    assert_eq!(held["inFlight"], false);
+    assert_eq!(state.event_status("input").await, "uncertain");
+    let agent = state.agent.clone();
+    let epoch = state.epoch;
+    let schedulable = state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            SchedulerRepository::claim(tx, &agent, epoch, "must-not-replay-held", 20.0, 10)
+                .map(|claim| claim.is_some())
+        })
+        .await
+        .expect("held input scheduler check");
+    assert!(
+        !schedulable,
+        "active restart history cannot enable delivery"
+    );
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "the check sends no native input"
+    );
+
+    // A new explicit request must read new history, not replay the active result.
+    let mut terminal_auth = auth;
+    terminal_auth.target = held;
+    terminal_auth.request_id = "manual-terminal-proof".into();
+    terminal_auth.signature = "terminal-signature".into();
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            EventWriteRepository::replace_receipt(
+                tx,
+                "manual-terminal-proof",
+                "terminal-signature",
+                "{\"status\":\"unconfirmed\"}",
+            )
+        })
+        .await
+        .expect("new explicit manual request");
+    let sender = port.clone();
+    let terminal_request = terminal_auth.clone();
+    let terminal =
+        tokio::spawn(async move { sender.recover_managed_agent(terminal_request).await });
+    let history = peer.write("thread/turns/list").await;
+    turn["status"] = json!("completed");
+    peer.reply(&history, json!({"data":[turn],"nextCursor":null}))
+        .await;
+    let accepted = terminal
+        .await
+        .expect("terminal check task")
+        .expect("terminal check");
+    worker_barrier(&worker).await;
+    let settled = state.record().await;
+    assert_eq!(accepted["turnId"], "manual-running-turn");
+    assert_eq!(accepted["manualDeliveryHeld"], true);
+    assert_eq!(settled["lastCompletedTurn"], "manual-running-turn");
+    assert_eq!(settled["restartRecovery"]["stage"], "finished");
+    assert!(settled["contextRepairWait"].is_null());
+    assert!(settled["turnId"].is_null());
+    assert_eq!(settled["inFlight"], false);
+    assert_eq!(state.event_status("input").await, "delivered");
+    assert_eq!(state.event_status("new-input").await, "pending");
+
+    let evidence = manual_restart_settlement_evidence(&state).await;
+    assert_eq!(evidence["activeReceipt"]["signature"], "signature");
+    assert_eq!(evidence["activeReceipt"]["result"], unconfirmed);
+    assert_eq!(
+        evidence["terminalReceipt"]["signature"],
+        "terminal-signature"
+    );
+    assert_eq!(evidence["terminalReceipt"]["result"], accepted);
+    for (receipt, turn_field) in [("startResult", "accepted"), ("terminal", "turn")] {
+        assert_eq!(
+            evidence["attempt"]["receipts"][receipt]["input"]["agent"],
+            state.agent
+        );
+        assert_eq!(
+            evidence["attempt"]["receipts"][receipt]["input"]["epoch"],
+            state.epoch
+        );
+        assert_eq!(
+            evidence["attempt"]["receipts"][receipt]["input"][turn_field],
+            "manual-running-turn"
+        );
+    }
+    assert_eq!(
+        evidence["events"],
+        json!([
+            {"id":"annotation:input","agent":state.agent,"epoch":state.epoch,"status":"delivered","turn":"manual-running-turn"},
+            {"id":"annotation:new-input","agent":state.agent,"epoch":state.epoch,"status":"pending","turn":null}
+        ])
+    );
+    let replay = port
+        .recover_managed_agent(terminal_auth)
+        .await
+        .expect("exact request replay");
+    assert_eq!(replay, accepted);
+    let duplicate = peer.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"manual-running-turn","status":"completed"}}})).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        peer.acknowledged_or_worker_exits(duplicate, &mut worker),
+    )
+    .await
+    .expect("the duplicate terminal notice is checkpointed");
+    worker_barrier(&worker).await;
+    assert_eq!(
+        manual_restart_settlement_evidence(&state).await,
+        evidence,
+        "replay and duplicate terminal notice cannot settle twice"
+    );
+    let agent = state.agent.clone();
+    let epoch = state.epoch;
+    let schedulable = state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            SchedulerRepository::claim(tx, &agent, epoch, "must-not-start-after-terminal", 20.0, 10)
+                .map(|claim| claim.is_some())
+        })
+        .await
+        .expect("settled input scheduler check");
+    worker.shutdown().await.expect("fixture shutdown");
+    assert!(
+        !schedulable,
+        "manual settlement cannot enable the next input"
+    );
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "manual recovery sends no new native input"
+    );
+}
+
+async fn manual_restart_settlement_evidence(state: &State) -> Value {
+    state.bridge.store.transaction(|tx| {
+        let mut receipts = Vec::new();
+        for id in ["manual-no-replay", "manual-terminal-proof"] {
+            let receipt = EventWriteRepository::receipt(tx, id)?.expect("exact manual receipt");
+            receipts.push(json!({"signature":receipt.signature,"result":serde_json::from_str::<Value>(&receipt.result)?}));
+        }
+        let events = tx.prepare("SELECT id,agent,epoch,status,turn_id FROM runtime_events WHERE id IN ('annotation:input','annotation:new-input') ORDER BY id")?
+            .query_map([], |row| Ok(json!({"id":row.get::<_,String>(0)?,"agent":row.get::<_,String>(1)?,"epoch":row.get::<_,i64>(2)?,"status":row.get::<_,String>(3)?,"turn":row.get::<_,Option<String>>(4)?})))?
+            .collect::<Result<Vec<_>,_>>()?;
+        let attempt = studio_runtime_store::ExecutionHistoryRepository::attempt(tx, "manual-unknown-attempt")?.expect("exact original attempt");
+        Ok::<_,StoreError>(json!({"activeReceipt":receipts[0],"terminalReceipt":receipts[1],"events":events,"attempt":attempt}))
+    }).await.expect("manual settlement evidence")
 }
 
 #[tokio::test]
