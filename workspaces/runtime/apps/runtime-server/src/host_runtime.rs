@@ -45,6 +45,10 @@ const CLAUDE_BRIDGE_RELATIVE: &str = "workspaces/providers/apps/claude-bridge";
 const LINUX_VM_HELPER_RELATIVE: &str =
     "workspaces/client/apps/desktop/native/linux-vm/studio-linux-vm";
 
+/// Where a source checkout keeps a local build of the file event helper.
+#[cfg(target_os = "macos")]
+const FS_EVENTS_HELPER_RELATIVE: &str = "workspaces/client/apps/desktop/native/studio-fs-events";
+
 /// Installed root shared by host-side runtime components.
 #[derive(Clone, Debug)]
 pub(crate) struct InstallRoot(PathBuf);
@@ -68,6 +72,20 @@ impl InstallRoot {
         match packaged {
             Some(packaged) if packaged.is_file() => packaged,
             _ => self.0.join(LINUX_VM_HELPER_RELATIVE),
+        }
+    }
+    /// The file event helper of Mac folder sync (docs/vm-mac-sync.md, "Watcher"): the
+    /// packaged `Resources/studio-fs-events`, or a build in a source checkout. Without
+    /// it, rounds scan every 10 seconds.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn fs_events_helper(&self) -> PathBuf {
+        let packaged = self
+            .0
+            .parent()
+            .map(|resources| resources.join("studio-fs-events"));
+        match packaged {
+            Some(packaged) if packaged.is_file() => packaged,
+            _ => self.0.join(FS_EVENTS_HELPER_RELATIVE),
         }
     }
     pub(crate) fn claude_bridge_dir(&self) -> PathBuf {
@@ -346,6 +364,23 @@ impl HostRuntime {
                     }
                 }
             });
+        }
+        // Mac folder sync of VM projects (docs/vm-mac-sync.md): rounds wait while the VM
+        // does not run.
+        #[cfg(target_os = "macos")]
+        if let Some(vm) = vm_runtime.clone() {
+            let vm_running: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+                vm.status().is_ok_and(|status| {
+                    status.get("state").and_then(Value::as_str) == Some("running")
+                })
+            });
+            tokio::spawn(studio_runtime_services::mac_sync::schedule::run(
+                vm_state_dir.clone(),
+                Arc::clone(&vm_guest),
+                vm_running,
+                install_root.fs_events_helper(),
+                state.sync_changes_handle(),
+            ));
         }
         resources.vm_provider_launch = Some(Arc::new(ServerVmProviderLaunchResolver {
             accounts: accounts.clone(),

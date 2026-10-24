@@ -110,12 +110,25 @@ def digest(method, params):
                                     allow_nan=False).encode()).hexdigest()
 
 
-def receipt(database, request_id, request_digest):
+# Methods that start again safely after a stop of the process that ran them: they keep
+# their own receipt and begin from saved state (docs/vm-mac-sync.md, "A sync round").
+RERUN_AFTER_STOP = frozenset({"sync.mac.apply"})
+
+
+def receipt(database, request_id, request_digest, method=None):
+    """The saved response of a request, or None after recording that it runs now.
+
+    The row is written before the operation and its response after it. A row without a
+    response means that the process stopped during the operation: the request has no
+    proven result and is not run again, unless its method is in RERUN_AFTER_STOP.
+    """
     row = database.execute("SELECT digest, response FROM receipts WHERE id=?", (request_id,)).fetchone()
     if row is not None:
         if row[0] != request_digest:
             raise GuestError("id_conflict", "The request ID has different content")
         if row[1] is None:
+            if method in RERUN_AFTER_STOP:
+                return None
             raise GuestError("outcome_unknown", "The request has no proven result; inspect the saved state")
         return json.loads(row[1])
     database.execute("INSERT INTO receipts VALUES (?, ?, NULL)", (request_id, request_digest))

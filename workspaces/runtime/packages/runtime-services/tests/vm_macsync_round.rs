@@ -132,13 +132,15 @@ impl GuestRpc for Guest {
                     params["stateId"].as_str().unwrap().to_owned(),
                     params["path"].as_str().unwrap().to_owned(),
                 );
-                Ok(match state.files.get(&key).cloned().unwrap_or(Some(Vec::new())) {
-                    None => json!({"kind":"absent"}),
-                    Some(data) => json!({
-                        "kind":"file","mode":0o644,"eof":true,
-                        "data":data_encoding::BASE64.encode(&data),
-                    }),
-                })
+                Ok(
+                    match state.files.get(&key).cloned().unwrap_or(Some(Vec::new())) {
+                        None => json!({"kind":"absent"}),
+                        Some(data) => json!({
+                            "kind":"file","mode":0o644,"eof":true,
+                            "data":data_encoding::BASE64.encode(&data),
+                        }),
+                    },
+                )
             }
             "sync.mac.head" => Ok(json!({"mainStateId": state.head})),
             "sync.mac.hashes" => {
@@ -279,7 +281,10 @@ fn entry_paths(entries: &Value) -> Vec<String> {
 // Rules and scan.
 
 #[test]
-#[allow(clippy::disallowed_methods, reason = "a test fixture creates a Git repository")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test fixture creates a Git repository"
+)]
 fn ignored_folders_and_dependency_folders_stay_but_ignored_files_sync() {
     let fixture = Fixture::new();
     let init = std::process::Command::new("git")
@@ -348,7 +353,10 @@ fn links_sync_as_links_and_special_files_are_reported() {
     assert_eq!(entries["link"].k, "link");
     assert_eq!(entries["folder-link"].k, "link");
     assert_eq!(entries["link"].h, sha(b"target.txt"));
-    assert_eq!(notices, vec!["pipe: a special file does not sync".to_owned()]);
+    assert_eq!(
+        notices,
+        vec!["pipe: a special file does not sync".to_owned()]
+    );
 }
 
 #[test]
@@ -357,13 +365,25 @@ fn writes_never_cross_a_symbolic_link_or_leave_the_folder() {
     let outside = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink(outside.path(), fixture.root.join("escape")).unwrap();
     for rel in ["escape/x.txt", "../x.txt"] {
-        assert!(write_mac(&fixture.root, rel, "file", b"x", 0o644).is_err(), "{rel}");
+        assert!(
+            write_mac(&fixture.root, rel, "file", b"x", 0o644).is_err(),
+            "{rel}"
+        );
     }
     assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
-    let entry = write_mac(&fixture.root, "new/deep/file.sh", "file", b"#!/bin/sh\n", 0o755)
-        .unwrap()
-        .unwrap();
-    assert_eq!((entry.h.as_str(), entry.x), (sha(b"#!/bin/sh\n").as_str(), 0o755));
+    let entry = write_mac(
+        &fixture.root,
+        "new/deep/file.sh",
+        "file",
+        b"#!/bin/sh\n",
+        0o755,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        (entry.h.as_str(), entry.x),
+        (sha(b"#!/bin/sh\n").as_str(), 0o755)
+    );
     let names = std::fs::read_dir(fixture.root.join("new/deep"))
         .unwrap()
         .map(|item| item.unwrap().file_name().into_string().unwrap())
@@ -377,7 +397,10 @@ fn writes_never_cross_a_symbolic_link_or_leave_the_folder() {
 fn a_lost_reply_repeats_the_same_operation() {
     let fixture = Fixture::new();
     fixture.write("a.txt", b"agreed");
-    fixture.save("manifest.json", json!({"a.txt": fixture.entry("a.txt", "s1")}));
+    fixture.save(
+        "manifest.json",
+        json!({"a.txt": fixture.entry("a.txt", "s1")}),
+    );
     fixture.write("a.txt", b"changed on the Mac");
     let guest = Guest::new(vec![
         Err(lost()),
@@ -423,7 +446,10 @@ fn many_mac_deletions_pause_the_round() {
 fn main_changes_skip_a_file_the_user_edited_again() {
     let fixture = Fixture::new();
     fixture.write("a.txt", b"agreed");
-    fixture.save("manifest.json", json!({"a.txt": fixture.entry("a.txt", "s1")}));
+    fixture.save(
+        "manifest.json",
+        json!({"a.txt": fixture.entry("a.txt", "s1")}),
+    );
     fixture.write("a.txt", b"edited during the round");
     let outbound = json!({"s1":[change("a.txt", Some(b"vm!"), 0o644)]});
     let guest = Guest::new(vec![Ok(reply("m2", json!({"outbound":outbound})))]);
@@ -436,7 +462,10 @@ fn main_changes_skip_a_file_the_user_edited_again() {
 fn a_refused_merge_sends_its_paths_again_in_the_next_partial_round() {
     let fixture = Fixture::new();
     fixture.write("a.txt", b"agreed");
-    fixture.save("manifest.json", json!({"a.txt": fixture.entry("a.txt", "s1")}));
+    fixture.save(
+        "manifest.json",
+        json!({"a.txt": fixture.entry("a.txt", "s1")}),
+    );
     fixture.write("a.txt", b"mac");
     let guest = Guest::new(vec![
         Ok(reply(
@@ -447,22 +476,34 @@ fn a_refused_merge_sends_its_paths_again_in_the_next_partial_round() {
     ]);
     let project = fixture.project(&guest);
     let first = project.round(None).unwrap();
-    assert_eq!((first["state"].clone(), first["rescan"].clone()), (json!("waiting"), json!(["a.txt"])));
+    assert_eq!(
+        (first["state"].clone(), first["rescan"].clone()),
+        (json!("waiting"), json!(["a.txt"]))
+    );
     let second = project.round(Some(&BTreeSet::new())).unwrap();
     let sent = guest
         .applies()
         .iter()
         .map(|params| entry_paths(&params["entries"]))
         .collect::<Vec<_>>();
-    assert_eq!(sent, vec![vec!["a.txt".to_owned()], vec!["a.txt".to_owned()]]);
-    assert_eq!((second["state"].clone(), second["rescan"].clone()), (json!("synced"), json!([])));
+    assert_eq!(
+        sent,
+        vec![vec!["a.txt".to_owned()], vec!["a.txt".to_owned()]]
+    );
+    assert_eq!(
+        (second["state"].clone(), second["rescan"].clone()),
+        (json!("synced"), json!([]))
+    );
 }
 
 #[test]
 fn a_replayed_round_keeps_the_paths_it_did_not_read() {
     let fixture = Fixture::new();
     fixture.write("a.txt", b"agreed");
-    fixture.save("manifest.json", json!({"a.txt": fixture.entry("a.txt", "s1")}));
+    fixture.save(
+        "manifest.json",
+        json!({"a.txt": fixture.entry("a.txt", "s1")}),
+    );
     fixture.write("a.txt", b"mac");
     let guest = Guest::new(vec![
         Err(lost()),
@@ -471,9 +512,7 @@ fn a_replayed_round_keeps_the_paths_it_did_not_read() {
     let project = fixture.project(&guest);
     assert!(project.round(None).is_err());
     // A choice asks for b.txt to be read again while the lost round waits.
-    let mut status = fixture.saved("status.json");
-    status["rescan"] = json!(["b.txt"]);
-    fixture.save("status.json", status);
+    fixture.save("status.json", json!({"rescan":["b.txt"]}));
     assert_eq!(
         project.round(Some(&BTreeSet::new())).unwrap()["rescan"],
         json!(["b.txt"])
@@ -496,7 +535,10 @@ fn a_base_the_guest_did_not_compare_stays_with_its_path() {
     ))]);
     fixture.project(&guest).round(None).unwrap();
     let saved = fixture.saved("manifest.json");
-    assert_eq!((saved["old.txt"]["b"].clone(), saved["new.txt"]["b"].clone()), (json!("s0"), json!("m2")));
+    assert_eq!(
+        (saved["old.txt"]["b"].clone(), saved["new.txt"]["b"].clone()),
+        (json!("s0"), json!("m2"))
+    );
 }
 
 #[test]
@@ -512,7 +554,9 @@ fn confirmed_mac_deletions_go_to_the_vm() {
     for index in 0..5 {
         std::fs::remove_file(fixture.root.join(format!("f{index}.txt"))).unwrap();
     }
-    let deleted = (0..5).map(|index| format!("f{index}.txt")).collect::<Vec<_>>();
+    let deleted = (0..5)
+        .map(|index| format!("f{index}.txt"))
+        .collect::<Vec<_>>();
     let guest = Guest::new(vec![Ok(reply(
         "m2",
         json!({"applied":deleted,"merge":"merged"}),
@@ -524,7 +568,10 @@ fn confirmed_mac_deletions_go_to_the_vm() {
         "syncing"
     );
     let status = project.round(None).unwrap();
-    assert_eq!((status["state"].clone(), status["deletes"].clone()), (json!("synced"), json!(0)));
+    assert_eq!(
+        (status["state"].clone(), status["deletes"].clone()),
+        (json!("synced"), json!(0))
+    );
     let entries = guest.applies()[0]["entries"].clone();
     let absent = entries
         .as_array()
@@ -556,7 +603,10 @@ fn a_refused_merge_keeps_the_unmerged_mac_edit() {
     guest.file("m2", "a.txt", Some(b"agent edit\n"));
     let status = fixture.project(&guest).round(None).unwrap();
     assert_eq!(fixture.read("a.txt"), b"mac edit\n");
-    assert_eq!(fixture.saved("manifest.json")["a.txt"]["h"], sha(b"agreed\n"));
+    assert_eq!(
+        fixture.saved("manifest.json")["a.txt"]["h"],
+        sha(b"agreed\n")
+    );
     assert_eq!(status["rescan"], json!(["a.txt"]));
 }
 
@@ -581,7 +631,10 @@ fn a_newer_mac_edit_during_a_handoff_is_not_overwritten() {
     let status = fixture.project(&guest).round(None).unwrap();
     assert_eq!(fixture.read("app.txt"), b"newer mac\n");
     assert_eq!(status["conflicts"], json!(["app.txt"]));
-    assert_eq!(fixture.saved("held.json")["app.txt"]["h"], sha(b"newer mac\n"));
+    assert_eq!(
+        fixture.saved("held.json")["app.txt"]["h"],
+        sha(b"newer mac\n")
+    );
 }
 
 #[test]
@@ -604,7 +657,10 @@ fn a_save_during_the_round_keeps_the_sent_content_as_the_next_base() {
     project.round(None).unwrap();
     assert_eq!(fixture.read("a.txt"), b"x abcd\n");
     let entry = fixture.saved("manifest.json")["a.txt"].clone();
-    assert_eq!((entry["h"].clone(), entry["b"].clone()), (json!(sha(b"x abc\n")), json!("m2")));
+    assert_eq!(
+        (entry["h"].clone(), entry["b"].clone()),
+        (json!(sha(b"x abc\n")), json!("m2"))
+    );
     guest.push(reply("m3", json!({"applied":["a.txt"],"merge":"merged"})));
     project.round(None).unwrap();
     let sent = guest.applies().last().unwrap()["entries"].clone();
@@ -663,7 +719,10 @@ fn many_main_deletions_wait_for_a_confirmation() {
     ]);
     let project = fixture.project(&guest);
     let status = project.round(None).unwrap();
-    assert_eq!((status["state"].clone(), status["deletes"].clone()), (json!("paused"), json!(5)));
+    assert_eq!(
+        (status["state"].clone(), status["deletes"].clone()),
+        (json!("paused"), json!(5))
+    );
     assert!(
         status["reason"]
             .as_str()
@@ -825,7 +884,12 @@ fn an_unknown_guest_outcome_ends_the_replay_and_loses_no_file() {
     assert_eq!(guest.operations(), vec![dropped.clone(), dropped.clone()]);
     let status = fixture.saved("status.json");
     assert_eq!(status["state"], "error");
-    assert!(status["reason"].as_str().unwrap().contains("outcome_unknown"));
+    assert!(
+        status["reason"]
+            .as_str()
+            .unwrap()
+            .contains("outcome_unknown")
+    );
     assert!(!fixture.exists("pending.json"));
     // Before the next round: main took a1 from the dropped operation, and an agent
     // changed d.txt in main. The Mac changed d.txt as well.
@@ -854,7 +918,10 @@ fn an_unknown_guest_outcome_ends_the_replay_and_loses_no_file() {
     let recovered = project.round(None).unwrap();
     let operations = guest.operations();
     assert_eq!(operations.len(), 3, "the replay loop ends");
-    assert_ne!(operations[2], dropped, "the next round starts a new operation");
+    assert_ne!(
+        operations[2], dropped,
+        "the next round starts a new operation"
+    );
     // Both sides were hashed again for the paths of the dropped operation.
     assert_eq!(guest.calls("sync.mac.hashes").len(), 1);
     // a.txt agrees, d.txt changed on both sides and waits; b.txt and the c.txt deletion go in.
@@ -913,7 +980,10 @@ fn an_unknown_outcome_of_a_head_only_round_needs_no_rehash() {
 fn the_first_round_agrees_on_the_import_state() {
     let fixture = Fixture::new();
     fixture.write("a.txt", b"edited after the import\n");
-    let guest = Guest::new(vec![Ok(reply("m2", json!({"applied":["a.txt"],"merge":"merged"})))]);
+    let guest = Guest::new(vec![Ok(reply(
+        "m2",
+        json!({"applied":["a.txt"],"merge":"merged"}),
+    ))]);
     guest.0.lock().unwrap().hashes.insert(
         "s1".into(),
         json!({"a.txt": {"kind":"file","mode":0o644,"size":9,"sha256":sha(b"imported\n")}}),
@@ -950,7 +1020,10 @@ fn conflict_fixture() -> (Fixture, Guest) {
 #[test]
 fn keep_mac_sends_the_mac_version_on_top_of_main() {
     let (fixture, guest) = conflict_fixture();
-    guest.push(reply("m10", json!({"applied":["app.txt"],"merge":"merged"})));
+    guest.push(reply(
+        "m10",
+        json!({"applied":["app.txt"],"merge":"merged"}),
+    ));
     mac_sync::resolve(&fixture.state, "p1", "app.txt", "mac", &guest).unwrap();
     assert_eq!(fixture.saved("status.json")["rescan"], json!(["app.txt"]));
     // The scheduler's next round reads the path again without a full scan.
@@ -964,7 +1037,10 @@ fn keep_mac_sends_the_mac_version_on_top_of_main() {
     );
     assert_eq!(fixture.read("app.txt"), b"mac\n");
     let manifest = fixture.saved("manifest.json")["app.txt"].clone();
-    assert_eq!((manifest["h"].clone(), manifest["b"].clone()), (json!(sha(b"mac\n")), json!("m10")));
+    assert_eq!(
+        (manifest["h"].clone(), manifest["b"].clone()),
+        (json!(sha(b"mac\n")), json!("m10"))
+    );
     assert_eq!(fixture.saved("status.json")["state"], "synced");
 }
 
@@ -975,14 +1051,21 @@ fn ask_the_lead_and_take_main_after_the_merge() {
     assert_eq!(result.response["stateId"], "h1");
     let status = fixture.saved("status.json");
     assert_eq!(
-        (status["state"].clone(), status["withAgent"].clone(), status["conflicts"].clone()),
+        (
+            status["state"].clone(),
+            status["withAgent"].clone(),
+            status["conflicts"].clone()
+        ),
         (json!("waiting"), json!(["app.txt"]), json!([]))
     );
     let project = fixture.project(&guest);
     // A quiet round leaves the Mac file alone while the lead works.
     guest.push(reply("m9", json!({"outbound":{"s1":[],"m9":[]}})));
     let quiet = project.round(Some(&BTreeSet::new())).unwrap();
-    assert_eq!((quiet["state"].clone(), quiet["sent"].clone()), (json!("waiting"), json!(0)));
+    assert_eq!(
+        (quiet["state"].clone(), quiet["sent"].clone()),
+        (json!("waiting"), json!(0))
+    );
     // The lead commits the combined file: the Mac takes main's version.
     guest.file("m10", "app.txt", Some(b"combined\n"));
     let combined = change("app.txt", Some(b"combined\n"), 0o644);
@@ -994,7 +1077,10 @@ fn ask_the_lead_and_take_main_after_the_merge() {
     let since = guest.applies().last().unwrap()["since"].clone();
     assert!(since.as_array().unwrap().contains(&json!("m9")));
     assert_eq!(fixture.read("app.txt"), b"combined\n");
-    assert_eq!((done["state"].clone(), done["withAgent"].clone()), (json!("synced"), json!([])));
+    assert_eq!(
+        (done["state"].clone(), done["withAgent"].clone()),
+        (json!("synced"), json!([]))
+    );
     assert_eq!(fixture.saved("held.json"), json!({}));
 }
 
@@ -1003,13 +1089,19 @@ fn a_new_mac_edit_ends_the_handoff_and_syncs_as_usual() {
     let (fixture, guest) = conflict_fixture();
     mac_sync::resolve(&fixture.state, "p1", "app.txt", "agent", &guest).unwrap();
     fixture.write("app.txt", b"mac again\n");
-    guest.push(reply("m9", json!({"conflicts":["app.txt"],"outbound":{"s1":[]}})));
+    guest.push(reply(
+        "m9",
+        json!({"conflicts":["app.txt"],"outbound":{"s1":[]}}),
+    ));
     let status = fixture.project(&guest).round(None).unwrap();
     assert_eq!(
         entry_paths(&guest.applies().last().unwrap()["entries"]),
         vec!["app.txt".to_owned()]
     );
-    assert_eq!((status["conflicts"].clone(), status["withAgent"].clone()), (json!(["app.txt"]), json!([])));
+    assert_eq!(
+        (status["conflicts"].clone(), status["withAgent"].clone()),
+        (json!(["app.txt"]), json!([]))
+    );
 }
 
 // Scheduling.
@@ -1049,7 +1141,10 @@ fn only_folders_with_sync_enabled_take_part() {
     mac_sync::configure(state, "a", Some(false), false).unwrap();
     assert_eq!(synced_projects(state).len(), 1);
     let paused = mac_sync::sync_status(state, "a").unwrap().unwrap();
-    assert_eq!((paused["state"].clone(), paused["enabled"].clone()), (json!("paused"), json!(false)));
+    assert_eq!(
+        (paused["state"].clone(), paused["enabled"].clone()),
+        (json!("paused"), json!(false))
+    );
     assert!(mac_sync::sync_status(state, "missing").unwrap().is_none());
 }
 
@@ -1133,12 +1228,7 @@ fn events_main_changes_and_quiet_projects() {
     tick(&mut scheduler, 1080.0); // confirmed Mac deletions: a full scan at once
     assert_eq!(
         *rounds.seen.lock().unwrap(),
-        vec![
-            None,
-            Some(paths(&["a.txt"])),
-            Some(BTreeSet::new()),
-            None
-        ]
+        vec![None, Some(paths(&["a.txt"])), Some(BTreeSet::new()), None]
     );
     // Only the first report changes what the sidebar shows; later rounds stay synced.
     assert_eq!(refreshed, 1);
@@ -1194,11 +1284,13 @@ fn the_watcher_collects_paths_per_folder_and_asks_for_rescans() {
     let mut ready = vec![root.display().to_string(), other.display().to_string()];
     ready.sort();
     let helper = fixture.state.join("helper");
+    let release = fixture.state.join("release");
     std::fs::write(
         &helper,
         format!(
-            "#!/bin/sh\necho '{}'\nread release\necho '{}'\necho '{}'\necho '{}'\ncat > /dev/null\n",
+            "#!/bin/sh\necho '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\necho '{}'\necho '{}'\necho '{}'\ncat > /dev/null\n",
             json!({"ready": ready}),
+            release.display(),
             json!({"path": root.join("a.txt")}),
             json!({"path": root.join("sub/b.txt")}),
             json!({"rescan": other}),
@@ -1213,15 +1305,21 @@ fn the_watcher_collects_paths_per_folder_and_asks_for_rescans() {
     // The first take after a start scans in full: nothing was watched before.
     assert_eq!(watcher.take(&root), (true, None));
     assert_eq!(watcher.take(&other), (true, None));
-    watcher.send_line("release").unwrap();
+    std::fs::write(&release, b"").unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while watcher.pending(&root) != Some(Some(paths(&["a.txt", "sub/b.txt"])))
         || watcher.pending(&other).is_none()
     {
-        assert!(std::time::Instant::now() < deadline, "file watcher fixture events");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "file watcher fixture events"
+        );
         std::thread::yield_now();
     }
-    assert_eq!(watcher.take(&root), (true, Some(paths(&["a.txt", "sub/b.txt"]))));
+    assert_eq!(
+        watcher.take(&root),
+        (true, Some(paths(&["a.txt", "sub/b.txt"])))
+    );
     assert_eq!(watcher.take(&other), (true, None));
     assert_eq!(watcher.take(&root), (false, Some(BTreeSet::new())));
     watcher.stop();

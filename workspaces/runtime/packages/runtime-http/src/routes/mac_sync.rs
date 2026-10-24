@@ -77,7 +77,9 @@ async fn configure(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::MacSyncConfigRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let root = std::path::PathBuf::from(state.state_dir);
+    // The VM state directory holds the layr project records (`layr-projects/<id>`).
+    let root =
+        studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state.state_dir));
     let status = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/mac_sync",
         move || {
@@ -101,7 +103,8 @@ async fn resolve(
     ApiJson(body): ApiJson<generated::MacSyncResolveRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let notifications = state.sync_changes.clone();
-    let root = std::path::PathBuf::from(state.state_dir.clone());
+    let root =
+        studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state.state_dir));
     let guest = UnixGuestRpc::for_runtime_state(std::path::Path::new(&state.state_dir));
     let project_id = body.project_id;
     let resolve_project_id = project_id.clone();

@@ -140,14 +140,22 @@ changed, and `{"ready"}` once. It exits when the backend closes its input.
 
 ## Implementation
 
-- Mac side: `workspaces/runtime/apps/server/src/codex_vm_mac_sync.py`. The runtime
-  maintenance tick schedules rounds (see Watcher) for each VM project with a Mac folder
-  (`layr-projects/<id>/project.json`), only while the VM runs. Per project, the folder
+- Mac side: `workspaces/runtime/packages/runtime-services/src/mac_sync.rs` (choices,
+  configuration, sidebar report), `mac_sync/round.rs` (the round) and
+  `mac_sync/schedule.rs` (the schedule and the file event helper). The server starts the
+  schedule on macOS next to the VM watchdog; it ticks every second and runs rounds (see
+  Watcher) for each VM project with a Mac folder (`layr-projects/<id>/project.json` in the
+  VM state directory, `linux-vm/`), only while the VM runs. Per project, the folder
   `layr-projects/<id>/sync/` holds:
   - `manifest.json`: agreed content and its base state per path;
   - `held.json`: Mac content in a conflict, or handed to the lead (`why`: `conflict` or
     `agent`, with the handoff's main state as `base`);
   - `pending.json`: the round to repeat after a lost reply;
+  - `recover.json`: the paths of a round whose result the guest could not prove
+    (`outcome_unknown`). Python repeated such a round forever. Now the round records the
+    error in `status.json` and ends; the next round hashes these paths again on the Mac and
+    in main: a path equal on both sides agrees, a path that changed on both sides becomes a
+    conflict, and the hash guards decide the rest;
   - `allow-deletes.json`: the user's confirmation of the Mac deletions that paused the
     project, used by the next round;
   - `config.json`: `{"enabled": false}` pauses the project;
@@ -157,7 +165,10 @@ changed, and `{"ready"}` once. It exits when the backend closes its input.
 - Guest side: `workspaces/runtime/apps/vm-guest/mac_sync.py`, broker methods
   `sync.mac.apply`, `sync.mac.read`, `sync.mac.hashes`, `sync.mac.head` and
   `sync.mac.handoff`. Receipts per operation make a repeated call return the first
-  result. The project user owns the `mac`, `mac-view` and `mac-conflict` lines; layr adds
+  result. The broker writes its receipt row before an operation and the response after
+  it; a stop of the guest service or the broker between the two leaves the row without a
+  result. `sync.mac.apply` then runs again with the same ID (it starts from main and keeps
+  its own receipt); other methods answer `outcome_unknown`. The project user owns the `mac`, `mac-view` and `mac-conflict` lines; layr adds
   Mac files that Git ignores by name, so they reach main. The first round of a synced
   project denies `push` to the agents group.
 - HTTP API: `POST /api/mac-sync/resolve` (`projectId`, `path`, `choice`: `mac`, `vm` or
@@ -166,7 +177,8 @@ changed, and `{"ready"}` once. It exits when the backend closes its input.
 - `project.json` records `importStateId`, the base of a project's first round. A project
   imported before this change has none: its first round agrees only on files equal to
   main, and every other difference waits in `status.json` (`choices`).
-- Checks: `test_codex_vm_mac_sync.py` (Mac side), and the opt-in guest end-to-end tests
+- Checks: `runtime-services/tests/vm_macsync_round.rs` (Mac side, ported from the
+  Python `test_codex_vm_mac_sync.py`), and the opt-in guest end-to-end tests
   `test_layr_e2e.py` and `test_mac_sync_e2e.py` with a real layr daemon.
 
 ## Phases
