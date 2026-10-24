@@ -157,6 +157,10 @@ test-browser-smoke:
 smoke-installed *args:
     @node {{quote(justfile_directory() / "workspaces/tooling/apps/installed-smoke/smoke.mjs")}} "$@"
 
+[doc("Install a newer build over the current one on an isolated clone with real processes, before a live install. See docs/testing.md, Upgrade canary.")]
+upgrade-canary *args:
+    @node {{quote(justfile_directory() / "workspaces/tooling/apps/upgrade-canary/canary.mjs")}} "$@"
+
 [doc("Run the full browser project as a manual heavy check.")]
 test-heavy:
     @node {{quote(facade)}} test-heavy
