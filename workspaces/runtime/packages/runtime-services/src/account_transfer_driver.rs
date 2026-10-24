@@ -1349,12 +1349,13 @@ mod request_tests {
 
     #[test]
     fn a_running_retained_monitor_does_not_block_its_owners_account_transfer() {
-        let (_root, store) = store_with_agents();
-        run_async(store.transaction(|tx| {
+        let (root, store) = store_with_agents();
+        let cwd = root.path().to_owned();
+        run_async(store.transaction(move |tx| {
             tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
                 [json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}}).to_string()])?;
             let key=format!("retained:source:{}",studio_runtime_store::sha256_hex(b"monitor:watch"));
-            let submitted=json!({"call":{"scope":{"account":"source","connection":"original","generation":4},"operation":"monitor:watch","actor":{"agent":"lead","epoch":1},"transfer":null,"deleted_actor_session":null,"method":"command/exec","params":{"processId":"watch","cwd":"/tmp/work","command":["true"]}},
+            let submitted=json!({"call":{"scope":{"account":"source","connection":"original","generation":4},"operation":"monitor:watch","actor":{"agent":"lead","epoch":1},"transfer":null,"deleted_actor_session":null,"method":"command/exec","params":{"processId":"watch","cwd":cwd,"command":["true"]}},
                 "request":{"id":key,"generation":4,"method":"command/exec","operation":key,"thread":null,"lightweight":true,"deadline":60000,"remoteId":null}});
             tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'test',?2)",(format!("account-worker:{key}:submitted"),submitted.to_string()))?;
             tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'test',?2)",(format!("account-worker:{key}:written"),submitted["request"].to_string()))?;

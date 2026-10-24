@@ -914,9 +914,10 @@ mod replay_identity_tests {
     async fn transferred_monitor_controls_require_the_original_retained_generation() {
         let root = tempfile::tempdir().expect("root");
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
-        store.transaction_with(|tx| {
+        let cwd = root.path().to_owned();
+        store.transaction_with(move |tx| {
             AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(json!({"id":"agent-1","rootId":"agent-1","epoch":7,"accountKey":"target","status":"queued","autoWake":true})).expect("actor"))?;
-            let original = Call {operation:"monitor:watch".into(),method:"command/exec".into(),params:json!({"processId":"watch","command":["true"],"cwd":"/tmp"}),..call()};
+            let original = Call {operation:"monitor:watch".into(),method:"command/exec".into(),params:json!({"processId":"watch","command":["true"],"cwd":cwd}),..call()};
             let key=original.key();
             store::save(tx,&key,"submitted",json!({"call":original,"request":{"id":key,"generation":4,"method":"command/exec","operation":key,"thread":null,"lightweight":true,"deadline":60000,"remoteId":null}}))?;
             studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","interactive":true,"cancelRequested":true,"reattachedConnectionId":"reconnected-source","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old-connection"}})).expect("monitor"))?;
