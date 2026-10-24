@@ -3,6 +3,7 @@ import type { Agent, Snapshot } from "../types";
 
 // Execute the real effects and read callbacks without rendering unrelated UI.
 const {
+  projectionListeners,
   contexts,
   effects,
   cleanups,
@@ -20,6 +21,7 @@ const {
   syncPost,
   reconcile,
 } = vi.hoisted(() => ({
+  projectionListeners: new Set<(snapshot: unknown) => void>(),
   contexts: new Map<unknown, unknown>(),
   effects: [] as Array<() => void | (() => void)>,
   cleanups: [] as Array<() => void>,
@@ -162,6 +164,19 @@ vi.mock("../sync/resourceEvents", () => ({
   },
 }));
 
+vi.mock("../sync/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../sync/client")>()),
+  subscribeStateProjection: (accept: (snapshot: unknown) => void) => {
+    projectionListeners.add(accept);
+    return () => projectionListeners.delete(accept);
+  },
+}));
+
+function receiveReceipts(receipts: unknown[]) {
+  for (const accept of projectionListeners)
+    accept({ runtime: { messageReceipts: receipts } });
+}
+
 import { useMessageReceipts } from "./useMessageReceipts";
 import { useMessageQueue } from "./useMessageQueue";
 import {
@@ -197,6 +212,7 @@ describe("resource read callers", () => {
     post.mockReset();
     syncPost.mockReset();
     reconcile.mockClear();
+    projectionListeners.clear();
     contexts.clear();
     effects.length = 0;
     states.length = 0;
@@ -237,44 +253,39 @@ describe("resource read callers", () => {
     vi.unstubAllGlobals();
   });
 
-  it("reconciles the exact delivered message after a lost receipt read", async () => {
-    const receipt = { id: "message-one", status: "delivered" };
-    get
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-      .mockResolvedValue({
-        agent: "lead",
-        workspaceId: "workspace",
-        items: [receipt],
-      });
+  it("reconciles requested receipt entities with zero idle GETs", async () => {
+    const receipt = { id: "message-one", agent: "lead", status: "delivered" };
     mount(() =>
       useMessageReceipts("lead", "scope", "workspace", ["message-one"]),
     );
-    notify({ kind: "receipts", agentId: "lead" });
+    receiveReceipts([
+      receipt,
+      { ...receipt, id: "unrequested" },
+      { ...receipt, agent: "other" },
+    ]);
     await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(1);
-    expect(reconcile).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(get).toHaveBeenCalledTimes(2);
-    expect(get.mock.calls[1]).toEqual(get.mock.calls[0]);
     expect(reconcile).toHaveBeenCalledExactlyOnceWith(
       "lead",
       [receipt],
       "workspace",
-      get.mock.calls[1]?.[1]?.signal,
+      expect.any(AbortSignal),
     );
-    const value = states[0]!.value as { receipts: Map<string, unknown> };
-    expect(value.receipts.get("message-one")).toEqual(receipt);
+    expect(
+      (states[0]!.value as { receipts: Map<string, unknown> }).receipts.get(
+        receipt.id,
+      ),
+    ).toEqual(receipt);
+    receiveReceipts([
+      receipt,
+      { ...receipt, agent: "other", id: "other-message" },
+    ]);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(get).toHaveBeenCalledTimes(2);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
   });
 
   it("persists delivery before publishing a receipt that can retire its reader", async () => {
-    const receipt = { id: "message-one", status: "delivered" };
-    get.mockResolvedValue({
-      agent: "lead",
-      workspaceId: "workspace",
-      items: [receipt],
-    });
+    const receipt = { id: "message-one", agent: "lead", status: "delivered" };
     let finishWrite: (() => void) | undefined;
     reconcile.mockImplementationOnce(
       () =>
@@ -285,7 +296,7 @@ describe("resource read callers", () => {
     mount(() =>
       useMessageReceipts("lead", "scope", "workspace", ["message-one"]),
     );
-    notify({ kind: "receipts", agentId: "lead" });
+    receiveReceipts([receipt]);
     await vi.advanceTimersByTimeAsync(0);
 
     expect(reconcile).toHaveBeenCalledTimes(1);
@@ -300,52 +311,23 @@ describe("resource read callers", () => {
     expect(signal.aborted).toBe(true);
   });
 
-  it("aborts an unmounted receipt read before it can start another batch", async () => {
-    let resolveRead:
-      | ((value: {
-          agent: string;
-          workspaceId: string;
-          items: Array<{ id: string; status: string }>;
-        }) => void)
-      | undefined;
-    get.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveRead = resolve;
-        }),
+  it("discards a queued receipt projection after unmount", async () => {
+    mount(() =>
+      useMessageReceipts("lead", "scope", "workspace", ["message-one"]),
     );
-    const ids = Array.from({ length: 101 }, (_, index) => `message-${index}`);
-    mount(() => useMessageReceipts("lead", "scope", "workspace", ids));
-    notify({ kind: "receipts", agentId: "lead" });
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(get).toHaveBeenCalledTimes(1);
-    const signal = get.mock.calls[0]?.[1]?.signal as AbortSignal;
-    expect(signal).toBeInstanceOf(AbortSignal);
-    expect(signal.aborted).toBe(false);
+    receiveReceipts([
+      { id: "message-one", agent: "lead", status: "delivered" },
+    ]);
     const previous = states[0]!.value;
     cleanups.pop()?.();
-    expect(signal.aborted).toBe(true);
-
-    resolveRead?.({
-      agent: "lead",
-      workspaceId: "workspace",
-      items: [{ id: ids[0]!, status: "delivered" }],
-    });
     await vi.advanceTimersByTimeAsync(0);
-
-    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
     expect(reconcile).not.toHaveBeenCalled();
     expect(states[0]!.value).toBe(previous);
   });
 
   it("aborts reconciliation when receipt readers unmount", async () => {
-    const receipt = { id: "message-one", status: "delivered" };
-    get.mockResolvedValue({
-      agent: "lead",
-      workspaceId: "workspace",
-      items: [receipt],
-    });
+    const receipt = { id: "message-one", agent: "lead", status: "delivered" };
     reconcile.mockImplementationOnce(
       (_room, _receipts, _workspaceId, value) => {
         const signal = value as AbortSignal;
@@ -357,7 +339,7 @@ describe("resource read callers", () => {
     mount(() =>
       useMessageReceipts("lead", "scope", "workspace", ["message-one"]),
     );
-    notify({ kind: "receipts", agentId: "lead" });
+    receiveReceipts([receipt]);
     await vi.advanceTimersByTimeAsync(0);
 
     expect(reconcile).toHaveBeenCalledTimes(1);
@@ -367,7 +349,7 @@ describe("resource read callers", () => {
 
     expect(signal.aborted).toBe(true);
     await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
   });
 
   it("waits for the workspace identity before it reads message receipts", async () => {

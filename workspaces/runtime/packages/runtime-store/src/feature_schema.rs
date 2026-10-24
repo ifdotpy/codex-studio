@@ -281,6 +281,41 @@ const FEATURE_SCHEMA: &str = r#"
 
 pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
     transaction.execute_batch(FEATURE_SCHEMA)?;
+    transaction.execute_batch("CREATE INDEX IF NOT EXISTS runtime_receipt_transcript_item ON runtime_event_meta(json_extract(record,'$.transcriptItemId'))")?;
+    // A deleted row is no longer readable by the writer journal. Its source
+    // trigger owns the corresponding summary tombstone in the same transaction.
+    for (table, collection) in [
+        ("runtime_plans", "plan"),
+        ("runtime_annotations", "annotation"),
+        ("runtime_events", "messageReceipt"),
+        ("runtime_tasks", "task"),
+    ] {
+        let tombstone =
+            format!("json_object('collection','{collection}','id',OLD.id,'value',json('{{}}'))");
+        transaction.execute_batch(&format!(
+            "CREATE TRIGGER IF NOT EXISTS summary_{collection}_delete AFTER DELETE ON {table} BEGIN
+             INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+             SELECT '{collection}',OLD.id,(SELECT max(seq)+1 FROM (
+                 SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
+                 SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
+                 SELECT COALESCE(MAX(seq),0) FROM sync_versions)),
+                 sync_entity_hash({tombstone}),{tombstone},1
+             WHERE EXISTS(SELECT 1 FROM sync_entities WHERE collection='{collection}' AND id=OLD.id AND deleted=0)
+             ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=1;
+             END;"
+        ))?;
+    }
+    // Removing a transcript or its metadata can change materialization even
+    // though the event itself is unchanged. Journal that event through its
+    // source row; semantic event triggers ignore this value-preserving update.
+    transaction.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS summary_receipt_meta_delete AFTER DELETE ON runtime_event_meta BEGIN
+         UPDATE runtime_events SET id=id WHERE id=OLD.id AND kind='user'; END;
+         CREATE TRIGGER IF NOT EXISTS summary_receipt_item_delete AFTER DELETE ON runtime_items BEGIN
+         UPDATE runtime_events SET id=id WHERE kind='user' AND agent=OLD.agent AND (
+            OLD.id=agent || ':' || id OR id IN (SELECT id FROM runtime_event_meta
+                WHERE json_extract(record,'$.transcriptItemId')=OLD.id)); END;"
+    )?;
     Ok(())
 }
 

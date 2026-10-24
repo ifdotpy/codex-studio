@@ -14573,6 +14573,73 @@
         "title": "AnnotationBody",
         "type": "object"
       },
+      "AnnotationEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "created": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Created"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "line": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Line",
+            "type": "integer"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "rootId": {
+            "title": "Rootid",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "turnId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Turnid"
+          }
+        },
+        "required": [
+          "id",
+          "agent",
+          "rootId",
+          "path",
+          "line",
+          "text",
+          "created"
+        ],
+        "title": "AnnotationEntityDto",
+        "type": "object"
+      },
       "AnnotationReceipt": {
         "additionalProperties": false,
         "properties": {
@@ -30950,6 +31017,72 @@
         "title": "MessageKind",
         "type": "string"
       },
+      "MessageReceiptEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Agent"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Error"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "materialized": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The exact user input exists in the saved transcript.",
+            "title": "Materialized"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "pending",
+              "reserved",
+              "dispatching",
+              "delivered",
+              "accepted",
+              "sent",
+              "uncertain",
+              "failed",
+              "cancelled",
+              "stored_only"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "MessageReceiptEntityDto",
+        "type": "object"
+      },
       "MessageReceipts": {
         "additionalProperties": false,
         "properties": {
@@ -37267,6 +37400,76 @@
           "version"
         ],
         "title": "PlanBody",
+        "type": "object"
+      },
+      "PlanSummaryEntityDto": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "description": "Known fields; runtime_plans records are returned without projection.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "native": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativePlanPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "rootId": {
+            "title": "Rootid",
+            "type": "string"
+          },
+          "steps": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "updated": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Updated"
+          },
+          "version": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "rootId",
+          "text",
+          "version",
+          "updated"
+        ],
+        "title": "PlanSummaryEntityDto",
         "type": "object"
       },
       "PlanView": {
@@ -52329,6 +52532,30 @@
         "title": "SyncAgentEntityPayload",
         "type": "object"
       },
+      "SyncAnnotationEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "annotation",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/AnnotationEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncAnnotationEntityPayload",
+        "type": "object"
+      },
       "SyncChatEntityPayload": {
         "additionalProperties": false,
         "properties": {
@@ -52809,6 +53036,69 @@
             "type": "object"
           },
           {
+            "properties": {
+              "collection": {
+                "const": "messageReceipt",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/MessageReceiptEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "plan",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/PlanSummaryEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "annotation",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/AnnotationEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
             "not": {
               "required": [
                 "value"
@@ -52833,7 +53123,10 @@
                   "uiPreferences",
                   "work",
                   "workspace",
-                  "rateLimit"
+                  "rateLimit",
+                  "messageReceipt",
+                  "plan",
+                  "annotation"
                 ],
                 "type": "string"
               },
@@ -52884,6 +53177,7 @@
         "discriminator": {
           "mapping": {
             "agent": "#/components/schemas/SyncAgentEntityPayload",
+            "annotation": "#/components/schemas/SyncAnnotationEntityPayload",
             "chat": "#/components/schemas/SyncChatEntityPayload",
             "complaint": "#/components/schemas/SyncComplaintEntityPayload",
             "edge": "#/components/schemas/SyncEdgeEntityPayload",
@@ -52891,6 +53185,7 @@
             "model": "#/components/schemas/SyncModelEntityPayload",
             "monitor": "#/components/schemas/SyncMonitorEntityPayload",
             "peerTeam": "#/components/schemas/SyncPeerTeamEntityPayload",
+            "plan": "#/components/schemas/SyncPlanEntityPayload",
             "project": "#/components/schemas/SyncProjectEntityPayload",
             "rateLimit": "#/components/schemas/SyncRateLimitEntityPayload",
             "request": "#/components/schemas/SyncRequestEntityPayload",
@@ -52954,6 +53249,15 @@
           },
           {
             "$ref": "#/components/schemas/SyncRateLimitEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncMessageReceiptEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncPlanEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncAnnotationEntityPayload"
           }
         ]
       },
@@ -53102,6 +53406,30 @@
           "value"
         ],
         "title": "SyncPeerTeamEntityPayload",
+        "type": "object"
+      },
+      "SyncPlanEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "plan",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/PlanSummaryEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncPlanEntityPayload",
         "type": "object"
       },
       "SyncProjectEntityPayload": {
@@ -54308,6 +54636,18 @@
             ],
             "title": "Durationms"
           },
+          "error": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
           "exitCode": {
             "anyOf": [
               {
@@ -54464,6 +54804,18 @@
               }
             ],
             "title": "Stdinerror"
+          },
+          "tail": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Tail"
           },
           "timeout_ms": {
             "anyOf": [

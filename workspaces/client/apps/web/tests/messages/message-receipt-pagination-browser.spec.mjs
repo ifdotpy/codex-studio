@@ -55,13 +55,7 @@ async function runMessageReceiptScenario(
   const receiptRequests = [];
   const errors = [];
   let latest;
-  let receiptGateReleased = false;
-  let releaseReceiptGate;
-  let receiptRequestPaused = false;
   let releaseFreshTranscript = () => {};
-  const receiptGate = new Promise((resolve) => {
-    releaseReceiptGate = resolve;
-  });
 
   const changeFixture = async (agent, phase, target, token) => {
     const value = { id, uncertainId, text, uncertainText, observedFirst };
@@ -190,6 +184,38 @@ async function runMessageReceiptScenario(
           }
         }
       }
+      // This external SQLite fixture is a writer: publish the exact summary
+      // with its source change, rather than asking the server to rebuild it.
+      for (const messageId of [value.id, value.uncertainId]) {
+        const event = db
+          .prepare(
+            "SELECT id,agent,status,error FROM runtime_events WHERE id=?",
+          )
+          .get(messageId);
+        if (!event) continue;
+        const item = db
+          .prepare("SELECT record FROM runtime_items WHERE id=? AND agent=?")
+          .get(agent + ":" + messageId, agent);
+        const value = { ...event, materialized: !!item };
+        const payload = JSON.stringify({
+          collection: "messageReceipt",
+          id: messageId,
+          value,
+        });
+        const seq = db
+          .prepare(
+            "SELECT max(seq)+1 AS seq FROM (SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_versions)",
+          )
+          .get().seq;
+        db.prepare(
+          "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('messageReceipt',?,?,?,?,0) ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=0",
+        ).run(
+          messageId,
+          seq,
+          createHash("sha256").update(payload).digest("hex"),
+          payload,
+        );
+      }
       db.exec("COMMIT");
     } finally {
       db.close();
@@ -207,16 +233,10 @@ async function runMessageReceiptScenario(
         },
         body: JSON.stringify({
           requestId: randomUUID(),
-          resources:
-            phase === "delivered" && !observedFirst
-              ? [
-                  { kind: "queue", agentId: agent },
-                  { kind: "receipts", agentId: agent },
-                  { kind: "transcript", agentId: agent },
-                ]
-              : phase === "observed" || phase === "paginate"
-                ? [{ kind: "transcript", agentId: agent }]
-                : [{ kind: "receipts", agentId: agent }],
+          resources: [
+            { kind: "state" },
+            { kind: "transcript", agentId: agent },
+          ],
         }),
       });
       assert.equal(response.status, 200, await response.text());
@@ -423,18 +443,6 @@ async function runMessageReceiptScenario(
           ids: JSON.parse(url.searchParams.get("ids")),
         });
     });
-    // Hold the browser request so each scenario controls when the response is
-    // fetched relative to transcript observation and durable delivery.
-    if (observedFirst)
-      await page.route("**/api/messages/receipts**", async (route) => {
-        const url = new URL(route.request().url());
-        const ids = JSON.parse(url.searchParams.get("ids") || "[]");
-        if (!receiptGateReleased && ids.includes(id)) {
-          receiptRequestPaused = true;
-          await receiptGate;
-        }
-        await route.continue();
-      });
     await page.goto(origin);
     await page.locator("#message").waitFor();
     const bubble = (message) =>
@@ -491,10 +499,6 @@ async function runMessageReceiptScenario(
     );
 
     if (observedFirst) {
-      await until(
-        () => receiptRequestPaused,
-        "The app tab did not start a receipt request for the accepted message",
-      );
       await changeFixture(agent.id, "observed", target, state.token);
       await until(
         async () => (await readOutboxReceipt(id))?.displayPending === false,
@@ -502,91 +506,23 @@ async function runMessageReceiptScenario(
       );
       const hiddenAccepted = await readOutboxReceipt(id);
       assert.equal(hiddenAccepted.status, "accepted");
-      assert.equal(hiddenAccepted.receipt?.status, "queued");
+      assert.equal(hiddenAccepted.receipt?.status, "pending");
       assert.equal(hiddenAccepted.displayPending, false);
       await bubble(text)
         .getByRole("status")
         .filter({ hasText: "Waiting for agent" })
         .waitFor({ state: "detached" });
       await changeFixture(agent.id, "delivered", target, state.token);
-      const deliveredReceiptResponse = page.waitForResponse((response) => {
-        const url = new URL(response.url());
+      await until(async () => {
+        const value = await readOutboxReceipt(id);
         return (
-          url.pathname === "/api/messages/receipts" &&
-          url.searchParams.get("agent") === agent.id &&
-          JSON.parse(url.searchParams.get("ids") || "[]").includes(id)
+          value?.status === "accepted" &&
+          value.receipt?.status === "delivered" &&
+          value.receipt?.materialized === true &&
+          value.displayPending === false
         );
-      });
-      receiptGateReleased = true;
-      releaseReceiptGate();
-      const response = await deliveredReceiptResponse;
-      const deliveredResponse = {
-        status: response.status(),
-        schema: response.headers()[API_SCHEMA_HASH_HEADER.toLowerCase()],
-        agent: new URL(response.url()).searchParams.get("agent"),
-        body: await response.json(),
-      };
-      assert.equal(deliveredResponse.status, 200);
-      assert.equal(deliveredResponse.schema, readApiSchemaHash());
-      assert.equal(deliveredResponse.agent, agent.id);
-      assert.ok(
-        deliveredResponse.body.items.some(
-          (item) =>
-            item.id === id &&
-            item.status === "delivered" &&
-            item.materialized === true,
-        ),
-      );
-
-      try {
-        await until(
-          async () => {
-            const value = await readOutboxReceipt(id);
-            return (
-              value?.status === "accepted" &&
-              value.receipt?.status === "delivered" &&
-              value.receipt?.materialized === true &&
-              value.displayPending === false
-            );
-          },
-          "The accepted outbox entry did not reconcile the delivered receipt",
-          5000,
-        );
-      } catch (error) {
-        const initialCount = receiptRequests.filter(
-          (request) => request.agent === agent.id && request.ids.includes(id),
-        ).length;
-        for (let notification = 1; notification <= 3; notification += 1) {
-          const before = receiptRequests.filter(
-            (request) => request.agent === agent.id,
-          ).length;
-          await changeFixture(agent.id, "receipt-refresh", target, state.token);
-          await until(
-            () =>
-              receiptRequests.filter((request) => request.agent === agent.id)
-                .length > before,
-            `Receipt notification ${notification} did not trigger a receipt request`,
-          );
-        }
-        const requestsContainingIdAfterNotifications =
-          receiptRequests.filter(
-            (request) => request.agent === agent.id && request.ids.includes(id),
-          ).length - initialCount;
-        const visibleBeforeReload = {
-          bubbleCount: await bubble(text).count(),
-          statuses: await bubble(text).getByRole("status").allTextContents(),
-        };
-        await page.reload();
-        await page.locator("#message").waitFor();
-        const storedAfterReload = await readOutboxReceipt(id);
-        const visibleAfterReload = {
-          bubbleCount: await bubble(text).count(),
-          statuses: await bubble(text).getByRole("status").allTextContents(),
-        };
-        throw new Error(
-          `${error.message}: ${JSON.stringify({ storedReceipt: await readOutboxReceipt(id), requestsContainingIdAfterThreeNotifications: requestsContainingIdAfterNotifications, storedAfterReload, visibleBeforeReload, visibleAfterReload, posts, errors })}`,
-        );
-      }
+      }, "The streamed receipt did not reconcile the observed input");
+      assert.deepEqual(receiptRequests, [], "receipt GET count is zero");
       assert.equal(
         posts.length,
         0,
@@ -749,16 +685,7 @@ async function runMessageReceiptScenario(
       0,
       "History recovery must not resend or cancel input",
     );
-    assert.ok(
-      receiptRequests.some(
-        (request) => request.agent === agent.id && request.ids.includes(id),
-      ),
-    );
-    assert.ok(
-      receiptRequests.every(
-        (request) => request.agent === agent.id && request.ids.length <= 100,
-      ),
-    );
+    assert.deepEqual(receiptRequests, [], "receipt GET count is zero");
     assert.deepEqual(errors, []);
     console.log(
       JSON.stringify({
@@ -772,8 +699,6 @@ async function runMessageReceiptScenario(
     );
   } finally {
     releaseFreshTranscript();
-    receiptGateReleased = true;
-    releaseReceiptGate();
     await Promise.all(
       testBrowser
         .contexts()

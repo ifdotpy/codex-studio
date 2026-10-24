@@ -32,11 +32,22 @@ pub trait EntityPublisher: Send + Sync {
 pub struct PendingEntities {
     pub agents: BTreeSet<String>,
     pub requests: BTreeSet<String>,
+    pub receipt_events: BTreeSet<String>,
+    pub receipt_items: BTreeSet<String>,
+    pub plans: BTreeSet<String>,
+    pub annotations: BTreeSet<String>,
+    pub tasks: BTreeSet<String>,
 }
 
 impl PendingEntities {
     pub fn is_empty(&self) -> bool {
-        self.agents.is_empty() && self.requests.is_empty()
+        self.agents.is_empty()
+            && self.requests.is_empty()
+            && self.receipt_events.is_empty()
+            && self.receipt_items.is_empty()
+            && self.plans.is_empty()
+            && self.annotations.is_empty()
+            && self.tasks.is_empty()
     }
 }
 
@@ -44,6 +55,12 @@ impl PendingEntities {
 enum Source {
     Agent,
     Request,
+    Event,
+    EventMeta,
+    Item,
+    Plan,
+    Annotation,
+    Task,
 }
 
 impl Source {
@@ -51,6 +68,12 @@ impl Source {
         match table {
             "runtime_agents" => Some(Self::Agent),
             "runtime_requests" => Some(Self::Request),
+            "runtime_events" => Some(Self::Event),
+            "runtime_event_meta" => Some(Self::EventMeta),
+            "runtime_items" => Some(Self::Item),
+            "runtime_plans" => Some(Self::Plan),
+            "runtime_annotations" => Some(Self::Annotation),
+            "runtime_tasks" => Some(Self::Task),
             _ => None,
         }
     }
@@ -59,6 +82,9 @@ impl Source {
         match collection {
             "agent" => Some(Self::Agent),
             "request" => Some(Self::Request),
+            "plan" => Some(Self::Plan),
+            "annotation" => Some(Self::Annotation),
+            "task" => Some(Self::Task),
             _ => None,
         }
     }
@@ -67,6 +93,12 @@ impl Source {
         match self {
             Self::Agent => "runtime_agents",
             Self::Request => "runtime_requests",
+            Self::Event => "runtime_events",
+            Self::EventMeta => "runtime_event_meta",
+            Self::Item => "runtime_items",
+            Self::Plan => "runtime_plans",
+            Self::Annotation => "runtime_annotations",
+            Self::Task => "runtime_tasks",
         }
     }
 }
@@ -183,6 +215,11 @@ pub(crate) fn pending(
         match source {
             Source::Agent => pending.agents.insert(id),
             Source::Request => pending.requests.insert(id),
+            Source::Event | Source::EventMeta => pending.receipt_events.insert(id),
+            Source::Item => pending.receipt_items.insert(id),
+            Source::Plan => pending.plans.insert(id),
+            Source::Annotation => pending.annotations.insert(id),
+            Source::Task => pending.tasks.insert(id),
         };
     }
     Ok(pending)

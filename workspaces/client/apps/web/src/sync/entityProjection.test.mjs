@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { applyEntityRows, emptyEntityProjection } from "./entityProjection.ts";
+import {
+  applyEntityChanges,
+  applyEntityRows,
+  emptyEntityProjection,
+} from "./entityProjection.ts";
 import {
   boundTranscriptItems,
   trimTranscriptPageCache,
@@ -54,7 +58,7 @@ it("projects bounded workspace summaries and receipts with deletes", () => {
   assert.equal(first.runtime.messageReceipts[0].status, "pending");
   assert.equal(first.runtime.plans[0].text, "Plan");
   assert.equal(first.runtime.annotations[0].text, "Comment");
-  const next = applyEntityRows(
+  const next = applyEntityChanges(
     state,
     [{ id: "entity:annotation:n", seq: 4, payload: "", _deleted: true }],
     true,

@@ -49,7 +49,6 @@ import {
   type ChatIndicatorKind,
 } from "../chat-status/chatStatusModel";
 import type { Agent, JsonValue, Monitor, Request, Snapshot } from "../../types";
-import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import { copyText } from "../../clipboard/clipboard";
 import {
   activeTask,
@@ -749,7 +748,6 @@ export default function BackgroundTasks({
           <TaskDetail
             key={selectedTask.id}
             task={selectedTask}
-            opened={opened}
             owner={owner(selectedTask.agent)}
             now={now}
             requests={data.runtime.requests}
@@ -832,7 +830,6 @@ export function BackgroundTaskStrip({
 
 function TaskDetail({
   task: summary,
-  opened,
   owner,
   now,
   requests,
@@ -845,7 +842,6 @@ function TaskDetail({
   controlPending,
 }: {
   task: DisplayBackgroundTask;
-  opened: boolean;
   owner?: Agent;
   now: number;
   requests: PendingRequest[];
@@ -857,7 +853,6 @@ function TaskDetail({
   onStop: () => void;
   controlPending: boolean;
 }) {
-  const watchResourceReads = useServerResourceReads();
   const { get, post } = useServerApi();
 
   const [fileOutput, setFileOutput] = useState<{
@@ -868,32 +863,15 @@ function TaskDetail({
   const [fileError, setFileError] = useState("");
   const [detail, setDetail] = useState<TaskDetailResponse | null>(null),
     [loadError, setLoadError] = useState("");
-  useEffect(() => {
-    if (
-      !opened ||
-      summary.kind === "monitor" ||
-      summary.capabilities?.readOutput === false
-    )
-      return;
-    let stopped = false;
-    const stop = watchResourceReads(
-      { kind: "task", taskId: summary.id },
-      async () => {
-        const value = await get("/api/task", { query: { id: summary.id } });
-        if (!stopped) {
-          setDetail(value);
-          setLoadError("");
-        }
-      },
-      (error) => {
-        if (!stopped) setLoadError(errorText(error));
-      },
-    );
-    return () => {
-      stopped = true;
-      stop();
-    };
-  }, [opened, summary.id, summary.kind, watchResourceReads]);
+  const loadDetail = async () => {
+    try {
+      const value = await get("/api/task", { query: { id: summary.id } });
+      setDetail(value);
+      setLoadError("");
+    } catch (error) {
+      setLoadError(errorText(error));
+    }
+  };
   const resolvedDetail = detail?.id === summary.id ? detail : null;
   const task = resolvedDetail ? { ...resolvedDetail, ...summary } : summary;
   const monitor = task.kind === "monitor" && "tail" in task ? task : null;
@@ -903,7 +881,7 @@ function TaskDetail({
       resolvedDetail?.tail ??
       ("tail" in task ? task.tail : undefined))
     : undefined;
-  const outputError = resolvedDetail?.error ?? monitor?.error;
+  const outputError = task.error ?? resolvedDetail?.error ?? monitor?.error;
   const [pending, setPending] = useState(false),
     [follow, setFollow] = useState(true),
     [copied, setCopied] = useState(false);
@@ -1059,6 +1037,15 @@ function TaskDetail({
               </p>
             )}
           </div>
+        )}
+        {task.kind !== "monitor" && !resolvedDetail && (
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            onClick={() => void loadDetail()}
+          >
+            Read tool input
+          </Button>
         )}
         {resolvedDetail?.arguments && (
           <details className="task-input">

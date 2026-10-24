@@ -223,6 +223,9 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
         "room" => "RoomEntityDto",
         "task" => "TaskEntityDto",
         "taskDetail" => "TaskDetailResponse",
+        "messageReceipt" => "MessageReceiptEntityDto",
+        "plan" => "PlanSummaryEntityDto",
+        "annotation" => "AnnotationEntityDto",
         "monitor" => "MonitorEntityDto",
         "complaint" => "ComplaintEntityDto",
         "request" => "RequestEntityDto",
@@ -265,7 +268,7 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
     {
         fields.remove(*field);
     }
-    Some(project_schema_value(
+    let mut projected = project_schema_value(
         &public_record,
         schema,
         "",
@@ -273,7 +276,23 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
         0,
         collection == "agent",
         false,
-    ))
+    );
+    if collection == "task"
+        && let Some(tail) = record.get("tail").and_then(Value::as_str)
+        && let Some(summary) = projected.get("tail").and_then(Value::as_str)
+        && summary != tail
+    {
+        // The canonical text projection owns the bound. A task tail keeps
+        // that many newest characters and advertises the omitted output.
+        let suffix = tail
+            .chars()
+            .rev()
+            .take(summary.chars().count())
+            .collect::<String>();
+        projected["tail"] = json!(suffix.chars().rev().collect::<String>());
+        projected["outputTruncated"] = json!(true);
+    }
+    Some(projected)
 }
 
 /// `(collection, field)` pairs that a sync view publishes only when set: a

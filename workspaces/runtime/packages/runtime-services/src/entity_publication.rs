@@ -27,7 +27,8 @@ impl EntityPublisher for DefaultPublisher {
             &changes,
             server_id.as_deref(),
             &|_, _, _, _| true,
-        )
+        )?;
+        crate::sync_policy::publish_summary_changes(transaction, pending)
     }
 }
 

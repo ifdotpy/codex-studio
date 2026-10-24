@@ -43,6 +43,9 @@ type SnapshotRuntime = WorkspaceEntityDto & {
     components["schemas"]["AccountRateLimitsDto"]
   >;
   rateLimits?: components["schemas"]["AccountRateLimitsDto"] | null;
+  messageReceipts?: components["schemas"]["MessageReceiptEntityDto"][];
+  plans?: components["schemas"]["PlanSummaryEntityDto"][];
+  annotations?: components["schemas"]["AnnotationEntityDto"][];
   agents: Agent[];
   rooms: Room[];
   tasks: BackgroundTask[];

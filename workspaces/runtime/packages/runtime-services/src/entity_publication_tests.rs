@@ -40,7 +40,7 @@ async fn summary_entities_publish_at_the_source_write() {
     );
     write(
         &store,
-        "INSERT INTO runtime_events(id,agent,kind,status,created) VALUES(?1,?2,'user','pending',1)",
+        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,'user','Input','pending',1,1)",
         vec!["receipt".into(), CHAT.into()],
     )
     .await;
@@ -50,6 +50,32 @@ async fn summary_entities_publish_at_the_source_write() {
     assert_eq!(receipt["agent"], CHAT);
     assert_eq!(receipt["status"], "pending");
     assert_eq!(receipt["materialized"], false);
+    let item_id = format!("{CHAT}:receipt");
+    let item = json!({"id":item_id,"role":"user","text":"Input","at":1});
+    write(
+        &store,
+        "INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,1)",
+        vec![item_id.clone(), CHAT.into(), item.to_string()],
+    )
+    .await;
+    assert_eq!(
+        client_entity(&store, "messageReceipt", "receipt")
+            .expect("materialized receipt")
+            .1["materialized"],
+        true
+    );
+    write(
+        &store,
+        "DELETE FROM runtime_items WHERE id=?1",
+        vec![item_id],
+    )
+    .await;
+    assert_eq!(
+        client_entity(&store, "messageReceipt", "receipt")
+            .expect("retained receipt")
+            .1["materialized"],
+        false
+    );
     write(
         &store,
         "UPDATE runtime_events SET status='delivered' WHERE id=?1",
@@ -62,6 +88,58 @@ async fn summary_entities_publish_at_the_source_write() {
             .1["status"],
         "delivered"
     );
+    let task = json!({"id":"task","agent":CHAT,"kind":"command","status":"running","created":1,"tail":"output","error":"failure","arguments":"Explicit read only"});
+    write(
+        &store,
+        "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
+        vec!["task".into(), task.to_string()],
+    )
+    .await;
+    let summary = client_entity(&store, "task", "task")
+        .expect("task summary")
+        .1;
+    assert_eq!(summary["tail"], "output");
+    assert_eq!(summary["error"], "failure");
+    assert!(summary.get("arguments").is_none());
+    let tail = format!("{}Newest output", "Older output ".repeat(1_000));
+    write(
+        &store,
+        "UPDATE runtime_tasks SET record=json_set(record,'$.tail',?2) WHERE id=?1",
+        vec!["task".into(), tail.clone()],
+    )
+    .await;
+    let summary = client_entity(&store, "task", "task")
+        .expect("bounded task summary")
+        .1;
+    assert!(
+        summary["tail"]
+            .as_str()
+            .expect("tail")
+            .ends_with("Newest output")
+    );
+    assert!(summary["tail"].as_str().expect("tail").len() < tail.len());
+    assert_eq!(summary["outputTruncated"], true);
+    for (table, collection, id) in [
+        ("runtime_tasks", "task", "task"),
+        ("runtime_annotations", "annotation", "note"),
+        ("runtime_plans", "plan", CHAT),
+        ("runtime_events", "messageReceipt", "receipt"),
+    ] {
+        let (table, id) = (table.to_owned(), id.to_owned());
+        let lookup_id = id.clone();
+        store
+            .transaction_with(move |tx| {
+                tx.execute(&format!("DELETE FROM {table} WHERE id=?1"), [id])?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("delete source");
+        assert!(
+            client_entity(&store, collection, &lookup_id)
+                .expect("summary tombstone")
+                .0
+        );
+    }
 }
 
 fn chat(extra: Value) -> Value {

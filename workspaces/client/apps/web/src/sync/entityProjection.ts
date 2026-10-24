@@ -58,6 +58,9 @@ const ENTITY_COLLECTIONS = [
   "rateLimit",
   "model",
   "uiPreferences",
+  "messageReceipt",
+  "plan",
+  "annotation",
 ] as const satisfies readonly EntityCollection[];
 type Assert<T extends true> = T;
 type EntityCollectionsAreComplete = Assert<
@@ -93,6 +96,9 @@ export type EntityProjection = {
 
 function emptyEntityValues(): EntityValues {
   return {
+    messageReceipt: new Map(),
+    plan: new Map(),
+    annotation: new Map(),
     agent: new Map<string, AgentEntityDto>(),
     room: new Map<string, RoomEntityDto>(),
     task: new Map<string, TaskEntityDto>(),
@@ -215,6 +221,18 @@ function projectSnapshotCollections(
   const runtime = {
     ...workspace,
     modelsByAccount,
+    messageReceipts:
+      prior && !changed.has("messageReceipt")
+        ? prior.runtime.messageReceipts
+        : entityValues(values, "messageReceipt"),
+    plans:
+      prior && !changed.has("plan")
+        ? prior.runtime.plans
+        : entityValues(values, "plan"),
+    annotations:
+      prior && !changed.has("annotation")
+        ? prior.runtime.annotations
+        : entityValues(values, "annotation"),
     rateLimitsByAccount,
     rateLimits: rateLimitsByAccount?.default ?? null,
     agents,
@@ -330,6 +348,15 @@ export function applyEntityChanges(
       changed.add(oldCollection);
     }
     switch (payload.collection) {
+      case "messageReceipt":
+        state.values.messageReceipt.set(payload.id, payload.value);
+        break;
+      case "plan":
+        state.values.plan.set(payload.id, payload.value);
+        break;
+      case "annotation":
+        state.values.annotation.set(payload.id, payload.value);
+        break;
       case "agent":
         state.values.agent.set(payload.id, payload.value);
         break;

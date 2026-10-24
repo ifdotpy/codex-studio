@@ -96,9 +96,16 @@ test("workspace ui", async ({ page: testPage }) => {
     const errors = [];
     const resourceRequests = [];
     const annotationRequests = [];
-    const planNotModified = [];
+    const summaryRequests = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
+      if (
+        ["/api/plan", "/api/task", "/api/messages/receipts"].includes(
+          url.pathname,
+        ) &&
+        request.method() === "GET"
+      )
+        summaryRequests.push(request.url());
       if (url.pathname === "/api/resources")
         resourceRequests.push(request.url());
       if (
@@ -106,13 +113,6 @@ test("workspace ui", async ({ page: testPage }) => {
         url.searchParams.get("view") === "annotations"
       )
         annotationRequests.push(request.url());
-    });
-    page.on("response", (response) => {
-      if (
-        new URL(response.url()).pathname === "/api/plan" &&
-        response.status() === 304
-      )
-        planNotModified.push(response);
     });
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(origin);
@@ -143,25 +143,15 @@ test("workspace ui", async ({ page: testPage }) => {
         .click();
     };
     let modal;
-    const initialPlanRead = page.waitForResponse((response) => {
-      const url = new URL(response.url());
-      return url.pathname === "/api/plan" && response.status() === 200;
-    });
     await section("Plan");
-    await initialPlanRead;
     await drawer.getByText("This agent has not reported a plan.").waitFor();
-    const unchangedPlanRefresh = page.waitForResponse((response) => {
-      const url = new URL(response.url());
-      return url.pathname === "/api/plan" && response.status() === 304;
-    });
     await notifyWorkspace();
-    await unchangedPlanRefresh;
-    await poll(
-      async () => planNotModified.length > 0,
-      "unchanged workspace plan uses a conditional 304 refresh",
-    );
-    assert.ok(planNotModified.length > 0);
     await drawer.getByText("This agent has not reported a plan.").waitFor();
+    assert.deepEqual(
+      summaryRequests,
+      [],
+      "summary screens use stream entities",
+    );
     assert.equal(await drawer.getByRole("textbox").count(), 0);
     assert.equal(
       await drawer
@@ -508,10 +498,12 @@ test("workspace ui", async ({ page: testPage }) => {
           .annotations.length === 1,
       "line comment stored",
     );
-    assert.ok(
-      annotationRequests.length > 0,
-      "Changes requests only annotations",
+    assert.deepEqual(
+      annotationRequests,
+      [],
+      "annotation summaries use stream entities",
     );
+    assert.deepEqual(summaryRequests, [], "idle summary GET count is zero");
     await drawer
       .getByRole("textbox", { name: "Open a file" })
       .fill("preview.html");

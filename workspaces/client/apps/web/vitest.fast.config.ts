@@ -55,6 +55,7 @@ export default {
       "src/components/desktopNotices.test.ts",
       "src/components/watchResourceReads.test.ts",
       "src/components/RealtimeVoice.test.ts",
+      "src/components/resourceReadRecovery.test.ts",
       // Normal draft changes use RxDB's master stream; recovery reads its durable checkpoint.
       "src/sync/client.draftStream.test.ts",
       // A complete state batch advances the durable projection with no new pull; storage failures, gaps, reconnects and epochs still reconcile.

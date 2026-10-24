@@ -7885,6 +7885,28 @@ export interface components {
        */
       turnId?: string | null;
     };
+    /** AnnotationEntityDto */
+    AnnotationEntityDto: {
+      /** Agent */
+      agent: string;
+      /** Created */
+      created: number;
+      /** Id */
+      id: string;
+      /** Line */
+      line: number;
+      /** Path */
+      path: string;
+      /** Rootid */
+      rootId: string;
+      /** Text */
+      text: string;
+      /**
+       * Turnid
+       * @default null
+       */
+      turnId?: null | string;
+    };
     /** AnnotationReceipt */
     AnnotationReceipt: {
       /**
@@ -14635,6 +14657,36 @@ export interface components {
      * @enum {string}
      */
     MessageKind: "chat-message" | "room-invite" | "room-accept";
+    /** MessageReceiptEntityDto */
+    MessageReceiptEntityDto: {
+      /** Agent */
+      agent?: null | string;
+      /** Error */
+      error?: null | string;
+      /** Id */
+      id: string;
+      /**
+       * Materialized
+       * @description The exact user input exists in the saved transcript.
+       */
+      materialized?: boolean | null;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status:
+        | "queued"
+        | "pending"
+        | "reserved"
+        | "dispatching"
+        | "delivered"
+        | "accepted"
+        | "sent"
+        | "uncertain"
+        | "failed"
+        | "cancelled"
+        | "stored_only";
+    };
     /** MessageReceipts */
     MessageReceipts: {
       /**
@@ -17335,6 +17387,31 @@ export interface components {
       text: string;
       /** Version */
       version: number;
+    };
+    /**
+     * PlanSummaryEntityDto
+     * @description Known fields; runtime_plans records are returned without projection.
+     */
+    PlanSummaryEntityDto: {
+      /** Id */
+      id: string;
+      /** @default null */
+      native?: components["schemas"]["NativePlanPayload"] | null;
+      /** Rootid */
+      rootId: string;
+      /**
+       * Steps
+       * @default []
+       */
+      steps?: components["schemas"]["JsonValue"][];
+      /** Text */
+      text: string;
+      /** Updated */
+      updated: number | null;
+      /** Version */
+      version: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * PlanView
@@ -23136,6 +23213,17 @@ export interface components {
       id: string;
       value: components["schemas"]["AgentEntityDto"];
     };
+    /** SyncAnnotationEntityPayload */
+    SyncAnnotationEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "annotation";
+      /** Id */
+      id: string;
+      value: components["schemas"]["AnnotationEntityDto"];
+    };
     /** SyncChatEntityPayload */
     SyncChatEntityPayload: {
       /**
@@ -23317,6 +23405,27 @@ export interface components {
           value: components["schemas"]["AccountRateLimitsDto"];
         }
       | {
+          /** @constant */
+          collection: "messageReceipt";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["MessageReceiptEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "plan";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["PlanSummaryEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "annotation";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["AnnotationEntityDto"];
+        }
+      | {
           /** @enum {string} */
           collection:
             | "agent"
@@ -23335,7 +23444,10 @@ export interface components {
             | "uiPreferences"
             | "work"
             | "workspace"
-            | "rateLimit";
+            | "rateLimit"
+            | "messageReceipt"
+            | "plan"
+            | "annotation";
           /** @constant */
           op: "delete";
         }
@@ -23357,7 +23469,10 @@ export interface components {
       | components["schemas"]["SyncUiPreferencesEntityPayload"]
       | components["schemas"]["SyncWorkEntityPayload"]
       | components["schemas"]["SyncWorkspaceEntityPayload"]
-      | components["schemas"]["SyncRateLimitEntityPayload"];
+      | components["schemas"]["SyncRateLimitEntityPayload"]
+      | components["schemas"]["SyncMessageReceiptEntityPayload"]
+      | components["schemas"]["SyncPlanEntityPayload"]
+      | components["schemas"]["SyncAnnotationEntityPayload"];
     /** SyncEventEntityPayload */
     SyncEventEntityPayload: {
       /**
@@ -23421,6 +23536,17 @@ export interface components {
       /** Id */
       id: string;
       value: components["schemas"]["PeerTeamEntityDto"];
+    };
+    /** SyncPlanEntityPayload */
+    SyncPlanEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "plan";
+      /** Id */
+      id: string;
+      value: components["schemas"]["PlanSummaryEntityDto"];
     };
     /** SyncProjectEntityPayload */
     SyncProjectEntityPayload: {
@@ -23845,6 +23971,11 @@ export interface components {
       cwd?: null | string;
       /** Durationms */
       durationMs?: number | null;
+      /**
+       * Error
+       * @default null
+       */
+      error?: null | string;
       /** Exitcode */
       exitCode?: number | null;
       /** Finished */
@@ -23872,6 +24003,11 @@ export interface components {
       stdinCloseRequested?: null | string;
       /** Stdinerror */
       stdinError?: null | string;
+      /**
+       * Tail
+       * @default null
+       */
+      tail?: null | string;
       /** Timeout Ms */
       timeout_ms?: number | null;
       /** Turnid */
@@ -39173,6 +39309,7 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 export type AgentEntityDto = components["schemas"]["AgentEntityDto"];
+export type AnnotationEntityDto = components["schemas"]["AnnotationEntityDto"];
 export type ChatEntityDto = components["schemas"]["ChatEntityDto"];
 export type ComplaintEntityDto = components["schemas"]["ComplaintEntityDto"];
 export type EdgeEntityDto = components["schemas"]["EdgeEntityDto"];
@@ -39180,6 +39317,8 @@ export type EventEntityDto = components["schemas"]["EventEntityDto"];
 export type ModelEntityDto = components["schemas"]["ModelEntityDto"];
 export type MonitorEntityDto = components["schemas"]["MonitorEntityDto"];
 export type PeerTeamEntityDto = components["schemas"]["PeerTeamEntityDto"];
+export type PlanSummaryEntityDto =
+  components["schemas"]["PlanSummaryEntityDto"];
 export type ProjectEntityDto = components["schemas"]["ProjectEntityDto"];
 export type RequestEntityDto = components["schemas"]["RequestEntityDto"];
 export type RoomEntityDto = components["schemas"]["RoomEntityDto"];
