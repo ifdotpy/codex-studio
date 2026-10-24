@@ -44,7 +44,9 @@ test("direct screens keep overlapping chat drafts and sends with their owner", a
     await dialog
       .getByRole("button", { name: "Add with an invitation", exact: true })
       .click();
-    await dialog.getByLabel("Server address").fill(remote.invitation.origin);
+    await dialog
+      .getByRole("textbox", { name: "Server address", exact: true })
+      .fill(remote.invitation.origin);
     await dialog
       .getByLabel("Pairing invitation")
       .fill(JSON.stringify(remote.invitation));
@@ -52,8 +54,9 @@ test("direct screens keep overlapping chat drafts and sends with their owner", a
       .getByRole("button", { name: "Pair server", exact: true })
       .click();
     const chat = (alias) =>
-      page.locator("#chat-list .chat-row").filter({
-        has: page.locator(`.chat-server-line[aria-label$=", ${alias}"]`),
+      page.getByRole("navigation", { name: "Chats" }).getByRole("button", {
+        name: alias === "REM" ? "Remote chat Server REM" : "Local chat",
+        exact: true,
       });
     await expect(chat("REM")).toContainText("Remote chat");
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
@@ -179,10 +182,14 @@ test("direct screens automatically include paired servers on phones", async ({
       page.locator("#chat-list [data-chat]").filter({
         has: page.getByText(`${server} chat`, { exact: true }),
       });
-    const openChats = () =>
-      page
-        .getByRole("button", { name: "Servers and chats", exact: true })
-        .click();
+    const openChats = async () => {
+      const toggle = page.getByRole("button", {
+        name: "Servers and chats",
+        exact: true,
+      });
+      if ((await toggle.getAttribute("aria-expanded")) === "false")
+        await toggle.click();
+    };
     await page.goto(home);
     await openChats();
     await expect(chat("Remote")).toBeVisible();

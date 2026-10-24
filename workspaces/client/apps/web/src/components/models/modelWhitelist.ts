@@ -28,9 +28,11 @@ export function writeModelWhitelist(value: ModelWhitelist, scope = "default") {
 }
 export function useModelWhitelist() {
   const { scope } = useModelCatalogReader();
+  const getSnapshot = useCallback(() => readModelWhitelist(scope), [scope]);
   return useSyncExternalStore(
     subscribeModelWhitelist,
-    useCallback(() => readModelWhitelist(scope), [scope]),
+    getSnapshot,
+    getSnapshot,
   );
 }
 
