@@ -37,10 +37,9 @@ the native account ID and exact credit before use. Local cost estimates cover
 the local usage sources reported by the cost reader, across accounts. They are
 not an account invoice. The application does not rotate accounts automatically.
 
-Use `codex-control accounts` to list account keys from the terminal.
-`codex-control create`, `models`, and `limits` accept `--account KEY`.
-Without that option, `create` uses the project account. `models` and `limits` use
-the global default account.
+The Studio window lists the account keys (`GET /api/accounts`). Chat creation,
+models and limits accept an account key; without one, a new chat uses the project
+account, and models and limits use the global default account.
 
 ## Project accounts
 
@@ -58,14 +57,8 @@ account for that exact project, an unambiguous old account rule, or the global d
 Old account rules remain only as migration data. They no longer restrict operations
 or appear in model instructions. Existing native profiles and credentials remain unchanged.
 
-From the command line:
-
-```sh
-codex-control project-account /path/to/project
-codex-control project-account /path/to/project --account ACCOUNT
-codex-control create 'Task' --cwd /path/to/project
-codex-control create 'Task' --cwd /path/to/project --account ACCOUNT
-```
+Set the project account in the Studio window. The Python `codex-control
+project-account` command was removed with the Python backend.
 
 Checks: `workspaces/runtime/apps/server/tests/project-accounts-contract.py`, `workspaces/runtime/apps/server/tests/account-project-runtime.py`,
 `workspaces/runtime/apps/server/tests/runtime-accounts-contract.py`, and `workspaces/client/apps/web/tests/accounts/account-project-ui.spec.mjs`.

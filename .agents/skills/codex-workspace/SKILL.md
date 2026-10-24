@@ -17,12 +17,14 @@ to resolve or forward conversational questions, complaints, and requests.
 
 In a managed session, use the advertised `orchestration_*` tools. The application
 owns their queue, permissions, state, and worker lifecycle.
-From a terminal, use this project's `codex-control --help` to find commands
-for the existing server. Do not start another server to control the same state.
+From a terminal, `studio-runtime-server --help` lists the server, user service and
+Linux VM commands, and `codex-diagnostics` reads a diagnostics snapshot. No terminal
+command controls agents: `codex-control` and the other Python commands were removed.
+Do not start another server to control the same state.
 
 Read [managed orchestration](../../../docs/orchestration.md) for tool contracts,
-permissions, and recovery. Read [CLI usage](../../../docs/cli.md) only for standalone
-worker waves, daemon operations, or legacy chat commands. Read the
+permissions, and recovery. Read [CLI usage](../../../docs/cli.md) for the installed
+commands and the user service. Read the
 [project README](../../../docs/product-guide.md) for setup. Paths are relative to this skill.
 
 If neither the managed tools nor an available application server support the
