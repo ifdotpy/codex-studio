@@ -3378,9 +3378,10 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .unwrap();
     let mut restart_changes = restarted_state.sync_changes_handle().subscribe();
     // Shutdown closes the bridge's query; whether the bridge persists the
-    // aborted turn as interrupted before it exits is a race. Either outcome
-    // is safe: an unknown turn is held, a confirmed interruption continues
-    // with a restart notice. Neither resends the interrupted input.
+    // aborted turn as interrupted before it exits is a race. An unknown input
+    // is held, a confirmed interruption continues with a restart notice, and
+    // an accepted turn without conclusive native history is paused. All three
+    // are safe and must not resend the interrupted input.
     let recovered = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = fixture
@@ -3404,7 +3405,13 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
             let continued = record["restartRecovery"]["stage"] == "continued"
                 && record["status"] == "completed"
                 && record["inFlight"] != true;
-            if held || continued {
+            let unconfirmed = record["restartRecovery"]["stage"] == "finished"
+                && record["status"] == "paused"
+                && record["autoWake"] == false
+                && record["inFlight"] != true
+                && record["nativeFailureHold"] == true
+                && record["lastCompletedTurnStatus"] == "uncertain";
+            if held || continued || unconfirmed {
                 break record;
             }
             restart_changes.changed().await.unwrap();
@@ -3413,7 +3420,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .await
     .unwrap_or_else(|_| {
         panic!(
-            "in-flight Claude turn should be held or continued: {}",
+            "in-flight Claude turn should be held, continued, or paused as unconfirmed: {}",
             direct_agent_debug(&fixture.store, &agent_id)
         )
     });
@@ -3433,6 +3440,18 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     let queries_started = std::fs::read_to_string(&queries).unwrap().lines().count();
     if recovered["restartRecovery"]["stage"] == "held" {
         assert_eq!(second_event_status, "uncertain");
+        assert_eq!(queries_started, 2, "restart must not resend the turn");
+    } else if recovered["restartRecovery"]["stage"] == "finished" {
+        assert_eq!(second_event_status, "delivered");
+        assert_eq!(
+            recovered["error"]["message"],
+            "Studio could not confirm the Claude turn outcome. Review the native transcript before continuing."
+        );
+        assert_eq!(
+            recovered["nativeTurnError"]["turnId"],
+            recovered["lastCompletedTurn"]
+        );
+        assert!(recovered["startAttempt"].is_null());
         assert_eq!(queries_started, 2, "restart must not resend the turn");
     } else {
         assert_eq!(second_event_status, "delivered");
