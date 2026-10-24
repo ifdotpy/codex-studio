@@ -21,6 +21,7 @@ mod missing_session;
 mod unknown_thread_retry;
 mod limits_updates;
 mod login_completion;
+mod manual_release_closure;
 #[cfg(unix)]
 mod many_agents;
 mod native_requests;

@@ -13,7 +13,7 @@ use studio_runtime_schema::shared_values::{
     PROVIDER_THREAD_START_UNKNOWN_ERROR,
 };
 use studio_runtime_store::CachedSql;
-use studio_runtime_store::{EventWriteRepository, NotificationDispatchRepository};
+use studio_runtime_store::{AgentRecord, EventWriteRepository, NotificationDispatchRepository};
 
 pub(super) const PUBLICATION_DRAIN_LIMIT: usize = 64;
 /// Pending publication receipts above which token-rate observations are
@@ -1842,6 +1842,88 @@ fn journal_stage(entry: &JournalEntry) -> &'static str {
     }
 }
 
+/// Consume only manual release closure, including a completed worker with no
+/// current turn attempt. Other notifications retain their attempt fence.
+fn record_manual_release_closure(
+    tx: &rusqlite::Transaction<'_>,
+    identity: &JournalIdentity<'_>,
+    publication: &crate::notification_dispatch::PublicationContext,
+    entry: &JournalEntry,
+    method: &str,
+    params: &Value,
+) -> Result<bool, WorkerError> {
+    if method != "thread/closed"
+        && !(method == "thread/status/changed" && params["status"]["type"] == "notLoaded")
+    {
+        return Ok(false);
+    }
+    let Some(thread) = params["threadId"]
+        .as_str()
+        .filter(|thread| !thread.is_empty())
+    else {
+        return Ok(false);
+    };
+    let mut statement = tx.prepare_cached(
+        "SELECT record FROM runtime_agents WHERE thread_id=?1 AND account_key=?2 ORDER BY rowid LIMIT 2",
+    )?;
+    let rows = statement
+        .query_map(params![thread, identity.account], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let [raw] = rows.as_slice() else {
+        return Ok(false);
+    };
+    let mut agent: AgentRecord = serde_json::from_str(raw).map_err(|_| invalid(thread))?;
+    let record = agent.value();
+    let release = &record["nativeRelease"];
+    if !release["id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("manual-release:"))
+    {
+        return Ok(false);
+    }
+    // Never let the legacy turn route accept weaker closure evidence for a
+    // manual release, even when this notification fails the exact scope check.
+    let Some(source) = publication.native_source.as_ref() else {
+        return Ok(true);
+    };
+    let scope = crate::account_session_runtime::ConnectionScope {
+        account: identity.account.to_owned(),
+        connection: source.connection.clone(),
+        generation: entry.generation.0,
+    };
+    if identity.expected_vm_actor.is_some()
+        || source.provider != "codex"
+        || source.account != identity.account
+        || source.connection.is_empty()
+        || source.generation != Some(entry.generation.0)
+        || release["scope"] != json!(scope)
+        || release["connectionId"] != source.connection
+        || release["accountKey"] != identity.account
+        || release["threadId"] != thread
+        || release["targetEpoch"] != record["epoch"]
+        || release["targetRootId"] != record["rootId"]
+        || release["targetParentId"] != record["parentId"]
+        || release["resetPending"] != true
+        || release["submittedAt"].as_f64().is_none()
+        || !matches!(
+            release["phase"].as_str(),
+            Some("unsubscribing" | "released" | "unknown")
+        )
+    {
+        return Ok(true);
+    }
+    let mut release = release.clone();
+    release["closedAt"] = json!(now());
+    release["resetPending"] = json!(false);
+    // Closure does not replace the exact unsubscribe receipt. In particular,
+    // an unknown unsubscribe keeps its phase and cannot enable preparation.
+    agent.extra.insert("nativeRelease".into(), release);
+    AgentRepository::put(tx, &agent)?;
+    Ok(true)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn journal_one(
     tx: &rusqlite::Transaction<'_>,
@@ -1945,6 +2027,21 @@ fn journal_one(
                 .map_err(|_| invalid(&operation))?;
                 effect = Some(Effect::LimitsUpdated(update));
             }
+        } else if let Some((method, params)) = notice
+            && record_manual_release_closure(
+                tx,
+                &JournalIdentity {
+                    account,
+                    journal_scope,
+                    expected_vm_actor,
+                },
+                publication,
+                entry,
+                method,
+                params,
+            )?
+        {
+            // The manual release is independent of a live model turn.
         } else if let Some((method, params)) = notice
             && let Some((agent, epoch)) = steer::acknowledge(tx, account, method, params)?
         {
