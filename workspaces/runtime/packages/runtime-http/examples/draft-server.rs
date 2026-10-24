@@ -57,10 +57,13 @@ async fn main() {
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(async {
-        tokio::task::spawn_blocking(|| {
-            use std::io::Read;
-            let _closed = std::io::stdin().read(&mut [0]);
-        })
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/examples/draft-server",
+            || {
+                use std::io::Read;
+                let _closed = std::io::stdin().read(&mut [0]);
+            },
+        )
         .await
         .expect("fixture shutdown reader");
     })
