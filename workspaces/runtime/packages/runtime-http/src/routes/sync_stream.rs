@@ -4035,7 +4035,7 @@ mod tests {
             studio_runtime_services::diagnostics::sync_recovery_counters()["reconnect"]
                 .as_u64()
                 .expect("counter is numeric")
-                >= before_reconnects + 1
+                > before_reconnects
         );
         let reconnect = document(&body.next().await.expect("reconnect rates").expect("bytes"));
         assert_eq!(reconnect["snapshot"], true);

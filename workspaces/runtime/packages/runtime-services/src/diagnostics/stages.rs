@@ -110,7 +110,7 @@ mod tests {
         let histogram = &STAGES[STAGE_NAMES
             .iter()
             .position(|name| *name == "test.histogram")
-            .unwrap()];
+            .expect("test histogram stage is registered")];
         assert_eq!(histogram.count.load(Ordering::Relaxed), 2);
         assert_eq!(histogram.buckets[1].load(Ordering::Relaxed), 1);
         assert_eq!(histogram.buckets[6].load(Ordering::Relaxed), 1);
