@@ -1076,3 +1076,233 @@ async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() 
         .expect("created project exists");
     assert_eq!(project["accountKey"], "alternate");
 }
+
+/// Sign `body` for the receiver as `signing` and build the request that Tailscale Serve
+/// forwards to the backend.
+fn signed_api_request(
+    signing: &studio_runtime_services::remote_transport::RemoteIdentity,
+    receiver: &Value,
+    origin: &str,
+    method: &'static str,
+    target: &str,
+    body: &[u8],
+    nonce: &str,
+) -> Request<Body> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs() as i64;
+    let url = format!("{origin}{target}");
+    let request_id = format!("signed-api-{nonce}");
+    let signed = MultiServerRequest {
+        server_id: receiver["serverId"].as_str().expect("receiver ID"),
+        method,
+        url: &url,
+        request_id: &request_id,
+        timestamp: now,
+        nonce,
+        body,
+    };
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(target)
+        .header("host", "127.0.0.1:4000")
+        .header("x-forwarded-host", "receiver.fixture.ts.net")
+        .header("x-forwarded-proto", "https")
+        .header("x-forwarded-for", "100.64.0.2")
+        .header("tailscale-user-login", "owner@example.test")
+        .header("content-type", "application/json")
+        .header("content-length", body.len().to_string());
+    for (name, value) in multi_server_signed_headers(signing, &signed, now).expect("signs") {
+        builder = builder.header(name, value);
+    }
+    let mut request = builder
+        .body(Body::from(body.to_vec()))
+        .expect("signed request builds");
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:4321"
+            .parse::<std::net::SocketAddr>()
+            .expect("loopback peer address"),
+    ));
+    request
+}
+
+/// A paired Studio window reads and writes the ordinary API with signed requests. The
+/// Python boundary dispatched them; the Rust boundary answered 501 for every route except
+/// server management, so a window showed no chats of a paired Rust server.
+#[tokio::test]
+async fn a_paired_window_reaches_the_ordinary_api_with_signed_requests() {
+    let PairedReceiver {
+        _caller_root,
+        _receiver_root,
+        receiver_store,
+        receiver_identity,
+        caller_signing: _,
+        origin,
+        app,
+    } = paired_receiver().await;
+    // The window's own key, paired as a UI client.
+    let window_root = tempfile::tempdir().expect("window key root");
+    let window_store = Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(window_root.path()))
+            .await
+            .expect("window key store opens"),
+    );
+    let window_identity = studio_runtime_services::federation_credentials::Credentials::default()
+        .identity(
+            Arc::clone(&window_store),
+            Some("https://window.fixture.ts.net"),
+        )
+        .await
+        .expect("window key exists");
+    let window_signing =
+        load_multi_server_identity(window_root.path()).expect("window signing key loads");
+    let window_id = window_signing.id().to_owned();
+    let window_key = window_identity["publicKey"].clone();
+    let row_id = window_id.clone();
+    receiver_store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                rusqlite::params![
+                    row_id,
+                    serde_json::json!({
+                        "id":row_id,"clientId":row_id,"kind":"ui","status":"paired",
+                        "label":"Studio UI","created":1,"publicKey":window_key,
+                        "origin":null,"serverId":null,"revoked":null,
+                        "tailscaleUser":"owner@example.test"
+                    })
+                    .to_string(),
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the receiver trusts the window");
+    let last_access = || {
+        receiver_store
+            .test_read_transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT json_extract(record,'$.lastAccess') FROM runtime_access_clients WHERE id=?1",
+                    [&window_id],
+                    |row| row.get::<_, Option<f64>>(0),
+                )?)
+            })
+            .expect("the window row reads")
+    };
+    assert_eq!(last_access(), None);
+
+    let read = app
+        .clone()
+        .oneshot(signed_api_request(
+            &window_signing,
+            &receiver_identity,
+            origin,
+            "GET",
+            "/api/ui-summary",
+            b"",
+            "windowreadnonce00000000000000001",
+        ))
+        .await
+        .expect("signed read answers");
+    let status = read.status();
+    let server_header = read
+        .headers()
+        .get("x-studio-server")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let body = to_bytes(read.into_body(), 1024 * 1024).await.expect("body");
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let summary: Value = serde_json::from_slice(&body).expect("summary JSON");
+    assert!(
+        summary["chats"].is_array(),
+        "the window gets the chat summary"
+    );
+    assert_eq!(
+        server_header.as_deref(),
+        receiver_identity["serverId"].as_str(),
+        "the response names the server that answered"
+    );
+    assert!(last_access().is_some(), "the access is recorded");
+
+    // The same signed request again is a replay.
+    let replay = app
+        .clone()
+        .oneshot(signed_api_request(
+            &window_signing,
+            &receiver_identity,
+            origin,
+            "GET",
+            "/api/ui-summary",
+            b"",
+            "windowreadnonce00000000000000001",
+        ))
+        .await
+        .expect("replay answers");
+    assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
+
+    // A signed write reaches its route without the window holding a session token.
+    let write_body = br#"{"scope":"server","fields":{}}"#;
+    let write = app
+        .clone()
+        .oneshot(signed_api_request(
+            &window_signing,
+            &receiver_identity,
+            origin,
+            "POST",
+            "/api/sync/preferences",
+            write_body,
+            "windowwritenonce0000000000000002",
+        ))
+        .await
+        .expect("signed write answers");
+    let status = write.status();
+    let body = to_bytes(write.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    // A forged signature and a revoked window reach no route.
+    let mut forged = signed_api_request(
+        &window_signing,
+        &receiver_identity,
+        origin,
+        "GET",
+        "/api/ui-summary",
+        b"",
+        "windowforgednonce000000000000003",
+    );
+    forged
+        .headers_mut()
+        .insert("x-studio-signature", "AAAA".parse().expect("header value"));
+    let forged = app.clone().oneshot(forged).await.expect("forged answers");
+    assert_eq!(forged.status(), StatusCode::UNAUTHORIZED);
+    let revoked_id = window_id.clone();
+    receiver_store
+        .transaction(move |tx| {
+            tx.execute(
+                "UPDATE runtime_access_clients SET record=json_set(record,'$.status','revoked','$.revoked',2) WHERE id=?1",
+                [&revoked_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the window is revoked");
+    let revoked = app
+        .clone()
+        .oneshot(signed_api_request(
+            &window_signing,
+            &receiver_identity,
+            origin,
+            "GET",
+            "/api/ui-summary",
+            b"",
+            "windowrevokednonce00000000000004",
+        ))
+        .await
+        .expect("revoked answers");
+    assert!(
+        revoked.status().is_client_error(),
+        "a revoked window is refused: {}",
+        revoked.status()
+    );
+}
