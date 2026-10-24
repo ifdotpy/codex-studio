@@ -652,10 +652,14 @@ impl ModelCatalogService {
                     Some((id, (home, provider)))
                 })
                 .collect::<HashMap<_, _>>();
-            retired.extend(profiles.iter().filter_map(|(id, (home, provider))| {
-                (retained.get(id) != Some(&(home.clone(), provider.clone())))
-                    .then(|| (id.clone(), home.clone(), provider.clone()))
-            }));
+            retired.extend(
+                profiles
+                    .iter()
+                    .filter(|&(id, (home, provider))| {
+                        retained.get(id) != Some(&(home.clone(), provider.clone()))
+                    })
+                    .map(|(id, (home, provider))| (id.clone(), home.clone(), provider.clone())),
+            );
             profiles.clear();
             profiles.extend(retained);
             self.0.accounts_initialized.store(true, Ordering::Release);
