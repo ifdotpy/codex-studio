@@ -50,6 +50,7 @@ inherits = "ci"
 # Clause 31: Draft stream content witness: Unrelated commits must not request draft pulls; draft changes still notify.
 # Clause 32: supervisor detach on shutdown witnesses: Check that shutdown waits for the supervisor to release both connections within one bound inside the shutdown budget, and that preparation and backend shutdown report an unconfirmed detach instead of losing it.
 # Clause 33: supervisor detach on shutdown witnesses: Check that backend shutdown reports both detach timeouts through its real caller.
+# Vault readiness witness: OS metadata notifications replace renderer polls without reading keys.
 default-filter = '''
     ((package(=studio-runtime-server)) & ((kind(lib) | kind(bin) | kind(test))) & (test(operator_cli::)))
     | ((package(=studio-runtime-services)) & (kind(lib)) & (test(/^(host_exec(_service)?|layr_read)::/) | test(/^thread_prepare::vm_catalog_tests::/) | test(/::context::tests::the_tools_topic_lists_the_tools_of_a_vm_agent$/) | test(/::a_vm_agent_on_an_old_thread_gets_the_current_catalog$/)))
@@ -95,6 +96,7 @@ platform = 'cfg(target_os = "linux")'
 # Linux clause: supervisor protocol and identity witnesses: Reject retired protocol and Python identity adoption before ownership changes.
 # Linux clause: independent provider reaping witnesses: Check that child reaping and account session loss do not wait for blocked I/O, that the registry starts a new generation without resending an uncertain turn, and that a changed launch command reattaches a running child with the earlier command it lists.
 # Linux clause: supervisor detach on shutdown witnesses: Check that a real supervisor releases ownership on shutdown so another backend reattaches at the same generation.
+# Vault readiness witness: OS metadata notifications replace renderer polls without reading keys.
 default-filter = '''
     ((package(=studio-runtime-server)) & ((kind(lib) | kind(bin) | kind(test))) & (test(operator_cli::)))
     | ((package(=studio-runtime-services)) & (kind(lib)) & (test(/^(host_exec(_service)?|layr_read)::/) | test(/^thread_prepare::vm_catalog_tests::/) | test(/::context::tests::the_tools_topic_lists_the_tools_of_a_vm_agent$/) | test(/::a_vm_agent_on_an_old_thread_gets_the_current_catalog$/)))
