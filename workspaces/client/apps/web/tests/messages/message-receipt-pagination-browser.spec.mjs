@@ -221,6 +221,49 @@ async function runMessageReceiptScenario(
           payload,
         );
       }
+      // This external writer also owns its queue summary; a notification does
+      // not ask the server to reconstruct values from an event hint.
+      const epoch = JSON.parse(
+        db.prepare("SELECT record FROM runtime_agents WHERE id=?").get(agent)
+          .record,
+      ).epoch;
+      const queueItems = db
+        .prepare(
+          "SELECT id,kind,text,status,created,error FROM runtime_events WHERE agent=? AND epoch=? AND status IN ('pending','reserved') AND kind IN ('user','followup') ORDER BY created,rowid",
+        )
+        .all(agent, epoch)
+        .map((event) => ({
+          ...event,
+          status: "pending",
+          assets: [],
+          delivery: "current_turn",
+          requestedDelivery: "current_turn",
+        }));
+      const queueValue = {
+        items: queueItems,
+        capabilities: { reorder: true, receipts: true },
+        revision: createHash("sha256")
+          .update(JSON.stringify([epoch, queueItems]))
+          .digest("hex"),
+      };
+      const queuePayload = JSON.stringify({
+        collection: "queue",
+        id: agent,
+        value: queueValue,
+      });
+      const queueSeq = db
+        .prepare(
+          "SELECT max(seq)+1 AS seq FROM (SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_versions)",
+        )
+        .get().seq;
+      db.prepare(
+        "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('queue',?,?,?,?,0) ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=0",
+      ).run(
+        agent,
+        queueSeq,
+        createHash("sha256").update(queuePayload).digest("hex"),
+        queuePayload,
+      );
       db.exec("COMMIT");
     } finally {
       db.close();

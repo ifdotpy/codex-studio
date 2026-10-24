@@ -221,6 +221,13 @@ fn accounts_summary(snapshot: studio_runtime_services::account_policy::AccountsS
     json!({"accounts":snapshot.accounts,"archivedAccounts":snapshot.archived_accounts,"defaultAccountKey":snapshot.default_account_key,"defaultAccountGroups":snapshot.default_account_groups,"supportsDelete":true,"supportsDisconnect":true})
 }
 
+fn cost_summary(value: Value) -> Result<Value, StoreError> {
+    // The scanner cache carries private bookkeeping. Its generated public DTO
+    // owns the field allowlist, as it does for the explicit HTTP cost read.
+    let summary: crate::generated::AccountCostEntityDto = serde_json::from_value(value)?;
+    Ok(serde_json::to_value(summary)?)
+}
+
 async fn publish_costs(state: &HttpState) -> Result<(), StoreError> {
     let snapshot = accounts(state).await?;
     let root = std::path::PathBuf::from(&state.state_dir);
@@ -242,11 +249,11 @@ async fn publish_costs(state: &HttpState) -> Result<(), StoreError> {
                     value["refreshing"] = json!(true);
                 }
                 if let Some(fields) = value.as_object_mut() {fields.remove("_refreshDue");}
-                rows.push((key, value));
+                rows.push((key, cost_summary(value)?));
             }
-            (rows, refreshes)
+            Ok::<_, StoreError>((rows, refreshes))
         },
-    ).await.map_err(|_| StoreError::ReadTaskFailed)?;
+    ).await.map_err(|_| StoreError::ReadTaskFailed)??;
     put(
         state.store.as_ref().ok_or(StoreError::ReadTaskFailed)?,
         "accountCost",
@@ -396,6 +403,23 @@ mod tests {
         assert_eq!(value["accounts"][0]["label"], "Source account");
         assert!(value.get("logins").is_none());
         assert!(!value.to_string().contains("private-only"));
+    }
+
+    #[tokio::test]
+    async fn cost_summary_excludes_scanner_bookkeeping_from_published_cache() {
+        let (_root, state) = state().await;
+        let summary = cost_summary(json!({"accountKey":"default","at":1,"error":null,"data":null,"refreshing":false,"stale":false,"sourceFingerprint":"scanner-only","_refreshDue":true})).expect("public DTO");
+        put(
+            state.store.as_ref().expect("store"),
+            "accountCost",
+            vec![("default".into(), summary)],
+        )
+        .await
+        .expect("cache publication");
+        let value = entity(&state, "accountCost", "default");
+        assert_eq!(value["at"], 1);
+        assert!(value.get("sourceFingerprint").is_none());
+        assert!(value.get("_refreshDue").is_none());
     }
 
     #[tokio::test]

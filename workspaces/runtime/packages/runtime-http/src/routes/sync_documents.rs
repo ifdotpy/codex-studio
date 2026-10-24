@@ -1618,7 +1618,8 @@ mod vault_maintenance_tests {
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     rusqlite::params![
                         "agent-1",
-                        json!({"id":"agent-1","status":"idle"}).to_string()
+                        json!({"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
+                            .to_string()
                     ],
                 )?;
                 Ok(())
@@ -1676,7 +1677,10 @@ mod vault_maintenance_tests {
                     let id = format!("agent-{index:04}");
                     transaction.execute(
                         "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
-                        rusqlite::params![id, json!({"id":id,"status":"idle"}).to_string()],
+                        rusqlite::params![
+                            id,
+                            json!({"id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()
+                        ],
                     )?;
                     transaction.execute(
                         "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",
