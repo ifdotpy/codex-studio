@@ -684,7 +684,8 @@ fn transferred_monitor_keeps_its_source_for_interactive_input_and_reattach() {
     actor["accountKey"] = json!("target");
     let mut watch = case["before"].clone();
     watch["interactive"] = json!(true);
-    let snapshot = MonitorSnapshot::checked(watch.clone(), actor.clone()).unwrap();
+    let snapshot = MonitorSnapshot::checked(watch.clone(), actor.clone())
+        .expect("the source monitor and transferred actor form a valid snapshot");
     let input = Input {
         text: "hello".into(),
         rows: None,
@@ -700,7 +701,8 @@ fn transferred_monitor_keeps_its_source_for_interactive_input_and_reattach() {
     );
     watch["reattachRecovery"] =
         json!({"status":"running","epoch":op.epoch,"accountKey":op.account_key,"startedAt":2000.0});
-    let snapshot = MonitorSnapshot::checked(watch, actor).unwrap();
+    let snapshot = MonitorSnapshot::checked(watch, actor)
+        .expect("the source monitor remains valid after its actor moves");
     let proof = monitor_policy::ReattachProof {
         operation: op,
         operation_id: format!("monitor:{}", snapshot.id()),
