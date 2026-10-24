@@ -1904,7 +1904,7 @@ function fastTierCommands(root) {
             "studio-runtime-schema",
             "--lib",
             "-E",
-            "test(authenticated_task_caller_) | test(acceptance_gate_) | test(task_result_schema) | test(claude_child_) | test(workspace_fence) | test(input_origin) | test(stop_receipt_) | test(live_limits_) | test(archive_keeps_submodule) | test(turn_prepare::budget_tests::)",
+            "test(authenticated_task_caller_) | test(acceptance_gate_) | test(task_result_schema) | test(claude_child_) | test(workspace_fence) | test(input_origin) | test(stop_receipt_) | test(live_limits_) | test(archive_keeps_submodule) | test(linked_project_cleanup_) | test(turn_prepare::budget_tests::)",
           ],
         ],
       ],
