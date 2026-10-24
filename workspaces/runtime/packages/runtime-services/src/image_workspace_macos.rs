@@ -169,12 +169,7 @@ impl WorkspaceBackend for MacAsifBackend {
         key: &str,
         version: &str,
     ) -> Result<WorkspaceBaseStaging, ImageWorkspaceError> {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let store = std::env::var_os(STORE_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".local/state/codex-agents/workspaces"));
+        let store = store_dir();
         let version_path = store.join("bases").join(key).join("versions").join(version);
         let image = version_path.join("base.asif");
         let mount = version_path.join("mount");

@@ -81,8 +81,39 @@ mod image_execution_tests {
         assert!(!is_image_workspace_agent(&fallback));
     }
 }
-#[cfg(target_os = "macos")]
 const STORE_ENV: &str = "CODEX_WORKSPACE_STORE";
+/// Folder of the image workspace store inside the server's state folder.
+const STORE_FOLDER: &str = "workspaces";
+
+/// The image workspace store of this server: `CODEX_WORKSPACE_STORE`, else the `workspaces`
+/// folder of the server's own state folder. For the default state folder that is the store
+/// path of earlier builds, so nothing moves. A server with another state folder (a clone, a
+/// test, a second state) never reaches the default state's store.
+pub fn store_dir() -> PathBuf {
+    store_dir_for(
+        std::env::var_os(STORE_ENV).map(PathBuf::from),
+        studio_runtime_store::resolve_state_dir()
+            .map(CanonicalPath::into_path_buf)
+            .ok()
+            .or_else(|| std::env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from)),
+    )
+}
+
+/// The store for an explicit store setting and the server's state folder. Without a state
+/// folder (the default one does not exist yet) it is the default state folder's store.
+fn store_dir_for(configured: Option<PathBuf>, state: Option<PathBuf>) -> PathBuf {
+    configured.unwrap_or_else(|| {
+        state
+            .unwrap_or_else(|| {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_default()
+                    .join(".local/state")
+                    .join("codex-agents")
+            })
+            .join(STORE_FOLDER)
+    })
+}
 const BASE_MIN_FREE_ENV: &str = "CODEX_WORKSPACE_MIN_FREE_BYTES";
 const AGENT_MIN_FREE_ENV: &str = "CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES";
 const DEFAULT_BASE_MIN_FREE: u64 = 20 * 1024 * 1024 * 1024;
@@ -1001,13 +1032,7 @@ pub fn platform_refusal() -> ImageWorkspaceError {
 
 #[cfg(target_os = "macos")]
 pub fn production() -> WorkspaceLifecycle<MacAsifBackend> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let store = std::env::var_os(STORE_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".local/state/codex-agents/workspaces"));
-    WorkspaceLifecycle::with_backend(store, MacAsifBackend)
+    WorkspaceLifecycle::with_backend(store_dir(), MacAsifBackend)
 }
 
 pub fn create_workspace(root: &Path, agent_id: &str) -> Result<Value, ImageWorkspaceError> {
@@ -1657,6 +1682,43 @@ pub use macos::MacAsifBackend;
 mod tests {
     use super::*;
     use std::sync::{Mutex, mpsc};
+
+    #[test]
+    fn a_server_with_another_state_folder_never_uses_the_default_store() {
+        let other = PathBuf::from("/clone/state");
+        assert_eq!(
+            store_dir_for(None, Some(other.clone())),
+            other.join("workspaces")
+        );
+        // The default state folder keeps the store path of earlier builds.
+        let live = PathBuf::from("/Users/owner/.local/state/codex-agents");
+        assert_eq!(
+            store_dir_for(None, Some(live.clone())),
+            live.join("workspaces")
+        );
+        assert_eq!(
+            store_dir_for(Some("/explicit/store".into()), Some(other)),
+            PathBuf::from("/explicit/store")
+        );
+    }
+
+    #[test]
+    fn no_store_user_names_the_default_store_by_a_fixed_path() {
+        let fixed = concat!(".local/state/codex-agents", "/workspaces");
+        for (file, text) in [
+            ("image_workspace.rs", include_str!("image_workspace.rs")),
+            (
+                "image_workspace_macos.rs",
+                include_str!("image_workspace_macos.rs"),
+            ),
+            ("vm_preparation.rs", include_str!("vm_preparation.rs")),
+        ] {
+            assert!(
+                !text.contains(fixed),
+                "{file} names the default store by a fixed path"
+            );
+        }
+    }
 
     struct CopyGate {
         entered: mpsc::Sender<()>,
