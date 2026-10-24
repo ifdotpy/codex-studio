@@ -3402,6 +3402,12 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
                 && record["contextRepairWait"]["scope"] == "native"
                 && record["contextRepairWait"]["events"]
                     == json!(["a19e61c8-6156-4874-b8d8-9111b0a49fc4"]);
+            // A held input may also stop as interrupted without auto-wake when
+            // the restart notice reaches the agent before native repair starts.
+            let held_interrupted = record["status"] == "interrupted"
+                && record["autoWake"] == false
+                && record["inFlight"] != true
+                && record["restartRecovery"]["stage"] == "held";
             let continued = record["restartRecovery"]["stage"] == "continued"
                 && record["status"] == "completed"
                 && record["inFlight"] != true;
@@ -3411,7 +3417,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
                 && record["inFlight"] != true
                 && record["nativeFailureHold"] == true
                 && record["lastCompletedTurnStatus"] == "uncertain";
-            if held || continued || unconfirmed {
+            if held || held_interrupted || continued || unconfirmed {
                 break record;
             }
             restart_changes.changed().await.unwrap();
