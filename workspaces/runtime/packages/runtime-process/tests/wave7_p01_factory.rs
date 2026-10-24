@@ -502,3 +502,242 @@ async fn running_child_started_before_a_launch_variable_existed_reattaches() {
     .await
     .unwrap();
 }
+
+/// A launch variable whose value the owner learns over time: the Claude
+/// credential identity gains the organization and account UUIDs after a bridge
+/// starts, so the next build's launch has another value. A child launched with
+/// an earlier value that the launch lists in `retained.earlier` reattaches with
+/// its own environment; without that entry it stays unverifiable.
+#[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture; `which` exits at once"
+)]
+async fn running_child_started_with_an_earlier_learned_value_reattaches() {
+    const IDENTITY: &str = "STUDIO_CLAUDE_CREDENTIAL_IDENTITY";
+    let earlier = "claude:a@example.test";
+    let learned = "claude:v2:[\"a@example.test\",\"org\",\"acct\"]";
+    let (state, mut supervisor) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-process/tests/wave7_p01_factory",
+        || {
+            let state = support::DisposableState::new();
+            let supervisor = support::SupervisorProcess::start(&state);
+            (state, supervisor)
+        },
+    )
+    .await
+    .unwrap();
+    let state = std::sync::Arc::new(state);
+    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let handle = ProviderHandle::for_account("retained");
+    let node = std::process::Command::new("which")
+        .arg("node")
+        .output()
+        .unwrap();
+    assert!(node.status.success());
+    let node = String::from_utf8(node.stdout).unwrap().trim().to_owned();
+    let command = vec![node, "-e".to_owned(), "process.stdin.resume()".to_owned()];
+    let environment = |identity: &str| {
+        let mut environment = support::child_environment(&state.0);
+        environment.insert(IDENTITY.to_owned(), identity.to_owned());
+        environment
+    };
+    let launch = |identity: &str, retained: &[&str]| {
+        let mut launch =
+            ProviderLaunchSpec::new(command.clone(), environment(identity), state.0.clone());
+        if !retained.is_empty() {
+            launch.retained.earlier.insert(
+                IDENTITY.to_owned(),
+                retained.iter().map(|value| (*value).to_owned()).collect(),
+            );
+        }
+        OpenOptions {
+            clock: SessionClock::default(),
+            launch,
+            expected_generation: None,
+        }
+    };
+    let attach = |identity: &'static str, retained: &'static [&'static str]| {
+        let factory = &factory;
+        let handle = handle.clone();
+        let options = launch(identity, retained);
+        let mut reopened = launch(identity, retained);
+        async move {
+            let prepared = factory
+                .prepare(handle.clone(), options, Shutdown::default())
+                .await?;
+            reopened.expected_generation = Some(prepared.generation());
+            prepared.open(handle, reopened, Shutdown::default()).await
+        }
+    };
+    let mut attachment = attach(earlier, &[]).await.unwrap();
+    let started = attachment.status.borrow().info.clone().unwrap();
+    supervisor.own_child(started.pid);
+    let _exit = attachment.shutdown().await;
+
+    assert!(
+        attach(learned, &[]).await.is_err(),
+        "a learned value without its earlier form is refused"
+    );
+    let mut attachment = attach(learned, &["claude:a@example.test"]).await.unwrap();
+    let info = attachment.status.borrow().info.clone().unwrap();
+    assert!(info.resumed);
+    assert_eq!(info.pid, started.pid);
+    assert_eq!(info.generation, started.generation);
+    let _exit = attachment.shutdown().await;
+    // Fixture teardown owns the supervisor and its surviving child.
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-process/tests/wave7_p01_factory",
+        move || drop(supervisor),
+    )
+    .await
+    .unwrap();
+}
+
+/// A program and a launch variable that hold the canonical path of an
+/// executable which the system replaces while the child runs: Homebrew
+/// upgrades node and the Claude CLI updates itself. A child launched with the
+/// earlier paths reattaches with its own command and environment when the
+/// launch marks both places as replaceable executables; without that it stays
+/// unverifiable, and another value of any other variable stays refused.
+#[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture; `which` exits at once"
+)]
+async fn running_child_started_before_its_executables_were_replaced_reattaches() {
+    use studio_runtime_process::HealthRequest;
+    use studio_runtime_store::supervisor_journal::launch_signature;
+    const CLI: &str = "STUDIO_CLAUDE_BIN";
+    let (state, mut supervisor) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-process/tests/wave7_p01_factory",
+        || {
+            let state = support::DisposableState::new();
+            let supervisor = support::SupervisorProcess::start(&state);
+            (state, supervisor)
+        },
+    )
+    .await
+    .unwrap();
+    let state = std::sync::Arc::new(state);
+    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let handle = ProviderHandle::for_account("retained");
+    let node = std::process::Command::new("which")
+        .arg("node")
+        .output()
+        .unwrap();
+    assert!(node.status.success());
+    let node = String::from_utf8(node.stdout).unwrap().trim().to_owned();
+    // The earlier node is another path of the same executable.
+    let earlier_node = state.0.join("Cellar/node/24.1/bin/node");
+    std::fs::create_dir_all(earlier_node.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&node, &earlier_node).unwrap();
+    let earlier_node = earlier_node.to_string_lossy().into_owned();
+    let command = |program: &str| {
+        vec![
+            program.to_owned(),
+            "-e".to_owned(),
+            "process.stdin.resume()".to_owned(),
+        ]
+    };
+    let environment = |cli: &str, options: &str| {
+        let mut environment = support::child_environment(&state.0);
+        environment.insert(CLI.to_owned(), cli.to_owned());
+        environment.insert("STUDIO_CLAUDE_OPTIONS".to_owned(), options.to_owned());
+        environment
+    };
+    let launch = |program: &str, cli: &str, options: &str, replaceable: bool| {
+        let mut launch =
+            ProviderLaunchSpec::new(command(program), environment(cli, options), state.0.clone());
+        if replaceable {
+            launch.retained.executable_program = true;
+            launch.retained.executable_variables.insert(CLI.to_owned());
+        }
+        OpenOptions {
+            clock: SessionClock::default(),
+            launch,
+            expected_generation: None,
+        }
+    };
+    let attach = |program: String, cli: &'static str, options: &'static str, replaceable: bool| {
+        let factory = &factory;
+        let handle = handle.clone();
+        let options_value = launch(&program, cli, options, replaceable);
+        let mut reopened = launch(&program, cli, options, replaceable);
+        async move {
+            let prepared = factory
+                .prepare(handle.clone(), options_value, Shutdown::default())
+                .await?;
+            reopened.expected_generation = Some(prepared.generation());
+            prepared.open(handle, reopened, Shutdown::default()).await
+        }
+    };
+    let mut attachment = attach(earlier_node.clone(), "/cli/versions/2.1.1", "{}", true)
+        .await
+        .unwrap();
+    let started = attachment.status.borrow().info.clone().unwrap();
+    supervisor.own_child(started.pid);
+    let _exit = attachment.shutdown().await;
+
+    assert!(
+        attach(node.clone(), "/cli/versions/2.1.2", "{}", false)
+            .await
+            .is_err(),
+        "replaced executables that the launch does not mark are refused"
+    );
+    assert!(
+        attach(
+            node.clone(),
+            "/cli/versions/2.1.2",
+            "{\"configDir\":\"other\"}",
+            true
+        )
+        .await
+        .is_err(),
+        "a child with other options is refused"
+    );
+    let mut attachment = attach(node.clone(), "/cli/versions/2.1.2", "{}", true)
+        .await
+        .unwrap();
+    let info = attachment.status.borrow().info.clone().unwrap();
+    assert!(info.resumed);
+    assert_eq!(info.pid, started.pid);
+    assert_eq!(info.generation, started.generation);
+    let _exit = attachment.shutdown().await;
+    let running = {
+        let state = state.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-process/tests/wave7_p01_factory",
+            move || {
+                support::connect_client(&state)
+                    .health(HealthRequest::default())
+                    .unwrap()
+                    .handles
+                    .into_iter()
+                    .find(|handle| handle.id == "account:retained")
+                    .map(|handle| (handle.pid, handle.signature))
+            },
+        )
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        running,
+        Some((
+            Some(started.pid),
+            launch_signature(
+                &command(&earlier_node),
+                &environment("/cli/versions/2.1.1", "{}"),
+                state.0.to_str()
+            )
+        )),
+        "the reattached child keeps its own command and environment"
+    );
+    // Fixture teardown owns the supervisor and its surviving child.
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-process/tests/wave7_p01_factory",
+        move || drop(supervisor),
+    )
+    .await
+    .unwrap();
+}
