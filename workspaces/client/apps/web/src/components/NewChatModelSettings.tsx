@@ -2,11 +2,11 @@ import { isModelWhitelisted, useModelWhitelist } from "./models/modelWhitelist";
 import { modelForValue } from "./models/modelOption";
 import { useServerServices } from "../servers/ServerServicesContext";
 import { createServerServices } from "../servers/serverServices";
-import { watchResourceReads } from "./watchResourceReads";
+import { subscribeStateProjection } from "../sync/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Stack } from "@mantine/core";
 import { errorText, type GetResult } from "../api";
-import type { Agent } from "../types";
+import type { Agent, Snapshot } from "../types";
 import { serverResourceScope, type StudioServer } from "../servers/registry";
 import { ExecutionSettings, settingsFor } from "./agents/ExecutionSettings";
 import {
@@ -69,7 +69,17 @@ export default function NewChatModelSettings(props: Props) {
             services.owner.credentialId,
           ])
         : serverResourceScope(server.current),
-      watchResourceReads: services?.watchResourceReads ?? watchResourceReads,
+      subscribeState: (
+        accept: (snapshot: Snapshot) => void,
+        fail: (error: unknown | null) => void,
+      ) =>
+        services
+          ? services.sync.subscribeStateProjection((snapshot) => {
+              if (snapshot) accept(snapshot);
+            }, fail)
+          : subscribeStateProjection((snapshot) => {
+              if (snapshot) accept(snapshot);
+            }, fail),
       read: (options: Options) => {
         const key = JSON.stringify(options?.query ?? {});
         let shared = reads.get(key);

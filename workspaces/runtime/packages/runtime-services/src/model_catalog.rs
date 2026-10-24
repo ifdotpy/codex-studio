@@ -26,7 +26,7 @@ const CATALOG_ADMISSION_WAIT: Duration = Duration::from_secs(MODEL_CATALOG_ADMIS
 const MAX_CATALOG_PAGE_BYTES: usize = MODEL_CATALOG_MAX_FRAME_BYTES;
 const MAX_CATALOG_RESPONSE_BYTES: usize = MODEL_CATALOG_MAX_RESPONSE_BYTES;
 const MAX_CATALOG_PAGES: usize = MODEL_CATALOG_MAX_PAGES;
-pub type ChangeCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+pub type ChangeCallback = Arc<dyn Fn(&str, &str, &str, Option<Value>) + Send + Sync + 'static>;
 
 /// Dependency name reported when no fresh model catalog can be read for an
 /// admission decision. The condition is transient: a later read can succeed.
@@ -248,28 +248,6 @@ struct CatalogInner {
 pub struct ModelCatalogService(Arc<CatalogInner>);
 
 impl ModelCatalogService {
-    /// Content already available to model reads, without starting a provider or
-    /// including refresh generations and expiration timestamps in resource versions.
-    pub fn cached_resource_content(&self) -> Option<Value> {
-        let cache = self.0.state.lock().ok()?;
-        let mut entries = cache.entries.iter().collect::<Vec<_>>();
-        entries.sort_by_key(|(key, _)| *key);
-        serde_json::to_value(
-            entries
-                .into_iter()
-                .map(|(key, entry)| {
-                    (
-                        key,
-                        &entry.value,
-                        entry.error && !entry.pending,
-                        entry.value.is_none() && entry.pending,
-                    )
-                })
-                .collect::<Vec<_>>(),
-        )
-        .ok()
-    }
-
     /// Observe only an already refreshed catalog. This never starts a provider;
     /// use `read` outside admission to request/coalesce the asynchronous refresh.
     #[must_use]
@@ -371,10 +349,10 @@ impl ModelCatalogService {
 
     #[must_use]
     pub fn new() -> Self {
-        Self::with_change_callback(Arc::new(|| {}))
+        Self::with_change_callback(Arc::new(|_, _, _, _| {}))
     }
 
-    /// Construct the cache with a shared resource-change callback for completed reads.
+    /// Construct the cache with an owner callback for completed account catalog changes.
     #[must_use]
     pub fn with_change_callback(on_change: ChangeCallback) -> Self {
         Self(Arc::new(CatalogInner {
@@ -656,21 +634,30 @@ impl ModelCatalogService {
             .unwrap_or(CatalogRead::Pending)
     }
     pub fn retain_accounts(&self, accounts: &[Value]) {
+        let mut retired = Vec::new();
         if let Ok(mut profiles) = self.0.accounts.lock() {
-            profiles.clear();
-            profiles.extend(accounts.iter().filter_map(|account| {
-                let id = account.get("id")?.as_str()?.to_owned();
-                let home = account
-                    .get("home")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                let provider = studio_runtime_providers::ProviderKind::of_record(account)
-                    .ok()?
-                    .key()
-                    .to_owned();
-                Some((id, (home, provider)))
+            let retained = accounts
+                .iter()
+                .filter_map(|account| {
+                    let id = account.get("id")?.as_str()?.to_owned();
+                    let home = account
+                        .get("home")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let provider = studio_runtime_providers::ProviderKind::of_record(account)
+                        .ok()?
+                        .key()
+                        .to_owned();
+                    Some((id, (home, provider)))
+                })
+                .collect::<HashMap<_, _>>();
+            retired.extend(profiles.iter().filter_map(|(id, (home, provider))| {
+                (retained.get(id) != Some(&(home.clone(), provider.clone())))
+                    .then(|| (id.clone(), home.clone(), provider.clone()))
             }));
+            profiles.clear();
+            profiles.extend(retained);
             self.0.accounts_initialized.store(true, Ordering::Release);
         }
         self.0
@@ -687,6 +674,9 @@ impl ModelCatalogService {
                 })
             });
         self.0.refresh_changed.notify_waiters();
+        for (account, home, provider) in retired {
+            (self.0.on_change)(&account, &home, &provider, None);
+        }
     }
 
     /// Return the registered provider/home identity for transfer validation.
@@ -820,7 +810,12 @@ fn store_result(
         false
     };
     if stored {
-        (inner.on_change)();
+        let value = inner
+            .state
+            .lock()
+            .ok()
+            .and_then(|cache| cache.entries.get(key).and_then(|entry| entry.value.clone()));
+        (inner.on_change)(&key.0, &key.1, &key.2, value);
         inner.refresh_changed.notify_waiters();
     }
     stored
@@ -831,36 +826,6 @@ pub(crate) mod tests {
     use super::*;
 
     use std::sync::Mutex as StdMutex;
-
-    #[test]
-    fn cached_resource_content_ignores_refresh_metadata() {
-        let service = ModelCatalogService::new();
-        let payload = json!({"data":[{"model":"fixture"}]});
-        service.seed_test_admission_catalog("account", "home", "codex", payload);
-        let before = service.cached_resource_content().expect("content");
-        {
-            let mut cache = service.0.state.lock().expect("cache");
-            let entry = cache.entries.values_mut().next().expect("entry");
-            entry.generation += 1;
-            entry.expires_at = None;
-            entry.pending = true;
-            entry.error = true;
-        }
-        assert_eq!(service.cached_resource_content(), Some(before.clone()));
-        {
-            let mut cache = service.0.state.lock().expect("cache");
-            let entry = cache.entries.values_mut().next().expect("entry");
-            entry.pending = false;
-            entry.expires_at = Some(Instant::now() + CATALOG_FAILURE_RETRY);
-        }
-        assert_ne!(
-            service.cached_resource_content(),
-            Some(before.clone()),
-            "a failed worker catalog is unavailable even while display reads retain the old payload"
-        );
-        service.seed_test_admission_catalog("account", "home", "codex", json!({"data":[]}));
-        assert_ne!(service.cached_resource_content(), Some(before));
-    }
 
     /// Retained-session fake that answers each `model/list` with the next page.
     /// A gated fake holds every reply until `release` grants it.

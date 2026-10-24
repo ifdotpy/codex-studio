@@ -37,6 +37,7 @@ export type Work = WorkEntityDto;
 export type Edge = EdgeEntityDto;
 
 type SnapshotRuntime = WorkspaceEntityDto & {
+  modelsByAccount?: Record<string, components["schemas"]["ModelEntityDto"][]>;
   rateLimitsByAccount?: Record<
     string,
     components["schemas"]["AccountRateLimitsDto"]

@@ -31347,6 +31347,36 @@
         "title": "ModelCatalogResponse",
         "type": "object"
       },
+      "ModelEntityDto": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ProviderModel"
+          },
+          {
+            "properties": {
+              "accountKey": {
+                "type": "string"
+              },
+              "catalogPosition": {
+                "description": "Zero-based order within this account's provider model catalog.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "provider": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "accountKey",
+              "catalogPosition",
+              "provider"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "A complete provider model row scoped to its account; catalogPosition preserves provider order.",
+        "title": "ModelEntityDto"
+      },
       "ModelsResource": {
         "additionalProperties": false,
         "properties": {
@@ -52529,6 +52559,27 @@
           {
             "properties": {
               "collection": {
+                "const": "model",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/ModelEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
                 "const": "monitor",
                 "type": "string"
               },
@@ -52772,6 +52823,7 @@
                   "edge",
                   "event",
                   "monitor",
+                  "model",
                   "peerTeam",
                   "project",
                   "request",
@@ -52836,6 +52888,7 @@
             "complaint": "#/components/schemas/SyncComplaintEntityPayload",
             "edge": "#/components/schemas/SyncEdgeEntityPayload",
             "event": "#/components/schemas/SyncEventEntityPayload",
+            "model": "#/components/schemas/SyncModelEntityPayload",
             "monitor": "#/components/schemas/SyncMonitorEntityPayload",
             "peerTeam": "#/components/schemas/SyncPeerTeamEntityPayload",
             "project": "#/components/schemas/SyncProjectEntityPayload",
@@ -52868,6 +52921,9 @@
           },
           {
             "$ref": "#/components/schemas/SyncMonitorEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncModelEntityPayload"
           },
           {
             "$ref": "#/components/schemas/SyncPeerTeamEntityPayload"
@@ -52974,6 +53030,30 @@
           "syncProtocol"
         ],
         "title": "SyncIdentityResponse",
+        "type": "object"
+      },
+      "SyncModelEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "model",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/ModelEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncModelEntityPayload",
         "type": "object"
       },
       "SyncMonitorEntityPayload": {

@@ -518,30 +518,6 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
                 .0,
         )
         .ok(),
-        ResourceRef::ModelsResource(_) => {
-            let catalog = state.model_catalog.cached_resource_content()?;
-            let accounts = super::catalog::accounts(State(state)).await.ok()?.0;
-            // Only account fields consumed by account_catalog/worker_catalog
-            // affect model reads; labels and login receipts do not.
-            let contexts = accounts
-                .accounts
-                .iter()
-                .map(|account| {
-                    (
-                        &account.id,
-                        &account.home,
-                        &account.provider,
-                        &account.status,
-                        &account.error,
-                        &account.deleted,
-                        &account.disconnected,
-                        &account.duplicate_of,
-                        &account.can_attempt_native_proof,
-                    )
-                })
-                .collect::<Vec<_>>();
-            serde_json::to_vec(&(accounts.default_account_key, contexts, catalog)).ok()
-        }
         ResourceRef::CostsResource(_) => {
             let policy = state.account_policy.clone()?;
             studio_runtime_process::blocking_pool::spawn_blocking(
@@ -3716,7 +3692,7 @@ mod tests {
         );
         let resources = json!([
             {"kind":"accounts"}, {"kind":"desktop"}, {"kind":"terminals"},
-            {"kind":"queue","agentId":"agent-1"}, {"kind":"models"}
+            {"kind":"queue","agentId":"agent-1"}
         ]);
         let query = form_urlencoded::Serializer::new(String::new())
             .append_pair("protocol", SYNC_PROTOCOL_VERSION_TEXT)

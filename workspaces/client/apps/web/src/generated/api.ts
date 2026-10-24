@@ -14784,6 +14784,16 @@ export interface components {
        */
       unavailableAccounts?: components["schemas"]["UnavailableAccount"][];
     };
+    /**
+     * ModelEntityDto
+     * @description A complete provider model row scoped to its account; catalogPosition preserves provider order.
+     */
+    ModelEntityDto: components["schemas"]["ProviderModel"] & {
+      accountKey: string;
+      /** @description Zero-based order within this account's provider model catalog. */
+      catalogPosition: number;
+      provider: string;
+    };
     /** ModelsResource */
     ModelsResource: {
       /**
@@ -23224,6 +23234,13 @@ export interface components {
         }
       | {
           /** @constant */
+          collection: "model";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["ModelEntityDto"];
+        }
+      | {
+          /** @constant */
           collection: "monitor";
           /** @constant */
           op: "upsert";
@@ -23308,6 +23325,7 @@ export interface components {
             | "edge"
             | "event"
             | "monitor"
+            | "model"
             | "peerTeam"
             | "project"
             | "request"
@@ -23329,6 +23347,7 @@ export interface components {
       | components["schemas"]["SyncEdgeEntityPayload"]
       | components["schemas"]["SyncEventEntityPayload"]
       | components["schemas"]["SyncMonitorEntityPayload"]
+      | components["schemas"]["SyncModelEntityPayload"]
       | components["schemas"]["SyncPeerTeamEntityPayload"]
       | components["schemas"]["SyncProjectEntityPayload"]
       | components["schemas"]["SyncRequestEntityPayload"]
@@ -23369,6 +23388,17 @@ export interface components {
       syncProtocol: 2;
       /** Workspaceid */
       workspaceId: string;
+    };
+    /** SyncModelEntityPayload */
+    SyncModelEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "model";
+      /** Id */
+      id: string;
+      value: components["schemas"]["ModelEntityDto"];
     };
     /** SyncMonitorEntityPayload */
     SyncMonitorEntityPayload: {
@@ -39147,6 +39177,7 @@ export type ChatEntityDto = components["schemas"]["ChatEntityDto"];
 export type ComplaintEntityDto = components["schemas"]["ComplaintEntityDto"];
 export type EdgeEntityDto = components["schemas"]["EdgeEntityDto"];
 export type EventEntityDto = components["schemas"]["EventEntityDto"];
+export type ModelEntityDto = components["schemas"]["ModelEntityDto"];
 export type MonitorEntityDto = components["schemas"]["MonitorEntityDto"];
 export type PeerTeamEntityDto = components["schemas"]["PeerTeamEntityDto"];
 export type ProjectEntityDto = components["schemas"]["ProjectEntityDto"];

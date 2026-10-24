@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent } from "../types";
+import type { Agent, Snapshot } from "../types";
 
 // Execute the real effects and read callbacks without rendering unrelated UI.
 const {
@@ -129,6 +129,10 @@ vi.mock("../sync/localDraft", async (importOriginal) => ({
   },
 }));
 vi.mock("../sync/send", () => ({ reconcileOutboxReceipts: reconcile }));
+vi.mock("../sync/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../sync/client")>()),
+  subscribeStateProjection: vi.fn(() => () => {}),
+}));
 vi.mock("../sync/resume", () => ({ onResume: () => () => {} }));
 vi.mock("../sync/resourceEvents", () => ({
   watchResourceChanges: (
@@ -162,21 +166,22 @@ import { useMessageReceipts } from "./useMessageReceipts";
 import { useMessageQueue } from "./useMessageQueue";
 import {
   useWorkerModels,
+  readWorkerModels,
   ModelCatalogReader,
 } from "./agents/WorkerModelPicker";
 import { useAccounts } from "./Accounts";
 import Usage from "./Usage";
-import { ApiError } from "../api";
 
-function mount(action: () => void) {
+function mount<T>(action: () => T): T {
   cursor.state = 0;
   cursor.ref = 0;
   cursor.memo = 0;
-  action();
+  const result = action();
   for (const effect of effects.splice(0)) {
     const cleanup = effect();
     if (cleanup) cleanups.push(cleanup);
   }
+  return result;
 }
 
 function notify(resource: unknown, version?: unknown) {
@@ -535,233 +540,150 @@ describe("resource read callers", () => {
     expect(syncPost).toHaveBeenCalledTimes(1);
   });
 
-  it("loads models after a transient catalog read without an explicit retry", async () => {
-    get
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-      .mockResolvedValue({ data: [{ model: "gpt-6-luna" }] });
-    mount(() => useWorkerModels("default", true, true));
-    expect(get).not.toHaveBeenCalled();
-    notify({ kind: "models" }, { epoch: "catalog", revision: 1 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(get).toHaveBeenCalledTimes(2);
-    expect(get.mock.calls[1]).toEqual(get.mock.calls[0]);
-    const state = states.find(
-      (entry) => (entry.value as { models?: unknown } | null)?.models,
-    )?.value;
-    expect(state).toMatchObject({
-      models: [{ model: "gpt-6-luna" }],
-      error: "",
-      pending: false,
+  it("projects account and worker model lists from streamed model entities without GETs", async () => {
+    const row = (
+      accountKey: string,
+      model: string,
+      hidden: boolean,
+      catalogPosition: number,
+    ) => ({
+      accountKey,
+      model,
+      hidden,
+      provider: accountKey === "default" ? "codex" : "claude",
+      catalogPosition,
+      serviceTiers: [],
+      supportedReasoningEfforts: [],
     });
-  });
-
-  it("keeps overlapping model catalogs and late responses with their connection owner", async () => {
-    let finishA!: (value: { data: { model: string }[] }) => void;
-    const readA = vi.fn(
-      () =>
-        new Promise((resolve) => {
-          finishA = resolve;
-        }),
-    );
-    const readB = vi.fn(async () => ({ data: [{ model: "server-b" }] }));
-    const callbacks = new Map<string, () => Promise<void>>();
-    const stops = new Map<string, ReturnType<typeof vi.fn>>();
-    const reader = (owner: string, read: unknown) => ({
-      scope: "same-server-identity",
+    const snapshot = (
+      modelsByAccount: NonNullable<Snapshot["runtime"]["modelsByAccount"]>,
+    ) => ({
+      runtime: { modelsByAccount },
+      entitiesComplete: true,
+    });
+    let current = snapshot({
+      default: [
+        row("default", "shared-model", false, 0),
+        row("default", "hidden-model", true, 1),
+      ],
+      secondary: [
+        row("secondary", "other-model", false, 0),
+        row("secondary", "shared-model", false, 1),
+      ],
+    });
+    const listeners: Array<(value: typeof current) => void> = [];
+    const reader = {
+      scope: "model-entities",
       cacheOwner: {},
-      read,
-      watchResourceReads: (
-        _resource: unknown,
-        refresh: () => Promise<void>,
+      read: get,
+      subscribeState: (
+        accept: (value: typeof current) => void,
+        _fail: (error: unknown | null) => void,
       ) => {
-        callbacks.set(owner, refresh);
-        const stop = vi.fn();
-        stops.set(owner, stop);
-        return Object.assign(stop, { refresh });
+        listeners.push(accept);
+        accept(current);
+        return vi.fn();
       },
-    });
-    contexts.set(ModelCatalogReader, reader("a", readA));
+    };
+    contexts.set(ModelCatalogReader, reader);
+
     mount(() => useWorkerModels("default", true));
-    const stateA = states[0]!;
+    const accountView = mount(() => useWorkerModels("default", true));
+    expect(accountView.models).toMatchObject([{ model: "shared-model" }]);
+    expect(states[0]!.value).toMatchObject({
+      models: [{ model: "shared-model" }, { model: "hidden-model" }],
+      pending: false,
+      loaded: true,
+    });
+    expect(get).not.toHaveBeenCalled();
+
+    current = snapshot({
+      default: [row("default", "updated-model", false, 0)],
+      secondary: [row("secondary", "other-model", false, 0)],
+    });
+    listeners[0]!(current);
+    const updatedAccountView = mount(() => useWorkerModels("default", true));
+    expect(updatedAccountView.models).toMatchObject([
+      { model: "updated-model" },
+    ]);
+    expect(states[0]!.value).toMatchObject({
+      models: [{ model: "updated-model" }],
+    });
+    expect(get).not.toHaveBeenCalled();
+
+    cursor.state = 0;
+    cursor.ref = 0;
+    cursor.memo = 0;
     states.length = 0;
     memos.length = 0;
-    contexts.set(ModelCatalogReader, reader("b", readB));
-    mount(() => useWorkerModels("default", true));
-    const stateB = states[0]!;
-    const pendingA = callbacks.get("a")!();
-    await callbacks.get("b")!();
-    expect(stateB.value).toMatchObject({ models: [{ model: "server-b" }] });
-    finishA({ data: [{ model: "server-a" }] });
-    await pendingA;
-    expect(stateA.value).toMatchObject({ models: [{ model: "server-a" }] });
-    expect(stateB.value).toMatchObject({ models: [{ model: "server-b" }] });
-    expect(readA).toHaveBeenCalledTimes(1);
-    expect(readB).toHaveBeenCalledTimes(1);
-    for (const cleanup of cleanups.splice(0)) cleanup();
-    expect(stops.get("a")).toHaveBeenCalledTimes(1);
-    expect(stops.get("b")).toHaveBeenCalledTimes(1);
-  });
-
-  it("shares a catalog read and refreshes it after a models resource event", async () => {
-    get
-      .mockResolvedValueOnce({ data: [{ model: "before-change" }] })
-      .mockResolvedValueOnce({ data: [{ model: "after-change" }] });
-    mount(() => useWorkerModels("shared-catalog-account", true));
-    mount(() => useWorkerModels("shared-catalog-account", true));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(0);
-    expect(watchers.size).toBe(1);
-
-    notify({ kind: "models" }, { epoch: "catalog", revision: 1 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(1);
-
-    notify({ kind: "models" }, { epoch: "catalog", revision: 2 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(2);
-    expect(get.mock.calls[1]?.[0]).toBe("/api/models");
-    expect(get.mock.calls[1]?.[1]).toMatchObject({
-      query: { account_key: "shared-catalog-account" },
-    });
-    expect(states[0]?.value).toMatchObject({
-      models: [{ model: "after-change" }],
-    });
-  });
-
-  it("waits for the baseline and rereads once when the catalog changes during its GET", async () => {
-    let resolveFirst!: (value: unknown) => void;
-    get
-      .mockReturnValueOnce(
-        new Promise((resolve) => {
-          resolveFirst = resolve;
-        }),
-      )
-      .mockResolvedValueOnce({ data: [{ model: "revision-n-plus-one" }] });
-    mount(() => useWorkerModels("interleaving-account", true));
-    await vi.advanceTimersByTimeAsync(0);
+    contexts.set(ModelCatalogReader, reader);
+    mount(() => useWorkerModels("default", true, true));
+    const workerView = mount(() => useWorkerModels("default", true, true));
+    expect(workerView.models).toMatchObject([
+      { model: "updated-model" },
+      { model: "other-model" },
+    ]);
+    await expect(
+      readWorkerModels(reader, "default", true),
+    ).resolves.toMatchObject([
+      { model: "updated-model" },
+      { model: "other-model" },
+    ]);
+    expect(states[0]!.value).toMatchObject({ pending: false });
     expect(get).not.toHaveBeenCalled();
-
-    notify({ kind: "models" }, { epoch: "catalog", revision: 10 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(1);
-
-    notify({ kind: "models" }, { epoch: "catalog", revision: 11 });
-    resolveFirst({ data: [{ model: "revision-n" }] });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(2);
-    expect(states[0]?.value).toMatchObject({
-      models: [{ model: "revision-n-plus-one" }],
-    });
   });
 
-  it("does not reread on an unchanged stream reopen and rereads after an epoch change", async () => {
-    get
-      .mockResolvedValueOnce({ data: [{ model: "epoch-one" }] })
-      .mockResolvedValueOnce({ data: [{ model: "epoch-two" }] });
-    mount(() => useWorkerModels("epoch-account", true));
-    notify({ kind: "models" }, { epoch: "epoch-one", revision: 4 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(1);
-
-    notify({ kind: "models" }, { epoch: "epoch-one", revision: 4 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(1);
-
-    notify({ kind: "models" }, { epoch: "epoch-two", revision: 1 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(2);
-    expect(states[0]?.value).toMatchObject({
-      models: [{ model: "epoch-two" }],
+  it("keeps the model picker loading until the streamed entity baseline completes", () => {
+    let snapshot: {
+      runtime: {
+        modelsByAccount: NonNullable<Snapshot["runtime"]["modelsByAccount"]>;
+      };
+      entitiesComplete?: boolean;
+    } = { runtime: { modelsByAccount: {} }, entitiesComplete: false };
+    let acceptSnapshot!: (value: typeof snapshot) => void;
+    const reader = {
+      scope: "pending-model-entities",
+      cacheOwner: {},
+      read: get,
+      subscribeState: (accept: typeof acceptSnapshot) => {
+        acceptSnapshot = accept;
+        accept(snapshot);
+        return vi.fn();
+      },
+    };
+    contexts.set(ModelCatalogReader, reader);
+    const pendingView = mount(() => useWorkerModels("default", true));
+    expect(pendingView.loading).toBe(true);
+    expect(states[0]!.value).toMatchObject({
+      models: [],
+      pending: true,
     });
-  });
-
-  it.each(["degraded", "offline"] as const)(
-    "loads once after a %s stream state and reconciles when its baseline arrives",
-    async (status) => {
-      get
-        .mockResolvedValueOnce({ data: [{ model: "fallback" }] })
-        .mockResolvedValueOnce({ data: [{ model: "baseline-current" }] });
-      mount(() => useWorkerModels(`fallback-${status}-account`, true));
-      for (const listener of connectionWatchers) listener(status, "connecting");
-      await vi.advanceTimersByTimeAsync(0);
-      expect(get).toHaveBeenCalledTimes(1);
-
-      for (const listener of connectionWatchers) listener(status, "connecting");
-      await vi.advanceTimersByTimeAsync(0);
-      expect(get).toHaveBeenCalledTimes(1);
-
-      notify({ kind: "models" }, { epoch: "catalog", revision: 3 });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(get).toHaveBeenCalledTimes(2);
-      expect(states[0]?.value).toMatchObject({
-        models: [{ model: "baseline-current" }],
-      });
-    },
-  );
-
-  it("reads immediately without a stream and reconciles a later baseline once", async () => {
-    connectionStream.value = "stopped";
-    get
-      .mockResolvedValueOnce({ data: [{ model: "before-baseline" }] })
-      .mockResolvedValueOnce({ data: [{ model: "after-baseline" }] });
-    mount(() => useWorkerModels("no-stream-account", true));
-    expect(watchers.size).toBe(1);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(1);
-
-    notify({ kind: "models" }, { epoch: "catalog", revision: 1 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledTimes(2);
-    expect(states[0]?.value).toMatchObject({
-      models: [{ model: "after-baseline" }],
+    snapshot = {
+      runtime: {
+        modelsByAccount: {
+          default: [
+            {
+              accountKey: "default",
+              model: "ready-model",
+              provider: "codex",
+              hidden: false,
+              catalogPosition: 0,
+              serviceTiers: [],
+              supportedReasoningEfforts: [],
+            },
+          ],
+        },
+      },
+      entitiesComplete: true,
+    };
+    acceptSnapshot(snapshot);
+    const loadedView = mount(() => useWorkerModels("default", true));
+    expect(loadedView.loading).toBe(false);
+    expect(states[0]!.value).toMatchObject({
+      models: [{ model: "ready-model" }],
+      pending: false,
     });
-  });
-
-  it("does not start a read when schema mismatch blocks API requests", async () => {
-    mount(() => useWorkerModels("schema-mismatch-account", true));
-    for (const listener of connectionWatchers)
-      listener("schema-mismatch", "stopped");
-    await vi.advanceTimersByTimeAsync(0);
     expect(get).not.toHaveBeenCalled();
-    expect(watchers.size).toBe(1);
-  });
-
-  it("uses the selected account catalog after an account switch", async () => {
-    get.mockImplementation(
-      async (_path: string, options: { query: { account_key: string } }) => ({
-        data: [{ model: `${options.query.account_key}-model` }],
-      }),
-    );
-    mount(() => useWorkerModels("first-account", true, true));
-    notify({ kind: "models" }, { epoch: "catalog", revision: 1 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(states[0]?.value).toMatchObject({
-      models: [{ model: "first-account-model" }],
-    });
-
-    for (const cleanup of cleanups.splice(0)) cleanup();
-    mount(() => useWorkerModels("current-account", true, true));
-    notify({ kind: "models" }, { epoch: "catalog", revision: 2 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(states[0]?.value).toMatchObject({
-      models: [{ model: "current-account-model" }],
-    });
-  });
-
-  it("keeps a catalog pending marker under server control", async () => {
-    get.mockRejectedValue(
-      new ApiError("Pending", 400, { catalogPending: true }),
-    );
-    mount(() => useWorkerModels("pending-account", true, true));
-    notify({ kind: "models" }, { epoch: "catalog", revision: 1 });
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(get).toHaveBeenCalledTimes(1);
-    const state = states.find(
-      (entry) => (entry.value as { models?: unknown } | null)?.models,
-    )?.value;
-    expect(state).toMatchObject({ models: [], error: "", pending: true });
   });
 
   it("recovers both cost display reads without repeating a reset-credit action", async () => {

@@ -5,6 +5,7 @@ import type {
   EdgeEntityDto,
   EventEntityDto,
   MonitorEntityDto,
+  ModelEntityDto,
   PeerTeamEntityDto,
   ProjectEntityDto,
   RequestEntityDto,
@@ -55,6 +56,7 @@ const ENTITY_COLLECTIONS = [
   "work",
   "workspace",
   "rateLimit",
+  "model",
   "uiPreferences",
 ] as const satisfies readonly EntityCollection[];
 type Assert<T extends true> = T;
@@ -106,6 +108,7 @@ function emptyEntityValues(): EntityValues {
     work: new Map<string, WorkEntityDto>(),
     workspace: new Map<string, WorkspaceEntityDto>(),
     rateLimit: new Map<string, AccountRateLimitsDto>(),
+    model: new Map<string, ModelEntityDto>(),
     uiPreferences: new Map<string, UiPreferencesDto>(),
   };
 }
@@ -196,8 +199,22 @@ function projectSnapshotCollections(
     prior && !changed.has("rateLimit")
       ? prior.runtime.rateLimitsByAccount
       : Object.fromEntries(values.rateLimit);
+  let modelsByAccount: Record<string, ModelEntityDto[]>;
+  if (prior && !changed.has("model")) {
+    modelsByAccount = prior.runtime.modelsByAccount ?? {};
+  } else {
+    modelsByAccount = {};
+    for (const model of entityValues(values, "model")) {
+      (modelsByAccount[model.accountKey] ??= []).push(model);
+    }
+    for (const models of Object.values(modelsByAccount))
+      models.sort(
+        (left, right) => left.catalogPosition - right.catalogPosition,
+      );
+  }
   const runtime = {
     ...workspace,
+    modelsByAccount,
     rateLimitsByAccount,
     rateLimits: rateLimitsByAccount?.default ?? null,
     agents,
@@ -357,6 +374,9 @@ export function applyEntityChanges(
         break;
       case "rateLimit":
         state.values.rateLimit.set(payload.id, payload.value);
+        break;
+      case "model":
+        state.values.model.set(payload.id, payload.value);
         break;
       case "workspace":
         state.values.workspace.set(payload.id, payload.value);
