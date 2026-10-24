@@ -3258,8 +3258,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     // Shutdown closes the bridge's query; whether the bridge persists the
     // aborted turn as interrupted before it exits is a race. Either outcome
     // is safe: an unknown turn is held, a confirmed interruption continues
-    // with a restart notice, and a native-history-confirmed running turn is
-    // retained (RestartInputCompletion::complete, eb4c4080). None resends input.
+    // with a restart notice. Neither resends the interrupted input.
     let recovered = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = fixture
@@ -3273,16 +3272,17 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
                 )
                 .unwrap();
             let record: Value = serde_json::from_str(&raw).unwrap();
-            let held = record["status"] == "interrupted"
-                && record["autoWake"] == false
-                && record["restartRecovery"]["stage"] == "held";
+            let held = record["status"] == "queued"
+                && record["autoWake"] == true
+                && record["inFlight"] != true
+                && record["restartRecovery"]["stage"] == "held"
+                && record["contextRepairWait"]["scope"] == "native"
+                && record["contextRepairWait"]["events"]
+                    == json!(["a19e61c8-6156-4874-b8d8-9111b0a49fc4"]);
             let continued = record["restartRecovery"]["stage"] == "continued"
                 && record["status"] == "completed"
                 && record["inFlight"] != true;
-            let retained = record["restartRecovery"]["stage"] == "finished"
-                && record["status"] == "running"
-                && record["inFlight"] == true;
-            if held || continued || retained {
+            if held || continued {
                 break record;
             }
             restart_changes.changed().await.unwrap();
@@ -3291,7 +3291,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .await
     .unwrap_or_else(|_| {
         panic!(
-            "in-flight Claude turn should be held, continued, or retained: {}",
+            "in-flight Claude turn should be held or continued: {}",
             direct_agent_debug(&fixture.store, &agent_id)
         )
     });
@@ -3312,20 +3312,6 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     if recovered["restartRecovery"]["stage"] == "held" {
         assert_eq!(second_event_status, "uncertain");
         assert_eq!(queries_started, 2, "restart must not resend the turn");
-    } else if recovered["restartRecovery"]["stage"] == "finished" {
-        assert_eq!(second_event_status, "delivered");
-        assert_eq!(recovered["autoWake"], true);
-        assert!(recovered["error"].is_null());
-        assert!(recovered["contextRepairWait"].is_null());
-        assert_eq!(
-            recovered["startAttempt"]["events"],
-            json!(["a19e61c8-6156-4874-b8d8-9111b0a49fc4"])
-        );
-        assert!(recovered["startAttempt"]["turnId"].as_str().is_some());
-        assert_eq!(
-            queries_started, 2,
-            "native history must not resend the turn"
-        );
     } else {
         assert_eq!(second_event_status, "delivered");
         let continued_events = recovered["startAttempt"]["events"].as_array().unwrap();

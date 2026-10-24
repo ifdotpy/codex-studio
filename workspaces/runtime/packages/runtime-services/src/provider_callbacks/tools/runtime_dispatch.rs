@@ -13,9 +13,6 @@ use crate::managed_host_tools::{
     Actor, DeliveryCertainty, DispatchedOperation, Error, OperationResult, WakeSignal,
 };
 
-type ModelPrice = (f64, f64);
-type WorkerModelPrices = Option<(Option<ModelPrice>, Option<ModelPrice>)>;
-
 /// What a worker creation asks of account selection.
 pub struct WorkerAccountRequest<'a> {
     pub parent_account_key: &'a str,
@@ -118,43 +115,6 @@ pub fn select_worker_account(
     Err(CreationError::Unavailable(
         crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
     ))
-}
-
-/// Apply Python's explicit subagent model-provider and cached-price limits.
-/// `prices` is absent before the first pricing snapshot, matching Python's
-/// permissive first-run behavior.
-pub fn validate_worker_model_choice(
-    requested: &str,
-    default: &str,
-    prices: WorkerModelPrices,
-) -> Result<(), CreationError> {
-    if requested == default {
-        return Ok(());
-    }
-    let provider = worker_model_provider(default);
-    if provider.is_some() && worker_model_provider(requested) != provider {
-        // The worker provider follows the chat's default subagent model, not
-        // the lead's provider; tell the caller which family is allowed.
-        return Err(CreationError::Invalid(if provider == Some("codex") {
-            "Choose a gpt-* (Codex) model: chat settings fix the worker provider to Codex"
-        } else {
-            "Choose default, sonnet, opus, haiku or a claude-* model: chat settings fix the worker provider to Claude"
-        }));
-    }
-    let Some((Some(requested), Some(default))) = prices else {
-        if prices.is_some() {
-            return Err(CreationError::Invalid(
-                "Studio cannot compare this model's price with the default subagent model",
-            ));
-        }
-        return Ok(());
-    };
-    if requested.0 > default.0 || requested.1 > default.1 {
-        return Err(CreationError::Invalid(
-            "Choose a model that costs no more than the default subagent model",
-        ));
-    }
-    Ok(())
 }
 
 fn account_read_error(
@@ -1212,9 +1172,7 @@ fn child_creation_result(result: OperationResult) -> DispatchedOperation {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CreationError, child_creation_result, managed_input_receipt, validate_worker_model_choice,
-    };
+    use super::{child_creation_result, managed_input_receipt};
     use crate::managed_host_tools::{DeliveryCertainty, OperationResult};
     use serde_json::json;
 
@@ -1346,39 +1304,6 @@ mod tests {
                 }
             );
         }
-    }
-
-    #[test]
-    fn managed_spawn_refuses_cross_provider_and_more_expensive_model_choices() {
-        assert_eq!(
-            validate_worker_model_choice("claude-opus-5-5", "gpt-6-luna", None),
-            Err(CreationError::Invalid(
-                "Choose a gpt-* (Codex) model: chat settings fix the worker provider to Codex"
-            ))
-        );
-        assert!(
-            matches!(
-                validate_worker_model_choice("gpt-6-luna", "claude-opus-5-5", None),
-                Err(CreationError::Invalid(message)) if message.contains("claude-*")
-            ),
-            "a Claude chat default names the Claude family"
-        );
-        assert!(
-            validate_worker_model_choice(
-                "gpt-6-expensive",
-                "gpt-6-default",
-                Some((Some((2.0, 3.0)), Some((1.0, 1.0)))),
-            )
-            .is_err()
-        );
-        assert!(
-            validate_worker_model_choice(
-                "gpt-6-cheaper",
-                "gpt-6-default",
-                Some((Some((0.5, 0.8)), Some((1.0, 1.0)))),
-            )
-            .is_ok()
-        );
     }
 }
 
@@ -1610,6 +1535,13 @@ mod account_identity_tests {
                 .expect("explicit account is honoured even when busier or not ready"),
             "offline"
         );
-        assert!(select(&accounts, "gpt-5", Some("offline"), &counts, &mut |_| false).is_err());
+        assert_eq!(
+            select(&accounts, "gpt-5", Some("offline"), &counts, &mut |_| false),
+            Err(
+                crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
+                    "This model is not available for the selected worker accounts",
+                )
+            )
+        );
     }
 }

@@ -291,8 +291,9 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
     await page.setViewportSize(viewport);
     syncStreams.clear();
     await page.goto(origin);
-    if (width < 700) await page.locator("#sidebar-toggle").click();
-    await page.locator(`[data-chat="${chat.id}"]`).click();
+    const chatRow = page.locator(`[data-chat="${chat.id}"]`);
+    await expect(chatRow).toBeVisible();
+    await chatRow.click();
     await root.locator('[data-message="prompt-live"]').waitFor();
     assert.ok(
       await root.evaluate((e) => !!e.querySelector("[data-history-window]")),

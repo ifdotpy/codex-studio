@@ -1,11 +1,9 @@
 //! A `turn/start` outcome became unknown (live: its reply did not arrive
 //! before its deadline), and Studio waited to check the input in native
 //! history. The provider connection then closed while the backend kept
-//! running. The disconnect interrupted the agent and parked the attempt in its
-//! disconnect receipt, where no recovery pass looks: the input stayed
-//! `uncertain` for good, although the provider had applied it (22 October
-//! 2026). The next account worker must read native history once for that
-//! input, keep the applied turn, and never send the input again.
+//! running. The disconnect can leave a submitted input with no confirmed turn
+//! identity. The next account worker checks native history, keeps the input
+//! uncertain until the turn is terminal, and never sends the input again.
 use super::*;
 
 /// Submit the input on provider generation 1, settle its start as unknown as
@@ -106,11 +104,13 @@ async fn unknown_start_then_disconnect(state: &State, generation: u64) -> (Peer,
 #[tokio::test]
 async fn a_disconnect_after_an_unknown_start_checks_native_history_once() {
     for generation in [1, 2] {
-        applied_unknown_start_is_kept_after_a_disconnect(generation).await;
+        for status in ["inProgress", "completed"] {
+            applied_unknown_start_is_kept_after_a_disconnect(generation, status).await;
+        }
     }
 }
 
-async fn applied_unknown_start_is_kept_after_a_disconnect(generation: u64) {
+async fn applied_unknown_start_is_kept_after_a_disconnect(generation: u64, status: &str) {
     let state = State::new().await;
     let (mut next, mut replacement) = unknown_start_then_disconnect(&state, generation).await;
     let history = tokio::select! {
@@ -120,24 +120,45 @@ async fn applied_unknown_start_is_kept_after_a_disconnect(generation: u64) {
             panic!("generation {generation}: the unknown start was never checked in native history: {record}")
         }
     };
-    // The provider applied the input before the connection closed.
+    // Native history identifies the input, but only a terminal turn proves
+    // that this worker can settle it without adopting a live stream.
     next.reply(
         &history,
-        json!({"data":[{"id":"native-turn","threadId":"fake-thread-0","status":"inProgress",
+        json!({"data":[{"id":"native-turn","threadId":"fake-thread-0","status":status,
             "items":[],"clientUserMessageId":"annotation:input"}]}),
     )
     .await;
     worker_barrier(&replacement).await;
     let record = state.record().await;
-    assert_eq!(
-        record["turnId"], "native-turn",
-        "generation {generation}: {record}"
-    );
-    assert_eq!(
-        state.event_status("input").await,
-        "delivered",
-        "generation {generation}"
-    );
+    if status == "completed" {
+        assert_eq!(
+            record["lastCompletedTurn"], "native-turn",
+            "generation {generation}, status {status}: {record}"
+        );
+        assert_eq!(
+            state.event_status("input").await,
+            "delivered",
+            "generation {generation}, status {status}"
+        );
+    } else {
+        assert_eq!(
+            record["restartRecovery"]["stage"], "held",
+            "generation {generation}, status {status}: {record}"
+        );
+        assert_eq!(
+            record["contextRepairWait"]["events"],
+            json!(["annotation:input"])
+        );
+        assert!(
+            record["turnId"].is_null(),
+            "generation {generation}: {record}"
+        );
+        assert_eq!(
+            state.event_status("input").await,
+            "uncertain",
+            "generation {generation}, status {status}"
+        );
+    }
     while let Ok(wire) = next.writes.try_recv() {
         assert_ne!(
             wire.value["method"], "turn/start",

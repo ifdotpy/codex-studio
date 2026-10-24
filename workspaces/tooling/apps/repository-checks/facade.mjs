@@ -1487,6 +1487,8 @@ function fastTierCommands(root) {
               "test(/^wave7_p11_native::review_reservation_accepts_provider_progress_after_preparation$/)",
               "test(/^wave7_p11_native::a_worker_review_checks_lead_settings_but_accepts_lead_progress$/)",
               "test(/^wave7_p11_native::review_reservation_refuses_identity_authority_and_settings_changes$/)",
+              "test(/^recovery_history::held_restart_start_/)",
+              "test(/^recovery_history::ordinary_exact_start_still_accepts_delivered_in_progress_turn$/)",
               "test(/^analytics_capture_corpus::uncertain_turn_keeps_its_outcome_and_reason_in_analytics$/)",
               "test(/^turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings$/)",
               "test(wave7_p10_lifecycle::committed_delete_)",

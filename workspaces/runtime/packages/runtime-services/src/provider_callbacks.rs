@@ -107,7 +107,7 @@ pub(crate) use tools::{
 pub(crate) use tools::{MonitorCancelPort, MonitorInputPort};
 pub use tools::{
     WorkActionOutcome, WorkActionPort, WorkerAccountRequest, WorkerAccountSelection,
-    select_worker_account, validate_worker_model_choice,
+    select_worker_account,
 };
 
 pub(crate) struct ManagedToolPortsConfig {

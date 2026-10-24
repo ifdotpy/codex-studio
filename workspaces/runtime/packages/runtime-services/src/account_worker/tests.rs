@@ -1648,13 +1648,14 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
 
 /// The backend and its provider process stopped after a worker's first
 /// `turn/start` was submitted and before its answer arrived. Startup recovery
-/// holds that input until native history decides it. The first account worker of the new backend must read
-/// that history, then deliver the input once if the provider did not apply it,
-/// or keep the applied turn. The input must never stay held without a check,
-/// and must never be sent twice.
+/// holds that input until native history decides it. The first account worker
+/// reads that history: explicit non-application permits one send, terminal
+/// proof settles the input, and nonterminal history keeps the hold. Every
+/// input is checked, and an applied input must never be sent twice.
 #[tokio::test]
 async fn restart_held_first_input_is_reconciled_by_the_first_worker() {
-    for applied in [false, true] {
+    for native_status in [None, Some("inProgress"), Some("completed")] {
+        let applied = native_status.is_some();
         let state = State::new().await;
         let agent = state.agent.clone();
         let epoch = state.epoch;
@@ -1730,15 +1731,25 @@ async fn restart_held_first_input_is_reconciled_by_the_first_worker() {
                 panic!("applied {applied}: the first pass left the held input unchecked")
             }
         };
-        if applied {
+        if let Some(status) = native_status {
             peer.reply(
                 &history,
-                json!({"data":[{"id":"old-turn","threadId":"fake-thread-0","status":"inProgress",
+                json!({"data":[{"id":"old-turn","threadId":"fake-thread-0","status":status,
                     "items":[],"clientUserMessageId":"annotation:input"}]}),
             )
             .await;
             worker_barrier(&worker).await;
-            assert_eq!(state.record().await["turnId"], "old-turn");
+            let record = state.record().await;
+            if status == "completed" {
+                assert_eq!(record["lastCompletedTurn"], "old-turn");
+                assert_eq!(record["status"], "completed");
+                assert_eq!(state.event_status("input").await, "delivered");
+            } else {
+                assert_eq!(record["restartRecovery"]["stage"], "held");
+                assert!(record["turnId"].is_null());
+                assert_ne!(record["inFlight"], true);
+                assert_eq!(state.event_status("input").await, "uncertain");
+            }
         } else {
             peer.reply(
                 &history,
