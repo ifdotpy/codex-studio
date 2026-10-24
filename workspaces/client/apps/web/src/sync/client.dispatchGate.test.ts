@@ -43,7 +43,7 @@ vi.mock("rxdb/plugins/leader-election", () => ({
 vi.mock("rxdb/plugins/replication", () => ({
   replicateRxCollection: vi.fn(),
 }));
-vi.mock("./resourceEvents", () => ({
+vi.mock("./subscriptions/events", () => ({
   acknowledgeEntitySequences: vi.fn(),
   watchResourceChanges: mocks.watchResourceChanges,
   watchResourceConnection: vi.fn((listener: (status: string) => void) => {

@@ -33,6 +33,7 @@ type Entry = {
   observers: Set<() => void>;
   state: SubscriptionState<unknown>;
   version?: ResourceVersion;
+  confirmed: boolean;
   stop?: () => void;
   timer?: ReturnType<typeof setTimeout>;
   graceMs: number;
@@ -55,6 +56,7 @@ export function createSubscriptionStore(transport: SubscriptionTransport) {
         consumers: new Set(),
         observers: new Set(),
         state: { data: undefined, status: "loading", error: null },
+        confirmed: false,
         graceMs: DEFAULT_SUBSCRIPTION_GRACE_MS,
       };
       entries.set(key, entry);
@@ -70,7 +72,7 @@ export function createSubscriptionStore(transport: SubscriptionTransport) {
         ? "error"
         : !entry.consumers.size || connection !== "live"
           ? "stale"
-          : entry.version
+          : entry.confirmed
             ? "live"
             : entry.state.data === undefined
               ? "loading"
@@ -84,7 +86,10 @@ export function createSubscriptionStore(transport: SubscriptionTransport) {
     if (stopConnection) return;
     stopConnection = transport.watchResourceConnection((next) => {
       connection = next;
-      for (const entry of entries.values()) status(entry);
+      for (const entry of entries.values()) {
+        if (next !== "live") entry.confirmed = false;
+        status(entry);
+      }
     });
   };
   const releaseSource = (entry: Entry) => {
@@ -94,6 +99,7 @@ export function createSubscriptionStore(transport: SubscriptionTransport) {
     entry.stop = undefined;
     // Retain domain data, but a future new interest needs an authoritative frame.
     entry.version = undefined;
+    entry.confirmed = false;
     status(entry);
     if (![...entries.values()].some((candidate) => candidate.stop)) {
       stopConnection?.();
@@ -123,16 +129,26 @@ export function createSubscriptionStore(transport: SubscriptionTransport) {
     entry.consumers.add(listener);
     ensureConnection();
     if (starting) {
+      let replayingCache = true;
       entry.stop = transport.watchResourceChanges(
         ref,
         (version) => {
           entry.version = version;
+          if (!replayingCache)
+            entry.confirmed =
+              !!version &&
+              ((!!version.cursor && !!version.replyKind) ||
+                !!version.progress ||
+                !!version.discoverySnapshot ||
+                !!version.voiceRecords ||
+                !!version.draftChanges);
           entry.state = { ...entry.state, error: null };
           status(entry);
           for (const callback of entry.consumers) callback(version);
         },
         { waitForBaseline: options.waitForBaseline },
       );
+      replayingCache = false;
     } else if (entry.version) listener(entry.version);
     status(entry);
     let stopped = false;

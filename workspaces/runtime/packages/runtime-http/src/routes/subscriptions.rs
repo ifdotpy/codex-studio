@@ -330,14 +330,20 @@ mod tests {
                 .expect("selector fields");
             let mut value = serde_json::Map::new();
             for (field, schema) in properties {
+                let schema = schema
+                    .get("$ref")
+                    .and_then(Value::as_str)
+                    .and_then(|path| document.pointer(path.trim_start_matches('#')))
+                    .unwrap_or(schema);
                 let value = schema
                     .get("const")
                     .cloned()
                     .or_else(|| {
                         schema
                             .get("enum")
-                            .and_then(|items| items[0].as_str())
-                            .map(|s| json!(s))
+                            .and_then(|items| items.as_array())
+                            .and_then(|items| items.first())
+                            .cloned()
                     })
                     .unwrap_or_else(|| {
                         if schema["type"] == "integer" {

@@ -67,12 +67,35 @@ describe("screen subscription ownership", () => {
   it("marks data stale when the final screen leaves and on lost connection", () => {
     const { store, deliver } = fixture();
     const stop = store.watchResourceChanges(resource, () => {});
-    deliver({ epoch: "epoch", revision: 1, reason: "initial" });
+    deliver({
+      epoch: "epoch",
+      revision: 1,
+      reason: "initial",
+      cursor: { workspaceId: "workspace", seq: 1 },
+      replyKind: "snapshot",
+    });
     expect(store.getSnapshot(resource).status).toBe("live");
     stop();
     expect(store.getSnapshot(resource).status).toBe("stale");
     vi.advanceTimersByTime(20_000);
     expect(store.getSnapshot(resource).status).toBe("stale");
+    store.dispose();
+  });
+
+  it("keeps a revision-only recovery hint stale until an applied baseline", () => {
+    const { store, deliver } = fixture();
+    const stop = store.watchResourceChanges(resource, () => {});
+    deliver({ epoch: "epoch", revision: 1, reason: "initial" });
+    expect(store.getSnapshot(resource).status).not.toBe("live");
+    deliver({
+      epoch: "epoch",
+      revision: 1,
+      reason: "initial",
+      cursor: { workspaceId: "workspace", seq: 1 },
+      replyKind: "delta",
+    });
+    expect(store.getSnapshot(resource).status).toBe("live");
+    stop();
     store.dispose();
   });
 

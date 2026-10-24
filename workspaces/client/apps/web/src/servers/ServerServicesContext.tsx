@@ -8,7 +8,7 @@ import * as defaultChatCreations from "../chatCreation";
 import { serverLocalStorage } from "./storage";
 import * as defaultFileActions from "../fileActions";
 import * as defaultFileDialogs from "../native/fileDialogs";
-import { watchResourceReads } from "../components/watchResourceReads";
+import { watchResourceReads } from "../sync/subscriptions/reads";
 import * as defaultAccountLimits from "../usage/accountUsage";
 import * as defaultActivity from "./activity";
 import { useSyncedDrafts } from "../sync/drafts";

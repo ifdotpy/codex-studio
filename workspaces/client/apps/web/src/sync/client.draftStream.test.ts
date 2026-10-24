@@ -2,7 +2,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { RxDatabase } from "rxdb";
 import { firstValueFrom, filter } from "rxjs";
 import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
-import type { ResourceChangeEvent, ResourceVersion } from "./resourceEvents";
+import type {
+  ResourceChangeEvent,
+  ResourceVersion,
+} from "./subscriptions/events";
 
 const mocks = vi.hoisted(() => ({
   databases: [] as RxDatabase[],
@@ -69,7 +72,7 @@ vi.mock("../api", () => ({
   isApiSchemaMismatch: () => false,
   onMatchingApiSchemaResponse: () => () => {},
 }));
-vi.mock("./resourceEvents", () => ({
+vi.mock("./subscriptions/events", () => ({
   acknowledgeEntitySequences: vi.fn(),
   watchResourceConnection: () => () => {},
   watchResourceChanges: (

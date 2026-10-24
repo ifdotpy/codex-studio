@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
 import { READ_RECOVERY_MAX_ATTEMPTS } from "../sync/readRetry";
-import type { ResourceRef, ResourceVersion } from "../sync/resourceEvents";
+import type {
+  ResourceRef,
+  ResourceVersion,
+} from "../sync/subscriptions/events";
 
 const {
   watchers,
@@ -22,7 +25,7 @@ const {
   knownVersions: new Map<string, ResourceVersion>(),
 }));
 
-vi.mock("../sync/resourceEvents", () => ({
+vi.mock("../sync/subscriptions/events", () => ({
   watchResourceChanges: (
     resource: ResourceRef,
     callback: (version?: ResourceVersion) => void,

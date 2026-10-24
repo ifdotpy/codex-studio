@@ -10,7 +10,10 @@ import fixture from "../../../../contracts/draft-replication.json";
 import type { RxDatabase } from "rxdb";
 import { firstValueFrom, ReplaySubject, filter, skip } from "rxjs";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
-import type { ResourceChangeEvent, ResourceVersion } from "./resourceEvents";
+import type {
+  ResourceChangeEvent,
+  ResourceVersion,
+} from "./subscriptions/events";
 
 const mocks = vi.hoisted(() => ({
   databases: [] as RxDatabase[],
@@ -69,7 +72,7 @@ vi.mock("../api", () => ({
   isApiSchemaMismatch: () => false,
   onMatchingApiSchemaResponse: () => () => {},
 }));
-vi.mock("./resourceEvents", () => ({
+vi.mock("./subscriptions/events", () => ({
   acknowledgeEntitySequences: vi.fn(),
   watchResourceConnection: () => () => {},
   watchResourceChanges: (

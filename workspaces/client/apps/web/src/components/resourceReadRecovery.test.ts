@@ -132,7 +132,7 @@ vi.mock("../sync/localDraft", async (importOriginal) => ({
 }));
 vi.mock("../sync/send", () => ({ reconcileOutboxReceipts: reconcile }));
 vi.mock("../sync/resume", () => ({ onResume: () => () => {} }));
-vi.mock("../sync/resourceEvents", () => ({
+vi.mock("../sync/subscriptions/events", () => ({
   watchResourceChanges: (
     resource: unknown,
     callback: (version?: unknown) => void,

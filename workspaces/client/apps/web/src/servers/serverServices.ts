@@ -15,7 +15,7 @@ import { serverStoragePrefix, createStorageEventKey } from "./storage";
 import { createChatCreationStore } from "../chatCreation";
 import { createFileActions } from "../fileActions";
 import { createFileDialogs } from "../native/fileDialogs";
-import { watchResourceReads } from "../components/watchResourceReads";
+import { watchResourceReads } from "../sync/subscriptions/reads";
 import { createAccountLimitsCache } from "../usage/accountUsage";
 import { createBrowserDrafts } from "../sync/drafts";
 import { createDraftJournal } from "../sync/draftJournal";

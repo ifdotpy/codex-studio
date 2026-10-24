@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { ResourceVersion } from "../sync/resourceEvents";
+import type { ResourceVersion } from "../sync/subscriptions/events";
 
 const mocks = vi.hoisted(() => ({
   effects: [] as (() => void | (() => void))[],
@@ -39,7 +39,7 @@ vi.mock("../servers/ServerServicesContext", async () => {
     useServerResourceReads: () => watchResourceReads,
   };
 });
-vi.mock("../sync/resourceEvents", () => ({
+vi.mock("../sync/subscriptions/events", () => ({
   watchResourceChanges: (resource: unknown, callback: typeof mocks.changes) => {
     expect(resource).toEqual({ kind: "voice", agentId: "owner-chat" });
     mocks.changes = callback;

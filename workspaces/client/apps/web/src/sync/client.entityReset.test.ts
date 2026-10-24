@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptPageData } from "../types";
-import type { ResourceChangeEvent } from "./resourceEvents";
+import type { ResourceChangeEvent } from "./subscriptions/events";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 import { READ_RECOVERY_MAX_ATTEMPTS, readRetryDelay } from "./readRetry";
 
@@ -74,7 +74,7 @@ vi.mock("../api", () => ({
   syncGet: mocks.syncGet,
   syncPost: vi.fn(),
 }));
-vi.mock("./resourceEvents", () => ({
+vi.mock("./subscriptions/events", () => ({
   acknowledgeEntitySequences: vi.fn(),
   watchResourceChanges: mocks.watchResourceChanges,
   watchResourceConnection: vi.fn((listener: (status: string) => void) => {
