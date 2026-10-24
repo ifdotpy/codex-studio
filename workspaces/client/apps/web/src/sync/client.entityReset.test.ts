@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptPageData } from "../types";
 import type { ResourceChangeEvent } from "./resourceEvents";
-import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 import { readRetryDelay } from "./readRetry";
 
@@ -445,7 +444,7 @@ describe("entity pull reset wiring", () => {
     stop();
   });
 
-  it.each(["delta", "retry", "gap", "oversize", "epoch", "storage"])(
+  it.each(["delta", "retry", "gap", "epoch", "storage"])(
     "applies or rejects a transcript stream %s through the pulled delta applier",
     async (scenario) => {
       const workspaceId = "8".repeat(32);
@@ -517,10 +516,7 @@ describe("entity pull reset wiring", () => {
                   {
                     id: "answer",
                     role: "assistant",
-                    text:
-                      scenario === "oversize"
-                        ? "x".repeat(SYNC_STREAM_EVENT_MAX_BYTES)
-                        : "streamed",
+                    text: "streamed",
                   },
                 ],
                 removed: [],
@@ -535,14 +531,18 @@ describe("entity pull reset wiring", () => {
         storageInstance.bulkWrite.mockRejectedValueOnce(
           new Error("storage unavailable"),
         );
-      if (["gap", "oversize", "epoch", "storage"].includes(scenario)) {
+      if (["gap", "epoch", "storage"].includes(scenario)) {
         await expect(
           client.persistResourceEntityChanges(event, () => true),
         ).rejects.toThrow();
         expect(rows.get("transcript:agent")?.seq).toBe(1);
         return;
       }
+      const stringify = vi.spyOn(JSON, "stringify");
       await client.persistResourceEntityChanges(event, () => true);
+      expect(stringify).not.toHaveBeenCalledWith(
+        event.resourceVersions[0].transcriptChanges,
+      );
       const writes = storageInstance.bulkWrite.mock.calls.length;
       if (scenario === "retry") {
         await client.persistResourceEntityChanges(event, () => true);

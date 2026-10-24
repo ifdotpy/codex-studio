@@ -1170,9 +1170,9 @@ fn resource_changes_event(
     view: &ResourceChanges,
     reason: ResourceChangeEventReason,
     sequence: i64,
-    changes: Option<EntityChangeBatch>,
+    mut changes: Option<EntityChangeBatch>,
     draft_sequence: i64,
-    draft_changes: Option<DraftChangeBatch>,
+    mut draft_changes: Option<DraftChangeBatch>,
 ) -> Result<ResourceChangeEvent, ApiError> {
     let resources = view
         .resources
@@ -1195,8 +1195,8 @@ fn resource_changes_event(
                 } else {
                     *revision
                 },
-                draft_changes: drafts.then(|| draft_changes.clone()).flatten().map(Some),
-                entity_changes: state.then(|| changes.clone()).flatten().map(Some),
+                draft_changes: drafts.then(|| draft_changes.take()).flatten().map(Some),
+                entity_changes: state.then(|| changes.take()).flatten().map(Some),
                 entity_sequence_reset: state.then_some(Some(view.entity_reset)),
                 entity_sequences: None,
                 transcript_changes: None,
@@ -1435,6 +1435,56 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[test]
+    fn state_stream_moves_owned_batch_allocations() {
+        let changes: EntityChangeBatch = serde_json::from_value(json!({
+            "after": 1, "through": 2,
+            "documents": [{"op":"delete", "collection":"agent", "id":"agent", "seq":2}]
+        }))
+        .expect("entity batch");
+        let drafts: DraftChangeBatch = serde_json::from_value(json!({
+            "after": 1, "through": 2,
+            "documents": [{"id":"draft", "payload":"{}", "seq":2, "_deleted":true}]
+        }))
+        .expect("draft batch");
+        let entities_ptr = changes.documents.as_ptr();
+        let drafts_ptr = drafts.documents.as_ptr();
+        let view = ResourceChanges {
+            cursor: ChangeSnapshot {
+                epoch: "epoch".into(),
+                revision: 2,
+                resource_revision: 2,
+                closed: false,
+            },
+            resources: vec![json!({"kind":"state"}), json!({"kind":"drafts"})],
+            versions: vec![2, 2],
+            entity_reset: false,
+            overflow: false,
+        };
+        let event = resource_changes_event(
+            "workspace",
+            &view,
+            ResourceChangeEventReason::Change,
+            2,
+            Some(changes),
+            2,
+            Some(drafts),
+        )
+        .expect("event");
+        let entities = event.resource_versions[0]
+            .entity_changes
+            .as_ref()
+            .and_then(Option::as_ref)
+            .expect("entity batch");
+        let drafts = event.resource_versions[1]
+            .draft_changes
+            .as_ref()
+            .and_then(Option::as_ref)
+            .expect("draft batch");
+        assert_eq!(entities.documents.as_ptr(), entities_ptr);
+        assert_eq!(drafts.documents.as_ptr(), drafts_ptr);
+    }
 
     async fn frame_bytes(event: Event) -> axum::body::Bytes {
         axum::body::to_bytes(

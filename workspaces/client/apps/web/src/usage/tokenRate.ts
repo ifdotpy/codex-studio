@@ -186,20 +186,27 @@ export function createTokenRateCache() {
     // Apply the entire frame before notifying: every observer sees the same batch.
     for (const id of event.removed) {
       const previous = records.get(id);
-      if (previous) teamAgents.delete(workerRateKey(previous.rootId, id));
+      changed.add(id);
+      if (previous) {
+        const key = workerRateKey(previous.rootId, id);
+        teamAgents.delete(key);
+        changed.add(key);
+      }
       records.delete(id);
     }
     for (const record of event.records) {
       const previous = records.get(record.agentId);
-      if (previous)
-        teamAgents.delete(workerRateKey(previous.rootId, record.agentId));
+      if (previous) {
+        const key = workerRateKey(previous.rootId, record.agentId);
+        teamAgents.delete(key);
+        changed.add(key);
+      }
       records.set(record.agentId, record);
-      teamAgents.set(
-        workerRateKey(record.rootId, record.agentId),
-        record.agentId,
-      );
+      const key = workerRateKey(record.rootId, record.agentId);
+      teamAgents.set(key, record.agentId);
+      changed.add(key);
     }
-    for (const id of listeners.keys()) notify(id);
+    for (const id of changed) notify(id);
     return true;
   }
 

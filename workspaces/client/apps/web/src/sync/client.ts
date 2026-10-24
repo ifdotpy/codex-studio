@@ -3,7 +3,6 @@ import { serverDatabaseSuffix } from "../servers/environment";
 import {
   MAX_SAFE_INTEGER,
   SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
-  SYNC_STREAM_EVENT_MAX_BYTES,
   SYNC_TRANSCRIPT_STREAM_MAX_ITEMS,
 } from "../generated/sharedValues";
 
@@ -602,9 +601,7 @@ export function createSyncClient(options: SyncClientOptions) {
           batch.after < 0 ||
           batch.through <= batch.after ||
           batch.delta.items.length + batch.delta.removed.length >
-            SYNC_TRANSCRIPT_STREAM_MAX_ITEMS ||
-          new TextEncoder().encode(JSON.stringify(batch)).length >
-            SYNC_STREAM_EVENT_MAX_BYTES
+            SYNC_TRANSCRIPT_STREAM_MAX_ITEMS
         )
           throw new TypeError("Invalid stream transcript batch");
         await persistTranscriptProjection(
@@ -649,10 +646,7 @@ export function createSyncClient(options: SyncClientOptions) {
             row.seq <= changes.after ||
             row.seq > changes.through,
         ) ||
-        Math.max(...changes.documents.map((row) => row.seq)) !==
-          changes.through ||
-        new TextEncoder().encode(JSON.stringify(changes)).length >
-          SYNC_STREAM_EVENT_MAX_BYTES
+        Math.max(...changes.documents.map((row) => row.seq)) !== changes.through
       )
         throw new TypeError("Invalid stream entity batch");
       await persistEntityDocuments(

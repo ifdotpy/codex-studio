@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -272,7 +271,7 @@ describe("entity pull dispatch gate", () => {
     stop();
   });
 
-  it("rejects a stream batch above the UTF-8 byte cap before storing or advancing", async () => {
+  it("does not re-serialize a decoded inline entity batch", async () => {
     const { client, rows, workspaceId, stop, entitySequence } = await setup();
     vi.stubGlobal("navigator", {
       onLine: true,
@@ -284,44 +283,44 @@ describe("entity pull dispatch gate", () => {
     entitySequence
       .getEntitySequenceCheckpoint("state:entities:v1", API_SCHEMA_HASH)
       .observeEpoch("validity");
-    await expect(
-      client.persistResourceEntityChanges(
+    const stringify = vi.spyOn(JSON, "stringify");
+    const event: Parameters<typeof client.persistResourceEntityChanges>[0] = {
+      protocol: 4,
+      workspaceId,
+      epoch: "validity",
+      revision: 2,
+      reason: "change",
+      resources: [{ kind: "state" }],
+      resourceVersions: [
         {
-          protocol: 4,
-          workspaceId,
-          epoch: "validity",
-          revision: 2,
-          reason: "change",
-          resources: [{ kind: "state" }],
-          resourceVersions: [
-            {
-              revision: 101,
-              entityChanges: {
-                after: 100,
-                through: 101,
-                documents: [
-                  {
-                    op: "upsert",
-                    collection: "agent",
-                    id: "oversize",
-                    value: {
-                      id: "oversize",
-                      name: "é".repeat(SYNC_STREAM_EVENT_MAX_BYTES / 2),
-                      status: "idle",
-                      source: "managed",
-                    },
-                    seq: 101,
-                  },
-                ],
+          revision: 101,
+          entityChanges: {
+            after: 100,
+            through: 101,
+            documents: [
+              {
+                op: "upsert",
+                collection: "agent",
+                id: "inline",
+                value: {
+                  id: "inline",
+                  name: "Streamed",
+                  status: "idle",
+                  source: "managed",
+                },
+                seq: 101,
               },
-            },
-          ],
+            ],
+          },
         },
-        () => true,
-      ),
-    ).rejects.toThrow("Invalid stream entity batch");
-    expect(rows.has("entity:agent:oversize")).toBe(false);
-    expect(rows.get("state:entities:checkpoint")?.seq).toBe(100);
+      ],
+    };
+    await client.persistResourceEntityChanges(event, () => true);
+    expect(stringify).not.toHaveBeenCalledWith(
+      event.resourceVersions?.[0].entityChanges,
+    );
+    expect(rows.has("entity:agent:inline")).toBe(true);
+    expect(rows.get("state:entities:checkpoint")?.seq).toBe(101);
     stop();
   });
 

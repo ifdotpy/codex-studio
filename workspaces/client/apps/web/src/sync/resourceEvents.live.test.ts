@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createResourceEvents } from "./resourceEvents";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
+import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 
 vi.mock("./client", () => ({ syncDatabase: vi.fn() }));
@@ -397,3 +398,73 @@ it("invalidates pending follower persistence when its last transcript subscriber
   await vi.advanceTimersByTimeAsync(25);
   expect(f.persist).toHaveBeenCalledTimes(1);
 });
+
+it.each(["entityChanges", "transcriptChanges"])(
+  "rejects oversized UTF-8 %s frame data before parsing or persistence",
+  async (batch) => {
+    const f = await fixture();
+    f.persist.mockClear();
+    const data = JSON.stringify({
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision: 2,
+      reason: "change",
+      resources: [{ kind: "state" }],
+      resourceVersions: [
+        {
+          revision: 2,
+          [batch]: { text: "é".repeat(SYNC_STREAM_EVENT_MAX_BYTES / 2) },
+        },
+      ],
+    });
+    expect(data.length).toBeLessThan(SYNC_STREAM_EVENT_MAX_BYTES);
+    expect(new TextEncoder().encode(data).length).toBeGreaterThan(
+      SYNC_STREAM_EVENT_MAX_BYTES,
+    );
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      f.source.listeners.get("resources")?.({ data } as MessageEvent<string>);
+      expect(parse).not.toHaveBeenCalledWith(data);
+      expect(f.persist).not.toHaveBeenCalled();
+      expect(f.source.closed).toBe(true);
+    } finally {
+      parse.mockRestore();
+    }
+  },
+);
+
+it.each(["resources", "token-rates"])(
+  "counts received resources bytes once and exempts %s when appropriate",
+  async (type) => {
+    const f = await fixture();
+    const frame = JSON.stringify({
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision: 2,
+      reason: "change",
+      resources: [{ kind: "state" }],
+      resourceVersions: [
+        { revision: 2, entityChanges: { after: 1, through: 2, documents: [] } },
+      ],
+      snapshot: true,
+      records: [],
+      removed: [],
+    });
+    const size = SYNC_STREAM_EVENT_MAX_BYTES + (type === "token-rates" ? 1 : 0);
+    const data = frame.padEnd(size, " ");
+    const encode = vi.spyOn(TextEncoder.prototype, "encode");
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      f.source.listeners.get(type)?.({ data } as MessageEvent<string>);
+      expect(parse).toHaveBeenCalledWith(data);
+      expect(encode).toHaveBeenCalledTimes(type === "resources" ? 1 : 0);
+      if (type === "resources") expect(encode).toHaveBeenCalledWith(data);
+      expect(f.source.closed).toBe(false);
+    } finally {
+      encode.mockRestore();
+      parse.mockRestore();
+    }
+  },
+);

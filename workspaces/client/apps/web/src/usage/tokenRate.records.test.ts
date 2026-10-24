@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
   TOKEN_RATE_MAX_ENTRIES,
@@ -277,4 +277,79 @@ it("requires a token baseline for each epoch before applying deltas", () => {
   expect(cache.receiveResourceTokenRates({ ...frame, epoch: "two" })).toBe(
     false,
   );
+});
+
+it("notifies only delta agents and their previous and current team memberships", () => {
+  const cache = createTokenRateCache();
+  const record: TokenRate = {
+    agentId: "active",
+    rootId: "first",
+    turnId: "turn",
+    active: true,
+    estimated: false,
+    rate: 1,
+    outputTokens: 10,
+  };
+  const quiet = { ...record, agentId: "quiet" };
+  const removed = { ...record, agentId: "gone" };
+  const frame = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 1,
+    snapshot: true,
+    records: [record, quiet, removed],
+    removed: [] as string[],
+  };
+  cache.receiveResourceTokenRates(frame);
+  const closeFirst = cache.watchTeamTokenRates("first");
+  const closeSecond = cache.watchTeamTokenRates("second");
+  const ids = [
+    "active",
+    "quiet",
+    "gone",
+    "missing",
+    workerRateKey("first", "active"),
+    workerRateKey("second", "active"),
+    workerRateKey("first", "quiet"),
+    workerRateKey("first", "gone"),
+  ];
+  const callbacks = ids.map((id) => {
+    const callback = vi.fn();
+    cache.subscribeTokenRate(id, callback);
+    callback.mockClear();
+    return callback;
+  });
+  const moved = { ...record, rootId: "second", rate: 5 };
+  expect(
+    cache.receiveResourceTokenRates({
+      ...frame,
+      snapshot: false,
+      records: [moved],
+      removed: ["gone"],
+    }),
+  ).toBe(true);
+  expect(callbacks.map((callback) => callback.mock.calls)).toEqual([
+    [[moved]],
+    [],
+    [[null]],
+    [],
+    [[null]],
+    [[moved]],
+    [],
+    [[null]],
+  ]);
+  expect(cache.getTokenRate("quiet")).toBe(quiet);
+  callbacks.forEach((callback) => callback.mockClear());
+  expect(
+    cache.receiveResourceTokenRates({
+      ...frame,
+      snapshot: false,
+      records: [],
+      removed: [],
+    }),
+  ).toBe(true);
+  expect(callbacks.every((callback) => !callback.mock.calls.length)).toBe(true);
+  closeFirst();
+  closeSecond();
 });

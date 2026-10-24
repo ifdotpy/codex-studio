@@ -11,6 +11,8 @@ import {
   type operations,
 } from "../generated/api";
 
+import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
+
 import { API_SCHEMA_HASH, API_SCHEMA_HASH_PARAM } from "../generated/apiSchema";
 
 import {
@@ -1143,6 +1145,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         message: Event,
         apply: (parsed: unknown) => void,
         resetRetryOnSuccess = true,
+        maxBytes?: number,
       ) => {
         if (source !== connected) return;
         if (!schemaHandshakeReceived) {
@@ -1150,7 +1153,14 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           return;
         }
         try {
-          apply(JSON.parse((message as MessageEvent<string>).data) as unknown);
+          const data = (message as MessageEvent<string>).data;
+          // Check received UTF-8 once, before parsing or publishing inline batches.
+          if (
+            maxBytes !== undefined &&
+            new TextEncoder().encode(data).length > maxBytes
+          )
+            throw new TypeError("Resource frame exceeds the size limit");
+          apply(JSON.parse(data) as unknown);
           if (resetRetryOnSuccess) retryCount = 0;
         } catch (error) {
           frameFailed(error);
@@ -1234,6 +1244,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             receiveResourceEvent(parsed);
           },
           false,
+          SYNC_STREAM_EVENT_MAX_BYTES,
         );
       });
       connected.addEventListener("heartbeat", (message: Event) => {
