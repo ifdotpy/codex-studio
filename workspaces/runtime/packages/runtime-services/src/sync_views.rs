@@ -224,6 +224,8 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
         "task" => "TaskEntityDto",
         "taskDetail" => "TaskDetailResponse",
         "messageReceipt" => "MessageReceiptEntityDto",
+        "retainedWorktree" => "RetainedWorktreeEntityDto",
+        "questionHistory" => "AgentRequest",
         "plan" => "PlanSummaryEntityDto",
         "annotation" => "AnnotationEntityDto",
         "monitor" => "MonitorEntityDto",
@@ -871,4 +873,24 @@ mod projection_plan_tests {
         ));
         assert!(std::ptr::eq(plan, schema_projection_properties()));
     }
+}
+
+/// Public retained-folder entity. Cleanup operation identities never leave the server.
+pub fn retained_worktree_entity(member: &Value) -> Option<Value> {
+    let intent = member.get("workspaceCleanupIntent")?;
+    if !matches!(
+        intent.get("phase").and_then(Value::as_str),
+        Some("not_sent" | "unknown")
+    ) || !matches!(
+        intent.pointer("/effect/kind").and_then(Value::as_str),
+        Some("remove_worktree" | "save_worktree_ref")
+    ) || member
+        .get("remoteWorker")
+        .is_some_and(|value| !value.is_null())
+    {
+        return None;
+    }
+    let projected = project_persisted_record("agent", member)?;
+    Some(json!({"id":member["id"], "rootId":member["rootId"],
+        "name":projected.get("name"), "cleanup":projected["workspaceCleanupIntent"]}))
 }

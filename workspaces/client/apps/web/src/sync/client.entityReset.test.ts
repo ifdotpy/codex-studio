@@ -447,7 +447,7 @@ describe("entity pull reset wiring", () => {
     stop();
   });
 
-  it.each(["delta", "retry", "gap", "epoch", "storage"])(
+  it.each(["delta", "retry", "gap", "epoch", "storage", "snapshot"])(
     "applies or rejects a transcript stream %s through the pulled delta applier",
     async (scenario) => {
       const workspaceId = "8".repeat(32);
@@ -530,6 +530,14 @@ describe("entity pull reset wiring", () => {
           },
         ],
       };
+      if (scenario === "snapshot") {
+        event.reason = "initial";
+        delete event.resourceVersions[0].transcriptChanges;
+        event.resourceVersions[0].transcriptSnapshot = {
+          items: [{ id: "answer", role: "assistant", text: "streamed" }],
+          truncated: false,
+        };
+      }
       if (scenario === "storage")
         storageInstance.bulkWrite.mockRejectedValueOnce(
           new Error("storage unavailable"),

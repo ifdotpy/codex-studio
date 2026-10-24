@@ -207,3 +207,31 @@ describe("bounded stream entity delivery", () => {
     expect(persist).toHaveBeenCalledTimes(2);
   });
 });
+
+it("persists an added transcript baseline before dispatching its initial notification", async () => {
+  let finish!: () => void;
+  const persist = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const dispatch = vi.fn();
+  const delivery = new ResourceEntityDelivery(persist, dispatch);
+  const initial = {
+    protocol: 4,
+    workspaceId: "a".repeat(32),
+    epoch: "one",
+    revision: 1,
+    reason: "initial",
+    resources: [{ kind: "transcript", agentId: "chat" }],
+    resourceVersions: [
+      { revision: 1, transcriptSnapshot: { items: [], truncated: false } },
+    ],
+  } as ResourceChangeEvent;
+  delivery.receive(initial);
+  expect(persist).toHaveBeenCalledTimes(1);
+  expect(dispatch).not.toHaveBeenCalled();
+  finish();
+  await vi.waitFor(() => expect(dispatch).toHaveBeenCalledWith(initial));
+});

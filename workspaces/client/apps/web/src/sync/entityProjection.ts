@@ -66,6 +66,8 @@ const ENTITY_COLLECTIONS = [
   "terminal",
   "queue",
   "uiPreferences",
+  "retainedWorktree",
+  "questionHistory",
   "messageReceipt",
   "plan",
   "annotation",
@@ -104,6 +106,8 @@ export type EntityProjection = {
 
 function emptyEntityValues(): EntityValues {
   return {
+    retainedWorktree: new Map(),
+    questionHistory: new Map(),
     messageReceipt: new Map(),
     plan: new Map(),
     annotation: new Map(),
@@ -248,6 +252,14 @@ function projectSnapshotCollections(
   const runtime = {
     ...workspace,
     modelsByAccount,
+    retainedWorktrees:
+      prior && !changed.has("retainedWorktree")
+        ? prior.runtime.retainedWorktrees
+        : entityValues(values, "retainedWorktree"),
+    questionHistory:
+      prior && !changed.has("questionHistory")
+        ? prior.runtime.questionHistory
+        : entityValues(values, "questionHistory"),
     messageReceipts:
       prior && !changed.has("messageReceipt")
         ? prior.runtime.messageReceipts
@@ -400,6 +412,12 @@ export function applyEntityChanges(
       changed.add(oldCollection);
     }
     switch (payload.collection) {
+      case "retainedWorktree":
+        state.values.retainedWorktree.set(payload.id, payload.value);
+        break;
+      case "questionHistory":
+        state.values.questionHistory.set(payload.id, payload.value);
+        break;
       case "messageReceipt":
         state.values.messageReceipt.set(payload.id, payload.value);
         break;

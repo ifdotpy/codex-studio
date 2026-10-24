@@ -75,6 +75,18 @@ own. A path that publishes after its last write is not published twice.
 Volatile agent fields are outside this rule: their writers leave
 `runtime_agents` unchanged on purpose.
 
+Retained cleanup folders have their own `retainedWorktree` entities, including
+folders of deleted workers. Question answers remain in `questionHistory` entities
+after their pending request disappears; secret answers are omitted from this
+persistent projection. Both collections follow their source transaction and
+hard-delete tombstones. A bounded transcript baseline uses `transcriptSnapshot`
+in the subscription's initial resource frame, after its acknowledgement; the
+renderer persists it before notifying transcript readers. Oversized frames keep
+the scoped recovery hint. Saved Claude repair evidence is read on opening the
+view or explicit refresh, never because an agent's status changed. Viewing a
+focused completed result records its read receipt; its confirmed mutation
+response does not cause another session or projection read.
+
 The existing native EventSource transport and RxDB projection cache remain in
 use. Adding a separate query cache is unnecessary for this contract. FastAPI
 owns SSE framing; the renderer and server compare the same generated schema
@@ -184,3 +196,20 @@ on a request, rather than scanning on a timer. A cached size is not evidence
 that arbitrary external filesystem writes have been detected: repository trees
 are not recursively watched. The response's measurement
 time identifies the age of the returned result.
+
+### Read-only request audit
+
+[`audit-live-requests.mjs`](../workspaces/client/apps/web/scripts/audit-live-requests.mjs)
+measures idle and chat-switching traffic in headless Chromium, retaining request
+counts, fetch stacks, CDP initiators and stream metadata outside the checkout.
+It blocks every write except the audited tab's stream subscription updates:
+
+```sh
+node workspaces/client/apps/web/scripts/audit-live-requests.mjs \
+  --url http://127.0.0.1:4620 --chat FIRST_ID --chat SECOND_ID \
+  --output "$HOME/.cache/codex-studio/request-audit.json"
+```
+
+Blocked writes remain attempted requests in the report. A blocked read receipt
+can cause uncertainty-recovery pulls, which must be classified separately from
+reads triggered by a live change.

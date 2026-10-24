@@ -55,6 +55,8 @@ type SnapshotRuntime = WorkspaceEntityDto & {
     components["schemas"]["AccountRateLimitsDto"]
   >;
   rateLimits?: components["schemas"]["AccountRateLimitsDto"] | null;
+  retainedWorktrees?: components["schemas"]["RetainedWorktreeEntityDto"][];
+  questionHistory?: components["schemas"]["AgentRequest"][];
   messageReceipts?: components["schemas"]["MessageReceiptEntityDto"][];
   plans?: components["schemas"]["PlanSummaryEntityDto"][];
   annotations?: components["schemas"]["AnnotationEntityDto"][];

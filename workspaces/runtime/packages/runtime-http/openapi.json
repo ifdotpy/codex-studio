@@ -40834,6 +40834,17 @@
               }
             ]
           },
+          "transcriptSnapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptPageResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bounded complete transcript baseline sent immediately after a subscription acknowledgement. Omission requires scoped recovery."
+          },
           "voiceRecords": {
             "anyOf": [
               {
@@ -41019,6 +41030,36 @@
           }
         },
         "title": "RestartRecoveryRecordResponse",
+        "type": "object"
+      },
+      "RetainedWorktreeEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "cleanup": {
+            "$ref": "#/components/schemas/WorkspaceCleanupSummaryDto"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rootId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "cleanup",
+          "rootId"
+        ],
         "type": "object"
       },
       "RetainedWorktreesResponse": {
@@ -48610,7 +48651,9 @@
                   "accountCost",
                   "sessionCost",
                   "desktop",
-                  "terminal"
+                  "terminal",
+                  "retainedWorktree",
+                  "questionHistory"
                 ],
                 "type": "string"
               },
@@ -48750,6 +48793,48 @@
               "value"
             ],
             "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "retainedWorktree",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/RetainedWorktreeEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "questionHistory",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/AgentRequest"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
           }
         ],
         "properties": {
@@ -48801,9 +48886,11 @@
             "peerTeam": "#/components/schemas/SyncPeerTeamEntityPayload",
             "plan": "#/components/schemas/SyncPlanEntityPayload",
             "project": "#/components/schemas/SyncProjectEntityPayload",
+            "questionHistory": "#/components/schemas/SyncQuestionHistoryEntityPayload",
             "queue": "#/components/schemas/SyncQueueEntityPayload",
             "rateLimit": "#/components/schemas/SyncRateLimitEntityPayload",
             "request": "#/components/schemas/SyncRequestEntityPayload",
+            "retainedWorktree": "#/components/schemas/SyncRetainedWorktreeEntityPayload",
             "room": "#/components/schemas/SyncRoomEntityPayload",
             "rule": "#/components/schemas/SyncRuleEntityPayload",
             "sessionCost": "#/components/schemas/SyncSessionCostEntityPayload",
@@ -48897,6 +48984,12 @@
           },
           {
             "$ref": "#/components/schemas/SyncTerminalEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncRetainedWorktreeEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncQuestionHistoryEntityPayload"
           }
         ]
       },
@@ -49310,6 +49403,30 @@
         "title": "SyncPullResponse",
         "type": "object"
       },
+      "SyncQuestionHistoryEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "questionHistory",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/AgentRequest"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncQuestionHistoryEntityPayload",
+        "type": "object"
+      },
       "SyncQueueEntityPayload": {
         "additionalProperties": false,
         "properties": {
@@ -49422,6 +49539,30 @@
           "value"
         ],
         "title": "SyncRequestEntityPayload",
+        "type": "object"
+      },
+      "SyncRetainedWorktreeEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "retainedWorktree",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/RetainedWorktreeEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncRetainedWorktreeEntityPayload",
         "type": "object"
       },
       "SyncRoomEntityPayload": {

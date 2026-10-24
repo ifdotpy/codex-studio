@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use crate::generated::{
     DraftChangeBatch, EntityChangeBatch, ResourceChangeEvent, ResourceChangeEventReason,
-    ResourceRef, ResourceRevisionEntry, TranscriptChangeBatch, TranscriptStreamDelta,
-    TranscriptSyncPage,
+    ResourceRef, ResourceRevisionEntry, TranscriptChangeBatch, TranscriptPageResponse,
+    TranscriptStreamDelta, TranscriptSyncPage,
 };
 use axum::Json;
 use axum::body::{Body, Bytes};
@@ -685,6 +685,10 @@ fn entity_change_batch(
 
 enum TranscriptStreamUpdate {
     Unchanged,
+    Snapshot {
+        revision: i64,
+        snapshot: Option<Box<TranscriptPageResponse>>,
+    },
     Changed {
         revision: i64,
         batch: Option<Box<TranscriptChangeBatch>>,
@@ -712,7 +716,11 @@ async fn read_transcript_changes(
         };
         let agent = resource.agent_id;
         let scope = format!("transcript:{agent}");
-        let after = sequences.get(&agent).copied();
+        let after = if complete {
+            sequences.get(&agent).copied()
+        } else {
+            None
+        };
         let result = studio_runtime_services::transcript::pull_scope(
             store.clone(),
             &scope,
@@ -737,6 +745,46 @@ async fn read_transcript_changes(
         }
         if complete && after == Some(through) && response.documents.is_empty() {
             updates.insert(agent, TranscriptStreamUpdate::Unchanged);
+            continue;
+        }
+        if !complete {
+            let snapshot = response
+                .documents
+                .first()
+                .filter(|document| {
+                    response.documents.len() == 1
+                        && document.id == scope
+                        && !document.deleted
+                        && document.seq == through
+                })
+                .and_then(|document| {
+                    let remaining = inline_bytes?;
+                    inline_bytes = remaining.checked_sub(document.payload.len());
+                    if inline_bytes.is_none() {
+                        for update in updates.values_mut() {
+                            match update {
+                                TranscriptStreamUpdate::Changed { batch, .. } => *batch = None,
+                                TranscriptStreamUpdate::Snapshot { snapshot, .. } => {
+                                    *snapshot = None
+                                }
+                                TranscriptStreamUpdate::Unchanged => {}
+                            }
+                        }
+                        return None;
+                    }
+                    serde_json::from_str::<TranscriptPageResponse>(&document.payload)
+                        .ok()
+                        .filter(|page| page.items.len() <= SYNC_TRANSCRIPT_STREAM_MAX_ITEMS)
+                })
+                .map(Box::new);
+            sequences.insert(agent.clone(), through);
+            updates.insert(
+                agent,
+                TranscriptStreamUpdate::Snapshot {
+                    revision: through,
+                    snapshot,
+                },
+            );
             continue;
         }
         let batch = after
@@ -884,6 +932,10 @@ fn attach_transcript_changes(
         if let ResourceRef::TranscriptResource(transcript) = &resource {
             match updates.remove(&transcript.agent_id) {
                 Some(TranscriptStreamUpdate::Unchanged) => continue,
+                Some(TranscriptStreamUpdate::Snapshot { revision, snapshot }) => {
+                    entry.revision = revision;
+                    entry.transcript_snapshot = snapshot.map(|snapshot| Some(*snapshot));
+                }
                 Some(TranscriptStreamUpdate::Changed { revision, batch }) => {
                     entry.revision = revision;
                     entry.transcript_changes = batch.map(|batch| Some(*batch));
@@ -1323,6 +1375,7 @@ fn resource_changes_event(
                 entity_sequence_reset: state.then_some(Some(view.entity_reset)),
                 entity_sequences: None,
                 transcript_changes: None,
+                transcript_snapshot: None,
                 resource: None,
             }
         })
@@ -1433,6 +1486,7 @@ fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event 
     for entry in &mut payload.resource_versions {
         entry.entity_changes = None;
         entry.transcript_changes = None;
+        entry.transcript_snapshot = None;
         entry.draft_changes = None;
         entry.discovery_snapshot = None;
         entry.voice_records = None;
@@ -2478,6 +2532,57 @@ mod tests {
             restored["records"], rates["records"],
             "full replay includes quiet agents"
         );
+    }
+
+    #[tokio::test]
+    async fn subscription_add_streams_bounded_transcript_snapshot_after_ack() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('small',?1)", [json!({"id":"small","rootId":"small","epoch":0,"status":"running","threadId":"small","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('small:answer','small',?1,1)", [json!({"id":"small:answer","role":"assistant","text":"Current answer"}).to_string()])?;
+            Ok(())
+        }).await.expect("transcript");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let mut state = test_stream(
+            &http.sync_changes,
+            &http.token_rates,
+            http.resource_notifications.clone(),
+            vec![],
+        );
+        state.http_state = Some(http);
+        state.store = Some(store);
+        let resource = json!({"kind":"transcript","agentId":"small"});
+        for generation in [1, 2] {
+            subscription_frame(
+                &mut state,
+                SubscriptionChange {
+                    generation,
+                    resources: vec![resource.clone()],
+                    added: vec![resource.clone()],
+                    token_rates: None,
+                },
+            )
+            .await
+            .expect("subscription");
+            let ack = event_document(Ok(state.initial.pop_front().expect("ack"))).await;
+            assert_eq!(ack["gen"], generation);
+            let frame = event_document(Ok(state.initial.pop_front().expect("initial data"))).await;
+            assert_eq!(frame["reason"], "initial");
+            let snapshot = &frame["resourceVersions"][0]["transcriptSnapshot"];
+            assert_eq!(
+                snapshot["items"][0]["text"], "Current answer",
+                "bounded initial data must not require a pull"
+            );
+        }
     }
 
     #[tokio::test]

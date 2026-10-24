@@ -534,6 +534,30 @@ export function createSyncClient(options: SyncClientOptions) {
     for (const [index, entry] of event.resourceVersions.entries()) {
       if (!isCurrent()) return;
       const resource = entry.resource ?? event.resources[index];
+      if (resource?.kind === "transcript" && entry.transcriptSnapshot) {
+        if (
+          event.reason !== "initial" ||
+          entry.transcriptSnapshot.items.length >
+            SYNC_TRANSCRIPT_STREAM_MAX_ITEMS
+        )
+          throw new TypeError("Invalid stream transcript snapshot");
+        await persistTranscriptProjection(
+          db.projections,
+          `transcript:${resource.agentId}`,
+          {
+            id: `transcript:${resource.agentId}`,
+            payload: "",
+            seq: entry.revision,
+            _deleted: false,
+          },
+          workspaceId,
+          entry.transcriptSnapshot,
+          undefined,
+          isCurrent,
+          event.epoch,
+        );
+        continue;
+      }
       if (resource?.kind === "transcript" && entry.transcriptChanges) {
         const batch = entry.transcriptChanges;
         if (

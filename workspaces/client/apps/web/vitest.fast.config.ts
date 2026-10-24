@@ -50,6 +50,8 @@ export default {
       "src/components/conversation/transcript/TurnHistory.uncertain.test.ts",
       "src/components/shell/WorkerPermissions.test.ts",
       "src/components/agents/RetainedWorktrees.test.ts",
+      "src/components/liveRequestConsumers.test.ts",
+      "src/components/readState.noRefetch.test.ts",
       "src/components/ProjectServerCards.test.ts",
       "src/components/models/modelWhitelist.test.ts",
       // Read a stable baseline once and retain the full-disk notice across failed reads.

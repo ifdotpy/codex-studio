@@ -29,8 +29,14 @@ export class ResourceEntityDelivery {
   }
 
   receive(event: ResourceChangeEvent) {
+    const hasInitialSnapshot =
+      event.reason === "initial" &&
+      event.resourceVersions?.some((entry) => entry.transcriptSnapshot);
     const hasChanges = event.resourceVersions?.some(
-      (entry) => entry.entityChanges || entry.transcriptChanges,
+      (entry) =>
+        entry.entityChanges ||
+        entry.transcriptChanges ||
+        entry.transcriptSnapshot,
     );
     const hasState = event.resources.some(
       (resource) => resource.kind === "state",
@@ -45,7 +51,7 @@ export class ResourceEntityDelivery {
       return;
     }
     if (
-      event.reason !== "change" ||
+      (event.reason !== "change" && !hasInitialSnapshot) ||
       this.storageBlocked ||
       !hasChanges ||
       (this.epoch !== undefined && this.epoch !== event.epoch) ||

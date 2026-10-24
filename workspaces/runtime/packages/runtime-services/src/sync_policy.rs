@@ -40,6 +40,8 @@ const LIVE_TASK_AGENT: &str = "json_extract(t.record,'$.agent') IN \
 /// bound; a parity test below checks every `LIMIT` there.
 pub const EVENT_WINDOW_ROWS: usize = 200;
 const SYNC_SEEDED_MARKER: &str = "seeded";
+/// Upgrade marker for source-published retained folders and question history.
+const CONVERSATION_DETAILS_SEED_MARKER: &str = "conversation_details_v1";
 const AGENT_ORGANIZATION_FIELDS_MARKER: &str = "agent_organization_fields";
 const AGENT_ORGANIZATION_FIELDS_VERSION: i64 = 3;
 use studio_runtime_store::SUMMARY_ENTITIES_SEED_MARKER;
@@ -71,6 +73,11 @@ pub fn has_complete_entity_seed(connection: &Connection) -> StoreResult<bool> {
     complete &= connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
         [SUMMARY_ENTITIES_SEED_MARKER],
+        |row| row.get::<_, bool>(0),
+    )?;
+    complete &= connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
+        [CONVERSATION_DETAILS_SEED_MARKER],
         |row| row.get::<_, bool>(0),
     )?;
     let table_exists = |name: &str| {
@@ -455,6 +462,10 @@ pub fn maintain_entity_projections_with_server_id(
         maintain_event_window(transaction, &validate_projection)
     })?;
     seed_summary_entities(transaction)?;
+    transaction.execute(
+        "INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES(?1,'1')",
+        [CONVERSATION_DETAILS_SEED_MARKER],
+    )?;
     crate::diagnostics::measure_runtime_stage("projection.canvas_chat_entities", || {
         maintain_canvas_chat_entities(transaction, &validate_projection)
     })?;
@@ -872,6 +883,12 @@ fn publish_agents(
     )?
     .0;
     for &(id, record) in agents {
+        match crate::sync_views::retained_worktree_entity(record) {
+            Some(value) => {
+                put_projection(transaction, "retainedWorktree", id, value, false, validate)?
+            }
+            None => retire_if_live(transaction, "retainedWorktree", id, validate)?,
+        }
         if truthy(record.get("deletedAt")) {
             retire_if_live(transaction, "agent", id, validate)?;
             continue;
@@ -895,6 +912,16 @@ fn publish_direct(
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
     let record = serde_json::from_str::<Value>(raw)?;
+    if collection == "request" {
+        let question = crate::questions_reads::question_history_entity(raw)
+            .map_err(|_| StoreError::RecordContract("invalid question history entity"))?;
+        match question {
+            Some(value) => {
+                put_projection(transaction, "questionHistory", id, value, false, validate)?
+            }
+            None => retire_if_live(transaction, "questionHistory", id, validate)?,
+        }
+    }
     if collection == "request" && record.get("status").and_then(Value::as_str) != Some("pending") {
         return retire_if_live(transaction, collection, id, validate);
     }

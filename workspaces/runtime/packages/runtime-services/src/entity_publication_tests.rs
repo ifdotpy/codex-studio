@@ -453,3 +453,119 @@ async fn terminal_source_writes_publish_summary_without_process_identity() {
             .0
     );
 }
+
+#[tokio::test]
+async fn retained_worktree_entities_follow_cleanup_even_after_worker_deletion() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    let worker = json!({"id":"retained-worker","rootId":CHAT,"epoch":0,"status":"completed",
+        "name":"Retained worker","accountKey":"default","deletedAt":1,
+        "workspaceCleanupIntent":{"phase":"unknown","effect":{"kind":"remove_worktree","identity":{"cwd":"/fixture/retained"}},"receipt":{"reason":"Modified files"},"requestId":"private"}});
+    write(
+        &store,
+        "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+        vec!["retained-worker".into(), worker.to_string()],
+    )
+    .await;
+    let (deleted, value) = client_entity(&store, "retainedWorktree", "retained-worker")
+        .expect("deleted workers retain their folder entity");
+    assert!(!deleted);
+    assert_eq!(value["rootId"], CHAT);
+    assert_eq!(value["cleanup"]["path"], "/fixture/retained");
+    assert_eq!(value["cleanup"]["reason"], "Modified files");
+    assert!(value.to_string().find("private").is_none());
+    write(&store, "UPDATE runtime_agents SET record=json_set(record,'$.workspaceCleanupIntent.phase','confirmed') WHERE id=?1", vec!["retained-worker".into()]).await;
+    assert!(
+        client_entity(&store, "retainedWorktree", "retained-worker")
+            .expect("cleanup tombstone")
+            .0
+    );
+}
+
+#[tokio::test]
+async fn question_history_entities_retain_answers_after_pending_request_is_retired() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    let question = json!({"id":"history-question","agent":CHAT,"method":"agent/asyncQuestion","status":"pending",
+        "params":{"message":"Continue?","questions":[{"id":"choice","question":"Continue?","options":[{"label":"Yes"}]}]}});
+    write(
+        &store,
+        "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
+        vec!["history-question".into(), question.to_string()],
+    )
+    .await;
+    let (deleted, pending) = client_entity(&store, "questionHistory", "history-question")
+        .expect("question history entity");
+    assert!(!deleted);
+    assert_eq!(pending["agent"], CHAT);
+    write(&store, "UPDATE runtime_requests SET record=json_set(record,'$.status','answered','$.decision','answer','$.answeredAt',2,'$.answerHistory',json('[{\"id\":\"choice\",\"question\":\"Continue?\",\"isSecret\":false,\"answer\":[\"Yes\"]}]')) WHERE id=?1", vec!["history-question".into()]).await;
+    assert!(
+        client_entity(&store, "request", "history-question")
+            .expect("pending tombstone")
+            .0
+    );
+    let (deleted, answered) =
+        client_entity(&store, "questionHistory", "history-question").expect("answered history");
+    assert!(!deleted);
+    assert_eq!(answered["status"], "answered");
+    assert_eq!(answered["answerHistory"][0]["answer"], json!(["Yes"]));
+    write(
+        &store,
+        "UPDATE runtime_requests SET record=json_set(record,'$.deletedAt',3) WHERE id=?1",
+        vec!["history-question".into()],
+    )
+    .await;
+    assert!(
+        client_entity(&store, "questionHistory", "history-question")
+            .expect("history tombstone")
+            .0
+    );
+}
+
+#[tokio::test]
+async fn conversation_detail_entities_remove_private_answers_and_hard_deleted_sources() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    let question = json!({"id":"private-question","agent":CHAT,"method":"agent/asyncQuestion","status":"answered",
+        "params":{"questions":[{"id":"password","question":"Password?","isSecret":true}]},
+        "answerHistory":[{"id":"password","question":"Password?","isSecret":true,"answer":"never-cache-this"}]});
+    write(
+        &store,
+        "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
+        vec!["private-question".into(), question.to_string()],
+    )
+    .await;
+    let history = client_entity(&store, "questionHistory", "private-question")
+        .expect("typed history")
+        .1;
+    assert_eq!(history["answerHistory"][0]["answer"], Value::Null);
+    assert!(!history.to_string().contains("never-cache-this"));
+    write(
+        &store,
+        "DELETE FROM runtime_requests WHERE id=?1",
+        vec!["private-question".into()],
+    )
+    .await;
+    assert!(
+        client_entity(&store, "questionHistory", "private-question")
+            .expect("history tombstone")
+            .0
+    );
+    write(&store, "UPDATE runtime_agents SET record=json_set(record,'$.workspaceCleanupIntent',json('{\"phase\":\"unknown\",\"effect\":{\"kind\":\"remove_worktree\",\"identity\":{\"cwd\":\"/fixture/kept\"}}}')) WHERE id=?1", vec![CHAT.into()]).await;
+    assert!(
+        !client_entity(&store, "retainedWorktree", CHAT)
+            .expect("retained folder")
+            .0
+    );
+    write(
+        &store,
+        "DELETE FROM runtime_agents WHERE id=?1",
+        vec![CHAT.into()],
+    )
+    .await;
+    assert!(
+        client_entity(&store, "retainedWorktree", CHAT)
+            .expect("folder tombstone")
+            .0
+    );
+}

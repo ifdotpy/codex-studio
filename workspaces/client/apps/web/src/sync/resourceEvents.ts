@@ -611,6 +611,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         revisionEntry?.transcriptChanges
       )
         version.transcriptSequence = revisionEntry.transcriptChanges.through;
+      if (resource.kind === "transcript" && revisionEntry?.transcriptSnapshot)
+        version.transcriptSequence = revisionEntry.revision;
       if (resource.kind === "drafts") {
         version.reason = event.reason;
         version.draftChanges = revisionEntry?.draftChanges ?? undefined;
@@ -652,6 +654,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             !!revisionEntry?.entitySequenceReset ||
             (resource.kind === "transcript" &&
               !revisionEntry?.transcriptChanges &&
+              !revisionEntry?.transcriptSnapshot &&
               !isDuplicate &&
               !staleRevision),
         );

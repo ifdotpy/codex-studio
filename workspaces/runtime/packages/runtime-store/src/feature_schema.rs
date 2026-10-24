@@ -289,6 +289,8 @@ pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
         ("runtime_annotations", "annotation"),
         ("runtime_events", "messageReceipt"),
         ("runtime_tasks", "task"),
+        ("runtime_requests", "questionHistory"),
+        ("runtime_agents", "retainedWorktree"),
     ] {
         let tombstone =
             format!("json_object('collection','{collection}','id',OLD.id,'value',json('{{}}'))");

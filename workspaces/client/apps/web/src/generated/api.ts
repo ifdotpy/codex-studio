@@ -18719,6 +18719,10 @@ export interface components {
       /** Revision */
       revision: number;
       transcriptChanges?: components["schemas"]["TranscriptChangeBatch"] | null;
+      /** @description Bounded complete transcript baseline sent immediately after a subscription acknowledgement. Omission requires scoped recovery. */
+      transcriptSnapshot?:
+        | components["schemas"]["TranscriptPageResponse"]
+        | null;
       /** @description Transient voice records and session state. Recover through HTTP if the cursor interval is missing or incomplete. */
       voiceRecords?: components["schemas"]["VoiceRecordBatch"] | null;
     };
@@ -18834,6 +18838,12 @@ export interface components {
       turnId?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
+    };
+    RetainedWorktreeEntityDto: {
+      cleanup: components["schemas"]["WorkspaceCleanupSummaryDto"];
+      id: string;
+      name?: string | null;
+      rootId: string;
     };
     RetainedWorktreesResponse: {
       retainedWorktrees: {
@@ -21871,7 +21881,9 @@ export interface components {
             | "accountCost"
             | "sessionCost"
             | "desktop"
-            | "terminal";
+            | "terminal"
+            | "retainedWorktree"
+            | "questionHistory";
           /** @constant */
           op: "delete";
         }
@@ -21917,6 +21929,20 @@ export interface components {
           op: "upsert";
           value: components["schemas"]["TerminalEntityDto"];
         }
+      | {
+          /** @constant */
+          collection: "retainedWorktree";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["RetainedWorktreeEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "questionHistory";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["AgentRequest"];
+        }
     );
     SyncEntityPayload:
       | components["schemas"]["SyncAgentEntityPayload"]
@@ -21945,7 +21971,9 @@ export interface components {
       | components["schemas"]["SyncAccountCostEntityPayload"]
       | components["schemas"]["SyncSessionCostEntityPayload"]
       | components["schemas"]["SyncDesktopEntityPayload"]
-      | components["schemas"]["SyncTerminalEntityPayload"];
+      | components["schemas"]["SyncTerminalEntityPayload"]
+      | components["schemas"]["SyncRetainedWorktreeEntityPayload"]
+      | components["schemas"]["SyncQuestionHistoryEntityPayload"];
     /** SyncEventEntityPayload */
     SyncEventEntityPayload: {
       /**
@@ -22114,6 +22142,17 @@ export interface components {
       /** Workspaceid */
       workspaceId: string;
     };
+    /** SyncQuestionHistoryEntityPayload */
+    SyncQuestionHistoryEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "questionHistory";
+      /** Id */
+      id: string;
+      value: components["schemas"]["AgentRequest"];
+    };
     /** SyncQueueEntityPayload */
     SyncQueueEntityPayload: {
       /**
@@ -22153,6 +22192,17 @@ export interface components {
       /** Id */
       id: string;
       value: components["schemas"]["RequestEntityDto"];
+    };
+    /** SyncRetainedWorktreeEntityPayload */
+    SyncRetainedWorktreeEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "retainedWorktree";
+      /** Id */
+      id: string;
+      value: components["schemas"]["RetainedWorktreeEntityDto"];
     };
     /** SyncRoomEntityPayload */
     SyncRoomEntityPayload: {
@@ -37336,6 +37386,8 @@ export type PlanSummaryEntityDto =
 export type ProjectEntityDto = components["schemas"]["ProjectEntityDto"];
 export type QueueEntityDto = components["schemas"]["QueueEntityDto"];
 export type RequestEntityDto = components["schemas"]["RequestEntityDto"];
+export type RetainedWorktreeEntityDto =
+  components["schemas"]["RetainedWorktreeEntityDto"];
 export type RoomEntityDto = components["schemas"]["RoomEntityDto"];
 export type RuleEntityDto = components["schemas"]["RuleEntityDto"];
 export type SessionCostEntityDto =
