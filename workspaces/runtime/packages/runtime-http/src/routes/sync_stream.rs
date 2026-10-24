@@ -277,11 +277,11 @@ async fn sync_stream(
     let change_hub = Arc::clone(&state.sync_changes);
     let mut changes = change_hub.subscribe();
     changes.borrow_and_update();
-    let initial_entity_sequence = match read_entity_sequence(Some(store.clone()), &resources).await
-    {
-        Ok(sequence) => sequence,
-        Err(error) => return error.into_response(),
-    };
+    let mut initial_entity_sequence =
+        match read_entity_sequence(Some(store.clone()), &resources).await {
+            Ok(sequence) => sequence,
+            Err(error) => return error.into_response(),
+        };
     let initial_draft_sequence =
         match read_draft_changes(Some(store.clone()), &resources, None).await {
             Ok((sequence, _)) => sequence,
@@ -335,6 +335,21 @@ async fn sync_stream(
     attach_transcript_changes(&mut initial_event, transcript_updates);
     if let Err(error) = attach_initial_entries(&state, &mut initial_event, &since).await {
         return error.into_response();
+    }
+    for (resource, entry) in initial_event
+        .resources
+        .iter()
+        .zip(&initial_event.resource_versions)
+    {
+        match resource {
+            ResourceRef::TranscriptResource(transcript) if entry.cursor.is_some() => {
+                transcript_sequences.insert(transcript.agent_id.clone(), entry.revision);
+            }
+            ResourceRef::StateResource(_) if entry.cursor.is_some() => {
+                initial_entity_sequence = entry.revision
+            }
+            _ => {}
+        }
     }
     attach_transient_snapshots(Some(&state), &mut initial_event, &mut voice_sequences).await;
     let mut initial = VecDeque::new();
@@ -1007,6 +1022,25 @@ fn attach_transcript_changes(
                 None => {}
             }
         }
+        if entry
+            .transcript_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.is_some())
+            || entry
+                .transcript_changes
+                .as_ref()
+                .is_some_and(|batch| batch.is_some())
+        {
+            entry.cursor = Some(SubscriptionCursor {
+                workspace_id: event.workspace_id.clone(),
+                seq: entry.revision,
+            });
+            entry.reply_kind = Some(if entry.transcript_snapshot.is_some() {
+                crate::generated::SubscriptionReplyKind::Snapshot
+            } else {
+                crate::generated::SubscriptionReplyKind::Delta
+            });
+        }
         event.resources.push(resource);
         event.resource_versions.push(entry);
     }
@@ -1175,6 +1209,9 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
             .await
             .ok()?;
         for (resource, entry) in event.resources.iter().zip(&event.resource_versions) {
+            if matches!(resource, ResourceRef::StateResource(_)) && entry.cursor.is_some() {
+                state.entity_sequence = entry.revision;
+            }
             if let ResourceRef::TranscriptResource(transcript) = resource {
                 state
                     .transcript_sequences
@@ -1560,6 +1597,8 @@ fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event 
         studio_runtime_services::diagnostics::SyncRecoveryKind::Oversize,
     );
     for entry in &mut payload.resource_versions {
+        entry.cursor = None;
+        entry.reply_kind = None;
         entry.entity_changes = None;
         entry.transcript_changes = None;
         entry.transcript_snapshot = None;

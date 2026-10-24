@@ -1,3 +1,4 @@
+import { SUBSCRIPTION_ENTITY_SCOPES } from "../generated/subscriptionEntities";
 import { cursorDocumentId, parseAppliedCursor } from "./subscriptions/cursors";
 import { serverDatabaseSuffix } from "../servers/environment";
 
@@ -546,6 +547,105 @@ export function createSyncClient(options: SyncClientOptions) {
     });
   }
 
+  async function persistScopedEntities(
+    resource: ResourceRef,
+    entry: components["schemas"]["ResourceRevisionEntry"],
+    isCurrent: () => boolean,
+  ) {
+    const cursor = entry.cursor;
+    const changes = entry.entityChanges;
+    if (!cursor || !changes) return false;
+    const scopes: Record<
+      string,
+      {
+        collections: readonly string[];
+        idField: string | null;
+        agentField: string | null;
+      }
+    > = SUBSCRIPTION_ENTITY_SCOPES;
+    const scope = scopes[resource.kind];
+    if (!scope) return false;
+    const { db, workspaceId } = await syncDatabase();
+    if (
+      cursor.workspaceId !== workspaceId ||
+      cursor.seq !== entry.revision ||
+      changes.through !== cursor.seq
+    )
+      throw new Error("Invalid subscription cursor interval");
+    const selector = resource as unknown as Record<string, unknown>;
+    const belongs = (entity: {
+      collection: string;
+      id: string;
+      value?: unknown;
+    }) => {
+      if (!scope.collections.includes(entity.collection)) return false;
+      if (scope.idField && entity.id !== selector[scope.idField]) return false;
+      if (
+        scope.agentField &&
+        selector[scope.agentField] &&
+        entity.value &&
+        (entity.value as { agent?: string }).agent !==
+          selector[scope.agentField]
+      )
+        return false;
+      return true;
+    };
+    await withEntityProjectionWrite(db.projections.database.name, async () => {
+      if (!isCurrent()) return;
+      const applied = await readSubscriptionCursor(resource);
+      if (applied && applied.seq > cursor.seq) return;
+      if (entry.replyKind !== "snapshot" && applied?.seq !== changes.after)
+        throw new Error("Subscription delta has no applied local base");
+      if (
+        changes.documents.some(
+          (row) =>
+            !belongs(row) ||
+            row.seq > cursor.seq ||
+            (entry.replyKind !== "snapshot" && row.seq <= changes.after),
+        )
+      )
+        throw new Error("Entity outside subscription interval");
+      const rows = changes.documents.map(entityCacheRow);
+      if (entry.replyKind === "snapshot") {
+        const incoming = new Set(rows.map((row) => row.id));
+        for (const collection of scope.collections) {
+          const prefix = `entity:${collection}:`;
+          const existing = await db.projections
+            .find({
+              selector: { id: { $gte: prefix, $lt: `entity:${collection};` } },
+            })
+            .exec();
+          for (const doc of existing) {
+            const row = doc.toJSON();
+            if (row.entity && belongs(row.entity) && !incoming.has(row.id))
+              rows.push({
+                id: row.id,
+                payload: "",
+                seq: cursor.seq,
+                _deleted: true,
+              });
+          }
+        }
+      }
+      await persistProjectionBatch(db.projections, rows, isCurrent);
+      if (!isCurrent()) return;
+      if (resource.kind === "state") {
+        await persistProjection(db.projections, {
+          id: "state:entities:checkpoint",
+          payload: "{}",
+          seq: cursor.seq,
+        });
+        await persistProjection(db.projections, {
+          id: "state:entities:ready",
+          payload: "ready",
+          seq: cursor.seq,
+        });
+      }
+      await persistSubscriptionCursor(resource, cursor, isCurrent);
+    });
+    return true;
+  }
+
   async function persistResourceEntityChanges(
     event: import("./subscriptions/events").ResourceChangeEvent,
     isCurrent: () => boolean,
@@ -558,6 +658,27 @@ export function createSyncClient(options: SyncClientOptions) {
     for (const [index, entry] of event.resourceVersions.entries()) {
       if (!isCurrent()) return;
       const resource = entry.resource ?? event.resources[index];
+      if (
+        resource &&
+        entry.cursor &&
+        entry.entityChanges &&
+        (await persistScopedEntities(resource, entry, isCurrent))
+      )
+        continue;
+      if (
+        resource &&
+        entry.cursor &&
+        entry.replyKind === "delta" &&
+        !entry.transcriptChanges &&
+        !entry.transcriptSnapshot &&
+        !entry.entityChanges
+      ) {
+        const applied = await readSubscriptionCursor(resource);
+        if (!applied || applied.seq < entry.cursor.seq)
+          throw new Error("Empty subscription delta has no applied local base");
+        continue;
+      }
+
       if (resource?.kind === "transcript" && entry.transcriptSnapshot) {
         if (
           (event.reason !== "initial" && event.reason !== "reconnect") ||
