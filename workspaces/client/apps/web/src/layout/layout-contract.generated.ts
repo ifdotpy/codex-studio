@@ -272,11 +272,6 @@ export const layoutTokens = {
     purpose:
       "Retained Analytics width threshold 520px, owned by slice1-contract",
   },
-  "legacy_Sidebar.width760": {
-    value: 760,
-    unit: "px",
-    purpose: "Retained Sidebar width threshold 760px, owned by slice2-sidebar",
-  },
   "legacy_Usage.width600": {
     value: 600,
     unit: "px",
@@ -486,12 +481,6 @@ export const layoutTokens = {
     purpose:
       "Retained team_chats width threshold 850px, owned by slice3-workspace-panel",
   },
-  "legacy_sidebar_projects.width760": {
-    value: 760,
-    unit: "px",
-    purpose:
-      "Retained sidebar_projects width threshold 760px, owned by slice2-sidebar",
-  },
   "legacy_sidebar_projects.dimension94": {
     value: 24,
     unit: "px",
@@ -677,9 +666,6 @@ export const layoutValues = {
     width850: 850,
     width520: 520,
   },
-  legacy_Sidebar: {
-    width760: 760,
-  },
   legacy_Usage: {
     width600: 600,
   },
@@ -768,7 +754,6 @@ export const layoutValues = {
     dimension89: 850,
   },
   legacy_sidebar_projects: {
-    width760: 760,
     dimension94: 24,
   },
   legacy_team_navigation: {

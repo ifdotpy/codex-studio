@@ -265,11 +265,6 @@
       "unit": "px",
       "purpose": "Retained Analytics width threshold 520px, owned by slice1-contract"
     },
-    "legacy_Sidebar.width760": {
-      "value": 760,
-      "unit": "px",
-      "purpose": "Retained Sidebar width threshold 760px, owned by slice2-sidebar"
-    },
     "legacy_Usage.width600": {
       "value": 600,
       "unit": "px",
@@ -444,11 +439,6 @@
       "value": 850,
       "unit": "px",
       "purpose": "Retained team_chats width threshold 850px, owned by slice3-workspace-panel"
-    },
-    "legacy_sidebar_projects.width760": {
-      "value": 760,
-      "unit": "px",
-      "purpose": "Retained sidebar_projects width threshold 760px, owned by slice2-sidebar"
     },
     "legacy_sidebar_projects.dimension94": {
       "value": 24,
@@ -715,15 +705,6 @@
       "count": 1,
       "purpose": "Retained dimension consumer in Dictation",
       "plannedOwner": "slice1-contract"
-    },
-    {
-      "path": "src/components/Sidebar.tsx",
-      "kind": "query",
-      "signature": "useMediaQuery(\"(max-width: 760px)\"",
-      "key": "legacy_Sidebar.width760",
-      "count": 1,
-      "purpose": "Retained query consumer in Sidebar",
-      "plannedOwner": "slice2-sidebar"
     },
     {
       "path": "src/components/Usage.css",
@@ -1367,24 +1348,6 @@
       "count": 1,
       "purpose": "Retained dimension consumer in team_chats",
       "plannedOwner": "slice3-workspace-panel"
-    },
-    {
-      "path": "src/components/sidebar-projects.css",
-      "kind": "query",
-      "signature": "@media (max-width: 760px) {",
-      "key": "legacy_sidebar_projects.width760",
-      "count": 1,
-      "purpose": "Retained query consumer in sidebar_projects",
-      "plannedOwner": "slice2-sidebar"
-    },
-    {
-      "path": "src/components/sidebar-projects.css",
-      "kind": "query",
-      "signature": "@media (hover: none), (max-width: 760px) {",
-      "key": "legacy_sidebar_projects.width760",
-      "count": 2,
-      "purpose": "Retained query consumer in sidebar_projects",
-      "plannedOwner": "slice2-sidebar"
     },
     {
       "path": "src/components/sidebar-projects.css",

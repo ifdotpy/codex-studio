@@ -1,3 +1,4 @@
+import { restoreSidebarFocus } from "../components/sidebar/SidebarFrame";
 import { readTerminalDockHeight } from "../layout/terminalGeometry";
 import { layoutQueries } from "../layout/layout-contract.generated";
 import { ScreenContext } from "./ScreenContext";
@@ -182,6 +183,9 @@ function MultiServerShell({
   const notificationState = useRef(
     new Map<string, { seen: Set<string>; started: number }>(),
   );
+  const [sidebarCompact, setSidebarCompact] = useState(
+    () => window.matchMedia(layoutQueries.navigationCompact).matches,
+  );
   const [sidebarHidden, setSidebarHidden] = useState(false);
   // Each server view reports its terminal panel; the shell draws the closed bar under
   // its sidebar and makes room for the open panel (servers.css "Terminal under the sidebar").
@@ -199,10 +203,10 @@ function MultiServerShell({
   >({});
   const [shellSidebarWidth, setShellSidebarWidth] = useState(0);
   const toggleSidebar = useCallback(() => {
-    if (window.matchMedia(layoutQueries.navigationCompact).matches)
-      setMobileOpen((old) => !old);
+    restoreSidebarFocus();
+    if (sidebarCompact) setMobileOpen((old) => !old);
     else setSidebarHidden((old) => !old);
-  }, []);
+  }, [sidebarCompact]);
   const { setColorScheme } = useMantineColorScheme();
   const [preferences, setPreferences] = useState(() => {
     try {
@@ -874,7 +878,12 @@ function MultiServerShell({
       observer.disconnect();
       narrow.removeEventListener("change", measure);
     };
-  }, [sidebarHidden, mergedSidebar?.sources.length, servers.length]);
+  }, [
+    sidebarHidden,
+    sidebarCompact,
+    mergedSidebar?.sources.length,
+    servers.length,
+  ]);
   if (!uiOnly && !paired.length && accountsServers.length === servers.length)
     return (
       <ServerSettingsContext.Provider
@@ -903,6 +912,7 @@ function MultiServerShell({
     <div
       className={`multi-server-shell ${sidebarHidden ? "server-sidebar-hidden" : ""}`}
       data-navigation="combined"
+      data-navigation-compact={sidebarCompact}
       data-shell-terminal={terminalLayout}
       style={
         {
@@ -935,9 +945,10 @@ function MultiServerShell({
             }
             mobile={mobileOpen}
             hidden={sidebarHidden}
+            onCompactChange={setSidebarCompact}
             close={() => {
               setMobileOpen(false);
-              setSidebarHidden(true);
+              if (!sidebarCompact) setSidebarHidden(true);
             }}
             settings={openManager}
             search={() => setSearchOpen(true)}

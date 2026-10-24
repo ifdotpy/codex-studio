@@ -178,6 +178,7 @@ function isLeadCreateRequest(value: Json): value is LeadCreateRequest {
   );
 }
 import Sidebar from "./components/Sidebar";
+import { restoreSidebarFocus } from "./components/sidebar/SidebarFrame";
 import {
   createAppCatalogSelector,
   mostRecentActivity,
@@ -520,6 +521,7 @@ export default function App({ active = true }: { active?: boolean }) {
     },
     [colorScheme, setColorScheme, studioPreferences],
   );
+  const [sidebarCompact, setSidebarCompact] = useState(!!mobileClient);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     saved("codex-sidebar-collapsed", false),
   );
@@ -560,7 +562,8 @@ export default function App({ active = true }: { active?: boolean }) {
       postToShell({ kind: "studio-server-toggle-sidebar" }, serverParentOrigin);
       return;
     }
-    if (mobileClient) {
+    restoreSidebarFocus();
+    if (sidebarCompact) {
       setSidebar((visible) => !visible);
       return;
     }
@@ -568,7 +571,7 @@ export default function App({ active = true }: { active?: boolean }) {
       save("codex-sidebar-collapsed", !collapsed);
       return !collapsed;
     });
-  }, [mobileClient]);
+  }, [sidebarCompact]);
   useEffect(() => {
     const shortcut = parseSidebarShortcut(studioPreferences.sidebarShortcut);
     if (!shortcut) return;
@@ -2690,6 +2693,7 @@ export default function App({ active = true }: { active?: boolean }) {
           remove={remove}
           mobile={sidebar}
           collapsed={sidebarCollapsed}
+          onCompactChange={setSidebarCompact}
           onSearch={() => {
             if (isServerView) {
               postToShell({ kind: "studio-server-search" }, serverParentOrigin);
@@ -2702,7 +2706,7 @@ export default function App({ active = true }: { active?: boolean }) {
           close={() => {
             if (isServerView)
               delete document.documentElement.dataset.serverProjects;
-            if (mobileClient) setSidebar(false);
+            if (sidebarCompact) setSidebar(false);
             else {
               setSidebarCollapsed(true);
               save("codex-sidebar-collapsed", true);
@@ -2720,7 +2724,7 @@ export default function App({ active = true }: { active?: boolean }) {
             <ActionIcon
               id="sidebar-toggle"
               aria-label="Toggle conversations"
-              aria-expanded={mobileClient ? sidebar : !sidebarCollapsed}
+              aria-expanded={sidebarCompact ? sidebar : !sidebarCollapsed}
               onClick={toggleSidebar}
             >
               <PanelLeft size={18} />

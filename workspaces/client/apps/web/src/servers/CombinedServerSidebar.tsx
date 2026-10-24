@@ -23,6 +23,7 @@ export default function CombinedServerSidebar({
   applyNavigation,
   mobile,
   hidden,
+  onCompactChange,
   close,
   settings,
   search,
@@ -42,6 +43,7 @@ export default function CombinedServerSidebar({
   applyNavigation: (owner: string, navigation: ServerNavigation) => void;
   mobile: boolean;
   hidden: boolean;
+  onCompactChange?: (compact: boolean) => void;
   close: () => void;
   settings: () => void;
   search: () => void;
@@ -106,6 +108,7 @@ export default function CombinedServerSidebar({
       creating={!!navigation[current]?.creating}
       mobile={mobile}
       collapsed={hidden}
+      onCompactChange={onCompactChange}
       close={close}
       settings={settings}
       onSearch={search}

@@ -274,6 +274,17 @@
   min-width: 0;
   display: flex;
 }
+.multi-server-shell[data-navigation-compact="true"] {
+  flex-direction: column;
+}
+.multi-server-shell[data-navigation-compact="true"] .server-mobile-toggle {
+  display: block;
+  flex-shrink: 0;
+}
+.multi-server-shell[data-navigation-compact="true"] .server-views {
+  width: 100%;
+  min-height: 0;
+}
 .server-mobile-toggle {
   display: none;
 }
