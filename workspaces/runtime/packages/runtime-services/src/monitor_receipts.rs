@@ -327,7 +327,12 @@ mod tests {
             .expect("receipt directory is readable")
             .map(|entry| entry.expect("directory entry"))
             .collect();
-        entries.sort_by_key(|entry| order.iter().position(|p| p == &entry.path()).unwrap());
+        entries.sort_by_key(|entry| {
+            order
+                .iter()
+                .position(|p| p == &entry.path())
+                .expect("ordered entry")
+        });
         let mut entries = entries.into_iter().map(Ok);
         for key in ["valid-receipt", "second-receipt"] {
             let (remaining, found) = next_receipt(entries, root.path());

@@ -391,13 +391,13 @@ mod tests {
         let mut expected_agents = before["agents"].clone();
         expected_agents[0]["record"]
             .as_object_mut()
-            .unwrap()
+            .expect("agent record object")
             .remove("reviewSchedules");
         assert_eq!(after["agents"], expected_agents);
         let mut expected_rooms = before["rooms"].clone();
         expected_rooms[0]["record"]
             .as_object_mut()
-            .unwrap()
+            .expect("room record object")
             .remove("reviewTargets");
         assert_eq!(after["rooms"], expected_rooms);
     }
