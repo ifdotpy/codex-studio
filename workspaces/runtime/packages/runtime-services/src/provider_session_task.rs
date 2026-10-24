@@ -719,10 +719,13 @@ impl SessionTask {
         }
         // The pending event was received before every entry of the tail.
         let mut undelivered: Vec<_> = self.retained.pending.take().into_iter().collect();
-        undelivered.extend(tail.into_iter().map(|journal| SessionEvent {
-            journal: Some(journal),
-            outcomes: vec![],
-        }));
+        for journal in tail {
+            let outcomes = self.tail_reply(&journal).into_iter().collect();
+            undelivered.push(SessionEvent {
+                journal: Some(journal),
+                outcomes,
+            });
+        }
         let mut outcomes = self
             .retained
             .control
@@ -747,6 +750,36 @@ impl SessionTask {
             outcomes,
             pending_acknowledgement: self.pending_ack(),
         }
+    }
+
+    /// Correlates a response in the exit tail with its request, as
+    /// `process_journal` does for a delivered entry. Without the reply, the
+    /// account applied the tail's notifications, such as `turn/started`, and
+    /// then settled the request as unknown: a start whose reply was in the tail
+    /// was neither accepted nor unknown, and a server restart could not recover
+    /// it. Only the reply is kept; the terminal path writes nothing, so a
+    /// request this reply would release stays queued and is reported unsent.
+    fn tail_reply(&mut self, entry: &JournalEntry) -> Option<SessionOutcome> {
+        let JournalPayload::Frame(frame @ Frame::Response { .. }) = &entry.payload else {
+            return None;
+        };
+        if entry.generation.0 != self.state.generation() {
+            return None;
+        }
+        let actions = self
+            .state
+            .receive_at(frame.clone(), entry.received_at_ms)
+            .ok()?;
+        actions.into_iter().find_map(|action| match action {
+            Action::Resolve {
+                ticket,
+                outcome: outcome @ RequestOutcome::Reply { .. },
+            } => self
+                .records
+                .remove(&ticket.id)
+                .map(|_| SessionOutcome::Resolved { ticket, outcome }),
+            _ => None,
+        })
     }
 
     fn finish_without_adapter(&mut self, result: Result<(), SessionTaskError>) -> SessionExit {

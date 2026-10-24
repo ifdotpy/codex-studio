@@ -371,7 +371,9 @@ the adapter, the session receives the provider's exit tail from its journal lane
 into this handoff, in cursor order after the one retained transition: at most
 `SHUTDOWN_TAIL_ENTRIES` entries before the join plus the 16 the lane still holds,
 so a consumer that stopped reading cannot lose a final `turn/completed`. The
-adapter's drain grace bounds the tail in time. Retained control outcomes go in
+adapter's drain grace bounds the tail in time. A tail response to an open request
+carries its `Resolved` reply, as a delivered entry does, and that request is not
+also reported unknown. Retained control outcomes go in
 `exit.outcomes`. Evidence stays task-owned before fallible processing, including
 across an injected panic; terminal cleanup does not execute more protocol writes.
 Shutdown never ACKs or waits for room in the consumer lane.
