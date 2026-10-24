@@ -362,6 +362,26 @@ impl MonitorSnapshot {
             .as_ref()
             .is_some_and(|recovery| recovery.status == RecoveryStatus::Running)
     }
+    /// A loss decided at the command deadline. The provider process may still
+    /// send the command's real answer, which then completes it once.
+    pub(crate) fn deadline_lost(&self) -> bool {
+        self.fields.status == MonitorStatus::Lost
+            && self.fields.rule_id.as_deref().is_none_or(str::is_empty)
+            && self
+                .fields
+                .reattach_recovery
+                .as_ref()
+                .is_some_and(|recovery| recovery.proof.as_deref() == Some(DEADLINE_PASSED))
+    }
+    /// A deadline loss whose late answer is still awaited at `now`.
+    pub(crate) fn awaits_late_answer(&self, now: f64) -> bool {
+        self.deadline_lost()
+            && self
+                .record
+                .get("finished")
+                .and_then(Value::as_f64)
+                .is_some_and(|finished| now < finished + MONITOR_LATE_ANSWER_SECONDS)
+    }
     pub(crate) fn reconciliation_deadline(&self) -> Option<f64> {
         self.fields
             .reattach_recovery
@@ -540,7 +560,9 @@ pub fn finish(
         ));
     }
     let mut decision = snapshot.decision();
-    if !snapshot.fields.status.terminal() {
+    // The real answer of a command lost at its deadline completes it once.
+    let late = snapshot.deadline_lost();
+    if !snapshot.fields.status.terminal() || late {
         remove(&mut decision.record, "reattachRecovery");
         crate::monitor_matches::flush(&mut decision.record)?;
         output_effect(snapshot, &mut decision, now, true);
@@ -559,6 +581,9 @@ pub fn finish(
         decision.record["configurationPending"] = json!(false);
         if snapshot.fields.cancel_requested && snapshot.record().get("cancelDispatch").is_some() {
             decision.record["cancelDispatch"] = json!({"status":"done","updatedAt":now});
+        }
+        if late {
+            decision.record["lateAnswerAt"] = json!(now);
         }
     }
     decision.effects.push(
@@ -895,6 +920,18 @@ pub fn start(
 /// Afterwards each remaining recovery settles as `not_reattachable` once.
 pub const MONITOR_REATTACH_WINDOW_SECONDS: f64 = 600.0;
 
+/// Proof of a loss decided because the provider gave no answer by the command
+/// deadline: `timeout_ms` after creation plus the provider grace. The provider
+/// process may still answer; see [`MONITOR_LATE_ANSWER_SECONDS`].
+pub const DEADLINE_PASSED: &str = "deadline_passed";
+
+/// How long after a deadline loss the command's real answer still completes it.
+/// Owner: monitor deadline policy. Unit: seconds.
+pub const MONITOR_LATE_ANSWER_SECONDS: f64 = 3600.0;
+
+const DEADLINE_LOST_ERROR: &str =
+    "Command deadline passed without an answer. Outcome unknown; not rerun.";
+
 /// A supervisor's operation receipt is evidence of the original command; it is never
 /// permission to run it again. The connection owner supplies this verified receipt.
 pub struct ReattachProof {
@@ -958,8 +995,11 @@ pub(crate) fn restart_lost(
     decision.record["reattachRecovery"] = json!(recovery);
     decision.record["status"] = json!(MonitorStatus::Lost);
     decision.record["finished"] = json!(now);
-    decision.record["error"] =
-        json!("Command outcome unknown after losing the provider result; not rerun.");
+    decision.record["error"] = json!(if reason == DEADLINE_PASSED {
+        DEADLINE_LOST_ERROR
+    } else {
+        "Command outcome unknown after losing the provider result; not rerun."
+    });
     decision.effects.push(if snapshot.fields.rule_id.is_some() {
         Effect::RuleFinished
     } else {
