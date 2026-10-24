@@ -2030,6 +2030,31 @@ async function startSession(s, active, p) {
           active.input.withdraw();
           break;
         }
+        // A result names the user inputs whose prompt it answered. Claude can
+        // answer a steer as its own prompt after the reply it was sent into,
+        // without a replay echo; this result is then its only delivery proof.
+        // Without it, every later result waited for that echo and the turn
+        // never ended (live, 24 October 2026).
+        const answered = new Set(
+          [...(m.user_message_uuids || []), m.user_message_uuid].filter(
+            Boolean,
+          ),
+        );
+        for (const item of turn?.items || []) {
+          if (
+            item.type !== "userMessage" ||
+            item.delivery !== "steer" ||
+            item.deliveryStatus !== "submitted" ||
+            !(item.nativeIds || [item.nativeId]).every((uuid) =>
+              answered.has(uuid),
+            )
+          )
+            continue;
+          item.deliveryStatus = "delivered";
+          active.pendingSteers.delete(item.id);
+          turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
+          persistLater(s, active);
+        }
         if (
           (active.pendingSteers.size || active.reservingInput) &&
           !m.is_error &&
