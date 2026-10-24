@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { hasNativeClient, nativeRequest } from "./client";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 function mock(
   reply: (request: { id: string; method: string; params: unknown }) => unknown,
 ) {
@@ -11,6 +14,7 @@ function mock(
 }
 describe("native request transport", () => {
   it("renders 150 messages below transport limits without delaying writes", async () => {
+    vi.useFakeTimers();
     let active = 0;
     let peak = 0;
     let completed = 0;
@@ -33,7 +37,9 @@ describe("native request transport", () => {
     expect(
       await nativeRequest("preferences.raw_set", { key: "test", value: "yes" }),
     ).toBe("saved");
-    expect(completed).toBeLessThan(150);
+    expect(active).toBe(4);
+    expect(completed).toBe(0);
+    await vi.runAllTimersAsync();
     expect(await Promise.all(replies)).toHaveLength(150);
     expect(completed).toBe(150);
     expect(peak).toBe(4);

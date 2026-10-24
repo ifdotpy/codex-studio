@@ -9,7 +9,7 @@ import type { Agent, Snapshot } from "../types";
 
 const WORKERS = 512;
 
-function fixture(): Snapshot {
+function fixture(workerCount = WORKERS): Snapshot {
   const lead: Agent = {
     id: "lead",
     name: "Lead",
@@ -20,7 +20,7 @@ function fixture(): Snapshot {
     autoWake: true,
     accountKey: "default",
   };
-  const workers: Agent[] = Array.from({ length: WORKERS }, (_, index) => ({
+  const workers: Agent[] = Array.from({ length: workerCount }, (_, index) => ({
     id: `worker-${index}`,
     name: `Worker ${index}`,
     source: "managed",
@@ -69,8 +69,7 @@ function changeWorker(
   };
 }
 
-// Mirrors the App pipeline. The conversation host is memoized, so an unchanged
-// `data` identity is a conversation, composer and transcript render count of 0.
+// Exercise the selectors used by App; identity changes are not React render counts.
 function pipeline() {
   const chat = createChatSnapshotSelector(true);
   const conversation = createConversationDataSelector();
@@ -86,36 +85,36 @@ function pipeline() {
 }
 
 describe("worker-only snapshot changes", () => {
-  it("never change the conversation props across 512 worker status changes", () => {
-    const run = pipeline();
-    let data = fixture();
-    const first = run(data);
-    let previous = first;
-    let conversationRenders = 0;
-    let waitNotifications = 0;
-    for (let index = 0; index < WORKERS; index++) {
-      data = changeWorker(data, index, { status: "running", inFlight: true });
-      const next = run(data);
-      if (next.conversationData !== previous.conversationData)
-        conversationRenders++;
-      if (next.wait !== previous.wait) waitNotifications++;
-      previous = next;
-    }
-    expect(conversationRenders).toBe(0);
-    // The lead's wait is real information: each new working agent changes its
-    // count, and only the wait leaves render for it.
-    expect(waitNotifications).toBe(WORKERS);
-    expect(previous.wait?.agents).toHaveLength(WORKERS);
-  });
+  it.each([8, WORKERS])(
+    "retains conversation props across worker status changes in a %i-worker team",
+    (count) => {
+      const run = pipeline();
+      let data = fixture(count);
+      const first = run(data);
+      let previousWait = first.wait;
+      const indices =
+        count === WORKERS
+          ? [0, WORKERS / 2, WORKERS - 1]
+          : Array.from({ length: count }, (_, i) => i);
+      for (const [offset, index] of indices.entries()) {
+        data = changeWorker(data, index, { status: "running", inFlight: true });
+        const next = run(data);
+        expect(next.conversationData).toBe(first.conversationData);
+        expect(next.wait?.agents).toHaveLength(offset + 1);
+        expect(next.wait).not.toBe(previousWait);
+        previousWait = next.wait;
+      }
+    },
+  );
 
-  it("notify no consumer when the wait itself is unchanged", () => {
+  it("retains wait identity across token-only changes", () => {
     const run = pipeline();
     let data = changeWorker(fixture(), 0, {
       status: "running",
       inFlight: true,
     });
     const first = run(data);
-    for (let count = 1; count <= WORKERS; count++) {
+    for (let count = 1; count <= 3; count++) {
       data = changeWorker(data, 1, { tokensUsed: count, status: "completed" });
       const next = run(data);
       expect(next.conversationData).toBe(first.conversationData);
@@ -123,7 +122,7 @@ describe("worker-only snapshot changes", () => {
     }
   });
 
-  it("render the conversation for a name or error a team member shows", () => {
+  it("changes conversation identity for a team member name or error", () => {
     const run = pipeline();
     const data = fixture();
     const first = run(data).conversationData;

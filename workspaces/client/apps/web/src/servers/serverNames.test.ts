@@ -1,3 +1,4 @@
+/// <reference lib="es2024.promise" />
 import { afterEach, expect, test, vi } from "vitest";
 import {
   refreshServerName,
@@ -157,9 +158,16 @@ test("an in-flight name response does not restore a removed peer", async () => {
   });
   const events = new EventTarget();
   vi.stubGlobal("window", events);
+  const entered = Promise.withResolvers<void>();
   let finish!: (response: Response) => void;
   setServerCredentialAdapter({
-    fetch: vi.fn(() => new Promise<Response>((resolve) => (finish = resolve))),
+    fetch: vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+          entered.resolve();
+        }),
+    ),
     forget: async () => {},
     hasPairAttempt: async () => false,
     pair: async () => server,
@@ -176,7 +184,7 @@ test("an in-flight name response does not restore a removed peer", async () => {
       finishRefresh();
     }
   });
-  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  await entered.promise;
   values.set(SERVER_REGISTRY_KEY, "[]");
   events.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
   finish(new Response(JSON.stringify({ serverId: "remote", label: "New" })));
@@ -206,13 +214,17 @@ test("an old name response cannot overwrite a same-ID replacement peer", async (
   });
   const events = new EventTarget();
   vi.stubGlobal("window", events);
+  const entered = Promise.withResolvers<void>();
   let finishOldRequest!: (response: Response) => void;
   const requestedPeers: string[] = [];
   setServerCredentialAdapter({
     fetch: vi.fn((server) => {
       requestedPeers.push(server.origin);
       if (requestedPeers.length === 1)
-        return new Promise<Response>((resolve) => (finishOldRequest = resolve));
+        return new Promise<Response>((resolve) => {
+          finishOldRequest = resolve;
+          entered.resolve();
+        });
       return Promise.reject(new Error("replacement is offline"));
     }),
     forget: async () => {},
@@ -233,14 +245,14 @@ test("an old name response cannot overwrite a same-ID replacement peer", async (
       if (completedRefreshes === 2) finishRefreshes();
     }
   });
-  await vi.waitFor(() => expect(finishOldRequest).toBeTypeOf("function"));
+  await entered.promise;
   values.set(SERVER_REGISTRY_KEY, JSON.stringify([replacement]));
   events.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
   finishOldRequest(
     new Response(JSON.stringify({ serverId: "remote", label: "Stale name" })),
   );
-  await vi.waitFor(() => expect(requestedPeers).toHaveLength(2));
   await refreshesFinished;
+  expect(requestedPeers).toEqual([original.origin, replacement.origin]);
 
   expect(readServers()[0]).toMatchObject({
     label: replacement.label,
