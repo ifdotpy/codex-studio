@@ -49,7 +49,9 @@ use thiserror::Error;
 const AUTH_FILE_LIMIT: u64 = 1024 * 1024;
 const CLAUDE_OUTPUT_LIMIT: usize = 1024 * 1024;
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(8);
-const CLAUDE_BIN_OVERRIDE: &str = "STUDIO_CLAUDE_BIN";
+/// Variable with the path of the Claude CLI: an override that Studio reads,
+/// and the canonical path that a Claude bridge launch passes to the bridge.
+pub(crate) const CLAUDE_BIN_OVERRIDE: &str = "STUDIO_CLAUDE_BIN";
 const AUTH_ERROR: &str = "Cannot read this profile's authentication";
 /// Error text of Python `codex_accounts.auth_metadata` for an unreadable,
 /// malformed or oversized Codex `auth.json`.

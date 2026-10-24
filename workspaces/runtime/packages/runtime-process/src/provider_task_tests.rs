@@ -285,7 +285,7 @@ fn actor(
             extra: Default::default(),
         },
         reattach_commands: Vec::new(),
-        retained_values: BTreeMap::new(),
+        retained: RetainedLaunchValues::default(),
         identity: BackendIdentity {
             backend_id: BackendId("unit".into()),
             state_dir: "/unused".into(),
@@ -935,7 +935,7 @@ async fn retained_environment_settles_after_a_transient_launch_record() {
         &mut stop,
         &slots,
         &clean,
-        &BTreeMap::new(),
+        &RetainedLaunchValues::default(),
         Duration::from_secs(5),
         read,
     )
@@ -962,7 +962,7 @@ async fn retained_environment_refuses_a_record_that_never_matches() {
         &mut stop,
         &slots,
         &clean,
-        &BTreeMap::new(),
+        &RetainedLaunchValues::default(),
         Duration::from_millis(50),
         read,
     )
@@ -992,7 +992,7 @@ async fn retained_environment_wait_ends_on_shutdown() {
         &mut stop,
         &slots,
         &clean,
-        &BTreeMap::new(),
+        &RetainedLaunchValues::default(),
         Duration::from_secs(60),
         read,
     )

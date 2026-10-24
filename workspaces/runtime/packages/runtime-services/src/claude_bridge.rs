@@ -160,7 +160,7 @@ impl BridgeSnapshot {
             crate::account_driver::claude_identity::earlier_forms(&credential_identity);
         env.insert(CREDENTIAL_IDENTITY_ENVIRONMENT.into(), credential_identity);
         env.insert(
-            "STUDIO_CLAUDE_BIN".into(),
+            crate::account_driver::CLAUDE_BIN_OVERRIDE.into(),
             paths.executable.to_string_lossy().into_owned(),
         );
         env.insert(
@@ -181,9 +181,16 @@ impl BridgeSnapshot {
             paths.root,
         );
         if !earlier_identities.is_empty() {
-            spec.retained_values
+            spec.retained
+                .earlier
                 .insert(CREDENTIAL_IDENTITY_ENVIRONMENT.into(), earlier_identities);
         }
+        // Node and the Claude CLI run by canonical paths, which a package
+        // manager upgrade or a CLI self-update replaces while a bridge runs.
+        spec.retained.executable_program = true;
+        spec.retained
+            .executable_variables
+            .insert(crate::account_driver::CLAUDE_BIN_OVERRIDE.into());
         Ok(spec)
     }
 }

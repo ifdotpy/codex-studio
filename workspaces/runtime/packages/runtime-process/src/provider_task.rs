@@ -173,7 +173,7 @@ impl SupervisorProviderTaskFactory {
                 handle,
                 open,
                 reattach_commands: options.launch.reattach_commands,
-                retained_values: options.launch.retained_values,
+                retained: options.launch.retained,
                 identity: self.identity.clone(),
                 endpoint: self.endpoint.clone(),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -367,8 +367,8 @@ struct AdapterTask {
     open: OpenRequest,
     /// Earlier commands of this launch that a running child may keep.
     reattach_commands: Vec<Vec<String>>,
-    /// Earlier values of learned launch variables that a running child may keep.
-    retained_values: BTreeMap<String, Vec<String>>,
+    /// Launch values that a running child of this provider may hold in another form.
+    retained: RetainedLaunchValues,
     identity: BackendIdentity,
     endpoint: PathBuf,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -467,8 +467,10 @@ impl AdapterTask {
             self.open.env = self
                 .retained_environment(prior.pid, prior.return_code.is_some())
                 .await?;
-            if prior.return_code.is_none() && !self.reattach_commands.is_empty() {
-                self.adopt_reattach_command(&mut rpc).await?;
+            if prior.return_code.is_none()
+                && (!self.reattach_commands.is_empty() || self.retained.executable_program)
+            {
+                self.adopt_reattach_command(&mut rpc, prior.pid).await?;
             }
             if self.handled_cursor > prior.sequence {
                 return Err(AdapterError::InvalidConfiguration);
@@ -581,7 +583,7 @@ impl AdapterTask {
             &mut self.stop,
             &self.environment_reads,
             &self.open.env,
-            &self.retained_values,
+            &self.retained,
             RETAINED_ENVIRONMENT_SETTLE,
             move || read_process_environment(pid),
         )
@@ -610,10 +612,17 @@ impl AdapterTask {
     /// different launch settings. Health reports each active handle's launch
     /// signature; the supervisor holds at most `MAX_CHILDREN` of them. Only
     /// `id` and `signature` are read, so a supervisor of an earlier release
-    /// that outlives a backend install is served the same way.
+    /// that outlives a backend install is served the same way. A replaced
+    /// program has no earlier command to list: the child's own command is read
+    /// from its launch record and adopted when `retained_command` accepts it.
     async fn adopt_reattach_command<S: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         rpc: &mut Rpc<S>,
+        #[cfg_attr(
+            not(any(target_os = "linux", target_os = "macos")),
+            allow(unused_variables)
+        )]
+        pid: u32,
     ) -> Result<(), AdapterError> {
         #[derive(Deserialize)]
         struct Health {
@@ -639,12 +648,29 @@ impl AdapterTask {
             return Ok(());
         };
         let cwd = (!self.inherit_cwd).then_some(self.open.cwd.as_str());
-        if let Some(command) = self
-            .reattach_commands
-            .iter()
-            .find(|command| launch_signature(command, &self.open.env, cwd) == running.signature)
+        let signed = |command: &[String]| launch_signature(command, &self.open.env, cwd);
+        let mut candidates = self.reattach_commands.clone();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.retained.executable_program
+            && signed(&self.open.command) != running.signature
+            && let Ok(original) = bounded_read(&mut self.stop, &self.environment_reads, move || {
+                read_process_command(pid)
+            })
+            .await?
+            && retained_command(
+                &original,
+                &self.open.command,
+                &self.reattach_commands,
+                &self.retained,
+            )
         {
-            self.open.command = command.clone();
+            candidates.push(original);
+        }
+        if let Some(command) = candidates
+            .into_iter()
+            .find(|command| signed(command) == running.signature)
+        {
+            self.open.command = command;
         }
         Ok(())
     }
@@ -1117,29 +1143,14 @@ async fn settled_environment(
     stop: &mut watch::Receiver<bool>,
     slots: &Arc<Semaphore>,
     clean: &BTreeMap<String, String>,
-    retained_values: &BTreeMap<String, Vec<String>>,
+    retained: &RetainedLaunchValues,
     settle: Duration,
     read: impl Fn() -> std::io::Result<BTreeMap<String, String>> + Clone + Send + 'static,
 ) -> Result<BTreeMap<String, String>, AdapterError> {
     let deadline = Instant::now() + settle;
     loop {
-        let slots = slots.clone();
-        let permit = interruptible(stop, async move {
-            slots
-                .acquire_owned()
-                .await
-                .map_err(|_| AdapterError::TaskFailed)
-        })
-        .await?;
-        let read = read.clone();
-        let job =
-            crate::blocking_pool::spawn_blocking("runtime-process/provider_task", move || {
-                let _permit = permit;
-                read()
-            });
-        // Reap the bounded filesystem job; never detach a started blocking job.
-        if let Ok(original) = reap_environment_job(job, stop).await?
-            && verify_environment(&original, clean, retained_values).is_ok()
+        if let Ok(original) = bounded_read(stop, slots, read.clone()).await?
+            && verify_environment(&original, clean, retained).is_ok()
         {
             return Ok(original);
         }
@@ -1152,6 +1163,30 @@ async fn settled_environment(
             _ = tokio::time::sleep(RETAINED_ENVIRONMENT_RETRY) => {}
         }
     }
+}
+
+/// Run one read of a retained child's launch record as a bounded blocking job
+/// that holds one of the `slots`; stop cancels the wait.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn bounded_read<T: Send + 'static>(
+    stop: &mut watch::Receiver<bool>,
+    slots: &Arc<Semaphore>,
+    read: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+) -> Result<std::io::Result<T>, AdapterError> {
+    let slots = slots.clone();
+    let permit = interruptible(stop, async move {
+        slots
+            .acquire_owned()
+            .await
+            .map_err(|_| AdapterError::TaskFailed)
+    })
+    .await?;
+    let job = crate::blocking_pool::spawn_blocking("runtime-process/provider_task", move || {
+        let _permit = permit;
+        read()
+    });
+    // Reap the bounded filesystem job; never detach a started blocking job.
+    reap_environment_job(job, stop).await
 }
 
 /// Abort queued blocking work on stop. Once the OS read has started Tokio cannot
