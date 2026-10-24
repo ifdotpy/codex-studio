@@ -381,7 +381,7 @@ async fn sync_stream(
     if renderer_hash.is_some() {
         initial.push_back(sse_event("api-schema", None, json!({"hash": server_hash})));
     }
-    initial.push_back(resource_sse_event(
+    initial.extend(initial_resource_sse_events(
         subscription_snapshot.revision,
         initial_event,
     ));
@@ -1211,7 +1211,7 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         }
         state
             .initial
-            .push_back(resource_sse_event(view.cursor.revision, event));
+            .extend(initial_resource_sse_events(view.cursor.revision, event));
         append_progress_frames(http_state, &view, &mut state.initial).await;
     }
     if let Some(interest) = update.token_rates {
@@ -1565,6 +1565,46 @@ fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Even
         Some(revision) => event.id(revision.to_string()),
         None => event,
     }
+}
+
+/// Baselines for independent transcript refs get independent byte budgets. A
+/// crowded subscription set must not force normal windows into pull recovery.
+fn initial_resource_sse_events(revision: i64, payload: ResourceChangeEvent) -> Vec<Event> {
+    if payload.resources.len() <= 1
+        || !payload
+            .resource_versions
+            .iter()
+            .any(|entry| entry.transcript_snapshot.is_some())
+    {
+        return vec![resource_sse_event(revision, payload)];
+    }
+    let ResourceChangeEvent {
+        protocol,
+        workspace_id,
+        epoch,
+        revision: event_revision,
+        reason,
+        resources,
+        resource_versions,
+    } = payload;
+    resources
+        .into_iter()
+        .zip(resource_versions)
+        .map(|(resource, entry)| {
+            resource_sse_event(
+                revision,
+                ResourceChangeEvent {
+                    protocol,
+                    workspace_id: workspace_id.clone(),
+                    epoch: epoch.clone(),
+                    revision: event_revision,
+                    reason: reason.clone(),
+                    resources: vec![resource],
+                    resource_versions: vec![entry],
+                },
+            )
+        })
+        .collect()
 }
 
 /// Write JSON once into Axum's event buffer, counting the complete UTF-8 envelope.
