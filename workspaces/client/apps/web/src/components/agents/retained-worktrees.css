@@ -1,0 +1,14 @@
+.retained-worktree {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: 6px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.retained-worktree p {
+  margin: 6px 0;
+}
+.retained-worktree-path {
+  font-family: monospace;
+}

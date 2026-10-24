@@ -541,6 +541,7 @@ impl SyncDocumentsRepository {
         payload: Option<&str>,
         sequence: Option<i64>,
     ) -> StoreResult<bool> {
+        crate::entity_publication::mark_published(collection, id);
         let current = transaction
             .query_row_cached(
                 "SELECT hash,deleted FROM sync_entities WHERE collection=?1 AND id=?2",

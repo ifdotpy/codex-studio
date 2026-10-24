@@ -57,7 +57,28 @@ function fixture() {
     uid: 777,
     applicationPath:
       "/Applications/Codex Studio.app/Contents/Resources/app.asar",
+    // The fixture supervisor is not a real script: accept every interpreter.
+    checkInterpreter: async () => {},
   };
+}
+
+// Two python3 stubs on PATH: `old` stands for /usr/bin/python3 (3.9), `new` for a
+// Python that runs recover_backend.py.
+function interpreters(data) {
+  const found = {};
+  for (const name of ["old", "new"]) {
+    const dir = path.join(data.root, `${name}-python`);
+    mkdirSync(dir, { recursive: true });
+    found[name] = path.join(dir, "python3");
+    writeFileSync(found[name], "#!/bin/sh\nexit 0\n");
+    chmodSync(found[name], 0o755);
+  }
+  return found;
+}
+function plistInterpreter(file) {
+  return readFileSync(file, "utf8").match(
+    /<key>ProgramArguments<\/key><array><string>([^<]+)<\/string>/,
+  )[1];
 }
 
 test("only the installed Studio bundle can configure background recovery", async () => {
@@ -696,6 +717,121 @@ test("recovery rejects an invalid saved launch environment before changing it", 
   }
 });
 
+// The shapes of two live background-recovery.json files that the deleted
+// Python backend wrote (one Mac still on Python, one already switched to Rust;
+// values replaced by fixture paths). Main refused both for CODEX_AGENTS_PYTHON.
+function pythonEraRecords(state) {
+  return [
+    {
+      version: 1,
+      enabled: true,
+      supervisorEnabled: true,
+      stateDir: state,
+      resources: "/Applications/Codex Studio.app/Contents/Resources/workspace",
+      python: "/opt/homebrew/bin/python3",
+      codex: "/opt/homebrew/bin/codex",
+      port: 4620,
+      environment: {
+        SHELL: "/bin/zsh",
+        PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+      },
+      unsetEnvironment: [
+        "CODEX_HOME",
+        "CODEX_CANVAS_CWD",
+        "CODEX_CANVAS_CONCURRENCY",
+        "CODEX_BIN",
+        "CODEX_AGENTS_PYTHON",
+        "LANG",
+        "LC_ALL",
+        "CODEX_AGENTS_SUPERVISOR_MODE",
+        "CODEX_AGENTS_SUPERVISOR_FALLBACK",
+      ],
+    },
+    {
+      version: 1,
+      enabled: true,
+      supervisorEnabled: true,
+      stateDir: state,
+      resources: "/Applications/Codex Studio.app/Contents/Resources/workspace",
+      python: "/opt/homebrew/bin/python3",
+      codex: "/opt/homebrew/bin/codex",
+      port: 4620,
+      environment: {
+        CODEX_BIN: "/usr/bin/true",
+        SHELL: "/bin/zsh",
+        LANG: "en_US.UTF-8",
+        LC_ALL: "en_US.UTF-8",
+        PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+      },
+      unsetEnvironment: [
+        "CODEX_HOME",
+        "CODEX_CANVAS_CWD",
+        "CODEX_CANVAS_CONCURRENCY",
+        "CODEX_AGENTS_PYTHON",
+        "CODEX_AGENTS_SUPERVISOR_MODE",
+        "CODEX_AGENTS_SUPERVISOR_FALLBACK",
+      ],
+      backend: "rust",
+      runtimeServer:
+        "/Applications/Codex Studio.app/Contents/Resources/workspace/bin/studio-runtime-server",
+      processSupervisor:
+        "/Applications/Codex Studio.app/Contents/Resources/workspace/bin/codex-process-supervisor",
+    },
+  ];
+}
+
+test("a Python-era saved launch environment is accepted without its retired keys", async () => {
+  const data = fixture();
+  const files = recoveryPaths(data.env, data.home);
+  try {
+    for (const saved of pythonEraRecords(files.state)) {
+      writeFileSync(files.config, JSON.stringify(saved));
+      await configureRecovery({ ...data, enabled: true, run: async () => {} });
+      const after = JSON.parse(readFileSync(files.config, "utf8"));
+      assert.equal(after.backend, "rust");
+      assert.ok(!after.unsetEnvironment.includes("CODEX_AGENTS_PYTHON"));
+      assert.equal(after.environment.CODEX_AGENTS_PYTHON, undefined);
+      assert.equal(after.environment.SHELL, "/bin/zsh");
+      assert.ok(after.unsetEnvironment.includes("CODEX_HOME"));
+    }
+    // A retired name with a saved value is accepted and not restored.
+    const [first] = pythonEraRecords(files.state);
+    writeFileSync(
+      files.config,
+      JSON.stringify({
+        ...first,
+        environment: {
+          ...first.environment,
+          CODEX_AGENTS_PYTHON: "/old/python",
+        },
+        unsetEnvironment: first.unsetEnvironment.filter(
+          (key) => key !== "CODEX_AGENTS_PYTHON",
+        ),
+      }),
+    );
+    await configureRecovery({ ...data, enabled: true, run: async () => {} });
+    const after = JSON.parse(readFileSync(files.config, "utf8"));
+    assert.equal(after.environment.CODEX_AGENTS_PYTHON, undefined);
+    // An unknown new name is still refused.
+    const before = JSON.stringify({
+      ...first,
+      unsetEnvironment: [...first.unsetEnvironment, "CODEX_UNKNOWN_SETTING"],
+    });
+    writeFileSync(files.config, before);
+    await assert.rejects(
+      configureRecovery({
+        ...data,
+        enabled: true,
+        run: async () => assert.fail("Invalid state must not reach launchctl"),
+      }),
+      /saved restart environment/i,
+    );
+    assert.equal(readFileSync(files.config, "utf8"), before);
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
+
 test("backend restart environment overrides the attaching desktop and preserves absent keys", async () => {
   const data = fixture();
   try {
@@ -750,5 +886,115 @@ test("explicit Quit and window close withdraw intent after a cancelled shutdown"
     } finally {
       rmSync(data.root, { recursive: true, force: true });
     }
+  }
+});
+
+test("recovery refuses when no interpreter runs recover_backend.py and writes nothing", async () => {
+  const data = fixture();
+  const calls = [];
+  const paths = recoveryPaths(data.env, data.home);
+  try {
+    await assert.rejects(
+      configureRecovery({
+        ...data,
+        enabled: true,
+        checkInterpreter: async () => {
+          throw new Error("ImportError: cannot import name 'StrEnum'");
+        },
+        run: async (...args) => calls.push(args),
+      }),
+      /needs Python 3\.11 or newer to run recover_backend\.py/,
+    );
+    assert.deepEqual(calls, []);
+    assert.equal(existsSync(paths.config), false);
+    assert.equal(existsSync(paths.plist), false);
+    // Turning recovery off never needs a supported interpreter.
+    const off = await configureRecovery({
+      ...data,
+      enabled: false,
+      checkInterpreter: async () => {
+        throw new Error("ImportError: cannot import name 'StrEnum'");
+      },
+      run: async () => {
+        throw new Error("absent");
+      },
+    });
+    assert.equal(off.enabled, false);
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
+
+test("recovery saves the first interpreter that runs recover_backend.py", async () => {
+  const data = fixture();
+  const python = interpreters(data);
+  const checked = [];
+  try {
+    const result = await configureRecovery({
+      ...data,
+      env: {
+        ...data.env,
+        PATH: `${path.dirname(python.old)}:${path.dirname(python.new)}`,
+      },
+      enabled: true,
+      checkInterpreter: async (candidate, script) => {
+        checked.push([candidate, script]);
+        if (candidate === python.old)
+          throw new Error("ImportError: cannot import name 'StrEnum'");
+      },
+      run: async () => {},
+    });
+    assert.deepEqual(checked.slice(0, 2), [
+      [python.old, data.supervisor],
+      [python.new, data.supervisor],
+    ]);
+    assert.equal(
+      JSON.parse(readFileSync(result.config, "utf8")).python,
+      python.new,
+    );
+    assert.equal(plistInterpreter(result.plist), python.new);
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
+
+test("a registered recovery job with an interpreter that cannot run recover_backend.py is reloaded", async () => {
+  const data = fixture();
+  const python = interpreters(data);
+  const env = {
+    ...data.env,
+    PATH: `${path.dirname(python.old)}:${path.dirname(python.new)}`,
+  };
+  const calls = [];
+  try {
+    // The first registration saved `old` (the defect of 2026-10-24); launchd runs it.
+    const initial = await configureRecovery({
+      ...data,
+      env,
+      enabled: true,
+      run: async () => {},
+    });
+    assert.equal(plistInterpreter(initial.plist), python.old);
+    const result = await configureRecovery({
+      ...data,
+      env,
+      enabled: true,
+      checkInterpreter: async (candidate) => {
+        if (candidate === python.old)
+          throw new Error("ImportError: cannot import name 'StrEnum'");
+      },
+      run: async (_file, args) => {
+        calls.push(args[0]);
+        return { stdout: "state = running\n" };
+      },
+    });
+    assert.deepEqual(calls, ["print", "bootout", "bootstrap", "print"]);
+    assert.equal(plistInterpreter(result.plist), python.new);
+    assert.equal(
+      JSON.parse(readFileSync(result.config, "utf8")).python,
+      python.new,
+    );
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
   }
 });

@@ -6,10 +6,10 @@ use super::*;
 #[cfg(test)]
 pub(super) use pipeline::prepare;
 pub(super) use pipeline::{
-    Admission, CommitGuard, PreparedSteer, RequestPreparation, admit, commit, commit_claude,
-    commit_steer, compiled_submission, persist_compilation, prepare_ready, prepare_steer,
-    refuse_idle, refuse_prepared_idle, refuse_prepared_steer, refuse_steer, snapshot_changed,
-    workspace,
+    Admission, CommitGuard, PreparedSteer, RequestPreparation, admit, before_start, commit,
+    commit_claude, commit_steer, compiled_submission, persist_compilation, prepare_ready,
+    prepare_steer, refuse_idle, refuse_prepared_idle, refuse_prepared_steer, refuse_steer,
+    snapshot_changed, workspace,
 };
 pub(crate) use pipeline::{CATALOG_PENDING_REASON, WORKSPACE_PENDING_REASON};
 pub use receipts::remember_delivered_manifests;
@@ -54,15 +54,6 @@ pub(crate) struct PreparedReviewThread {
     attempt: Box<crate::thread_prepare::PreparedAttempt>,
 }
 impl PreparedReviewThread {
-    pub(crate) fn mcp_servers(&self) -> Option<Vec<String>> {
-        self.attempt
-            .snapshot
-            .guidance
-            .thread_config
-            .get("mcp_servers")
-            .and_then(serde_json::Value::as_object)
-            .map(|servers| servers.keys().cloned().collect())
-    }
     pub(crate) fn cwd(&self) -> &str {
         &self.attempt.snapshot.actor.cwd
     }

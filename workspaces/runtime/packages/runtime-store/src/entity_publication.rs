@@ -1,0 +1,189 @@
+//! Default client publication of agent and request rows.
+//!
+//! The renderer reads chats and cards only from their `sync_entities` rows, and
+//! a pull does not rebuild a complete projection. So every writer transaction
+//! publishes the `runtime_agents` and `runtime_requests` rows it changed, in the
+//! same transaction and before it commits, unless the transaction already
+//! published that entity after its last change. The projection itself belongs
+//! to runtime-services, which installs it with
+//! [`crate::RuntimeStore::install_entity_publisher`].
+//!
+//! The writer's update hook journals each changed row. Entity writers journal
+//! each publication. A partial projection write that cannot recompute derived
+//! view fields journals a stale mark instead, which asks for a full
+//! publication. Volatile agent fields (`agent_volatile`) are outside this
+//! rule: their writers leave `runtime_agents` alone on purpose.
+
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use rusqlite::{OptionalExtension, Transaction};
+
+use crate::StoreResult;
+
+/// The projection that publishes the rows a writer transaction changed.
+pub trait EntityPublisher: Send + Sync {
+    /// Publish the client views of `pending` inside `transaction`, before it commits.
+    fn publish(&self, transaction: &Transaction<'_>, pending: &PendingEntities) -> StoreResult<()>;
+}
+
+/// Agent and request ids whose client views are older than their stored rows.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PendingEntities {
+    pub agents: BTreeSet<String>,
+    pub requests: BTreeSet<String>,
+}
+
+impl PendingEntities {
+    pub fn is_empty(&self) -> bool {
+        self.agents.is_empty() && self.requests.is_empty()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum Source {
+    Agent,
+    Request,
+}
+
+impl Source {
+    fn of_table(table: &str) -> Option<Self> {
+        match table {
+            "runtime_agents" => Some(Self::Agent),
+            "runtime_requests" => Some(Self::Request),
+            _ => None,
+        }
+    }
+
+    fn of_collection(collection: &str) -> Option<Self> {
+        match collection {
+            "agent" => Some(Self::Agent),
+            "request" => Some(Self::Request),
+            _ => None,
+        }
+    }
+
+    fn table(self) -> &'static str {
+        match self {
+            Self::Agent => "runtime_agents",
+            Self::Request => "runtime_requests",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum Event {
+    /// The update hook saw a write of this row.
+    Row(Source, i64),
+    /// An entity writer published this entity.
+    Published(Source, String),
+    /// A partial projection write needs a full publication.
+    Stale(Source, String),
+}
+
+thread_local! {
+    /// The journal of the writer transaction that runs on this thread, if any.
+    /// The writer connection runs all its transactions on one thread.
+    static JOURNAL: RefCell<Option<Vec<Event>>> = const { RefCell::new(None) };
+}
+
+fn push(event: Event) {
+    JOURNAL.with(|journal| {
+        if let Some(events) = journal.borrow_mut().as_mut() {
+            events.push(event);
+        }
+    });
+}
+
+/// Start the journal of a writer transaction.
+pub(crate) fn begin() {
+    JOURNAL.with(|journal| *journal.borrow_mut() = Some(Vec::new()));
+}
+
+/// The events of one writer transaction, in write order.
+pub(crate) struct Journal(Vec<Event>);
+
+/// End the journal of the current writer transaction and return its events.
+pub(crate) fn finish() -> Journal {
+    Journal(JOURNAL.with(|journal| journal.borrow_mut().take().unwrap_or_default()))
+}
+
+/// Whether the current writer transaction publishes its changed rows before commit.
+pub(crate) fn active() -> bool {
+    JOURNAL.with(|journal| journal.borrow().is_some())
+}
+
+/// Journal a row write that the writer update hook reports.
+pub(crate) fn observe_row(table: &str, row_id: i64) {
+    if let Some(source) = Source::of_table(table) {
+        push(Event::Row(source, row_id));
+    }
+}
+
+/// Journal that an entity writer published `collection/id`.
+pub(crate) fn mark_published(collection: &str, id: &str) {
+    if let Some(source) = Source::of_collection(collection) {
+        push(Event::Published(source, id.to_owned()));
+    }
+}
+
+/// Journal that `collection/id` needs a full publication before commit.
+pub(crate) fn mark_stale(collection: &str, id: &str) {
+    if let Some(source) = Source::of_collection(collection) {
+        push(Event::Stale(source, id.to_owned()));
+    }
+}
+
+/// The rows of `events` whose last change comes after their last publication.
+pub(crate) fn pending(
+    transaction: &Transaction<'_>,
+    Journal(events): Journal,
+) -> StoreResult<PendingEntities> {
+    let mut ids: HashMap<(Source, i64), Option<String>> = HashMap::new();
+    for event in &events {
+        if let Event::Row(source, row_id) = event
+            && !ids.contains_key(&(*source, *row_id))
+        {
+            // A deleted row has no id left; its writer owns the entity removal.
+            let id = transaction
+                .query_row(
+                    &format!("SELECT id FROM {} WHERE rowid=?1", source.table()),
+                    [row_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            ids.insert((*source, *row_id), id);
+        }
+    }
+    let mut changed: BTreeMap<(Source, String), usize> = BTreeMap::new();
+    let mut published: HashMap<(Source, String), usize> = HashMap::new();
+    for (index, event) in events.into_iter().enumerate() {
+        match event {
+            Event::Row(source, row_id) => {
+                if let Some(Some(id)) = ids.get(&(source, row_id)) {
+                    changed.insert((source, id.clone()), index);
+                }
+            }
+            Event::Stale(source, id) => {
+                changed.insert((source, id), index);
+            }
+            Event::Published(source, id) => {
+                published.insert((source, id), index);
+            }
+        }
+    }
+    let mut pending = PendingEntities::default();
+    for ((source, id), index) in changed {
+        if published
+            .get(&(source, id.clone()))
+            .is_some_and(|published| *published > index)
+        {
+            continue;
+        }
+        match source {
+            Source::Agent => pending.agents.insert(id),
+            Source::Request => pending.requests.insert(id),
+        };
+    }
+    Ok(pending)
+}

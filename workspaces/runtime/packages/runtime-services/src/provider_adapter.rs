@@ -64,6 +64,11 @@ pub struct Capabilities {
     /// An unready image workspace gets a writable temporary sandbox root
     /// (otherwise it runs read-only).
     pub writable_sandbox_roots: bool,
+    /// The turn takes no `turn/steer` input after the time it reports as its
+    /// `completedAt`: every steer it took is recorded in that turn, and a later
+    /// steer is refused (`expectedTurnId`). A steer written after that time was
+    /// never applied.
+    pub turn_end_closes_steer: bool,
 }
 
 pub trait ProviderAdapter: Send + Sync + 'static {
@@ -221,6 +226,7 @@ impl ProviderAdapter for CodexAdapter {
             voice_and_review_tools: true,
             daybreak: true,
             writable_sandbox_roots: true,
+            turn_end_closes_steer: true,
         }
     }
 
@@ -344,6 +350,7 @@ impl ProviderAdapter for ClaudeAdapter {
             voice_and_review_tools: false,
             daybreak: false,
             writable_sandbox_roots: false,
+            turn_end_closes_steer: false,
         }
     }
 
@@ -376,12 +383,6 @@ impl ProviderAdapter for ClaudeAdapter {
             options.insert("env".into(), json!(environment));
         }
         params.insert("claude".into(), json!(options));
-        if s.settings.capability_profile != Default::default() {
-            params.insert(
-                "capabilityProfile".into(),
-                json!(s.settings.capability_profile),
-            );
-        }
         // A managed worker (a child agent) runs without the user's MCP servers.
         if s.actor.parent_id.is_some() {
             params.insert("userMcp".into(), json!(false));
@@ -741,5 +742,149 @@ mod tests {
             launch.environment["STUDIO_CLAUDE_CREDENTIAL_IDENTITY"],
             identity
         );
+    }
+
+    /// A supervised provider outlives a backend install, so every earlier host
+    /// launch that a running provider may still have must reattach under the
+    /// current launch: its command is the current command or one of the
+    /// `reattach_commands`, its environment passes the retained check, and its
+    /// working directory is unchanged. The last entry of each launch in
+    /// `provider-launch-history.json` is the current launch, so any change to
+    /// a Codex or Claude launch command, environment or working directory fails
+    /// here until it is recorded with a matching reattach entry.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn earlier_host_launches_reattach_under_the_current_launch() {
+        use std::collections::BTreeMap;
+        use std::os::unix::fs::PermissionsExt;
+        #[derive(serde::Deserialize, serde::Serialize, PartialEq, Debug)]
+        struct Recorded {
+            release: String,
+            command: Vec<String>,
+            environment: BTreeMap<String, String>,
+            cwd: Option<String>,
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let canonical = studio_runtime_store::path_identity::CanonicalPath::existing(dir.path())
+            .expect("canonical temp dir");
+        let normalize = |value: &str| {
+            value
+                .replace(&canonical.as_path().to_string_lossy().into_owned(), "<dir>")
+                .replace(&dir.path().to_string_lossy().into_owned(), "<dir>")
+        };
+        let record = |release: &str, spec: &studio_runtime_process::ProviderLaunchSpec| Recorded {
+            release: release.to_owned(),
+            command: spec.command.iter().map(|part| normalize(part)).collect(),
+            environment: spec
+                .environment
+                .iter()
+                .map(|(key, value)| (key.clone(), normalize(value)))
+                .collect(),
+            cwd: spec
+                .cwd
+                .as_ref()
+                .map(|cwd| normalize(&cwd.to_string_lossy())),
+        };
+        let input = BTreeMap::from([
+            ("HOME".to_owned(), format!("{}/home", dir.path().display())),
+            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+            ("OPENAI_API_KEY".to_owned(), "fixture-key".to_owned()),
+        ]);
+        let codex = |isolated: bool| {
+            adapter(ProviderKind::Codex)
+                .host_launch(super::HostLaunch {
+                    profile: &serde_json::Value::Null,
+                    home: format!("{}/codex", dir.path().display()),
+                    isolated,
+                    codex_executable: None,
+                    claude_bridge_dir: std::path::Path::new(""),
+                    account: "default",
+                    root: dir.path().to_path_buf(),
+                    environment: input.clone(),
+                })
+                .expect("Codex launch")
+                .spec
+        };
+        let binary = dir.path().join("claude");
+        std::fs::write(&binary, "#!/bin/sh\n").expect("fake executable");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
+            .expect("make executable");
+        let sdk = dir
+            .path()
+            .join("node_modules/@anthropic-ai/claude-agent-sdk");
+        std::fs::create_dir_all(&sdk).expect("sdk dir");
+        std::fs::write(sdk.join("package.json"), "{}").expect("sdk package");
+        let profile = json!({
+            "id": "account", "provider": "claude", "status": "ready", "home": dir.path(),
+            "email": "a@example.test", "accountId": "claude:a@example.test",
+            "_credentialIdentity": "claude:a@example.test",
+            "claudeOptions": {"binaryPath": binary, "configDir": dir.path().join("config"),
+                "customModels": [], "launchArgs": ""}
+        });
+        let mut claude_input = input.clone();
+        claude_input.insert(
+            "STUDIO_NODE_BIN".to_owned(),
+            binary.to_string_lossy().into_owned(),
+        );
+        let (claude, _) = super::claude_launch(
+            &profile,
+            dir.path(),
+            dir.path().join("account-servers/account"),
+            claude_input,
+        )
+        .expect("Claude launch");
+        let history: BTreeMap<String, Vec<Recorded>> =
+            serde_json::from_str(include_str!("provider-launch-history.json"))
+                .expect("launch history");
+        let mut failures = Vec::new();
+        for (name, spec) in [
+            ("codex", codex(false)),
+            ("codex-isolated", codex(true)),
+            ("claude", claude),
+        ] {
+            let current = record("current", &spec);
+            let current_json = serde_json::to_string_pretty(&current).expect("current launch");
+            let Some((last, earlier)) = history.get(name).and_then(|entries| entries.split_last())
+            else {
+                failures.push(format!(
+                    "{name}: no recorded launch; current:\n{current_json}"
+                ));
+                continue;
+            };
+            if (&last.command, &last.environment, &last.cwd)
+                != (&current.command, &current.environment, &current.cwd)
+            {
+                failures.push(format!(
+                    "{name}: the launch changed. Record it as the last entry of \
+                     provider-launch-history.json, with a reattach entry for each \
+                     earlier launch:\n{current_json}"
+                ));
+            }
+            let reattach: Vec<Vec<String>> = spec
+                .reattach_commands
+                .iter()
+                .map(|command| command.iter().map(|part| normalize(part)).collect())
+                .collect();
+            for earlier in earlier {
+                let release = &earlier.release;
+                if earlier.command != current.command && !reattach.contains(&earlier.command) {
+                    failures.push(format!(
+                        "{name} {release}: its command has no reattach command"
+                    ));
+                }
+                if !studio_runtime_process::retained_environment_accepted(
+                    &earlier.environment,
+                    &current.environment,
+                ) {
+                    failures.push(format!(
+                        "{name} {release}: its environment fails the retained check"
+                    ));
+                }
+                if earlier.cwd != current.cwd {
+                    failures.push(format!("{name} {release}: its working directory changed"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n\n"));
     }
 }

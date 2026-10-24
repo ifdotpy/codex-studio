@@ -23,6 +23,55 @@ function processSupervisor(resources, env) {
   return binary;
 }
 
+// Milliseconds that one interpreter check may take (15 s).
+const INTERPRETER_CHECK_MS = 15000;
+// The packaged recover_backend.py imports enum.StrEnum, so it needs Python 3.11 or newer.
+// An interpreter counts only when it runs the script's own check (its imports and helpers).
+async function checkRecoveryInterpreter(python, script) {
+  await runFile(python, ["-B", script, "--check-interpreter"], {
+    timeout: INTERPRETER_CHECK_MS,
+  });
+}
+// Every python3 on PATH in order, then the saved interpreter and the usual install folders.
+function interpreterCandidates(env, saved) {
+  const candidates = [];
+  const add = (file) => {
+    if (!path.isAbsolute(file) || candidates.includes(file)) return;
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      candidates.push(file);
+    } catch {}
+  };
+  for (const dir of (env.PATH || "").split(path.delimiter))
+    if (dir) add(path.join(dir, "python3"));
+  if (typeof saved.python === "string") add(saved.python);
+  for (const dir of ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"])
+    add(path.join(dir, "python3"));
+  return candidates;
+}
+async function interpreterRuns(checkInterpreter, python, script) {
+  try {
+    await checkInterpreter(python, script);
+    return true;
+  } catch {
+    return false;
+  }
+}
+// Never save or register an interpreter that cannot run the recovery script.
+async function supportedPython({ env, saved, script, checkInterpreter }) {
+  const refused = [];
+  for (const candidate of interpreterCandidates(env, saved)) {
+    if (await interpreterRuns(checkInterpreter, candidate, script))
+      return candidate;
+    refused.push(candidate);
+  }
+  throw new Error(
+    `Background recovery needs Python 3.11 or newer to run ${path.basename(script)}. ` +
+      `${refused.length ? `These interpreters cannot run it: ${refused.join(", ")}.` : "No python3 was found."} ` +
+      "Install Python 3.11 or newer, for example with Homebrew, and try again.",
+  );
+}
+
 function rendererIndex(resources) {
   const development = path.join(
     resources,
@@ -271,6 +320,7 @@ async function configureRecovery({
   home = os.homedir(),
   uid = process.getuid(),
   run = runFile,
+  checkInterpreter = checkRecoveryInterpreter,
 }) {
   if (!Number.isInteger(port) || port < 1024 || port > 65535)
     throw new Error("Invalid recovery port.");
@@ -312,7 +362,15 @@ async function configureRecovery({
   // Python runs only the desktop helpers; backend binaries have their own owners.
   const interpreterEnv = { ...launchEnv, PATH: env.PATH };
   delete interpreterEnv.CODEX_AGENTS_PYTHON;
-  const python = executable("python3", interpreterEnv);
+  // Turning recovery off never needs a supported interpreter.
+  const python = enabled
+    ? await supportedPython({
+        env: interpreterEnv,
+        saved,
+        script: supervisor,
+        checkInterpreter,
+      })
+    : executable("python3", interpreterEnv);
   const rustSelection =
     enabled || supervisorEnabled
       ? {
@@ -423,9 +481,13 @@ async function configureRecovery({
     registered = false;
   }
   // Save automatic interpreter and policy changes for the next registration.
-  // The registered recovery process can keep its original interpreter.
+  // The registered recovery process can keep its original interpreter only while that
+  // interpreter runs the script; otherwise launchd must load the new arguments.
   const retainedPythonPlist =
-    typeof saved.python === "string" && path.isAbsolute(saved.python)
+    typeof saved.python === "string" &&
+    path.isAbsolute(saved.python) &&
+    (saved.python === python ||
+      (await interpreterRuns(checkInterpreter, saved.python, supervisor)))
       ? launchAgent({
           ...files,
           python: saved.python,

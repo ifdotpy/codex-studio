@@ -10,8 +10,9 @@
 //!   `item/completed` userMessage whose `clientId` is the first input id. Codex
 //!   app-server and the Claude bridge emit it when the turn records that exact
 //!   input.
-//! - A definite rejection or a turn-end report of unread input returns the input
-//!   to the queue once; anything else unresolved becomes visibly unconfirmed.
+//! - A definite rejection, a turn-end report of unread input, or a steer written
+//!   after the provider's reported turn end returns the input to the queue
+//!   once; anything else unresolved becomes visibly unconfirmed.
 use super::*;
 use crate::notification_dispatch::{PreparedSubmission, SubmittedInput, record_user_submission};
 use rusqlite::OptionalExtension;

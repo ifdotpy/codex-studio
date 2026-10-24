@@ -56,10 +56,6 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
-                "WORKER_TURN_LIMIT_REASON",
-                json_string(crate::worker_capabilities::TURN_LIMIT_REASON),
-            ),
-            (
                 "SYNC_TRANSCRIPT_STREAM_MAX_ITEMS",
                 values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS.to_string(),
             ),
@@ -104,6 +100,14 @@ fn shared_values_ts() -> String {
                 values::ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS.to_string(),
             ),
             (
+                "SIGN_IN_ALERT_GRACE_SECONDS",
+                values::SIGN_IN_ALERT_GRACE_SECONDS.to_string(),
+            ),
+            (
+                "SIGN_IN_REMINDER_SECONDS",
+                values::SIGN_IN_REMINDER_SECONDS.to_string(),
+            ),
+            (
                 "CHILD_RESULT_COALESCE_DEFAULT_SECONDS",
                 values::CHILD_RESULT_COALESCE_DEFAULT_SECONDS.to_string(),
             ),
@@ -114,6 +118,14 @@ fn shared_values_ts() -> String {
             (
                 "CHILD_RESULT_COALESCE_MAX_SECONDS",
                 values::CHILD_RESULT_COALESCE_MAX_SECONDS.to_string(),
+            ),
+            (
+                "IDLE_COMPACTION_DEFAULT_MIN_TOKENS",
+                values::IDLE_COMPACTION_DEFAULT_MIN_TOKENS.to_string(),
+            ),
+            (
+                "IDLE_COMPACTION_MIN_TOKENS",
+                values::IDLE_COMPACTION_MIN_TOKENS.to_string(),
             ),
             (
                 "IDLE_SESSION_UNLOAD_DEFAULT_MINUTES",
@@ -302,7 +314,7 @@ fn api_types_tail() -> String {
 
 fn vm_guest_py() -> String {
     format!(
-        "# {HEADER}\nMAX_PROJECT_SECRET_VALUE_BYTES = {}\nPROJECT_SECRET_VALUE_LIMIT_LABEL = {}\nGUEST_UPDATE_KEY_PATH = {}\nGUEST_PAYLOAD_RECORD_PATH = {}\nGUEST_UPDATE_PART_BYTES = {}\nLINUX_VM_ROSETTA_TAG = {}\nLINUX_VM_PROVIDER_HANDLE_PREFIX = {}\nSIGN_IN_OPEN_LIMIT_SECONDS = {}\nSIGN_IN_NOT_SENT_CODE = {}\n",
+        "# {HEADER}\nMAX_PROJECT_SECRET_VALUE_BYTES = {}\nPROJECT_SECRET_VALUE_LIMIT_LABEL = {}\nGUEST_UPDATE_KEY_PATH = {}\nGUEST_PAYLOAD_RECORD_PATH = {}\nGUEST_UPDATE_PART_BYTES = {}\nLINUX_VM_ROSETTA_TAG = {}\nLINUX_VM_PROVIDER_HANDLE_PREFIX = {}\nSIGN_IN_OPEN_LIMIT_SECONDS = {}\nSIGN_IN_NOT_SENT_CODE = {}\nSIGN_IN_JOINED_STATE = {}\nSIGN_IN_JOINED_SIGNED_IN_REASON = {}\n",
         values::MAX_PROJECT_SECRET_VALUE_BYTES,
         json_string(values::PROJECT_SECRET_VALUE_LIMIT_LABEL),
         json_string(values::GUEST_UPDATE_KEY_PATH),
@@ -312,6 +324,8 @@ fn vm_guest_py() -> String {
         json_string(values::LINUX_VM_PROVIDER_HANDLE_PREFIX),
         values::SIGN_IN_OPEN_LIMIT_SECONDS,
         json_string(values::SIGN_IN_NOT_SENT_CODE),
+        json_string(values::SIGN_IN_JOINED_STATE),
+        json_string(values::SIGN_IN_JOINED_SIGNED_IN_REASON),
     )
 }
 
@@ -415,11 +429,36 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
     crate::task_gate::check_api_contract(openapi)?;
+    for (suffix, value) in [
+        ("minimum", values::IDLE_COMPACTION_MIN_TOKENS),
+        ("default", values::IDLE_COMPACTION_DEFAULT_MIN_TOKENS),
+        ("maximum", values::MAX_SAFE_INTEGER as u64),
+    ] {
+        expect_number(
+            openapi,
+            &format!("/components/schemas/IdleCompactionSettings/properties/minTokens/{suffix}"),
+            value as i64,
+        )?;
+    }
+
     expect_number(
         openapi,
         "/components/schemas/ClaudeRepairReport/properties/skippedRows/maximum",
         values::MAX_SAFE_INTEGER,
     )?;
+    let modes = serde_json::to_value([
+        crate::idle_compaction::Mode::Off,
+        crate::idle_compaction::Mode::Log,
+        crate::idle_compaction::Mode::Compact,
+    ])
+    .map_err(|error| error.to_string())?;
+    if openapi.pointer("/components/schemas/IdleCompactionSettings/properties/mode/enum")
+        != Some(&modes)
+    {
+        return Err(
+            "IdleCompactionSettings.mode must match runtime-schema/src/idle_compaction.rs".into(),
+        );
+    }
     let expected = serde_json::to_value(crate::agent_progress::StartWaitReason::ALL)
         .map_err(|error| error.to_string())?;
     for pointer in [

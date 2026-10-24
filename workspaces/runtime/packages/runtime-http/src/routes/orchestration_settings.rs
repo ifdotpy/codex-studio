@@ -33,12 +33,19 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-fn response(values: [u64; 2]) -> Result<Json<generated::OrchestrationSettingsResponse>, ApiError> {
-    let settings = SETTINGS
+fn response(
+    values: [u64; 2],
+    idle: studio_runtime_schema::idle_compaction::Settings,
+) -> Result<Json<generated::OrchestrationSettingsResponse>, ApiError> {
+    let mut settings = SETTINGS
         .iter()
         .zip(values)
         .map(|(setting, value)| (setting.field.to_owned(), Value::from(value)))
         .collect::<Map<_, _>>();
+    settings.insert(
+        "idleCompaction".into(),
+        serde_json::to_value(idle).map_err(|_| ApiError::internal())?,
+    );
     Ok(Json(super::generated_json(
         serde_json::json!({ "settings": settings }),
     )?))
@@ -48,23 +55,47 @@ async fn read_settings(
     State(state): State<HttpState>,
 ) -> Result<Json<generated::OrchestrationSettingsResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let values = store
+    let (values, idle) = store
         .read_async("runtime-http/routes/orchestration_settings", |connection| {
             let mut values = [0; 2];
             for (value, setting) in values.iter_mut().zip(SETTINGS) {
                 *value = OrchestrationSettingsRepository::value(connection, setting)?;
             }
-            Ok::<_, studio_runtime_store::StoreError>(values)
+            Ok::<_, studio_runtime_store::StoreError>((
+                values,
+                OrchestrationSettingsRepository::idle_compaction(connection)?,
+            ))
         })
         .await
         .map_err(|_| ApiError::internal())?;
-    response(values)
+    response(values, idle)
 }
 
 async fn write_settings(
     State(state): State<HttpState>,
     ApiJson(settings): ApiJson<generated::OrchestrationSettings>,
 ) -> Result<Json<generated::OrchestrationSettingsResponse>, ApiError> {
+    let idle = settings
+        .idle_compaction
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|_| ApiError::internal())?
+        .map(serde_json::from_value::<studio_runtime_schema::idle_compaction::Settings>)
+        .transpose()
+        .map_err(|_| {
+            ApiError::validation(vec![
+                Value::String("body".into()),
+                Value::String("idleCompaction".into()),
+            ])
+        })?;
+    if idle.as_ref().is_some_and(|settings| !settings.valid()) {
+        return Err(ApiError::validation(vec![
+            Value::String("body".into()),
+            Value::String("idleCompaction".into()),
+            Value::String("minTokens".into()),
+        ]));
+    }
     let requested = [
         settings.child_result_coalesce_seconds,
         settings.idle_session_unload_minutes,
@@ -82,19 +113,22 @@ async fn write_settings(
             })?;
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    store
+    let idle = store
         .transaction(move |transaction| {
             for (value, setting) in values.into_iter().zip(SETTINGS) {
                 OrchestrationSettingsRepository::set(transaction, setting, value)?;
             }
-            Ok(())
+            if let Some(idle) = idle {
+                OrchestrationSettingsRepository::set_idle_compaction(transaction, &idle)?;
+            }
+            OrchestrationSettingsRepository::idle_compaction(transaction)
         })
         .await
         .map_err(|_| ApiError::internal())?;
     // Held results are re-evaluated against the new hold at once; account
     // workers read the unload delay on their next idle sweep.
     state.event_wake.notify_one();
-    response(values)
+    response(values, idle)
 }
 
 inventory::submit! {

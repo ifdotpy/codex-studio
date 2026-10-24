@@ -61,7 +61,11 @@ fn state(db: &rusqlite::Connection) -> Value {
                                 json!(s)
                             }
                         }
-                        ValueRef::Blob(_) => panic!("unexpected blob"),
+                        // Owned stored-text columns hold stored format 1.
+                        ValueRef::Blob(bytes) => json!(
+                            studio_runtime_store::stored_text::decode_blob(bytes)
+                                .expect("blob is stored text")
+                        ),
                     };
                     value.insert(name.clone(), v);
                 }

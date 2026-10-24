@@ -127,7 +127,24 @@ pub(crate) fn put_request(
         return Err(BrowserCardError::Invalid);
     }
     QuestionsWriteRepository::put_request(tx, id, &studio_runtime_store::python_json_utf8(record))?;
+    publish_request(tx, id)?;
     Ok(())
+}
+
+/// Publish the client view of a stored card in the writer's transaction. The renderer shows
+/// a card only through its `request` entity: a pending card has one, and a closed card loses it.
+pub(crate) fn publish_request(
+    tx: &Transaction<'_>,
+    id: &str,
+) -> Result<(), studio_runtime_store::StoreError> {
+    let changes = crate::sync_policy::EntityChanges {
+        requests: BTreeSet::from([id.to_owned()]),
+        ..Default::default()
+    };
+    let server_id = RuntimeStore::transaction_local_server_id(tx)?;
+    crate::sync_policy::publish_entity_changes(tx, &changes, server_id.as_deref(), &|_, _, _, _| {
+        true
+    })
 }
 
 /// Tell the chat how a sign-in that the person opened ended (section 6.2). Returns whether an

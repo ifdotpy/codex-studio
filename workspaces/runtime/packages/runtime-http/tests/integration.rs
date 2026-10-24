@@ -1,4 +1,3 @@
-mod agent_limits;
 mod checkpoint_rewind;
 mod child_permissions;
 mod claude_file_backups;
@@ -12,6 +11,8 @@ mod process_controls;
 mod project_preparation;
 mod recovery_http;
 mod remote_access_origin;
+mod retained_worktrees;
+mod studio_errors;
 mod task_output;
 mod task_review;
 mod ui_limits_org;
@@ -20,7 +21,6 @@ mod wave7_p04_callback_http;
 mod wave7_p10_lifecycle_http;
 mod wave7_p15_http;
 mod wave7_p18_account_session;
-mod worker_capabilities;
 // Register every integration test module here; the tooling witness checks coverage.
 
 // The shared callback fixture prepares files before any HTTP handler runs; the

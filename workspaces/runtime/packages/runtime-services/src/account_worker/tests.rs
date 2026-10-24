@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)]
+mod account_transfer;
 mod agent_isolation;
 #[cfg(unix)]
 mod auth_hold;
@@ -9,6 +10,7 @@ mod capacity_retry;
 mod claude_preparation;
 #[cfg(unix)]
 mod continuation_start;
+mod disconnected_unknown_start;
 mod exited_generation_callback;
 mod idle_unload;
 mod input_origin;
@@ -3387,11 +3389,12 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
     let full_size = state
         .bridge
         .run(move |store| async move {
-            Ok(store.test_reader()?.query_row(
-                "SELECT length(body) FROM runtime_item_fulltext WHERE id LIKE '%:base'",
+            let body = store.test_reader()?.query_row(
+                "SELECT body FROM runtime_item_fulltext WHERE id LIKE '%:base'",
                 [],
-                |row| row.get::<_, i64>(0),
-            )?)
+                |row| row.get::<_, studio_runtime_store::stored_text::StoredText>(0),
+            )?;
+            Ok(body.into_string().len() as i64)
         })
         .await
         .unwrap();
@@ -3410,11 +3413,13 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
         .bridge
         .run(move |store| async move {
             let db = store.test_reader()?;
-            let text: String = db.query_row(
-                "SELECT body FROM runtime_item_fulltext WHERE id LIKE '%:base'",
-                [],
-                |r| r.get(0),
-            )?;
+            let text = db
+                .query_row(
+                    "SELECT body FROM runtime_item_fulltext WHERE id LIKE '%:base'",
+                    [],
+                    |r| r.get::<_, studio_runtime_store::stored_text::StoredText>(0),
+                )?
+                .into_string();
             let bases: i64 = db.query_row(
                 "SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='stream-base'",
                 [],
@@ -3761,7 +3766,7 @@ async fn stream_base_and_metadata_rollback_together() {
         // rolls back the base it preserves together with the snapshot and the
         // stream metadata, leaving the flushed item intact.
         assert_eq!(tx.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='stream-base'",[],|row|row.get::<_,i64>(0))?,0);
-        let body:String=tx.query_row("SELECT body FROM runtime_item_fulltext WHERE id LIKE '%:atomic'",[],|row|row.get(0))?;
+        let body=tx.query_row("SELECT body FROM runtime_item_fulltext WHERE id LIKE '%:atomic'",[],|row|row.get::<_,studio_runtime_store::stored_text::StoredText>(0))?.into_string();
         assert_eq!(body,"x".repeat(store::STREAM_FLUSH_BYTES));
         assert_eq!(store::receipt(tx,"cursor:default:1","ack")?,Some(json!(delta)));
         tx.execute_batch("DROP TRIGGER fail_stream_metadata")?;

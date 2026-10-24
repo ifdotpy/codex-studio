@@ -361,6 +361,17 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
     {
         return Err(NativeError::Changed);
     }
+    if r.request_id
+        .starts_with(crate::idle_compaction::REQUEST_PREFIX)
+        && let Some(reason) =
+            crate::idle_compaction::handoff_refusal(tx, &snapshot.agent, &r.request_id)?
+    {
+        eprintln!(
+            "idle_compaction_refused request={} reason={reason}",
+            r.request_id
+        );
+        return Err(NativeError::Invalid(reason));
+    }
     let mut params = json!({"threadId":r.thread_id});
     let method = match r.action {
         Action::Compact => "thread/compact/start",
@@ -373,6 +384,12 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
             "review/start"
         }
     };
+    if r.request_id
+        .starts_with(crate::idle_compaction::REQUEST_PREFIX)
+    {
+        params["requestId"] = json!(r.request_id);
+        params["idleCompaction"] = snapshot.agent["idleCompactionEpisode"]["cache"].clone();
+    }
     let request = NativeRequest {
         ticket: ticket.clone(),
         method: method.into(),

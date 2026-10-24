@@ -12,6 +12,8 @@ use studio_runtime_schema::agent_limits::MAX_TRANSFER_AGENT_RECORDS;
 pub use studio_runtime_store::MAX_TRANSFER_RECORD_BYTES as MAX_RECORD_BYTES;
 pub const EXECUTOR_REQUIRED: &str = "account-transfer/provider-history-executor";
 pub const SETTINGS_REQUIRED: &str = "account-transfer/destination-settings";
+/// Internal receipt-hold identity mapped to native admission by preparation.
+pub(crate) const RECEIPT_HOLD: &str = "account-transfer/receipt-hold";
 
 #[derive(Debug, Error)]
 pub enum TransferError {
@@ -264,7 +266,8 @@ impl Snapshot {
                                 "lazy"
                             } else {
                                 "waiting"
-                            })
+                            });
+                            member["waiting"] = json!(WAITING_FOR_NEXT_TURN);
                         }
                         Phase::Submitted | Phase::LazySubmitted => {
                             member["phase"] = json!("unknown");
@@ -311,6 +314,9 @@ impl Snapshot {
                     } else {
                         "waiting"
                     });
+                    if member["phase"] != "ready" {
+                        member["waiting"] = json!(WAITING_FOR_NEXT_TURN);
+                    }
                     member["error"] = Value::Null;
                     member["nextCheck"] = json!(0);
                     if studio_runtime_store::truthy(member.get("interruptSubmittedAt")) {
@@ -329,9 +335,19 @@ impl Snapshot {
                 for id in &self.order {
                     let m = &op["members"][id];
                     let phase = self.phase(id)?;
+                    // Only a native thread request moves history. Source and
+                    // catalog reads do not, so a member without one may return.
+                    let native_request =
+                        matches!(
+                            phase,
+                            Phase::Reading | Phase::Submitted | Phase::LazySubmitted | Phase::Ready
+                        ) || ["providerIntent", "transportTicket", "submittedAt", "result"]
+                            .iter()
+                            .any(|key| studio_runtime_store::truthy(m.get(*key)));
                     if flag(m, "lazy")
                         && !phase.terminal()
                         && phase != Phase::Lazy
+                        && native_request
                         && !(phase == Phase::Blocked
                             && flag(m, "archiveInvalidated")
                             && (!studio_runtime_store::truthy(m.get("submittedAt"))
@@ -377,13 +393,24 @@ impl Snapshot {
                             ));
                         }
                         a["accountKey"] = lazy["sourceAccountKey"].clone();
-                        for field in RESTORED_SETTINGS {
-                            if let Some(value) = lazy["sourceState"].get(*field) {
-                                if value.is_null() {
-                                    remove(a, &[*field])?;
-                                } else {
-                                    a[*field] = value.clone();
+                        let exact = match lazy.get("sourceStateExact") {
+                            None => false,
+                            Some(Value::Bool(exact)) => *exact,
+                            Some(_) => {
+                                return Err(invalid(
+                                    "transfer agent",
+                                    "/lazyAccountTransfer/sourceStateExact",
+                                ));
+                            }
+                        };
+                        for field in SOURCE_STATE_FIELDS {
+                            match lazy["sourceState"].get(*field) {
+                                Some(value) if exact || !value.is_null() => {
+                                    a[*field] = value.clone()
                                 }
+                                Some(_) => remove(a, &[*field])?,
+                                None if exact => remove(a, &[*field])?,
+                                None => {}
                             }
                         }
                         remove(a, &["lazyAccountTransfer"])?;
@@ -409,6 +436,74 @@ impl Snapshot {
         let mut decision = self.decision(op, agents, followups);
         decision.changed |= matches!(command, Command::Action(_));
         Ok(decision)
+    }
+
+    /// A member busy with a turn at the request waits. Once that turn has ended
+    /// it is enrolled again as an idle member: the lazy hold moves its account,
+    /// and its history moves at its next turn start. Saved provider journals
+    /// stay on the member. `None` when the member cannot be released now.
+    pub fn release_waiting(&self, agent: &str) -> Result<Option<Decision>, TransferError> {
+        let Some(current) = self.agents.get(agent) else {
+            return Ok(None);
+        };
+        let member = &self.operation["members"][agent];
+        if !self.pending()
+            || !member.is_object()
+            || self.phase(agent)? != Phase::Waiting
+            || flag(member, "lazy")
+            || current["accountTransferId"] != self.identity.id
+            || studio_runtime_store::truthy(current.get("lazyAccountTransfer"))
+            || studio_runtime_store::truthy(current.get("deletedAt"))
+            || flag(current, "inFlight")
+            || matches!(
+                current["status"].as_str(),
+                Some("running" | "starting" | "approval")
+            )
+            || ["submittedAt", "result", "transportTicket", "providerIntent"]
+                .iter()
+                .any(|key| studio_runtime_store::truthy(member.get(*key)))
+        {
+            return Ok(None);
+        }
+        let target_provider = self.operation["targetProvider"]
+            .as_str()
+            .ok_or_else(|| invalid("account transfer", "/targetProvider"))?;
+        let mut agents = self.agents.clone();
+        let value = agents
+            .get_mut(agent)
+            .ok_or(TransferError::Refused("Unknown transfer member"))?;
+        let enrolled = enroll(
+            value,
+            &self.identity.id,
+            &self.identity.target_account_key,
+            target_provider,
+            agent == self.identity.lead_id,
+        )?;
+        if enrolled["phase"] != "lazy" {
+            // Completed or blocked members hold no transfer pointer.
+            remove(value, &["accountTransferId"])?;
+        }
+        let mut op = self.operation.clone();
+        let saved = op["members"][agent]
+            .as_object_mut()
+            .ok_or_else(|| invalid("account transfer", "/members"))?;
+        for (key, field) in enrolled
+            .as_object()
+            .ok_or_else(|| invalid("account transfer", "/members"))?
+        {
+            saved.insert(key.clone(), field.clone());
+        }
+        if enrolled.get("waiting").is_none() {
+            saved.remove("waiting");
+        }
+        if op["members"].as_object().is_some_and(|members| {
+            members
+                .values()
+                .all(|m| matches!(m["phase"].as_str(), Some("completed" | "left")))
+        }) {
+            op["status"] = json!("completed");
+        }
+        Ok(Some(self.decision(op, agents, vec![])))
     }
 
     pub fn begin_read(&self, agent: &str) -> Result<Decision, TransferError> {
@@ -446,6 +541,8 @@ impl Snapshot {
             member[field] = a.get(field).cloned().unwrap_or(Value::Null);
         }
         member["error"] = Value::Null;
+        // The move has started; the card shows it as moving now.
+        remove(member, &["waiting"])?;
         Ok(self.decision(op, self.agents.clone(), vec![]))
     }
 
@@ -1003,6 +1100,144 @@ impl Snapshot {
     }
 }
 
+/// Why a `waiting` or `lazy` member has not moved yet: its move runs at the
+/// wake of its next turn, before that turn's input is claimed.
+pub const WAITING_FOR_NEXT_TURN: &str = "Moves when its next turn starts";
+
+/// The transfer member record for one agent, as a request enrolls it, and the
+/// agent's hold. A member on another provider stays on its source account. A
+/// member busy with a turn waits for its next turn. An idle member gets the lazy
+/// hold: its account changes now, and its history moves at its next turn start.
+pub(crate) fn enroll(
+    value: &mut Value,
+    operation_id: &str,
+    target: &str,
+    target_provider: &str,
+    lead: bool,
+) -> Result<Value, TransferError> {
+    let target_kind: studio_runtime_providers::ProviderKind = target_provider
+        .parse()
+        .map_err(|_| TransferError::Refused("Unknown destination provider"))?;
+    let source_account = value
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        .to_owned();
+    let provider = studio_runtime_providers::ProviderKind::of_record(value)
+        .map_err(|_| TransferError::Refused("Unknown agent provider"))?
+        .key()
+        .to_owned();
+    let source_thread = value
+        .get("threadId")
+        .cloned()
+        .filter(|thread| !thread.is_null());
+    if !lead && provider != target_provider {
+        return Ok(json!({"phase":"left","sourceAccountKey":source_account,
+            "sourceThreadId":source_thread,"provider":provider,"name":value.get("name"),
+            "reason":format!("Uses {provider}; the destination account uses {target_provider}")}));
+    }
+    let done = source_account == target;
+    let active = studio_runtime_store::truthy(value.get("inFlight"))
+        || matches!(
+            value["status"].as_str(),
+            Some("running" | "starting" | "approval")
+        );
+    let lazy = !done && !active;
+    let pending = value
+        .get("pendingSettings")
+        .filter(|settings| !settings.is_null())
+        .cloned();
+    let pending_mismatch = pending.is_some()
+        && value
+            .get("pendingSettingsAccountKey")
+            .and_then(Value::as_str)
+            .unwrap_or(&source_account)
+            != source_account;
+    let blocked = lazy && pending_mismatch;
+    let phase = if done {
+        "completed"
+    } else if blocked {
+        "blocked"
+    } else if active {
+        "waiting"
+    } else {
+        "lazy"
+    };
+    let mut member = json!({
+        "phase":phase,"sourceAccountKey":source_account,"sourceThreadId":source_thread,
+        "provider":provider,"name":value.get("name"),"lazy":lazy,
+        "pendingSettings":pending.clone().unwrap_or(Value::Null),
+        "sourcePendingSettings":pending.unwrap_or(Value::Null),
+        "sourceClaudeOptions":value.get("claudeOptions"),
+        "error":if blocked {json!("Queued settings belong to another account. Save them again before transfer")} else {Value::Null}
+    });
+    if matches!(phase, "waiting" | "lazy") {
+        member["waiting"] = json!(WAITING_FOR_NEXT_TURN);
+    }
+    if done || blocked {
+        return Ok(member);
+    }
+    value["accountTransferId"] = json!(operation_id);
+    if !lazy {
+        return Ok(member);
+    }
+    let source_state = SOURCE_STATE_FIELDS
+        .iter()
+        .filter_map(|key| {
+            value
+                .get(*key)
+                .cloned()
+                .map(|value| ((*key).to_owned(), value))
+        })
+        .collect::<serde_json::Map<_, _>>();
+    value["lazyAccountTransfer"] = json!({"id":operation_id,"sourceAccountKey":source_account,
+        "sourceThreadId":source_thread,"sourceState":source_state,"sourceStateExact":true});
+    value["accountKey"] = json!(target);
+    if provider != target_provider {
+        value["provider"] = json!(target_provider);
+        value["model"] = json!(crate::provider_adapter::default_model(target_kind));
+        value["effort"] = Value::Null;
+        value["nativeEffort"] = json!("medium");
+        value["fastMode"] = json!(false);
+        value["daybreakEnabled"] = json!(false);
+        value["cyberAccessProgram"] = json!("standard");
+        remove(
+            value,
+            &[
+                "claudeOptions",
+                "pendingSettings",
+                "pendingSettingsAccountKey",
+            ],
+        )?;
+    }
+    let mut defaults = value
+        .get("workerDefaults")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if provider != target_provider {
+        defaults.insert("model".into(), Value::Null);
+        defaults.insert("effort".into(), json!("medium"));
+        defaults.insert("fastMode".into(), json!(false));
+        defaults.insert("daybreakEnabled".into(), json!(false));
+        defaults.insert("cyberAccessProgram".into(), json!("standard"));
+    }
+    defaults.insert("accountKey".into(), json!(target));
+    value["workerDefaults"] = Value::Object(defaults);
+    value["pendingSettingsAccountKey"] = if value
+        .get("pendingSettings")
+        .is_some_and(|settings| !settings.is_null())
+    {
+        json!(target)
+    } else {
+        Value::Null
+    };
+    if value.get("pendingSettings").is_none_or(Value::is_null) {
+        value["executionSettingsAccountKey"] = json!(source_account);
+    }
+    Ok(member)
+}
+
 pub fn before_start(agent: &Value) -> Result<(), TransferError> {
     validate("PersistedAgentRecord", "transfer agent", agent)?;
     if agent.get("accountTransfer").is_some_and(|v| {
@@ -1013,7 +1248,7 @@ pub fn before_start(agent: &Value) -> Result<(), TransferError> {
             .get("emptyTransferRecovery")
             .is_some_and(|r| !r.is_null() && r["phase"] != "completed")
     {
-        return Err(TransferError::Requires("account-transfer/receipt-hold"));
+        return Err(TransferError::Requires(RECEIPT_HOLD));
     }
     Ok(())
 }
@@ -1029,7 +1264,10 @@ pub(crate) fn remove(value: &mut Value, keys: &[&str]) -> Result<(), TransferErr
     }
     Ok(())
 }
-const RESTORED_SETTINGS: &[&str] = &[
+/// Fields the lazy move owns, including source failure state. Sparse exact
+/// snapshots preserve null and absence; legacy snapshots used null for both.
+const SOURCE_STATE_FIELDS: &[&str] = &[
+    "accountKey",
     "provider",
     "model",
     "effort",
@@ -1042,6 +1280,9 @@ const RESTORED_SETTINGS: &[&str] = &[
     "pendingSettingsAccountKey",
     "claudeOptions",
     "executionSettingsAccountKey",
+    "status",
+    "error",
+    "nativeFailureHold",
 ];
 const CANCEL_FOLLOWUP: &str = "The account transfer was cancelled after this turn was interrupted. Continue the existing task on this account from saved context. Preserve completed work and check existing receipts before any command with an unknown outcome.";
 
@@ -1423,6 +1664,83 @@ mod provider_receipt_tests {
             json!({"model":"model-a"}),
         )
         .expect("test fixture operation succeeds")
+    }
+
+    /// The live record shape of a lazy move refused during its source reads:
+    /// written destination catalog and source reads, one source read with an
+    /// intent and no receipt, and no native thread request.
+    fn refused_during_source_reads(native_intent: bool) -> Snapshot {
+        let read = |operation: &str, account: &str, method: &str| {
+            json!({"operation":operation,"account":account,"method":method,
+                "params":{"threadId":"source-thread"},
+                "scope":{"account":account,"connection":format!("{account}-connection"),"generation":1}})
+        };
+        let written = |operation: &str, account: &str| {
+            json!({"certainty":"written","result":{"kind":"reply","value":{"data":[]}},
+                "receipt":{"certainty":"written","notSentReason":null,"operation":operation,
+                    "scope":{"account":account,"connection":format!("{account}-connection"),"generation":1},
+                    "ticket":{"generation":1,"id":"request","method":"thread/read"}}})
+        };
+        let mut member = json!({
+            "phase":"blocked", "lazy":true, "sourceAccountKey":"source",
+            "sourceThreadId":"source-thread", "provider":"claude", "nextCheck":0,
+            "error":"Transfer preparation failed before native submission",
+            "source":{"accountKey":"target","threadId":"source-thread","epoch":7,"cwd":"/work"},
+            "providerReadIntents":{
+                "model-list":read("model-list","target","model/list"),
+                "thread-read":read("thread-read","source","thread/read"),
+                "transfer:transfer:agent:queue-before":read("transfer:transfer:agent:queue-before","source","thread/queue/list"),
+                "transfer:transfer:agent:background-before":read("transfer:transfer:agent:background-before","source","thread/backgroundTerminals/list")
+            },
+            "providerReadReceipts":{
+                "model-list":written("model-list","target"),
+                "thread-read":written("thread-read","source"),
+                "transfer:transfer:agent:queue-before":written("transfer:transfer:agent:queue-before","source")
+            }
+        });
+        if native_intent {
+            member["providerIntent"] = json!({"operation":"transfer:agent:thread-start",
+                "scope":{"account":"target"},"method":"thread/start","params":{}});
+        }
+        let operation = json!({
+            "id":"transfer", "leadId":"agent", "targetAccountKey":"target",
+            "targetProvider":"claude", "status":"pending", "created":1.0, "scope":"team",
+            "members":{"agent":member}
+        });
+        let agent = json!({
+            "id":"agent", "rootId":"agent", "epoch":7, "status":"queued", "provider":"claude",
+            "accountKey":"target", "accountTransferId":"transfer", "threadId":"source-thread",
+            "executionSettingsAccountKey":"source", "model":"model-a",
+            "lazyAccountTransfer":{"id":"transfer","sourceAccountKey":"source",
+                "sourceThreadId":"source-thread",
+                "sourceState":{"executionSettingsAccountKey":"source","model":"model-a",
+                    "provider":"claude","status":"queued","error":null}}
+        });
+        Snapshot::read(
+            &operation.to_string(),
+            [("agent".into(), agent.to_string())],
+        )
+        .expect("test fixture operation succeeds")
+    }
+
+    #[test]
+    fn cancel_returns_a_lazy_member_whose_move_sent_no_thread_request() {
+        let cancelled = refused_during_source_reads(false)
+            .decide(Command::Action(Action::Cancel))
+            .expect("nothing native was sent, so cancel is safe");
+        assert_eq!(cancelled.operation["status"], "cancelled");
+        let agent = &cancelled.agents["agent"];
+        assert_eq!(agent["accountKey"], "source");
+        assert_eq!(agent["executionSettingsAccountKey"], "source");
+        assert!(agent.get("lazyAccountTransfer").is_none());
+        assert!(agent.get("accountTransferId").is_none());
+
+        assert!(matches!(
+            refused_during_source_reads(true).decide(Command::Action(Action::Cancel)),
+            Err(TransferError::Refused(
+                "A native history move has started. Resolve its receipt before cancelling."
+            ))
+        ));
     }
 
     #[test]

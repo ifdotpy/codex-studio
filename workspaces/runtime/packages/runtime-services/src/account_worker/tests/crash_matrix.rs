@@ -411,7 +411,7 @@ async fn restart(context: &Context, label: &str) {
                 );
             }
             for (item, expected) in expected_items {
-                let actual: String = db.query_row("SELECT COALESCE((SELECT body FROM runtime_item_fulltext WHERE id=i.id),json_extract(i.record,'$.text')) FROM runtime_items i WHERE id LIKE ?1", [format!("%:{item}")], |row|row.get(0))?;
+                let actual = db.query_row("SELECT COALESCE((SELECT body FROM runtime_item_fulltext WHERE id=i.id),json_extract(i.record,'$.text')) FROM runtime_items i WHERE id LIKE ?1", [format!("%:{item}")], |row|row.get::<_, studio_runtime_store::stored_text::StoredText>(0))?.into_string();
                 assert!(
                     actual == expected,
                     "{assert_label}: acknowledged payload text missing after restart for {item}: actual_len={}, expected_len={}, actual_prefix={:?}, expected_prefix={:?}",

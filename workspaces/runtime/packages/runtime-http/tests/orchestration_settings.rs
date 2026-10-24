@@ -41,7 +41,7 @@ async fn call(app: &axum::Router, method: &str, body: Option<Value>) -> (u16, Va
 }
 
 fn settings(hold: Value, unload: Value) -> Value {
-    json!({ HOLD: hold, UNLOAD: unload })
+    json!({ HOLD: hold, UNLOAD: unload, "idleCompaction":{"mode":"off","minTokens":200000} })
 }
 
 #[tokio::test]
@@ -103,4 +103,36 @@ async fn settings_default_persist_and_refuse_out_of_range_values() {
         None,
         "a refused write keeps the stored unload delay"
     );
+}
+
+#[tokio::test]
+async fn idle_compaction_modes_and_token_minimum_round_trip() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    let app = router(HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    ))
+    .unwrap();
+    for mode in ["off", "log", "compact"] {
+        let mut requested = settings(json!(10), json!(15));
+        requested["idleCompaction"] = json!({"mode":mode,"minTokens":100000});
+        let (status, body) = call(&app, "POST", Some(requested.clone())).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["settings"], requested);
+    }
+    for invalid in [
+        json!({"mode":"compact_on_return","minTokens":200000}),
+        json!({"mode":"compact","minTokens":99999}),
+    ] {
+        let mut requested = settings(json!(10), json!(15));
+        requested["idleCompaction"] = invalid;
+        let (status, _) = call(&app, "POST", Some(requested)).await;
+        assert!((400..500).contains(&status));
+    }
 }

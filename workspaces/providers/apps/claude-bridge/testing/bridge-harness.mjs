@@ -23,7 +23,13 @@ export async function startBridge(fakeSdk, prefix = "claude-bridge-") {
       source.replaceAll("@anthropic-ai/claude-agent-sdk", "./fake.mjs"),
     );
   }
-  await fs.writeFile(path.join(root, "fake.mjs"), fakeSdk);
+  await fs.writeFile(
+    path.join(root, "fake.mjs"),
+    fakeSdk.includes("export const resolveSettings") ||
+      fakeSdk.includes("export function resolveSettings")
+      ? fakeSdk
+      : "export const resolveSettings=async()=>({effective:{}});\n" + fakeSdk,
+  );
   await fs.symlink(
     path.join(BRIDGE, "node_modules"),
     path.join(root, "node_modules"),

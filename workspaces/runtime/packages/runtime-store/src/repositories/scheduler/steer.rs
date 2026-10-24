@@ -18,6 +18,10 @@
 //! Only the provider acknowledgement records delivery. A lost response leaves
 //! the input `dispatching` until the acknowledgement or the turn's end decides
 //! it. Nothing in this module ever resubmits an input whose outcome is unknown.
+//! A turn end proves input unread when the provider reports it (the Claude
+//! bridge's `unappliedSteers`), or when Studio wrote the steer after the time
+//! at which the provider reports that the turn stopped taking input
+//! ([`SchedulerRepository::release_steers_written_after_turn_end`]).
 
 use super::*;
 use crate::CachedSql;
@@ -32,6 +36,12 @@ pub(super) const STOP_CANCELLED_ERROR: &str = "Cancelled by Stop before Claude r
 pub(super) const STOP_QUEUED_ERROR: &str =
     "Claude still holds this input after Stop. Delivery is unknown.";
 pub const STEER_UNCONFIRMED_ERROR: &str = "The agent did not confirm this message before its turn ended. It may have been read; Studio did not send it again.";
+/// Unit: seconds. The least time by which a steer's durable `submittedAt`
+/// must follow the provider's reported turn end before the steer counts as
+/// written after that end. The provider reports the end in whole seconds; the
+/// rest of the margin absorbs a small wall-clock correction between the two
+/// reads of the same host clock.
+const STEER_AFTER_TURN_END_SECONDS: f64 = 5.0;
 
 /// One claimed busy-turn input batch.
 #[derive(Clone, Debug, PartialEq)]
@@ -732,6 +742,39 @@ impl SchedulerRepository {
             } else {
                 receipt["interruptStillQueued"] = json!(true);
                 store(tx, &id, &receipt)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Return the input of every steer to `turn_id` that Studio wrote after
+    /// the provider stopped taking input into that turn, at `ended_at` (unix
+    /// seconds, the provider's reported turn end). The caller passes it only
+    /// for a provider that records every steer it took before that time and
+    /// refuses a later one (`expectedTurnId`). `submittedAt` is written before
+    /// the request, so such a steer was never applied, also when its reply was
+    /// lost or a closed transport already made it unconfirmed. The input
+    /// returns to the queue once; the request is never written again.
+    pub fn release_steers_written_after_turn_end(
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        turn_id: &str,
+        ended_at: f64,
+    ) -> StoreResult<()> {
+        if !ended_at.is_finite() {
+            return Ok(());
+        }
+        for (id, receipt) in receipts(tx, &receipt_id(agent_id, ""))? {
+            let written_after_end = receipt["submittedAt"]
+                .as_f64()
+                .is_some_and(|at| at >= ended_at + STEER_AFTER_TURN_END_SECONDS);
+            if receipt["agent"] == agent_id
+                && receipt["turnId"] == turn_id
+                && matches!(receipt["stage"].as_str(), Some("submitted" | "unconfirmed"))
+                && receipt["interruptStillQueued"] != true
+                && written_after_end
+            {
+                release(tx, &id, &receipt)?;
             }
         }
         Ok(())
