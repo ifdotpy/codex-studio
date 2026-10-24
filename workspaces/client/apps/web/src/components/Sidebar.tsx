@@ -1352,16 +1352,6 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             </ActionIcon>
           )}
         </div>
-        {p.newSharedChat && (
-          <Button
-            className="sidebar-nav-button sidebar-shared-chat"
-            title="New shared chat"
-            leftSection={<Users size={15} />}
-            onClick={() => p.newSharedChat?.()}
-          >
-            New shared chat
-          </Button>
-        )}
         <StudioErrorsButton open={p.open} />
       </div>
       <TextInput
