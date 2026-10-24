@@ -75,6 +75,7 @@ export const forkSession = async () => ({
   sessionId: "22222222-2222-4222-8222-222222222222",
 });
 export const getSessionMessages = async () => [];
+export const resolveSettings = async () => ({ effective: {} });
 export function query({ prompt, options }) {
   if (
     options.systemPrompt &&
