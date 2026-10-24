@@ -10,6 +10,60 @@ use studio_runtime_store::{AgentRecord, AgentRepository, StoreError};
 
 const CHAT: &str = "published-chat";
 
+#[tokio::test]
+async fn summary_entities_publish_at_the_source_write() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    let plan = json!({"id":CHAT,"rootId":CHAT,"text":"Plan","version":1,"updated":1});
+    write(
+        &store,
+        "INSERT INTO runtime_plans(id,record) VALUES(?1,?2)",
+        vec![CHAT.to_owned(), plan.to_string()],
+    )
+    .await;
+    assert_eq!(
+        client_entity(&store, "plan", CHAT).expect("plan entity").1["text"],
+        "Plan"
+    );
+    let annotation = json!({"id":"note","agent":CHAT,"rootId":CHAT,"path":"a.rs","line":1,"text":"Comment","created":1});
+    write(
+        &store,
+        "INSERT INTO runtime_annotations(id,record) VALUES(?1,?2)",
+        vec!["note".into(), annotation.to_string()],
+    )
+    .await;
+    assert_eq!(
+        client_entity(&store, "annotation", "note")
+            .expect("annotation entity")
+            .1["text"],
+        "Comment"
+    );
+    write(
+        &store,
+        "INSERT INTO runtime_events(id,agent,kind,status,created) VALUES(?1,?2,'user','pending',1)",
+        vec!["receipt".into(), CHAT.into()],
+    )
+    .await;
+    let receipt = client_entity(&store, "messageReceipt", "receipt")
+        .expect("receipt entity")
+        .1;
+    assert_eq!(receipt["agent"], CHAT);
+    assert_eq!(receipt["status"], "pending");
+    assert_eq!(receipt["materialized"], false);
+    write(
+        &store,
+        "UPDATE runtime_events SET status='delivered' WHERE id=?1",
+        vec!["receipt".into()],
+    )
+    .await;
+    assert_eq!(
+        client_entity(&store, "messageReceipt", "receipt")
+            .expect("receipt")
+            .1["status"],
+        "delivered"
+    );
+}
+
 fn chat(extra: Value) -> Value {
     let mut record = json!({
         "id":CHAT,"rootId":CHAT,"epoch":1,"status":"idle","name":"Published chat",

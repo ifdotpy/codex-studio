@@ -11,6 +11,58 @@ import {
 
 import { it } from "vitest";
 
+it("projects bounded workspace summaries and receipts with deletes", () => {
+  const state = emptyEntityProjection();
+  const row = (collection, id, value, seq) => ({
+    id: `entity:${collection}:${id}`,
+    seq,
+    payload: "",
+    entity: { collection, id, value },
+  });
+  const first = applyEntityRows(
+    state,
+    [
+      row(
+        "messageReceipt",
+        "m",
+        { id: "m", agent: "a", status: "pending", materialized: false },
+        1,
+      ),
+      row(
+        "plan",
+        "a",
+        { id: "a", rootId: "a", text: "Plan", version: 1, updated: 1 },
+        2,
+      ),
+      row(
+        "annotation",
+        "n",
+        {
+          id: "n",
+          agent: "a",
+          rootId: "a",
+          path: "a.rs",
+          line: 1,
+          text: "Comment",
+          created: 1,
+        },
+        3,
+      ),
+    ],
+    true,
+  );
+  assert.equal(first.runtime.messageReceipts[0].status, "pending");
+  assert.equal(first.runtime.plans[0].text, "Plan");
+  assert.equal(first.runtime.annotations[0].text, "Comment");
+  const next = applyEntityRows(
+    state,
+    [{ id: "entity:annotation:n", seq: 4, payload: "", _deleted: true }],
+    true,
+  );
+  assert.equal(next.runtime.annotations.length, 0);
+  assert.equal(next.runtime.messageReceipts, first.runtime.messageReceipts);
+});
+
 it("reuses unchanged entity data and bounds transcript and history caches", () => {
   const row = (collection, id, value, seq, deleted = false) => ({
     id: `entity:${collection}:${id}`,
