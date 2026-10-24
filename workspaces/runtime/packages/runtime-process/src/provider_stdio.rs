@@ -248,7 +248,7 @@ impl StdioProviderTaskFactory {
             wrapped.wrap(ProcessGroup::leader());
             priority.apply_before_spawn(&mut wrapped);
             let mut child = wrapped.spawn().map_err(process_error)?;
-            let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
+            let (commands, mut inbox) = mpsc::channel(LANE_CAPACITY);
             let (entries, journal) = mpsc::channel(LANE_CAPACITY);
             let diagnostic_handle = handle.clone();
             let pending_replies = PendingReplies::default();
@@ -309,7 +309,7 @@ impl StdioProviderTaskFactory {
                     tokio::try_join!(
                         write_commands(
                             stdin,
-                            inbox,
+                            &mut inbox,
                             diagnostic_handle,
                             generation,
                             pending_replies
@@ -338,13 +338,14 @@ impl StdioProviderTaskFactory {
                 let (result, exit_unobserved) = tokio::select! {
                     biased;
                     _ = Shutdown::cancelled(&mut stop) => (Ok(()), false),
-                    // First retain immediately readable replies in the bounded journal.
-                    // A full journal must never prevent observing and reaping the child.
-                    result = bounded => (result, false),
+                    // Observe exit before accepting another stdin write. The drain
+                    // retains stdout and serves ACKs without touching the dead stdin.
                     exited = leader_exit => match exited {
-                        Ok(()) => (drain_stdout_after_exit(&mut reader, &mut stop, deadline).await, false),
+                        Ok(()) => (drain_stdout_after_exit(&mut reader, &mut inbox, &mut stop, deadline).await, false),
                         Err(error) => (Err(process_error(error)), true),
                     },
+                    // A full journal must never prevent observing and reaping the child.
+                    result = bounded => (result, false),
                 };
                 // Signal the group before the leader is reaped. If its exit could not
                 // be observed, the leader may already be reaped: send nothing.
@@ -419,6 +420,7 @@ impl StdioProviderTaskFactory {
 
 async fn drain_stdout_after_exit(
     reader: impl std::future::Future<Output = Result<(), AdapterError>>,
+    commands: &mut mpsc::Receiver<AdapterCommand>,
     stop: &mut watch::Receiver<bool>,
     deadline: Option<Instant>,
 ) -> Result<(), AdapterError> {
@@ -427,10 +429,16 @@ async fn drain_stdout_after_exit(
     // deadline, and preserve shutdown's priority and successful result.
     let grace_deadline = Instant::now() + REAP_GRACE;
     let drain_deadline = deadline.map_or(grace_deadline, |end| end.min(grace_deadline));
+    let drain = async {
+        tokio::select! {
+            result = reader => result,
+            result = commands_after_exit(commands) => result,
+        }
+    };
     tokio::select! {
         biased;
         _ = Shutdown::cancelled(stop) => Ok(()),
-        result = tokio::time::timeout_at(drain_deadline, reader) => {
+        result = tokio::time::timeout_at(drain_deadline, drain) => {
             result.unwrap_or_else(|_| {
                 if deadline.is_some_and(|end| end <= grace_deadline) {
                     Err(AdapterError::Timeout)
@@ -440,6 +448,24 @@ async fn drain_stdout_after_exit(
             })
         }
     }
+}
+
+async fn commands_after_exit(
+    commands: &mut mpsc::Receiver<AdapterCommand>,
+) -> Result<(), AdapterError> {
+    while let Some(command) = commands.recv().await {
+        match command {
+            AdapterCommand::Ack { cursor, reply } => {
+                if reply.send(CommandReceipt::Acknowledged(cursor)).is_err() {
+                    return Err(AdapterError::ConsumerClosed);
+                }
+            }
+            // The leader is confirmed exited: new writes are proven NotSent.
+            // Never touch stdin or wait for receipt observation on this path.
+            command @ AdapterCommand::Write { .. } => command.reject(),
+        }
+    }
+    Err(AdapterError::ConsumerClosed)
 }
 
 pub(crate) async fn drain_stderr(
@@ -497,7 +523,7 @@ fn process_error(error: io::Error) -> AdapterError {
 
 async fn write_commands(
     mut stdin: impl AsyncWrite + Unpin,
-    mut commands: mpsc::Receiver<AdapterCommand>,
+    commands: &mut mpsc::Receiver<AdapterCommand>,
     handle: ProviderHandle,
     generation: Generation,
     pending_replies: PendingReplies,
@@ -705,6 +731,7 @@ mod tests {
             let deadline = has_deadline.then(|| Instant::now() + REAP_GRACE / 2);
             let (entries, mut journal) = mpsc::channel(1);
             let shutdown = Shutdown::default();
+            let (_commands, mut inbox) = mpsc::channel(LANE_CAPACITY);
             let started = Instant::now();
             let result = drain_stdout_after_exit(
                 read_entries(
@@ -716,6 +743,7 @@ mod tests {
                     None,
                     None,
                 ),
+                &mut inbox,
                 &mut shutdown.subscribe(),
                 deadline,
             )
@@ -744,6 +772,7 @@ mod tests {
             // Keep the writer alive, like a descendant inheriting stdout.
             let (entries, mut journal) = mpsc::channel(1);
             let shutdown = Shutdown::default();
+            let (_commands, mut inbox) = mpsc::channel(LANE_CAPACITY);
             let mut stop = shutdown.subscribe();
             let started = Instant::now();
             let (result, ()) = tokio::join!(
@@ -757,6 +786,7 @@ mod tests {
                         None,
                         None,
                     ),
+                    &mut inbox,
                     &mut stop,
                     None,
                 ),

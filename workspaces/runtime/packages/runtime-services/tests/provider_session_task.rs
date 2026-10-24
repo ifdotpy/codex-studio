@@ -238,6 +238,148 @@ async fn pending<F: std::future::Future>(future: F) {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn exited_stdio_provider_drains_beyond_journal_capacity_through_session_settlement() {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    use studio_runtime_process::provider_stdio::StdioProviderTaskFactory;
+
+    const HANG_GUARD: Duration = Duration::from_secs(10);
+    // Exceed both the adapter lane and the session's unsettled horizon. Lost
+    // ACK service cannot be hidden by buffering the whole tail before closing.
+    const FINAL_FRAMES: usize = MAX_UNSETTLED + 2 * LANE_CAPACITY + 1;
+    let root = tempfile::tempdir().unwrap();
+    let release = root.path().join("release");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &release,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        0,
+    )
+    .unwrap();
+    let script = format!(
+        r#"IFS= read -r initialize
+printf '{{"id":"attachment-1:1","result":{{}}}}\n'
+IFS= read -r initialized
+IFS= read -r release < release
+index=0
+while [ "$index" -lt {FINAL_FRAMES} ]; do
+    printf '{{"method":"fixture/final","index":%s}}\n' "$index"
+    index=$((index + 1))
+done"#
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut session = runtime.block_on(async {
+        tokio::time::timeout(HANG_GUARD, async {
+            let factory = Arc::new(StdioProviderTaskFactory {
+                deadline: Some(tokio::time::Instant::now() + HANG_GUARD),
+                max_frame_bytes: 1024,
+                max_output_bytes: None,
+                stderr_log: None,
+            });
+            let mut opts = options();
+            opts.launch = ProviderLaunchSpec::new(
+                vec!["/bin/sh".into(), "-c".into(), script],
+                BTreeMap::new(),
+                root.path().to_path_buf(),
+            );
+            let mut cfg = config();
+            cfg.timeout_ms = HANG_GUARD.as_millis() as u64;
+            let mut session = SessionHandle::open(
+                factory,
+                ProviderHandle::for_account("stdio-session-tail"),
+                opts,
+                cfg,
+            )
+            .await
+            .unwrap();
+            status(&mut session, InitializationStatus::Ready).await;
+            let initial = session.events.recv().await.unwrap().journal.unwrap();
+            assert_eq!(initial.cursor, EventCursor(1));
+            session.control.settled(initial.cursor).await.unwrap();
+            session
+        })
+        .await
+        .expect("stdio session handshake hang guard")
+    });
+    let pid = session
+        .status
+        .borrow()
+        .attachment
+        .info
+        .as_ref()
+        .unwrap()
+        .pid;
+    let pid = Pid::from_raw(pid as i32).unwrap();
+    // No task runs while the real child writes its bounded tail and exits.
+    // The next owner poll must select leader exit, with stdout still to drain.
+    std::fs::write(&release, b"exit\n").unwrap();
+    waitid(
+        WaitId::Pid(pid),
+        WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+    )
+    .unwrap();
+
+    runtime.block_on(async {
+        tokio::time::timeout(HANG_GUARD, async {
+            let mut retained = vec![];
+            while let Some(event) = session.events.recv().await {
+                if let Some(entry) = event.journal {
+                    let cursor = entry.cursor;
+                    retained.push(entry);
+                    // A terminal close can race the final settlement. Completion
+                    // owns its remaining journal evidence, as in the account caller.
+                    match session.control.settled(cursor).await {
+                        Ok(()) | Err(SessionTaskError::Closed) => {}
+                        Err(error) => panic!("settlement failed: {error}"),
+                    }
+                }
+            }
+            let exit = session.completion().await;
+            retained.extend(
+                exit.undelivered
+                    .into_iter()
+                    .filter_map(|event| event.journal),
+            );
+            assert_eq!(
+                retained.len(),
+                FINAL_FRAMES,
+                "every final frame is retained"
+            );
+            for (index, entry) in retained.into_iter().enumerate() {
+                assert_eq!(entry.cursor, EventCursor(index as u64 + 2));
+                assert_eq!(entry.generation, Generation(1));
+                let JournalPayload::Frame(Frame::UnknownMethod(frame)) = entry.payload else {
+                    panic!("expected final fixture notification");
+                };
+                assert_eq!(frame.fields.get("index"), Some(&json!(index)));
+            }
+            let adapter = exit.adapter.expect("real stdio adapter completion");
+            assert!(adapter.cleanup_error.is_none());
+            assert!(matches!(
+                adapter.result,
+                Err(AdapterError::Supervisor(
+                    studio_runtime_process::SupervisorError::ConnectionLost
+                ))
+            ));
+            assert_eq!(
+                waitid(
+                    WaitId::Pid(pid),
+                    WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+                )
+                .expect_err("the owned child was reaped"),
+                rustix::io::Errno::CHILD,
+            );
+        })
+        .await
+        .expect("stdio session final drain hang guard");
+    });
+}
+
 #[tokio::test(start_paused = true)]
 async fn initialization_requires_reply_and_written_notification_receipt() {
     let (mut session, mut peer) = open().await;

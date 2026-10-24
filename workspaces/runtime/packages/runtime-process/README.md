@@ -235,8 +235,10 @@ or status-channel closure. This adapter requires Unix process groups.
 After observing the leader's exit, the task drains stdout into the journal to
 EOF, bounded by the earlier of the caller's deadline and the cleanup grace owned
 by [`provider_stdio.rs`](src/provider_stdio.rs). Shutdown still interrupts this
-drain. A full journal or an inherited pipe cannot delay process-group cleanup
-beyond that bound.
+drain. ACKs remain served so session settlement can release the bounded journal;
+new writes return `NotSent` without touching stdin or waiting for observation.
+A full journal or an inherited pipe cannot delay process-group cleanup beyond
+that bound.
 
 The model catalog consumes it through the accepted session task. Its cache is
 process-local, so consumed entries are settled without a durable journal.

@@ -1458,6 +1458,7 @@ function fastTierCommands(root) {
             "-E",
             nextestAnyOf([
               "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
+              "test(/^provider_session_task::exited_stdio_provider_drains_beyond_journal_capacity_through_session_settlement$/)",
               "test(provider_callbacks_unjournaled_card_is_refused_without_writes)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
               "test(/^recovery_store::restart_continues_only_a_confirmed_interruption$/)",
@@ -1507,6 +1508,7 @@ function fastTierCommands(root) {
                   "-E",
                   nextestAnyOf([
                     "test(/^provider_stdio::final_stdout_is_journaled_when_the_child_exits_before_the_owner_is_polled$/)",
+                    "test(/^provider_stdio::writes_after_confirmed_exit_are_not_sent_and_do_not_block_ack_or_stdout$/)",
                     "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
                     "test(/^provider_stdio::cancellation_stops_the_entire_owned_process_group$/)",
                     "test(/^wave7_p01_factory::running_child_started_with_a_previous_command_reattaches$/)",

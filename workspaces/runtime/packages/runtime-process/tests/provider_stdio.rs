@@ -13,16 +13,32 @@ const PROVIDER_EXIT_HANG_GUARD: Duration = Duration::from_secs(10);
 
 #[test]
 fn final_stdout_is_journaled_when_the_child_exits_before_the_owner_is_polled() {
+    assert_final_stdout_is_journaled(false);
+}
+
+#[test]
+fn writes_after_confirmed_exit_are_not_sent_and_do_not_block_ack_or_stdout() {
+    assert_final_stdout_is_journaled(true);
+}
+
+fn assert_final_stdout_is_journaled(write_after_exit: bool) {
     use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
-    use studio_runtime_providers::{Frame, RequestId, ResponseBody};
+    use studio_runtime_process::OperationId;
+    use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("current-thread provider runtime");
-    let mut attachment = runtime.block_on(child(
-        r#"printf '{"id":1,"result":{}}\n'; printf 'final diagnostic\n' >&2; printf '{"id":2,"result":{}}\n'"#,
-    ));
+    let replies = if write_after_exit {
+        LANE_CAPACITY + 1
+    } else {
+        2
+    };
+    let script = format!(
+        r#"index=1; while [ "$index" -le {replies} ]; do printf '{{"id":%s,"result":{{}}}}\n' "$index"; index=$((index + 1)); done; printf 'final diagnostic\n' >&2"#
+    );
+    let mut attachment = runtime.block_on(child(&script));
     let child_pid = pid(&attachment);
     // Opening only spawns the owner task. With its runtime stopped, wait for
     // the fixture's exit without reaping, before any stdout readiness is polled.
@@ -33,15 +49,38 @@ fn final_stdout_is_journaled_when_the_child_exits_before_the_owner_is_polled() {
     )
     .expect("fixture exited without reaping");
 
+    let receipts = write_after_exit.then(|| {
+        let frame = Frame::Request(RequestFrame {
+            id: RequestId::Number(100),
+            method: Method::ModelList,
+            params: None,
+            fields: Default::default(),
+        });
+        let write = PreparedWrite::new(OperationId("after-exit".into()), &frame).expect("write");
+        let (command, written) = AdapterCommand::write(write);
+        attachment.commands.try_send(command).expect("queued write");
+        let (command, acknowledged) = AdapterCommand::ack(EventCursor(0));
+        attachment.commands.try_send(command).expect("queued ACK");
+        (written, acknowledged)
+    });
     runtime.block_on(async {
         tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, async {
-            for (cursor, id) in [(1, 1), (2, 2)] {
+            if let Some((written, acknowledged)) = receipts {
+                // The write receipt is deliberately unobserved until ACK arrives.
+                // The full journal holds the reader while both commands settle.
+                assert!(matches!(
+                    acknowledged.receive().await,
+                    CommandReceipt::Acknowledged(EventCursor(0))
+                ));
+                assert!(matches!(written.receive().await, CommandReceipt::NotSent));
+            }
+            for id in 1..=replies as u64 {
                 let entry = attachment
                     .journal
                     .recv()
                     .await
                     .expect("final reply retained");
-                assert_eq!(entry.cursor, EventCursor(cursor));
+                assert_eq!(entry.cursor, EventCursor(id));
                 assert_eq!(entry.generation, Generation(1));
                 assert!(matches!(
                     entry.payload,
