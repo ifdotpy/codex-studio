@@ -33,10 +33,9 @@ import { parseArgs } from "node:util";
 import {
   claudeAccount,
   claudeConfigEnvironment,
-  defaultKeychainConfig,
   fileConfig,
-  keychainConfig,
 } from "./claude-auth.mjs";
+import { studioProfile } from "./studio-claude-profile.mjs";
 import {
   CheckFailed,
   Report,
@@ -177,7 +176,7 @@ export function proxyDecision(host) {
 }
 
 /** A CONNECT proxy that forwards only the allowed hosts and counts every request. */
-export function startProxy() {
+function startProxy() {
   const seen = new Map();
   const server = http.createServer((request, response) => {
     // Plain HTTP is never needed by the providers; refuse and count it.
@@ -241,6 +240,7 @@ export function profiles({
   readable,
   writable = [],
   claudeKeychain = false,
+  claudeProfile = null,
 }) {
   const quote = (value) => JSON.stringify(value);
   const common = `(version 1)
@@ -275,19 +275,25 @@ ${readable.map((file) => `(deny file-write* (literal ${quote(file)}))`).join("\n
   const loopback = `(allow network-outbound (remote tcp ${quote(`localhost:${proxyPort}`)})${backend("remote")} (remote unix-socket (subpath ${quote(root)})))
 (allow network-bind${backend("local")} (local unix-socket (subpath ${quote(root)})))
 (allow network-inbound${backend("local")} (local unix-socket (subpath ${quote(root)})))`;
+  // A fresh Studio Add profile can live inside liveState. Only its proven exact
+  // directory is writable; the live sockets and every sibling remain denied.
+  const dedicated =
+    claudeKeychain && claudeProfile
+      ? `\n(allow file-write* (subpath ${quote(claudeProfile)}))`
+      : "";
   return {
     // The supervisor and its providers: real CLIs, network only through the proxy.
     supervisor: `${auth}
 (allow process-exec)
 ${loopback}
 ${live}
-(deny process-exec (literal "/usr/bin/ssh") (literal "/usr/bin/scp") (literal "/usr/bin/git"))`,
+(deny process-exec (literal "/usr/bin/ssh") (literal "/usr/bin/scp") (literal "/usr/bin/git"))${dedicated}`,
     // The recovery job and the server.
     recovery: `${auth}
 (allow process-exec)
 ${loopback}
 ${live}
-(deny process-exec (literal "/usr/bin/osascript") (literal "/usr/bin/open"))`,
+(deny process-exec (literal "/usr/bin/osascript") (literal "/usr/bin/open"))${dedicated}`,
     // The installer of build N: no window tools, writes only below the run folder.
     installer: `${common.trimEnd()}\n${keychainDeny}
 (allow process-exec)
@@ -421,9 +427,17 @@ export class Canary {
         ? path.resolve(options["claude-config"])
         : null;
     this.claudeKeychain = options["claude-keychain"] === true;
+    this.claudeReservation = options["claude-reservation"]
+      ? path.resolve(options["claude-reservation"])
+      : null;
     this.claudeProfileHome = os.homedir();
-    if (this.claudeKeychain && !this.claudeConfig)
-      throw new CheckFailed("Keychain mode requires a canary Claude profile.");
+    if (
+      this.claudeKeychain !== Boolean(this.claudeReservation) ||
+      (this.claudeReservation && options["no-claude"])
+    )
+      throw new CheckFailed(
+        "Keychain mode requires a bound fresh Studio Add reservation.",
+      );
     this.python = options.python;
     this.node = options.node;
     this.keep = options.keep;
@@ -484,10 +498,19 @@ export class Canary {
 
   /** The clone registry: the chosen Codex login (linked read-only) and the canary Claude login. */
   accountsFile() {
-    if (this.claudeConfig)
-      (this.claudeKeychain ? keychainConfig : fileConfig)(this.claudeConfig, {
-        home: this.claudeProfileHome,
-      });
+    const dedicated = this.claudeReservation
+      ? studioProfile(this.claudeReservation, this.liveState, {
+          storage: this.claudeOwnershipStorage,
+        })
+      : null;
+    if (dedicated) {
+      if (this.claudeConfig && this.claudeConfig !== dedicated.config)
+        throw new CheckFailed(
+          "The config differs from the bound Studio canary profile.",
+        );
+      this.claudeConfig = dedicated.config;
+    } else if (this.claudeConfig)
+      fileConfig(this.claudeConfig, { home: this.claudeProfileHome });
     const live = readJSON(path.join(this.liveState, "accounts/registry.json"));
     const codex = live.accounts?.[this.codexAccount];
     if (!codex || codex.provider === "claude")
@@ -515,7 +538,9 @@ export class Canary {
       // The Claude part fails alone; the Codex part still runs.
       this.claudeProblem = `the canary Claude login ${credentials} is missing; see docs/testing.md, "Upgrade canary"`;
     } else if (credentials) {
-      const profile = claudeAccount(this.claudeConfig);
+      const profile = dedicated
+        ? { emailAddress: dedicated.account.email }
+        : claudeAccount(this.claudeConfig);
       accounts["claude-canary"] = {
         id: "claude-canary",
         provider: "claude",
@@ -524,9 +549,14 @@ export class Canary {
         status: "ready",
         email: profile.emailAddress,
         accountId: `claude:${profile.emailAddress}`,
-        _credentialIdentity: `claude:${profile.emailAddress}`,
+        _credentialIdentity:
+          dedicated?.account._credentialIdentity ??
+          `claude:${profile.emailAddress}`,
         home: this.claudeConfig,
-        claudeOptions: { configDir: this.claudeConfig },
+        claudeOptions: {
+          configDir: this.claudeConfig,
+          ...(dedicated ? { binaryPath: dedicated.binary } : {}),
+        },
       };
       this.accounts.push({ key: "claude-canary", provider: "claude" });
     }
@@ -652,6 +682,15 @@ export class Canary {
 
   /** The proxy, the clone port, the sandbox profiles and the launchd environment of the jobs. */
   async sandbox() {
+    if (
+      this.claudeReservation &&
+      studioProfile(this.claudeReservation, this.liveState, {
+        storage: this.claudeOwnershipStorage,
+      }).config !== this.claudeConfig
+    )
+      throw new CheckFailed(
+        "The Studio canary profile changed before sandbox admission.",
+      );
     const proxy = await startProxy();
     this.proxy = proxy;
     this.port = await freePort();
@@ -670,6 +709,7 @@ export class Canary {
       proxyPort: proxy.port,
       readable: this.readable,
       claudeKeychain: this.claudeKeychain,
+      claudeProfile: this.claudeKeychain ? this.claudeConfig : null,
       // The canary's own Claude login: the CLI keeps its sessions and refreshed login there.
       writable: this.accounts.some((account) => account.provider === "claude")
         ? [fs.realpathSync(this.claudeConfig)]
@@ -1334,6 +1374,12 @@ export function options(argv, environment = process.env) {
         type: "boolean",
         default: environment.CANARY_CLAUDE_KEYCHAIN === "1",
       },
+      "claude-reservation": {
+        type: "string",
+        ...(environment.CANARY_CLAUDE_RESERVATION
+          ? { default: environment.CANARY_CLAUDE_RESERVATION }
+          : {}),
+      },
       "no-claude": { type: "boolean", default: false },
       python: { type: "string", default: "/opt/homebrew/bin/python3" },
       node: { type: "string", default: process.execPath },
@@ -1348,12 +1394,12 @@ export function options(argv, environment = process.env) {
   values["claude-config"] ??=
     environment.CANARY_CLAUDE_CONFIG_DIR ||
     (values["claude-keychain"]
-      ? defaultKeychainConfig()
+      ? undefined
       : path.join(os.homedir(), ".config/codex-studio/canary-claude"));
   return values;
 }
 
-const usage = `Usage: just upgrade-canary --to <N+1 app> [--from <N app>] [--codex-account key] [--claude-config dir] [--claude-keychain] [--keep]
+const usage = `Usage: just upgrade-canary --to <N+1 app> [--from <N app>] [--codex-account key] [--claude-config dir] [--claude-keychain --claude-reservation record] [--keep]
 Installs build N+1 over build N on an isolated clone with real processes; see docs/testing.md, "Upgrade canary".
 `;
 
