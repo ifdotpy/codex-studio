@@ -218,7 +218,7 @@ mod tests {
         assert!(!executed.load(Ordering::Acquire));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canceled_response_keeps_admission_until_queued_job_finishes() {
         let directory = tempfile::tempdir().expect("temporary actor directory");
         let database_path = directory.path().join("canvas.sqlite3");

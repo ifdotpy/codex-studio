@@ -716,7 +716,6 @@ mod tests {
     #[tokio::test]
     async fn incremental_writes_match_a_rebuild() {
         let temp = tempfile::tempdir().expect("temporary state");
-        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         let mut seed = 0x2545_f491_u64;
         let mut next = move |bound: u64| {
             seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
@@ -754,13 +753,19 @@ mod tests {
                 "total": tokens,
             }));
         }
-        for record in writes {
+        // Preserve a real commit/reopen boundary with later overwrites of the same ids.
+        for records in writes.chunks(200) {
+            let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+            let records = records.to_vec();
             store
                 .analytics_transaction::<_, StoreError>(move |tx, _| {
-                    AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &record)
+                    for record in records {
+                        AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &record)?;
+                    }
+                    Ok(())
                 })
                 .await
-                .expect("usage write");
+                .expect("usage writes");
         }
         let path = temp.path().join("analytics.sqlite3");
         let incremental = dump(&path);

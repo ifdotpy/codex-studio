@@ -297,7 +297,10 @@ fn invalid_outbound(server_id: &str, request_id: &str) -> StoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{OutboundReservation, RemoteTransportRepository};
+    use super::{
+        MULTI_SERVER_MAX_RETAINED_NONCES, MULTI_SERVER_MAX_UNPAIRED_NONCES, OutboundReservation,
+        RemoteTransportRepository,
+    };
     use rusqlite::Connection;
     use serde_json::json;
 
@@ -408,16 +411,12 @@ mod tests {
         tx.commit().expect("nonce transaction commits");
 
         let mut db = nonce_db();
-        db.execute_batch("BEGIN;").expect("bulk transaction begins");
-        for index in 0..10_000 {
-            db.execute(
-                "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES(?1,?2,?3)",
-                rusqlite::params!["paired-client", format!("{index:032}"), now - 61],
-            )
-            .expect("retained nonce fixture inserts");
-        }
-        db.execute_batch("COMMIT;")
-            .expect("bulk transaction commits");
+        db.execute(
+            "WITH RECURSIVE n(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i+1<?1)
+             INSERT INTO runtime_access_nonces SELECT 'paired-client',printf('%032d',i),?2 FROM n",
+            rusqlite::params![MULTI_SERVER_MAX_RETAINED_NONCES, now - 61],
+        )
+        .expect("retained nonce fixture inserts");
         let tx = db.transaction().expect("limit transaction starts");
         assert!(
             !RemoteTransportRepository::consume_access_nonce(
@@ -436,13 +435,12 @@ mod tests {
     fn unpaired_nonce_cap_is_limited_to_pairing_context() {
         let mut db = nonce_db();
         let tx = db.transaction().expect("transaction starts");
-        for index in 0..1_280 {
-            tx.execute(
-                "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES(?1,?2,?3)",
-                rusqlite::params![format!("client-{index}"), format!("{index:032}"), 100],
-            )
-            .expect("unpaired nonce fixture inserts");
-        }
+        tx.execute(
+            "WITH RECURSIVE n(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i+1<?1)
+             INSERT INTO runtime_access_nonces SELECT 'client-'||i,printf('%032d',i),100 FROM n",
+            [MULTI_SERVER_MAX_UNPAIRED_NONCES],
+        )
+        .expect("unpaired nonce fixture inserts");
         assert!(
             !RemoteTransportRepository::consume_access_nonce(
                 &tx,
@@ -671,7 +669,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("redacted receipt reads");
-        assert!(!stored.contains("secret-invitation-token"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&stored).expect("receipt JSON"),
+            serde_json::json!({"outcome":"redacted", "completed":2.0})
+        );
         let tx = db
             .unchecked_transaction()
             .expect("replay transaction begins");
