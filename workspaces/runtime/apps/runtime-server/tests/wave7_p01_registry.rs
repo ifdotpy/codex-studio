@@ -548,6 +548,23 @@ fn scripted_with_unknown_first_launch() -> (Arc<Scripted>, mpsc::UnboundedReceiv
 {
     scripted_with_policy(true, false, true)
 }
+/// Drain the recorded provider writes. A start whose outcome is unknown when its
+/// provider connection closes gets one native history check of `thread` by the
+/// next account worker, so such reads are allowed (the scripted provider does
+/// not answer them). Any other write fails with `context`. Returns the reads.
+fn drain_history_reads(
+    writes: &mut mpsc::UnboundedReceiver<(String, Value)>,
+    thread: &Value,
+    context: &str,
+) -> usize {
+    let mut reads = 0;
+    while let Ok((_, write)) = writes.try_recv() {
+        assert_eq!(write["method"], "thread/turns/list", "{context}: {write}");
+        assert_eq!(&write["params"]["threadId"], thread, "{context}: {write}");
+        reads += 1;
+    }
+    reads
+}
 fn scripted_with_policy(
     unknown_writes: bool,
     record_resumes: bool,
@@ -844,15 +861,30 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     assert!(event_id.starts_with("radio-turn:"));
     assert!(matches!(status.as_str(), "dispatching" | "uncertain"));
     drop(db);
-    // The unknown write closes the scripted session. Reconcile after its
-    // settlement so the radio tick prepares from the settled agent row.
-    wait_for_durable_agent_status(&fixture, "a", "interrupted").await;
+    // The unknown write closes the scripted session. Its turn/start outcome is
+    // unknown, so the disconnect holds the agent for one native history check
+    // of that input, as a backend restart does, instead of interrupting it.
+    // Reconcile after its settlement so the radio tick prepares from the
+    // settled agent row.
+    wait_for_durable_agent_status(&fixture, "a", "queued").await;
+    let error: String = fixture
+        .store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT json_extract(record,'$.error') FROM runtime_agents WHERE id='a'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        error.starts_with("Context repair waits for a confirmed input receipt"),
+        "{error}"
+    );
+    let thread = write["params"]["threadId"].clone();
 
     registry.reconcile(None).await.unwrap();
-    assert!(
-        writes.try_recv().is_err(),
-        "radio queue event was sent twice"
-    );
+    drain_history_reads(&mut writes, &thread, "radio queue event was sent twice");
     // The worker ends on the closed session unless shutdown reaches it first.
     let shutdown = registry.shutdown().await;
     assert!(
@@ -899,11 +931,12 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
         )
         .unwrap();
     assert_eq!(status_after_recovery, status_before_restart);
-    assert!(
-        writes.try_recv().is_err(),
-        "unknown radio turn must not be resent after worker restart"
-    );
     restarted.shutdown().await.unwrap();
+    drain_history_reads(
+        &mut writes,
+        &thread,
+        "unknown radio turn must not be resent after worker restart",
+    );
 }
 
 #[tokio::test]
@@ -1460,10 +1493,22 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
     .expect("replacement worker hang guard");
     fixture.enqueue(1, "new-input-after-disconnect").await;
     wake.notify_one();
-    let second = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
-        .await
-        .expect("post-disconnect provider write hang guard")
-        .unwrap();
+    // The first turn/start lost its acceptance, so its outcome is unknown when
+    // the provider exits. The replacement worker checks that exact input in
+    // native history once, as after a backend restart; the scripted provider
+    // leaves the read unanswered, so the input stays uncertain and unsent.
+    let mut history_reads = 0;
+    let second = loop {
+        let write = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
+            .await
+            .expect("post-disconnect provider write hang guard")
+            .unwrap();
+        if write.1["method"] != "thread/turns/list" {
+            break write;
+        }
+        assert_eq!(write.1["params"]["threadId"], first.1["params"]["threadId"]);
+        history_reads += 1;
+    };
     assert_eq!(second.0, "account:default");
     assert_eq!(second.1["method"], "turn/start");
     assert_ne!(
@@ -1490,9 +1535,18 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
         .unwrap();
     assert_eq!(launcher.opened.lock().unwrap().len(), 2);
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
+    history_reads += drain_history_reads(
+        &mut writes,
+        &first.1["params"]["threadId"],
+        "unknown input must not be resent on replacement",
+    );
     assert!(
-        writes.try_recv().is_err(),
-        "unknown input must not be resent on replacement"
+        history_reads > 0,
+        "the replacement worker checks the unknown input in native history"
+    );
+    assert_eq!(
+        fixture.event_status("annotation:unknown-before-disconnect"),
+        "uncertain"
     );
 }
 
