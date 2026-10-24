@@ -12,6 +12,8 @@ use studio_runtime_schema::agent_limits::MAX_TRANSFER_AGENT_RECORDS;
 pub use studio_runtime_store::MAX_TRANSFER_RECORD_BYTES as MAX_RECORD_BYTES;
 pub const EXECUTOR_REQUIRED: &str = "account-transfer/provider-history-executor";
 pub const SETTINGS_REQUIRED: &str = "account-transfer/destination-settings";
+/// Internal receipt-hold identity mapped to native admission by preparation.
+pub(crate) const RECEIPT_HOLD: &str = "account-transfer/receipt-hold";
 
 #[derive(Debug, Error)]
 pub enum TransferError {
@@ -1246,7 +1248,7 @@ pub fn before_start(agent: &Value) -> Result<(), TransferError> {
             .get("emptyTransferRecovery")
             .is_some_and(|r| !r.is_null() && r["phase"] != "completed")
     {
-        return Err(TransferError::Requires("account-transfer/receipt-hold"));
+        return Err(TransferError::Requires(RECEIPT_HOLD));
     }
     Ok(())
 }

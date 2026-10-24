@@ -809,7 +809,17 @@ pub(crate) async fn before_start(
     ))
     .await
     .map(|_| ())
-    .map_err(|error| refusal(error.to_string()))
+    .map_err(|error| match error {
+        crate::account_transfer::TransferError::Requires(crate::account_transfer::RECEIPT_HOLD) => {
+            // A stored transfer marker is an admission hold, including when
+            // its operation is unavailable. It is not a missing capability.
+            refusal(format!(
+                "thread-preparation/{:?}",
+                thread::HoldReason::AccountTransfer
+            ))
+        }
+        error => refusal(error.to_string()),
+    })
 }
 
 async fn admit_for_purpose(

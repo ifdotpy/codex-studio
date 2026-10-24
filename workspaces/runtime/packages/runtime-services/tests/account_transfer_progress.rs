@@ -98,6 +98,37 @@ fn resources(root: &std::path::Path, session: Arc<dyn AccountSessionPort>) -> Pr
     resources
 }
 
+#[tokio::test]
+async fn unknown_transfer_operation_keeps_the_native_admission_hold() {
+    let (root, store) = fixture().await;
+    store
+        .transaction(|tx| {
+            let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
+            row.extra.insert("accountTransferId".into(), json!(OP));
+            AgentRepository::put(tx, &row)
+        })
+        .await
+        .expect("orphan transfer marker");
+    let before = agent(&store);
+    let session = Arc::new(RefusingSession::default());
+    let error = preparation::prepare_native_thread(
+        store.clone(),
+        &resources(root.path(), session.clone()),
+        "lead",
+        "orphan-transfer",
+        1,
+    )
+    .await
+    .expect_err("an unknown transfer operation cannot admit a native request");
+    assert!(matches!(
+        error,
+        studio_runtime_services::account_worker::WorkerError::PreparationRefused(ref reason)
+            if reason == "thread-preparation/AccountTransfer"
+    ));
+    assert_eq!(agent(&store), before, "the source state remains held");
+    assert!(session.0.lock().expect("calls").is_empty());
+}
+
 struct CompletingSession {
     store: Arc<RuntimeStore>,
     native_path: std::path::PathBuf,
