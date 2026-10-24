@@ -254,7 +254,7 @@ fn a_new_state_gets_a_token_and_a_service() {
     let state = State::new();
     std::fs::remove_file(state.path.join("host-exec-token")).unwrap();
     let path = &state.path;
-    let token = ensure_service(&path, &binary(), "fresh-build", None).unwrap();
+    let token = ensure_service(path, &binary(), "fresh-build", None).unwrap();
     assert_eq!(token.len(), 64);
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(
@@ -265,10 +265,10 @@ fn a_new_state_gets_a_token_and_a_service() {
             & 0o777,
         0o600
     );
-    let health = service_call(&path, &token, "health", None).unwrap();
+    let health = service_call(path, &token, "health", None).unwrap();
     assert_eq!(health["buildId"], "fresh-build");
     let params = json!({"buildId": "fresh-build", "pid": health["pid"]});
-    service_call(&path, &token, "service.retire", Some(&params)).unwrap();
+    service_call(path, &token, "service.retire", Some(&params)).unwrap();
     let deadline = Instant::now() + HANG_GUARD;
     while service_is_live(health["pid"].as_u64().unwrap() as u32) {
         assert!(Instant::now() < deadline, "fresh service did not retire");
