@@ -1,4 +1,4 @@
-import type { ResourceChangeEvent } from "./resourceEvents";
+import type { ResourceChangeEvent } from "./subscriptions/events";
 
 const MAX_PENDING_FRAMES = 8;
 const PERSIST_DEADLINE_MS = 1000;

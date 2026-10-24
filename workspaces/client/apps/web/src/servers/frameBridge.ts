@@ -18,7 +18,7 @@ import {
   type ServerCommand,
 } from "./navigation";
 import type { Snapshot } from "../types";
-import "../sync/resourceEvents";
+import "../sync/subscriptions/events";
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
 import { serverStorageEventKey } from "./storage";
 export function useServerFrame(

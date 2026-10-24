@@ -58,83 +58,37 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("releases prefetch detail when its server screen becomes hidden and restores it on return", () => {
-  vi.useFakeTimers();
-  vi.stubGlobal("document", {
-    hidden: false,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  });
-  vi.stubGlobal("navigator", { onLine: true });
-  vi.stubGlobal("window", {
-    matchMedia: () => ({ matches: false }),
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  });
-  const data = {
-    stateDir: "workspace",
-    threads: [
-      { id: "open", source: "managed" },
-      { id: "prefetch", source: "managed" },
-    ],
-  } as Snapshot;
-  const render = (active: boolean) => {
-    cleanup?.();
-    mocks.effects.length = 0;
-    useChatPrefetch(data, "open", "workspace", active);
-    cleanup = mocks.effects[0]() || undefined;
-    vi.advanceTimersByTime(1000);
-  };
-  render(true);
-  expect([...mocks.resources]).toEqual(["prefetch"]);
-  render(false);
-  expect([...mocks.resources]).toEqual([]);
-  expect(mocks.stops).toEqual(["prefetch"]);
-  render(true);
-  expect([...mocks.resources]).toEqual(["prefetch"]);
-});
-
-it("does not answer ordinary transcript notifications with HTTP reads", async () => {
-  vi.useFakeTimers();
-  vi.stubGlobal("document", {
-    hidden: false,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  });
-  vi.stubGlobal("navigator", { onLine: true });
-  vi.stubGlobal("window", {
-    matchMedia: () => ({ matches: false }),
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  });
-  const data = {
-    stateDir: "workspace",
-    threads: [
-      { id: "open", source: "managed" },
-      { id: "prefetch", source: "managed" },
-    ],
-  } as Snapshot;
-  useChatPrefetch(data, "open", "workspace");
-  cleanup = mocks.effects[0]() || undefined;
-  await vi.advanceTimersByTimeAsync(1000);
-  const changed = mocks.callbacks.get("prefetch")!;
-  changed({ epoch: "live", revision: 9 });
-  mocks.peek.mockReturnValue({ payload: { items: [] }, seq: 10 });
-  changed({ epoch: "live", revision: 10, transcriptSequence: 10 });
-  await vi.advanceTimersByTimeAsync(0);
-  expect(mocks.prefetch).not.toHaveBeenCalled();
-  changed({ epoch: "live", revision: 11, transcriptSequence: 11 });
-  await vi.advanceTimersByTimeAsync(0);
-  expect(mocks.prefetch).not.toHaveBeenCalled();
-  changed({ epoch: "live", revision: 12 });
-  await vi.advanceTimersByTimeAsync(0);
-  expect(mocks.prefetch).not.toHaveBeenCalled();
-  changed({
-    epoch: "live",
-    revision: 13,
-    reason: "change",
-    transcriptReadRequired: true,
-  });
-  await vi.advanceTimersByTimeAsync(0);
-  expect(mocks.prefetch).toHaveBeenCalledTimes(1);
-});
+it.each([false, true])(
+  "keeps invisible chats unsubscribed on mobile=%s",
+  async (mobile) => {
+    vi.useFakeTimers();
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("window", {
+      matchMedia: () => ({ matches: mobile }),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const data = {
+      stateDir: "workspace",
+      threads: [
+        { id: "open", source: "managed" },
+        { id: "invisible-one", source: "managed" },
+        { id: "invisible-two", source: "managed" },
+      ],
+    } as Snapshot;
+    const prepare = useChatPrefetch(data, "open", "workspace");
+    for (const effect of mocks.effects) {
+      const stop = effect();
+      if (stop) cleanup = stop;
+    }
+    prepare("invisible-one");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect([...mocks.resources]).toEqual([]);
+    expect(mocks.prefetch).not.toHaveBeenCalled();
+  },
+);

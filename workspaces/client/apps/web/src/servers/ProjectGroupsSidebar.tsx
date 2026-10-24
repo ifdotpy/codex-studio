@@ -12,7 +12,7 @@ import { projectServerChoices } from "./projectLocations";
 import type { ServerCommand, ServerNavigation } from "./navigation";
 import type { StudioServer } from "./registry";
 import { DEFAULT_LOCAL_SERVER_ALIAS } from "./serverAliases";
-import type { ResourceConnectionState } from "../sync/resourceEvents";
+import type { ResourceConnectionState } from "../sync/subscriptions/events";
 
 export default function ProjectGroupsSidebar({
   navigation,

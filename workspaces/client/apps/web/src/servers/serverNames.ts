@@ -1,7 +1,10 @@
 import { readServers, writeServers, type StudioServer } from "./registry";
 import { serverCredentialAdapter } from "./transport";
 
-import type { ResourceRef, ResourceVersion } from "../sync/resourceEvents";
+import type {
+  ResourceRef,
+  ResourceVersion,
+} from "../sync/subscriptions/events";
 
 export function validateServerName(label: string) {
   if (

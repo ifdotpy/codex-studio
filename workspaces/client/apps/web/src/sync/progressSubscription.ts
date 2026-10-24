@@ -3,7 +3,7 @@ import type {
   ResourceProgress,
   ResourceRef,
   ResourceVersion,
-} from "./resourceEvents";
+} from "./subscriptions/events";
 
 type ProgressResource = Extract<
   ResourceRef,

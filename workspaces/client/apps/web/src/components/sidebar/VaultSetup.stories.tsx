@@ -1,7 +1,10 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import VaultSetup from "./VaultSetup";
-import type { ResourceRef, ResourceVersion } from "../../sync/resourceEvents";
+import type {
+  ResourceRef,
+  ResourceVersion,
+} from "../../sync/subscriptions/events";
 
 type Reply = Record<string, unknown>;
 

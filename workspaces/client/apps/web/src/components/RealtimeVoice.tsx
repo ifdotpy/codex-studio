@@ -10,7 +10,7 @@ import { ActionIcon, Popover } from "@mantine/core";
 import { AudioLines, X } from "lucide-react";
 import { errorText, type PostResult } from "../api";
 import type { ResourceConnectionState } from "../sync/client";
-import type { ResourceVersion } from "../sync/resourceEvents";
+import type { ResourceVersion } from "../sync/subscriptions/events";
 import "./realtime-voice.css";
 import { useServerResourceReads } from "../servers/ServerServicesContext";
 import { watchVoiceTransport } from "./voiceTransport";

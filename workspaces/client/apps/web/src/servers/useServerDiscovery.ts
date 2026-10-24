@@ -6,7 +6,7 @@ import {
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
 import { ServerManagementRequests } from "./managementRequests";
 import { useEffect, useRef, useState } from "react";
-import type { ResourceVersion } from "../sync/resourceEvents";
+import type { ResourceVersion } from "../sync/subscriptions/events";
 import { errorText } from "../api";
 import {
   discoverySnapshot,

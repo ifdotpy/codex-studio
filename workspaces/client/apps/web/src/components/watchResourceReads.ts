@@ -1,14 +1,14 @@
 import {
   watchResourceChanges as defaultWatchResourceChanges,
   watchResourceConnection as defaultWatchResourceConnection,
-} from "../sync/resourceEvents";
+} from "../sync/subscriptions/events";
 import { onResume } from "../sync/resume";
 import { ReadRecoveryBudget, retryableReadError } from "../sync/readRetry";
 import type {
   ResourceRef,
   ResourceStreamState,
   ResourceVersion,
-} from "../sync/resourceEvents";
+} from "../sync/subscriptions/events";
 
 type ResourceReadWatcher = (() => void) & { refresh: () => void };
 type ReadTrigger = { resourceKey: string; version?: ResourceVersion };

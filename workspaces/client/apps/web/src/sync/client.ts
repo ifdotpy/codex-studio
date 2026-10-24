@@ -55,7 +55,7 @@ import {
   type ResourceConnectionState,
   type ResourceRef,
   type ResourceVersion,
-} from "./resourceEvents";
+} from "./subscriptions/events";
 
 import { onResume } from "./resume";
 
@@ -120,9 +120,9 @@ export {
   watchResourceChanges,
   watchResourceConnection,
   type ResourceConnectionState,
-} from "./resourceEvents";
+} from "./subscriptions/events";
 
-export type { ResourceRef } from "./resourceEvents";
+export type { ResourceRef } from "./subscriptions/events";
 
 type TranscriptSyncPayload = components["schemas"]["TranscriptSyncPayload"];
 
@@ -162,7 +162,7 @@ export type SyncClientOptions = {
     | "onMatchingApiSchemaResponse"
   >;
   resources: Pick<
-    typeof import("./resourceEvents"),
+    typeof import("./subscriptions/events"),
     "watchResourceChanges" | "watchResourceConnection"
   >;
   sequences: Pick<
@@ -523,7 +523,7 @@ export function createSyncClient(options: SyncClientOptions) {
   }
 
   async function persistResourceEntityChanges(
-    event: import("./resourceEvents").ResourceChangeEvent,
+    event: import("./subscriptions/events").ResourceChangeEvent,
     isCurrent: () => boolean,
   ) {
     // Older browsers keep the existing pull path. Tab-local serialization cannot

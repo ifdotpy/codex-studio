@@ -1,5 +1,5 @@
 import { ApiError } from "../../api";
-import * as defaultResources from "../../sync/resourceEvents";
+import * as defaultResources from "../../sync/subscriptions/events";
 import { subscribeProgress } from "../../sync/progressSubscription";
 import type { components } from "../../generated/api";
 import type { ProjectChip } from "./MacSync";

@@ -1,14 +1,15 @@
 # Sync protocols
 
 This document defines Studio's change notifications and durable pull recovery.
-The renderer and server use protocol 3 for live notifications. Unsupported and
+The renderer and server use protocol 4 for live notifications. Unsupported and
 unspecified stream protocol selectors receive HTTP 426. Pull projection schemas
 remain separate from the stream transport version.
 
 ## Rule: no polling, only SSE events
 
 This section is the single owner of this rule. Other documents link here and do
-not restate it.
+not restate it. The [screen subscription rule](#subscriptions-follow-the-screen)
+defines which resources belong on that stream.
 
 **The client never polls the server.** Every change the server makes reaches the
 client as an event on the one `/api/sync/stream` SSE connection: an entity
@@ -38,12 +39,36 @@ Anything else is a defect, in particular:
 - a timer, interval or backoff loop that reads server state;
 - a refetch on window focus, tab visibility or route change;
 - a GET or pull issued because an event said that something changed;
-- a write (`POST`, `PUT`) the user did not trigger.
+- a business write (`POST`, `PUT`) the user did not trigger.
+
+Subscription interest updates are transport control messages. They carry typed
+references and never read data or repeat a business action.
 
 A quiet interface on a live stream sends no HTTP requests. A new feature that
 needs server data adds a stream resource and an event; it does not add a read.
 
-## Protocol 3: resource changes
+## Subscriptions follow the screen
+
+This section owns the rule: a mounted view subscribes to the resources it displays.
+Identical typed references share one subscription across components and cooperating
+tabs. The [subscription module](../workspaces/client/apps/web/src/sync/subscriptions/index.ts)
+exposes `useSubscription(ref, { graceMs })` and domain data with loading, live, stale
+or error status. It owns the [grace interval in milliseconds](../workspaces/client/apps/web/src/sync/subscriptions/contracts.ts),
+reference counting and transport integration. Returning to a recently viewed chat
+within grace reuses its interest without a subscription change. A resource with
+no mounted reader is stale, including while its grace interval runs. Offscreen
+chats retain cached history without opening a subscription to keep it warm.
+
+The [OpenAPI document](../workspaces/runtime/packages/runtime-http/openapi.json)
+owns `ResourceRef` and `SubscriptionDataMap`; Rust and TypeScript consume generated
+types. Diagnostic keys are derived from references and are never parsed back.
+The [server registry](../workspaces/runtime/packages/runtime-http/src/routes/subscriptions.rs)
+owns each resource kind's initial snapshot, change filter, encoded byte bound and
+diagnostic key. A parity witness requires exactly one handler and data contract
+for every generated resource kind. Business services publish domain changes
+without tracking sessions or subscribers.
+
+## Protocol 4: resource changes
 
 User actions, media transport, and recovery of an already accepted write retain
 their own request identities and lifecycles.
@@ -54,7 +79,7 @@ The committed [OpenAPI document](../workspaces/runtime/packages/runtime-http/ope
 owns the closed resource union and named event envelopes.
 `pnpm run contracts:generate` emits TypeScript declarations and the SHA-256 identity of
 the canonical OpenAPI JSON. `pnpm run contracts:check` rejects stale output. API
-responses include the server identity. Hash-bearing protocol-3 connections begin
+responses include the server identity. Hash-bearing protocol-4 connections begin
 with an `api-schema` event; mismatches get only that handshake before close.
 Hashless non-renderer clients retain the existing event sequence. Mutating
 requests with a present mismatching hash receive a marked 426. A mismatch stops
@@ -108,25 +133,27 @@ uses inline stream snapshots and intervals; a revision-only oversized interval
 retains its scoped recovery read.
 
 The existing native EventSource transport and RxDB projection cache remain in
-use. Adding a separate query cache is unnecessary for this contract. FastAPI
+use. Adding a separate query cache is unnecessary for this contract. The Rust HTTP adapter
 owns SSE framing; the renderer and server compare the same generated schema
 identity before continuing with live updates.
 
 ### Subscription and notification
 
-A same-origin EventSource requests `/api/sync/stream?protocol=3&resources=...`.
-`resources` is a URL-encoded JSON array of the generated resource union. References
-identify a resource kind and, where required, its nonempty agent, task, terminal,
-room or account identifier. Per-agent transcript references prevent a change in
-one conversation from reloading unrelated conversations.
+A same-origin EventSource requests `/api/sync/stream?protocol=4&resources=...`.
+`resources` is a URL-encoded JSON array of generated typed references. After the
+session handshake, `/api/sync/subscriptions` accepts typed additions and removals;
+its generation acknowledgement precedes the added resources' initial data. The
+connection stays open when interests change. Only the subscription module knows
+about sessions, generations, acknowledgements, cursors or grace timers.
 
-Named `resources` events carry protocol, workspace identity, process epoch,
-monotonic revision, reason and affected resource references. The authoritative
-field definitions and accepted reasons are in the Python models. The initial
-notification reconciles all subscribed resources. Ordinary change notifications
-contain only affected references. Subscribers coalesce duplicate references and
-serialize reads; a notification arriving during a read schedules one further
-read so the update cannot be lost.
+Named `resources` events carry the workspace, process epoch, monotonic stream
+revision and bounded domain records. Entity changes use typed upserts and deletes.
+Transcript subscriptions receive a bounded visible tail; older history remains an
+explicit user action. Durable per-reference cursors describe fully applied local
+records. An initial subscription can resume with a delta when its cursor remains
+valid; a missing or expired cursor receives a fresh bounded snapshot. Transient
+stream revisions never replace durable projection cursors. Snapshot records and
+their cursor are read at the same database boundary.
 
 The server installs a subscription and captures its initial state without a gap
 that could lose a committed change. Producers notify only after a successful
@@ -157,8 +184,9 @@ becomes unavailable.
 
 There is no periodic `/api/sync/generations` request and no polling fallback.
 While the stream is unavailable, automatic state updates are unavailable.
-A successful reconnection reconciles the current subscriptions once. It does
-not retry user commands, messages, credit charges or other writes.
+A successful reconnection resumes each current subscription from its last fully
+applied durable cursor or receives a bounded snapshot. It does not retry user
+commands, messages, credit charges or other writes.
 
 A transient failure while reconciling a notified resource may retry that same
 outstanding read within the shared [read-recovery attempt budget](../workspaces/client/apps/web/src/sync/readRetry.ts),
@@ -184,18 +212,18 @@ An epoch distinguishes a server process restart from an old event revision.
 The client rejects malformed messages, incompatible protocol versions and
 another workspace's events. Duplicate notifications within an epoch do not
 cause repeated reads. Stream revisions are transient notification sequence
-numbers; they are not durable projection cursors. Reconnect/reset uses current
-resource reads, so missed notifications do not require an unbounded event log.
+numbers; they are not durable projection cursors. Reconnect/reset uses scoped durable deltas or bounded snapshots, so missed
+notifications do not require an unbounded stream event log.
 
 Named `token-rates` events preserve live token-rate telemetry on the same stream.
-They use the generated Python contract and update the existing renderer cache;
+They use the generated OpenAPI contract and update the existing renderer cache;
 they do not cause a periodic limits or costs request.
 
 ### Notifications from other processes
 
 Supported CLI writers publish their committed resource changes through the
 [authenticated notification relay](../workspaces/runtime/apps/server/src/studio_api/sync/resources/relay/README.md).
-`POST /api/sync/notify` accepts the Python-defined request identity and resource
+`POST /api/sync/notify` accepts the OpenAPI-defined request identity and resource
 references; the ordinary API token and request-boundary checks still apply.
 The CLI verifies that the API state directory matches the source write's root
 before sending a notification.

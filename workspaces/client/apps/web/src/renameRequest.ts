@@ -21,7 +21,10 @@ export async function submitRename(
 /** The server replays this durable receipt inside the subscription baseline,
  * including after reconnect. A progress hint never starts an HTTP read. */
 export function watchRenameResult(
-  events: Pick<typeof import("./sync/resourceEvents"), "watchResourceChanges">,
+  events: Pick<
+    typeof import("./sync/subscriptions/events"),
+    "watchResourceChanges"
+  >,
   agentId: string,
   requestId: string,
   accept: (receipt: RenameReceipt) => void,
@@ -41,7 +44,7 @@ export function watchRenameResult(
         return;
       const receipt = (
         progress as Extract<
-          import("./sync/resourceEvents").ResourceProgress,
+          import("./sync/subscriptions/events").ResourceProgress,
           { resource: { kind: "rename-progress" } }
         >
       ).value;

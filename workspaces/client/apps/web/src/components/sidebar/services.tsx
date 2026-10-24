@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import * as resources from "../../sync/resourceEvents";
+import * as resources from "../../sync/subscriptions/events";
 import { post, saved, save } from "../../api";
 import { serverViewId } from "../../servers/environment";
 import { serverLocalStorage } from "../../servers/storage";
