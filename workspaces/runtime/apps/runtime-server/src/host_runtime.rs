@@ -40,6 +40,11 @@ use tokio::time::timeout;
 
 const REQUEST_TIMEOUT_MS: u64 = 60_000;
 const HOST_RUNTIME_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+// The supervisor detach must finish, and report, inside this bound.
+const _: () = assert!(
+    studio_runtime_process::provider_task::SUPERVISOR_DETACH_TIMEOUT.as_millis()
+        < HOST_RUNTIME_SHUTDOWN_WAIT.as_millis()
+);
 const CLAUDE_BRIDGE_RELATIVE: &str = "workspaces/providers/apps/claude-bridge";
 /// Where `native/linux-vm/build.mjs` writes the helper in a source checkout.
 const LINUX_VM_HELPER_RELATIVE: &str =
