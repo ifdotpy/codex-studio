@@ -97,17 +97,23 @@ function stallDeadline(clock, lastEventAt, limits) {
 // Node's largest supported timer delay, in milliseconds.
 const MAX_STALL_TIMER_DELAY_MS = 2_147_483_647;
 
-// One timer for the nearest unfinished tool call; Studio-owned waits and idle
-// queries have no deadline. The bridge rearms after changing their state.
+// One timer for unfinished tool calls and silent synthetic turns.
+// Studio-owned waits and idle queries have no deadline. The bridge rearms after changing their state.
 export function watchStalls(queries, studioWaits, limits, recoverStall) {
   let timer;
   let armedAt = Infinity;
   const eligible = (id, active) =>
-    active.turn && !active.stall && active.session && !studioWaits.get(id);
+    active.turn &&
+    (!active.turn.status || active.turn.status === "inProgress") &&
+    !active.stall &&
+    active.session &&
+    !studioWaits.get(id);
   function arm() {
     let nearest = Infinity;
     for (const [id, active] of queries) {
       if (!eligible(id, active)) continue;
+      if (active.turn.synthetic)
+        nearest = Math.min(nearest, active.lastEventAt + limits.silenceMs);
       for (const clock of active.toolClocks.values())
         nearest = Math.min(
           nearest,
@@ -131,6 +137,15 @@ export function watchStalls(queries, studioWaits, limits, recoverStall) {
             limits,
           );
           if (found) void recoverStall(active.session, active, found);
+          else if (
+            active.turn.synthetic &&
+            now >= active.lastEventAt + limits.silenceMs
+          )
+            void recoverStall(active.session, active, {
+              id: "continuation:" + active.turn.id,
+              synthetic: true,
+              silentMs: Math.max(0, now - active.lastEventAt),
+            });
         }
         arm();
       },

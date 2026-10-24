@@ -23,6 +23,11 @@ Claude starts a separate continuation turn. The echo starts that continuation
 immediately, so new input steers it even before its first assistant output.
 [The lifecycle limits](stall-watch.mjs)
 own the grace, retention window, and interrupt deadlines in milliseconds.
+New input arriving before a pending steer echoes also joins the continuation.
+Partially consumed input batches keep the CLI loaded, and retried starts reuse
+recorded user-message identities even when they were auto-steered. A synthetic
+continuation with no SDK events uses the same silence watchdog as an unbudgeted
+tool call; Studio-owned waits pause that watchdog.
 
 Stop finalizes an already deferred result as interrupted. If running Claude does
 not end its turn by the interrupt deadline, the existing stall recovery closes

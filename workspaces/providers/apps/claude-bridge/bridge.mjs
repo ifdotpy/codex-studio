@@ -237,6 +237,7 @@ const queryBusy = (id, active) =>
     active.unknownSteers.size ||
     active.reservingInput ||
     active.input.values.length ||
+    active.input.pending.length ||
     operations.get(id),
   );
 // The one stdout writer. Lines of one event-loop turn leave in one write at
@@ -1033,12 +1034,14 @@ function startContinuation(s, active) {
     items: [],
     synthetic: true,
   };
+  active.idleRequestStartedAt = Date.now();
   active.reportedTurnOutput = 0;
   s.turns.push(active.turn);
   emit("turn/started", {
     threadId: s.id,
     turn: { id: active.turn.id, status: "inProgress" },
   });
+  armStallWatch();
 }
 function clearTurnTimers(active) {
   clearDeferredResult(active);
@@ -1079,7 +1082,6 @@ async function finishTurn(s, active, result, error) {
   clearTimeout(active.stopTimer);
   active.stopTimer = null;
   active.toolClocks.clear();
-  armStallWatch();
   if (
     (error?.preparationTimedOut === true ||
       error?.claudeAccountValidationFailed === true) &&
@@ -1105,6 +1107,7 @@ async function finishTurn(s, active, result, error) {
     : error || result?.is_error || result?.subtype !== "success"
       ? "failed"
       : "completed";
+  armStallWatch();
   const errorMessage =
     error?.message ||
     result?.errors?.join("\n") ||
@@ -1336,7 +1339,11 @@ async function recoverStall(s, active, found) {
   if (!turn || active.stall || finishingTurns.has(turn)) return;
   const message = found.stop
     ? "Studio stopped this turn: Claude Code did not end the turn after Stop."
-    : stallMessage({ ...found, tool: item?.tool || found.tool });
+    : found.synthetic
+      ? "Studio stopped this turn: Claude continuation sent no event for " +
+        durationText(found.silentMs) +
+        "."
+      : stallMessage({ ...found, tool: item?.tool || found.tool });
   let ended;
   const finished = new Promise((resolve) => (ended = resolve));
   active.stall = { turnId: turn.id, ended, closed: null };
@@ -1345,15 +1352,17 @@ async function recoverStall(s, active, found) {
     message,
     data: found.stop
       ? { claudeStopTimeout: true }
-      : {
-          claudeToolStall: {
-            toolUseId: found.id,
-            tool: item?.tool || found.tool,
-            timeoutMs: found.timeoutMs,
-            elapsedMs: found.elapsedMs,
-            silentMs: found.silentMs,
+      : found.synthetic
+        ? { claudeContinuationStall: { silentMs: found.silentMs } }
+        : {
+            claudeToolStall: {
+              toolUseId: found.id,
+              tool: item?.tool || found.tool,
+              timeoutMs: found.timeoutMs,
+              elapsedMs: found.elapsedMs,
+              silentMs: found.silentMs,
+            },
           },
-        },
   };
   if (item)
     finishItem(s, turn, {
@@ -2563,7 +2572,8 @@ async function handle(method, p) {
             !query.pendingSteers.size &&
             !query.unknownSteers.size &&
             !query.reservingInput &&
-            !query.input.values.length)
+            !query.input.values.length &&
+            !query.input.pending.length)
         );
       };
       if (idle())
@@ -2579,7 +2589,8 @@ async function handle(method, p) {
         !active?.turn &&
         !active?.tasks.size &&
         !active?.unknownSteers.size &&
-        !active?.input.values.length
+        !active?.input.values.length &&
+        !active?.input.pending.length
       ) {
         if (active) clearTurnTimers(active);
         active?.input.close();
@@ -2683,27 +2694,56 @@ async function handle(method, p) {
   }
   if (method === "turn/start") {
     const s = await session(p.threadId);
-    const matches = s.turns.filter(
-      (turn) =>
-        turn.clientUserMessageId &&
-        turn.clientUserMessageId === p.clientUserMessageId,
-    );
+    const matches = p.clientUserMessageId
+      ? s.turns.flatMap((turn) =>
+          turn.items
+            .filter(
+              (item, index) =>
+                item.type === "userMessage" &&
+                (item.id === p.clientUserMessageId ||
+                  (index === 0 &&
+                    turn.clientUserMessageId === p.clientUserMessageId)),
+            )
+            .map((item) => ({ turn, item })),
+        )
+      : [];
     if (
       matches.some(
-        (turn) =>
-          JSON.stringify(turn.items[0].content) !== JSON.stringify(p.input),
+        ({ item }) => JSON.stringify(item.content) !== JSON.stringify(p.input),
       )
     )
       throw new Error("This message identity has different content");
-    const prior = matches.find((turn) => turn.startOutcome !== "not_applied");
+    const prior = matches.find(({ turn, item }) =>
+      item.delivery === "steer"
+        ? item.deliveryStatus !== "not_applied"
+        : turn.startOutcome !== "not_applied",
+    );
     if (prior) {
-      if (prior.startOutcome === "preparing")
+      const steered = prior.item.delivery === "steer";
+      if (
+        (steered ? prior.item.deliveryStatus : prior.turn.startOutcome) ===
+        "preparing"
+      )
         throw Object.assign(new Error("Claude input receipt outcome unknown"), {
           data: { turnStartOutcome: "unknown" },
         });
-      return { turn: { id: prior.id, status: prior.status } };
+      return {
+        turn: { id: prior.turn.id, status: prior.turn.status },
+        ...(steered ? { steered: true } : {}),
+      };
     }
-    const running = queries.get(s.id)?.turn;
+    const query = queries.get(s.id);
+    // Pending native input owns the next continuation even before its echo.
+    // New input must steer that work instead of claiming its future result.
+    if (
+      query &&
+      !query.turn &&
+      (query.unknownSteers.size ||
+        query.input.pending.length ||
+        query.input.values.length)
+    )
+      startContinuation(s, query);
+    const running = query?.turn;
     if (running) {
       try {
         await handle("turn/steer", {

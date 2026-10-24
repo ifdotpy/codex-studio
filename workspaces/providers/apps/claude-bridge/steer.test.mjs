@@ -1021,3 +1021,172 @@ Object.defineProperty(process.stdout, 'writableLength', {configurable:true, get(
   await release(bridge, ".continued");
   await completed(bridge, continuation.params.turn.id);
 });
+
+test("turn/start before a late echo steers the reserved continuation", async () => {
+  const sdk = FAKE_SDK.replace(
+    "await until(cwd+'/.continued',abort.signal);",
+    "const next=await read();yield {type:'user',isReplay:true,uuid:next.value.uuid};await until(cwd+'/.continued',abort.signal);",
+  );
+  const bridge = await startBridge({}, sdk);
+  const old = await running(bridge, "success-late");
+  await steer(bridge, old, "before-echo");
+  await read(bridge, "steer text");
+  await end(bridge);
+  await completed(bridge, old);
+  const next = await bridge.call("turn/start", {
+    threadId: bridge.thread,
+    clientUserMessageId: "pre-echo-input",
+    input: text("new before echo"),
+  });
+  assert.equal(next.steered, true);
+  assert.notEqual(next.turn.id, old);
+  await release(bridge, ".echo");
+  const oldAck = await bridge.note((n) => ack(bridge, "before-echo") === n);
+  assert.equal(oldAck.params.turnId, old);
+  await read(bridge, "new before echo");
+  const delivered = await bridge.note(
+    (n) => ack(bridge, "pre-echo-input") === n,
+  );
+  assert.equal(delivered.params.turnId, next.turn.id);
+  await release(bridge, ".continued");
+  await completed(bridge, next.turn.id);
+  assert.deepEqual(await inputs(bridge), [
+    "success-late",
+    "steer text",
+    "new before echo",
+  ]);
+});
+
+test("partially consumed input keeps the query through resume and unsubscribe", async () => {
+  const sdk = FAKE_SDK.replace(
+    "await until(cwd+'/.continued',abort.signal);",
+    "const prefix=await read();yield {type:'user',isReplay:true,uuid:prefix.value.uuid};yield {type:'result',subtype:'success',num_turns:0,user_message_uuid:prefix.value.uuid,usage};await until(cwd+'/.continued',abort.signal);",
+  ).replace(
+    "yield {type:'result',subtype:'success',usage,result:'continued'};",
+    "yield {type:'result',subtype:'success',usage,result:'continued'};await until(cwd+'/.allow-tail',abort.signal);if(abort.signal.aborted)return;",
+  );
+  const bridge = await startBridge(
+    { STUDIO_CLAUDE_STEER_UNKNOWN_WAIT_MS: "100" },
+    sdk,
+  );
+  const old = await running(bridge, "success-late");
+  await steer(bridge, old, "split-old");
+  await read(bridge, "steer text");
+  await end(bridge);
+  await completed(bridge, old);
+  await release(bridge, ".echo");
+  await bridge.note((n) => ack(bridge, "split-old") === n);
+  const next = await bridge.call("turn/start", {
+    threadId: bridge.thread,
+    clientUserMessageId: "new-split",
+    input: [
+      { type: "text", text: "event-prefix", inputOrigin: "studio_event" },
+      { type: "text", text: "human-tail", inputOrigin: "human" },
+    ],
+  });
+  await read(bridge, "event-prefix");
+  await release(bridge, ".continued");
+  await completed(bridge, next.turn.id);
+  // The tail is still in InputQueue.pending after the unknown-echo hold expires.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await assert.rejects(
+    bridge.call("thread/unsubscribe", { threadId: bridge.thread }),
+    /Pause the Claude turn/,
+  );
+  assert.equal(
+    (await bridge.call("thread/resume", { threadId: bridge.thread }))
+      .reattached,
+    true,
+  );
+  await release(bridge, ".allow-tail");
+  await read(bridge, "human-tail");
+  const delivered = await bridge.note((n) => ack(bridge, "new-split") === n);
+  assert.equal(delivered.params.turnId, next.turn.id);
+  const tailTurn = await bridge.note(
+    (n) =>
+      n.method === "turn/started" &&
+      ![old, next.turn.id].includes(n.params.turn.id),
+  );
+  await end(bridge);
+  await completed(bridge, tailTurn.params.turn.id);
+  assert.deepEqual(await inputs(bridge), [
+    "success-late",
+    "steer text",
+    "event-prefix",
+    "human-tail",
+  ]);
+});
+
+test("a synthetic continuation with no SDK events ends with a visible silence error", async () => {
+  const bridge = await startBridge({
+    STUDIO_CLAUDE_TOOL_SILENCE_MS: "120",
+    STUDIO_CLAUDE_TOOL_STALL_GRACE_MS: "10000",
+    STUDIO_CLAUDE_STALL_INTERRUPT_WAIT_MS: "50",
+    STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50",
+  });
+  const old = await running(bridge, "late");
+  await steer(bridge, old, "silent-continuation");
+  await read(bridge, "steer text");
+  await end(bridge);
+  await completed(bridge, old);
+  await bridge.note((n) => ack(bridge, "silent-continuation") === n);
+  const next = await bridge.note(
+    (n) => n.method === "turn/started" && n.params.turn.id !== old,
+  );
+  const done = await completed(bridge, next.params.turn.id);
+  assert.equal(done.params.turn.status, "interrupted");
+  assert.match(done.params.turn.error.message, /continuation sent no event/);
+  assert.ok(
+    done.params.turn.error.data.claudeContinuationStall.silentMs >= 120,
+  );
+});
+
+for (const echoed of [false, true]) {
+  test(`turn/start retry of an auto-steered input preserves identity after completion: echoed=${echoed}`, async () => {
+    const sdk = FAKE_SDK.replace(
+      "await until(cwd+'/.continued',abort.signal);",
+      "const followup=await read();" +
+        (echoed
+          ? "yield {type:'user',isReplay:true,uuid:followup.value.uuid};"
+          : "") +
+        "await until(cwd+'/.continued',abort.signal);",
+    );
+    const bridge = await startBridge({}, sdk);
+    const old = await running(bridge, "success-late");
+    await steer(bridge, old, "retry-old");
+    await read(bridge, "steer text");
+    await end(bridge);
+    await completed(bridge, old);
+    await release(bridge, ".echo");
+    await bridge.note((n) => ack(bridge, "retry-old") === n);
+    const request = {
+      threadId: bridge.thread,
+      clientUserMessageId: "retry-followup",
+      input: text("followup"),
+    };
+    const first = await bridge.call("turn/start", request);
+    assert.equal(first.steered, true);
+    await read(bridge, "followup");
+    if (echoed) await bridge.note((n) => ack(bridge, "retry-followup") === n);
+    await release(bridge, ".continued");
+    await completed(bridge, first.turn.id);
+    const retried = await bridge.call("turn/start", request);
+    assert.deepEqual(retried, {
+      turn: { id: first.turn.id, status: "completed" },
+      steered: true,
+    });
+    await assert.rejects(
+      bridge.call("turn/start", { ...request, input: text("changed content") }),
+      /different content/,
+    );
+    const item = (await turnItems(bridge, first.turn.id)).find(
+      (i) => i.id === "retry-followup",
+    );
+    assert.equal(item.deliveryStatus, echoed ? "delivered" : "submitted");
+    assert.deepEqual(await inputs(bridge), [
+      "success-late",
+      "steer text",
+      "followup",
+    ]);
+  });
+}
