@@ -63,9 +63,11 @@ export function query({prompt,options}){
      queueMode=true;survive=text.endsWith('survivor');
      const stopped=new Promise(r=>stopTurn=r);
      for(;;){const next=await read();nativeQueue.push(next.value);if(text!=='native-split-all'||next.value.shouldQuery!==false)break;}
+     const submitted=nativeQueue.map(message=>message.uuid);
      fs.writeFileSync(cwd+'/.native-queued','');
      await stopped;
      yield {type:'result',subtype:'error_during_execution',is_error:true,usage,errors:['interrupted']};
+     if(text==='native-split-all')yield {type:'result',subtype:'success',usage,user_message_uuids:submitted};
      for(const held of nativeQueue.splice(0)){
       fs.writeFileSync(cwd+'/.survived','');
       yield {type:'user',isReplay:true,uuid:held.uuid};
@@ -321,6 +323,10 @@ for (const missing of [false, true]) {
         "completed",
       );
       assert.ok(ack(bridge, id), "each split part has an exact result receipt");
+      assert.equal(
+        bridge.notes.filter((note) => ack(bridge, id) === note).length,
+        1,
+      );
     }
     assert.deepEqual(await inputs(bridge), [
       scenario,
