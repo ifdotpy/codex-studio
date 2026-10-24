@@ -61,7 +61,8 @@ the stream answers with an acknowledgement for `gen`, followed by initial data o
 added resources. The client drops data of removed resources received before that
 acknowledgement. An unknown or expired session answers so that the client reopens
 the stream with its full set and cursors, the v3 recovery path. Set changes are
-coalesced on the client.
+coalesced on the client. If the resource set changes before a session is announced,
+the client also reopens the stream with its full set and cursors.
 
 ## Ordering invariants (unchanged from v3)
 

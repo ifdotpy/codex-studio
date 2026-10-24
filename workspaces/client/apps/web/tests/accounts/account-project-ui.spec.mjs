@@ -194,6 +194,7 @@ test("account project ui", async ({ browser: _browser }) => {
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
+        subscriptionUpdate: body,
       })
     )
       return;

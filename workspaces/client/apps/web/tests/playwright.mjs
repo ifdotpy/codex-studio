@@ -1420,6 +1420,8 @@ export async function readFixtureSyncContract(origin) {
 
 /** @type {WeakMap<EntityFixtureState, MutableEntityPullState>} */
 const nodeEntityPullStates = new WeakMap();
+/** @type {WeakMap<EntityFixtureState, Map<string, (update: import("../src/generated/api").components["schemas"]["SyncSubscriptionRequest"]) => void>>} */
+const nodeSyncSessions = new WeakMap();
 
 /** @returns {MutableEntityPullState} */
 function createMutableEntityPullState() {
@@ -1529,7 +1531,7 @@ export function accountTileButton(page, label, accountName) {
  * Serve the same sync routes from a small Node HTTP fixture backend.
  * @param {import("node:http").IncomingMessage} request
  * @param {import("node:http").ServerResponse} response
- * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, versionedResources?: boolean, epoch?: string, onPull?: () => void, onStreamReady?: (notify: (resources: ResourceRef[], reason?: "change" | "reconnect") => void, resources: ResourceRef[]) => (() => void) | void }} fixture
+ * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, versionedResources?: boolean, epoch?: string, onPull?: () => void, subscriptionUpdate?: import("../src/generated/api").components["schemas"]["SyncSubscriptionRequest"], onStreamReady?: (notify: (resources: ResourceRef[], reason?: "change" | "reconnect") => void, resources: ResourceRef[]) => (() => void) | void }} fixture
  * @returns {boolean} whether this was an /api/sync route
  */
 export function handleEntitySyncFixtureRequest(request, response, fixture) {
@@ -1541,6 +1543,29 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
     response.end(JSON.stringify(value));
   };
+  if (url.pathname === "/api/sync/subscriptions" && request.method === "POST") {
+    const apply = (update) => {
+      const session = nodeSyncSessions
+        .get(fixture.snapshot)
+        ?.get(update.sessionId);
+      if (!session) {
+        response.statusCode = 410;
+        json({ error: "Unknown sync session; reopen the stream" });
+        return;
+      }
+      session(update);
+      json({ gen: update.gen });
+    };
+    if (fixture.subscriptionUpdate) apply(fixture.subscriptionUpdate);
+    else {
+      let body = "";
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => apply(JSON.parse(body)));
+    }
+    return true;
+  }
   if (url.pathname === "/api/sync/identity") {
     json(identity);
     return true;
@@ -1601,8 +1626,10 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
       "X-Accel-Buffering": "no",
     });
+    const sessionId = randomUUID();
+    response.write(protocol3SseEvent("session", { sessionId }));
     response.write(apiSchemaHandshakeSse());
-    /** @param {string} name @param {ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent} value */
+    /** @param {string} name @param {ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent | import("../src/generated/api").components["schemas"]["SyncSubscriptionAck"]} value */
     const writeFrame = (name, value) => {
       eventId += 1;
       response.write(
@@ -1648,6 +1675,35 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     const heartbeatTimer = setInterval(heartbeat, 5000);
     heartbeatTimer.unref?.();
     response.once("close", () => clearInterval(heartbeatTimer));
+    let sessions = nodeSyncSessions.get(fixture.snapshot);
+    if (!sessions)
+      nodeSyncSessions.set(fixture.snapshot, (sessions = new Map()));
+    sessions.set(sessionId, (update) => {
+      const removed = new Set(
+        update.remove.map((resource) => JSON.stringify(resource)),
+      );
+      const next = requestedResources.filter(
+        (resource) => !removed.has(JSON.stringify(resource)),
+      );
+      const keys = new Set(next.map((resource) => JSON.stringify(resource)));
+      for (const resource of update.add) {
+        if (!keys.has(JSON.stringify(resource))) next.push(resource);
+        keys.add(JSON.stringify(resource));
+      }
+      // Preserve the array observed by the caller's subscription assertions.
+      requestedResources.splice(0, requestedResources.length, ...next);
+      writeFrame("subscriptions", { gen: update.gen });
+      if (update.add.length)
+        writeFrame("resources", {
+          ...initial,
+          resources: update.add,
+          resourceVersions: fixture.versionedResources
+            ? withResourceVersions(update.add)
+            : [],
+          revision: ++revision,
+        });
+    });
+    response.once("close", () => sessions.delete(sessionId));
     const cleanup = fixture.onStreamReady?.((resources, reason = "change") => {
       if (response.destroyed) return;
       /** @type {ResourceChangeEvent} */

@@ -149,6 +149,7 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
+        subscriptionUpdate: body,
         onStreamReady: (notify) =>
           notify(JSON.parse(url.searchParams.get("resources") || "[]")),
       })

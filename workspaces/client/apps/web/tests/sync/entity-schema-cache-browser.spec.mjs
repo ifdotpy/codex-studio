@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ENTITY_PROJECTION_CACHE_VERSION } from "../../src/sync/entityCacheStorage.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, readdir } from "node:fs/promises";
@@ -362,7 +363,7 @@ test.describe("legacy schema mismatch", () => {
         transcripts: transcriptRows.length,
       });
       const oldBuildNames = [
-        `rxdb-dexie-studio-entity-projection-${workspaceId}-${oldHash}--0--projections`,
+        `rxdb-dexie-studio-entity-projection-${workspaceId}-${oldHash}--${ENTITY_PROJECTION_CACHE_VERSION}--projections`,
         `rxdb-dexie-studio-entity-projection-${workspaceId}-${oldHash}--0--_rxdb_internal`,
         `rxdb-dexie-studio-entity-projection-${workspaceId}-${oldHash}--0--rx-replication-meta-${"a".repeat(64)}`,
       ];
@@ -444,16 +445,20 @@ test.describe("legacy schema mismatch", () => {
         "Draft kept across the schema update",
       );
       validProjectionDatabaseNames = await newPage.evaluate(
-        async ({ workspaceId, schemaHash }) =>
+        async ({ workspaceId, schemaHash, cacheVersion }) =>
           (await indexedDB.databases())
             .map(({ name }) => name)
             .filter(
               (name) =>
                 name?.includes(
                   `entity-projection-${workspaceId}-${schemaHash}`,
-                ) && name.endsWith("--0--projections"),
+                ) && name.endsWith(`--${cacheVersion}--projections`),
             ),
-        { workspaceId, schemaHash: nextHash },
+        {
+          workspaceId,
+          schemaHash: nextHash,
+          cacheVersion: ENTITY_PROJECTION_CACHE_VERSION,
+        },
       );
       assert.ok(
         validProjectionDatabaseNames.length > 0,
@@ -462,7 +467,7 @@ test.describe("legacy schema mismatch", () => {
       const readNewPageStateCheckpoint = () =>
         newPage.evaluate(async (names) => {
           const name = names.find((databaseName) =>
-            databaseName.endsWith("--0--projections"),
+            databaseName.endsWith("--projections"),
           );
           if (!name) return {};
           const db = await new Promise((resolve, reject) => {
@@ -599,7 +604,10 @@ test.describe("legacy schema mismatch", () => {
       assert.equal(mutation.status, 200);
       const mutationBody = await mutation.json();
       const mutationEntity = mutationBody._syncEntities?.find(
-        (row) => row.id === `entity:agent:${createdId}`,
+        (row) =>
+          row.op === "upsert" &&
+          row.collection === "agent" &&
+          row.id === createdId,
       );
       assert.ok(mutationEntity, "fixture mutation returns a sequenced entity");
       assert.ok(

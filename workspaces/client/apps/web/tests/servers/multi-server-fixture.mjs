@@ -245,10 +245,12 @@ export async function fixture(
       handleEntitySyncFixtureRequest(request, response, {
         snapshot,
         workspaceId,
+        subscriptionUpdate: body,
         initialResources: options.resourceBaseline
           ? JSON.parse(url.searchParams.get("resources") || "[]")
           : undefined,
-        onStreamReady: (send) => {
+        onStreamReady: (send, resources) => {
+          subscriptions.set(response, resources);
           notify.push(send);
         },
       })
@@ -513,6 +515,10 @@ export async function fixture(
         archivedAccounts: [],
         logins: [...accountLogins.values()],
       });
+      return;
+    }
+    if (url.pathname === "/api/retained-worktrees") {
+      json({ retainedWorktrees: [] });
       return;
     }
     if (url.pathname === "/api/models") {

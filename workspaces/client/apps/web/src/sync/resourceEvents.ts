@@ -1280,8 +1280,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   }
 
   function updateSubscriptions(resources: ResourceRef[], tokenRates: boolean) {
-    if (!source || !sessionId || pendingSubscription || subscriptionRequest)
-      return;
+    if (!source || pendingSubscription || subscriptionRequest) return;
     const desired = new Set(resources.map(resourceKey));
     const previous = new Set(wireResources.map(resourceKey));
     const add = resources.filter(
@@ -1295,6 +1294,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         !acceptedResources.has(resourceKey(resource)),
     );
     if (!add.length && !remove.length && tokenRates === wireTokenRates) return;
+    if (!sessionId) {
+      // A stream without its session cannot acknowledge a diff. Recover with
+      // the complete desired set rather than stranding newly added resources.
+      reconnectNow();
+      return;
+    }
     const connected = source;
     const gen = ++subscriptionGen;
     pendingSubscription = { gen, resources, tokenRates };

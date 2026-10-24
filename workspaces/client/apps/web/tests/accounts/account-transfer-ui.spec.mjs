@@ -187,6 +187,7 @@ test("Account Transfer Ui", async ({
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
+        subscriptionUpdate: body,
         onStreamReady: (notify) => {
           notifySync = notify;
         },

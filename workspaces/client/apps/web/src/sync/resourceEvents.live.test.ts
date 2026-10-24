@@ -35,7 +35,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function fixture(follower = false) {
+async function fixture(follower = false, session = true) {
   vi.useFakeTimers();
   vi.stubGlobal("window", {
     addEventListener: vi.fn(),
@@ -121,7 +121,8 @@ async function fixture(follower = false) {
   const stopState = transport.watchResourceChanges(state, vi.fn());
   await vi.advanceTimersByTimeAsync(0);
   const source = follower ? ({ emit: peer } as Source) : sources[0]!;
-  if (!follower) source.emit("session", { sessionId: "session-one" });
+  if (!follower && session)
+    source.emit("session", { sessionId: "session-one" });
   if (!follower) source.emit("api-schema", { hash: API_SCHEMA_HASH });
   source.emit("resources", {
     protocol: SYNC_PROTOCOL_VERSION,
@@ -158,6 +159,31 @@ it("coalesces chat switches into one POST without reopening the SSE stream", asy
     add: [{ kind: "transcript", agentId: "chat-final" }],
     remove: [],
   });
+});
+
+it("reopens with the full desired set when a stream has not announced its session", async () => {
+  const f = await fixture(false, false);
+  const transcript = { kind: "transcript", agentId: "chat" } as const;
+  f.transport.watchResourceChanges(transcript, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  expect(f.source.closed).toBe(true);
+  expect(f.post).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(f.sources).toHaveLength(2);
+  expect(
+    JSON.parse(
+      new URL(f.urls[1]!, "http://studio.test").searchParams.get("resources")!,
+    ),
+  ).toEqual([{ kind: "state" }, transcript]);
+});
+
+it("keeps a session-less stream when its desired resources are unchanged", async () => {
+  const f = await fixture(false, false);
+  f.transport.watchResourceChanges({ kind: "state" }, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  expect(f.source.closed).toBe(false);
+  expect(f.sources).toHaveLength(1);
+  expect(f.post).not.toHaveBeenCalled();
 });
 
 it("drops removed data and waits for acknowledgement before accepting a re-added resource", async () => {
