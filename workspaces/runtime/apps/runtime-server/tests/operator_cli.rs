@@ -147,11 +147,14 @@ fn command_installation_migrates_only_owned_links_and_preflights_conflicts() {
     let destination = root.path().join("commands");
     fs::create_dir_all(&binaries).unwrap();
     fs::create_dir(&destination).unwrap();
-    fs::copy(
-        env!("CARGO_BIN_EXE_studio-runtime-server"),
-        binaries.join("studio-runtime-server"),
-    )
-    .unwrap();
+    let source = env!("CARGO_BIN_EXE_studio-runtime-server");
+    let relocated = binaries.join("studio-runtime-server");
+    if let Err(error) = fs::hard_link(source, &relocated) {
+        if error.kind() != std::io::ErrorKind::CrossesDevices {
+            panic!("{error}");
+        }
+        fs::copy(source, &relocated).expect("cross-device copy");
+    }
     for name in ["codex-process-supervisor", "codex-diagnostics"] {
         fs::write(binaries.join(name), "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(binaries.join(name), fs::Permissions::from_mode(0o755)).unwrap();
