@@ -36,6 +36,21 @@ fn agent_of(agents: &[String], thread: &str) -> String {
 /// Returns the agent whose turn started and that start's input.
 async fn serve_start(peer: &mut Peer, agents: &[String]) -> (String, Value) {
     let mut wire = peer.next_write().await;
+    // A turn adopted again after a restart gets one native history read first.
+    while wire.value["method"] == "thread/read" {
+        let read = wire.value;
+        let _ignored = wire.receipt.send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        });
+        let thread = read["params"]["threadId"].clone();
+        peer.reply(
+            &read,
+            json!({"thread":{"id":thread,"status":{"type":"active","activeFlags":[]}}}),
+        )
+        .await;
+        wire = peer.next_write().await;
+    }
     if wire.value["method"] == "thread/resume" {
         let resume = wire.value;
         let _ignored = wire.receipt.send(CommandReceipt::Written {

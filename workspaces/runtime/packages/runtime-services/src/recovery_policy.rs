@@ -424,17 +424,32 @@ fn eligibility(a: &Value) -> Eligibility {
         && (continued || surviving)
         && has(r, "autoWake")
         && same(r, a, &["epoch", "accountKey", "threadId", "turnId"]);
-    let transport_turn = a["status"] == "interrupted"
+    let interrupted_transport = a["status"] == "interrupted"
         && stopped
-        && has(a, "threadId")
-        && has(a, "turnId")
         && one(
             &a["error"],
             &[
                 PROVIDER_DISCONNECTED_TURN_ERROR,
                 VM_PROVIDER_DISCONNECTED_TURN_ERROR,
             ],
-        )
+        );
+    // A disconnected turn that generation reconciliation adopted again on the
+    // same provider generation (connection recovery outcome "active") waits for
+    // the provider's turn/completed. The turn can end while no worker is
+    // attached, and then nothing reads that end (22 October 2026: agents stayed
+    // `running`, and busy-turn input went to turns the provider had finished).
+    // As for an adopted restart turn, the worker reads it in native history
+    // once per connection: an ended turn is reconciled, a running one only
+    // records the check.
+    let reattached_transport = a["status"] == "running"
+        && has(a, "autoWake")
+        && c["source"] == "native_thread_read"
+        && c["outcome"] == "active"
+        && c["automatic"] == true
+        && c["turnId"] == a["turnId"];
+    let transport_turn = (interrupted_transport || reattached_transport)
+        && has(a, "threadId")
+        && has(a, "turnId")
         && clear(a)
         && !has(a, "contextRepairWait")
         && !one(&repair["phase"], ACTIVE_REPAIR)

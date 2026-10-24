@@ -40,6 +40,7 @@ mod steer;
 mod stop_after_reattach;
 mod submission;
 mod tool_reply_retirement;
+mod transport_reattach;
 mod unsent_start;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
@@ -2482,6 +2483,19 @@ fn injected() -> bool {
 
 /// Waits until the worker has processed every earlier command, or returns at
 /// once when an injected crash killed it before it could answer.
+/// Answer the one native history read that a worker makes on a new connection
+/// for a turn adopted on the same provider generation after a disconnect
+/// (`transport_reattach.rs`). The thread is still active, so the adopted turn
+/// keeps running and the read only records the check.
+async fn answer_adopted_turn_check(peer: &mut Peer) {
+    let read = peer.write("thread/read").await;
+    let thread = read["params"]["threadId"].clone();
+    peer.reply(
+        &read,
+        json!({"thread":{"id":thread,"status":{"type":"active","activeFlags":[]}}}),
+    )
+    .await;
+}
 async fn worker_barrier(worker: &AccountHandle) {
     let barrier = async {
         while !worker

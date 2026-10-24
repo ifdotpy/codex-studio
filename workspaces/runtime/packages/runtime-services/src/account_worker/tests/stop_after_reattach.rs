@@ -174,6 +174,7 @@ async fn ending_after_worker_reattach_ends_the_turn_work(ending: Ending) {
     // new connection id and continues the turn.
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
+    answer_adopted_turn_check(&mut peer).await;
     worker_barrier(&worker).await;
     let live = worker.retained_session().scope().clone();
     let record = state.record().await;
