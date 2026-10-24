@@ -363,7 +363,7 @@ exit $?
         // systemd-run, systemctl or journalctl, even on a host running Studio.
         for name in [
             "dirname", "mkdir", "flock", "rm", "tar", "cp", "mv", "ln", "ls", "tail", "date",
-            "touch",
+            "touch", "find", "sort",
         ] {
             std::os::unix::fs::symlink(Path::new("/usr/bin").join(name), tools.join(name)).unwrap();
         }
@@ -528,18 +528,22 @@ fn delivery_uses_unique_units_and_replays_only_the_current_invocation() {
     assert_ne!(identities[0].1, identities[1].1);
 }
 
-#[test]
 #[cfg(target_os = "linux")]
-fn delivery_bounds_invocation_history_and_preserves_active_and_latest_records() {
-    let fixture = DeliveryFixture::new();
-    let source =
-        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("deliver.sh")).unwrap();
-    let kept: usize = source
+fn invocation_record_budget() -> usize {
+    fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("deliver.sh"))
+        .unwrap()
         .lines()
         .find_map(|line| line.strip_prefix("readonly KEPT_INVOCATION_RECORDS="))
         .expect("deliver.sh owns the invocation history budget")
         .parse()
-        .unwrap();
+        .unwrap()
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn delivery_bounds_invocation_history_and_preserves_active_and_latest_records() {
+    let fixture = DeliveryFixture::new();
+    let kept = invocation_record_budget();
     let directory = fixture.release_root.join("delivery-invocations");
     fs::create_dir(&directory).unwrap();
     let active = directory.join("active-fixture");
@@ -589,6 +593,97 @@ fn delivery_bounds_invocation_history_and_preserves_active_and_latest_records() 
     assert!(fixture.command().output().unwrap().status.success());
     assert!(!active.exists(), "inactive old record was never collected");
     assert!(fs::read_dir(directory).unwrap().count() <= kept);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn delivery_recovers_oversized_invocation_history_with_small_argument_limit() {
+    let mut fixture = DeliveryFixture::new();
+    // A longer disposable root and a fixture-only low stack limit reproduce
+    // ARG_MAX with hundreds of files instead of tens of thousands. Node and
+    // the rest of delivery retain their normal limits; only the ls wrapper
+    // lowers its soft limit immediately before execing the real utility.
+    let root = fixture.root.path().join("r".repeat(200));
+    fs::rename(&fixture.release_root, &root).unwrap();
+    fixture.release_root = root;
+    fixture.release = fixture.release_root.join("releases/fixture-commit");
+    let limit = Command::new("/bin/bash")
+        .args(["-c", "ulimit -S -s 256; /usr/bin/getconf ARG_MAX"])
+        .output()
+        .unwrap();
+    assert!(limit.status.success());
+    let argument_limit: usize = String::from_utf8(limit.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let directory = fixture.release_root.join("delivery-invocations");
+    fs::create_dir(&directory).unwrap();
+    let count = argument_limit / (directory.as_os_str().len() + 34) + 32;
+    for index in 0..count {
+        fs::write(directory.join(format!("{index:032x}")), "old invocation\n").unwrap();
+    }
+    fs::remove_file(fixture.root.path().join("tools/ls")).unwrap();
+    fixture.tool(
+        "ls",
+        r#"#!/bin/bash
+ulimit -S -s 256
+exec /usr/bin/ls "$@"
+"#,
+    );
+    let output = fixture.command().output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let kept = invocation_record_budget();
+    assert!(
+        fs::read_dir(directory).unwrap().count() <= kept,
+        "oversized history was not collected"
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("delivered fixture-commit"));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn delivery_housekeeping_failure_warns_without_changing_unit_outcome() {
+    for failed_unit in [false, true] {
+        let fixture = DeliveryFixture::new();
+        fs::remove_file(fixture.root.path().join("tools/tail")).unwrap();
+        fixture.tool(
+            "tail",
+            &format!(
+                r#"#!/bin/sh
+case "$*" in *+{}*) echo 'fixture pruning failure' >&2; exit 77;; esac
+exec /usr/bin/tail "$@"
+"#,
+                invocation_record_budget() + 1
+            ),
+        );
+        let mut command = fixture.command();
+        if failed_unit {
+            command.env("RUN_FAILURE", "37");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(if failed_unit { 37 } else { 0 }),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let logs = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            logs.contains("warning: could not prune delivery invocation history"),
+            "{logs}"
+        );
+    }
 }
 
 #[test]

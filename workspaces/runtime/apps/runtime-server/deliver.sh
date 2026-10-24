@@ -55,10 +55,11 @@ prune_invocation_records() (
   [ -d "$invocation_directory" ] || exit 0
   exec 6>"$invocation_history_lock"
   flock 6
-  records=("$invocation_directory"/*)
-  [ -f "${records[0]}" ] || exit 0
-  ls -1t -- "${records[@]}" | tail -n +$((KEPT_INVOCATION_RECORDS + 1)) |
-    while IFS= read -r old; do
+  # Stream the listing: a large backlog must not exceed the argument limit.
+  find "$invocation_directory" -mindepth 1 -maxdepth 1 -type f -printf '%T@ %f\n' |
+    sort -rn | tail -n +$((KEPT_INVOCATION_RECORDS + 1)) |
+    while read -r _ name; do
+      old=$invocation_directory/$name
       # An old record may still belong to a running worker or a caller that
       # has not replayed its output. Never wait on or remove such a record.
       (
@@ -165,10 +166,8 @@ if [ "$in_delivery_unit" != true ] && [ "$test_fixture" != true ]; then
   # Completion/replay makes this the most recent record, even after a long run.
   touch -- "$CODEX_STUDIO_DELIVER_INVOCATION_FILE"
   exec 8>&-
-  prune_invocation_records || {
-    echo "could not prune delivery invocation history" >&2
-    [ "$status" -ne 0 ] || status=1
-  }
+  prune_invocation_records ||
+    echo "warning: could not prune delivery invocation history" >&2
   exit "$status"
 fi
 
@@ -182,10 +181,8 @@ finish_delivery() {
       [ "$status" -ne 0 ] || status=1
     }
     exec 8>&-
-    prune_invocation_records || {
-      echo "could not prune delivery invocation history" >&2
-      [ "$status" -ne 0 ] || status=1
-    }
+    prune_invocation_records ||
+      echo "warning: could not prune delivery invocation history" >&2
   fi
   echo "delivery $commit finished with exit code $status"
   exit "$status"
@@ -202,7 +199,9 @@ if [ -n "${CODEX_STUDIO_DELIVER_INVOCATION_FILE:-}" ]; then
   open_invocation_record
   printf '%s\n' "$INVOCATION_ID" > "$CODEX_STUDIO_DELIVER_INVOCATION_FILE"
   echo "Delivery invocation: $INVOCATION_ID"
-  prune_invocation_records
+  # Housekeeping never decides the delivery outcome.
+  prune_invocation_records ||
+    echo "warning: could not prune delivery invocation history" >&2
 fi
 
 release=$root/releases/$commit

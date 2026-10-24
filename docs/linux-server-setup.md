@@ -52,6 +52,9 @@ disconnect. `KEPT_INVOCATION_RECORDS` in the delivery script owns the history
 budget. Older records are pruned after attempts, including lock refusals. Shared
 file locks preserve records still needed by a worker or by a caller awaiting its
 journal replay; those records can temporarily exceed the recent-history budget.
+Pruning streams the directory listing, so an old backlog cannot exceed the
+command argument limit. Housekeeping failures produce warnings and leave the
+delivery outcome unchanged.
 Check that outcome before retrying; a lost caller result does not mean delivery
 failed. Concurrent deliveries using the same release root are refused by
 `deliver.lock` inside the unit.
