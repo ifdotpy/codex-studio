@@ -152,7 +152,10 @@ pub(crate) fn active() -> bool {
 
 /// Journal a row write that the writer update hook reports.
 pub(crate) fn observe_row(table: &str, row_id: i64) {
-    if matches!(table, "runtime_agents" | "runtime_monitors" | "runtime_events" | "runtime_operation_receipts") {
+    if matches!(
+        table,
+        "runtime_agents" | "runtime_monitors" | "runtime_events" | "runtime_operation_receipts"
+    ) {
         push(Event::StudioErrors);
     }
     if let Some(source) = Source::of_table(table) {

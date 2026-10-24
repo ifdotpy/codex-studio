@@ -69,6 +69,8 @@ export default {
       // Prevent duplicate entity pulls and preserve server storage and API ownership.
       "src/servers/useUiPreferenceSync.test.ts",
       "src/servers/useServerDiscovery.test.ts",
+      "src/servers/sidebarSnapshot.test.ts",
+      "src/servers/mergedSidebar.test.ts",
       "src/sync/uiPreferenceBridge.test.ts",
       // Prevent idle polling and lost draft notifications during a refresh.
       "src/native/useNativeDrafts.test.ts",

@@ -293,7 +293,7 @@ function readModelCatalog(
     } catch (error) {
       const pending =
         error instanceof ApiError &&
-        error.status === 400 &&
+        error.status === 503 &&
         error.catalogPending === true;
       publishCatalog(entry, {
         models: previous.models,

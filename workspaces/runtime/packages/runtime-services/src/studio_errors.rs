@@ -303,6 +303,32 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
     Ok(json!({"items":rows}))
 }
 
+/// Server-owned refresh cadence for time-derived membership (stuck input and
+/// the error history window). Unit: time; clients never poll this collection.
+const TIME_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Seed persisted errors on startup and refresh time-derived membership.
+pub async fn refresh(store: &studio_runtime_store::RuntimeStore) -> Result<(), StoreError> {
+    store.transaction(publish).await
+}
+
+/// Source writes publish immediately through DefaultPublisher. Time alone may
+/// also change membership, so the same owner refreshes until server shutdown.
+pub async fn run(
+    store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    while !*shutdown.borrow() {
+        tokio::select! {
+            () = tokio::time::sleep(TIME_REFRESH_INTERVAL) => {},
+            _ = shutdown.changed() => return,
+        }
+        if let Err(error) = refresh(&store).await {
+            eprintln!("Studio error entity refresh failed: {error}");
+        }
+    }
+}
+
 /// Publish the current server-owned error rows as sync entities in the same
 /// transaction as a source row or dismissal changes. Equal rows retain their
 /// existing entity sequence, while removed rows publish tombstones.

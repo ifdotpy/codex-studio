@@ -387,7 +387,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Arc::new(RuntimeStore::open_claiming(configured_state_dir.as_deref(), &owner).await?);
     // Before the first runtime write: every writer transaction publishes the chats and
     // cards it changed.
-    studio_runtime_services::entity_publication::install(&store);
+    studio_runtime_services::entity_publication::install(&store).await?;
     store
         .set_diagnostics_callback(Some(
             studio_runtime_services::diagnostics::observe_store_event,
@@ -995,6 +995,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         state_root.to_path_buf(),
         monitor_shutdown.subscribe(),
     ));
+    let studio_errors_task = tokio::spawn(studio_runtime_services::studio_errors::run(
+        Arc::clone(&store),
+        monitor_shutdown.subscribe(),
+    ));
     let retention_task = tokio::spawn(studio_runtime_services::storage_retention::run(
         Arc::clone(&store),
         monitor_shutdown.subscribe(),
@@ -1320,6 +1324,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     if let Some(service) = browser_host {
         shutdown_join("browser host bridge", service.stop()).await?;
     }
+    shutdown_join("Studio error publication task", studio_errors_task).await??;
     shutdown_join("storage retention task", retention_task).await??;
     shutdown_join("analytics projection task", analytics_projection_task).await??;
     if let Some(task) = orchestration_task {

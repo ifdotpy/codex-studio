@@ -1294,8 +1294,6 @@ export default function App({ active = true }: { active?: boolean }) {
     reloadLimitsFor,
   ]);
   const usageAccounts = useRetainedUsageAccounts(nextUsageAccounts);
-  // Only accounts that take part in this chat team get a dot and a cache read.
-  const usageAccountKeys = usageAccounts.map((item) => item.key).join("\n");
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };

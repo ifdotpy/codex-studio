@@ -39,8 +39,10 @@ impl EntityPublisher for DefaultPublisher {
 /// Make every later writer transaction of `store` publish the client entities of the
 /// agent and request rows it changed. The server calls it once, right after it opens
 /// the store.
-pub fn install(store: &RuntimeStore) {
+pub async fn install(store: &RuntimeStore) -> StoreResult<()> {
     store.install_entity_publisher(Arc::new(DefaultPublisher));
+    // Upgrades may have source errors but no studioError entities yet.
+    crate::studio_errors::refresh(store).await
 }
 
 #[cfg(test)]
@@ -55,7 +57,9 @@ pub(crate) mod test_support {
         let store = RuntimeStore::open(Some(dir.path()))
             .await
             .expect("runtime store opens");
-        super::install(&store);
+        super::install(&store)
+            .await
+            .expect("initial error projection");
         (dir, store)
     }
 

@@ -49,6 +49,7 @@ function fixture(workerCount = WORKERS): Snapshot {
       peerTeams: [],
       events: [],
       work: [],
+      studioErrors: [],
     },
   };
 }

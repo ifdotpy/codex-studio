@@ -224,7 +224,9 @@ function projectSnapshotCollections(
   const studioErrors =
     prior && !changed.has("studioError")
       ? prior.runtime.studioErrors
-      : entityValues(values, "studioError");
+      : entityValues(values, "studioError").sort(
+          (a, b) => b.at - a.at || a.id.localeCompare(b.id),
+        );
   const runtime = {
     ...workspace,
     modelsByAccount,

@@ -252,16 +252,28 @@ async fn startup_models_http_reports_pending_and_refuses_an_unknown_explicit_acc
     let policy = studio_runtime_services::account_policy::AccountPolicyState::from_startup(
         Some(&serde_json::to_vec(&registry).unwrap()),
         [],
-    ).unwrap();
+    )
+    .unwrap();
     let state = HttpState::new(
-        "fixture-token".into(), "fixture".into(), store.root().to_string_lossy().into(),
-        49171, None, Some(store), Some(Arc::new(policy)),
+        "fixture-token".into(),
+        "fixture".into(),
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store),
+        Some(Arc::new(policy)),
     );
     let app = router(state).unwrap();
     let (status, value) = call(&app, "GET", "/api/models", None).await;
-    assert_eq!(status, 503, "startup is pending, not an invalid request: {value}");
+    assert_eq!(
+        status, 503,
+        "startup is pending, not an invalid request: {value}"
+    );
     assert_eq!(value["catalogPending"], true);
     let (status, value) = call(&app, "GET", "/api/models?account_key=unknown", None).await;
-    assert_eq!(status, 400, "explicit unknown accounts remain invalid: {value}");
+    assert_eq!(
+        status, 400,
+        "explicit unknown accounts remain invalid: {value}"
+    );
     assert_ne!(value["catalogPending"], true);
 }

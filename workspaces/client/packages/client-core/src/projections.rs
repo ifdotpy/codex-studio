@@ -142,6 +142,17 @@ fn entity_snapshot(rows: &[Value]) -> Value {
     if let (Some(target), Some(extra)) = (runtime.as_object_mut(), workspace_entity.as_object()) {
         target.extend(extra.clone());
     }
+    let mut errors = list("studioError");
+    if let Some(rows) = errors.as_array_mut() {
+        rows.sort_by(|a, b| {
+            b["at"]
+                .as_f64()
+                .unwrap_or(0.0)
+                .total_cmp(&a["at"].as_f64().unwrap_or(0.0))
+                .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+        });
+    }
+    runtime["studioErrors"] = errors;
     let edges = list("edge");
     let limits = collections.remove("rateLimit").unwrap_or_default();
     runtime["rateLimits"] = limits.get("default").cloned().unwrap_or(Value::Null);
@@ -360,7 +371,8 @@ mod tests {
     #[test]
     fn studio_error_entities_reach_native_state_and_dismissal_removes_them() {
         let directory = tempfile::tempdir().unwrap();
-        let mut store = crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let mut store =
+            crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
         let workspace = "a".repeat(32);
         let apply = |changes| Request {
             id: "studio-errors".into(),
@@ -372,13 +384,15 @@ mod tests {
             {"op":"upsert","collection":"studioError","id":"event:one","seq":1,"value":item}
         ])));
         assert!(first.error.is_none(), "{:?}", first.error);
-        let snapshot: Value = serde_json::from_str(first.result.unwrap()["payload"].as_str().unwrap()).unwrap();
+        let snapshot: Value =
+            serde_json::from_str(first.result.unwrap()["payload"].as_str().unwrap()).unwrap();
         assert_eq!(snapshot["runtime"]["studioErrors"], json!([item]));
         let removed = store.dispatch(apply(json!([
             {"op":"delete","collection":"studioError","id":"event:one","seq":2}
         ])));
         assert!(removed.error.is_none(), "{:?}", removed.error);
-        let snapshot: Value = serde_json::from_str(removed.result.unwrap()["payload"].as_str().unwrap()).unwrap();
+        let snapshot: Value =
+            serde_json::from_str(removed.result.unwrap()["payload"].as_str().unwrap()).unwrap();
         assert_eq!(snapshot["runtime"]["studioErrors"], json!([]));
     }
 

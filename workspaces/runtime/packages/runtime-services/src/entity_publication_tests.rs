@@ -211,6 +211,32 @@ async fn studio_error_rows_are_published_as_entities_with_their_source_write() {
     assert!(!deleted);
     assert_eq!(value["agentId"], CHAT);
     assert_eq!(value["kind"], "turn_disconnected");
+    let sequence = store
+        .test_read_transaction(|tx| {
+            studio_runtime_store::SyncDocumentsRepository::entity_sequence(tx)
+        })
+        .expect("source publication sequence");
+    crate::studio_errors::refresh(&store)
+        .await
+        .expect("equal refresh");
+    assert_eq!(
+        store
+            .test_read_transaction(|tx| {
+                studio_runtime_store::SyncDocumentsRepository::entity_sequence(tx)
+            })
+            .expect("equal refresh sequence"),
+        sequence
+    );
+
+    store
+        .transaction_with(|tx| crate::studio_errors::dismiss(tx, "agent:published-chat:", 100.0))
+        .await
+        .expect("dismissal commits");
+    assert!(
+        client_entity(&store, "studioError", "agent:published-chat:")
+            .expect("tombstone")
+            .0
+    );
 }
 
 #[tokio::test]

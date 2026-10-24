@@ -15,6 +15,7 @@ use studio_runtime_services::model_catalog::{CatalogRead, ModelCatalogService};
 // Display-read messages. Spawn admission owns its own "no workers were created"
 // wording; a catalog read for the UI creates nothing.
 const PENDING_MESSAGE: &str = "Model catalog is still loading from the provider; retry shortly";
+const PENDING_STATUS: StatusCode = StatusCode::SERVICE_UNAVAILABLE;
 const WORKER_PENDING_MESSAGE: &str =
     "Model catalog is pending; no worker model catalog is available yet";
 const UNAVAILABLE_MESSAGE: &str = "Model catalog is temporarily unavailable: the provider did not return its model list; retry shortly";
@@ -130,7 +131,7 @@ fn catalog_unavailable() -> (StatusCode, Value) {
 
 fn catalog_pending() -> (StatusCode, Value) {
     (
-        StatusCode::BAD_REQUEST,
+        PENDING_STATUS,
         json!({"error": PENDING_MESSAGE, "catalogPending": true}),
     )
 }
@@ -209,12 +210,7 @@ async fn worker_catalog(
     >,
 ) -> Result<Value, (StatusCode, Value)> {
     let default_account = snapshot.default_account_key.as_str().unwrap_or("default");
-    if parent_account == "default"
-        && !snapshot
-            .accounts
-            .iter()
-            .any(|row| row.get("id").and_then(Value::as_str) == Some("default"))
-    {
+    if parent_account == "default" && snapshot.accounts.is_empty() {
         return Err(catalog_pending());
     }
     let mut order = Vec::new();
@@ -311,7 +307,7 @@ async fn worker_catalog(
     if models.is_empty() {
         if pending {
             return Err((
-                StatusCode::BAD_REQUEST,
+                PENDING_STATUS,
                 json!({"error": WORKER_PENDING_MESSAGE, "catalogPending": true}),
             ));
         }
@@ -533,7 +529,7 @@ mod tests {
         )
         .await
         .expect_err("Claude requires its provider service");
-        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             error.1,
             json!({"error":PENDING_MESSAGE,"catalogPending":true})
