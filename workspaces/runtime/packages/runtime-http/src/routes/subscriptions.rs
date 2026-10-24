@@ -85,7 +85,15 @@ async fn transcript_initial(
     resource: ResourceRef,
     since: Option<SubscriptionCursor>,
 ) -> Result<ResourceRevisionEntry, ApiError> {
-    super::sync_stream::transcript_initial_snapshot(state, resource, since).await
+    let tail = match &resource {
+        ResourceRef::TranscriptResource(transcript) => transcript.tail,
+        _ => return Err(ApiError::internal()),
+    };
+    let mut entry = super::sync_stream::transcript_initial_snapshot(state, resource, since).await?;
+    if let Some(Some(page)) = entry.transcript_snapshot.take() {
+        entry.transcript_snapshot = Some(Some(super::transcript::window_snapshot(page, tail)));
+    }
+    Ok(entry)
 }
 
 async fn entity_initial(
