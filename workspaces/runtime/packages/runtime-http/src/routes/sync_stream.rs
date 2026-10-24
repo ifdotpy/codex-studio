@@ -1666,6 +1666,12 @@ mod tests {
         let id = "e0166868-592a-4dca-8994-04d34a730af5";
         let url = "https://claude.com/cai/oauth/authorize?secret=transient-fixture";
         let mut changed = state.sync_changes.subscribe();
+        let entity_sequence_before = store
+            .read_async("test/before-progress", |connection| {
+                SyncDocumentsRepository::entity_sequence(connection)
+            })
+            .await
+            .expect("initial entity sequence");
         login
             .start(id.into(), None, None, None)
             .await
@@ -1708,7 +1714,7 @@ mod tests {
                 })
                 .await
                 .expect("sequence"),
-            0,
+            entity_sequence_before,
             "progress never writes a SQLite entity"
         );
         let receipt = tokio::fs::read_to_string(directory.join(format!("{id}.json")))
