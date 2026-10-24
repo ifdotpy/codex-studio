@@ -1,4 +1,5 @@
 nextest-version = "0.9.146"
+# Conversation detail publication and bounded subscription baselines are fast witnesses.
 
 [profile.default]
 fail-fast = true
@@ -89,7 +90,6 @@ default-filter = '''
     | ((package(=studio-runtime-process)) & ((kind(lib) | kind(bin) | kind(test))) & (binary(studio_runtime_process) & test(/^provider_task::tests::(shutdown_waits_for_supervisor_detach_on_both_connections|shutdown_reports_control_detach_timeout|shutdown_reports_event_detach_timeout|shutdown_reports_both_detach_timeouts_within_one_budget)$/) | binary(integration) & test(/^wave7_p01_factory::(prepare_reports_handshake_error_and_unconfirmed_detach|prepare_preserves_handshake_error_after_confirmed_detach)$/)))
     | ((package(=studio-runtime-server)) & ((kind(test) & binary(=integration))) & (test(/^wave7_p01_registry::backend_shutdown_reports_both_supervisor_detach_timeouts$/)))
     | (package(=studio-runtime-services) & kind(lib) & test(entity_publication::tests::studio_error_))
-    # Remaining live request reads publish source entities; subscription adds carry bounded baselines.
     | (package(=studio-runtime-services) & kind(lib) & (test(entity_publication::tests::retained_worktree_entities_) | test(entity_publication::tests::question_history_entities_) | test(entity_publication::tests::conversation_detail_entities_)))
     | (package(=studio-runtime-http) & kind(lib) & (test(subscription_add_streams_bounded_transcript_snapshot_after_ack) | test(state_stream_subscription_added_oversized_initial_data_stays_revisions_only)))
     | (package(=studio-runtime-store) & kind(lib) & test(entity_replay_and_patch_preserve_sequence_until_value_or_deletion_changes))
@@ -143,7 +143,6 @@ default-filter = '''
     | ((package(=studio-runtime-process)) & ((kind(lib) | kind(bin) | kind(test))) & (binary(studio_runtime_process) & test(/^provider_task::tests::(shutdown_waits_for_supervisor_detach_on_both_connections|shutdown_reports_control_detach_timeout|shutdown_reports_event_detach_timeout|shutdown_reports_both_detach_timeouts_within_one_budget)$/) | binary(integration) & test(/^wave7_p01_factory::(prepare_reports_handshake_error_and_unconfirmed_detach|prepare_preserves_handshake_error_after_confirmed_detach)$/)))
     | ((package(=studio-runtime-server)) & ((kind(test) & binary(=integration))) & (test(/^wave7_p01_registry::backend_shutdown_reports_both_supervisor_detach_timeouts$/)))
     | (package(=studio-runtime-services) & kind(lib) & test(entity_publication::tests::studio_error_))
-    # Remaining live request reads publish source entities; subscription adds carry bounded baselines.
     | (package(=studio-runtime-services) & kind(lib) & (test(entity_publication::tests::retained_worktree_entities_) | test(entity_publication::tests::question_history_entities_) | test(entity_publication::tests::conversation_detail_entities_)))
     | (package(=studio-runtime-http) & kind(lib) & (test(subscription_add_streams_bounded_transcript_snapshot_after_ack) | test(state_stream_subscription_added_oversized_initial_data_stays_revisions_only)))
     | (package(=studio-runtime-store) & kind(lib) & test(entity_replay_and_patch_preserve_sequence_until_value_or_deletion_changes))
