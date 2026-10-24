@@ -423,3 +423,71 @@ async fn legacy_start_matches_python_complete_history() {
         assert_eq!(json!(reader.calls), case["calls"], "{}", case["name"]);
     }
 }
+
+fn unknown_start_snapshot(held: bool) -> RecoverySnapshot {
+    let attempt = json!({"id":"attempt","epoch":0,"accountKey":"default",
+        "threadId":"thread","connectionId":"connection","events":["event"],
+        "submitted":true,"executionOutcome":"unknown"});
+    let mut record = json!({"id":"agent","rootId":"agent","epoch":0,
+        "status":"queued","accountKey":"default","threadId":"thread",
+        "autoWake":true,"inFlight":!held});
+    if held {
+        record["restartRecovery"] = json!({"stage":"held","startAttempt":attempt});
+        record["contextRepairWait"] = json!({"scope":"native","events":["event"]});
+    } else {
+        record["startAttempt"] = attempt;
+    }
+    RecoverySnapshot::from_record(record).expect("valid unknown start fixture")
+}
+
+async fn recover_exact_status(held: bool, status: &str) -> (RecoveryOutcome, Reader, Effects) {
+    let snapshot = unknown_start_snapshot(held);
+    assert!(snapshot.eligibility().unconfirmed_start);
+    let mut reader = Reader {
+        replies: vec![Ok(page(json!({"id":"turn","status":status,"items":[],
+            "clientUserMessageId":"event"})))]
+        .into(),
+        ..Default::default()
+    };
+    let mut effects = Effects { actions: vec![] };
+    let result = recovery::recover_turn(&snapshot, scope(), &mut reader, &mut effects)
+        .await
+        .expect("exact start recovery");
+    (result.outcome, reader, effects)
+}
+
+#[tokio::test]
+async fn held_restart_start_keeps_nonterminal_history_uncertain() {
+    for status in ["inProgress", "running", "uncertain"] {
+        let (outcome, reader, effects) = recover_exact_status(true, status).await;
+        assert!(matches!(outcome, RecoveryOutcome::Unconfirmed), "{status}");
+        assert!(
+            effects.actions.is_empty(),
+            "{status} must retain the input hold"
+        );
+        assert_eq!(reader.methods, vec![HistoryMethod::Turns]);
+    }
+}
+
+#[tokio::test]
+async fn held_restart_start_accepts_only_confirmed_terminal_history() {
+    for status in ["completed", "failed", "interrupted"] {
+        let (outcome, reader, effects) = recover_exact_status(true, status).await;
+        assert!(matches!(outcome, RecoveryOutcome::Applied(_)), "{status}");
+        assert!(reader.barrier);
+        assert!(
+            matches!(&effects.actions[..], [RecoveryAction::AcceptStart { turn }] if turn["status"] == status)
+        );
+        assert_eq!(reader.methods, vec![HistoryMethod::Turns]);
+    }
+}
+
+#[tokio::test]
+async fn ordinary_exact_start_still_accepts_delivered_in_progress_turn() {
+    let (outcome, reader, effects) = recover_exact_status(false, "inProgress").await;
+    assert!(matches!(outcome, RecoveryOutcome::Applied(_)));
+    assert!(reader.barrier);
+    assert!(
+        matches!(&effects.actions[..], [RecoveryAction::AcceptStart { turn }] if turn["status"] == "inProgress")
+    );
+}

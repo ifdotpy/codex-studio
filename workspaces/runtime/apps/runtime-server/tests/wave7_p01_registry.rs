@@ -3272,9 +3272,13 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
                 )
                 .unwrap();
             let record: Value = serde_json::from_str(&raw).unwrap();
-            let held = record["status"] == "interrupted"
-                && record["autoWake"] == false
-                && record["restartRecovery"]["stage"] == "held";
+            let held = record["status"] == "queued"
+                && record["autoWake"] == true
+                && record["inFlight"] != true
+                && record["restartRecovery"]["stage"] == "held"
+                && record["contextRepairWait"]["scope"] == "native"
+                && record["contextRepairWait"]["events"]
+                    == json!(["a19e61c8-6156-4874-b8d8-9111b0a49fc4"]);
             let continued = record["restartRecovery"]["stage"] == "continued"
                 && record["status"] == "completed"
                 && record["inFlight"] != true;
@@ -3790,10 +3794,14 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
                 )
                 .unwrap();
             let record: Value = serde_json::from_str(&raw).unwrap();
-            // A provider crash while the backend runs is a disconnect, not a restart.
-            if record["disconnectRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
-                && record["error"] == "Codex disconnected. Review the transcript before resuming."
-                && record["restartRecovery"].is_null()
+            // A submitted input with an unknown outcome keeps its native receipt wait.
+            if record["restartRecovery"]["stage"] == "held"
+                && record["restartRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
+                && record["contextRepairWait"]["scope"] == "native"
+                && record["contextRepairWait"]["events"] == json!([body["id"]])
+                && record["status"] == "queued"
+                && record["autoWake"] == true
+                && record["disconnectRecovery"].is_null()
             {
                 break record;
             }
@@ -3807,7 +3815,7 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
             direct_agent_debug(&fixture.store, agent_id)
         )
     });
-    assert_eq!(held["autoWake"], false);
+    assert_eq!(held["error"], held["contextRepairWait"]["error"]);
     assert_eq!(
         fixture
             .store
