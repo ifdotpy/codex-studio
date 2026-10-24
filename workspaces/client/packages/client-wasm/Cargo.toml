@@ -10,4 +10,5 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 studio-client-domain = { path = "../client-domain" }
 serde_json.workspace = true
+sha2.workspace = true
 wasm-bindgen = "=0.2.129"

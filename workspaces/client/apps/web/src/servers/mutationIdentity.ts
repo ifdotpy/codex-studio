@@ -1,4 +1,5 @@
 import { randomUUID } from "../uuid";
+import { sha256Hex } from "../sha256";
 import { serverViewId } from "./environment";
 import { serverLocalStorage } from "./storage";
 const UNCERTAIN_RESPONSE_CODES = new Set([
@@ -60,15 +61,9 @@ export function createMutationJournal(
         unknown() {},
         reject(_status: number, _body: unknown) {},
       };
-    const hash = Array.from(
-      new Uint8Array(
-        await crypto.subtle.digest(
-          "SHA-256",
-          new TextEncoder().encode(path + "\n" + JSON.stringify(body)),
-        ),
-      ),
-      (byte) => byte.toString(16).padStart(2, "0"),
-    ).join("");
+    const hash = await sha256Hex(
+      new TextEncoder().encode(path + "\n" + JSON.stringify(body)),
+    );
     const key = `studio-server-write:${hash}`;
     const existing = storage.getItem(key);
     let saved: { requestId: string; uncertain: boolean } | undefined;
