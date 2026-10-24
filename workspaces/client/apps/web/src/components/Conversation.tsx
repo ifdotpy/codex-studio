@@ -1525,6 +1525,7 @@ export default function Conversation(p: {
             setLimitsOpen(true);
             p.reloadLimits();
           }}
+          refreshLimits={p.reloadLimits}
           newChat={p.onNewChat}
           chooseChat={p.onChooseChat}
         />
