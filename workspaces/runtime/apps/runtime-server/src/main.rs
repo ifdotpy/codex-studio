@@ -110,6 +110,10 @@ fn async_executor_worker_threads(
 }
 
 fn main() -> std::process::ExitCode {
+    // launchd gives a soft open-file limit of 256; the providers and commands that this
+    // process starts inherit the raised limit (`open_files`).
+    #[cfg(unix)]
+    studio_runtime_process::open_files::raise_open_file_limit();
     // The launcher of agent sign-in links runs this binary (`browser_host::write_launcher`).
     #[cfg(unix)]
     if let Some(code) = studio_runtime_services::browser_host::shim_main(env::args_os()) {
