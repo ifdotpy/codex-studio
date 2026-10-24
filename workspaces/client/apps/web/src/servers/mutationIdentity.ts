@@ -2,6 +2,11 @@ import { randomUUID } from "../uuid";
 import { sha256Hex } from "../sha256";
 import { serverViewId } from "./environment";
 import { serverLocalStorage } from "./storage";
+import {
+  createMonitorInputStore,
+  type MonitorInputEntry,
+  type MonitorInputStore,
+} from "./monitorInputStore";
 const MONITOR_INPUT_PATH = "/api/monitor/input";
 const UNCERTAIN_RESPONSE_CODES = new Set([
   "remote_timeout",
@@ -15,61 +20,28 @@ const UNCERTAIN_RESPONSE_CODES = new Set([
   "request_conflict",
 ]);
 
-type MonitorInputEntry = {
-  requestId: string;
-  payloadDigest: string;
-  uncertain: boolean;
-};
+type MonitorJournalOwner = { readonly monitorInput: MonitorInputStore };
 
-function monitorInputJournalKey(monitorId: string): string {
-  if (!monitorId) throw new Error("A monitor ID is required for input.");
-  return `studio-monitor-input:${monitorId}`;
-}
-
-function readMonitorInput(
-  storage: Storage,
-  key: string,
-): MonitorInputEntry | undefined {
-  const raw = storage.getItem(key);
-  if (raw === null) return;
-  try {
-    const entry = JSON.parse(raw);
-    if (
-      entry &&
-      typeof entry === "object" &&
-      Object.keys(entry).length === 3 &&
-      typeof entry.requestId === "string" &&
-      entry.requestId &&
-      typeof entry.payloadDigest === "string" &&
-      /^[0-9a-f]{64}$/.test(entry.payloadDigest) &&
-      typeof entry.uncertain === "boolean"
-    )
-      return entry as MonitorInputEntry;
-  } catch {}
-  throw new Error(
-    "The monitor input journal is invalid. Do not send another input until its result is confirmed.",
-  );
-}
-
-export function pendingMonitorInput(
-  storage: Storage,
+export async function pendingMonitorInput(
+  journal: MonitorJournalOwner,
   monitorId: string,
-): { requestId: string } | null {
-  const entry = readMonitorInput(storage, monitorInputJournalKey(monitorId));
-  return entry ? { requestId: entry.requestId } : null;
+): Promise<{ requestId: string } | null> {
+  return journal.monitorInput.transition(monitorId, (entry) => ({
+    entry,
+    result: entry ? { requestId: entry.requestId } : null,
+  }));
 }
 
 // The caller must first verify an exact acknowledged or rejected process receipt.
-export function finishMonitorInput(
-  storage: Storage,
+export async function finishMonitorInput(
+  journal: MonitorJournalOwner,
   monitorId: string,
   requestId: string,
-): boolean {
-  const key = monitorInputJournalKey(monitorId);
-  const entry = readMonitorInput(storage, key);
-  if (!entry || entry.requestId !== requestId) return false;
-  storage.removeItem(key);
-  return true;
+): Promise<boolean> {
+  return journal.monitorInput.transition(monitorId, (entry) => {
+    const matches = entry?.requestId === requestId;
+    return { entry: matches ? undefined : entry, result: matches };
+  });
 }
 
 export function serverMutationResponseIsUncertain(
@@ -89,6 +61,7 @@ export function serverMutationResponseIsUncertain(
 export function createMutationJournal(
   serverId: string | null,
   storage: Storage,
+  monitorInput: MonitorInputStore = createMonitorInputStore(serverId),
 ) {
   async function beginMonitorInput(body: unknown, explicitRequestId?: string) {
     const value =
@@ -96,7 +69,7 @@ export function createMutationJournal(
     if (typeof value.id !== "string" || !value.id) {
       throw new Error("A monitor ID is required for input.");
     }
-    const key = monitorInputJournalKey(value.id);
+    const monitorId = value.id;
     const serialized = JSON.stringify(body);
     const payloadDigest = await sha256Hex(
       new TextEncoder().encode(MONITOR_INPUT_PATH + "\n" + serialized),
@@ -109,47 +82,55 @@ export function createMutationJournal(
       value.requestId,
       value.request_id,
     ].find((id): id is string => typeof id === "string" && !!id);
-    const saved = readMonitorInput(storage, key);
-    if (
-      saved &&
-      (saved.payloadDigest !== payloadDigest ||
-        (explicit && saved.requestId !== explicit))
-    ) {
-      throw new Error(
-        "Resolve the pending monitor input before sending different input.",
-      );
-    }
-    // A saved unresolved attempt can have reached the process before a reload.
-    const entry: MonitorInputEntry = saved
-      ? { ...saved, uncertain: true }
-      : {
-          requestId: explicit || randomUUID(),
-          payloadDigest,
-          uncertain: false,
-        };
-    storage.setItem(key, JSON.stringify(entry));
-    const currentEntry = () => {
-      const current = readMonitorInput(storage, key);
-      return current?.requestId === entry.requestId &&
-        current.payloadDigest === entry.payloadDigest
-        ? current
-        : undefined;
-    };
-    const finish = () => {
-      if (currentEntry()) storage.removeItem(key);
-    };
-    const unknown = () => {
-      const current = currentEntry();
-      if (current)
-        storage.setItem(key, JSON.stringify({ ...current, uncertain: true }));
-    };
+    const entry = await monitorInput.transition(monitorId, (saved) => {
+      if (JSON.stringify(body) !== serialized) {
+        throw new Error("Monitor input changed before its identity was saved.");
+      }
+      if (
+        saved &&
+        (saved.payloadDigest !== payloadDigest ||
+          (explicit && saved.requestId !== explicit))
+      ) {
+        throw new Error(
+          "Resolve the pending monitor input before sending different input.",
+        );
+      }
+      // A saved unresolved attempt can have reached the process before a reload.
+      const next: MonitorInputEntry = saved
+        ? { ...saved, uncertain: true }
+        : {
+            requestId: explicit || randomUUID(),
+            payloadDigest,
+            uncertain: false,
+          };
+      return { entry: next, result: next };
+    });
+    const updateCurrent = (
+      update: (current: MonitorInputEntry) => MonitorInputEntry | undefined,
+    ) =>
+      monitorInput.transition(monitorId, (current) => ({
+        entry:
+          current?.requestId === entry.requestId &&
+          current.payloadDigest === entry.payloadDigest
+            ? update(current)
+            : current,
+        result: undefined,
+      }));
+    const finish = () => updateCurrent(() => undefined);
+    const unknown = () =>
+      updateCurrent((current) => ({ ...current, uncertain: true }));
     return {
       requestId: entry.requestId,
       finish,
       unknown,
       reject(status: number, body: unknown) {
-        if (serverMutationResponseIsUncertain(status, body)) unknown();
-        else if (currentEntry()?.uncertain === false) finish();
+        return updateCurrent((current) =>
+          serverMutationResponseIsUncertain(status, body)
+            ? { ...current, uncertain: true }
+            : current.uncertain
+              ? current
+              : undefined,
+        );
       },
     };
   }
@@ -222,7 +203,9 @@ export function createMutationJournal(
     };
   }
 
-  return beginServerMutation;
+  return Object.defineProperty(beginServerMutation, "monitorInput", {
+    value: monitorInput,
+  }) as typeof beginServerMutation & MonitorJournalOwner;
 }
 export const beginServerMutation = createMutationJournal(
   serverViewId,
