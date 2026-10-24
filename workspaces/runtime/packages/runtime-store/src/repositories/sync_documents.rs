@@ -226,6 +226,57 @@ impl SyncDocumentsRepository {
         })
     }
 
+    /// Read one ref's durable interval and watermark in the caller's SQLite snapshot.
+    /// `reset` selects a replacement snapshot when the cursor is missing, expired,
+    /// or ahead of this store. Snapshots omit tombstones; deltas retain removals.
+    /// A checkpoint below `max_sequence` means the bounded page is incomplete.
+    pub fn resume_entities(
+        transaction: &Transaction<'_>,
+        since: Option<i64>,
+        collection: Option<&str>,
+        id: Option<&str>,
+        limit: i64,
+    ) -> StoreResult<EntityPage> {
+        let tombstone_floor = Self::entity_tombstone_floor(transaction)?;
+        let max_sequence = Self::entity_sequence(transaction)?.max(tombstone_floor);
+        let reset = since.is_none_or(|seq| seq < tombstone_floor || seq > max_sequence || seq < 0);
+        let after = if reset { 0 } else { since.unwrap_or(0) };
+        let limit = limit.clamp(1, SYNC_ENTITY_STREAM_MAX_DOCUMENTS);
+        let mut statement = transaction.prepare_cached(
+            "SELECT collection,id,seq,payload,deleted FROM sync_entities \
+             WHERE collection NOT LIKE 'transcript:%' AND seq>?1 AND seq<=?2 \
+               AND (?3 IS NULL OR collection=?3) AND (?4 IS NULL OR id=?4) \
+               AND (?5=0 OR deleted=0) ORDER BY seq LIMIT ?6",
+        )?;
+        let mut rows = statement
+            .query_map(
+                params![
+                    after,
+                    max_sequence,
+                    collection,
+                    id,
+                    i64::from(reset),
+                    limit + 1
+                ],
+                entity_row,
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        let checkpoint = if rows.len() as i64 > limit {
+            rows.truncate(limit as usize);
+            rows.last().map_or(after, |row| row.sequence)
+        } else {
+            max_sequence
+        };
+        Ok(EntityPage {
+            rows,
+            max_sequence,
+            tombstone_floor,
+            initial_high: if reset { max_sequence } else { 0 },
+            checkpoint,
+            reset,
+        })
+    }
+
     pub fn draft(transaction: &Transaction<'_>, id: &str) -> StoreResult<Option<SyncDocument>> {
         transaction
             .query_row_cached(
@@ -649,6 +700,61 @@ inventory::submit! {
 mod tests {
     use super::SyncDocumentsRepository;
     use rusqlite::Connection;
+
+    #[test]
+    fn resume_entities_current_old_and_expired_cursors() {
+        let mut connection = Connection::open_in_memory().expect("memory SQLite");
+        connection.execute_batch(
+            "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
+             CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO sync_entities VALUES('agent','a',2,'a','{}',0),('agent','b',4,'b','{}',0),('agent','gone',5,'g','{}',1),('transcript:a','item:x',6,'x',NULL,0);
+             INSERT INTO sync_entity_meta VALUES('entity_tombstone_floor','1');",
+        ).expect("fixture");
+        let transaction = connection.transaction().expect("snapshot");
+        let current =
+            SyncDocumentsRepository::resume_entities(&transaction, Some(5), None, None, 100)
+                .expect("current");
+        assert!(!current.reset);
+        assert!(current.rows.is_empty());
+        assert_eq!(current.checkpoint, 5);
+        let old = SyncDocumentsRepository::resume_entities(&transaction, Some(2), None, None, 100)
+            .expect("older");
+        assert!(!old.reset);
+        assert_eq!(
+            old.rows
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "gone"]
+        );
+        for since in [None, Some(0), Some(6), Some(-1)] {
+            let expired =
+                SyncDocumentsRepository::resume_entities(&transaction, since, None, None, 100)
+                    .expect("expired");
+            assert!(expired.reset);
+            assert_eq!(
+                expired
+                    .rows
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["a", "b"]
+            );
+            assert_eq!(expired.checkpoint, 5);
+        }
+        let scoped = SyncDocumentsRepository::resume_entities(
+            &transaction,
+            Some(2),
+            Some("agent"),
+            Some("a"),
+            100,
+        )
+        .expect("scoped");
+        assert!(
+            scoped.rows.is_empty(),
+            "an unrelated entity never enters this ref"
+        );
+    }
 
     #[test]
     fn entity_replay_and_patch_preserve_sequence_until_value_or_deletion_changes() {
