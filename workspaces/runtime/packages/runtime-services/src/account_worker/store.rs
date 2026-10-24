@@ -8,6 +8,10 @@ use crate::notification_dispatch::{
     ProviderDeliveryIdentity, dispatch_notification_with_effects, flush_notification_streams,
 };
 use rusqlite::{OptionalExtension, params};
+use studio_runtime_schema::shared_values::{
+    PROVIDER_RESUME_UNKNOWN_ERROR, PROVIDER_SESSION_MISSING_ERROR,
+    PROVIDER_THREAD_START_UNKNOWN_ERROR,
+};
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::{EventWriteRepository, NotificationDispatchRepository};
 
@@ -1167,12 +1171,24 @@ fn settle_outcome(
             true
         }
         SessionOutcome::Write { ticket, .. } => {
-            uncertain(tx, &context, ticket.as_ref(), false, session_closed)?
+            if let Some((agent, epoch)) = retry_unknown_resume(tx, &context, session_closed)? {
+                effect = Some(Effect::Wake(agent, epoch));
+                true
+            } else {
+                uncertain(tx, &context, ticket.as_ref(), false, session_closed)?
+            }
         }
         SessionOutcome::Resolved {
             outcome: RequestOutcome::Unknown,
             ticket,
-        } => uncertain(tx, &context, Some(&ticket), false, session_closed)?,
+        } => {
+            if let Some((agent, epoch)) = retry_unknown_resume(tx, &context, session_closed)? {
+                effect = Some(Effect::Wake(agent, epoch));
+                true
+            } else {
+                uncertain(tx, &context, Some(&ticket), false, session_closed)?
+            }
+        }
         SessionOutcome::Resolved {
             ticket,
             outcome: RequestOutcome::Reply { body, .. },
@@ -1184,6 +1200,17 @@ fn settle_outcome(
                     // attempt, as in Python, which drops a reply whose
                     // preparation already finished. It neither prepares nor
                     // settles the attempt a second time.
+                }
+                Method::ThreadResume | Method::ThreadStart if matches!(&body, ResponseBody::Error(error) if session_missing(error)) =>
+                {
+                    // The saved session is gone, so no retry can resume it. The input
+                    // was never sent: it settles as not sent, and the transcript stays.
+                    SchedulerRepository::settle_start_outcome(
+                        tx,
+                        &i.identity(),
+                        "failed",
+                        Some(PROVIDER_SESSION_MISSING_ERROR),
+                    )?;
                 }
                 Method::ThreadResume | Method::ThreadStart => {
                     // Name the provider's own error; a rejected reply names
@@ -1443,6 +1470,57 @@ fn not_sent_reason(
     )
 }
 
+/// The error data flag of a missing saved session. The Claude bridge owns the
+/// name, so it is read from the bridge source instead of being copied here.
+fn session_missing_flag() -> &'static str {
+    static FLAG: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(|| {
+        include_str!("../../../../../providers/apps/claude-bridge/session-store.mjs")
+            .split_once("export const SESSION_MISSING = \"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(flag, _)| flag)
+            .expect("Claude bridge session missing flag")
+    });
+    *FLAG
+}
+
+/// Whether a provider error reply says that the thread's saved session is gone.
+fn session_missing(error: &Value) -> bool {
+    error
+        .get("data")
+        .and_then(|data| data.get(session_missing_flag()))
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
+/// The stored reason of a thread/resume whose input went back to the queue.
+const UNKNOWN_THREAD_RESUME_RETRY: &str =
+    "Provider thread resume outcome is unknown; the input returned to the queue once.";
+
+/// Return the input of a thread/resume whose outcome is unknown while its
+/// provider session stays open, for example after its reply deadline. A thread
+/// request carries no input (only turn/start does), and resuming a thread again
+/// creates nothing, so the retry cannot repeat a message. It happens once per
+/// run; a second unknown outcome holds the input. Returns the agent to wake.
+fn retry_unknown_resume(
+    tx: &studio_runtime_store::Transaction<'_>,
+    context: &Pending,
+    session_closed: bool,
+) -> Result<Option<(String, i64)>, WorkerError> {
+    if session_closed || context.method()? != Method::ThreadResume {
+        return Ok(None);
+    }
+    let identity = context.intent.identity();
+    if studio_runtime_store::ExecutionHistoryRepository::start_returns(tx, &identity.attempt_id)?
+        > 0
+    {
+        return Ok(None);
+    }
+    if SchedulerRepository::return_unstarted_input(tx, &identity, UNKNOWN_THREAD_RESUME_RETRY)? {
+        return Ok(Some((identity.agent_id, identity.epoch)));
+    }
+    Ok(None)
+}
+
 /// Settle a request whose provider outcome is unknown. Returns true when the
 /// request is retired because its attempt went back to the queue.
 fn uncertain(
@@ -1476,7 +1554,12 @@ fn uncertain(
             TurnStart::Unknown
         } else {
             TurnStart::Blocked {
-                reason: studio_runtime_schema::shared_values::PROVIDER_RESUME_UNKNOWN_ERROR.into(),
+                reason: if context.method()? == Method::ThreadStart {
+                    PROVIDER_THREAD_START_UNKNOWN_ERROR
+                } else {
+                    PROVIDER_RESUME_UNKNOWN_ERROR
+                }
+                .into(),
             }
         };
         SchedulerRepository::settle_start_outcome(
