@@ -276,6 +276,15 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
     ]);
     assert.ok(!JSON.stringify(steps).includes("--release"));
     assert.equal(steps.find((s) => s.id === "guest").requires, "workspace");
+    assert.equal(
+      steps.find((s) => s.id === "web unit tests").requires,
+      "workspace",
+    );
+    assert.ok(
+      steps
+        .find((s) => s.id === "workspace")
+        .commands[0][1].includes("--examples"),
+    );
   }
   assert.ok(
     gateSteps(process.cwd(), "test-fast-rest-non-rust").every(

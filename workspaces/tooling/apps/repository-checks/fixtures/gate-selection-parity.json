@@ -1,14 +1,18 @@
 {
-  "baselineRevision": "3d46306f5172ff2fdd821c7f1486349f955ef0b3",
+  "baselineRevision": "7946e68cfc30b82a5f5787a3ced7728848234177",
   "platform": "linux-x86_64",
-  "evidence": "Pre-change workspace binaries and Cargo metadata reused from gate-orchestration analysis; no compilation or test execution. Native nextest evaluates the new profile and each scoped clause.",
+  "evidence": "Native nextest evaluates both the pre-migration scoped facade union and profile.fast against the same current workspace test binaries. The sole explicit addition is the schema-lazy preparation witness requested during integration.",
   "selectionOwner": ".config/nextest.toml profile.fast",
-  "beforeUnique": 484,
-  "afterUnique": 484,
-  "equal": true,
+  "beforeUnique": 526,
+  "afterUnique": 527,
+  "equalAfterExplicitAdditions": true,
+  "explicitAdditions": [
+    "studio-runtime-schema::tests::preparing_named_schemas_does_not_compile_validators"
+  ],
+  "unrequestedRemovals": [],
   "subsetOfComprehensive": true,
-  "comprehensiveNonignored": 3533,
-  "selectedIdsSha256": "6172251e5393ff0d69261d246ea5093afb3f67410a449c2e8646e187e754269a",
+  "comprehensiveNonignored": 3527,
+  "selectedIdsSha256": "b7977cef507dc26d50a29c91853b84cdee5aeee6c05f406ea38724a53f5bab53",
   "clauses": [
     {
       "purpose": "Rust operator CLI witnesses",
@@ -28,7 +32,7 @@
     {
       "purpose": "Linux VM start, watchdog and share mount witnesses",
       "linuxOnly": false,
-      "matched": 22
+      "matched": 21
     },
     {
       "purpose": "Linux VM start, watchdog and share mount witnesses",
@@ -48,7 +52,7 @@
     {
       "purpose": "retained provider disconnect witnesses",
       "linuxOnly": false,
-      "matched": 2
+      "matched": 6
     },
     {
       "purpose": "supervisor protocol and identity witnesses",
@@ -63,12 +67,12 @@
     {
       "purpose": "draft wire and legacy compatibility witnesses",
       "linuxOnly": false,
-      "matched": 3
+      "matched": 6
     },
     {
-      "purpose": "JSON compression and native decoding witnesses",
+      "purpose": "JSON and stream compression with native decoding witnesses",
       "linuxOnly": false,
-      "matched": 5
+      "matched": 11
     },
     {
       "purpose": "native client boundary witnesses",
@@ -98,7 +102,7 @@
     {
       "purpose": "Rust state migration and SQL callback witnesses",
       "linuxOnly": false,
-      "matched": 25
+      "matched": 34
     },
     {
       "purpose": "server command snapshot witnesses",
@@ -113,12 +117,12 @@
     {
       "purpose": "provider callback, task submission and monitor projection witnesses",
       "linuxOnly": false,
-      "matched": 10
+      "matched": 17
     },
     {
       "purpose": "independent provider reaping witnesses",
       "linuxOnly": true,
-      "matched": 7
+      "matched": 11
     },
     {
       "purpose": "project preparation and retained worktree witnesses",
@@ -153,17 +157,17 @@
     {
       "purpose": "monitor ownership, history lock boundaries, and recovery witnesses",
       "linuxOnly": false,
-      "matched": 77
+      "matched": 75
     },
     {
       "purpose": "Rust SQL boundary and agent progress witnesses",
       "linuxOnly": false,
-      "matched": 54
+      "matched": 56
     },
     {
       "purpose": "task authority and Claude input witnesses",
       "linuxOnly": false,
-      "matched": 69
+      "matched": 72
     },
     {
       "purpose": "Desktop content identity and native attach witnesses",
@@ -173,7 +177,7 @@
     {
       "purpose": "Primary state stream and conversation revision witnesses",
       "linuxOnly": false,
-      "matched": 13
+      "matched": 21
     },
     {
       "purpose": "Draft stream content witness",
@@ -181,5 +185,12 @@
       "matched": 1
     }
   ],
-  "wallSeconds": 4.788
+  "historicalMigration": {
+    "baselineRevision": "3d46306f5172ff2fdd821c7f1486349f955ef0b3",
+    "beforeUnique": 484,
+    "afterUnique": 484,
+    "equal": true,
+    "selectedIdsSha256": "6172251e5393ff0d69261d246ea5093afb3f67410a449c2e8646e187e754269a"
+  },
+  "wallSeconds": 10.593
 }

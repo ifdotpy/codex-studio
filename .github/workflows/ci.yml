@@ -102,7 +102,7 @@ jobs:
       - name: Pack inputs for checks that never compile Rust
         run: |
           mkdir -p "$RUNNER_TEMP/prepared-check-inputs"
-          tar -cf "$RUNNER_TEMP/prepared-check-inputs/prepared-check-inputs.tar" workspaces/client/apps/web/dist workspaces/client/apps/web/src/wasm/generated target/debug/codex-process-supervisor target/debug/studio-runtime-server
+          tar -cf "$RUNNER_TEMP/prepared-check-inputs/prepared-check-inputs.tar" workspaces/client/apps/web/dist workspaces/client/apps/web/src/wasm/generated target/debug/codex-process-supervisor target/debug/studio-runtime-server target/debug/examples/draft-server
       - uses: ./.github/actions/upload-build-output
         with:
           name: prepared-check-inputs
@@ -122,7 +122,7 @@ jobs:
         with:
           name: prepared-check-inputs
           directory: ${{ runner.temp }}/prepared-check-inputs
-      - name: Restore the exact renderer, WASM and supervisor inputs
+      - name: Restore the exact renderer, WASM, supervisor and draft-server inputs
         run: tar -xf "$RUNNER_TEMP/prepared-check-inputs/prepared-check-inputs.tar"
       - name: List facade recipes
         run: just --list

@@ -22,8 +22,9 @@ generated-contract and dependency guards, and the VM guest Python suite through 
 fixed concurrent lanes: Rust preparation and tests, JavaScript checks, and the guest
 suite. Cargo compilation stays in the Rust lane with four build jobs. WASM is
 generated once; the renderer is built once before the native crate embeds it.
-JavaScript checks wait for WASM; the guest waits for the workspace build's debug
-supervisor. Both can overlap the Rust build or test run. The
+Type checks wait for WASM; web tests wait for the workspace build's debug
+`examples/draft-server`, and the guest waits for its debug supervisor. The gate
+passes both binary paths explicitly. These checks overlap the Rust build or test run. The
 [WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.mjs) requires
 the exact binding generator version pinned by the client-wasm crate; its error
 gives the installation command. Cold builds are outside the warm short-tier
@@ -123,7 +124,7 @@ and `AI_AGENT` settings using `scrubAgentEnvironment` in `gate-config.mjs`;
 fixtures and the gate supply their explicit binary paths afterward.
 
 `just test-fast-rest` runs the comprehensive remainder without browser smoke.
-`just test-fast-rest-non-rust` consumes prebuilt WASM and a debug supervisor and
+`just test-fast-rest-non-rust` consumes prebuilt WASM, a debug supervisor and draft-server and
 runs only the JavaScript and guest lanes: no Clippy, WASM builder or Rust
 compilation. Hosted CI restores commit- and SHA-256-verified artifacts from the
 workspace build job for this remainder and browser smoke. Standalone browser
@@ -224,7 +225,10 @@ preserving its package and binary-kind scope and adding a purpose comment. The
 old facade `nextestAnyOf` lists are removed. Use nextest's native `list --profile
 fast` to inspect selection; `ci` is the comprehensive superset. The migration's
 [recorded parity evidence](../workspaces/tooling/apps/repository-checks/fixtures/gate-selection-parity.json)
-compares 484 unique Linux witnesses and checks that every clause matches tests.
+preserves the original 484-ID migration evidence and compares the 526 witnesses
+on the integration baseline, with the explicitly added schema-preparation witness
+bringing the current selection to 527. Every Linux clause matches tests, and the
+selection is a subset of comprehensive.
 Fast Vitest includes belong in the package's `vitest.fast.config.*`, never a
 second facade or package-script file list. Package manifests own
 `codexStudioChecks` mappings.

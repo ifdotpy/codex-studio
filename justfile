@@ -100,7 +100,7 @@ test-fast-rust-partition partition count archive="":
       source=(--archive-file "$3" --workspace-remap . --extract-to . --extract-overwrite)
       supervisor="$PWD/target/debug/codex-process-supervisor"
     else
-      cargo build --workspace --tests --bins --locked
+      cargo build --workspace --tests --bins --examples --locked
       source=(--workspace --locked)
       supervisor="$(node -p 'require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "debug", "codex-process-supervisor")')"
     fi
@@ -114,7 +114,7 @@ build-rust-test-archive file:
       echo "Unset CARGO_TARGET_DIR: test-fast-rust-partition extracts the archive into ./target" >&2
       exit 1
     fi
-    cargo build --workspace --tests --bins --locked
+    cargo build --workspace --tests --bins --examples --locked
     cargo nextest archive --workspace --locked --archive-file "$1"
     if ! tar -tf "$1" | grep -x 'target/debug/codex-process-supervisor' >/dev/null; then
       echo "The archive lacks target/debug/codex-process-supervisor, which test-fast-rust-partition selects" >&2

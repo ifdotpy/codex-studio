@@ -117,6 +117,13 @@ const DECLARATION_SECTIONS = [
 ];
 const BOUNDARY_ALLOWLIST = [
   {
+    importer: "studio-claude-bridge",
+    file: "vitest.config.mjs",
+    specifier: "../../../tooling/apps/repository-checks/gate-config.mjs",
+    reason:
+      "Bridge test configuration consumes the repository's ambient-agent environment policy.",
+  },
+  {
     importer: "codex-agents-desktop",
     file: "bridge.d.ts",
     specifier: "../web/src/desktop",
@@ -707,7 +714,7 @@ export function gateSteps(root, name) {
       ...cargo(
         "workspace",
         "Rust workspace build",
-        ["build", "--workspace", "--tests", "--bins", "--locked"],
+        ["build", "--workspace", "--tests", "--bins", "--examples", "--locked"],
         { buildOnly: true },
       ),
       requires: "renderer",
@@ -761,11 +768,14 @@ export function gateSteps(root, name) {
     script("client helper type check", tooling, "typecheck:client-helper", {
       allowZeroTests: true,
     }),
-    script(
-      "web unit tests",
-      web,
-      fast ? "test:unit:fast" : "test:unit:prepared",
-    ),
+    {
+      ...script(
+        "web unit tests",
+        web,
+        fast ? "test:unit:fast" : "test:unit:prepared",
+      ),
+      requires: "workspace",
+    },
     ...["studio-claude-bridge", "codex-agents-desktop"].map((packageName) => ({
       ...script(
         packageName,
@@ -899,7 +909,7 @@ export function recipePlan(root, name) {
       : "codex-agents-web test:browser",
     requiredSetup:
       name === "test-fast-rest-non-rust"
-        ? "Frozen pnpm dependencies and prebuilt WASM/debug supervisor artifacts; no Rust compilation"
+        ? "Frozen pnpm dependencies and prebuilt WASM/debug supervisor/draft-server artifacts; no Rust compilation"
         : `Frozen pnpm dependencies; pinned Rust, wasm-bindgen and nextest; one WASM and renderer preparation${name === "test-comprehensive" || name === "test-heavy" ? "; browser binaries" : "; no browser or model provider"}`,
     reason: fast
       ? name === "test-fast"
@@ -945,7 +955,9 @@ export async function executeRecipe(root, name, steps, options = {}) {
         "workspaces/client/apps/web/src/wasm/generated/client.js",
       ),
     ),
-    workspace: existsSync(debugBinary(root, "codex-process-supervisor")),
+    workspace:
+      existsSync(debugBinary(root, "codex-process-supervisor")) &&
+      existsSync(debugBinary(root, "examples/draft-server")),
   };
   const typeCache = path.join(
     cacheDirectory(),
@@ -960,6 +972,7 @@ export async function executeRecipe(root, name, steps, options = {}) {
     NEXTEST_NO_TESTS: "fail",
     STUDIO_TSC_CACHE: typeCache,
     STUDIO_SUPERVISOR_BINARY: debugBinary(root, "codex-process-supervisor"),
+    STUDIO_DRAFT_SERVER_BINARY: debugBinary(root, "examples/draft-server"),
     CODEX_STUDIO_RUNTIME_SERVER: debugBinary(root, "studio-runtime-server"),
   };
   // Fixed Rust, JS and guest lanes: no generic graph scheduler or resource inference.
