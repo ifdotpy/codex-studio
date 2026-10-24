@@ -42,6 +42,16 @@ impl RecoveryObservation {
                 && current.generation == self.scope.generation
         })
     }
+    /// The provider process that received the start no longer exists: this
+    /// observation's connection reached a later provider generation of the
+    /// account than the one the start was submitted on. A request held by that
+    /// process can no longer be applied after this read. The account worker's
+    /// first pass knows its connection generation but no supervisor identity.
+    pub fn replaced_generation(&self, snapshot: &RecoverySnapshot) -> bool {
+        snapshot.start_attempt()["connectionGeneration"]
+            .as_u64()
+            .is_some_and(|submitted| self.scope.generation > submitted)
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,7 +67,10 @@ pub fn start_absence(
     idle_twice: bool,
 ) -> StartAbsenceDecision {
     let a = snapshot.record();
-    if complete_history && idle_twice && observation.replaced_child(snapshot) {
+    if complete_history
+        && idle_twice
+        && (observation.replaced_child(snapshot) || observation.replaced_generation(snapshot))
+    {
         return StartAbsenceDecision::Restore;
     }
     let age = a["startAttempt"]["created"]

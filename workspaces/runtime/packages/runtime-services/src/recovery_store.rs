@@ -159,6 +159,16 @@ impl RecoveryEffects for RecoveryStore {
                                     updated.as_object_mut().ok_or(RecoveryError::CommitFailed)?;
                                 object.remove("startAttempt");
                                 object.remove("startOutcomeHold");
+                                // A restart-held input waited for this check;
+                                // the check closes its marker and the wait.
+                                if a["restartRecovery"]["stage"] == "held"
+                                    && !a["contextRepairWait"].is_null()
+                                {
+                                    object.remove("contextRepairWait");
+                                    updated["autoWake"] = json!(true);
+                                    updated["restartRecovery"]["stage"] = json!("finished");
+                                    updated["restartRecovery"]["reconciledAt"] = json!(current.at);
+                                }
                                 updated["status"] = json!("queued");
                                 updated["turnRecovery"] = json!({"at":current.at,"turnId":null,"outcome":"input_absent","source":"replaced_native_child","attemptId":attempt["id"]});
                             }

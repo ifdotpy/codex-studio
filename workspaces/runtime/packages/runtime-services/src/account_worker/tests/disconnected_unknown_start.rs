@@ -147,18 +147,33 @@ async fn applied_unknown_start_is_kept_after_a_disconnect(generation: u64) {
     replacement.shutdown().await.unwrap();
 }
 
-/// Absence from native history is not proof that the provider never applied
-/// the input: it stays `uncertain`, the wait stays visible, and nothing is sent.
-#[tokio::test]
-async fn a_disconnected_unknown_start_absent_from_history_stays_uncertain() {
-    let state = State::new().await;
-    let (mut next, mut replacement) = unknown_start_then_disconnect(&state, 2).await;
+/// Serve the native history reads of the replacement worker: the thread is
+/// idle and its history does not contain the input. A request that `ends`
+/// names is returned unanswered. Without such a request, the reads end when the
+/// worker's first pass is done; any other request fails.
+async fn serve_absent_history(
+    next: &mut Peer,
+    replacement: &AccountHandle,
+    ends: &[&str],
+) -> (bool, Option<Wire>) {
     let mut read = false;
     loop {
-        let wire = tokio::select! {
-            wire = next.next_write() => wire,
-            () = worker_barrier(&replacement) => break,
+        let wire = if ends.is_empty() {
+            tokio::select! {
+                wire = next.next_write() => wire,
+                () = worker_barrier(replacement) => return (read, None),
+            }
+        } else {
+            // The restored input is woken after the first pass, so the
+            // barrier can finish before its first request.
+            next.next_write().await
         };
+        if wire.value["method"]
+            .as_str()
+            .is_some_and(|method| ends.contains(&method))
+        {
+            return (read, Some(wire));
+        }
         let request = wire.value;
         let _ignored = wire.receipt.send(CommandReceipt::Written {
             remote_id: None,
@@ -176,6 +191,67 @@ async fn a_disconnected_unknown_start_absent_from_history_stays_uncertain() {
         };
         next.reply(&request, result).await;
     }
+}
+
+/// The provider process that received the start is gone: the replacement
+/// worker reached a later provider generation. Its idle thread and complete
+/// history without the input prove that the input was never applied, and the
+/// old request can no longer be applied. The input goes back to the queue and
+/// is sent exactly once; the agent does not wait for a manual repair.
+#[tokio::test]
+async fn a_replaced_provider_without_the_input_sends_it_once() {
+    let state = State::new().await;
+    let (mut next, mut replacement) = unknown_start_then_disconnect(&state, 2).await;
+    let restored = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        serve_absent_history(&mut next, &replacement, &["thread/resume", "turn/start"]),
+    )
+    .await;
+    let Ok((read, Some(mut wire))) = restored else {
+        let record = state.record().await;
+        panic!("the absent input was not restored after the provider was replaced: {record}");
+    };
+    assert!(read, "the replacement worker reads native history");
+    if wire.value["method"] == "thread/resume" {
+        let resume = wire.value;
+        let _ignored = wire.receipt.send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        });
+        next.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+            .await;
+        wire = next.next_write().await;
+    }
+    assert_eq!(wire.value["method"], "turn/start", "{}", wire.value);
+    let _ignored = wire.receipt.send(CommandReceipt::Written {
+        remote_id: None,
+        duplicate: false,
+    });
+    let start = wire.value;
+    assert_eq!(
+        start["params"]["clientUserMessageId"], "annotation:input",
+        "{start}"
+    );
+    next.accepted(&start).await;
+    worker_barrier(&replacement).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    let record = state.record().await;
+    assert!(record["contextRepairWait"].is_null(), "{record}");
+    assert!(
+        next.writes.try_recv().is_err(),
+        "the restored input is sent once"
+    );
+    replacement.shutdown().await.unwrap();
+}
+
+/// While the provider process that received the start still runs, absence from
+/// native history is not proof: that process can still apply the request. The
+/// input stays `uncertain`, the wait stays visible, and nothing is sent.
+#[tokio::test]
+async fn a_disconnected_unknown_start_absent_from_history_stays_uncertain() {
+    let state = State::new().await;
+    let (mut next, mut replacement) = unknown_start_then_disconnect(&state, 1).await;
+    let (read, _) = serve_absent_history(&mut next, &replacement, &[]).await;
     assert!(read, "the replacement worker reads native history");
     assert_eq!(state.event_status("input").await, "uncertain");
     let record = state.record().await;
