@@ -195,6 +195,7 @@ impl SupervisorProviderTaskFactory {
                 cached_initialize: None,
                 open_attempted: false,
                 provider_exited: false,
+                cleanup_error: None,
             };
             let task = tokio::spawn(actor.run());
             Ok(ProviderAttachment::from_task(
@@ -261,6 +262,24 @@ struct Rpc<S> {
     received_at: Instant,
 }
 impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
+    /// A supervisor EOF follows its ownership detach, whereas dropping our
+    /// socket only schedules that work. Bound cleanup even for a silent peer.
+    async fn close(&mut self) -> Result<(), AdapterError> {
+        tokio::time::timeout(RPC_TIMEOUT, async {
+            self.stream
+                .get_mut()
+                .shutdown()
+                .await
+                .map_err(SupervisorError::from)?;
+            tokio::io::copy(&mut self.stream, &mut tokio::io::sink())
+                .await
+                .map_err(SupervisorError::from)?;
+            Ok(())
+        })
+        .await
+        .unwrap_or(Err(AdapterError::Timeout))
+    }
+
     async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), AdapterError> {
         self.started = true;
         self.stream
@@ -385,6 +404,7 @@ struct AdapterTask {
     /// The supervisor reported the end of the attached child (`nextBatch`
     /// with its return code and closed output readers).
     provider_exited: bool,
+    cleanup_error: Option<String>,
 }
 
 fn pump_channel_closed(shutdown: bool, terminal: bool) -> Option<AdapterError> {
@@ -408,7 +428,7 @@ impl AdapterTask {
         let recovery_needed = self.status.borrow().initialization_recovery();
         TaskExit {
             result,
-            cleanup_error: None,
+            cleanup_error: self.cleanup_error,
             recovery_needed,
             // The supervisor owns the child: it outlives this attachment
             // unless the attachment saw it end.
@@ -438,6 +458,25 @@ impl AdapterTask {
             started: false,
             received_at: Instant::now(),
         };
+        let result = self.attached(&mut rpc).await;
+        self.record_cleanup(rpc.close().await);
+        result
+    }
+
+    fn record_cleanup(&mut self, result: Result<(), AdapterError>) {
+        if let Err(error) = result {
+            let message = format!("supervisor detach was not confirmed: {error}");
+            match &mut self.cleanup_error {
+                Some(previous) => {
+                    previous.push_str("; ");
+                    previous.push_str(&message);
+                }
+                None => self.cleanup_error = Some(message),
+            }
+        }
+    }
+
+    async fn attached(&mut self, rpc: &mut Rpc<UnixStream>) -> Result<(), AdapterError> {
         let handshake = serialize_frame(&handshake_request_v2(&self.identity))?;
         let reply = interruptible(&mut self.stop, rpc.exchange(&handshake)).await?;
         validate_handshake_v2(&reply)?;
@@ -465,7 +504,7 @@ impl AdapterTask {
                 .retained_environment(prior.pid, prior.return_code.is_some())
                 .await?;
             if prior.return_code.is_none() && !self.reattach_commands.is_empty() {
-                self.adopt_reattach_command(&mut rpc).await?;
+                self.adopt_reattach_command(rpc).await?;
             }
             if self.handled_cursor > prior.sequence {
                 return Err(AdapterError::InvalidConfiguration);
@@ -542,25 +581,36 @@ impl AdapterTask {
             received_at: Instant::now(),
         };
         let handshake = serialize_frame(&handshake_request_v2(&self.identity))?;
-        let reply = interruptible(&mut self.stop, event_rpc.exchange(&handshake)).await?;
-        validate_handshake_v2(&reply)?;
         let (pump_sender, pump_receiver) = mpsc::channel(1);
-        let pump_stop = self.stop.clone();
+        let mut pump_stop = self.stop.clone();
+        let event_shutdown = Shutdown::default();
+        let mut event_stop = event_shutdown.subscribe();
         let handle = self.open.handle.clone();
         let generation = opened.generation;
         let cursor = EventCursor(opened.acknowledged);
         let event_pump = tokio::spawn(async move {
-            event_pump(
-                event_rpc,
-                handle,
-                generation,
-                cursor,
-                pump_sender,
-                pump_stop,
-            )
-            .await
+            let result = tokio::select! {
+                biased;
+                _ = Shutdown::cancelled(&mut event_stop) => Err(AdapterError::Cancelled),
+                result = async {
+                    let reply = interruptible(&mut pump_stop, event_rpc.exchange(&handshake)).await?;
+                    validate_handshake_v2(&reply)?;
+                    event_pump(
+                        &mut event_rpc, handle, generation, cursor,
+                        pump_sender.clone(), pump_stop.clone(),
+                    ).await
+                } => result,
+            };
+            if let Err(error) = result {
+                tokio::select! {
+                    biased;
+                    _ = Shutdown::cancelled(&mut event_stop) => {},
+                    _ = send_pump_message(&pump_sender, &mut pump_stop, Err(error)) => {},
+                }
+            }
+            event_rpc.close().await
         });
-        self.serve(&mut rpc, pump_receiver, event_pump, cursor)
+        self.serve(rpc, pump_receiver, event_pump, event_shutdown, cursor)
             .await
     }
 
@@ -650,6 +700,7 @@ impl AdapterTask {
         rpc: &mut Rpc<S>,
         mut pump: mpsc::Receiver<Result<PumpMessage, AdapterError>>,
         event_pump: tokio::task::JoinHandle<Result<(), AdapterError>>,
+        event_shutdown: Shutdown,
         mut cursor: EventCursor,
     ) -> Result<(), AdapterError> {
         let mut terminal = false;
@@ -721,10 +772,8 @@ impl AdapterTask {
                 }
             }
         };
-        if !event_pump.is_finished() {
-            event_pump.abort();
-        }
-        let _ignored = event_pump.await;
+        event_shutdown.cancel();
+        self.record_cleanup(event_pump.await.unwrap_or(Err(AdapterError::TaskFailed)));
         result
     }
 
@@ -999,7 +1048,7 @@ async fn send_pump_message(
 }
 
 async fn event_pump(
-    mut rpc: Rpc<UnixStream>,
+    rpc: &mut Rpc<UnixStream>,
     handle: SupervisorHandle,
     generation: Generation,
     mut cursor: EventCursor,

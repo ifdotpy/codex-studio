@@ -305,6 +305,7 @@ fn actor(
         cached_initialize: None,
         open_attempted: false,
         provider_exited: false,
+        cleanup_error: None,
     };
     (actor, commands, journal)
 }
@@ -314,6 +315,132 @@ async fn read_request<S: AsyncRead + Unpin>(server: &mut BufReader<S>) -> Value 
     assert_ne!(server.read_line(&mut line).await.unwrap(), 0);
     serde_json::from_str(&line).unwrap()
 }
+
+async fn attachment_with_supervisor_peers() -> (
+    tempfile::TempDir,
+    ProviderAttachment,
+    BufReader<UnixStream>,
+    BufReader<UnixStream>,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let listener = tokio::net::UnixListener::bind(root.path().join("supervisor.sock")).unwrap();
+    let factory = SupervisorProviderTaskFactory::new(BackendIdentity {
+        backend_id: BackendId("detach-barrier".into()),
+        state_dir: root.path().into(),
+    });
+    let attachment = factory
+        .open(
+            ProviderHandle::for_account("unit"),
+            OpenOptions {
+                launch: ProviderLaunchSpec::new(
+                    vec!["fixture".into()],
+                    Default::default(),
+                    root.path().into(),
+                ),
+                clock: SessionClock::default(),
+                expected_generation: None,
+            },
+            Shutdown::default(),
+        )
+        .await
+        .unwrap();
+    let (socket, _) = listener.accept().await.unwrap();
+    let mut control = BufReader::new(socket);
+    let _handshake = read_request(&mut control).await;
+    control
+        .get_mut()
+        .write_all(b"{\"ok\":true,\"protocol\":2}\n")
+        .await
+        .unwrap();
+    let status = read_request(&mut control).await;
+    control.get_mut().write_all(format!("{}\n", serde_json::json!({"requestId":status["requestId"],"error":"Unknown supervisor handle"})).as_bytes()).await.unwrap();
+    let open = read_request(&mut control).await;
+    control.get_mut().write_all(format!("{}\n", serde_json::json!({"requestId":open["requestId"],"result":{"pid":1,"generation":1,"resumed":false,"sequence":0,"acknowledged":0}})).as_bytes()).await.unwrap();
+    let (socket, _) = listener.accept().await.unwrap();
+    let mut events = BufReader::new(socket);
+    let _handshake = read_request(&mut events).await;
+    events
+        .get_mut()
+        .write_all(b"{\"ok\":true,\"protocol\":2}\n")
+        .await
+        .unwrap();
+    assert_eq!(read_request(&mut events).await["action"], "nextBatch");
+    (root, attachment, control, events)
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_supervisor_detach_on_both_connections() {
+    tokio::time::timeout(RPC_TIMEOUT, async {
+        let (_root, mut attachment, mut control, mut events) =
+            attachment_with_supervisor_peers().await;
+        let mut shutdown = Box::pin(attachment.shutdown());
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(shutdown.as_mut().poll(cx).is_pending())).await
+        );
+        // The fake supervisor observes each FIN but withholds its EOF until
+        // ownership release. Neither local socket drop nor one EOF is enough.
+        assert_eq!(events.read(&mut [0]).await.unwrap(), 0);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(shutdown.as_mut().poll(cx).is_pending())).await,
+            "shutdown completed before the supervisor released the event connection"
+        );
+        events.get_mut().shutdown().await.unwrap();
+        assert_eq!(control.read(&mut [0]).await.unwrap(), 0);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(shutdown.as_mut().poll(cx).is_pending())).await,
+            "shutdown completed before the supervisor released the control connection"
+        );
+        control.get_mut().shutdown().await.unwrap();
+        let exit = shutdown.await;
+        assert!(matches!(exit.result, Err(AdapterError::Cancelled)));
+        assert!(exit.cleanup_error.is_none(), "{:?}", exit.cleanup_error);
+        assert!(exit.provider_retained);
+    })
+    .await
+    .expect("supervisor detach barrier hang guard");
+}
+#[tokio::test]
+async fn shutdown_reports_control_detach_timeout() {
+    let (_root, mut attachment, mut control, mut events) = attachment_with_supervisor_peers().await;
+    let task = tokio::spawn(async move { attachment.shutdown().await });
+    assert_eq!(events.read(&mut [0]).await.unwrap(), 0);
+    events.get_mut().shutdown().await.unwrap();
+    assert_eq!(control.read(&mut [0]).await.unwrap(), 0);
+    tokio::time::pause();
+    let exit = tokio::time::timeout(RPC_TIMEOUT * 2, task)
+        .await
+        .expect("supervisor detach must remain bounded")
+        .unwrap();
+    assert!(matches!(exit.result, Err(AdapterError::Cancelled)));
+    assert!(
+        exit.cleanup_error
+            .unwrap()
+            .contains(&AdapterError::Timeout.to_string())
+    );
+    assert!(exit.provider_retained);
+}
+
+#[tokio::test]
+async fn shutdown_reports_event_detach_timeout() {
+    let (_root, mut attachment, mut control, mut events) = attachment_with_supervisor_peers().await;
+    // The control peer will confirm detach; only the event peer withholds EOF.
+    control.get_mut().shutdown().await.unwrap();
+    let task = tokio::spawn(async move { attachment.shutdown().await });
+    assert_eq!(events.read(&mut [0]).await.unwrap(), 0);
+    tokio::time::pause();
+    let exit = tokio::time::timeout(RPC_TIMEOUT * 2, task)
+        .await
+        .expect("supervisor detach must remain bounded")
+        .unwrap();
+    assert!(matches!(exit.result, Err(AdapterError::Cancelled)));
+    assert!(
+        exit.cleanup_error
+            .unwrap()
+            .contains(&AdapterError::Timeout.to_string())
+    );
+    assert!(exit.provider_retained);
+}
+
 #[tokio::test(start_paused = true)]
 async fn idle_attachment_waits_for_events_without_periodic_next_requests() {
     let shutdown = Shutdown::default();
@@ -321,7 +448,12 @@ async fn idle_attachment_waits_for_events_without_periodic_next_requests() {
     let (socket, server) = tokio::io::duplex(4096);
     let mut server = BufReader::new(server);
     let (_pump_sender, pump) = mpsc::channel(1);
-    let event_pump = tokio::spawn(std::future::pending::<Result<(), AdapterError>>());
+    let event_shutdown = Shutdown::default();
+    let mut event_stop = event_shutdown.subscribe();
+    let event_pump = tokio::spawn(async move {
+        Shutdown::cancelled(&mut event_stop).await;
+        Ok(())
+    });
     let task = tokio::spawn(async move {
         let mut rpc = Rpc {
             stream: BufReader::new(socket),
@@ -330,7 +462,7 @@ async fn idle_attachment_waits_for_events_without_periodic_next_requests() {
             received_at: Instant::now(),
         };
         actor
-            .serve(&mut rpc, pump, event_pump, EventCursor(0))
+            .serve(&mut rpc, pump, event_pump, event_shutdown, EventCursor(0))
             .await
     });
     let (ack, barrier) = AdapterCommand::ack(EventCursor(0));
@@ -421,6 +553,7 @@ async fn full_journal_lane_keeps_ack_commands_live_while_next_event_waits() {
                 &mut rpc,
                 pump,
                 event_pump,
+                Shutdown::default(),
                 EventCursor(LANE_CAPACITY as u64),
             )
             .await

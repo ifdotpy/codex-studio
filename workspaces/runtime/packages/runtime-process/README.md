@@ -171,8 +171,14 @@ the factory validates launch configuration and wire size, then returns
 one supervisor-owned child; the account registry still owns attachment admission.
 
 The attachment exposes bounded `commands` and `journal` channels, a `status`
-watch, and cancellation-safe `completion()` / `shutdown()` futures. Both channels
-hold 16 entries with a 1 MiB serialized upper bound per entry (plus proportional
+watch, and cancellation-safe `completion()` / `shutdown()` futures. Completion
+half-closes both supervisor connections and waits for their EOF, which follows
+supervisor ownership release. This allows another backend identity to reattach
+without racing the old connections. Each detach wait uses the existing
+[`RPC_TIMEOUT`](src/provider_task.rs) bound; an unconfirmed detach is reported
+through `TaskExit::cleanup_error`, while the supervisor retains its child.
+
+Both channels hold 16 entries with a 1 MiB serialized upper bound per entry (plus proportional
 JSON allocation overhead). One outstanding RPC and at most 32 numeric response
 mappings are retained. Startup replay uses the same channel and no deferred queue.
 A receive slot is reserved before reading events.

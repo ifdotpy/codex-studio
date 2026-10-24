@@ -1006,6 +1006,8 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
     {
         // Disconnected client; durable receipts remain.
     }
+    // Keep the original socket open until ownership is released: clients
+    // half-close and await our EOF as the backend-detach acknowledgement.
     if let Ok(mut ownership) = supervisor.ownership.lock() {
         ownership.detach(admitted.as_deref());
     }
