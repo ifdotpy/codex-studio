@@ -1702,10 +1702,9 @@ mod tests {
         );
         assert_eq!(
             store
-                .read_async(
-                    "test/progress-is-transient",
-                    SyncDocumentsRepository::entity_sequence
-                )
+                .read_async("test/progress-is-transient", |connection| {
+                    SyncDocumentsRepository::entity_sequence(connection)
+                })
                 .await
                 .expect("sequence"),
             0,

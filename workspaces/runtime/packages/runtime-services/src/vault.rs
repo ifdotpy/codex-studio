@@ -898,7 +898,8 @@ mod tests {
             &settings,
             std::sync::Arc::new(move || {
                 if super::keys_ready(&watched_settings, "project-one").expect("readiness") {
-                    drop(sender.send(()));
+                    // The receiver outlives the owned watcher in this fixture.
+                    sender.send(()).expect("readiness receiver is alive");
                 }
             }),
         )
