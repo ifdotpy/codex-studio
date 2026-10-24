@@ -1,7 +1,6 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used)]
-#[path = "../src/account_registry.rs"]
-pub(crate) mod account_registry;
+use studio_runtime_server::{account_registry, host_runtime};
 
 use account_registry::{
     AccountLaunch, AccountLauncher, AccountRegistry, AccountRegistryConfig, AccountSessionBroker,
@@ -1464,12 +1463,6 @@ async fn shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_r
     assert!(writes.try_recv().is_err());
 }
 
-#[path = "../src/host_runtime.rs"]
-#[allow(dead_code)]
-pub(crate) mod host_runtime;
-#[path = "../src/provider_ports.rs"]
-#[allow(dead_code)]
-pub(crate) mod provider_ports;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "../src/runtime_shutdown.rs"]
 mod runtime_shutdown;
@@ -1611,11 +1604,8 @@ async fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Ve
             ), source(record) AS (
                 SELECT record FROM runtime_agents WHERE id = ?2
             )";
-        // Clones copy the whole agent, volatile fields included, and then move
-        // those fields like an older state's (format 2026-10-20).
-        let whole = studio_runtime_store::agent_volatile::merged_record(tx, &source)?
-            .expect("source agent")
-            .to_string();
+        // Seed the current split storage format; migration is not under test.
+        let record: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [&source], |row| row.get(0))?;
         tx.execute(
             &format!("{sequence}
                 INSERT INTO runtime_agents(id, record)
@@ -1625,9 +1615,16 @@ async fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Ve
                                 '$.executionSettingsAccountKey', CASE WHEN ?3 THEN printf('page-%06d', seq.i) ELSE 'default' END,
                                 '$.contextRepairWait', 'blocked')
                 FROM seq CROSS JOIN source"),
-            (count as i64, source.as_str(), each_account, whole),
+            (count as i64, source.as_str(), each_account, record),
         )?;
-        studio_runtime_store::agent_volatile::migrate_2026_10_20(tx)?;
+        let columns = studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
+            .map(|field| format!("\"{field}\"")).join(",");
+        tx.execute(
+            &format!("{sequence} INSERT INTO runtime_agent_volatile(id,{columns})
+                SELECT printf('00000000-0000-4000-8000-%012d', seq.i), {columns}
+                FROM seq CROSS JOIN runtime_agent_volatile WHERE id=?2"),
+            (count as i64, source.as_str()),
+        )?;
         tx.execute(
             &format!("{sequence}
                 INSERT INTO runtime_events(id, agent, kind, text, status, created, epoch)
@@ -1644,18 +1641,14 @@ async fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Ve
 }
 
 #[tokio::test]
-async fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
+async fn pending_backlog_pages_traverse_and_wrap() {
     let fixture = Fixture::new().await;
-    let expected = seed_backlog(&fixture, 4100, false).await;
+    let expected = seed_backlog(&fixture, 65, false).await;
+    let db = fixture.store.test_reader().expect("reader");
     let mut after = BTreeMap::new();
     let mut actual = Vec::new();
     while actual.len() < expected.len() {
-        let page = account_registry::target_page(
-            &fixture.store.test_reader().expect("reader"),
-            "",
-            &after,
-        )
-        .unwrap();
+        let page = account_registry::target_page(&db, "", &after).unwrap();
         let rows = &page["default"];
         assert!(rows.len() <= 32);
         actual.extend(rows.iter().map(|(id, _, _)| id.clone()));
@@ -1663,7 +1656,7 @@ async fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
     }
     assert_eq!(actual, expected);
     let wrapped_agents = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
+        &db,
         "",
         &BTreeMap::from([("default".into(), actual.last().unwrap().clone())]),
     )
@@ -1675,35 +1668,52 @@ async fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
             .collect::<Vec<_>>(),
         actual.iter().take(32).collect::<Vec<_>>()
     );
+}
+
+#[tokio::test]
+async fn pending_backlog_tail_beyond_the_historical_total_limit_is_reachable() {
+    let fixture = Fixture::new().await;
+    let expected = seed_backlog(&fixture, 4100, false).await;
+    let db = fixture.store.test_reader().expect("reader");
+    let page = account_registry::target_page(
+        &db,
+        "",
+        &BTreeMap::from([("default".into(), expected[4095].clone())]),
+    )
+    .unwrap();
+    assert_eq!(
+        page["default"]
+            .iter()
+            .map(|(id, _, _)| id)
+            .collect::<Vec<_>>(),
+        expected[4096..].iter().collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn account_backlog_pages_traverse_and_wrap() {
     let fixture = Fixture::new().await;
     seed_backlog(&fixture, 130, true).await;
-    let first = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
-        "",
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let db = fixture.store.test_reader().expect("reader");
+    let first = account_registry::target_page(&db, "", &BTreeMap::new()).unwrap();
     assert_eq!(first.len(), 128);
-    let second = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
-        first.last_key_value().unwrap().0,
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let second =
+        account_registry::target_page(&db, first.last_key_value().unwrap().0, &BTreeMap::new())
+            .unwrap();
     assert_eq!(second.len(), 2);
     assert!(second.keys().all(|account| !first.contains_key(account)));
-    let wrapped_accounts = account_registry::target_page(
-        &fixture.store.test_reader().expect("reader"),
-        second.last_key_value().unwrap().0,
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let wrapped_accounts =
+        account_registry::target_page(&db, second.last_key_value().unwrap().0, &BTreeMap::new())
+            .unwrap();
     assert_eq!(wrapped_accounts.len(), 128);
     assert_eq!(
         wrapped_accounts.first_key_value().unwrap().0,
         first.first_key_value().unwrap().0
     );
+}
 
+#[tokio::test]
+async fn account_backlog_rejects_invalid_stored_account() {
     let fixture = Fixture::new().await;
     let source = fixture.agents[0]["id"].as_str().unwrap();
     let source = source.to_owned();

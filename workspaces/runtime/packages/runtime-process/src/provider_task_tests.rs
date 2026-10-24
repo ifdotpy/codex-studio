@@ -915,7 +915,7 @@ fn scripted_records(
 /// strings before libSystem startup. A reattach reads again until the record
 /// equals the accepted launch, instead of refusing a correct child.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retained_environment_settles_after_a_transient_launch_record() {
     use std::sync::atomic::Ordering;
     let clean = launch_environment();
@@ -930,7 +930,7 @@ async fn retained_environment_settles_after_a_transient_launch_record() {
     let shutdown = Shutdown::default();
     let mut stop = shutdown.subscribe();
     let slots = Arc::new(Semaphore::new(1));
-    let settled = settled_environment(&mut stop, &slots, &clean, Duration::from_secs(5), read)
+    let settled = settled_environment(&mut stop, &slots, &clean, RETAINED_ENVIRONMENT_SETTLE, read)
         .await
         .unwrap();
     assert_eq!(settled, clean);
@@ -940,7 +940,7 @@ async fn retained_environment_settles_after_a_transient_launch_record() {
 
 /// A child whose launch record keeps differing is still refused.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retained_environment_refuses_a_record_that_never_matches() {
     use std::sync::atomic::Ordering;
     let clean = launch_environment();
@@ -950,8 +950,10 @@ async fn retained_environment_refuses_a_record_that_never_matches() {
     let shutdown = Shutdown::default();
     let mut stop = shutdown.subscribe();
     let slots = Arc::new(Semaphore::new(1));
+    let started = Instant::now();
     let result =
-        settled_environment(&mut stop, &slots, &clean, Duration::from_millis(50), read).await;
+        settled_environment(&mut stop, &slots, &clean, RETAINED_ENVIRONMENT_SETTLE, read).await;
+    assert_eq!(started.elapsed(), RETAINED_ENVIRONMENT_SETTLE);
     assert!(matches!(result, Err(AdapterError::UnverifiableChild)));
     assert!(reads.load(Ordering::SeqCst) >= 2);
     assert_eq!(slots.available_permits(), 1);
@@ -959,7 +961,7 @@ async fn retained_environment_refuses_a_record_that_never_matches() {
 
 /// Shutdown ends the wait between two reads.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retained_environment_wait_ends_on_shutdown() {
     let clean = launch_environment();
     let (read, _reads) = scripted_records(vec![Err(io::ErrorKind::InvalidData.into())]);

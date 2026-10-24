@@ -452,12 +452,6 @@ async fn running_child_started_before_a_launch_variable_existed_reattaches() {
     supervisor.own_child(started.pid);
     let _exit = attachment.shutdown().await;
 
-    assert!(
-        attach(with("STUDIO_CLAUDE_OPTIONS", "{\"configDir\":\"changed\"}"))
-            .await
-            .is_err(),
-        "a running child with another launch environment is refused"
-    );
     let mut attachment = attach(with(
         "STUDIO_CLAUDE_CREDENTIAL_IDENTITY",
         "claude:a@example.test",

@@ -1,92 +1,93 @@
-//! Exercise the renderer's actual RxDB replication against the HTTP router.
-
-use std::{path::Path, sync::Arc, time::Duration};
+//! Rust-only witness of the server contract used by the web RxDB ordering tests.
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    extract::ConnectInfo,
+    http::{Request, StatusCode},
+};
+use serde_json::{Value, json};
+use std::{net::SocketAddr, sync::Arc};
 use studio_runtime_http::{HttpState, router};
-use studio_runtime_store::{RuntimeStore, SyncDocumentsRepository};
+use studio_runtime_store::RuntimeStore;
+use tower::ServiceExt;
+
+async fn request(app: &Router, method: &str, uri: &str, body: Value) -> Value {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("host", "127.0.0.1:4321")
+        .header("origin", "http://127.0.0.1:4321")
+        .header("x-canvas-token", "token")
+        .header("x-canvas-workspace", "workspace")
+        .header("content-type", "application/json")
+        .body(if method == "GET" {
+            Body::empty()
+        } else {
+            Body::from(body.to_string())
+        })
+        .expect("request");
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:4321".parse::<SocketAddr>().expect("peer"),
+    ));
+    let response = app.clone().oneshot(request).await.expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body"),
+    )
+    .expect("JSON")
+}
 
 #[tokio::test]
-async fn real_rxdb_single_writer_draft_ack_echo_ordering() {
+async fn draft_push_ack_and_echo_follow_shared_contract() {
     let directory = tempfile::tempdir().expect("isolated draft store");
     let store = Arc::new(
         RuntimeStore::open(Some(directory.path()))
             .await
             .expect("store"),
     );
-    // Historical rows already accepted before the schema upgrade, including
-    // one whose successful push response never reached its client.
-    store
-        .transaction(|tx| {
-            for session in ["legacy-conflict", "legacy-lost-response"] {
-                let id = format!("phone:writer:{session}");
-                let payload = serde_json::json!({
-                    "id": id, "device": "phone", "session": session,
-                    "text": "legacy remote", "updated": 5,
-                    "metadata": {"kept": true}
-                });
-                SyncDocumentsRepository::put_draft(tx, &id, &payload.to_string(), false)?;
-            }
-            Ok(())
-        })
-        .await
-        .expect("historical drafts");
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("listen");
-    let address = listener.local_addr().expect("address");
-    let workspace_id = store
-        .read_async("draft witness identity", |tx| {
-            SyncDocumentsRepository::workspace_id(tx)
-        })
-        .await
-        .expect("workspace identity");
-    let state = HttpState::new(
-        "draft-witness".into(),
-        workspace_id.clone(),
+    let app = router(HttpState::new(
+        "token".into(),
+        "workspace".into(),
         directory.path().display().to_string(),
-        address.port(),
+        4321,
         None,
         Some(store),
         None,
+    ))
+    .expect("router");
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../client/contracts/draft-replication.json"
+    ))
+    .expect("shared fixture");
+    let document = json!({"id": fixture["document"]["id"], "payload": fixture["document"].to_string(), "seq": 0, "deleted": false});
+    let push = json!({"rows": [{"newDocumentState": document}]});
+    assert_eq!(
+        request(&app, "POST", "/api/sync/drafts", push.clone()).await,
+        json!([])
     );
-    let app = router(state).expect("real router");
-    let server = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .await
-    });
-    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-    let output = tokio::time::timeout(
-        Duration::from_secs(60),
-        tokio::process::Command::new("pnpm")
-            .current_dir(repository)
-            .args([
-                "--filter",
-                "codex-agents-web",
-                "exec",
-                "vitest",
-                "run",
-                "--config",
-                "vitest.unit.config.ts",
-                "src/sync/client.draftServer.test.ts",
-            ])
-            .env("STUDIO_DRAFT_WITNESS_URL", format!("http://{address}"))
-            .env("STUDIO_DRAFT_WITNESS_WORKSPACE", workspace_id)
-            .kill_on_drop(true)
-            .output(),
+    let first = request(&app, "GET", "/api/sync/pull?scope=drafts", Value::Null).await;
+    assert_eq!(first["documents"][0]["id"], document["id"]);
+    assert_eq!(first["documents"][0]["payload"], document["payload"]);
+    // An accepted write whose ACK was lost retries without allocating a version.
+    assert_eq!(
+        request(&app, "POST", "/api/sync/drafts", push).await,
+        json!([])
+    );
+    let retried = request(&app, "GET", "/api/sync/pull?scope=drafts", Value::Null).await;
+    assert_eq!(retried["documents"], first["documents"]);
+    let mut changed = fixture["document"].clone();
+    changed["text"] = json!("stale writer");
+    let mut stale = document;
+    stale["payload"] = json!(changed.to_string());
+    let conflicts = request(
+        &app,
+        "POST",
+        "/api/sync/drafts",
+        json!({"rows": [{"newDocumentState": stale}]}),
     )
     .await;
-    server.abort();
-    let _cancelled = server.await;
-    let output = output
-        .expect("bounded RxDB witness")
-        .expect("vitest starts");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    println!("{stdout}");
-    assert!(
-        output.status.success(),
-        "RxDB/server witness failed:\n{stdout}\n{stderr}"
-    );
+    assert_eq!(conflicts[0]["payload"], first["documents"][0]["payload"]);
+    assert_eq!(conflicts[0]["seq"], first["documents"][0]["seq"]);
 }

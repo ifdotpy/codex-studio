@@ -5,8 +5,10 @@
 //! `studio-runtime-server host-exec-service` process, its start and its
 //! replacement, and the unchanged guest broker against it.
 
+use std::cell::RefCell;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -27,6 +29,7 @@ fn repository() -> PathBuf {
 struct State {
     _temp: tempfile::TempDir,
     path: PathBuf,
+    children: RefCell<Vec<Child>>,
 }
 
 impl State {
@@ -35,7 +38,11 @@ impl State {
         let path = std::fs::canonicalize(temp.path()).unwrap().join("linux-vm");
         std::fs::create_dir(&path).unwrap();
         std::fs::write(path.join("host-exec-token"), TOKEN).unwrap();
-        Self { _temp: temp, path }
+        Self {
+            _temp: temp,
+            path,
+            children: RefCell::default(),
+        }
     }
 
     fn call(&self, method: &str, params: Option<&Value>) -> Value {
@@ -47,7 +54,7 @@ impl State {
         self.call("health", None)
     }
 
-    fn start(&self, build: &str) -> Child {
+    fn start(&self, build: &str) -> u32 {
         let child = Command::new(binary())
             .args(["host-exec-service"])
             .arg(&self.path)
@@ -55,12 +62,14 @@ impl State {
             .stdin(Stdio::null())
             .spawn()
             .unwrap();
+        let pid = child.id();
+        self.children.borrow_mut().push(child);
         let deadline = Instant::now() + HANG_GUARD;
         while service_call(&self.path, TOKEN, "health", None).is_err() {
             assert!(Instant::now() < deadline, "the service did not start");
             std::thread::sleep(Duration::from_millis(20));
         }
-        child
+        pid
     }
 
     fn wait_idle(&self) {
@@ -71,23 +80,42 @@ impl State {
         }
     }
 
-    /// Retire the running service; a fixture never leaves a service behind.
-    fn retire(&self) {
-        let Ok(health) = service_call(&self.path, TOKEN, "health", None) else {
-            return;
-        };
-        let params = json!({"buildId": health["buildId"], "pid": health["pid"]});
-        drop(service_call(
-            &self.path,
-            TOKEN,
-            "service.retire",
-            Some(&params),
-        ));
-        let pid =
-            nix::unistd::Pid::from_raw(i32::try_from(health["pid"].as_u64().unwrap()).unwrap());
+    fn wait_child(&self, pid: u32) -> ExitStatus {
+        let mut children = self.children.borrow_mut();
+        let child = children.iter_mut().find(|child| child.id() == pid).unwrap();
         let deadline = Instant::now() + HANG_GUARD;
-        while nix::sys::signal::kill(pid, None).is_ok() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("owned service {pid} did not exit after retirement");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Reap owned children directly; detached replacements can be zombies until
+    /// their OS parent reaps them. A live service at the watchdog is a failure.
+    fn retire(&self) {
+        if let Ok(health) = service_call(&self.path, TOKEN, "health", None) {
+            let params = json!({"buildId": health["buildId"], "pid": health["pid"]});
+            service_call(&self.path, TOKEN, "service.retire", Some(&params)).unwrap();
+            let pid = u32::try_from(health["pid"].as_u64().unwrap()).unwrap();
+            if self.children.borrow().iter().any(|child| child.id() == pid) {
+                assert!(self.wait_child(pid).success());
+            } else {
+                let deadline = Instant::now() + HANG_GUARD;
+                while service_is_live(pid) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "detached service {pid} did not retire"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
         }
     }
 
@@ -105,13 +133,33 @@ impl State {
 impl Drop for State {
     fn drop(&mut self) {
         self.retire();
+        for child in self.children.get_mut() {
+            if child.try_wait().unwrap().is_none() {
+                child.kill().unwrap();
+                child.wait().unwrap();
+            }
+        }
     }
+}
+
+fn service_is_live(pid: u32) -> bool {
+    let status = Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success() || status.status.code() == Some(1),
+        "ps failed"
+    );
+    let state = String::from_utf8(status.stdout).unwrap();
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
 }
 
 #[test]
 fn an_idle_service_of_another_build_is_replaced_and_keeps_receipts_and_leases() {
     let state = State::new();
-    let mut old = state.start("old-build");
+    let old = state.start("old-build");
     let before = state.health();
     assert_eq!(before["buildId"], "old-build");
     let op = state.acquire();
@@ -125,7 +173,7 @@ fn an_idle_service_of_another_build_is_replaced_and_keeps_receipts_and_leases() 
     let after = state.health();
     assert_eq!(after["buildId"], "new-build");
     assert_ne!(after["pid"], before["pid"]);
-    assert!(old.wait().unwrap().success());
+    assert!(state.wait_child(old).success());
     assert_eq!(std::fs::read(&lease).unwrap(), lease_bytes);
     // The saved receipt answers the exact retry; the operation keeps its lease.
     assert_eq!(state.acquire(), op);
@@ -144,21 +192,44 @@ fn an_idle_service_of_another_build_is_replaced_and_keeps_receipts_and_leases() 
 #[test]
 fn a_busy_service_of_another_build_stays_with_its_command() {
     let state = State::new();
-    let mut old = state.start("old-build");
+    let old = state.start("old-build");
     let before = state.health();
     let op = state.acquire();
     let empty = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
+    let pipe = state.path.join("busy-release");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut release = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&pipe)
+        .unwrap();
     state.call(
         "run",
         Some(
             &json!({"operationId": op["operationId"], "agentId": "agent",
-                     "argv": ["/bin/sleep", "30"], "manifestSha256": empty, "timeoutSeconds": 60}),
+                     "argv": ["/bin/sh", "-c", "read release < \"$1\"", "busy-holder", pipe], "manifestSha256": empty, "timeoutSeconds": 60}),
         ),
     );
     ensure_service(&state.path, &binary(), "new-build", None).unwrap();
     assert_eq!(state.health()["pid"], before["pid"]);
     assert_eq!(state.health()["buildId"], "old-build");
-    assert!(old.try_wait().unwrap().is_none());
+    assert!(
+        state
+            .children
+            .borrow_mut()
+            .iter_mut()
+            .find(|child| child.id() == old)
+            .unwrap()
+            .try_wait()
+            .unwrap()
+            .is_none()
+    );
     let refused = service_call(
         &state.path,
         TOKEN,
@@ -167,19 +238,22 @@ fn a_busy_service_of_another_build_stays_with_its_command() {
     )
     .unwrap_err();
     assert_eq!(refused.code, "busy");
-    state.call(
-        "cancel",
-        Some(&json!({"operationId": op["operationId"], "agentId": "agent"})),
-    );
+    release.write_all(b"release\n").unwrap();
     state.wait_idle();
+    let retired_at = Instant::now();
     state.retire();
-    assert!(old.wait().unwrap().success());
+    assert!(
+        retired_at.elapsed() < Duration::from_secs(2),
+        "retirement must reap the owned service promptly"
+    );
+    assert!(state.wait_child(old).success());
 }
 
 #[test]
 fn a_new_state_gets_a_token_and_a_service() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = std::fs::canonicalize(temp.path()).unwrap().join("linux-vm");
+    let state = State::new();
+    std::fs::remove_file(state.path.join("host-exec-token")).unwrap();
+    let path = &state.path;
     let token = ensure_service(&path, &binary(), "fresh-build", None).unwrap();
     assert_eq!(token.len(), 64);
     use std::os::unix::fs::PermissionsExt;
@@ -195,6 +269,11 @@ fn a_new_state_gets_a_token_and_a_service() {
     assert_eq!(health["buildId"], "fresh-build");
     let params = json!({"buildId": "fresh-build", "pid": health["pid"]});
     service_call(&path, &token, "service.retire", Some(&params)).unwrap();
+    let deadline = Instant::now() + HANG_GUARD;
+    while service_is_live(health["pid"].as_u64().unwrap() as u32) {
+        assert!(Instant::now() < deadline, "fresh service did not retire");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The guest broker of the VM (`vm-guest/host_exec.py`) runs unchanged against
@@ -224,7 +303,7 @@ fn the_guest_broker_runs_against_the_mac_service() {
 #[test]
 fn an_idle_service_without_the_browser_folder_is_replaced_and_its_commands_get_the_launcher() {
     let state = State::new();
-    let mut old = state.start("old-build");
+    let old = state.start("old-build");
     let before = state.health();
     let browser_host = state.path.parent().unwrap().join("browser-host");
     std::fs::create_dir(&browser_host).unwrap();
@@ -234,7 +313,7 @@ fn an_idle_service_without_the_browser_folder_is_replaced_and_its_commands_get_t
     let after = state.health();
     assert_eq!(after["buildId"], "new-build");
     assert_ne!(after["pid"], before["pid"]);
-    assert!(old.wait().unwrap().success());
+    assert!(state.wait_child(old).success());
     let op = state.acquire();
     let empty = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
     state.call(

@@ -1,11 +1,11 @@
 #[cfg(unix)]
-mod account_registry;
+use studio_runtime_server::account_registry;
 #[cfg(unix)]
 mod claude_login;
 #[cfg(unix)]
 mod history_runtime;
 #[cfg(unix)]
-mod host_runtime;
+use studio_runtime_server::host_runtime;
 #[cfg(unix)]
 mod io_runtime;
 mod monitor_port;
@@ -15,7 +15,7 @@ mod native_probe;
 mod operator_cli;
 #[cfg(unix)]
 mod peer_link;
-mod provider_ports;
+use studio_runtime_server::provider_ports;
 #[cfg(unix)]
 mod runtime_shutdown;
 mod web_assets;

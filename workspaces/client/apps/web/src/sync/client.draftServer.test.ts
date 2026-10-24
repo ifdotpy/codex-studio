@@ -1,4 +1,12 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
+import fixture from "../../../../contracts/draft-replication.json";
 import type { RxDatabase } from "rxdb";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 import type { ResourceChangeEvent, ResourceVersion } from "./resourceEvents";
@@ -87,13 +95,64 @@ afterEach(async () => {
   vi.resetModules();
 });
 
-const origin = process.env.STUDIO_DRAFT_WITNESS_URL;
-const workspaceId = process.env.STUDIO_DRAFT_WITNESS_WORKSPACE!;
-const headers = {
-  "content-type": "application/json",
-  "x-canvas-token": "draft-witness",
-  "x-canvas-workspace": workspaceId,
-};
+// The gate builds this fixture once. Vitest owns the real HTTP/RxDB exchange;
+// Rust nextest never launches Node or a second test runner.
+let origin: string;
+let headers: Record<string, string>;
+let server: ReturnType<typeof spawn>;
+let directory: string;
+beforeAll(async () => {
+  const binary =
+    process.env.STUDIO_DRAFT_SERVER_BINARY ??
+    fileURLToPath(
+      new URL(
+        "../../../../../../target/debug/examples/draft-server",
+        import.meta.url,
+      ),
+    );
+  directory = await mkdtemp(join(tmpdir(), "studio-draft-"));
+  server = spawn(binary, [directory], { stdio: ["pipe", "pipe", "inherit"] });
+  const lines = createInterface({ input: server.stdout! });
+  try {
+    const [line] = await Promise.race([
+      once(lines, "line", { signal: AbortSignal.timeout(30_000) }),
+      once(server, "exit").then(([code]) => {
+        throw new Error(`Draft fixture exited: ${code}`);
+      }),
+    ]);
+    const ready = JSON.parse(line);
+    origin = `http://127.0.0.1:${ready.port}`;
+    headers = {
+      "content-type": "application/json",
+      "x-canvas-token": "draft-witness",
+      "x-canvas-workspace": ready.workspaceId,
+    };
+  } finally {
+    lines.close();
+  }
+});
+afterAll(async () => {
+  try {
+    if (server?.pid && server.exitCode === null && server.signalCode === null) {
+      const exited = once(server, "exit", {
+        signal: AbortSignal.timeout(10_000),
+      });
+      server.stdin?.end();
+      try {
+        await exited;
+      } catch (error) {
+        if (server.exitCode === null && server.signalCode === null) {
+          const killed = once(server, "exit");
+          server.kill("SIGKILL");
+          await killed;
+        }
+        throw error;
+      }
+    }
+  } finally {
+    if (directory) await rm(directory, { recursive: true, force: true });
+  }
+});
 type PushRequest =
   import("../generated/api").components["schemas"]["DraftPushRequest"];
 type SyncDocument = import("./client").SyncDocument;
@@ -117,15 +176,7 @@ async function request(path: string, body?: unknown) {
   return value;
 }
 
-it
-  .skipIf(!origin)
-  .each([
-    "ack-first",
-    "late-echo",
-    "echo-first",
-    "lost-response",
-    "second-writer",
-  ] as const)(
+it.each(fixture.orders)(
   "single writer avoids false conflicts with %s",
   async (order) => {
     vi.stubGlobal("window", {
@@ -364,7 +415,7 @@ async function prepareClient() {
   return import("./client");
 }
 
-it.skipIf(!origin).each([false, true])(
+it.each([false, true])(
   "applies a later accepted lower-timestamp master (unseen alternatives: %s)",
   async (withAlternatives) => {
     const client = await prepareClient();
@@ -446,7 +497,7 @@ it.skipIf(!origin).each([false, true])(
   },
 );
 
-it.skipIf(!origin).each(["legacy-conflict", "legacy-lost-response"] as const)(
+it.each(fixture.legacy.map(({ session }) => session))(
   "acknowledges persisted pending payload through %s",
   async (session) => {
     const client = await prepareClient();

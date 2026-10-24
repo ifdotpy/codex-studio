@@ -524,6 +524,8 @@ async fn unverifiable_retained_child_refused_before_open() {
     peer.send(json!({"ok":true,"protocol":2})).await;
     let status = peer.request("status").await;
     peer.result(&status, json!({"pid":u32::MAX,"sequence":0,"acknowledged":0,"returnCode":null,"backpressure":false})).await;
+    // Socket setup is real; only the retained-record retry deadline is virtual.
+    tokio::time::pause();
     assert!(matches!(
         attachment.completion().await.result,
         Err(AdapterError::UnverifiableChild)
