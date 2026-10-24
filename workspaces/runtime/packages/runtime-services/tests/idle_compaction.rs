@@ -154,6 +154,12 @@ async fn idle_claude_dispatches_once_and_restart_does_not_repeat() {
     .unwrap();
     stop.send(true).unwrap();
     timer.await.unwrap();
+    // Shutdown can cancel the final fire write after the provider notification.
+    // Drain the writer actor before releasing its state-directory lock for restart.
+    store
+        .transaction(|_| Ok::<_, StoreError>(()))
+        .await
+        .unwrap();
 
     assert_eq!(session.calls.lock().unwrap().len(), 1);
     assert_eq!(
