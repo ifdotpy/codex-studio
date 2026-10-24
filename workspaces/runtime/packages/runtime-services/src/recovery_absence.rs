@@ -42,15 +42,18 @@ impl RecoveryObservation {
                 && current.generation == self.scope.generation
         })
     }
-    /// The provider process that received the start no longer exists: this
-    /// observation's connection reached a later provider generation of the
-    /// account than the one the start was submitted on. A request held by that
-    /// process can no longer be applied after this read. The account worker's
-    /// first pass knows its connection generation but no supervisor identity.
+    /// A later native provider generation proves that the process which received
+    /// the start no longer exists. The account worker's first pass knows this
+    /// generation but has no supervisor identity.
+    /// GuestProviderTaskFactory uses the host generation on VM tickets. A guest
+    /// process can survive a host replacement, so these tickets cannot prove
+    /// that the guest process ended.
     pub fn replaced_generation(&self, snapshot: &RecoverySnapshot) -> bool {
-        snapshot.start_attempt()["connectionGeneration"]
-            .as_u64()
-            .is_some_and(|submitted| self.scope.generation > submitted)
+        let mode = &snapshot.record()["executionMode"];
+        (mode.is_null() || mode == "native")
+            && snapshot.start_attempt()["connectionGeneration"]
+                .as_u64()
+                .is_some_and(|submitted| self.scope.generation > submitted)
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
