@@ -131,8 +131,8 @@ and generation permutations do not apply to prepared submissions or token usage;
 Python represents stopped agents as paused with autoWake false. Radio-turn policy
 is refused upstream by the scheduler; plain radio is tested as an ordinary kind.
 
-Both corpora use the sole declaration list in [deviations.json](deviations.json).
-Per-case field patches must reference a
+Both corpora use the sole declaration list in `deviations.json`: the lifecycle's
+three classes and notification's two. Per-case field patches must reference a
 declared class and exact field inventory. An absent, equal, or otherwise stale
 declared difference fails. The `rust_receipts` declaration owns the return contract:
 Python first-call effects are compared as rows; Rust entry-point results are pinned

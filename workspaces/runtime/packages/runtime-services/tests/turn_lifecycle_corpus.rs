@@ -669,8 +669,8 @@ fn differences(python: Option<&Value>, rust: Option<&Value>, path: &str, out: &m
         _=>out.push(json!({"path":path,"python":python,"rust":rust,"pythonPresent":python.is_some(),"rustPresent":rust.is_some()})),
     }
 }
-// Named, field-level contracts require each declared difference to occur with
-// its exact presence and value; other differences remain unexpected.
+// Named, field-level contracts: a deviation may disappear as its owner is wired,
+// but a different value or an additional field never becomes an allowed difference.
 fn expected_difference(diff: &Value, case: &Value, python_root: &Path) -> bool {
     case["expectedDifferences"].as_array().is_some_and(|rules| {
         rules.iter().any(|rule| {

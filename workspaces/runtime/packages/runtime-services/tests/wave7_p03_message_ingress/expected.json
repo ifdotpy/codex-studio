@@ -309,7 +309,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -685,7 +684,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -1061,7 +1059,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -1439,7 +1436,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -1817,7 +1813,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -2195,7 +2190,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -2573,7 +2567,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -2949,7 +2942,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -3331,7 +3323,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -4322,7 +4313,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -4709,7 +4699,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -5173,7 +5162,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -5944,7 +5932,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -6869,7 +6856,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -7866,7 +7852,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -8269,7 +8254,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
@@ -8679,7 +8663,6 @@
               "subagentConcurrencyVersion": 2,
               "tail": "",
               "threadId": null,
-              "tokenBudget": null,
               "tokensUsed": 0,
               "turnId": null,
               "workerDefaults": {
