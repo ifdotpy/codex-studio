@@ -5,18 +5,15 @@ import {
   readFixtureSyncContract,
   stubEntityState,
 } from "../playwright.mjs";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 test("phone conversation gives the transcript its viewport budget", async ({
   browser,
   readOnlyRust,
-}) => {
+}, testInfo) => {
   test.setTimeout(120_000);
-  const state = await mkdtemp(join(tmpdir(), "studio-conversation-space-"));
-  const evidence =
-    process.env.CONVERSATION_SPACE_EVIDENCE || join(state, "evidence");
+  const evidence = testInfo.outputPath("evidence");
   await mkdir(evidence, { recursive: true });
   console.log("Conversation space evidence:", evidence);
   const results = [];
@@ -196,7 +193,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
           const attachBox = await attach.boundingBox();
           expect(attachBox.width).toBeGreaterThanOrEqual(44);
           expect(attachBox.height).toBeGreaterThanOrEqual(44);
-          // Each role keeps its role icon and provider mark on one line.
+          // Only the lead provider remains beside its name on phones.
           const symbolRows = await page
             .locator("#composer .execution-symbols")
             .evaluateAll((nodes) =>
@@ -208,7 +205,10 @@ test("phone conversation gives the transcript its viewport budget", async ({
                   ),
                 ),
             );
-          expect(symbolRows.length).toBeGreaterThanOrEqual(2);
+          expect(symbolRows).toHaveLength(1);
+          await expect(page.locator(".execution-summary-more")).toHaveText(
+            "+2",
+          );
           for (const tops of symbolRows)
             expect(Math.max(...tops) - Math.min(...tops)).toBeLessThanOrEqual(
               1,
@@ -238,7 +238,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
             page.locator(".composer-queue-disclosure"),
           ).toBeVisible();
           await disclosure.click();
-          // Narrow touch composers hide the lead name; a shown name stays inside.
+          // The lead name remains visible and stays inside the trigger.
           const model = await page
             .locator(
               '.execution-summary-segment[data-role="lead"] .execution-model',
@@ -247,10 +247,10 @@ test("phone conversation gives the transcript its viewport budget", async ({
           const execution = await page
             .locator(".execution-summary-trigger")
             .boundingBox();
-          if (model)
-            expect(model.x + model.width).toBeLessThanOrEqual(
-              execution.x + execution.width,
-            );
+          expect(model).not.toBeNull();
+          expect(model.x + model.width).toBeLessThanOrEqual(
+            execution.x + execution.width,
+          );
           await expect(
             page.locator(".execution-summary-trigger"),
           ).toHaveAttribute("aria-label", /Lead \S/);

@@ -5,17 +5,15 @@ import {
   readFixtureSyncContract,
   stubEntityState,
 } from "../playwright.mjs";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-test("390px composer keeps role symbols separate and accessible model names", async ({
+test("phone composer keeps the lead model name and discloses other roles", async ({
   browser,
   readOnlyRust,
-}) => {
+}, testInfo) => {
   test.setTimeout(90_000);
-  const state = await mkdtemp(join(tmpdir(), "execution-family-"));
-  const evidence = process.env.EXECUTION_FAMILY_EVIDENCE || state;
+  const evidence = testInfo.outputPath("evidence");
   await mkdir(evidence, { recursive: true });
   const measurements = [];
   const origin = readOnlyRust.origin;
@@ -52,9 +50,10 @@ test("390px composer keeps role symbols separate and accessible model names", as
         (agent) => agent.source === "managed",
       );
       const page = await browser.newPage({
-        // Touch phones show symbols only; their 44px targets leave no name room.
+        // Coarse-pointer controls retain their touch targets beside the lead name.
         viewport: { width: 390, height: 844 },
         colorScheme: scheme,
+        hasTouch: true,
       });
       try {
         await stubEntityState(page, snapshot, contract);
@@ -107,13 +106,19 @@ test("390px composer keeps role symbols separate and accessible model names", as
           new RegExp(`Lead ${name} Medium`),
         );
         const label = trigger.locator('[data-role="lead"] .execution-model');
-        await expect(label).toBeHidden();
+        await expect(label).toBeVisible();
+        await expect(label).toHaveText(name);
+        await expect(trigger.locator(".execution-summary-more")).toHaveText(
+          "+2",
+        );
         const geometry = await trigger
           .locator(".execution-symbols")
           .evaluateAll((nodes) =>
-            nodes.map((node) => node.getBoundingClientRect().toJSON()),
+            nodes
+              .filter((node) => node.getClientRects().length)
+              .map((node) => node.getBoundingClientRect().toJSON()),
           );
-        expect(geometry).toHaveLength(3);
+        expect(geometry).toHaveLength(1);
         const triggerBox = await trigger.boundingBox();
         for (const [index, box] of geometry.entries()) {
           expect(box.left).toBeGreaterThanOrEqual(triggerBox.x);
@@ -134,7 +139,7 @@ test("390px composer keeps role symbols separate and accessible model names", as
           path: join(evidence, `family-390-${provider}-${scheme}.png`),
         });
         await page.setViewportSize({ width: 1440, height: 900 });
-        await expect(label.locator(".execution-model-family")).toBeHidden();
+        await expect(trigger.locator(".execution-summary-more")).toBeHidden();
         expect(await label.innerText()).toBe(name);
       } finally {
         await page.context().close();

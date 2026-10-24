@@ -13,11 +13,10 @@ import { join } from "node:path";
 
 test("composer keeps one tools row and readable mixed-provider execution summary in medium containers", async ({
   browser,
-}) => {
+}, testInfo) => {
   test.setTimeout(180_000);
   const state = await mkdtemp(join(tmpdir(), "studio-composer-container-"));
-  const evidence =
-    process.env.COMPOSER_CONTAINER_EVIDENCE || join(state, "evidence");
+  const evidence = testInfo.outputPath("evidence");
   await mkdir(evidence, { recursive: true });
   const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -43,18 +42,57 @@ test("composer keeps one tools row and readable mixed-provider execution summary
       provider: "claude",
       model: "claude-opus-4-6",
       effort: "medium",
+      reviewDefaults: { model: "gpt-6.1-sol", effort: "medium" },
+      accountTransfer: {
+        id: "blocked-move",
+        status: "pending",
+        total: 2,
+        completed: 1,
+        blocked: [
+          { id: lead.id, name: lead.name, reason: "Account needs sign-in" },
+        ],
+      },
       workerDefaults: {
-        model: "gpt-5.6-sol",
+        model: "gpt-6.1-sol",
         effort: "medium",
         accountKey: "default",
       },
     });
+    const { workspaceId } = await (
+      await fetch(origin + "/api/sync/identity")
+    ).json();
+    const draftResponse = await fetch(origin + "/api/sync/drafts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Canvas-Token": snapshot.token,
+        "X-Canvas-Workspace": workspaceId,
+        Origin: origin,
+      },
+      body: JSON.stringify({
+        rows: ["Current draft", "Saved alternative"].map((text, index) => ({
+          newDocumentState: {
+            id: `composer-layout-${index}:${lead.id}`,
+            seq: 0,
+            deleted: false,
+            payload: JSON.stringify({
+              id: `composer-layout-${index}:${lead.id}`,
+              session: lead.id,
+              device: `composer-layout-${index}`,
+              text,
+              updated: Date.now() + index,
+            }),
+          },
+        })),
+      }),
+    });
+    expect(draftResponse.ok, await draftResponse.text()).toBe(true);
     snapshot.runtime.agents = snapshot.threads.filter(
       (agent) => agent.source === "managed",
     );
     const models = [
       ["claude-opus-4-6", "Opus 4.6", "claude"],
-      ["gpt-5.6-sol", "Sol 5.6", "codex"],
+      ["gpt-6.1-sol", "Sol 6.1", "codex"],
     ].map(([model, displayName, provider]) => ({
       model,
       displayName,
@@ -64,6 +102,7 @@ test("composer keeps one tools row and readable mixed-provider execution summary
       serviceTiers: [],
     }));
     for (const { width, target, team } of [
+      { width: 1024, target: 700 },
       { width: 1440, target: 1100 },
       { width: 1920, target: 1400 },
       { width: 1440, target: 900 },
@@ -71,15 +110,16 @@ test("composer keeps one tools row and readable mixed-provider execution summary
       { width: 1440, target: 600, team: true },
       { width: 1440, target: 440, team: true },
       { width: 1024, target: 480 },
-      { width: 1080, target: 760 },
       { width: 768, target: 432 },
       { width: 390, target: 358 },
       { width: 320, target: 288 },
+      { width: 1080, target: 760 },
     ])
       for (const scheme of ["light", "dark"]) {
         const page = await browser.newPage({
           viewport: { width: 1440, height: 900 },
           colorScheme: scheme,
+          hasTouch: width <= 768,
         });
         try {
           page.setDefaultTimeout(10000);
@@ -125,9 +165,14 @@ test("composer keeps one tools row and readable mixed-provider execution summary
           }
           const trigger = page.locator("#composer .execution-summary-trigger");
           await expect(trigger).toHaveCount(1);
+          await expect(page.locator("#stop")).toBeVisible();
+          await expect(page.locator("#send")).toBeVisible();
+          await expect(
+            page.getByRole("button", { name: /^Other drafts/ }),
+          ).toBeVisible();
           await expect(trigger).toHaveAttribute(
             "aria-label",
-            /Lead Opus 4.6 Medium.*Workers Sol 5.6 Medium.*Review same as caller/,
+            /Lead Opus 4.6 Medium.*Workers Sol 6.1 Medium.*Review Sol 6.1 Medium/,
           );
           await expect(
             trigger.locator(".execution-summary-segment"),
@@ -158,21 +203,26 @@ test("composer keeps one tools row and readable mixed-provider execution summary
             },
             { target, scheme },
           );
-          if (target >= 900) {
-            const names = await trigger
-              .locator(".execution-model,.execution-inherited-label")
-              .evaluateAll((nodes) =>
-                nodes.map((node) => ({
-                  text: node.textContent,
-                  actual: node.clientWidth,
-                  content: node.scrollWidth,
-                })),
-              );
-            for (const name of names)
-              expect(
-                name.actual,
-                `${width}px ${name.text} is fully visible`,
-              ).toBe(name.content);
+          const roleWords = trigger.locator(".execution-role:visible");
+          const secondaryModels = trigger.locator(
+            '.execution-summary-segment:not([data-role="lead"]) .execution-model:visible',
+          );
+          if (target >= 760) {
+            await expect(roleWords).toHaveCount(3);
+            await expect(secondaryModels).toHaveCount(2);
+          } else if (target >= 600) {
+            await expect(roleWords).toHaveCount(0);
+            await expect(secondaryModels).toHaveCount(0);
+            await expect(
+              trigger.locator(".execution-symbols:visible"),
+            ).toHaveCount(3);
+          } else if (target <= 440) {
+            await expect(trigger.locator(".execution-summary-more")).toHaveText(
+              "+2",
+            );
+            await expect(
+              trigger.locator(".execution-summary-more"),
+            ).toBeVisible();
           }
           await expect(page.locator("#toast")).toBeHidden({ timeout: 10_000 });
           await trigger.click();
@@ -200,49 +250,51 @@ test("composer keeps one tools row and readable mixed-provider execution summary
             .locator("#composer")
             .evaluate((composer) => {
               const r = (element) => element.getBoundingClientRect().toJSON();
+              const trigger = composer.querySelector(
+                ".execution-summary-trigger",
+              );
+              const visible = (node) =>
+                node.getClientRects().length &&
+                getComputedStyle(node).display !== "none";
               const chips = [
-                ...composer.querySelectorAll(".execution-menu"),
-              ].map((button) => {
-                const label = button.querySelector(".execution-model"),
-                  glyph = button.querySelector(".execution-provider>svg");
-                const probe = document.createElement("span");
-                probe.style.cssText =
-                  "display:block;width:var(--studio-composer-model-min);position:absolute";
-                label.append(probe);
-                const minimum = probe.getBoundingClientRect().width;
-                probe.remove();
-                return {
-                  button: r(button),
-                  label: r(label),
-                  glyph: r(glyph),
-                  minimum,
-                  glyphColor: getComputedStyle(glyph).color,
-                  namesHidden: getComputedStyle(label).display === "none",
+                {
+                  button: r(trigger),
                   names: [
-                    ...button.querySelectorAll(
+                    ...trigger.querySelectorAll(
                       ".execution-model,.execution-inherited-label",
                     ),
-                  ].map((node) => ({
-                    text: node.textContent,
-                    scrollWidth: node.scrollWidth,
-                    clientWidth: node.clientWidth,
-                    visible: getComputedStyle(node).display !== "none",
-                    ...r(node),
-                  })),
-                  roleIcons: [
-                    ...button.querySelectorAll(".execution-role-icon"),
-                  ].map(r),
-                  inherited: r(
-                    button.querySelector(".execution-inherited-icon"),
-                  ),
-                };
-              });
+                  ]
+                    .filter(visible)
+                    .map((node) => ({
+                      text: node.textContent,
+                      scrollWidth: node.scrollWidth,
+                      clientWidth: node.clientWidth,
+                      ...r(node),
+                    })),
+                  segments: [
+                    ...trigger.querySelectorAll(".execution-summary-segment"),
+                  ]
+                    .filter(visible)
+                    .map(r),
+                  parts: [
+                    ...trigger.querySelectorAll(
+                      ".execution-symbols,.execution-summary-more",
+                    ),
+                  ]
+                    .filter(visible)
+                    .map(r),
+                  roleIcons: trigger.querySelectorAll(".execution-role-icon")
+                    .length,
+                },
+              ];
               return {
                 composer: r(composer),
                 chips,
+                status: r(composer.querySelector(".account-transfer-chip")),
+                bar: r(composer.querySelector(".composer-bar")),
                 controls: [
                   ...composer.querySelectorAll(
-                    ".composer-tools button,.composer-submit-actions>button",
+                    ".composer-draft-control button,.composer-tools button,.composer-submit-actions>button",
                   ),
                 ]
                   .filter(
@@ -252,11 +304,19 @@ test("composer keeps one tools row and readable mixed-provider execution summary
                   )
                   .map((button) => ({
                     name: button.getAttribute("aria-label"),
+                    inRow:
+                      getComputedStyle(button).position !== "absolute" &&
+                      getComputedStyle(button.parentElement).position !==
+                        "absolute",
                     ...r(button),
                   })),
               };
             });
           results.push({ width, target, team: !!team, scheme, ...geometry });
+          await writeFile(
+            join(evidence, "geometry.json"),
+            JSON.stringify(results, null, 2),
+          );
           await expect(page.locator("#toast")).toBeHidden({ timeout: 10_000 });
           await page.screenshot({
             path: join(
@@ -279,12 +339,15 @@ test("composer keeps one tools row and readable mixed-provider execution summary
               .evaluate((composer) => {
                 const controls = [
                   ...composer.querySelectorAll(
-                    ".composer-tools button,.composer-submit-actions>button",
+                    ".composer-draft-control button,.composer-tools button,.composer-submit-actions>button",
                   ),
                 ].filter(
                   (button) =>
                     button.getClientRects().length &&
-                    !button.closest(".attachment-list,details:not([open])"),
+                    !button.closest(".attachment-list,details:not([open])") &&
+                    getComputedStyle(button).position !== "absolute" &&
+                    getComputedStyle(button.parentElement).position !==
+                      "absolute",
                 );
                 return {
                   centers: controls.map((button) => {
@@ -318,41 +381,67 @@ test("composer keeps one tools row and readable mixed-provider execution summary
       JSON.stringify(results, null, 2),
     );
     for (const result of results) {
-      const centers = result.controls.map(
-        (control) => control.top + control.height / 2,
-      );
+      const centers = result.controls
+        .filter((control) => control.inRow)
+        .map((control) => control.top + control.height / 2);
       expect(
         Math.max(...centers) - Math.min(...centers),
         JSON.stringify(result),
       ).toBeLessThanOrEqual(1);
-      for (const chip of result.chips) {
-        // Phone composers (25em) keeps role symbols only.
-        if (result.composer.width > 400) expect(chip.namesHidden).toBe(false);
-        const names = chip.names.filter((name) => name.visible);
-        // One-line role symbols leave room for the third name from 32em.
-        if (result.composer.width >= 500) expect(names).toHaveLength(3);
-        for (const name of names) {
-          expect(name.left).toBeGreaterThanOrEqual(chip.button.left);
-          expect(name.right).toBeLessThanOrEqual(chip.button.right);
-          if (result.composer.width >= 900)
-            expect(name.scrollWidth, JSON.stringify(result)).toBe(
-              name.clientWidth,
-            );
-        }
-        if (!chip.namesHidden)
-          expect(
-            chip.label.width,
-            JSON.stringify(result),
-          ).toBeGreaterThanOrEqual(chip.minimum - 1);
-
-        expect(chip.roleIcons).toHaveLength(3);
-        for (const icon of [...chip.roleIcons, chip.inherited])
-          expect(icon.width).toBeGreaterThanOrEqual(14);
-        expect(chip.glyph.width, JSON.stringify(result)).toBeGreaterThanOrEqual(
-          12,
+      for (const control of result.controls) {
+        expect(control.left, JSON.stringify(result)).toBeGreaterThanOrEqual(
+          result.composer.left,
         );
-        expect(chip.glyph.height).toBeGreaterThanOrEqual(12);
+        expect(control.right, JSON.stringify(result)).toBeLessThanOrEqual(
+          result.composer.right,
+        );
       }
+      for (let i = 0; i < result.controls.length; i++)
+        for (let j = i + 1; j < result.controls.length; j++) {
+          const a = result.controls[i],
+            b = result.controls[j];
+          expect(
+            Math.min(a.right, b.right) > Math.max(a.left, b.left) &&
+              Math.min(a.bottom, b.bottom) > Math.max(a.top, b.top),
+            JSON.stringify({ a, b }),
+          ).toBe(false);
+        }
+      for (const chip of result.chips) {
+        for (const part of chip.parts) {
+          expect(part.left, JSON.stringify(result)).toBeGreaterThanOrEqual(
+            chip.button.left,
+          );
+          expect(part.right, JSON.stringify(result)).toBeLessThanOrEqual(
+            chip.button.right,
+          );
+          expect(part.width).toBeGreaterThan(0);
+        }
+        for (const name of chip.names) {
+          expect(name.left, JSON.stringify(result)).toBeGreaterThanOrEqual(
+            chip.button.left,
+          );
+          expect(name.right, JSON.stringify(result)).toBeLessThanOrEqual(
+            chip.button.right,
+          );
+          expect(name.scrollWidth, JSON.stringify(result)).toBe(
+            name.clientWidth,
+          );
+        }
+        for (let i = 1; i < chip.segments.length; i++)
+          expect(
+            chip.segments[i].left,
+            JSON.stringify(result),
+          ).toBeGreaterThanOrEqual(chip.segments[i - 1].right);
+        expect(
+          chip.names.length,
+          "Lead name stays visible",
+        ).toBeGreaterThanOrEqual(1);
+        expect(chip.roleIcons).toBe(0);
+      }
+      expect(
+        result.status.bottom,
+        "Account status has its own row",
+      ).toBeLessThanOrEqual(result.bar.top);
     }
     console.log("Composer evidence:", evidence);
   } finally {

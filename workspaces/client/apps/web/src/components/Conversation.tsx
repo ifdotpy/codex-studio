@@ -114,7 +114,7 @@ import { LiveAgentPhase } from "./agents/AgentPhase";
 import { UnifiedAgentSettings } from "./agents/UnifiedAgentSettings";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import { ExecutionSummaryTrigger } from "./agents/ExecutionSummaryTrigger";
-import type { useAccounts } from "./Accounts";
+import { AccountTransferChip, type useAccounts } from "./Accounts";
 import ComposerAttachments, {
   MessageAttachments,
   type Attachment,
@@ -694,6 +694,7 @@ export default function Conversation(p: {
       >
         <UnifiedAgentSettings
           key={p.agent.id}
+          showTransferStatus={false}
           state={p.accountsState}
           notify={p.notify}
           agent={p.agent}
@@ -1888,6 +1889,13 @@ export default function Conversation(p: {
                 );
               return (
                 <>
+                  {managed &&
+                    p.agent?.isLead &&
+                    p.agent.accountTransfer?.scope !== "subagents" && (
+                      <AccountTransferChip
+                        transfer={p.agent.accountTransfer ?? undefined}
+                      />
+                    )}
                   <PromptInput
                     value={draft}
                     session={p.id || "new"}
@@ -1965,18 +1973,20 @@ export default function Conversation(p: {
                     </div>
                   )}
                   <div className="composer-bar">
-                    <DraftVersions
-                      key={`drafts:${p.id || "new"}`}
-                      versions={p.draftConflicts || []}
-                      useVersion={(version, mode) =>
-                        p.setDraft((current) =>
-                          mode === "append" && current
-                            ? `${current}\n\n${version.text}`
-                            : version.text,
-                        )
-                      }
-                      dismiss={(version) => p.dismissDraft?.(version)}
-                    />
+                    <div className="composer-draft-control">
+                      <DraftVersions
+                        key={`drafts:${p.id || "new"}`}
+                        versions={p.draftConflicts || []}
+                        useVersion={(version, mode) =>
+                          p.setDraft((current) =>
+                            mode === "append" && current
+                              ? `${current}\n\n${version.text}`
+                              : version.text,
+                          )
+                        }
+                        dismiss={(version) => p.dismissDraft?.(version)}
+                      />
+                    </div>
                     <div className="composer-tools">
                       {attachTool}
                       <div className="composer-tools-inline">{voiceTool}</div>

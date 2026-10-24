@@ -736,6 +736,7 @@ export default function Accounts({
   externalCommand,
   onExternalCommandHandled,
   dialogsOnly = false,
+  showTransferStatus = true,
 }: {
   state: ReturnType<typeof useAccounts>;
   agent?: Agent;
@@ -754,6 +755,7 @@ export default function Accounts({
   > | null;
   onExternalCommandHandled?: () => void;
   dialogsOnly?: boolean;
+  showTransferStatus?: boolean;
 }) {
   const { post } = useServerApi();
   const storage = useServerStorage();
@@ -1010,7 +1012,7 @@ export default function Accounts({
       {!managerOnly &&
         renderPicker &&
         renderPicker(selectAccount, !!pending || (pinned && !owner))}
-      {!managerOnly && renderPicker && (
+      {!managerOnly && renderPicker && showTransferStatus && (
         <AccountTransferChip transfer={teamTransfer ?? undefined} />
       )}
       {!dialogsOnly && (
