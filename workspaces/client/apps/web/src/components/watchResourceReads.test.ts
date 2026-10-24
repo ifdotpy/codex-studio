@@ -401,6 +401,46 @@ describe("watchResourceReads", () => {
     stop();
   });
 
+  it.each(["new version", "reconnect", "user retry"])(
+    "exhausts persistent 503 reads and resets only on %s",
+    async (reset) => {
+      vi.useFakeTimers();
+      const read = vi.fn(async () => {
+        throw new ApiError("Unavailable", 503);
+      });
+      const failed = vi.fn();
+      const stop = watchResourceReads(output, read, failed);
+      const baseline = { epoch: "workspace", revision: 1 };
+      try {
+        notify(output, baseline);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(read).toHaveBeenCalledTimes(6);
+        expect(failed).toHaveBeenLastCalledWith(
+          expect.objectContaining({ name: "ReadRecoveryExhaustedError" }),
+        );
+        expect(vi.getTimerCount()).toBe(0);
+
+        notify(output, baseline);
+        for (const resume of resumeListeners) resume();
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(read).toHaveBeenCalledTimes(6);
+
+        if (reset === "new version")
+          notify(output, { epoch: "workspace", revision: 2 });
+        else if (reset === "reconnect") {
+          for (const listener of connectionListeners)
+            listener("degraded", "connecting");
+          for (const listener of connectionListeners) listener("live", "open");
+        } else stop.refresh();
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(read).toHaveBeenCalledTimes(12);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        stop();
+      }
+    },
+  );
+
   it("preserves the backoff during frequent resource changes", async () => {
     vi.useFakeTimers();
     const read = vi.fn(async () => {
