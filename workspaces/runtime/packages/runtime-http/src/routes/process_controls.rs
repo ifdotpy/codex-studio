@@ -64,22 +64,39 @@ fn provider(state: &HttpState, owner: &Value) -> Result<Arc<dyn AccountSessionPo
     )?
     .0)
 }
-fn connections(state: &HttpState, owners: &[Value]) -> controls::Connections {
-    owners
+fn connections(
+    state: &HttpState,
+    tx: &studio_runtime_store::Transaction<'_>,
+    owners: &[Value],
+) -> Result<controls::Connections, controls::Error> {
+    let mut connections: controls::Connections = owners
         .iter()
         .filter_map(|owner| {
             let account = owner["accountKey"].as_str().unwrap_or("default");
             let scope = provider(state, owner).ok()?.current_scope(account)?;
             Some((text(owner, "id").to_owned(), scope.connection))
         })
-        .collect()
+        .collect();
+    if let Some(source) = &state.account_session {
+        for original in controls::monitor_sources(tx, owners)? {
+            if let Some(scope) = source.current_scope(&original.account) {
+                connections.observe_source(scope);
+            }
+        }
+    }
+    Ok(connections)
 }
 async fn read_listing(state: HttpState, scope: String) -> Result<Value, ApiError> {
     let store = store(&state)?;
     store
         .read_async("runtime-http/routes/process_controls", move |tx| {
             let owners = controls::owners(tx, &scope).map_err(error)?;
-            controls::listing(tx, &scope, &connections(&state, &owners)).map_err(error)
+            controls::listing(
+                tx,
+                &scope,
+                &connections(&state, tx, &owners).map_err(error)?,
+            )
+            .map_err(error)
         })
         .await
 }
@@ -206,7 +223,12 @@ async fn execute(
     let claim = store
         .transaction_with(move |tx| {
             let owners = controls::owners(tx, text(&claim_request, "agent"))?;
-            controls::claim(tx, &claim_request, &connections(&claim_state, &owners), now)
+            controls::claim(
+                tx,
+                &claim_request,
+                &connections(&claim_state, tx, &owners)?,
+                now,
+            )
         })
         .await
         .map_err(error)?;
@@ -330,8 +352,10 @@ async fn bind(
                     &agent,
                     &connections(
                         &state,
+                        connection,
                         &controls::owners(connection, &agent).map_err(error)?,
-                    ),
+                    )
+                    .map_err(error)?,
                 )
                 .map_err(error)
             })
