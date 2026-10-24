@@ -350,6 +350,33 @@ impl ManagementSnapshot {
             .collect())
     }
 
+    /// Read maintenance facts only for an active lead and its checked descendants.
+    pub(crate) fn maintenance_team(
+        &self,
+        actor: &str,
+        epoch: i64,
+    ) -> Result<(Value, Vec<Value>), ManagementError> {
+        let lead = self.agent(actor)?;
+        if lead.identity.is_lead != Some(true)
+            || lead.identity.epoch != epoch
+            || lead.identity.auto_wake != Some(true)
+            || lead.flag("deletedAt")
+        {
+            return Err(ManagementError::Invalid(
+                "Only the active orchestrator can manage its workers",
+            ));
+        }
+        let mut team = Vec::new();
+        for agent in &self.agents {
+            if agent.id() == actor || agent.identity.root_id != lead.identity.root_id {
+                continue;
+            }
+            self.authorize(actor, epoch, agent.id())?;
+            team.push(agent.record.clone());
+        }
+        Ok((lead.record.clone(), team))
+    }
+
     fn rows(&self, table: &str) -> &[Value] {
         self.tables
             .get(table)

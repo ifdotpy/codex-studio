@@ -733,6 +733,33 @@ pub(super) async fn dispatch(
             };
             crate::layr_read::run(actor, args, request_id, std::sync::Arc::clone(guest)).await
         }
+        "orchestration_agent_manage" if args["action"] == "maintenance_report" => {
+            if execution_move {
+                return Ok(Some(not_sent(Error::Invalid(
+                    "The move is accepted. Finish this turn before the next task",
+                ))));
+            }
+            if studio_runtime_store::truthy(actor.record().extra.get("remoteOrigin")) {
+                return Ok(Some(not_sent(Error::Unavailable(
+                    "multi-server/worker-call",
+                ))));
+            }
+            if let Err(error) = super::services::manage::checked_action(args) {
+                return Ok(Some(not_sent(callback_refusal(error))));
+            }
+            match crate::agent_management_maintenance::report(
+                store,
+                actor_id.to_owned(),
+                actor_epoch,
+            )
+            .await
+            {
+                Ok(value) => written(value, Vec::new()),
+                Err(error) => not_sent(callback_refusal(
+                    super::services::manage::management_error(error),
+                )),
+            }
+        }
         "orchestration_agent_manage" if super::services::manage::lifecycle_action(args) => {
             return lifecycle_management(store, actor, args, now)
                 .await
@@ -1167,6 +1194,66 @@ mod tests {
     };
     use crate::managed_host_tools::{DeliveryCertainty, OperationResult};
     use serde_json::json;
+
+    #[tokio::test]
+    async fn maintenance_report_dispatches_for_an_active_lead() {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = std::sync::Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("store"),
+        );
+        let record = studio_runtime_store::AgentRecord::from_value(json!({
+            "id":"lead", "rootId":"lead", "epoch":1, "status":"running",
+            "isLead":true, "autoWake":true, "cwd":root.path(), "threadId":"thread"
+        }))
+        .expect("lead");
+        let saved = record.clone();
+        store
+            .transaction(move |tx| studio_runtime_store::AgentRepository::put(tx, &saved))
+            .await
+            .expect("seed");
+        let actor = crate::managed_host_tools::Actor::from_record(&record.value(), "lead", 1)
+            .expect("actor");
+        let context = crate::provider_callbacks::CallbackContext {
+            agent: "lead".into(),
+            account: "default".into(),
+            connection: "fixture".into(),
+            generation: 1,
+            epoch: 1,
+            thread: "thread".into(),
+            turn: "turn".into(),
+        };
+        let ports = super::ManagedToolRuntimePorts {
+            status_watch: None,
+            child_creation: None,
+            monitor_create: None,
+            interrupt: None,
+            monitor_input: None,
+            monitor_cancel: None,
+            work_action: None,
+            late: Default::default(),
+        };
+        let args = json!({"action":"maintenance_report"});
+        let result = super::dispatch(super::DispatchRequest {
+            store,
+            actor: &actor,
+            context: &context,
+            tool: "orchestration_agent_manage",
+            args: &args,
+            request_id: "maintenance",
+            now: 1.0,
+            ports: &ports,
+        })
+        .await
+        .expect("dispatch")
+        .expect("maintenance report has an async owner");
+        assert_eq!(result.certainty, DeliveryCertainty::Written);
+        assert_eq!(
+            result.result.value,
+            json!({"worktrees":[],"workspaces":[],"bases":[]})
+        );
+    }
 
     #[test]
     fn transient_catalog_refusal_tells_the_caller_to_retry_with_a_new_request_id() {

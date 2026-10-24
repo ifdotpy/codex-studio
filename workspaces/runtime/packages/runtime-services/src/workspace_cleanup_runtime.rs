@@ -486,6 +486,47 @@ pub(crate) fn check_archive_worktree(agent: &Value) -> Result<(), WorkspaceClean
     Ok(())
 }
 
+/// Describe stale worktrees through the cleanup owner's exact path checks.
+/// A clean Git tree alone does not authorize removal of the worker.
+pub(crate) fn maintenance_worktree(agent: &Value) -> Option<Value> {
+    if agent["worktreeReady"] != true {
+        return None;
+    }
+    let id = agent["id"].as_str()?;
+    let deleted = studio_runtime_store::truthy(agent.get("deletedAt"));
+    let root = agent["cwd"]
+        .as_str()
+        .and_then(|cwd| {
+            studio_runtime_store::path_identity::LexicalPath::exact(std::path::Path::new(cwd))
+        })
+        .and_then(|cwd| {
+            owned_worktree_root(&cwd, id)
+                .ok()
+                .map(std::path::Path::to_path_buf)
+        });
+    let Some(root) = root else {
+        return deleted.then(|| {
+            json!({"id":id,"folderMissing":false,
+            "reason":"The recorded path is outside the Studio worktree folder"})
+        });
+    };
+    let metadata = std::fs::symlink_metadata(&root);
+    let missing = matches!(&metadata, Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+    if !deleted && !missing {
+        return None;
+    }
+    let reason = if missing {
+        "worktree folder missing"
+    } else if metadata.is_err() {
+        "The worktree folder state is unavailable"
+    } else if check_archive_worktree(agent).is_ok() {
+        "The Git worktree is clean. Inspect the worker before removal"
+    } else {
+        "The worktree is changed or unverified. Preserve its files for inspection"
+    };
+    Some(json!({"id":id,"folderMissing":missing,"reason":reason}))
+}
+
 fn owned_worktree_root<'a>(
     cwd: &'a std::path::Path,
     id: &str,

@@ -150,9 +150,6 @@ pub(super) fn execute(
             "account-worker/agent-input-recovery",
         )),
         "reset_tools" => Err(CallbackError::Dependency("native-release/tool-reset")),
-        "maintenance_report" => Err(CallbackError::Dependency(
-            "agent-management/maintenance-report",
-        )),
         _ => Err(CallbackError::Invalid(
             "Agent lifecycle dispatch missed an action",
         )),

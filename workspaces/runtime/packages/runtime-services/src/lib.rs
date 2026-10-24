@@ -20,6 +20,7 @@ pub mod account_transfer_executor;
 pub mod account_worker;
 pub mod agent_lifecycle_runtime;
 pub mod agent_management;
+pub(crate) mod agent_management_maintenance;
 pub mod agent_management_store;
 pub mod agent_move;
 pub(crate) mod agent_progress;
