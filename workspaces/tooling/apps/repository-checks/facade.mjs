@@ -1183,13 +1183,14 @@ function fastTierCommands(root) {
             "vitest.config.mjs",
             "restart-reconcile.test.mjs",
             "journal-repair.test.mjs",
+            "steer.test.mjs",
           ],
         ],
       ],
       options: {
-        selector: "restart-reconcile and journal-repair",
+        selector: "restart-reconcile, journal-repair and steer",
         reason:
-          "Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.",
+          "Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query, and end a turn whose steer Claude answered without a replay echo.",
       },
     },
     {
