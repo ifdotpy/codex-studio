@@ -850,3 +850,193 @@ async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
         }
     }
 }
+
+async fn change_owner(store: &RuntimeStore, fields: Value) {
+    store
+        .transaction(move |tx| {
+            let id = studio_runtime_store::AgentId::from("owner");
+            let mut value = serde_json::to_value(
+                studio_runtime_store::AgentRepository::get(tx, &id)?.expect("owner exists"),
+            )?;
+            for (field, value_new) in fields.as_object().expect("owner changes") {
+                value[field] = value_new.clone();
+            }
+            studio_runtime_store::AgentRepository::put(
+                tx,
+                &studio_runtime_store::AgentRecord::from_value(value)?,
+            )
+        })
+        .await
+        .expect("change owner");
+}
+
+/// Input that a failed start kept: pending at the owner's epoch, with the
+/// start error. `None` delivers it.
+async fn held_input(store: &RuntimeStore, status: Option<&'static str>) {
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,error) \
+                 VALUES ('held','owner','user','continue','pending',?1,7,?2) \
+                 ON CONFLICT(id) DO UPDATE SET status=excluded.status",
+                rusqlite::params![
+                    NOW - 600.0,
+                    "Provider thread resume failed (ENOENT); input remains pending."
+                ],
+            )?;
+            if let Some(status) = status {
+                tx.execute(
+                    "UPDATE runtime_events SET status=?1 WHERE id='held'",
+                    [status],
+                )?;
+            }
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .expect("held input");
+}
+
+/// A rule checks on an interval and starts a command each time. While its
+/// owner cannot act on a wake (failed with its input held, held after a native
+/// failure, or archived), the rule starts no command: it pauses with the
+/// reason. It resumes by itself when the owner can run again. A rule of an
+/// idle owner, or of a failed owner without held input, keeps running.
+#[tokio::test]
+async fn a_rule_pauses_while_its_owner_cannot_run_and_resumes_when_it_can() {
+    struct Case {
+        name: &'static str,
+        hold: Value,
+        held_input: bool,
+        release: Value,
+    }
+    let cases = [
+        Case {
+            name: "failed with held input",
+            hold: json!({"status":"failed","error":"Provider thread resume failed (ENOENT); input remains pending."}),
+            held_input: true,
+            release: json!({"status":"waiting","error":null}),
+        },
+        Case {
+            name: "native failure hold",
+            hold: json!({"status":"failed","nativeFailureHold":true}),
+            held_input: false,
+            release: json!({"status":"waiting","nativeFailureHold":null}),
+        },
+        Case {
+            name: "archived conversation",
+            hold: json!({"archived":true}),
+            held_input: false,
+            release: json!({"archived":false}),
+        },
+    ];
+    for case in cases {
+        let state = seeded_state().await;
+        let store = RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("rules store");
+        change(
+            &store,
+            json!({"kind":"interval","intervalSeconds":240,"nextAt":NOW,"command":"check.sh"}),
+        )
+        .await;
+        change_owner(&store, case.hold.clone()).await;
+        if case.held_input {
+            held_input(&store, None).await;
+        }
+        let monitor = CapturingMonitor {
+            store: &store,
+            calls: Mutex::new(Vec::new()),
+            unknown: false,
+        };
+        for minute in 0..3 {
+            tick_batch(
+                &store,
+                0,
+                NOW + 240.0 * f64::from(minute),
+                &LocalRuleFiles,
+                &monitor,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{}: tick: {error}", case.name));
+        }
+        let paused = rule(&store);
+        assert!(
+            monitor.calls.lock().expect("calls").is_empty(),
+            "{}: no command while the owner cannot run: {paused}",
+            case.name
+        );
+        assert_eq!(paused["status"], "paused", "{}: {paused}", case.name);
+        assert!(paused["ownerHold"].is_string(), "{}: {paused}", case.name);
+        assert!(
+            paused["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("resumes")),
+            "{}: the owner sees why: {paused}",
+            case.name
+        );
+        assert!(
+            events(&store).iter().all(|(id, _)| id == "held"),
+            "{}: no wake",
+            case.name
+        );
+
+        change_owner(&store, case.release.clone()).await;
+        if case.held_input {
+            held_input(&store, Some("delivered")).await;
+        }
+        tick_batch(&store, 0, NOW + 1000.0, &LocalRuleFiles, &monitor)
+            .await
+            .expect("resume tick");
+        let resumed = rule(&store);
+        assert_eq!(resumed["status"], "active", "{}: {resumed}", case.name);
+        assert!(
+            resumed.get("ownerHold").is_none_or(Value::is_null),
+            "{}: {resumed}",
+            case.name
+        );
+        assert!(resumed["error"].is_null(), "{}: {resumed}", case.name);
+        tick_batch(&store, 0, NOW + 1001.0, &LocalRuleFiles, &monitor)
+            .await
+            .expect("tick after resume");
+        assert_eq!(
+            monitor.calls.lock().expect("calls").len(),
+            1,
+            "{}: the resumed rule checks again",
+            case.name
+        );
+    }
+
+    // An idle owner, and a failed owner whose input is not held, keep the rule.
+    for (name, owner) in [
+        ("idle", json!({"status":"waiting"})),
+        (
+            "failed without held input",
+            json!({"status":"failed","error":"The model failed"}),
+        ),
+    ] {
+        let state = seeded_state().await;
+        let store = RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("rules store");
+        change(
+            &store,
+            json!({"kind":"interval","intervalSeconds":240,"nextAt":NOW,"command":"check.sh"}),
+        )
+        .await;
+        change_owner(&store, owner).await;
+        let monitor = CapturingMonitor {
+            store: &store,
+            calls: Mutex::new(Vec::new()),
+            unknown: false,
+        };
+        tick_batch(&store, 0, NOW, &LocalRuleFiles, &monitor)
+            .await
+            .expect("tick");
+        assert_eq!(
+            monitor.calls.lock().expect("calls").len(),
+            1,
+            "{name}: the rule keeps running"
+        );
+        assert_eq!(rule(&store)["status"], "active", "{name}");
+    }
+}
