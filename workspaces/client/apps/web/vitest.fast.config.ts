@@ -25,6 +25,7 @@ export default {
       "src/components/ConversationWarnings.test.ts",
       // web unit safety witnesses
       "src/api.test.ts",
+      "src/playwrightWorkers.test.mjs",
       "src/startWait.test.ts",
       "src/apiSchema.test.ts",
       "src/chatScope.test.ts",

@@ -27,12 +27,15 @@ test("fixture readiness reports early exit instead of waiting for timeout", asyn
   await assert.rejects(ready, /Search fixture exited before printing its port/);
 });
 
-test("fixture readiness has one shared, bounded startup timeout", async () => {
+test("fixture readiness has one shared, bounded startup timeout", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const child = new FakeChild();
   const ready = waitForFixturePort(child, { timeoutMs: 5, label: "Message" });
-  await assert.rejects(
+  const rejected = assert.rejects(
     ready,
     /Message fixture did not print its port within 5ms/,
   );
+  t.mock.timers.tick(5);
+  await rejected;
   child.stdout.destroy();
 });
