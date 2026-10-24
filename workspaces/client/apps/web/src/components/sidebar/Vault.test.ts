@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   chipWithVault,
   deskLink,
@@ -46,6 +46,33 @@ describe("vault menu", () => {
     expect(deskLink(vault({ site: "http://desk.example.com/" }))).toBeNull();
     expect(deskLink(vault({ site: null }))).toBeNull();
     expect(deskLink(vault({ prefix: null }))).toBeNull();
+  });
+
+  it("streams running job receipts without timer reads", async () => {
+    vi.useFakeTimers();
+    const post = vi
+      .fn()
+      .mockResolvedValue({ requestId: "r1", state: "running" });
+    const watchResourceChanges = vi.fn(() => () => {});
+    const pending = runJob(
+      { post } as never,
+      "/api/vault/setup",
+      { requestId: "r1" },
+      {
+        resources: {
+          watchResourceChanges,
+          watchResourceConnection: () => () => {},
+        },
+      } as never,
+    );
+    void pending.catch(() => {});
+    await vi.advanceTimersByTimeAsync(10_000);
+    try {
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(watchResourceChanges).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("asks about one pull with one request id until it ends", async () => {
