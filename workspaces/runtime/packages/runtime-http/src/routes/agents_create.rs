@@ -10,7 +10,7 @@ use studio_runtime_services::agents_create::{
 use studio_runtime_services::host_worker_create::{
     AccountIdentity, CreationCatalog, ExecutionSettings,
 };
-use studio_runtime_services::provider_adapter::{adapter, model_provider};
+use studio_runtime_services::provider_adapter::model_provider;
 
 /// Compose the same fresh model admission and P02 host snapshot used by agent
 /// creation for managed Spawn, Review, and monitor admission.
@@ -129,54 +129,6 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
 
     fn catalog(&self) -> &dyn CreationCatalog {
         &self.catalog
-    }
-
-    fn validate_worker_choice<'a>(
-        &'a self,
-        store: &'a studio_runtime_store::RuntimeStore,
-        account_key: &'a str,
-        account: &'a AccountIdentity,
-        requested: &'a str,
-        default: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError>> + Send + 'a>>{
-        Box::pin(async move {
-            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
-            studio_runtime_services::provider_callbacks::validate_worker_model_choice(
-                requested, default, None,
-            )?;
-            if requested == default {
-                return Ok(());
-            }
-            let path = store.root().join("model-pricing/models-dev-v1.json");
-            let artifact = match tokio::fs::read(path)
-                .await
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            {
-                Some(value) if value.get("version").and_then(Value::as_u64) == Some(1) => value,
-                _ => return Ok(()),
-            };
-            let Some(catalog) = artifact.get("catalog").and_then(|value| {
-                studio_runtime_services::pricing::PricingCatalog::from_value(value).ok()
-            }) else {
-                return Ok(());
-            };
-            let requested_name = self.catalog.pricing_name(account_key, account, requested)?;
-            let default_name = self.catalog.pricing_name(account_key, account, default)?;
-            let provider_for = |model: &str| {
-                adapter(model_provider(model).unwrap_or(account.provider)).pricing_vendor()
-            };
-            let prices = Some((
-                catalog.worker_choice_rates(provider_for(requested), &requested_name),
-                catalog.worker_choice_rates(provider_for(default), &default_name),
-            ));
-            studio_runtime_services::provider_callbacks::validate_worker_model_choice(
-                requested, default, prices,
-            )
-            .map_err(|_| {
-                E::Invalid("Choose a model that costs no more than the default subagent model")
-            })
-        })
     }
 
     fn prepare_workspace(
@@ -706,56 +658,6 @@ impl RouteCreationCatalog {
             Err(CreateError::ModelUnavailable) => Ok(false),
             Err(error) => Err(error),
         }
-    }
-
-    fn pricing_name(
-        &self,
-        account_key: &str,
-        account: &AccountIdentity,
-        model: &str,
-    ) -> Result<String, studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError>
-    {
-        use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
-        let (Some(home), provider) = (account.home.as_deref(), account.provider.key()) else {
-            return Err(E::Unavailable("provider-session/model-list"));
-        };
-        let catalog = match self.service.read_for_admission(account_key, home, provider) {
-            studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
-                value,
-                account_key: key,
-                home: fresh_home,
-                provider: fresh_provider,
-                expires_at,
-                ..
-            } if key == account_key
-                && fresh_home == home
-                && fresh_provider == provider
-                && expires_at > std::time::Instant::now() =>
-            {
-                value
-            }
-            _ => return Err(E::Unavailable("provider-session/model-list")),
-        };
-        catalog
-            .get("data")
-            .and_then(Value::as_array)
-            .and_then(|rows| {
-                rows.iter().find(|row| {
-                    !row.get("hidden").and_then(Value::as_bool).unwrap_or(false)
-                        && (row.get("model").and_then(Value::as_str) == Some(model)
-                            || row.get("resolvedModel").and_then(Value::as_str) == Some(model))
-                })
-            })
-            .map(|row| {
-                row.get("resolvedModel")
-                    .and_then(Value::as_str)
-                    .or_else(|| row.get("model").and_then(Value::as_str))
-                    .unwrap_or(model)
-                    .to_owned()
-            })
-            .ok_or(E::Invalid(
-                "This model is not available for the selected worker accounts",
-            ))
     }
 }
 

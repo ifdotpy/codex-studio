@@ -2237,26 +2237,6 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
     fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {
         &Self
     }
-    fn validate_worker_choice<'a>(
-        &'a self,
-        _: &'a RuntimeStore,
-        _: &'a str,
-        _: &'a crate::host_worker_create::AccountIdentity,
-        _: &'a str,
-        _: &'a str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<
-                        (),
-                        crate::managed_child_create::ManagedCreationEnvironmentError,
-                    >,
-                > + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move { Ok(()) })
-    }
     fn prepare_workspace(
         &self,
         _: &RuntimeStore,
@@ -2319,6 +2299,66 @@ fn run_git_output(directory: &std::path::Path, arguments: &[&str]) -> String {
         .unwrap();
     assert!(output.status.success(), "git {arguments:?}: {output:?}");
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+#[tokio::test]
+async fn managed_spawn_accepts_any_explicit_model_for_each_role() {
+    let (_root, store, context) = fixture().await;
+    let parent = studio_runtime_store::AgentRepository::get(
+        &store.test_reader().unwrap(),
+        &context.agent.as_str().into(),
+    )
+    .unwrap()
+    .unwrap()
+    .value();
+    let actor = Actor::from_record(&parent, &context.agent, context.epoch).unwrap();
+    for role in ["implementer", "reviewer"] {
+        for model in ["gpt-6-astra", "claude-opus-5-5"] {
+            let request_id = format!("explicit-model-{role}-{model}");
+            let mut args = json!({"agents":[{"name":"Explicit model", "prompt":"Read the task",
+                "role":role, "model":model, "effort":null}]});
+            if role == "implementer" {
+                args["agents"][0]["workspace"] = json!("shared");
+            }
+            let spawned = crate::managed_child_create::spawn_agents(
+                &store,
+                &actor,
+                &args,
+                &request_id,
+                20.0,
+                &CreationEnvironment,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{role} with {model}: {error:?}"));
+            let child_id = spawned.value["agents"][0]["id"].as_str().unwrap();
+            let child = studio_runtime_store::AgentRepository::get(
+                &store.test_reader().unwrap(),
+                &child_id.into(),
+            )
+            .unwrap()
+            .unwrap()
+            .value();
+            assert_eq!(child["role"], role);
+            assert_eq!(child["model"], model);
+            assert_eq!(
+                child["provider"],
+                crate::provider_adapter::model_provider(model)
+                    .unwrap()
+                    .key()
+            );
+            let replayed = crate::managed_child_create::spawn_agents(
+                &store,
+                &actor,
+                &args,
+                &request_id,
+                21.0,
+                &CreationEnvironment,
+            )
+            .await
+            .unwrap();
+            assert_eq!(replayed.value["agents"][0]["id"], child_id);
+        }
+    }
 }
 
 #[tokio::test]
