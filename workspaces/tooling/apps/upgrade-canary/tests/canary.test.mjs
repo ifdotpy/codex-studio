@@ -27,6 +27,96 @@ function temporary(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
+
+function subscriptionCanary(t, snapshot) {
+  const root = temporary(t);
+  const canary = new Canary({
+    from: root,
+    to: root,
+    "live-state": path.join(root, "live"),
+  });
+  canary.root = root;
+  canary.accounts = [
+    {
+      key: "claude-canary",
+      provider: "claude",
+      accountId: "claude:canary@example.test",
+    },
+  ];
+  const requests = [];
+  canary.backend = {
+    get: async (url) => {
+      requests.push(url);
+      return snapshot;
+    },
+  };
+  return { canary, requests };
+}
+
+function subscriptionLimits() {
+  return {
+    accountKey: "claude-canary",
+    error: null,
+    data: {
+      accountId: "claude:canary@example.test",
+      subscriptionType: "max",
+      rateLimits: {
+        primary: { windowDurationMins: 300 },
+        secondary: { windowDurationMins: 10080 },
+      },
+    },
+  };
+}
+
+test("Claude subscription proof reads native limits without a recorded turn window", async (t) => {
+  const { canary, requests } = subscriptionCanary(t, subscriptionLimits());
+  assert.equal(
+    fs.existsSync(path.join(canary.state, "analytics.sqlite3")),
+    false,
+  );
+  assert.equal(await canary.claudeBuckets(), "windows five_hour, weekly");
+  assert.deepEqual(requests, ["/api/limits?account_key=claude-canary"]);
+});
+
+test("Claude subscription proof rejects missing windows, wrong identity, and read errors", async (t) => {
+  for (const change of [
+    (snapshot) => {
+      snapshot.accountKey = "another-account";
+    },
+    (snapshot) => {
+      snapshot.data.accountId = "claude:another@example.test";
+    },
+    (snapshot) => {
+      delete snapshot.data.accountId;
+    },
+    (snapshot) => {
+      snapshot.error = "Native limits unavailable";
+    },
+    (snapshot) => {
+      snapshot.data = null;
+    },
+    (snapshot) => {
+      snapshot.data.rateLimits = {};
+    },
+    (snapshot) => {
+      delete snapshot.data.rateLimits.primary;
+    },
+  ]) {
+    const snapshot = subscriptionLimits();
+    change(snapshot);
+    const { canary } = subscriptionCanary(t, snapshot);
+    await assert.rejects(async () => canary.claudeBuckets());
+  }
+  const { canary } = subscriptionCanary(t, subscriptionLimits());
+  canary.backend.get = async () => {
+    throw new Error("Native read failed");
+  };
+  await assert.rejects(
+    async () => canary.claudeBuckets(),
+    /Native read failed/,
+  );
+});
+
 test("the admission helper cannot start native authentication", () => {
   assert.throws(() => admissionCli(["--login", "--claude", "/native/claude"]));
   assert.throws(() => admissionCli(["--prepare"]));

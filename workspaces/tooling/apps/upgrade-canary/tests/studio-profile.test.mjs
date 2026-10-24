@@ -228,6 +228,10 @@ test("the real canary registry and native environment retain the bound Studio id
     binaryPath: f.binary,
   });
   assert.equal(own._credentialIdentity, "claude:canary@example.test");
+  assert.equal(
+    canary.accounts.find((row) => row.key === "claude-canary").accountId,
+    own.accountId,
+  );
   assert.deepEqual(canary.claudeEnvironment(), {
     CLAUDE_CONFIG_DIR: f.config,
     CLAUDE_SECURESTORAGE_CONFIG_DIR: f.config,

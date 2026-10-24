@@ -558,7 +558,11 @@ export class Canary {
           ...(dedicated ? { binaryPath: dedicated.binary } : {}),
         },
       };
-      this.accounts.push({ key: "claude-canary", provider: "claude" });
+      this.accounts.push({
+        key: "claude-canary",
+        provider: "claude",
+        accountId: accounts["claude-canary"].accountId,
+      });
     }
     // A fresh Rust state accepts only a private accounts folder with a private registry.
     fs.mkdirSync(path.join(this.state, "accounts"), {
@@ -1123,17 +1127,24 @@ export class Canary {
     return `steer ${detail}`;
   }
 
-  /** The Claude rate-limit windows that the bridge recorded: five hours and a week mean a subscription. */
-  claudeBuckets() {
-    const [row] = query(
-      path.join(this.state, "analytics.sqlite3"),
-      "select record from analytics_limits where account='claude-canary' order by at desc limit 1",
+  /** Read plan limits explicitly; a successful turn need not emit a limit event. */
+  async claudeBuckets() {
+    const snapshot = await this.backend.get(
+      "/api/limits?account_key=claude-canary",
     );
-    if (!row)
+    const expected = this.accounts.find(
+      (account) => account.key === "claude-canary",
+    )?.accountId;
+    if (
+      !expected ||
+      snapshot?.accountKey !== "claude-canary" ||
+      snapshot?.data?.accountId !== expected ||
+      snapshot.error
+    )
       throw new CheckFailed(
-        "the Claude account recorded no rate-limit windows",
+        "Claude subscription limits do not verify the canary account",
       );
-    const limits = JSON.parse(row[0])?.data?.rateLimits ?? {};
+    const limits = snapshot.data.rateLimits ?? {};
     const windows = [limits.primary, limits.secondary]
       .filter(Boolean)
       .map(
