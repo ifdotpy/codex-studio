@@ -287,7 +287,8 @@ mod tests {
     #[tokio::test]
     async fn resolve_http_uses_a_fake_guest_endpoint_and_writes_vm_choice() {
         let state_dir = tempfile::tempdir().expect("fixture operation succeeds");
-        let project = state_dir.path().join("layr-projects/p1");
+        // The VM state directory owns the layr project records, as on a real install.
+        let project = state_dir.path().join("linux-vm/layr-projects/p1");
         let folder = state_dir.path().join("mac-folder");
         let socket_dir = state_dir.path().join("linux-vm");
         std::fs::create_dir_all(project.join("sync")).expect("fixture operation succeeds");
@@ -382,7 +383,8 @@ mod tests {
     #[tokio::test]
     async fn config_http_contract_and_invalid_resolve_refusal_are_quiescent() {
         let state_dir = tempfile::tempdir().expect("fixture operation succeeds");
-        let project = state_dir.path().join("layr-projects/p1");
+        // The VM state directory owns the layr project records, as on a real install.
+        let project = state_dir.path().join("linux-vm/layr-projects/p1");
         let folder = state_dir.path().join("mac-folder");
         std::fs::create_dir_all(project.join("sync")).expect("fixture operation succeeds");
         std::fs::create_dir_all(&folder).expect("fixture operation succeeds");
