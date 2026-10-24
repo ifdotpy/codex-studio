@@ -1294,6 +1294,7 @@ mod tests {
     async fn vault_job_progress_publishes_every_changed_receipt_without_persistence() {
         use axum::response::IntoResponse;
         use studio_runtime_services::resource_notify::ResourceChanges;
+        let folder = tempfile::tempdir().expect("owned pull folder");
         let mut state = HttpState::new(
             "token".into(),
             "workspace".into(),
@@ -1318,7 +1319,7 @@ mod tests {
                 initial["prefix"] = json!("demo");
             }
             if kind == VaultJobKind::Pull {
-                initial["folder"] = json!("/tmp/demo");
+                initial["folder"] = json!(folder.path().join("demo"));
             }
             let before = state.sync_changes.snapshot().revision;
             reserve_job(&client, kind, "one", initial)
