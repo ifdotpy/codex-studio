@@ -1,4 +1,3 @@
-import { WORKER_TURN_LIMIT_REASON } from "../../generated/sharedValues";
 import { createContext, type ReactNode } from "react";
 import { useWorkerModels, type WorkerModelInfo } from "./WorkerModelPicker";
 
@@ -51,7 +50,6 @@ export function workerState(
   deferred?: Set<string>,
 ) {
   const status = agent.status ?? "";
-  if (agent.terminalReason === WORKER_TURN_LIMIT_REASON) return "stopped";
   if (agent.stall) return "stalled";
   if (answers.has(agent.id)) return "answer";
   if (status === "approval")
@@ -192,19 +190,10 @@ export function teamDispatchGroups(
   workers: Agent[],
   indicators: Map<string, ChatIndicator>,
 ) {
-  // A turn-limited worker stopped before finishing; it stays visible as Stopped.
-  const turnLimited = (agent: Agent) =>
-    agent.terminalReason === WORKER_TURN_LIMIT_REASON;
-  const kindOf = (agent: Agent) => {
-    const kind = indicators.get(agent.id)?.kind || "none";
-    return turnLimited(agent) && !["answer", "error", "working"].includes(kind)
-      ? "paused"
-      : kind;
-  };
+  const kindOf = (agent: Agent) => indicators.get(agent.id)?.kind || "none";
   const finished = (agent: Agent) =>
     agent.status === "completed" &&
     !agent.stall &&
-    !turnLimited(agent) &&
     !["answer", "error", "working"].includes(kindOf(agent));
   return {
     groups: CHAT_INDICATOR_URGENCY.map((kind) => ({

@@ -1,3 +1,4 @@
+import { IdleCompactionNotice } from "./IdleCompactionNotice";
 import { MAX_TURN_ATTACHMENTS } from "../generated/sharedValues";
 import { DeliveryMoment } from "../generated/deliveryMoment";
 import { useSendingMessageRemoval } from "./useSendingMessageRemoval";
@@ -1412,7 +1413,9 @@ export default function Conversation(p: {
           enabled={managed && !p.room}
           storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
           renderMessage={(item) =>
-            item.nativeNotice ? (
+            item.idleCompaction ? (
+              <IdleCompactionNotice key={item.id} text={item.text} />
+            ) : item.nativeNotice ? (
               isNonBlockingWarning(item) ? null : (
                 <NativeNotice key={item.id} item={item} planType={planType} />
               )
@@ -1524,6 +1527,7 @@ export default function Conversation(p: {
             setLimitsOpen(true);
             p.reloadLimits();
           }}
+          refreshLimits={p.reloadLimits}
           newChat={p.onNewChat}
           chooseChat={p.onChooseChat}
         />

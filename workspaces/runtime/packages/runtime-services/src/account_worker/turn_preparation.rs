@@ -255,6 +255,15 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
         steer::WakeClaim::Busy => return Ok(Err(Unclaimed::Nothing)),
         steer::WakeClaim::Idle => {}
     }
+    // The claim below refuses an agent that an account transfer holds.
+    if !Box::pin(stage(
+        "turn_preparation.account_transfer",
+        advance_transfer(wake),
+    ))
+    .await?
+    {
+        return Ok(Err(Unclaimed::Nothing));
+    }
     // A new turn waits for the account's start throttle before its claim, so
     // its input stays queued meanwhile; a slot not claimed below is freed. A
     // host without an account registry (fixtures; production hosts always
@@ -356,13 +365,17 @@ async fn prepare(
     if let Some(token) = run.carried.clone() {
         let i = intent.clone();
         let r = resources.clone();
-        stage(
+        let gate = stage(
             "turn_preparation.admit",
             bridge.prepare_run("preparation", move |s| async move {
-                before_start(&s, &r, &i).await
+                store::preparation_step(&s, &r, &i, preparation::before_start(&s, &r, &i.agent_id))
+                    .await
             }),
         )
         .await?;
+        if let Err(step) = gate.into_ready::<preparation::RequestPreparation>() {
+            return Ok(step);
+        }
         match Box::pin(ready(run, None, token)).await {
             // A stale carried token or unfrozen settings take the full path.
             Err(WorkerError::PreparationRefused(_)) => {}
@@ -374,9 +387,6 @@ async fn prepare(
     let selection = match stage(
         "turn_preparation.admit",
         bridge.prepare_run("preparation", move |s| async move {
-            if may_start_turn {
-                before_start(&s, &r, &i).await?;
-            }
             store::preparation_step(&s, &r, &i, preparation::admit(Arc::clone(&s), &r, &i)).await
         }),
     )
@@ -410,23 +420,117 @@ async fn prepare(
     Box::pin(settle(run, result)).await
 }
 
-/// Apply an account transfer requested before this turn starts.
-async fn before_start(
-    store: &Arc<RuntimeStore>,
-    resources: &preparation::PreparationResources,
-    intent: &TurnIntent,
-) -> Result<(), WorkerError> {
-    crate::account_transfer_executor::before_start(
-        Arc::clone(store),
-        resources.account_session.clone(),
-        &resources.model_catalog,
+fn transfer_error(error: crate::account_transfer::TransferError) -> WorkerError {
+    match error {
+        crate::account_transfer::TransferError::Store(error) => WorkerError::Store(error),
+        error => WorkerError::PreparationRefused(error.to_string()),
+    }
+}
+
+/// Advance the agent's account transfer at its wake, before its input is
+/// claimed. A member that was busy at the request is released to the
+/// destination account, whose worker then claims the input. A lazy member of
+/// this account moves its history here first. `false` leaves the input queued;
+/// the transfer record names the wait or the refusal.
+async fn advance_transfer(wake: &Wake) -> Result<bool, WorkerError> {
+    let Wake {
+        bridge,
+        account,
+        agent_id,
         resources,
-        &intent.agent_id,
-        now(),
-    )
-    .await
-    .map(|_| ())
-    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+        ..
+    } = wake;
+    let (g, a) = (agent_id.clone(), account.clone());
+    // The member's phase, when an account transfer holds this agent.
+    let held = bridge
+        .worker_run("account_transfer_hold", move |store| async move {
+            store
+                .read_async("runtime-services/account_transfer_hold", move |db| {
+                    let Some(agent) = AgentRepository::get(db, &AgentId::from(g.as_str()))? else {
+                        return Ok::<_, WorkerError>(None);
+                    };
+                    let Some(operation) = agent
+                        .extra
+                        .get("accountTransferId")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                    else {
+                        return Ok(None);
+                    };
+                    let phase =
+                        studio_runtime_store::AccountTransferRepository::get(db, operation)?
+                            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                            .and_then(|record| {
+                                record["members"][g.as_str()]["phase"]
+                                    .as_str()
+                                    .map(str::to_owned)
+                            })
+                            .unwrap_or_default();
+                    let lazy_here =
+                        studio_runtime_store::truthy(agent.extra.get("lazyAccountTransfer"))
+                            && agent
+                                .extra
+                                .get("accountKey")
+                                .and_then(Value::as_str)
+                                .unwrap_or("default")
+                                == a;
+                    Ok(Some((phase, lazy_here)))
+                })
+                .await
+        })
+        .await?;
+    let Some((phase, lazy_here)) = held else {
+        return Ok(true);
+    };
+    // Any other phase waits for its receipt, Retry or Cancel; the transfer
+    // record names the reason, so a wake neither writes nor logs.
+    if phase == "waiting" && !lazy_here {
+        let g = agent_id.clone();
+        match bridge
+            .worker_run("account_transfer_release", move |store| async move {
+                crate::account_transfer_driver::release_waiting(&store, &g, now())
+                    .await
+                    .map_err(transfer_error)
+            })
+            .await
+        {
+            Ok(true) => bridge.event_wake().notify_one(),
+            Ok(false) => {}
+            Err(WorkerError::PreparationRefused(reason)) => {
+                eprintln!("account transfer of {agent_id} was not released: {reason}");
+            }
+            Err(error) => return Err(error),
+        }
+        return Ok(false);
+    }
+    if phase != "lazy" || !lazy_here {
+        return Ok(false);
+    }
+    let (g, r) = (agent_id.clone(), resources.clone());
+    let moved = bridge
+        .prepare_run("account_transfer_move", move |store| async move {
+            crate::account_transfer_executor::before_start(
+                store,
+                r.account_session.clone(),
+                &r.model_catalog,
+                &r,
+                &g,
+                now(),
+            )
+            .await
+            .map_err(transfer_error)
+        })
+        .await;
+    match moved {
+        Ok(agent) => Ok(!studio_runtime_store::truthy(
+            agent.get("accountTransferId"),
+        )),
+        Err(WorkerError::PreparationRefused(reason)) => {
+            eprintln!("account transfer of {agent_id} did not move: {reason}");
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn ready(

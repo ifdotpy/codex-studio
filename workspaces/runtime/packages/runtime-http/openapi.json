@@ -4176,16 +4176,6 @@
             ],
             "title": "Autowake"
           },
-          "budgetBlocked": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "canSend": {
             "anyOf": [
               {
@@ -4196,16 +4186,6 @@
               }
             ],
             "title": "Cansend"
-          },
-          "capabilityProfile": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/WorkerCapabilitiesDto"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "capacityRetry": {
             "anyOf": [
@@ -4261,18 +4241,6 @@
               }
             ],
             "title": "Compactions"
-          },
-          "completedWorkerTurns": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "concurrency": {
             "anyOf": [
@@ -5353,16 +5321,6 @@
             ],
             "title": "Tail"
           },
-          "terminalReason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "threadId": {
             "anyOf": [
               {
@@ -5373,28 +5331,6 @@
               }
             ],
             "title": "Threadid"
-          },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "tokenUsageAccounting": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "tokensUsed": {
             "anyOf": [
@@ -23577,21 +23513,6 @@
             "title": "Account Key",
             "type": "string"
           },
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "concurrency": {
             "default": 32,
             "maximum": 2048,
@@ -23615,21 +23536,6 @@
             ],
             "default": null,
             "title": "Daybreak Enabled"
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "effort": {
             "anyOf": [
@@ -23678,33 +23584,6 @@
             "minimum": 1,
             "title": "Maxagents",
             "type": "integer"
-          },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "model": {
             "anyOf": [
@@ -23777,21 +23656,6 @@
           "role": {
             "$ref": "#/components/schemas/AgentRole-Input",
             "default": "orchestrator"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "tokenBudget": {
             "anyOf": [
@@ -28676,6 +28540,31 @@
           "detail"
         ],
         "title": "IdentityAlert",
+        "type": "object"
+      },
+      "IdleCompactionSettings": {
+        "additionalProperties": false,
+        "properties": {
+          "minTokens": {
+            "default": 200000,
+            "maximum": 9007199254740991,
+            "minimum": 100000,
+            "type": "integer"
+          },
+          "mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "log",
+              "compact"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "minTokens"
+        ],
         "type": "object"
       },
       "ImageMountDiagnostics": {
@@ -35153,6 +35042,9 @@
             "title": "Childresultcoalesceseconds",
             "type": "integer"
           },
+          "idleCompaction": {
+            "$ref": "#/components/schemas/IdleCompactionSettings"
+          },
           "idleSessionUnloadMinutes": {
             "description": "Minutes a lead's or ordinary chat's idle Codex thread or Claude session stays loaded, and an account's provider process keeps running after its last thread unloaded. A managed worker without a running turn, pending input, or active monitor unloads at once. The next message resumes a thread. 0 never unloads.",
             "maximum": 1440,
@@ -38250,36 +38142,6 @@
             "title": "Action",
             "type": "string"
           },
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "effort": {
             "anyOf": [
               {
@@ -38330,33 +38192,6 @@
             "default": null,
             "title": "Isnew"
           },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "anyOf": [
               {
@@ -38391,21 +38226,6 @@
             ],
             "title": "Role",
             "type": "string"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "title": "ProfileBody",
@@ -38489,21 +38309,6 @@
             "default": null,
             "title": "Syncentitiesafter"
           },
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "deleted": {
             "anyOf": [
               {
@@ -38515,21 +38320,6 @@
             ],
             "default": null,
             "title": "Deleted"
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "effort": {
             "anyOf": [
@@ -38575,33 +38365,6 @@
             "default": null,
             "title": "Instructions"
           },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "anyOf": [
               {
@@ -38641,21 +38404,6 @@
             ],
             "default": null,
             "title": "Role"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "title": "ProfileMutation",
@@ -38664,36 +38412,6 @@
       "ProfileRecord": {
         "additionalProperties": false,
         "properties": {
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "effort": {
             "anyOf": [
               {
@@ -38721,33 +38439,6 @@
             "title": "Instructions",
             "type": "string"
           },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "title": "Model",
             "type": "string"
@@ -38763,21 +38454,6 @@
             ],
             "title": "Role",
             "type": "string"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [
@@ -43488,6 +43164,17 @@
               }
             ]
           },
+          "clientId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Clientid"
+          },
           "command": {
             "anyOf": [
               {
@@ -43516,6 +43203,39 @@
             ],
             "title": "Cwd"
           },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Expiresat"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Host"
+          },
+          "linuxUser": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Linuxuser"
+          },
           "message": {
             "anyOf": [
               {
@@ -43526,6 +43246,20 @@
               }
             ],
             "title": "Message"
+          },
+          "paste": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paste"
           },
           "permissions": {
             "anyOf": [
@@ -43540,6 +43274,17 @@
               }
             ],
             "title": "Permissions"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Phase"
           },
           "questions": {
             "anyOf": [
@@ -43566,6 +43311,20 @@
             ],
             "title": "Reason"
           },
+          "redirect": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redirect"
+          },
           "requestedSchema": {
             "anyOf": [
               {
@@ -43575,6 +43334,28 @@
                 "type": "null"
               }
             ]
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Scope"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Source"
           },
           "threadId": {
             "anyOf": [
@@ -43608,6 +43389,31 @@
               }
             ],
             "title": "Url"
+          },
+          "userCode": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Usercode"
+          },
+          "waiting": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting"
           }
         },
         "title": "RequestParamsDto",
@@ -44812,6 +44618,48 @@
           }
         },
         "title": "RestartRecoveryRecordResponse",
+        "type": "object"
+      },
+      "RetainedWorktreesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "retainedWorktrees": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "cleanup": {
+                  "$ref": "#/components/schemas/WorkspaceCleanupSummaryDto"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "cleanup"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rootId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rootId",
+          "retainedWorktrees"
+        ],
         "type": "object"
       },
       "RetryAction": {
@@ -51347,6 +51195,152 @@
         "title": "StopResponse",
         "type": "object"
       },
+      "StudioError": {
+        "additionalProperties": false,
+        "description": "One agent work item that ended because of a Studio error, not because of the agent's own work.",
+        "properties": {
+          "action": {
+            "description": "resume runs connection recovery for the agent; check opens the agent for the owner.",
+            "enum": [
+              "resume",
+              "check"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "agentId": {
+            "title": "Agentid",
+            "type": "string"
+          },
+          "agentName": {
+            "title": "Agentname",
+            "type": "string"
+          },
+          "at": {
+            "description": "Unix seconds of the failure.",
+            "minimum": 0,
+            "title": "At",
+            "type": "number"
+          },
+          "detail": {
+            "description": "The stored error.",
+            "title": "Detail",
+            "type": "string"
+          },
+          "eventId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Eventid"
+          },
+          "id": {
+            "description": "Row identity; dismissing it hides this row only.",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "monitor_outcome_lost",
+              "monitor_not_recorded",
+              "input_not_sent",
+              "input_unconfirmed",
+              "input_uncertain",
+              "input_stuck",
+              "turn_disconnected",
+              "workspace_failed"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "monitorId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Monitorid"
+          },
+          "reason": {
+            "description": "The reason in plain words.",
+            "title": "Reason",
+            "type": "string"
+          },
+          "subject": {
+            "description": "The command or the start of the message.",
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "reason",
+          "action",
+          "agentId",
+          "agentName",
+          "detail",
+          "subject",
+          "at"
+        ],
+        "title": "StudioError",
+        "type": "object"
+      },
+      "StudioErrorsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "_syncEntities": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SyncEntity"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentities"
+          },
+          "_syncEntitiesAfter": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Syncentitiesafter"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StudioError"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "StudioErrorsResponse",
+        "type": "object"
+      },
       "SummaryAccount": {
         "additionalProperties": false,
         "properties": {
@@ -53883,89 +53877,6 @@
         "title": "TasksResource",
         "type": "object"
       },
-      "TeamBudgetSummary": {
-        "additionalProperties": false,
-        "properties": {
-          "incomplete": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "agentId": {
-                  "type": "string"
-                },
-                "reason": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "agentId",
-                "reason"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "reached": {
-            "type": "boolean"
-          },
-          "retainedWorktrees": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "cleanup": {
-                  "$ref": "#/components/schemas/WorkspaceCleanupSummaryDto"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "name": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "id",
-                "cleanup"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "rootId": {
-            "type": "string"
-          },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "tokensUsed": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "rootId",
-          "tokenBudget",
-          "reached",
-          "incomplete"
-        ],
-        "type": "object"
-      },
       "TerminalClose": {
         "additionalProperties": false,
         "properties": {
@@ -56092,6 +56003,10 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "idleCompaction": {
+            "description": "The notice confirms a completed idle compaction of a Claude session.",
+            "type": "boolean"
           },
           "inputs": {
             "anyOf": [
@@ -60532,6 +60447,131 @@
         "title": "WalTelemetry",
         "type": "object"
       },
+      "WebPushRemoveRequest": {
+        "additionalProperties": false,
+        "description": "Stop the sign-in pushes of one device.",
+        "properties": {
+          "id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "WebPushRemoveRequest",
+        "type": "object"
+      },
+      "WebPushRemoveResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "removed": {
+            "title": "Removed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ],
+        "title": "WebPushRemoveResponse",
+        "type": "object"
+      },
+      "WebPushState": {
+        "additionalProperties": false,
+        "description": "The server's VAPID public key for PushManager.subscribe and the subscribed devices (docs/web-push.md).",
+        "properties": {
+          "publicKey": {
+            "title": "Publickey",
+            "type": "string"
+          },
+          "ready": {
+            "description": "The server has an https remote access origin, so a push can name its contact.",
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "subscriptions": {
+            "items": {
+              "$ref": "#/components/schemas/WebPushSubscription"
+            },
+            "title": "Subscriptions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "publicKey",
+          "ready",
+          "subscriptions"
+        ],
+        "title": "WebPushState",
+        "type": "object"
+      },
+      "WebPushSubscribeRequest": {
+        "additionalProperties": false,
+        "description": "A PushSubscription of this device: its endpoint and keys (base64url), and a device name.",
+        "properties": {
+          "auth": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Auth",
+            "type": "string"
+          },
+          "device": {
+            "maxLength": 80,
+            "title": "Device",
+            "type": "string"
+          },
+          "endpoint": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Endpoint",
+            "type": "string"
+          },
+          "p256dh": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "P256Dh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint",
+          "p256dh",
+          "auth",
+          "device"
+        ],
+        "title": "WebPushSubscribeRequest",
+        "type": "object"
+      },
+      "WebPushSubscription": {
+        "additionalProperties": false,
+        "description": "One device of the owner that gets sign-in pushes. The endpoint and keys stay on the server.",
+        "properties": {
+          "created": {
+            "title": "Created",
+            "type": "number"
+          },
+          "device": {
+            "maxLength": 80,
+            "title": "Device",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "device",
+          "created"
+        ],
+        "title": "WebPushSubscription",
+        "type": "object"
+      },
       "WhoisStatus": {
         "enum": [
           "pending",
@@ -62193,104 +62233,6 @@
           "displayStatus"
         ],
         "title": "WorkViewRecordResponse",
-        "type": "object"
-      },
-      "WorkerCapabilitiesDto": {
-        "additionalProperties": false,
-        "properties": {
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "WorkerContinueRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "type": "string"
-          },
-          "request_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "request_id"
-        ],
         "type": "object"
       },
       "WorkerDefaults": {
@@ -66813,127 +66755,6 @@
           }
         },
         "summary": "Account Transfer"
-      }
-    },
-    "/api/agents/continue": {
-      "post": {
-        "operationId": "continue_worker_api_agents_continue_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WorkerContinueRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/studio_api__work__models__MessageReceipt"
-                }
-              }
-            },
-            "description": "Successful Response",
-            "headers": {
-              "Access-Control-Allow-Origin": {
-                "$ref": "#/components/headers/AccessControlAllowOrigin"
-              },
-              "Access-Control-Expose-Headers": {
-                "$ref": "#/components/headers/AccessControlExposeHeaders"
-              },
-              "Cache-Control": {
-                "$ref": "#/components/headers/CacheControl"
-              },
-              "Content-Encoding": {
-                "$ref": "#/components/headers/ContentEncoding"
-              },
-              "Content-Length": {
-                "$ref": "#/components/headers/ContentLength"
-              },
-              "Content-Security-Policy": {
-                "$ref": "#/components/headers/ContentSecurityPolicy"
-              },
-              "Content-Type": {
-                "$ref": "#/components/headers/ContentType"
-              },
-              "Referrer-Policy": {
-                "$ref": "#/components/headers/ReferrerPolicy"
-              },
-              "Server-Timing": {
-                "$ref": "#/components/headers/ServerTiming"
-              },
-              "Vary": {
-                "$ref": "#/components/headers/Vary"
-              },
-              "X-Content-Type-Options": {
-                "$ref": "#/components/headers/XContentTypeOptions"
-              },
-              "X-Studio-API-Schema": {
-                "$ref": "#/components/headers/StudioApiSchema"
-              },
-              "X-Studio-Server": {
-                "$ref": "#/components/headers/StudioServer"
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ApiError400",
-            "description": "Bad Request"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "408": {
-            "$ref": "#/components/responses/ApiError408",
-            "description": "Request Timeout"
-          },
-          "409": {
-            "$ref": "#/components/responses/ApiError409",
-            "description": "Conflict"
-          },
-          "410": {
-            "$ref": "#/components/responses/ApiError410",
-            "description": "Gone"
-          },
-          "413": {
-            "$ref": "#/components/responses/ApiError413",
-            "description": "Content Too Large"
-          },
-          "415": {
-            "$ref": "#/components/responses/ApiError415",
-            "description": "Unsupported Media Type"
-          },
-          "426": {
-            "$ref": "#/components/responses/ApiError426",
-            "description": "Upgrade Required"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "502": {
-            "$ref": "#/components/responses/ApiError502",
-            "description": "Bad Gateway"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "Post Message"
       }
     },
     "/api/agents/finder-view": {
@@ -77653,6 +77474,102 @@
         "summary": "Rename"
       }
     },
+    "/api/retained-worktrees": {
+      "get": {
+        "operationId": "retained_worktrees_api_retained_worktrees_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Agent",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetainedWorktreesResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Retained Worktrees"
+      }
+    },
     "/api/room/delete": {
       "post": {
         "operationId": "delete_room_api_room_delete_post",
@@ -78715,6 +78632,210 @@
         "summary": "Stop"
       }
     },
+    "/api/studio-errors": {
+      "get": {
+        "operationId": "studio_errors_read_api_studio_errors_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioErrorsResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Studio Errors Read"
+      }
+    },
+    "/api/studio-errors/dismiss": {
+      "post": {
+        "operationId": "studio_errors_dismiss_api_studio_errors_dismiss_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioErrorsResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Studio Errors Dismiss"
+      }
+    },
     "/api/sync/drafts": {
       "post": {
         "operationId": "push_drafts_api_sync_drafts_post",
@@ -79693,102 +79814,6 @@
           }
         },
         "summary": "Read bounded task output within its owner workspace"
-      }
-    },
-    "/api/team-budget": {
-      "get": {
-        "operationId": "team_budget_api_team_budget_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "agent",
-            "required": true,
-            "schema": {
-              "maxLength": 200,
-              "minLength": 1,
-              "title": "Agent",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TeamBudgetSummary"
-                }
-              }
-            },
-            "description": "Successful Response",
-            "headers": {
-              "Access-Control-Allow-Origin": {
-                "$ref": "#/components/headers/AccessControlAllowOrigin"
-              },
-              "Access-Control-Expose-Headers": {
-                "$ref": "#/components/headers/AccessControlExposeHeaders"
-              },
-              "Cache-Control": {
-                "$ref": "#/components/headers/CacheControl"
-              },
-              "Content-Encoding": {
-                "$ref": "#/components/headers/ContentEncoding"
-              },
-              "Content-Length": {
-                "$ref": "#/components/headers/ContentLength"
-              },
-              "Content-Security-Policy": {
-                "$ref": "#/components/headers/ContentSecurityPolicy"
-              },
-              "Content-Type": {
-                "$ref": "#/components/headers/ContentType"
-              },
-              "Referrer-Policy": {
-                "$ref": "#/components/headers/ReferrerPolicy"
-              },
-              "Server-Timing": {
-                "$ref": "#/components/headers/ServerTiming"
-              },
-              "Vary": {
-                "$ref": "#/components/headers/Vary"
-              },
-              "X-Content-Type-Options": {
-                "$ref": "#/components/headers/XContentTypeOptions"
-              },
-              "X-Studio-API-Schema": {
-                "$ref": "#/components/headers/StudioApiSchema"
-              },
-              "X-Studio-Server": {
-                "$ref": "#/components/headers/StudioServer"
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ApiError400",
-            "description": "Bad Request"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "Processes"
       }
     },
     "/api/terminals": {
@@ -83355,6 +83380,331 @@
           }
         },
         "summary": "Submit"
+      }
+    },
+    "/api/web-push": {
+      "get": {
+        "operationId": "web_push_state_api_web_push_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebPushState"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Web Push State"
+      }
+    },
+    "/api/web-push/remove": {
+      "post": {
+        "operationId": "web_push_remove_api_web_push_remove_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebPushRemoveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebPushRemoveResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Web Push Remove"
+      }
+    },
+    "/api/web-push/subscriptions": {
+      "post": {
+        "operationId": "web_push_subscribe_api_web_push_subscriptions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebPushSubscribeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebPushSubscription"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Web Push Subscribe"
       }
     },
     "/api/work": {

@@ -6190,6 +6190,22 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_events/0/status",
+        "python": "failed",
+        "pythonPresent": true,
+        "rust": "pending",
+        "rustPresent": true,
+        "deviation": "unsent_input_kept"
+      },
+      {
+        "path": "/sync_entities/1/payload/value/status",
+        "python": "failed",
+        "pythonPresent": true,
+        "rust": "pending",
+        "rustPresent": true,
+        "deviation": "unsent_input_kept"
       }
     ],
     "tier": "fast",

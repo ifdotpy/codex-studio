@@ -56,6 +56,12 @@ their removed Python commands are not current instructions.
 | Hidden Rust native WebView scenarios, manual heavy   | `just test-native-webview`               |
 | Hidden Rust native WebView scenarios, manual heavy   | `just test-native-webview`               |
 
+Set `STUDIO_STORE_COMPRESS_EVERY_WRITE=1` to run any Rust selection in the
+compress-every-write mode of [`stored_text.rs`](../workspaces/runtime/packages/runtime-store/src/stored_text.rs):
+every writer of a compressed text column then stores the compressed form, so
+the selected tests check that every reader decodes it. For example,
+`STUDIO_STORE_COMPRESS_EVERY_WRITE=1 just test studio-runtime-services notification_dispatch`.
+
 Heavy runs are announced and selected by hand. A test that needs repeated runs
 to be trusted must be rewritten or moved to the heavy tier. New tests fit the
 short tier. Load, stress, and contention runs require a separate explicit selection,

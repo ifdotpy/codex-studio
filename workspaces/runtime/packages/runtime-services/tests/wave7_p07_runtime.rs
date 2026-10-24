@@ -218,7 +218,13 @@ async fn connection_completion_matches_python_full_records_and_results() {
         let full: Vec<(String, String)> = read
             .prepare("SELECT id,body FROM runtime_item_fulltext ORDER BY id")
             .expect("prepare")
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get::<_, studio_runtime_store::stored_text::StoredText>(1)?
+                        .into_string(),
+                ))
+            })
             .expect("query")
             .collect::<Result<_, _>>()
             .expect("rows");

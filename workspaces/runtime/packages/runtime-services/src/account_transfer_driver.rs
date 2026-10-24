@@ -91,6 +91,52 @@ pub async fn drop_orphan_summary(
         .await
 }
 
+/// Release a member that was busy at its transfer request once its turn has
+/// ended (`Snapshot::release_waiting`). The caller has not claimed the agent's
+/// queued input, so the destination account's worker claims it. Returns whether
+/// the member was released.
+pub async fn release_waiting(
+    store: &RuntimeStore,
+    agent_id: &str,
+    now: f64,
+) -> Result<bool, TransferError> {
+    let agent_id = agent_id.to_owned();
+    store
+        .transaction_with_error(move |tx| release_waiting_in(tx, &agent_id, now))
+        .await
+}
+
+/// Release in the terminal transaction, after source-account continuation policy.
+pub(crate) fn release_waiting_in(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    now: f64,
+) -> Result<bool, TransferError> {
+    if !Repository::available(tx)? {
+        return Ok(false);
+    }
+    let Some(raw) = Repository::agent(tx, agent_id)? else {
+        return Ok(false);
+    };
+    let agent: Value =
+        serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
+    let Some(operation) = agent
+        .get("accountTransferId")
+        .and_then(Value::as_str)
+        .filter(|_| !studio_runtime_store::truthy(agent.get("lazyAccountTransfer")))
+    else {
+        return Ok(false);
+    };
+    if Repository::get(tx, operation)?.is_none() {
+        return Ok(false);
+    }
+    let Some(decision) = load(tx, operation)?.release_waiting(agent_id)? else {
+        return Ok(false);
+    };
+    persist(tx, decision, now)?;
+    Ok(true)
+}
+
 /// A transfer may bypass only its own native-start admission marker, and only
 /// while its exact member is durably in the Reading phase.
 pub fn owns_reading_member(
@@ -184,285 +230,215 @@ pub async fn request(
     let lead = lead.to_owned();
     let target = target.to_owned();
     let scope = scope.to_owned();
-    let target_kind: studio_runtime_providers::ProviderKind = target_provider
-        .parse()
+    target_provider
+        .parse::<studio_runtime_providers::ProviderKind>()
         .map_err(|_| TransferError::Refused("Unknown destination provider"))?;
     let target_provider = target_provider.to_owned();
-    store.transaction_with_error(move |tx| {
-        if !Repository::available(tx)? {
-            return Err(TransferError::Requires(EXECUTOR_REQUIRED));
-        }
-        drop_orphan_summary_in(tx, &lead)?;
-        let actor = crate::event_write::checked_agent(tx, &lead)
-            .map_err(|_| TransferError::Refused("Unknown managed agent"))?;
-        if actor.extra.get("isLead") != Some(&Value::Bool(true)) {
-            return Err(TransferError::Refused(
-                "Choose the orchestrator to transfer its team",
-            ));
-        }
-        if actor
-            .extra
-            .get("excludedAccountKeys")
-            .and_then(Value::as_array)
-            .is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some(target.as_str())))
-        {
-            return Err(TransferError::Refused(
-                "This account is disabled for this chat",
-            ));
-        }
-        for key in Repository::ids(tx)? {
-            let snapshot = load(tx, &key)?;
-            if snapshot.replay(&id, &lead, &target, &scope)? {
-                return snapshot.public_view();
+    store
+        .transaction_with_error(move |tx| {
+            if !Repository::available(tx)? {
+                return Err(TransferError::Requires(EXECUTOR_REQUIRED));
             }
-        }
-        if let Some(active) = actor.extra.get("accountTransfer").filter(|value| {
-            !matches!(value["status"].as_str(), Some("completed" | "cancelled"))
-        }) {
-            if active["targetAccountKey"] != target || active.get("scope").and_then(Value::as_str).unwrap_or("team") != scope {
-                return Err(TransferError::Refused("Finish or cancel the current transfer first"));
+            drop_orphan_summary_in(tx, &lead)?;
+            let actor = crate::event_write::checked_agent(tx, &lead)
+                .map_err(|_| TransferError::Refused("Unknown managed agent"))?;
+            if actor.extra.get("isLead") != Some(&Value::Bool(true)) {
+                return Err(TransferError::Refused(
+                    "Choose the orchestrator to transfer its team",
+                ));
             }
-            let active_id = active["id"].as_str().ok_or(TransferError::Refused("Invalid current transfer"))?;
-            let snapshot = load(tx, active_id)?;
-            let mut operation = snapshot.operation().clone();
-            let mut agents = snapshot_agents(&snapshot)?;
+            if actor
+                .extra
+                .get("excludedAccountKeys")
+                .and_then(Value::as_array)
+                .is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some(target.as_str())))
+            {
+                return Err(TransferError::Refused(
+                    "This account is disabled for this chat",
+                ));
+            }
+            for key in Repository::ids(tx)? {
+                let snapshot = load(tx, &key)?;
+                if snapshot.replay(&id, &lead, &target, &scope)? {
+                    return snapshot.public_view();
+                }
+            }
+            if let Some(active) = actor.extra.get("accountTransfer").filter(|value| {
+                !matches!(value["status"].as_str(), Some("completed" | "cancelled"))
+            }) {
+                if active["targetAccountKey"] != target
+                    || active
+                        .get("scope")
+                        .and_then(Value::as_str)
+                        .unwrap_or("team")
+                        != scope
+                {
+                    return Err(TransferError::Refused(
+                        "Finish or cancel the current transfer first",
+                    ));
+                }
+                let active_id = active["id"]
+                    .as_str()
+                    .ok_or(TransferError::Refused("Invalid current transfer"))?;
+                let snapshot = load(tx, active_id)?;
+                let mut operation = snapshot.operation().clone();
+                let mut agents = snapshot_agents(&snapshot)?;
+                let ids = {
+                    let mut statement = tx
+                        .prepare("SELECT id FROM runtime_agents ORDER BY rowid LIMIT 4097")
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                    statement
+                        .query_map([], |row| row.get::<_, String>(0))
+                        .map_err(studio_runtime_store::StoreError::from)?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(studio_runtime_store::StoreError::from)?
+                };
+                if ids.len() > 4096 {
+                    return Err(TransferError::Refused(
+                        "Transfer member scan exceeds the supported limit",
+                    ));
+                }
+                let target_provider = operation["targetProvider"]
+                    .as_str()
+                    .unwrap_or(&target_provider)
+                    .to_owned();
+                for member_id in ids {
+                    if operation["members"].get(&member_id).is_some()
+                        || (scope == "subagents" && member_id == lead)
+                    {
+                        continue;
+                    }
+                    let Some(raw) = Repository::agent(tx, &member_id)? else {
+                        continue;
+                    };
+                    let mut value: Value = serde_json::from_str(&raw)
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                    if studio_runtime_store::truthy(value.get("deletedAt"))
+                        || (member_id != lead && value["rootId"].as_str() != Some(lead.as_str()))
+                    {
+                        continue;
+                    }
+                    operation["members"][&member_id] = crate::account_transfer::enroll(
+                        &mut value,
+                        active_id,
+                        &target,
+                        &target_provider,
+                        member_id == lead,
+                    )?;
+                    agents.insert(member_id, value);
+                }
+                if agents.get(&lead).is_some_and(|lead_agent| {
+                    lead_agent.get("accountKey").and_then(Value::as_str) == Some(target.as_str())
+                }) {
+                    let lead_agent = agents
+                        .get_mut(&lead)
+                        .ok_or(TransferError::Refused("Unknown transfer lead"))?;
+                    let mut defaults = lead_agent
+                        .get("workerDefaults")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    defaults.insert("accountKey".into(), json!(target));
+                    lead_agent["workerDefaults"] = Value::Object(defaults);
+                }
+                operation["requests"][id.as_str()] =
+                    json!({"leadId":lead,"targetAccountKey":target,"scope":scope});
+                let mut decision = Snapshot::read(
+                    &operation.to_string(),
+                    agents
+                        .iter()
+                        .map(|(id, value)| (id.clone(), value.to_string())),
+                )?
+                .decide(Command::Restart)?;
+                decision.operation = operation;
+                decision.agents = agents;
+                decision.changed = true;
+                return persist(tx, decision, now);
+            }
+
             let ids = {
-                let mut statement = tx.prepare("SELECT id FROM runtime_agents ORDER BY rowid LIMIT 4097")
+                let mut statement = tx
+                    .prepare("SELECT id FROM runtime_agents ORDER BY rowid LIMIT 4097")
                     .map_err(studio_runtime_store::StoreError::from)?;
-                statement.query_map([], |row| row.get::<_, String>(0))
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))
                     .map_err(studio_runtime_store::StoreError::from)?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(studio_runtime_store::StoreError::from)?
             };
             if ids.len() > 4096 {
-                return Err(TransferError::Refused("Transfer member scan exceeds the supported limit"));
+                return Err(TransferError::Refused(
+                    "Transfer member scan exceeds the supported limit",
+                ));
             }
-            let target_provider = operation["targetProvider"]
-                .as_str()
-                .unwrap_or(&target_provider)
-                .to_owned();
-            let target_kind: studio_runtime_providers::ProviderKind = target_provider
-                .parse()
-                .map_err(|_| TransferError::Refused("Unknown destination provider"))?;
-            for member_id in ids {
-                if operation["members"].get(&member_id).is_some()
-                    || (scope == "subagents" && member_id == lead)
-                {
+            let mut agents = std::collections::BTreeMap::new();
+            for id in ids {
+                let Some(raw) = Repository::agent(tx, &id)? else {
                     continue;
-                }
-                let Some(raw) = Repository::agent(tx, &member_id)? else { continue };
-                let mut value: Value = serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
+                };
+                let value: Value =
+                    serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
                 if studio_runtime_store::truthy(value.get("deletedAt"))
-                    || (member_id != lead && value["rootId"].as_str() != Some(lead.as_str()))
+                    || (id != lead && value["rootId"].as_str() != Some(lead.as_str()))
+                    || (scope == "subagents" && id == lead)
                 {
                     continue;
                 }
-                let source_account = value.get("accountKey").and_then(Value::as_str).unwrap_or("default").to_owned();
-                let provider = studio_runtime_providers::ProviderKind::of_record(&value).map_err(|_| TransferError::Refused("Unknown agent provider"))?.key().to_owned();
-                let source_thread = value.get("threadId").cloned().filter(|thread| !thread.is_null());
-                if member_id != lead && provider != target_provider {
-                    operation["members"][&member_id] = json!({"phase":"left","sourceAccountKey":source_account,
-                        "sourceThreadId":source_thread,"provider":provider,"name":value.get("name"),
-                        "reason":format!("Uses {provider}; the destination account uses {target_provider}")});
-                    agents.insert(member_id, value);
-                    continue;
-                }
-                let done = source_account == target;
-                let active_member = value.get("inFlight").is_some_and(|flag| studio_runtime_store::truthy(Some(flag)))
-                    || matches!(value["status"].as_str(), Some("running" | "starting" | "approval"));
-                let lazy = !done && !active_member;
-                let pending = value.get("pendingSettings").filter(|settings| !settings.is_null());
-                let pending_mismatch = pending.is_some()
-                    && value.get("pendingSettingsAccountKey").and_then(Value::as_str).unwrap_or(&source_account) != source_account;
-                let blocked = lazy && pending_mismatch;
-                operation["members"][&member_id] = json!({
-                    "phase":if done {"completed"} else if blocked {"blocked"} else if active_member {"waiting"} else {"lazy"},
-                    "sourceAccountKey":source_account,"sourceThreadId":source_thread,"provider":provider,
-                    "name":value.get("name"),"lazy":lazy,
-                    "pendingSettings":pending.cloned().unwrap_or(Value::Null),
-                    "sourcePendingSettings":pending.cloned().unwrap_or(Value::Null),
-                    "sourceClaudeOptions":value.get("claudeOptions"),
-                    "error":if blocked {json!("Queued settings belong to another account. Save them again before transfer")} else {Value::Null}
-                });
-                if !done && !blocked {
-                    value["accountTransferId"] = json!(active_id);
-                    if lazy {
-                        let source_state = ["provider","model","effort","nativeEffort","fastMode","daybreakEnabled",
-                            "cyberAccessProgram","workerDefaults","pendingSettings","pendingSettingsAccountKey",
-                            "claudeOptions","executionSettingsAccountKey","status","error","nativeFailureHold"]
-                            .into_iter().map(|key| (key.to_owned(), value.get(key).cloned().unwrap_or(Value::Null)))
-                            .collect::<serde_json::Map<_,_>>();
-                        value["lazyAccountTransfer"] = json!({"id":active_id,"sourceAccountKey":source_account,
-                            "sourceThreadId":source_thread,"sourceState":source_state});
-                        value["accountKey"] = json!(target);
-                        if provider != target_provider {
-                            value["provider"] = json!(target_provider);
-                            value["model"] = json!(crate::provider_adapter::default_model(target_kind));
-                            value["effort"] = Value::Null;
-                            value["nativeEffort"] = json!("medium");
-                            value["fastMode"] = json!(false);
-                            value["daybreakEnabled"] = json!(false);
-                            value["cyberAccessProgram"] = json!("standard");
-                            if let Some(object) = value.as_object_mut() {
-                                for key in ["claudeOptions","pendingSettings","pendingSettingsAccountKey"] {
-                                    drop(object.remove(key));
-                                }
-                            }
-                        }
-                        let mut defaults = value.get("workerDefaults").and_then(Value::as_object).cloned().unwrap_or_default();
-                        if provider != target_provider {
-                            defaults.insert("model".into(), Value::Null);
-                            defaults.insert("effort".into(), json!("medium"));
-                            defaults.insert("fastMode".into(), json!(false));
-                            defaults.insert("daybreakEnabled".into(), json!(false));
-                            defaults.insert("cyberAccessProgram".into(), json!("standard"));
-                        }
-                        defaults.insert("accountKey".into(), json!(target));
-                        value["workerDefaults"] = Value::Object(defaults);
-                        value["pendingSettingsAccountKey"] = if value.get("pendingSettings").is_some_and(|v| !v.is_null()) {json!(target)} else {Value::Null};
-                        if value.get("pendingSettings").is_none_or(Value::is_null) { value["executionSettingsAccountKey"] = json!(source_account); }
-                    }
-                }
-                agents.insert(member_id, value);
+                agents.insert(id, value);
             }
-            if agents
-                .get(&lead)
-                .is_some_and(|lead_agent| lead_agent.get("accountKey").and_then(Value::as_str) == Some(target.as_str()))
-            {
-                let lead_agent = agents
-                    .get_mut(&lead)
-                    .ok_or(TransferError::Refused("Unknown transfer lead"))?;
-                let mut defaults = lead_agent.get("workerDefaults").and_then(Value::as_object).cloned().unwrap_or_default();
-                defaults.insert("accountKey".into(), json!(target));
-                lead_agent["workerDefaults"] = Value::Object(defaults);
+            if !agents.contains_key(&lead) {
+                return Err(TransferError::Refused("Unknown managed agent"));
             }
-            operation["requests"][id.as_str()] = json!({"leadId":lead,"targetAccountKey":target,"scope":scope});
-            let mut decision = Snapshot::read(
+            if agents.values().any(|agent| {
+                agent["environment"] == "linux"
+                    && agent
+                        .get("accountKey")
+                        .and_then(Value::as_str)
+                        .unwrap_or("default")
+                        != target
+            }) {
+                return Err(TransferError::Refused(
+                    "Archive Linux VM workers before changing the team account",
+                ));
+            }
+            let operation_id = id;
+            let mut requests = serde_json::Map::new();
+            requests.insert(
+                operation_id.to_owned(),
+                json!({"leadId":lead,"targetAccountKey":target,"scope":scope}),
+            );
+            let mut operation = json!({"id":operation_id,"leadId":lead,"targetAccountKey":target,
+            "targetProvider":target_provider,"status":"pending","scope":scope,"created":now,
+            "members":{},"requests":Value::Object(requests)});
+            for (agent_id, value) in &mut agents {
+                operation["members"][agent_id] = crate::account_transfer::enroll(
+                    value,
+                    &operation_id,
+                    &target,
+                    &target_provider,
+                    agent_id.as_str() == lead.as_str(),
+                )?;
+            }
+            if operation["members"].as_object().is_some_and(|members| {
+                members
+                    .values()
+                    .all(|member| matches!(member["phase"].as_str(), Some("completed" | "left")))
+            }) {
+                operation["status"] = json!("completed");
+            }
+            let snapshot = Snapshot::read(
                 &operation.to_string(),
-                agents.iter().map(|(id,value)|(id.clone(),value.to_string())),
-            )?.decide(Command::Restart)?;
+                agents
+                    .iter()
+                    .map(|(id, value)| (id.clone(), value.to_string())),
+            )?;
+            let mut decision = snapshot.decide(Command::Restart)?;
             decision.operation = operation;
             decision.agents = agents;
             decision.changed = true;
-            return persist(tx, decision, now);
-        }
-
-        let ids = {
-            let mut statement = tx.prepare("SELECT id FROM runtime_agents ORDER BY rowid LIMIT 4097")
-                .map_err(studio_runtime_store::StoreError::from)?;
-            statement.query_map([], |row| row.get::<_, String>(0))
-                .map_err(studio_runtime_store::StoreError::from)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(studio_runtime_store::StoreError::from)?
-        };
-        if ids.len() > 4096 {
-            return Err(TransferError::Refused("Transfer member scan exceeds the supported limit"));
-        }
-        let mut agents = std::collections::BTreeMap::new();
-        for id in ids {
-            let Some(raw) = Repository::agent(tx, &id)? else { continue };
-            let value: Value = serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-            if studio_runtime_store::truthy(value.get("deletedAt"))
-                || (id != lead && value["rootId"].as_str() != Some(lead.as_str()))
-                || (scope == "subagents" && id == lead)
-            {
-                continue;
-            }
-            agents.insert(id, value);
-        }
-        if !agents.contains_key(&lead) {
-            return Err(TransferError::Refused("Unknown managed agent"));
-        }
-        if agents.values().any(|agent| {
-            agent["environment"] == "linux"
-                && agent.get("accountKey").and_then(Value::as_str).unwrap_or("default") != target
-        }) {
-            return Err(TransferError::Refused("Archive Linux VM workers before changing the team account"));
-        }
-        let operation_id = id;
-        let mut requests = serde_json::Map::new();
-        requests.insert(operation_id.to_owned(), json!({"leadId":lead,"targetAccountKey":target,"scope":scope}));
-        let mut operation = json!({"id":operation_id,"leadId":lead,"targetAccountKey":target,
-            "targetProvider":target_provider,"status":"pending","scope":scope,"created":now,
-            "members":{},"requests":Value::Object(requests)});
-        for (agent_id, value) in &mut agents {
-            let source_account = value.get("accountKey").and_then(Value::as_str).unwrap_or("default").to_owned();
-            let provider = studio_runtime_providers::ProviderKind::of_record(value).map_err(|_| TransferError::Refused("Unknown agent provider"))?.key().to_owned();
-            let source_thread = value.get("threadId").cloned().filter(|thread| !thread.is_null());
-            if agent_id.as_str() != lead.as_str() && provider != target_provider {
-                operation["members"][agent_id] = json!({"phase":"left","sourceAccountKey":source_account,
-                    "sourceThreadId":source_thread,"provider":provider,"name":value.get("name"),
-                    "reason":format!("Uses {provider}; the destination account uses {target_provider}")});
-                continue;
-            }
-            let done = source_account == target;
-            let active = value.get("inFlight").is_some_and(|flag| studio_runtime_store::truthy(Some(flag)))
-                || matches!(value["status"].as_str(), Some("running" | "starting" | "approval"));
-            let lazy = !done && !active;
-            let pending = value.get("pendingSettings").filter(|settings| !settings.is_null());
-            let pending_mismatch = pending.is_some()
-                && value.get("pendingSettingsAccountKey").and_then(Value::as_str)
-                    .unwrap_or(&source_account) != source_account;
-            let blocked = lazy && pending_mismatch;
-            operation["members"][agent_id] = json!({
-                "phase": if done {"completed"} else if blocked {"blocked"} else if active {"waiting"} else {"lazy"},
-                "sourceAccountKey":source_account,"sourceThreadId":source_thread,"provider":provider,
-                "name":value.get("name"),"lazy":lazy,
-                "pendingSettings":pending.cloned().unwrap_or(Value::Null),
-                "sourcePendingSettings":pending.cloned().unwrap_or(Value::Null),
-                "sourceClaudeOptions":value.get("claudeOptions"),
-                "error":if blocked {json!("Queued settings belong to another account. Save them again before transfer")} else {Value::Null}
-            });
-            if !done && !blocked {
-                value["accountTransferId"] = json!(operation_id);
-                if lazy {
-                    let source_state = ["provider","model","effort","nativeEffort","fastMode","daybreakEnabled",
-                        "cyberAccessProgram","workerDefaults","pendingSettings","pendingSettingsAccountKey",
-                        "claudeOptions","executionSettingsAccountKey","status","error","nativeFailureHold"]
-                        .into_iter().map(|key| (key.to_owned(), value.get(key).cloned().unwrap_or(Value::Null)))
-                        .collect::<serde_json::Map<_,_>>();
-                    value["lazyAccountTransfer"] = json!({"id":operation_id,"sourceAccountKey":source_account,
-                        "sourceThreadId":source_thread,"sourceState":source_state});
-                    value["accountKey"] = json!(target);
-                    if provider != target_provider {
-                        value["provider"] = json!(target_provider);
-                        value["model"] = json!(crate::provider_adapter::default_model(target_kind));
-                        value["effort"] = Value::Null;
-                        value["nativeEffort"] = json!("medium");
-                        value["fastMode"] = json!(false);
-                        value["daybreakEnabled"] = json!(false);
-                        value["cyberAccessProgram"] = json!("standard");
-                        value.as_object_mut().expect("agent record object").remove("claudeOptions");
-                        value.as_object_mut().expect("agent record object").remove("pendingSettings");
-                        value.as_object_mut().expect("agent record object").remove("pendingSettingsAccountKey");
-                    }
-                    let mut defaults = value.get("workerDefaults").and_then(Value::as_object).cloned().unwrap_or_default();
-                    if provider != target_provider {
-                        defaults.insert("model".into(), Value::Null);
-                        defaults.insert("effort".into(), json!("medium"));
-                        defaults.insert("fastMode".into(), json!(false));
-                        defaults.insert("daybreakEnabled".into(), json!(false));
-                        defaults.insert("cyberAccessProgram".into(), json!("standard"));
-                    }
-                    defaults.insert("accountKey".into(), json!(target));
-                    value["workerDefaults"] = Value::Object(defaults);
-                    value["pendingSettingsAccountKey"] = if value.get("pendingSettings").is_some_and(|v| !v.is_null()) {json!(target)} else {Value::Null};
-                    if value.get("pendingSettings").is_none_or(Value::is_null) {
-                        value["executionSettingsAccountKey"] = json!(source_account);
-                    }
-                }
-            }
-        }
-        if operation["members"].as_object().is_some_and(|members| members.values().all(|member| matches!(member["phase"].as_str(),Some("completed"|"left")))) {
-            operation["status"] = json!("completed");
-        }
-        let snapshot = Snapshot::read(&operation.to_string(), agents.iter().map(|(id,value)|(id.clone(),value.to_string())))?;
-        let mut decision = snapshot.decide(Command::Restart)?;
-        decision.operation = operation;
-        decision.agents = agents;
-        decision.changed = true;
-        persist(tx, decision, now)
-    }).await
+            persist(tx, decision, now)
+        })
+        .await
 }
 
 pub async fn reserve(
@@ -1200,6 +1176,70 @@ mod request_tests {
             Ok::<_, studio_runtime_store::StoreError>(())
         }))
         .expect("test fixture operation succeeds");
+    }
+
+    fn set_lead_busy(store: &RuntimeStore, busy: bool) {
+        run_async(store.transaction_with_error(move |tx| {
+            let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead exists");
+            lead.status = if busy {
+                studio_runtime_store::AgentStatus::Running
+            } else {
+                studio_runtime_store::AgentStatus::Idle
+            };
+            lead.extra.insert("inFlight".into(), json!(busy));
+            AgentRepository::put(tx, &lead)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }))
+        .expect("lead state is written");
+    }
+
+    fn stored(store: &RuntimeStore, id: &str) -> Value {
+        AgentRepository::get(
+            &store.test_reader().expect("database is readable"),
+            &AgentId::from(id),
+        )
+        .expect("agent read succeeds")
+        .expect("agent exists")
+        .value()
+    }
+
+    #[test]
+    fn busy_member_says_why_it_waits_and_moves_once_its_turn_ended() {
+        let (_root, store) = store_with_agents();
+        set_lead_busy(&store, true);
+        let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c4a101";
+        let first = request(&store, id, "lead", "target", "team", "codex", 10.0)
+            .expect("transfer request succeeds");
+        assert_eq!(first["members"]["lead"]["phase"], "waiting");
+        assert_eq!(
+            first["members"]["lead"]["waiting"],
+            crate::account_transfer::WAITING_FOR_NEXT_TURN
+        );
+        assert_eq!(first["members"]["child"]["phase"], "lazy");
+        assert!(
+            !run_async(release_waiting(&store, "lead", 11.0)).expect("release reads"),
+            "a member stays while its turn runs"
+        );
+        assert_eq!(stored(&store, "lead")["accountKey"], "source");
+
+        set_lead_busy(&store, false);
+        assert!(run_async(release_waiting(&store, "lead", 12.0)).expect("release writes"));
+        let lead = stored(&store, "lead");
+        assert_eq!(lead["accountKey"], "target");
+        assert_eq!(lead["accountTransferId"], id);
+        assert_eq!(lead["lazyAccountTransfer"]["sourceAccountKey"], "source");
+        assert_eq!(lead["accountTransfer"]["waitingCount"], 0);
+        assert_eq!(lead["accountTransfer"]["nativeHistoryPending"], 2);
+        let member = run_async(store.transaction_with_error(move |tx| {
+            Ok::<_, TransferError>(load(tx, id)?.operation()["members"]["lead"].clone())
+        }))
+        .expect("transfer reads");
+        assert_eq!(member["phase"], "lazy");
+        assert_eq!(member["lazy"], true);
+        assert!(
+            !run_async(release_waiting(&store, "lead", 13.0)).expect("release reads"),
+            "a released member is not released again"
+        );
     }
 
     #[test]

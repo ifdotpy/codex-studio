@@ -350,7 +350,28 @@ pub fn stage(tx: &Transaction<'_>, completion: Completion<'_>) -> Result<Staged>
             known,
             now,
             limits,
-        } => stage_terminal(tx, agent_id, turn, known, now, limits),
+        } => {
+            // Continuation policy must observe the account that ran the turn.
+            // Release its transfer only after that policy has saved its effects.
+            let mut staged = stage_terminal(tx, agent_id, turn, known, now, limits)?;
+            if known
+                && turn.get("id").and_then(Value::as_str).is_some()
+                && matches!(text(turn, "status"), "completed" | "failed" | "interrupted")
+                && crate::account_transfer_driver::release_waiting_in(tx, agent_id, now).map_err(
+                    |error| {
+                        ContinuationError::Store(studio_runtime_store::StoreError::SchemaMismatch(
+                            error.to_string(),
+                        ))
+                    },
+                )?
+            {
+                staged.changed = true;
+                staged.event_wake = true;
+                let epoch = staged.epoch;
+                add_account_wake(&mut staged, agent_id, epoch);
+            }
+            Ok(staged)
+        }
     }
 }
 

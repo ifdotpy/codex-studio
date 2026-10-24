@@ -198,6 +198,17 @@ pub const BACKEND_RESTARTED_TURN_ERROR: &str =
     "Server restarted during a turn. Review history, then send a new instruction.";
 /// Turn error after the Linux VM provider connection ended.
 pub const VM_PROVIDER_DISCONNECTED_TURN_ERROR: &str = "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.";
+// Persisted input and agent errors that Studio, not the agent's work, causes. The
+// scheduler writes them, and the Studio error list classifies them.
+/// Error of input whose turn/start answer was lost: the provider may have started it.
+pub const PROVIDER_START_UNKNOWN_ERROR: &str = "turn/start response timed out; outcome unknown";
+/// Error of input that the provider proved it never received.
+pub const PROVIDER_START_NOT_SENT_ERROR: &str = "Provider did not send turn/start";
+/// Hold reason of input whose thread resume answer was lost.
+pub const PROVIDER_RESUME_UNKNOWN_ERROR: &str =
+    "Provider thread resume outcome is unknown; input remains pending.";
+/// Refusal of a monitor whose owner stopped its turn: the owner ended it, not Studio.
+pub const MONITOR_OWNER_STOPPED_ERROR: &str = "The agent turn was stopped";
 /// Seconds that the host retries one idempotent Linux VM provider journal read (next,
 /// replay, eventRead, info, status, ack) after a result that the guest could not prove. A
 /// guest supervisor stall shorter than this does not end the provider connection. Writes
@@ -284,6 +295,34 @@ pub const SIGN_IN_OPEN_LIMIT_SECONDS: u64 = 1800;
 /// retry is safe. The host bridge (`browser_host::NOT_SENT_CODE`), the VM guest bridge and
 /// the server's answers (`browser_answer`) use it.
 pub const SIGN_IN_NOT_SENT_CODE: &str = "not_sent";
+/// The state of a sign-in request that waits on the open request of another chat with the
+/// same Linux user, sign-in host and client ID (its `joinedTo`), instead of a card of its own
+/// (docs/vm-browser-bridge.md, "One card for the same sign-in"). The host bridge
+/// (`browser_host::JOINED`), the VM guest bridge and the card poll (`browser_cards`) use it.
+pub const SIGN_IN_JOINED_STATE: &str = "joined";
+/// The `closeReason` of a joined sign-in request whose sign-in finished on the card that it
+/// waited on. The card poll tells the joined chat to run its command again.
+pub const SIGN_IN_JOINED_SIGNED_IN_REASON: &str = "joined-signed-in";
+/// A pending sign-in card alerts the owner only after it stayed open this long, in seconds:
+/// on a Mac host the browser can finish the sign-in at once without the person. The desktop
+/// alerts (`web/src/desktop/desktopAlerts.ts`) and the phone pushes (`runtime-services`
+/// `web_push`) use it.
+pub const SIGN_IN_ALERT_GRACE_SECONDS: u64 = 10;
+/// The one reminder of an open sign-in card comes this long before the card closes, in
+/// seconds. The desktop alerts and the phone pushes use it.
+pub const SIGN_IN_REMINDER_SECONDS: u64 = 300;
+
+// Claude Code 2.1.302 idle compaction policy. Counts are context tokens.
+pub const IDLE_COMPACTION_DEFAULT_MIN_TOKENS: u64 = 200000;
+pub const IDLE_COMPACTION_MIN_TOKENS: u64 = 100000;
+/// Fraction of the observed cache lifetime before the idle timer fires.
+pub const IDLE_COMPACTION_FIRE_FRACTION: f64 = 0.9;
+pub const IDLE_COMPACTION_MIN_FIRE_FRACTION: f64 = 0.5;
+pub const IDLE_COMPACTION_MAX_FIRE_FRACTION: f64 = 0.95;
+/// Maximum permitted timer lateness, in seconds.
+pub const IDLE_COMPACTION_MAX_LATE_SECONDS: f64 = 60.0;
+/// One-hour prompt cache lifetime, in seconds.
+pub const IDLE_COMPACTION_CACHE_SECONDS: f64 = 3600.0;
 
 #[cfg(test)]
 mod tests {

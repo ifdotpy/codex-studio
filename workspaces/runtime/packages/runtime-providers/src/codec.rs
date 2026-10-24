@@ -236,6 +236,7 @@ define_methods! {
     ThreadClosed => "thread/closed",
     ThreadStatusChanged => "thread/status/changed",
     ThreadTokenUsageUpdated => "thread/tokenUsage/updated",
+    ThreadIdleCompactionUpdated => "thread/idleCompaction/updated",
     AccountLoginCompleted => "account/login/completed",
     AccountUpdated => "account/updated",
     AccountRateLimitsUpdated => "account/rateLimits/updated",

@@ -83,6 +83,69 @@ fn request(store: &studio_runtime_store::RuntimeStore, bridge: &str) -> Option<V
         .map(|raw| serde_json::from_str(&raw).expect("request JSON"))
 }
 
+/// The client entity of a card: `None` when it was never published, else whether it is
+/// retired and its value.
+fn request_entity(
+    store: &studio_runtime_store::RuntimeStore,
+    bridge: &str,
+) -> Option<(bool, Value)> {
+    use rusqlite::OptionalExtension;
+    store
+        .test_read_transaction(|tx| {
+            Ok(tx
+                .query_row(
+                    "SELECT deleted,payload FROM sync_entities WHERE collection='request' AND id=?1",
+                    [card_id(bridge)],
+                    |row| Ok((row.get::<_, bool>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?)
+        })
+        .expect("request entity reads")
+        .map(|(deleted, payload)| {
+            let payload: Value = serde_json::from_str(&payload).expect("entity JSON");
+            (deleted, payload["value"].clone())
+        })
+}
+
+#[tokio::test]
+async fn a_card_reaches_the_client_while_pending_and_leaves_it_when_it_closes() {
+    let (_dir, store) = store().await;
+    let device = "f".repeat(32);
+    let guest = Arc::new(WaitGuest {
+        batches: Mutex::new(VecDeque::from([
+            json!({"items":[item(&device, VM_AGENT, DEVICE, Value::Null, "pending", 1)], "next": 1}),
+            json!({"items":[item(&device, VM_AGENT, DEVICE, Value::Null, "closed", 2)], "next": 2}),
+        ])),
+        calls: Mutex::new(Vec::new()),
+    });
+    let source = CardSource {
+        source: "vm",
+        guest,
+        forwarder: None,
+        http_providers: Default::default(),
+    };
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    let (retired, card) = request_entity(&store, &device).expect("the pending card is published");
+    assert!(!retired);
+    assert_eq!(card["id"], card_id(&device));
+    assert_eq!(card["method"], "browser/open");
+    assert_eq!(card["status"], "pending");
+    assert_eq!(card["params"]["host"], "device.sso.us-east-1.amazonaws.com");
+    assert_eq!(card["params"]["userCode"], "ABCD-EFGH");
+    assert_eq!(card["params"]["expiresAt"], 601.0);
+    poll_once(&store, &source, 1, 0, None)
+        .await
+        .expect("test step");
+    assert_eq!(
+        request(&store, &device).expect("test step")["status"],
+        "expired"
+    );
+    let (retired, _) = request_entity(&store, &device).expect("the closed card stays known");
+    assert!(retired, "a closed card leaves the client");
+}
+
 #[tokio::test]
 async fn pending_links_become_cards_once_and_unknown_chats_are_refused() {
     let (_dir, store) = store().await;

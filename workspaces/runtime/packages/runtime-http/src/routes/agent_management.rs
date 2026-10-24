@@ -15,6 +15,7 @@ use studio_runtime_services::{
     native_action_ports,
     native_actions::{self, Admission, NativeError},
 };
+
 #[cfg(test)]
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore};
@@ -139,6 +140,36 @@ async fn native_action(
     >,
     repair: Option<Extension<Arc<dyn NativeContextRepairPort>>>,
     ApiJson(body): ApiJson<generated::NativeActionRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if serde_json::to_value(&body).map_err(|_| ApiError::internal())?["request_id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with(studio_runtime_services::idle_compaction::REQUEST_PREFIX))
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "This request ID uses the reserved idle compaction namespace.",
+        ));
+    }
+    run_native_action(
+        State(state),
+        lifecycle,
+        preparation,
+        repair,
+        ApiJson(body),
+        None,
+    )
+    .await
+}
+
+async fn run_native_action(
+    State(state): State<HttpState>,
+    lifecycle: Option<Extension<Arc<dyn LifecyclePorts>>>,
+    preparation: Option<
+        Extension<Arc<studio_runtime_services::account_worker::preparation::PreparationResources>>,
+    >,
+    repair: Option<Extension<Arc<dyn NativeContextRepairPort>>>,
+    ApiJson(body): ApiJson<generated::NativeActionRequest>,
+    idle: Option<(studio_runtime_services::idle_compaction::Episode, Value)>,
 ) -> Result<Json<Value>, ApiError> {
     let value = serde_json::to_value(body).map_err(|_| ApiError::internal())?;
     let Some(action) = value.get("action").and_then(Value::as_str) else {
@@ -351,6 +382,16 @@ async fn native_action(
         admission_override.unwrap_or_else(|| Arc::from(prepared));
     let bridge: Arc<dyn Admission> =
         Arc::new(native_action_ports::MessageNativeAdmission::new(admission));
+    let bridge: Arc<dyn Admission> = match idle {
+        Some((episode, limits)) => {
+            Arc::new(studio_runtime_services::idle_compaction::IdleAdmission {
+                inner: bridge,
+                episode,
+                limits,
+            })
+        }
+        None => bridge,
+    };
     let preparation_run = NativeActionPreparationRun {
         store: store.clone(),
         provider: provider.clone(),
@@ -565,7 +606,25 @@ impl native_actions::Preparation for NativeActionPreparationRun {
                 scope,
                 params,
             )
-            .await
+            .await?;
+            if request
+                .request_id
+                .starts_with(studio_runtime_services::idle_compaction::REQUEST_PREFIX)
+            {
+                let port =
+                    self.preparation
+                        .account_session
+                        .as_ref()
+                        .ok_or(NativeError::Unavailable(
+                            "provider-session/account-rate-limits",
+                        ))?;
+                port.read_limits_for_resume(&scope.account, unix_time())
+                    .await
+                    .map_err(|_| {
+                        NativeError::Unavailable("provider-session/account-rate-limits")
+                    })?;
+            }
+            Ok(())
         })
     }
 }
@@ -642,6 +701,54 @@ inventory::submit! {
             "account-worker/deleted-settlement", "usage-policy/agent-stop", "voice-driver/agent-stop", "work-driver/deletion-release",
             "workspace-state/agent-lifecycle", "cross-server/native-review",
         ],
+    }
+}
+
+/// The idle scheduler enters the same preparation, admission, and receipt path
+/// as the Compact control. Its admission rechecks the episode under the writer.
+pub struct IdleCompactionHost {
+    pub state: HttpState,
+    pub resources: Arc<studio_runtime_services::account_worker::preparation::PreparationResources>,
+    pub repair: Arc<dyn NativeContextRepairPort>,
+}
+impl studio_runtime_services::idle_compaction::Host for IdleCompactionHost {
+    fn compact<'a>(
+        &'a self,
+        agent: &'a str,
+        episode: studio_runtime_services::idle_compaction::Episode,
+        limits: Value,
+    ) -> studio_runtime_services::idle_compaction::HostFuture<'a> {
+        Box::pin(async move {
+            let body = serde_json::from_value(serde_json::json!({
+                "id":agent, "action":"compact", "request_id":episode.id, "context":episode.identity,
+            }))
+            .map_err(|error| error.to_string())?;
+            let request_id = episode.id.clone();
+            let result = run_native_action(
+                State(self.state.clone()),
+                None,
+                Some(Extension(self.resources.clone())),
+                Some(Extension(self.repair.clone())),
+                ApiJson(body),
+                Some((episode, limits)),
+            )
+            .await;
+            if let Err(error) = &result
+                && let Some(store) = &self.state.store
+            {
+                studio_runtime_services::idle_compaction::release_unsubmitted(
+                    store,
+                    agent.to_owned(),
+                    request_id,
+                    error.message().to_owned(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+            result
+                .map(|_| ())
+                .map_err(|error| error.message().to_owned())
+        })
     }
 }
 

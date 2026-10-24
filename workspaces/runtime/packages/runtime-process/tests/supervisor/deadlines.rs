@@ -2,7 +2,7 @@
 use super::*;
 use std::sync::mpsc;
 
-fn fixture() -> (tempfile::TempDir, Arc<Supervisor>) {
+pub(super) fn fixture() -> (tempfile::TempDir, Arc<Supervisor>) {
     let root = tempfile::tempdir().unwrap();
     let journal = Arc::new(SupervisorJournal::open(root.path()).unwrap());
     let journal_id = journal

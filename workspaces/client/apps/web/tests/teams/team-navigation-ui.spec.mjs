@@ -397,10 +397,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })
       .click();
-    await expect(team.locator("[data-worker]")).toHaveCount(0);
-    await expect(
-      team.getByRole("region", { name: "Team token budget" }),
-    ).toBeVisible();
+    await expect(team).toHaveCount(0);
     await selectLead();
     assert.equal(
       await search.inputValue(),

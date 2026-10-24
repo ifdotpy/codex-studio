@@ -1,6 +1,7 @@
 import { ModelWhitelistSettings } from "./components/models/ModelWhitelistSettings";
 import Disclosure from "./components/ui/Disclosure";
 import { ChatSettingsDialog } from "./components/agents/ChatSettingsDialog";
+import { useRetainedWorktrees } from "./components/agents/RetainedWorktrees";
 import { DeliveryMoment } from "./generated/deliveryMoment";
 import { useScreenEnvironment } from "./servers/ScreenContext";
 import {
@@ -192,6 +193,7 @@ import SessionActivity from "./components/agents/SessionActivity";
 import { useWorkerModels } from "./components/agents/WorkerModelPicker";
 import { FederationSettings } from "./components/FederationSettings";
 import { LinuxVMSettings } from "./components/LinuxVMSettings";
+import { SignInPushSettings } from "./components/SignInPushSettings";
 import { OrchestrationSettings } from "./components/OrchestrationSettings";
 import ProviderUpdateSettings from "./components/ProviderUpdateSettings";
 import SupervisorRecoveryNotice from "./components/SupervisorRecoveryNotice";
@@ -864,6 +866,9 @@ export default function App({ active = true }: { active?: boolean }) {
       );
   const team = (lead && catalog.team(lead.id)) || emptyAgents;
   const workers = (lead && catalog.workers(lead.id)) || emptyAgents;
+  // Deleted workers whose worktree cleanup kept the folder.
+  const retainedWorktrees = useRetainedWorktrees(lead, workers);
+  const hasTeam = workers.length > 0 || retainedWorktrees.length > 0;
   useTeamTokenRateStream(
     lead?.id,
     Boolean(
@@ -2478,6 +2483,7 @@ export default function App({ active = true }: { active?: boolean }) {
     <TeamPanel
       lead={lead}
       workers={workers}
+      retainedWorktrees={retainedWorktrees}
       accounts={accounts.data.accounts}
       opened={opened}
       answerIds={answerIds}
@@ -2626,7 +2632,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 <Settings2 size={18} />
               </ActionIcon>
             )}
-            {!!lead && (
+            {hasTeam && (
               <Button
                 leftSection={<Users size={16} />}
                 id="team-toggle"
@@ -2734,7 +2740,7 @@ export default function App({ active = true }: { active?: boolean }) {
                   >
                     Chat settings
                   </Menu.Item>
-                  {!!lead && (
+                  {hasTeam && (
                     <Menu.Item
                       id="chat-actions-team"
                       aria-label="Team"
@@ -3109,7 +3115,7 @@ export default function App({ active = true }: { active?: boolean }) {
             )}
           </UIErrorBoundary>
         </main>
-        {!!lead &&
+        {hasTeam &&
           (narrowTeam ? (
             <Drawer
               opened={teamOpen}
@@ -3616,6 +3622,9 @@ export default function App({ active = true }: { active?: boolean }) {
             </Tabs.Panel>
             <Tabs.Panel value="linux-vm" pt="md">
               <LinuxVMSettings active={studioSettingsOpen} />
+            </Tabs.Panel>
+            <Tabs.Panel value="phone-alerts" pt="md" keepMounted={false}>
+              <SignInPushSettings active={studioSettingsOpen} />
             </Tabs.Panel>
             <Tabs.Panel value="hotkeys" pt="md">
               <section className="settings-group" aria-label="Sidebar shortcut">

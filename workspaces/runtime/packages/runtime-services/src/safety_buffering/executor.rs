@@ -1229,3 +1229,7 @@ impl From<rusqlite::Error> for Error {
         Self::Persistence
     }
 }
+
+#[cfg(test)]
+#[path = "executor_publication_tests.rs"]
+mod publication_tests;

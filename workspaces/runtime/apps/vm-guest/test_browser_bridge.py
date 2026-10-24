@@ -23,7 +23,8 @@ from browser_bridge import (CHECK_SECONDS, KEEP_SECONDS, TTL_SECONDS, BridgeErro
                             BrowserBridge, Listener, connect_address, parse_listeners, proc_listeners)
 from browser_policy import (USER_CODE_LIMIT, PolicyError, Provider, StartPage, classify, pasted,  # noqa: E402
                             provider, sign_in_links)
-from shared_values_generated import SIGN_IN_NOT_SENT_CODE, SIGN_IN_OPEN_LIMIT_SECONDS  # noqa: E402
+from shared_values_generated import (SIGN_IN_JOINED_SIGNED_IN_REASON, SIGN_IN_JOINED_STATE,  # noqa: E402
+                                     SIGN_IN_NOT_SENT_CODE, SIGN_IN_OPEN_LIMIT_SECONDS)
 from test_browser_fakes import SHIM, FakeProvider, FakeTool, install_shim  # noqa: E402
 
 AGENT = str(uuid.uuid4())
@@ -481,6 +482,84 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
             raise LookupError(agent)
         again = BrowserBridge(self.root / "state", nobody)
         self.assertEqual(set(again.items), set(self.bridge.items))
+
+    # One card for one sign-in (docs/vm-browser-bridge.md, "One card for the same sign-in").
+
+    def chats(self, count: int) -> list[str]:
+        agents = [str(uuid.uuid4()) for _ in range(count)]
+        for agent in agents:
+            self.contexts[agent] = {"uid": UID, "projectId": "p1", "owner": "studio-a-test"}
+        return agents
+
+    async def submit(self, agent: str, tool: FakeTool) -> dict[str, object]:
+        return await self.bridge.call("browser.submit", {"agentId": agent, "url": tool.open_url})
+
+    async def test_a_second_chat_with_the_same_user_host_and_client_joins_the_open_request(self) -> None:
+        first_chat, second_chat = self.chats(2)
+        first = await self.submit(first_chat, self.tool("aws"))
+        self.assertEqual(first["state"], "pending")
+        self.now += 1
+        tool = self.tool("aws")
+        environment = {"STUDIO_BROWSER_SOCKET": str(self.socket), "LAYR_SESSION": second_chat}
+        result = await asyncio.to_thread(tool.launch, self.root / "bin", environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Another chat already asks the person to sign in", result.stderr)
+        [second] = [item for item in self.bridge.items.values() if item["agentId"] == second_chat]
+        self.assertEqual((second["state"], second["joinedTo"]), (SIGN_IN_JOINED_STATE, first["id"]))
+        # The server sees the joined request: the card names its chat.
+        waited = await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0})
+        self.assertIn(second["id"], [item["id"] for item in waited["items"]])
+        # Another Linux user or another client gets its own card.
+        self.contexts[OTHER]["uid"] = UID + 1
+        stranger = self.tool("aws")
+        self.owners[stranger.port] = UID + 1
+        self.assertEqual((await self.submit(OTHER, stranger))["state"], "pending")
+        device = self.tool("device")
+        self.assertEqual((await self.submit(second_chat, device))["state"], "pending")
+        # The same chat with a newer link still replaces its own link.
+        again = await self.submit(first_chat, self.tool("aws"))
+        self.assertEqual(again["state"], "pending")
+        self.assertEqual(self.bridge.items[first["id"]]["state"], "replaced")
+
+    async def test_a_finished_sign_in_ends_every_joined_request_as_signed_in(self) -> None:
+        first_chat, second_chat, third_chat = self.chats(3)
+        leader_tool = self.tool("aws")
+        first = await self.submit(first_chat, leader_tool)
+        second = await self.submit(second_chat, self.tool("aws"))
+        third = await self.submit(third_chat, self.tool("aws"))
+        self.assertEqual(third["joinedTo"], first["id"])
+        await self.bridge.check()
+        self.assertEqual(self.bridge.items[second["id"]]["state"], SIGN_IN_JOINED_STATE, "it waits on the card")
+        # The person signs in on the card: the command takes the relayed result.
+        await self.bridge.call("browser.answer", {"id": first["id"], "decision": "approve"})
+        location = await asyncio.to_thread(self.follow_provider, str(first["url"]))
+        target = location[location.index("/oauth/callback"):]
+        relayed = await self.bridge.call("browser.callback", {"id": first["id"], "target": target})
+        self.assertTrue(relayed["done"])
+        await self.bridge.check()
+        for joined in (second, third):
+            item = self.bridge.items[joined["id"]]
+            self.assertEqual((item["state"], item["closeReason"]), ("closed", SIGN_IN_JOINED_SIGNED_IN_REASON))
+
+    async def test_a_card_that_ends_without_a_sign_in_gives_the_oldest_joined_request_the_card(self) -> None:
+        first_chat, second_chat, third_chat = self.chats(3)
+        first = await self.submit(first_chat, self.tool("aws"))
+        self.now += 1
+        second = await self.submit(second_chat, self.tool("aws"))
+        self.now += 1
+        third = await self.submit(third_chat, self.tool("aws"))
+        await self.bridge.call("browser.answer", {"id": first["id"], "decision": "decline"})
+        await self.bridge.check()
+        promoted = self.bridge.items[second["id"]]
+        self.assertEqual(promoted["state"], "pending")
+        self.assertIsNone(promoted.get("joinedTo"))
+        self.assertEqual(self.bridge.items[third["id"]]["joinedTo"], second["id"])
+
+    async def test_a_device_code_link_without_a_client_never_joins(self) -> None:
+        first_chat, second_chat = self.chats(2)
+        first = await self.submit(first_chat, self.tool("device"))
+        second = await self.submit(second_chat, self.tool("device"))
+        self.assertEqual((first["state"], second["state"]), ("pending", "pending"))
 
 
 if __name__ == "__main__":

@@ -33,8 +33,6 @@ pub struct ProfileRecord {
     #[serde(deserialize_with = "deserialize_required_nullable")]
     pub effort: Option<ReasoningEffort>,
     pub instructions: String,
-    #[serde(flatten)]
-    pub capabilities: studio_runtime_schema::worker_capabilities::WorkerCapabilities,
 }
 
 impl JsonRecord for ProfileRecord {

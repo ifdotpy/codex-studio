@@ -283,6 +283,62 @@ async fn turn_end_without_acknowledgement_is_unconfirmed_and_never_resent(provid
     worker.shutdown().await.unwrap();
 }
 
+/// A turn end whose provider reports when the turn stopped taking input
+/// (`completedAt`, whole seconds), as the live Codex `turn/completed` does.
+fn finished_at(completed_at: f64) -> Value {
+    json!({"method":"turn/completed","params":{"threadId":"fake-thread-0",
+        "turn":{"id":"turn","status":"completed","completedAt":completed_at.floor() as i64}}})
+}
+
+/// Studio's view of a turn can lag the provider: the provider finished the turn,
+/// its `turn/completed` was not yet read, and Studio wrote a steer to it. The
+/// provider refuses that steer (`expectedTurnId`), and here the refusal never
+/// arrives. The turn end proves the input unread, so it starts the next turn
+/// once instead of failing as unconfirmed (22 October 2026: 11 inputs).
+#[tokio::test]
+async fn codex_steer_written_after_the_reported_turn_end_starts_the_next_turn_once() {
+    let (state, mut peer, mut worker) = running_turn("codex").await;
+    let request = steer(&state, &mut peer, &worker).await;
+    frame(&mut peer, finished_at(now() - 60.0)).await;
+    let (status, _, error) = input(&state).await;
+    assert_ne!(
+        status, "failed",
+        "a steer written after the turn ended is unread: {error:?}"
+    );
+    let next = peer.write_turn_start().await;
+    assert!(
+        next.to_string().contains(TEXT),
+        "the next turn carries the input"
+    );
+    assert_eq!(input(&state).await.0, "dispatching");
+    // The refusal of the earlier request arrives late and changes nothing.
+    frame(&mut peer, rejection(&request)).await;
+    no_write(&mut peer).await;
+    assert_eq!(input(&state).await.0, "dispatching");
+    worker.shutdown().await.unwrap();
+}
+
+/// A steer written before the reported end may have been read, and a provider
+/// without that guarantee proves nothing by its end time: both stay unconfirmed.
+#[tokio::test]
+async fn reported_turn_end_proves_only_a_later_codex_steer_unread() {
+    for (provider, completed_at) in [("codex", now() + 60.0), ("claude", now() - 60.0)] {
+        let (state, mut peer, mut worker) = running_turn(provider).await;
+        let _request = steer(&state, &mut peer, &worker).await;
+        frame(&mut peer, finished_at(completed_at)).await;
+        let (status, _, error) = input(&state).await;
+        assert_eq!(status, "failed", "{provider}");
+        assert_eq!(
+            error.as_deref(),
+            Some(studio_runtime_store::STEER_UNCONFIRMED_ERROR),
+            "{provider}"
+        );
+        state.wake(&worker).await;
+        no_write(&mut peer).await;
+        worker.shutdown().await.unwrap();
+    }
+}
+
 async fn transport_close_before_reply_is_unconfirmed_and_never_resent(provider: &'static str) {
     let (state, mut peer, mut worker) = running_turn(provider).await;
     let _request = steer(&state, &mut peer, &worker).await;

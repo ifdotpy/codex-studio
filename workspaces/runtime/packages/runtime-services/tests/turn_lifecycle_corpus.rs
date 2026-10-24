@@ -300,7 +300,11 @@ fn snapshot(root: &Path, tokens: &std::collections::BTreeMap<String, String>) ->
                                 json!(text)
                             }
                         }
-                        ValueRef::Blob(_) => panic!("unexpected snapshot blob"),
+                        // Owned stored-text columns hold stored format 1.
+                        ValueRef::Blob(bytes) => json!(
+                            studio_runtime_store::stored_text::decode_blob(bytes)
+                                .expect("snapshot blob is stored text")
+                        ),
                     };
                     record.insert(name.clone(), value);
                 }
@@ -735,7 +739,7 @@ fn fast_witnesses_cover_transitions_states_and_review_findings() {
     let registry = registry.as_object().expect("class declarations");
     assert_eq!(
         registry.len(),
-        3,
+        4,
         "the remaining lifecycle and notification classes are closed"
     );
     let owners: std::collections::BTreeSet<_> = cases

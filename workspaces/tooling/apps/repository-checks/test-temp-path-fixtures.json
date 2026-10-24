@@ -144,6 +144,11 @@
     "json!({\"id\":\"source\",\"home\":\"/tmp/source\",\"provider\":\"codex\"}),",
     "json!({\"id\":\"target\",\"home\":\"/tmp/target\",\"provider\":\"codex\"}),",
     "skills_root: PathBuf::from(\"/tmp/skills\"),",
+    "account_home: \"/tmp/target\".into(),",
+    "\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\"}))",
+    "json!({\"id\":\"source\",\"home\":\"/tmp/source\",\"provider\":\"codex\"}),",
+    "json!({\"id\":\"target\",\"home\":\"/tmp/target\",\"provider\":\"codex\"}),",
+    "skills_root: PathBuf::from(\"/tmp/skills\"),",
     "account_home: \"/tmp/target\".into(),"
   ],
   "workspaces/runtime/packages/runtime-services/src/account_worker/preparation/pipeline.rs": [

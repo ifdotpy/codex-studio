@@ -1,3 +1,4 @@
+import Disclosure from "./ui/Disclosure";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
 import { accountLimits } from "../usage/accountUsage";
@@ -919,19 +920,26 @@ export default function Usage({
                             <small>{activeAccount?.key || fallbackKey}</small>
                           )}
                       </div>
-                      {activeAccount.key === fallbackKey &&
-                        !recovery?.eligibility && (
-                          <ModelLimitEligibility
-                            eligibility={eligibility}
-                            now={now}
-                          />
-                        )}
                       {recovery && (
                         <LimitRecoveryNotice
                           key={JSON.stringify(recovery)}
                           recovery={recovery}
                           tabIndex={isSelected ? undefined : -1}
+                          onRefresh={() =>
+                            activeAccount.reload(true) ?? refreshLimits()
+                          }
                         />
+                      )}
+                      {activeAccount.key === fallbackKey && (
+                        <Disclosure
+                          className="model-limit-details"
+                          summary="Model eligibility details"
+                        >
+                          <ModelLimitEligibility
+                            eligibility={recovery?.eligibility ?? eligibility}
+                            now={now}
+                          />
+                        </Disclosure>
                       )}
                       <div
                         className="account-limits-groups"

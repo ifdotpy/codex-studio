@@ -819,7 +819,7 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(/^account_worker::tests::(a_replaced_worker_keeps_the_live_turn_of_its_retained_provider|a_supervised_provider_exit_is_still_a_disconnect|provider_exit_while_the_server_runs_is_a_disconnect_reported_once)$/)",
+            "test(/^account_worker::tests::(a_replaced_worker_keeps_the_live_turn_of_its_retained_provider|a_supervised_provider_exit_is_still_a_disconnect|provider_exit_while_the_server_runs_is_a_disconnect_reported_once|stop_after_reattach::(stop_while_a_retained_provider_has_no_live_worker_interrupts_its_turn_once|stop_without_an_account_session_interrupts_a_retained_turn_once|stop_interrupt_with_a_lost_reply_is_not_sent_again_after_reattach))$/)",
           ],
         ],
         [
@@ -860,7 +860,7 @@ function fastTierCommands(root) {
         selector:
           "account worker end with a supervised provider that outlives it",
         reason:
-          "Check that a replaced worker leaves the live turn of a retained provider running and tells no parent, while a provider exit stays a disconnect.",
+          "Check that a replaced worker leaves the live turn of a retained provider running and tells no parent, while a provider exit stays a disconnect, and that a turn stopped while no worker was attached is interrupted once by the worker that reattaches, never again after a lost reply.",
       },
     },
     {
@@ -1315,6 +1315,9 @@ function fastTierCommands(root) {
               "test(python_payload_marker_layout_is_refused_without_upgrade)",
               "test(repositories::workspace_views::bulk_read_tests::)",
               "test(repositories::analytics::capture_error_tests::)",
+              "test(stored_text::tests::)",
+              "test(repositories::transcript::tests::full_text_)",
+              "test(/^stored_text_owner::/)",
             ]),
           ],
         ],
@@ -1397,12 +1400,20 @@ function fastTierCommands(root) {
               "test(callback_request_expires_a_terminal_inline_result)",
               "test(callback_request_invalid_action_preserves_tool_refusal)",
               "test(account_worker::tests::callback_handoff::)",
+              "test(account_worker::tests::account_transfer::)",
+              "test(account_transfer_driver::request_tests::busy_member_)",
+              "test(account_transfer::provider_receipt_tests::cancel_returns_a_lazy_member_whose_move_sent_no_thread_request)",
+              "test(account_transfer_executor::retained_executor_tests::source_reads_start_a_dormant_source_session)",
               "test(account_worker::tests::auth_hold::held_start_wakes_nothing_until_an_account_change)",
+              "test(account_worker::tests::unsent_start::a_submitted_turn_start_that_stays_unsent_keeps_its_input_pending)",
+              "test(account_worker::tests::disconnected_unknown_start::)",
               "test(account_worker::tests::callback_head_of_line)",
               "test(account_worker::tests::native_requests::)",
               "test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn)",
               "test(stamp_tests::)",
               "test(start_submission_replaces_an_earlier_unsent_attempt)",
+              "test(codex_steer_written_after_the_reported_turn_end_starts_the_next_turn_once)",
+              "test(reported_turn_end_proves_only_a_later_codex_steer_unread)",
               "test(transcript_reasoning_decodes_each_row_before_fetching_the_next)",
               "test(sync_policy::tests::monitor_)",
               "test(work_write::actor_tests::submission_manifest_boundaries_use_shared_limits)",
@@ -1413,6 +1424,7 @@ function fastTierCommands(root) {
               "test(account_worker::retained::runtime::tests::payload_delivery_)",
               "test(account_worker::tests::retained::automatic_recovery_)",
               "test(account_worker::tests::retained::startup_first_pass_reconciles_exact_history_without_replaying_unknown_input)",
+              "test(/^studio_errors::/)",
               "test(account_worker::tests::retained::retained_actor_request_answer_after_same_generation_restart_is_recorded_once)",
               "test(account_worker::tests::restart_held_first_input_is_reconciled_by_the_first_worker)",
             ]),
@@ -1449,9 +1461,9 @@ function fastTierCommands(root) {
       ],
       options: {
         selector:
-          "account_worker::tests::callback_handoff, callback_head_of_line, native_requests, stale batch stamp recovery, automatic turn recovery, the session callback lane, monitor publication work and work_write submission boundaries",
+          "account_worker::tests::callback_handoff, account_transfer, callback_head_of_line, native_requests, stale batch stamp recovery, automatic turn recovery, the session callback lane, monitor publication work and work_write submission boundaries",
         reason:
-          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, that a native approval or question of a lead waits as a card and its user answer reaches the provider once, also after a worker reattach, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound. Native-history recovery continues authorized workers once, preserves explicit Stop, and never replays uncertain input.",
+          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, that a native approval or question of a lead waits as a card and its user answer reaches the provider once, also after a worker reattach, that a stamp left by an undelivered steer batch is replaced instead of holding the agent, and that busy-turn input written after the provider's reported turn end starts the next turn once instead of failing unconfirmed. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound. Native-history recovery continues authorized workers once, preserves explicit Stop, and never replays uncertain input. An account transfer member moves at its next wake and keeps its queued input, a blocked member waits without a write per wake, and a move that sent no thread request can be cancelled.",
       },
     },
     // The reaping witnesses are Linux only (#[cfg(target_os = "linux")]), so
@@ -1502,7 +1514,7 @@ function fastTierCommands(root) {
       : []),
     {
       item: { name: "project preparation", ecosystem: "cargo" },
-      label: "project preparation and agent limit witnesses",
+      label: "project preparation and retained worktree witnesses",
       commands: [
         [
           "cargo",
@@ -1521,15 +1533,14 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^project_preparation::/) | test(/^agent_limits::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
+            "test(/^project_preparation::/) | test(/^retained_worktrees::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
           ],
         ],
       ],
       options: {
         selector:
-          "project preparation conflicts, worker continuation authority, and budget projections",
-        reason:
-          "Check project writes, user-only worker resets, and bounded budget and cleanup views.",
+          "project preparation conflicts and retained worktree projections",
+        reason: "Check project writes and bounded cleanup views.",
       },
     },
     {
@@ -1803,7 +1814,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "task authority, worker limits, and Claude input witnesses",
+      label: "task authority and Claude input witnesses",
       commands: [
         [
           "cargo",
@@ -1823,15 +1834,15 @@ function fastTierCommands(root) {
             "studio-runtime-schema",
             "--lib",
             "-E",
-            "test(authenticated_task_caller_) | test(acceptance_gate_) | test(task_result_schema) | test(capability_) | test(claude_child_) | test(workspace_fence) | test(input_origin) | test(stop_receipt_) | test(live_limits_) | test(archive_keeps_submodule) | test(turn_prepare::budget_tests::)",
+            "test(authenticated_task_caller_) | test(acceptance_gate_) | test(task_result_schema) | test(claude_child_) | test(workspace_fence) | test(input_origin) | test(stop_receipt_) | test(live_limits_) | test(archive_keeps_submodule) | test(turn_prepare::budget_tests::)",
           ],
         ],
       ],
       options: {
         selector:
-          "task authority, acceptance gates, worker capability limits, and Claude input provenance",
+          "task authority, acceptance gates, and Claude input provenance",
         reason:
-          "Check that workers cannot act as the lead, gates and limits hold, and Claude input keeps its origin and queue receipts.",
+          "Check that workers cannot act as the lead, gates hold, and Claude input keeps its origin and queue receipts.",
       },
     },
     {

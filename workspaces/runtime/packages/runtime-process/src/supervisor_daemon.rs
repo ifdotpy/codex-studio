@@ -1,8 +1,8 @@
 //! Standalone supervisor. One lease, bounded connections and owned children.
 use super::supervisor_child::{OwnedChild, SpawnOutcome};
 use super::supervisor_identity::{
-    RETRY, free_space, inspect_start, process_gone_error, start_time, stop_verified, valid_start,
-    verify_group,
+    RETRY, free_space, inspect_start, legacy_python_start, legacy_start_ended, process_gone_error,
+    start_time, stop_verified, valid_start, verify_group,
 };
 use crate::{
     NextBatchRequestEnvelope, NextBatchResult, SUPERVISOR_NEXT_BATCH_MAX_EVENTS,
@@ -253,19 +253,21 @@ impl Supervisor {
                     let never_started = saved.pid == 0
                         && saved.closed_reason.as_deref() == Some(START_FAILED_REASON);
                     if !stopped && !never_started && saved.signature != signature {
-                        let proof = saved.recovery_proof
-                            || saved.closed_reason.as_deref() == Some(OPERATOR_CLOSED);
-                        if !proof
-                            || !saved.start_time.as_deref().is_some_and(valid_start)
-                            || matches!(
-                                inspect_start(
-                                    saved.pid,
-                                    saved.start_time.as_deref().unwrap_or("")
-                                )?
-                                .0,
-                                StartMatch::Exact
-                            )
-                        {
+                        let start = saved.start_time.as_deref().unwrap_or("");
+                        let ended = if valid_start(start) {
+                            let proof = saved.recovery_proof
+                                || saved.closed_reason.as_deref() == Some(OPERATOR_CLOSED);
+                            proof
+                                && !matches!(inspect_start(saved.pid, start)?.0, StartMatch::Exact)
+                        } else {
+                            // A row of the deleted Python supervisor. Only its
+                            // recovery proof and a gone or restarted PID show
+                            // that its child ended; a live child stays refused.
+                            saved.recovery_proof
+                                && legacy_python_start(start)
+                                && legacy_start_ended(saved.pid, start)?
+                        };
+                        if !ended {
                             return Err(Error::Refused(
                                 "Supervisor handle is orphaned; native outcome remains unknown",
                             ));
@@ -1159,3 +1161,6 @@ fn accepted(socket: std::io::Result<UnixStream>) -> Option<UnixStream> {
 #[cfg(test)]
 #[path = "../tests/supervisor/deadlines.rs"]
 mod deadline_tests;
+#[cfg(all(test, target_os = "macos"))]
+#[path = "../tests/supervisor/legacy_start.rs"]
+mod legacy_start_tests;

@@ -60,6 +60,7 @@ import {
 import SidebarRow from "./SidebarRow";
 import { needsYou, projectStateCounts } from "./sidebar/fleet";
 import ProjectStateCounts from "./sidebar/ProjectStateCounts";
+import { StudioErrorsButton } from "./StudioErrors";
 import {
   activeLayrReadiness,
   describeWithLayrReadiness,
@@ -1351,6 +1352,17 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             </ActionIcon>
           )}
         </div>
+        {p.newSharedChat && (
+          <Button
+            className="sidebar-nav-button sidebar-shared-chat"
+            title="New shared chat"
+            leftSection={<Users size={15} />}
+            onClick={() => p.newSharedChat?.()}
+          >
+            New shared chat
+          </Button>
+        )}
+        <StudioErrorsButton open={p.open} />
       </div>
       <TextInput
         id="chat-search"

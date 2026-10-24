@@ -384,6 +384,9 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let owner = studio_runtime_store::state_owner::StateOwnerClaim { backend_build };
     let store =
         Arc::new(RuntimeStore::open_claiming(configured_state_dir.as_deref(), &owner).await?);
+    // Before the first runtime write: every writer transaction publishes the chats and
+    // cards it changed.
+    studio_runtime_services::entity_publication::install(&store);
     store
         .set_diagnostics_callback(Some(
             studio_runtime_services::diagnostics::observe_store_event,
@@ -985,6 +988,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         sign_in_sources,
         monitor_shutdown.subscribe(),
     ));
+    // Sign-in alerts on the owner's phones (docs/web-push.md).
+    let web_push_task = tokio::spawn(studio_runtime_services::web_push::run(
+        Arc::clone(&store),
+        state_root.to_path_buf(),
+        monitor_shutdown.subscribe(),
+    ));
     let retention_task = tokio::spawn(studio_runtime_services::storage_retention::run(
         Arc::clone(&store),
         monitor_shutdown.subscribe(),
@@ -1000,6 +1009,20 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Arc::clone(&registry_wake),
         monitor_shutdown.subscribe(),
     ));
+    #[cfg(unix)]
+    let idle_compaction_task = runtime.preparation_resources().map(|resources| {
+        let host = Arc::new(studio_runtime_http::routes::IdleCompactionHost {
+            state: state.clone(),
+            resources,
+            repair: Arc::new(NativeContextRepairAdapter),
+        });
+        tokio::spawn(studio_runtime_services::idle_compaction::run(
+            Arc::clone(&store),
+            Arc::clone(&account_session),
+            host,
+            monitor_shutdown.subscribe(),
+        ))
+    });
     let continuation_task = tokio::spawn(continuation_scheduler(
         Arc::clone(&store),
         continuation_scheduler_wake,
@@ -1281,11 +1304,17 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     history_cleanup.map_err(std::io::Error::other)??;
     shutdown_join("federation delivery task", federation_task).await??;
     shutdown_join("continuation scheduler task", continuation_task).await??;
+    #[cfg(unix)]
+    if let Some(task) = idle_compaction_task {
+        shutdown_join("idle compaction scheduler task", task).await??;
+    }
+
     shutdown_join("held turn release task", auth_release_task).await??;
     for task in browser_card_tasks {
         shutdown_join("browser card poll", task).await??;
     }
     shutdown_join("sign-in message links", sign_in_task).await??;
+    shutdown_join("web push", web_push_task).await??;
     #[cfg(unix)]
     if let Some(service) = browser_host {
         shutdown_join("browser host bridge", service.stop()).await?;

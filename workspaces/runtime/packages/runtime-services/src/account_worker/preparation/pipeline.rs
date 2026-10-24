@@ -787,8 +787,41 @@ pub(crate) async fn admit(
     resources: &PreparationResources,
     intent: &TurnIntent,
 ) -> Result<Admission, WorkerError> {
+    before_start(&store, resources, &intent.agent_id).await?;
     admit_for_purpose(store, resources, intent, false).await
 }
+
+/// Every ordinary native method passes the transfer gate before its snapshot.
+pub(crate) async fn before_start(
+    store: &Arc<RuntimeStore>,
+    resources: &PreparationResources,
+    agent_id: &str,
+) -> Result<(), WorkerError> {
+    // Transfer preparation can itself prepare a destination thread. Its exact
+    // Reading owner bypasses this entry in prepare_native_snapshot.
+    Box::pin(crate::account_transfer_executor::before_start(
+        Arc::clone(store),
+        resources.account_session.clone(),
+        &resources.model_catalog,
+        resources,
+        agent_id,
+        now(),
+    ))
+    .await
+    .map(|_| ())
+    .map_err(|error| match error {
+        crate::account_transfer::TransferError::Requires(crate::account_transfer::RECEIPT_HOLD) => {
+            // A stored transfer marker is an admission hold, including when
+            // its operation is unavailable. It is not a missing capability.
+            refusal(format!(
+                "thread-preparation/{:?}",
+                thread::HoldReason::AccountTransfer
+            ))
+        }
+        error => refusal(error.to_string()),
+    })
+}
+
 async fn admit_for_purpose(
     store: Arc<RuntimeStore>,
     resources: &PreparationResources,
@@ -1303,7 +1336,7 @@ pub(crate) async fn prepare_monitor_command(
         None
     };
     let agent_id = agent_id.to_owned();
-    let resources_for_snapshot = resources.for_agent(&store, &agent_id).await?;
+    let resources_for_snapshot = resources.for_sql().await?;
     let state_root = store.root().to_path_buf();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &agent_id)?.value();
@@ -1533,6 +1566,9 @@ async fn prepare_native_snapshot(
     allow_paused_start: bool,
     account_transfer_owner: Option<&str>,
 ) -> Result<thread::Snapshot, WorkerError> {
+    if account_transfer_owner.is_none() {
+        before_start(&store, resources, agent_id).await?;
+    }
     let record = stored_agent_value(&store, agent_id).await?;
     let intent = TurnIntent {
         agent_id: agent_id.into(),
@@ -1597,7 +1633,7 @@ async fn prepare_native_snapshot(
     let (identity, _) = catalog(resources, &intent)?;
     let state_root = store.root().to_path_buf();
     let intent = intent.clone();
-    let resources_for_snapshot = resources.for_agent(&store, agent_id).await?;
+    let resources_for_snapshot = resources.for_sql().await?;
     let generation = generation.to_string();
     let transfer_owner = account_transfer_owner.map(str::to_owned);
     scheduler::lifecycle_transaction_with(&store, move |tx| {
@@ -1665,7 +1701,7 @@ pub(crate) async fn prepare_safety_retry(
         .unwrap_or("safety-retry-preparation")
         .to_owned();
     let snapshot_request = request.clone();
-    let resources_for_snapshot = resources.for_agent(&store, &request.agent_id).await?;
+    let resources_for_snapshot = resources.for_sql().await?;
     let state_root = store.root().to_path_buf();
     let mut snapshot = scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &snapshot_request.agent_id)?.value();
@@ -1799,7 +1835,7 @@ pub(crate) async fn prepare_ready(
     let token_for_snapshot = token.clone();
     let generation = generation.to_string();
     let state_root = store.root().to_path_buf();
-    let resources = resources.for_agent(&store, &intent.agent_id).await?;
+    let resources = resources.for_sql().await?;
     let resources_for_snapshot = resources.clone();
     let (
         mut snapshot,
@@ -2315,7 +2351,6 @@ mod daybreak_tests {
                 fast_mode: false,
                 yolo_mode: Some(true),
                 profile_instructions: String::new(),
-                capability_profile: Default::default(),
                 role: thread::Role::Implementer,
                 is_lead: false,
                 needs_title: false,

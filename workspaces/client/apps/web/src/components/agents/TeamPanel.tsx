@@ -1,4 +1,4 @@
-import TeamBudget from "./TeamBudget";
+import { TeamRetainedWorktrees } from "./RetainedWorktrees";
 import { ActionIcon, Button, TextInput } from "@mantine/core";
 import { ArrowLeft, Search, X } from "lucide-react";
 import type { Agent } from "../../types";
@@ -22,6 +22,7 @@ import {
 type Props = {
   lead?: Agent | null;
   workers: Agent[];
+  retainedWorktrees?: Parameters<typeof TeamRetainedWorktrees>[0]["items"];
   accounts: Account[];
   opened: string | null;
   answerIds: Set<string>;
@@ -44,6 +45,7 @@ type Props = {
 export default function TeamPanel({
   lead,
   workers,
+  retainedWorktrees = [],
   accounts,
   opened,
   answerIds,
@@ -170,7 +172,7 @@ export default function TeamPanel({
             )}
           </Disclosure>
         )}
-        {lead && <TeamBudget key={lead.id} lead={lead} members={workers} />}
+        <TeamRetainedWorktrees items={retainedWorktrees} />
         <TeamSummary
           workers={workers}
           indicators={teamIndicators}

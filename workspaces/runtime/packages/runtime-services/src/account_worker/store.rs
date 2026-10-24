@@ -1011,12 +1011,6 @@ pub(super) async fn outcome(
                     .thread
                     .as_ref()
                     .map(|attempt| attempt.snapshot.actor.cwd.as_str()),
-                context
-                    .thread
-                    .as_ref()
-                    .and_then(|attempt| attempt.snapshot.guidance.thread_config.get("mcp_servers"))
-                    .and_then(Value::as_object)
-                    .map(|servers| servers.keys().cloned().collect()),
             )
             .await?,
     );
@@ -1482,7 +1476,7 @@ fn uncertain(
             TurnStart::Unknown
         } else {
             TurnStart::Blocked {
-                reason: "Provider thread resume outcome is unknown; input remains pending.".into(),
+                reason: studio_runtime_schema::shared_values::PROVIDER_RESUME_UNKNOWN_ERROR.into(),
             }
         };
         SchedulerRepository::settle_start_outcome(
@@ -1542,14 +1536,6 @@ pub(super) async fn journal_batch(
                             .thread
                             .as_ref()
                             .map(|attempt| attempt.snapshot.actor.cwd.as_str()),
-                        step.context
-                            .thread
-                            .as_ref()
-                            .and_then(|attempt| {
-                                attempt.snapshot.guidance.thread_config.get("mcp_servers")
-                            })
-                            .and_then(Value::as_object)
-                            .map(|servers| servers.keys().cloned().collect()),
                     )
                     .await?,
             );

@@ -161,6 +161,28 @@ class RecoveryTest(unittest.TestCase):
             recovery.load_config(filename, self.state)
 
 
+class InterpreterCheckTest(unittest.TestCase):
+    """configureRecovery saves an interpreter only when it runs `--check-interpreter`."""
+
+    def run_check(self, helpers):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ["recover_backend.py", *helpers]:
+                (root / name).write_bytes((HERE / name).read_bytes())
+            return subprocess.run([sys.executable, "-B", str(root / "recover_backend.py"), "--check-interpreter"],
+                                  capture_output=True, text=True, timeout=30, check=False)
+
+    def test_the_check_passes_with_the_shipped_helpers(self):
+        result = self.run_check(["desktop_process.py", "desktop_updates.py", "desktop_vm.py"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["version"][:2], list(sys.version_info[:2]))
+
+    def test_the_check_fails_without_a_shipped_helper(self):
+        result = self.run_check(["desktop_process.py", "desktop_vm.py"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("desktop_updates", result.stderr)
+
+
 class RustSelectionTest(unittest.TestCase):
     """The explicit Rust selection uses fake executables in a private state directory."""
 
