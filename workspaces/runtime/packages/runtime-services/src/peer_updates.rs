@@ -121,12 +121,6 @@ impl Offer {
         }
     }
 
-    #[cfg(test)]
-    fn with_export_wait(mut self, wait: Duration) -> Self {
-        self.export_wait = wait;
-        self
-    }
-
     fn app(&self) -> Option<PathBuf> {
         match &self.app {
             AppSource::Installed => installed_app(),
@@ -682,7 +676,7 @@ pub(crate) mod fixture {
         let blob = folder.join(format!("{name}.bin"));
         std::fs::write(&blob, archive).unwrap();
         let wait = gate.map_or_else(String::new, |gate| {
-            format!("while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display())
+            format!("read _ < '{}'\n", gate.display())
         });
         script(
             folder,
@@ -920,23 +914,36 @@ mod tests {
         let root = folder.path().join("state");
         std::fs::create_dir(&root).unwrap();
         let gate = folder.path().join("gate");
+        const FIFO_SETUP_TIMEOUT: Duration = Duration::from_secs(5);
+        super::tool(
+            std::path::Path::new("mkfifo"),
+            &[gate.to_str().unwrap()],
+            FIFO_SETUP_TIMEOUT,
+        )
+        .unwrap();
+        // Keep both ends open so release cannot block on the child being scheduled.
+        let mut release = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&gate)
+            .unwrap();
         let app = fixture::app(folder.path());
         let codesign = fixture::script(folder.path(), "codesign", "exit 0");
         let ditto = fixture::ditto(folder.path(), "ditto-slow", b"slow archive", Some(&gate));
-        let waiting = Arc::new(
-            Offer::fixture(app.clone(), codesign.clone(), ditto.clone())
-                .with_export_wait(Duration::from_millis(20)),
-        );
+        let waiting = Arc::new(Offer::fixture(app.clone(), codesign.clone(), ditto.clone()));
+        tokio::time::pause();
         let first = call(
             &waiting,
             &root,
             "update.export",
             json!({"builtAt": 1792647971.037}),
         )
-        .await
-        .unwrap();
+        .await;
+        tokio::time::resume();
+        // Release the owned child before checking the response, including failure paths.
+        std::io::Write::write_all(&mut release, b"ready\n").unwrap();
+        let first = first.unwrap();
         assert_eq!(first["preparing"], json!(true));
-        std::fs::write(&gate, b"").unwrap();
         let patient = Arc::new(Offer::fixture(app, codesign, ditto));
         let ready = call(
             &patient,
