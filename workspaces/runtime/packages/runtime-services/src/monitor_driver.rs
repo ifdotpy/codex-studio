@@ -171,6 +171,45 @@ pub struct InputRequest<'a> {
     pub input: &'a Input,
 }
 
+pub(crate) async fn input_http(
+    store: &RuntimeStore,
+    port: &(impl MonitorNative + ?Sized),
+    id: &str,
+    request_id: &str,
+    input: &Input,
+    now: f64,
+) -> Result<Option<(Operation, String, Submission)>, MonitorError> {
+    // A concurrent native admission is uncertain to this HTTP caller.
+    let _sequence = native_sequence(store, id).map_err(|_| MonitorError::InputOutcomeUnknown)?;
+    let (owned_id, owned_request, owned_input) =
+        (id.to_owned(), request_id.to_owned(), input.clone());
+    let admission = store
+        .transaction_with(move |tx| {
+            crate::monitor_http_input::reserve(tx, &owned_id, &owned_request, &owned_input, now)
+        })
+        .await?;
+    let Some(crate::monitor_http_input::Reservation {
+        operation,
+        ticket,
+        effect,
+    }) = admission
+    else {
+        return Ok(None);
+    };
+    let submitted = port.submit(&operation, &effect).await;
+    let outcome = match &submitted {
+        Submission::Written => None,
+        Submission::NotSent { error, .. } => Some(InputOutcome::Rejected(error.clone())),
+        Submission::Unknown => Some(InputOutcome::Unknown(
+            "Input outcome unknown; do not repeat it".into(),
+        )),
+    };
+    if let Some(outcome) = outcome {
+        monitor_runtime::settle_input(store, id, &operation, &ticket, outcome, now).await?;
+    }
+    Ok(Some((operation, ticket, submitted)))
+}
+
 pub async fn input(
     store: &RuntimeStore,
     port: &(impl MonitorNative + ?Sized),

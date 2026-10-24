@@ -415,6 +415,10 @@ async fn call(app: &axum::Router, method: &str, path: &str, body: Value) -> (u16
         .header("content-type", "application/json")
         .header("x-canvas-token", "fixture-token")
         .header(
+            "x-studio-request-id",
+            studio_runtime_store::sha256_hex(body.to_string().as_bytes()),
+        )
+        .header(
             studio_runtime_http::API_SCHEMA_HASH_HEADER,
             studio_runtime_http::api_schema_hash(),
         )

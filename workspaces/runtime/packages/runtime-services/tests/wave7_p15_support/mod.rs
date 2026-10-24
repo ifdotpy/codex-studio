@@ -21,6 +21,7 @@ pub struct Port {
         Mutex<Option<(Arc<tokio::sync::Notify>, tokio::sync::oneshot::Receiver<()>)>>,
     pub acknowledged: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     pub unknown: Mutex<bool>,
+    pub input_reply: Mutex<Option<InputReply>>,
     pub not_sent: Mutex<bool>,
     pub not_sent_reason: Mutex<NotSentReason>,
     pub rule_available: Mutex<bool>,
@@ -165,6 +166,12 @@ impl MonitorPort for Port {
         _: &'a Operation,
         _: &'a str,
     ) -> futures_util::future::BoxFuture<'a, InputReply> {
-        Box::pin(async { InputReply::Acknowledged(json!({})) })
+        Box::pin(async {
+            self.input_reply
+                .lock()
+                .expect("input reply")
+                .take()
+                .unwrap_or_else(|| InputReply::Acknowledged(json!({})))
+        })
     }
 }

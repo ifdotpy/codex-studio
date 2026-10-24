@@ -2,13 +2,7 @@
 //! this task owns no provider connection and never repeats an uncertain command.
 //! Result recovery precedes stall decisions. Publication and transport ACK follow commit.
 //!
-//! Registered HTTP gap: "monitor input has no request identity; pending owner decision".
-//! Python has the same acknowledged-response gap: codex_rules.py:727 refuses only while
-//! `inputAttempt` exists; codex_rules.py:781-782 clears it on settlement and saves
-//! `lastInputAttempt` without comparing it on the next call. Therefore an identical HTTP retry
-//! after an acknowledged response may be a new input. Each provider write still has a durable
-//! ticketed intent; an unknown provider outcome remains latched and is never resent. Managed-tool
-//! input uses its callback request identity for durable replay instead.
+//! HTTP input and managed-tool input retain their own stable request identities.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -1035,19 +1029,42 @@ impl MonitorRuntime {
         Ok(result)
     }
 
-    /// Submit HTTP input with a fresh server ticket. The HTTP schema currently has
-    /// no caller request identity, so a lost HTTP response cannot be distinguished
-    /// from a new identical request; that retry gap is registered in this module's
-    /// documentation. Provider writes still commit an intent first, and an
-    /// uncertain provider outcome is retained and never resent.
+    /// Replay the exact HTTP input identity without another native write.
     pub async fn input_http(
         &self,
         id: &str,
+        request_id: &str,
         input: &Input,
         now: f64,
     ) -> Result<Value, MonitorError> {
-        let ticket = http_input_ticket()?;
-        self.input(id, &ticket, input, now).await
+        let Some((operation, ticket, submitted)) =
+            monitor_driver::input_http(&self.store, self.port.as_ref(), id, request_id, input, now)
+                .await?
+        else {
+            return Ok(crate::monitor_http_input::acknowledged(request_id));
+        };
+        if !matches!(submitted, Submission::Written) {
+            return Err(match submitted {
+                Submission::NotSent { .. } => MonitorError::Refused("Monitor input rejected"),
+                _ => MonitorError::InputOutcomeUnknown,
+            });
+        }
+        let (outcome, response) = match self.port.input_reply(&operation, &ticket).await {
+            InputReply::Acknowledged(_) => (
+                InputOutcome::Acknowledged,
+                Ok(crate::monitor_http_input::acknowledged(request_id)),
+            ),
+            InputReply::Rejected(error) => (
+                InputOutcome::Rejected(error),
+                Err(MonitorError::Refused("Monitor input rejected")),
+            ),
+            InputReply::Unknown(error) => (
+                InputOutcome::Unknown(error),
+                Err(MonitorError::InputOutcomeUnknown),
+            ),
+        };
+        monitor_runtime::settle_input(&self.store, id, &operation, &ticket, outcome, now).await?;
+        response
     }
 
     pub async fn input(
@@ -1327,15 +1344,6 @@ fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, Mo
         rule_deadline,
         reattach_deadline,
     ]))
-}
-
-fn http_input_ticket() -> Result<String, MonitorError> {
-    let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes)
-        .map_err(|_| MonitorError::Refused("Could not allocate monitor input ticket"))?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Ok(uuid::Uuid::from_bytes(bytes).to_string())
 }
 
 fn record_tick_failure(current: &mut Option<MonitorError>, incoming: MonitorError) {

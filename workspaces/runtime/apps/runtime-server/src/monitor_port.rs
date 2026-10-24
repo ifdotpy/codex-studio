@@ -1230,6 +1230,23 @@ impl MonitorNative for RetainedMonitorPort {
                 30_000
             };
             let process_id = params["processId"].as_str().unwrap_or_default().to_owned();
+            let input_ticket =
+                if method == Method::CommandExecWrite || method == Method::CommandExecResize {
+                    match studio_runtime_services::monitor_policy::input_effect_ticket(
+                        &process_id,
+                        identity,
+                    ) {
+                        Some(ticket) => Some(ticket.to_owned()),
+                        None => {
+                            return Submission::NotSent {
+                                reason: NotSentReason::Transient,
+                                error: "Invalid monitor input identity".into(),
+                            };
+                        }
+                    }
+                } else {
+                    None
+                };
             // Only the request future below can deliver this command's exit.
             let _exec_reply = (method == Method::CommandExec && !process_id.is_empty())
                 .then(|| self.claim(&self.execs, &process_id))
@@ -1297,8 +1314,7 @@ impl MonitorNative for RetainedMonitorPort {
                 {
                     return Submission::Unknown;
                 }
-            } else if method == Method::CommandExecWrite || method == Method::CommandExecResize {
-                let ticket = identity.rsplit(':').next().unwrap_or(identity).to_owned();
+            } else if let Some(ticket) = input_ticket {
                 let reply = match receipt.result {
                     Some(ProviderResponse::Reply(value)) => InputReply::Acknowledged(value),
                     Some(ProviderResponse::Rejected(value)) => {
@@ -1957,6 +1973,7 @@ mod tests {
     #[derive(Default)]
     struct ExecSession {
         terminate: Mutex<Option<ProviderResponse>>,
+        input_writes: std::sync::atomic::AtomicUsize,
     }
     impl AccountSessionPort for ExecSession {
         fn current_scope(
@@ -1981,6 +1998,13 @@ mod tests {
             Box::pin(async move {
                 if request.method == Method::CommandExec {
                     std::future::pending::<()>().await;
+                }
+                if matches!(
+                    request.method,
+                    Method::CommandExecWrite | Method::CommandExecResize
+                ) {
+                    self.input_writes
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
                 Ok(SessionReceipt {
                     scope: request.expected_scope.clone().expect("scope"),
@@ -2011,6 +2035,72 @@ mod tests {
             "outputEventCount":0,"outputEventIds":[],"status":"starting","created":1.0,
             "exitCode":null,"tail":"","bytes":0,"interactive":false,"ruleId":null,
             "log":log.to_string_lossy(),"cancelRequested":false})
+    }
+
+    #[tokio::test]
+    async fn http_input_retains_the_full_ticket_through_the_real_monitor_adapter() {
+        let root = tempfile::tempdir().expect("state root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let mut watch = starting_watch(root.path(), "watch:with:colons");
+        watch["status"] = json!("running");
+        watch["interactive"] = json!(true);
+        watch["operation"] =
+            json!({"agent":"owner","epoch":0,"accountKey":"default","connectionId":"connection"});
+        let actor = owner(root.path(), true);
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(actor)?)?;
+                studio_runtime_store::Table::new(tx)
+                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)
+            })
+            .await
+            .expect("running interactive monitor");
+        let session = Arc::new(ExecSession::default());
+        *lock(&session.terminate) = Some(ProviderResponse::Reply(json!({"accepted":true})));
+        let port = RetainedMonitorPort::new(store.clone(), session.clone());
+        let runtime = studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
+            store.clone(),
+            port.clone(),
+            Arc::new(Notify::new()),
+        );
+        let input = studio_runtime_services::monitor_policy::Input {
+            text: "one line\n".into(),
+            rows: None,
+            cols: None,
+            close_stdin: false,
+        };
+        for id in ["request-one", "request:with:colons"] {
+            let first = runtime
+                .input_http("watch:with:colons", id, &input, 2000.0)
+                .await
+                .expect("real adapter returns exact HTTP acknowledgement");
+            let replay = runtime
+                .input_http("watch:with:colons", id, &input, 2001.0)
+                .await
+                .expect("replay saved HTTP acknowledgement");
+            assert_eq!(first, replay);
+            assert_eq!(first["status"], "acknowledged");
+        }
+        runtime
+            .input(
+                "watch:with:colons",
+                "managed:callback:identity",
+                &input,
+                2002.0,
+            )
+            .await
+            .expect("managed callback keeps its complete original identity");
+        assert_eq!(
+            session
+                .input_writes
+                .load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "two deliberate HTTP inputs and one managed input, no HTTP replay write"
+        );
+        assert!(
+            lock(&port.input_replies).is_empty(),
+            "all exact tickets were consumed"
+        );
     }
 
     /// The process exited and the provider answered, but the store refused the

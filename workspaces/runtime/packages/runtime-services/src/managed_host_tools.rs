@@ -29,10 +29,8 @@
 //! waking the retained monitor runtime. Managed MonitorInput uses the callback
 //! request id as its durable provider ticket and callback replay identity.
 //!
-//! Registered owner decision: "monitor input has no request identity; pending owner decision".
-//! A lost HTTP response cannot be distinguished from a new
-//! input. Provider writes still persist their own ticket first and never resend
-//! Unknown.
+//! HTTP input uses its caller request header and a separate durable receipt.
+//! Managed callback identities and their tool schemas stay unchanged.
 //!
 //! Remote-origin routing follows Python `Runtime.dynamic` (codex_runtime.py
 //! 8969–8997, 9004–9049): Search and local Context topics remain local, while
