@@ -56,6 +56,8 @@ pub enum MacSyncError {
         "Linux guest sync.mac.apply: outcome_unknown for legacy operation {operation} ({paths} paths); sync waits for receipt reconciliation"
     )]
     Unproven { operation: String, paths: usize },
+    #[error("Mac sync waits for review of {path}; retained data: {recovery}")]
+    PreservedConflict { path: String, recovery: PathBuf },
 }
 
 /// The text of a failed round for `status.json`: the error and its causes, at most

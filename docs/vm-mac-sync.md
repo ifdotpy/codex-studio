@@ -60,7 +60,8 @@ so a lost response repeats the same step with the same ID and never applies it t
    round sends the same Mac files again and folds them onto the new main file by file.
 4. **Outbound.** For each path that changed from A to main': when the Mac file still has
    its agreed content, or the content that main took from this round, write the main'
-   version atomically (temporary file and rename). When the user changed it again during
+   version with an atomic inode exchange. The displaced inode stays in recovery storage.
+   When the user changed it again during
    the round, skip it; the next round uploads it, with the content main took as its base.
    A Mac edit that main did not take (a refused merge or a conflict) is never written
    over.
@@ -111,9 +112,47 @@ has a file where the other has a folder.
   cannot prove that an old operation has stopped.
 - A scan error stops the round before any upload. An unreadable folder is not a deletion.
 - A case or Unicode form rename keeps the file on the Mac. A name collision waits.
-- A Mac save during a round keeps the file, including a save that restores the agreed bytes.
-- Mac writes never go through symbolic links and never leave the project folder.
+- A Mac save during a round remains recoverable, including a save after the last content check.
+  Replacement exchanges the current inode with the staged VM inode. Deletion moves the current
+  inode into recovery storage. Creation uses a no-replace rename.
+  The filesystem must support these atomic operations. Recovery storage must use the same filesystem.
+  An unsupported operation stops the round. No copy-and-delete fallback runs.
+- Displaced inodes remain in private `.studio-sync-preserved-<uuid>` directories.
+  Git projects use their Git metadata directory. Other projects use the target file's parent directory.
+  Each directory has a Git exclusion before it receives content, including before a later Git initialization.
+  `record.json` records the path, operation phase, original hash, and conflict state.
+  Files and records receive filesystem synchronization before the round reports success.
+  Studio never removes these directories or their original inodes automatically.
+- A concurrent save can change the displaced inode through an existing open descriptor.
+  The save stays in `original`, not necessarily at the current project path.
+  A detected change stops later rounds and reports the recovery directory in `reason`.
+  Full scans also inspect recovery directories inside Git metadata.
+  The guard cannot promise that the visible project path always contains the latest uncoordinated save.
+  It protects the displaced bytes instead. Storage grows until the user reviews retained data.
+- An old `.name.studio-sync-<8 hex>` temporary file stops sync for review.
+  It can contain the only original file. Studio does not delete it automatically.
+- Changes to project paths never follow symbolic links through parent directories.
 - Sync writes in the VM run as the project user, never as root, so layr rules apply.
+
+### Review retained data
+
+This procedure requires an operator. The normal conflict buttons do not clear a retained-inode error.
+
+1. Pause the project and wait for its active round to finish.
+2. Close editors and other processes that can write through an old file descriptor.
+3. Stop the backend through its normal controls before changing its sync records.
+4. Read the reported recovery directory and its `record.json`.
+5. Compare the current project file with the retained `original` without changing either file.
+6. Make independent copies of both versions before selecting the desired project content.
+7. Restore the selected content to the project path.
+8. Set that recovery record's `phase` to `reviewed` only after completing the comparison.
+9. Clear the matching entry from `status.json`'s `preservedConflicts` array.
+10. Restart the same backend with the same runtime state identity.
+11. Run the preview before resuming the project.
+
+The `reviewed` phase permits sync without deleting the retained inode.
+An incomplete `prepared` record requires the same review. Never infer completion from equal hashes alone.
+Keep independent copies if you later remove recovery storage yourself.
 
 ## Watcher
 
@@ -166,7 +205,8 @@ changed, and `{"ready"}` once. It exits when the backend closes its input.
   - `config.json`: `{"enabled": false}` pauses the project;
   - `status.json`: `state` (`syncing`, `synced`, `waiting`, `conflict`, `paused` or
     `error`), `conflicts`, `choices`, `withAgent`, `deletes`, `reason`, and `rescan` (paths
-    that a refused merge or a choice left unsent).
+    that a refused merge or a choice left unsent). Internal `preserved` and
+    `preservedConflicts` arrays name retained inodes and those that require operator review.
 - Guest side: `workspaces/runtime/apps/vm-guest/mac_sync.py`, broker methods
   `sync.mac.apply`, `sync.mac.read`, `sync.mac.hashes`, `sync.mac.head` and
   `sync.mac.handoff`. Receipts per operation make a repeated call return the first

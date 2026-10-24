@@ -380,11 +380,17 @@ fn writes_never_cross_a_symbolic_link_or_leave_the_folder() {
         (entry.h.as_str(), entry.x),
         (sha(b"#!/bin/sh\n").as_str(), 0o755)
     );
-    let names = std::fs::read_dir(fixture.root.join("new/deep"))
-        .unwrap()
-        .map(|item| item.unwrap().file_name().into_string().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(names, vec!["file.sh".to_owned()]);
+    let (entries, _) = scan(
+        &fixture.root,
+        &Rules::new(&fixture.root).unwrap(),
+        &BTreeMap::new(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        entries.keys().collect::<Vec<_>>(),
+        vec!["escape", "new/deep/file.sh"]
+    );
 }
 
 // Rounds.
@@ -729,7 +735,29 @@ fn many_main_deletions_wait_for_a_confirmation() {
     mac_sync::configure(&fixture.state, "p1", None, true).unwrap();
     let done = project.round(None).unwrap();
     assert_eq!(done["state"], "synced");
-    assert_eq!(std::fs::read_dir(&fixture.root).unwrap().count(), 5);
+    let (entries, _) = scan(
+        &fixture.root,
+        &Rules::new(&fixture.root).unwrap(),
+        &BTreeMap::new(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(entries.len(), 5);
+    let preserved = done["preserved"].as_array().unwrap();
+    assert_eq!(preserved.len(), 5);
+    for original in preserved {
+        let path = original["path"].as_str().unwrap();
+        let recovery = original["recovery"].as_str().unwrap();
+        assert!(!fixture.root.join(path).exists());
+        assert_eq!(
+            std::fs::read(Path::new(recovery).join("original")).unwrap(),
+            path.strip_prefix('f')
+                .unwrap()
+                .strip_suffix(".txt")
+                .unwrap()
+                .as_bytes()
+        );
+    }
 }
 
 #[test]
@@ -1663,14 +1691,79 @@ fn a_mac_restore_of_the_same_bytes_during_the_fetch_is_not_overwritten() {
 }
 
 #[test]
-fn a_leftover_temporary_file_is_cleaned_and_never_sent() {
+fn a_leftover_temporary_file_is_retained_for_review_and_never_sent() {
     let fixture = Fixture::new();
     fixture.save("manifest.json", json!({}));
     fixture.write(".a.txt.studio-sync-0123abcd", b"partial");
     let guest = Guest::new(vec![Ok(reply("m2", json!({})))]);
-    fixture.project(&guest).round(None).unwrap();
-    assert_eq!(guest.applies()[0]["entries"], json!([]));
-    assert!(!fixture.root.join(".a.txt.studio-sync-0123abcd").exists());
+    assert!(matches!(
+        fixture.project(&guest).round(None),
+        Err(mac_sync::MacSyncError::PreservedConflict { .. })
+    ));
+    assert!(guest.applies().is_empty());
+    assert_eq!(fixture.read(".a.txt.studio-sync-0123abcd"), b"partial");
+}
+
+#[test]
+fn a_late_editor_save_to_a_retained_inode_stops_later_rounds() {
+    use std::io::{Seek, SeekFrom, Write};
+    let fixture = Fixture::new();
+    fixture.save(
+        "manifest.json",
+        json!({
+            "a.txt":fixture.agreed("a.txt", b"base", "s1", 0o644)
+        }),
+    );
+    let mut editor = std::fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.root.join("a.txt"))
+        .unwrap();
+    let guest = Guest::new(vec![Ok(reply(
+        "m2",
+        json!({
+            "outbound":{"s1":[change("a.txt", Some(b"vm"), 0o644)]}
+        }),
+    ))]);
+    guest.file("m2", "a.txt", Some(b"vm"));
+    let project = fixture.project(&guest);
+    let first = project.round(None).unwrap();
+    assert_eq!(first["preserved"].as_array().unwrap().len(), 1);
+    assert!(first["reason"].as_str().unwrap().contains("recovery"));
+    let recovery = PathBuf::from(first["preserved"][0]["recovery"].as_str().unwrap());
+    editor.set_len(0).unwrap();
+    editor.seek(SeekFrom::Start(0)).unwrap();
+    editor.write_all(b"late editor save").unwrap();
+    editor.sync_all().unwrap();
+    drop(editor);
+    let event = recovery
+        .join("original")
+        .strip_prefix(&fixture.root)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(matches!(
+        project.round(Some(&BTreeSet::from([event]))),
+        Err(mac_sync::MacSyncError::PreservedConflict { .. })
+    ));
+    assert_eq!(
+        std::fs::read(recovery.join("original")).unwrap(),
+        b"late editor save"
+    );
+    assert_eq!(fixture.read("a.txt"), b"vm");
+    mac_sync::configure(&fixture.state, "p1", Some(true), false).unwrap();
+    assert!(matches!(
+        project.round(Some(&paths(&["a.txt"]))),
+        Err(mac_sync::MacSyncError::PreservedConflict { .. })
+    ));
+    assert_eq!(guest.applies().len(), 1);
+    assert_eq!(
+        fixture.saved("status.json")["preservedConflicts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]

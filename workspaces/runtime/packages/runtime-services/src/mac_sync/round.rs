@@ -5,7 +5,8 @@
 //! and the layr state that content came from. A round sends the Mac's changes with those
 //! bases, lets the guest fold them into the `mac` line and merge it into main, and then
 //! writes main's changes into the Mac folder where the Mac file still has its agreed
-//! content. Nothing is written over a Mac edit, and no conflict markers reach the Mac.
+//! content. Every displaced inode remains available for recovery after a concurrent
+//! save. No conflict markers reach the Mac.
 //!
 //! Differences from Python (registered in docs/vm-mac-sync.md):
 //! - An uncertain guest result keeps the exact pending operation until a proven reply.
@@ -62,6 +63,12 @@ const GIT_OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
 const UPLOAD_ROOT: &str = "/var/lib/codex-studio/projects/mac-sync-";
 /// The marker of a temporary file of [`write_mac`]: `.<name>.studio-sync-<8 hex>`.
 const TEMPORARY_MARK: &str = ".studio-sync-";
+/// Private directories that retain every displaced Mac inode until explicit review.
+const PRESERVED_PREFIX: &str = ".studio-sync-preserved-";
+/// Format of the durable record beside each retained inode.
+const PRESERVATION_VERSION: u64 = 1;
+/// Maximum bytes in a Git worktree's metadata-directory pointer file.
+const MAX_GIT_DIRECTORY_RECORD_BYTES: u64 = 65_536;
 /// Maximum preview attempts to read a stable main state and its hashes.
 const PREVIEW_READS: usize = 5;
 /// The number of paths per list in a plan.
@@ -175,7 +182,10 @@ impl Rules {
 
     pub fn skipped(&self, rel: &str) -> bool {
         let parts = rel.split('/').collect::<Vec<_>>();
-        if parts.iter().any(|part| ALWAYS_SKIPPED.contains(part)) {
+        if parts
+            .iter()
+            .any(|part| ALWAYS_SKIPPED.contains(part) || is_preserved(part) || is_temporary(part))
+        {
             return true;
         }
         (1..=parts.len()).any(|count| self.ignored.contains(&parts[..count].join("/")))
@@ -188,6 +198,48 @@ fn is_temporary(name: &str) -> bool {
         && name.rsplit_once(TEMPORARY_MARK).is_some_and(|(_, tail)| {
             tail.len() == 8 && tail.bytes().all(|byte| byte.is_ascii_hexdigit())
         })
+}
+
+fn is_preserved(name: &str) -> bool {
+    name.strip_prefix(PRESERVED_PREFIX).is_some_and(|suffix| {
+        suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn preserved_conflict(rel: &str, directory: &Path) -> MacSyncError {
+    MacSyncError::PreservedConflict {
+        path: rel.to_owned(),
+        recovery: directory.to_path_buf(),
+    }
+}
+
+/// Inspect a retained inode without changing or removing it. A later editor save to
+/// an open descriptor changes this inode, even after the sync syscall returned.
+fn inspect_preserved(directory: &Path, rel: &str) -> Result<(), MacSyncError> {
+    let record = read_json(&directory.join("record.json"), Value::Null)?;
+    if record["version"] == PRESERVATION_VERSION
+        && matches!(record["phase"].as_str(), Some("not-applied" | "reviewed"))
+    {
+        return Ok(());
+    }
+    let original = record["path"].as_str().unwrap_or(rel);
+    if record["version"] != PRESERVATION_VERSION
+        || record["phase"] != "applied"
+        || record["conflict"] == true
+    {
+        return Err(preserved_conflict(original, directory));
+    }
+    if record["displaced"] == true {
+        let path = directory.join("original");
+        let meta = fs::symlink_metadata(&path).map_err(io)?;
+        if !(meta.is_file() || meta.file_type().is_symlink())
+            || describe(&path, &meta, true).map_err(io)?.h
+                != record["originalHash"].as_str().unwrap_or_default()
+        {
+            return Err(preserved_conflict(original, directory));
+        }
+    }
+    Ok(())
 }
 
 fn io(error: std::io::Error) -> MacSyncError {
@@ -211,19 +263,29 @@ struct FileStamp(u64, u64, i64, i64, i64, i64, u64, u32);
 impl FileStamp {
     fn read(path: &Path) -> std::io::Result<Option<Self>> {
         match fs::symlink_metadata(path) {
-            Ok(meta) => Ok(Some(Self(
-                meta.dev(),
-                meta.ino(),
-                meta.mtime(),
-                meta.mtime_nsec(),
-                meta.ctime(),
-                meta.ctime_nsec(),
-                meta.len(),
-                meta.mode(),
-            ))),
+            Ok(meta) => Ok(Some(Self::from_metadata(&meta))),
             Err(error) if not_found(&error) => Ok(None),
             Err(error) => Err(error),
         }
+    }
+
+    fn from_metadata(meta: &fs::Metadata) -> Self {
+        Self(
+            meta.dev(),
+            meta.ino(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+            meta.ctime(),
+            meta.ctime_nsec(),
+            meta.len(),
+            meta.mode(),
+        )
+    }
+
+    /// Our rename changes ctime. Identity, mtime, size, and mode must still match.
+    fn same_after_move(&self, other: &Self) -> bool {
+        (self.0, self.1, self.2, self.3, self.6, self.7)
+            == (other.0, other.1, other.2, other.3, other.6, other.7)
     }
 }
 
@@ -239,6 +301,10 @@ fn open_no_follow(path: &Path) -> std::io::Result<File> {
 
 fn file_hash(path: &Path) -> std::io::Result<String> {
     let mut file = open_no_follow(path)?;
+    hash_file(&mut file)
+}
+
+fn hash_file(file: &mut File) -> std::io::Result<String> {
     let mut digest = Sha256::new();
     let mut buffer = vec![0_u8; 256 * 1024];
     loop {
@@ -341,8 +407,6 @@ struct Scan<'a> {
     root: &'a Path,
     rules: &'a Rules,
     manifest: &'a Manifest,
-    /// Remove leftover temporary files of [`write_mac`]; a plan leaves them.
-    clean: bool,
     entries: Manifest,
     notices: Vec<String>,
 }
@@ -413,14 +477,15 @@ impl Scan<'_> {
                 let rel = format!("{prefix}{name}");
                 let path = folder.join(&name);
                 if is_temporary(&name) {
-                    if self.clean {
-                        // An interrupted write left it; the round lock keeps writes out.
-                        match fs::remove_file(&path) {
-                            Ok(()) => {}
-                            Err(error) if not_found(&error) => {}
-                            Err(error) => return Err(io(error)),
-                        }
-                    }
+                    // Older versions also used this name for the sole original of a
+                    // rename. Its contents are uncertain and must never be discarded.
+                    return Err(preserved_conflict(&rel, &path));
+                }
+                if is_preserved(&name) {
+                    inspect_preserved(&path, &rel)?;
+                    self.notices.push(format!(
+                        "{rel}: retained Mac data stays here until explicit review"
+                    ));
                     continue;
                 }
                 if self.rules.skipped(&rel) {
@@ -451,7 +516,7 @@ pub fn scan(
     manifest: &Manifest,
     start: Option<&Path>,
 ) -> Result<(Manifest, Vec<String>), MacSyncError> {
-    scan_folder(root, rules, manifest, start, true)
+    scan_folder(root, rules, manifest, start)
 }
 
 fn scan_folder(
@@ -459,16 +524,24 @@ fn scan_folder(
     rules: &Rules,
     manifest: &Manifest,
     start: Option<&Path>,
-    clean: bool,
 ) -> Result<(Manifest, Vec<String>), MacSyncError> {
     let mut scan = Scan {
         root,
         rules,
         manifest,
-        clean,
         entries: Manifest::new(),
         notices: Vec::new(),
     };
+    if let Some(git) = git_directory(root)? {
+        for item in fs::read_dir(&git).map_err(io)? {
+            let item = item.map_err(io)?;
+            if is_preserved(&item.file_name().to_string_lossy()) {
+                inspect_preserved(&item.path(), "Git metadata")?;
+                scan.notices
+                    .push(format!("retained Mac originals: {}", item.path().display()));
+            }
+        }
+    }
     scan.folder(start.unwrap_or(root))?;
     Ok((scan.entries, scan.notices))
 }
@@ -487,6 +560,22 @@ pub fn scan_paths(
     let mut named = BTreeSet::new();
     for rel in paths {
         if rel.is_empty() || rel.starts_with("../") || rel.split('/').any(|part| part == "..") {
+            continue;
+        }
+        let mut prefix = PathBuf::new();
+        let mut retained = false;
+        for component in rel.split('/') {
+            prefix.push(component);
+            if is_temporary(component) {
+                return Err(preserved_conflict(rel, &root.join(prefix)));
+            }
+            if is_preserved(component) {
+                inspect_preserved(&contained_path(root, &prefix.to_string_lossy())?, rel)?;
+                retained = true;
+                break;
+            }
+        }
+        if retained {
             continue;
         }
         named.insert(rel.clone());
@@ -517,7 +606,6 @@ pub fn scan_paths(
         root,
         rules,
         manifest,
-        clean: true,
         entries,
         notices: Vec::new(),
     };
@@ -549,9 +637,326 @@ pub fn scan_paths(
 /// The result of a guarded write.
 enum Written {
     /// The new manifest entry, `None` after a delete.
-    Done(Option<Entry>),
+    Done(Option<Entry>, Option<PreservedOutcome>),
     /// The Mac file no longer had the expected content: nothing changed.
     Changed,
+}
+
+struct PreservedOutcome {
+    directory: PathBuf,
+    changed: bool,
+}
+
+/// Holds both directory descriptors across the final guard and the atomic operation.
+/// No displaced inode is unlinked, including after an error or a later editor save.
+struct PreservedWrite {
+    parent: File,
+    directory: File,
+    name: OsString,
+    location: PathBuf,
+    record: Value,
+}
+
+fn open_directory(path: &Path) -> std::io::Result<File> {
+    use rustix::fs::{Mode, OFlags};
+    rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(Into::into)
+}
+
+/// Resolve Git metadata without running a command per file. Retained .env bytes must
+/// never become untracked files that `git add -A` can publish.
+fn git_directory(root: &Path) -> Result<Option<PathBuf>, MacSyncError> {
+    let dot = root.join(".git");
+    let meta = match fs::symlink_metadata(&dot) {
+        Ok(meta) => meta,
+        Err(error) if not_found(&error) => return Ok(None),
+        Err(error) => return Err(io(error)),
+    };
+    let path = if meta.is_file() {
+        let mut text = String::new();
+        open_no_follow(&dot)
+            .map_err(io)?
+            .take(MAX_GIT_DIRECTORY_RECORD_BYTES + 1)
+            .read_to_string(&mut text)
+            .map_err(io)?;
+        if text.len() as u64 > MAX_GIT_DIRECTORY_RECORD_BYTES {
+            return Err(MacSyncError::Invalid);
+        }
+        let value = text
+            .strip_prefix("gitdir: ")
+            .ok_or(MacSyncError::Invalid)?
+            .trim_end_matches(['\r', '\n']);
+        if value.is_empty() || value.contains(['\r', '\n']) {
+            return Err(MacSyncError::Invalid);
+        }
+        root.join(value)
+    } else {
+        dot
+    };
+    let directory = CanonicalPath::existing(&path).map_err(io)?.to_path_buf();
+    if !directory.is_dir() {
+        return Err(MacSyncError::Invalid);
+    }
+    Ok(Some(directory))
+}
+
+impl PreservedWrite {
+    fn new(
+        root: &Path,
+        rel: &str,
+        kind: &str,
+        expected: Option<&str>,
+    ) -> Result<Self, MacSyncError> {
+        use rustix::fs::{Mode, OFlags};
+        let path = Path::new(rel);
+        let mut parent = open_directory(root).map_err(io)?;
+        let relative_parent = path.parent().ok_or(MacSyncError::Invalid)?;
+        for part in relative_parent.components() {
+            let part = part.as_os_str();
+            match rustix::fs::openat(
+                &parent,
+                part,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            ) {
+                Ok(fd) => parent = File::from(fd),
+                Err(rustix::io::Errno::NOENT) => {
+                    match rustix::fs::mkdirat(&parent, part, Mode::from_raw_mode(0o755)) {
+                        Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+                        Err(error) => return Err(io(error.into())),
+                    }
+                    parent = File::from(
+                        rustix::fs::openat(
+                            &parent,
+                            part,
+                            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                            Mode::empty(),
+                        )
+                        .map_err(|error| io(error.into()))?,
+                    );
+                }
+                Err(error) => return Err(io(error.into())),
+            }
+        }
+        let (base, location) = match git_directory(root)? {
+            Some(git) => (open_directory(&git).map_err(io)?, git),
+            None => (parent.try_clone().map_err(io)?, root.join(relative_parent)),
+        };
+        if base.metadata().map_err(io)?.dev() != parent.metadata().map_err(io)?.dev() {
+            return Err(io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Mac sync requires recovery storage on the target filesystem",
+            )));
+        }
+        let directory_name = format!("{PRESERVED_PREFIX}{}", uuid::Uuid::new_v4().simple());
+        rustix::fs::mkdirat(&base, &directory_name, Mode::from_raw_mode(0o700))
+            .map_err(|error| io(error.into()))?;
+        let directory = File::from(
+            rustix::fs::openat(
+                &base,
+                &directory_name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|error| io(error.into()))?,
+        );
+        // This also protects a non-Git folder if the user later starts Git here.
+        // Create the exclusion before any original or VM content enters the directory.
+        let mut ignore = File::from(
+            rustix::fs::openat(
+                &directory,
+                ".gitignore",
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::from_raw_mode(0o600),
+            )
+            .map_err(|error| io(error.into()))?,
+        );
+        ignore.write_all(b"*\n").map_err(io)?;
+        ignore.sync_all().map_err(io)?;
+        directory.sync_all().map_err(io)?;
+        base.sync_all().map_err(io)?;
+        let value = Self {
+            parent,
+            directory,
+            name: path.file_name().ok_or(MacSyncError::Invalid)?.to_owned(),
+            location: location.join(directory_name),
+            record: json!({"version":PRESERVATION_VERSION,"phase":"prepared","path":rel,"requestedKind":kind,
+                "expectedHash":expected,"at":now_seconds()}),
+        };
+        value.save_record()?;
+        Ok(value)
+    }
+
+    fn save_record(&self) -> Result<(), MacSyncError> {
+        use rustix::fs::{Mode, OFlags};
+        let mut file = File::from(
+            rustix::fs::openat(
+                &self.directory,
+                "record.next",
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::from_raw_mode(0o600),
+            )
+            .map_err(|error| io(error.into()))?,
+        );
+        file.write_all(&serde_json::to_vec(&self.record).map_err(MacSyncError::Json)?)
+            .map_err(io)?;
+        file.sync_all().map_err(io)?;
+        rustix::fs::renameat(
+            &self.directory,
+            "record.next",
+            &self.directory,
+            "record.json",
+        )
+        .map_err(|error| io(error.into()))?;
+        self.directory.sync_all().map_err(io)
+    }
+
+    fn stage(&self, kind: &str, data: &[u8], mode: u32) -> Result<Entry, MacSyncError> {
+        use rustix::fs::{Mode, OFlags};
+        let (mtime, mode) = if kind == "link" {
+            rustix::fs::symlinkat(
+                std::str::from_utf8(data).map_err(|_| MacSyncError::Invalid)?,
+                &self.directory,
+                "original",
+            )
+            .map_err(|error| io(error.into()))?;
+            (0, 0)
+        } else {
+            let mut file = File::from(
+                rustix::fs::openat(
+                    &self.directory,
+                    "original",
+                    OFlags::WRONLY
+                        | OFlags::CREATE
+                        | OFlags::EXCL
+                        | OFlags::NOFOLLOW
+                        | OFlags::CLOEXEC,
+                    Mode::from_raw_mode(0o600),
+                )
+                .map_err(|error| io(error.into()))?,
+            );
+            file.write_all(data).map_err(io)?;
+            let mode = if mode == 0 { 0o644 } else { mode & 0o777 };
+            file.set_permissions(fs::Permissions::from_mode(mode))
+                .map_err(io)?;
+            file.sync_all().map_err(io)?;
+            (mtime_ns(&file.metadata().map_err(io)?), mode)
+        };
+        self.directory.sync_all().map_err(io)?;
+        Ok(Entry {
+            k: kind.to_owned(),
+            s: data.len() as i64,
+            m: mtime,
+            x: mode,
+            h: hex_sha(data),
+            b: None,
+        })
+    }
+
+    fn finish(
+        &mut self,
+        displaced: bool,
+        expected: Option<(&str, &Option<FileStamp>)>,
+    ) -> Result<bool, MacSyncError> {
+        use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+        let mut changed = false;
+        if displaced {
+            let stat = rustix::fs::statat(&self.directory, "original", AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(|error| io(error.into()))?;
+            if let Some((_, Some(before))) = expected {
+                changed |= before.0 != stat.st_dev as u64 || before.1 != stat.st_ino as u64;
+            }
+            let (hash, stamp) = match FileType::from_raw_mode(stat.st_mode) {
+                FileType::RegularFile => {
+                    let mut file = File::from(
+                        rustix::fs::openat(
+                            &self.directory,
+                            "original",
+                            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                            Mode::empty(),
+                        )
+                        .map_err(|error| io(error.into()))?,
+                    );
+                    file.sync_all().map_err(io)?;
+                    let stamp = FileStamp::from_metadata(&file.metadata().map_err(io)?);
+                    (hash_file(&mut file).map_err(io)?, Some(stamp))
+                }
+                FileType::Symlink => (
+                    hex_sha(
+                        rustix::fs::readlinkat(&self.directory, "original", Vec::new())
+                            .map_err(|error| io(error.into()))?
+                            .as_bytes(),
+                    ),
+                    None,
+                ),
+                _ => {
+                    changed = true;
+                    (String::new(), None)
+                }
+            };
+            if let Some((expected_hash, before)) = expected {
+                changed |= hash != expected_hash;
+                if let (Some(before), Some(after)) = (before, &stamp) {
+                    changed |= !before.same_after_move(after);
+                }
+            }
+            self.record["originalHash"] = json!(hash);
+        }
+        self.directory.sync_all().map_err(io)?;
+        self.parent.sync_all().map_err(io)?;
+        self.record["phase"] = json!("applied");
+        self.record["displaced"] = json!(displaced);
+        self.record["conflict"] = json!(changed);
+        self.save_record()?;
+        Ok(changed)
+    }
+
+    fn not_applied(&mut self) -> Result<(), MacSyncError> {
+        self.record["phase"] = json!("not-applied");
+        self.save_record()
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn atomic_move(
+    from_dir: &File,
+    from: &std::ffi::OsStr,
+    to_dir: &File,
+    to: &std::ffi::OsStr,
+    exchange: bool,
+) -> std::io::Result<()> {
+    use rustix::fs::{RenameFlags, renameat_with};
+    renameat_with(
+        from_dir,
+        from,
+        to_dir,
+        to,
+        if exchange {
+            RenameFlags::EXCHANGE
+        } else {
+            RenameFlags::NOREPLACE
+        },
+    )
+    .map_err(Into::into)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn atomic_move(
+    _from_dir: &File,
+    _from: &std::ffi::OsStr,
+    _to_dir: &File,
+    _to: &std::ffi::OsStr,
+    _exchange: bool,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Mac sync requires atomic exchange and no-replace rename",
+    ))
 }
 
 /// The hash of the Mac file under exactly this spelling, `ABSENT` when it has none.
@@ -577,7 +982,7 @@ pub fn write_mac(
     mode: u32,
 ) -> Result<Option<Entry>, MacSyncError> {
     match write_guarded(root, rel, kind, data, mode, None, &mut Listings::default())? {
-        Written::Done(entry) => Ok(entry),
+        Written::Done(entry, _) => Ok(entry),
         Written::Changed => Err(MacSyncError::Invalid),
     }
 }
@@ -593,7 +998,24 @@ fn write_guarded(
     expected: Option<(&str, &Option<FileStamp>)>,
     listings: &mut Listings,
 ) -> Result<Written, MacSyncError> {
+    write_guarded_with_hook(root, rel, kind, data, mode, expected, listings, &mut || {})
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_guarded_with_hook(
+    root: &Path,
+    rel: &str,
+    kind: &str,
+    data: &[u8],
+    mode: u32,
+    expected: Option<(&str, &Option<FileStamp>)>,
+    listings: &mut Listings,
+    before_apply: &mut dyn FnMut(),
+) -> Result<Written, MacSyncError> {
     let path = contained_path(root, rel)?;
+    if !matches!(kind, "file" | "link" | ABSENT) {
+        return Err(MacSyncError::Invalid);
+    }
     let unchanged = |listings: &mut Listings| -> Result<bool, MacSyncError> {
         listings.forget(&path);
         Ok(match expected {
@@ -604,75 +1026,82 @@ fn write_guarded(
             }
         })
     };
-    if kind == ABSENT {
-        if !unchanged(listings)? {
-            return Ok(Written::Changed);
-        }
-        if listings.actual(root, rel).map_err(io)?.as_deref() == Some(rel) {
-            match fs::symlink_metadata(&path) {
-                Ok(meta) if meta.file_type().is_symlink() || meta.is_file() => {
-                    fs::remove_file(&path).map_err(io)?;
-                }
-                _ => {}
+    if !unchanged(listings)? {
+        return Ok(Written::Changed);
+    }
+    if listings
+        .actual(root, rel)
+        .map_err(io)?
+        .is_some_and(|actual| actual != rel)
+    {
+        return Ok(Written::Changed);
+    }
+    let present = FileStamp::read(&path).map_err(io)?.is_some();
+    if kind == ABSENT && !present {
+        return Ok(Written::Done(None, None));
+    }
+    let mut retained = PreservedWrite::new(root, rel, kind, expected.map(|(hash, _)| hash))?;
+    let entry = if kind == ABSENT {
+        None
+    } else {
+        match retained.stage(kind, data, mode) {
+            Ok(entry) => Some(entry),
+            Err(error) => {
+                retained.not_applied()?;
+                return Err(error);
             }
         }
-        listings.forget(&path);
-        return Ok(Written::Done(None));
-    }
-    let parent = path.parent().ok_or(MacSyncError::Invalid)?;
-    fs::create_dir_all(parent).map_err(io)?;
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or(MacSyncError::Invalid)?;
-    let temporary = parent.join(format!(
-        ".{name}{TEMPORARY_MARK}{}",
-        &uuid::Uuid::new_v4().simple().to_string()[..8]
-    ));
-    if kind == "link" {
-        let target = std::str::from_utf8(data).map_err(|_| MacSyncError::Invalid)?;
-        std::os::unix::fs::symlink(target, &temporary).map_err(io)?;
-    } else {
-        use rustix::fs::{Mode, OFlags};
-        let written = (|| -> std::io::Result<()> {
-            let descriptor = rustix::fs::open(
-                &temporary,
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::from_raw_mode(0o600),
-            )?;
-            let mut file = File::from(descriptor);
-            file.write_all(data)?;
-            file.sync_all()?;
-            let mode = if mode == 0 { 0o644 } else { mode & 0o777 };
-            file.set_permissions(fs::Permissions::from_mode(mode))
-        })();
-        if let Err(error) = written {
-            drop(fs::remove_file(&temporary));
-            return Err(io(error));
+    };
+    // These checks reduce conflicts. Only the atomic operation preserves the inode
+    // that actually occupies the destination after an uncoordinated editor save.
+    match unchanged(listings) {
+        Ok(true) => {}
+        Ok(false) => {
+            retained.not_applied()?;
+            return Ok(Written::Changed);
+        }
+        Err(error) => {
+            retained.not_applied()?;
+            return Err(error);
         }
     }
-    // A save while main's version was fetched, or a file that appeared under another
-    // spelling of the name, keeps the Mac file.
-    let free = match unchanged(listings) {
-        Ok(true) => listings
-            .actual(root, rel)
-            .map(|actual| actual.is_none() || actual.as_deref() == Some(rel))
-            .map_err(io),
-        other => other,
+    before_apply();
+    let original = std::ffi::OsStr::new("original");
+    let result = if kind == ABSENT {
+        atomic_move(
+            &retained.parent,
+            &retained.name,
+            &retained.directory,
+            original,
+            false,
+        )
+    } else {
+        atomic_move(
+            &retained.directory,
+            original,
+            &retained.parent,
+            &retained.name,
+            present,
+        )
     };
-    if !matches!(free, Ok(true)) {
-        drop(fs::remove_file(&temporary));
-        return free.map(|_| Written::Changed);
-    }
-    if let Err(error) = fs::rename(&temporary, &path) {
-        drop(fs::remove_file(&temporary));
+    if let Err(error) = result {
+        if not_found(&error) || error.kind() == std::io::ErrorKind::AlreadyExists {
+            retained.not_applied()?;
+            return Ok(Written::Changed);
+        }
+        // Do not remove anything after an uncertain filesystem error.
         return Err(io(error));
     }
+    let displaced = present;
+    let changed = retained.finish(displaced, expected)?;
     listings.forget(&path);
-    let meta = fs::symlink_metadata(&path).map_err(io)?;
-    describe(&path, &meta, true)
-        .map(|entry| Written::Done(Some(entry)))
-        .map_err(io)
+    Ok(Written::Done(
+        entry,
+        displaced.then_some(PreservedOutcome {
+            directory: retained.location,
+            changed,
+        }),
+    ))
 }
 
 fn string_set(value: &Value) -> BTreeSet<String> {
@@ -697,6 +1126,7 @@ struct Outbound {
     skipped: BTreeSet<String>,
     removals: usize,
     notices: Vec<String>,
+    preserved: Vec<Value>,
 }
 
 /// The sync of one VM project with its Mac folder.
@@ -784,7 +1214,14 @@ impl<'a> ProjectSync<'a> {
     /// the same request. A definite guest refusal ends the operation.
     pub fn round(&self, paths: Option<&BTreeSet<String>>) -> Result<Value, MacSyncError> {
         let _lock = lock_round(&self.directory)?;
-        self.round_locked(paths)
+        let result = self.round_locked(paths);
+        if let Err(error) = &result
+            && let MacSyncError::PreservedConflict { path, recovery } = error
+        {
+            self.record_status(json!({"state":"error","reason":super::error_reason(error),
+                "preservedConflicts":[{"path":path,"recovery":recovery}]}))?;
+        }
+        result
     }
 
     fn load_manifest(&self) -> Result<Option<Manifest>, MacSyncError> {
@@ -1037,7 +1474,7 @@ impl<'a> ProjectSync<'a> {
                     .collect()
             }
         };
-        let (current, notices) = scan_folder(&self.root, &rules, &manifest, None, false)?;
+        let (current, notices) = scan_folder(&self.root, &rules, &manifest, None)?;
         let main_key = |rel: &str| {
             main.get(rel)
                 .filter(|item| matches!(item["kind"].as_str(), Some("file" | "link")))
@@ -1098,6 +1535,7 @@ impl<'a> ProjectSync<'a> {
         let mut plan = json!({
             "projectId": self.project_id,
             "pending": pending_view,
+            "preservedConflicts": status["preservedConflicts"],
             "recovery": read_json(&self.path("recover.json"), Value::Null)?,
             "firstRound": first_round,
             "importStateId": self.import_state,
@@ -1135,6 +1573,16 @@ impl<'a> ProjectSync<'a> {
 
     fn round_locked(&self, paths: Option<&BTreeSet<String>>) -> Result<Value, MacSyncError> {
         self.check_legacy_recovery()?;
+        let previous = read_json(&self.path("status.json"), json!({}))?;
+        if let Some(conflict) = previous["preservedConflicts"]
+            .as_array()
+            .and_then(|items| items.first())
+        {
+            return Err(MacSyncError::PreservedConflict {
+                path: conflict["path"].as_str().unwrap_or("unknown").to_owned(),
+                recovery: PathBuf::from(conflict["recovery"].as_str().unwrap_or("unknown")),
+            });
+        }
         let rules = self.rules()?;
         let mut manifest = match self.load_manifest()? {
             Some(manifest) => manifest,
@@ -1144,7 +1592,6 @@ impl<'a> ProjectSync<'a> {
                 manifest
             }
         };
-        let previous = read_json(&self.path("status.json"), json!({}))?;
         let waiting = string_set(&previous["choices"]);
         let previous_rescan = string_set(&previous["rescan"]);
         // Mac content in a conflict, or handed to the lead: it is not sent again until the
@@ -1435,6 +1882,25 @@ impl<'a> ProjectSync<'a> {
                 outbound.removals
             ));
         }
+        let preserved_conflicts = outbound
+            .preserved
+            .iter()
+            .filter(|item| item["conflict"] == true)
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(conflict) = preserved_conflicts.first() {
+            state = "error";
+            reason = json!(format!(
+                "Mac sync waits for review of {}; retained data: {}",
+                conflict["path"].as_str().unwrap_or("unknown"),
+                conflict["recovery"].as_str().unwrap_or("unknown")
+            ));
+        } else if let Some(preserved) = outbound.preserved.first() {
+            reason = json!(format!(
+                "Displaced Mac files remain available for recovery at {}",
+                preserved["recovery"].as_str().unwrap_or("unknown")
+            ));
+        }
         self.record_status(json!({
             "state": state,
             "mainStateId": main_state,
@@ -1446,6 +1912,8 @@ impl<'a> ProjectSync<'a> {
             "mergeError": result["mergeError"],
             "notices": notices,
             "reason": reason,
+            "preserved": outbound.preserved,
+            "preservedConflicts": preserved_conflicts,
             "deletes": outbound.removals,
         }))
     }
@@ -1576,6 +2044,7 @@ impl<'a> ProjectSync<'a> {
             skipped: BTreeSet::new(),
             removals: 0,
             notices: Vec::new(),
+            preserved: Vec::new(),
         };
         let state = result["mainStateId"]
             .as_str()
@@ -1869,14 +2338,28 @@ impl<'a> ProjectSync<'a> {
                 Some((&now_hash, &stamp)),
                 &mut listings,
             )? {
-                Written::Done(None) => {
-                    manifest.remove(rel);
-                    done.written.insert(rel.to_owned());
-                }
-                Written::Done(Some(entry)) => {
-                    manifest.insert(rel.to_owned(), entry.with_base(&state));
-                    if let Ok(meta) = fs::symlink_metadata(&path) {
-                        touched.insert((meta.dev(), meta.ino()));
+                Written::Done(entry, preserved) => {
+                    if let Some(preserved) = preserved {
+                        done.notices.push(format!(
+                            "{rel}: the displaced Mac inode remains at {}",
+                            preserved.directory.join("original").display()
+                        ));
+                        done.preserved.push(json!({"path":rel,"recovery":preserved.directory,"conflict":preserved.changed}));
+                        if preserved.changed {
+                            done.skipped.insert(rel.to_owned());
+                            continue;
+                        }
+                    }
+                    match entry {
+                        None => {
+                            manifest.remove(rel);
+                        }
+                        Some(entry) => {
+                            manifest.insert(rel.to_owned(), entry.with_base(&state));
+                            if let Ok(meta) = fs::symlink_metadata(&path) {
+                                touched.insert((meta.dev(), meta.ino()));
+                            }
+                        }
                     }
                     done.written.insert(rel.to_owned());
                 }
@@ -1898,4 +2381,200 @@ fn too_many(count: usize, allowed: usize, agreed: usize) -> bool {
     count > DELETE_FLOOR
         && count > allowed
         && (count > DELETE_COUNT || count as f64 > agreed as f64 * DELETE_SHARE)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::io::{Seek, SeekFrom};
+
+    fn temporary() -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = CanonicalPath::existing(temp.path()).unwrap().to_path_buf();
+        (temp, root)
+    }
+
+    fn has_bytes(root: &Path, bytes: &[u8]) -> bool {
+        fs::read_dir(root).unwrap().any(|item| {
+            let path = item.unwrap().path();
+            if path.is_dir() {
+                has_bytes(&path, bytes)
+            } else {
+                fs::read(path).is_ok_and(|content| content == bytes)
+            }
+        })
+    }
+
+    #[test]
+    fn replacement_retains_a_save_after_the_final_guard() {
+        let (_temp, root) = temporary();
+        let path = &root.join("file");
+        fs::write(&path, b"base").unwrap();
+        let stamp = FileStamp::read(&path).unwrap();
+        write_guarded_with_hook(
+            &root,
+            "file",
+            "file",
+            b"vm",
+            0o644,
+            Some((&hex_sha(b"base"), &stamp)),
+            &mut Listings::default(),
+            &mut || {
+                fs::write(&path, b"user save after the guard").unwrap();
+            },
+        )
+        .unwrap();
+        assert!(has_bytes(&root, b"user save after the guard"));
+    }
+
+    #[test]
+    fn deletion_retains_a_file_recreated_after_the_final_guard() {
+        let (_temp, root) = temporary();
+        let path = &root.join("file");
+        fs::write(&path, b"base").unwrap();
+        let stamp = FileStamp::read(&path).unwrap();
+        write_guarded_with_hook(
+            &root,
+            "file",
+            ABSENT,
+            b"",
+            0,
+            Some((&hex_sha(b"base"), &stamp)),
+            &mut Listings::default(),
+            &mut || {
+                fs::remove_file(&path).unwrap();
+                fs::write(&path, b"recreated user file").unwrap();
+            },
+        )
+        .unwrap();
+        assert!(has_bytes(&root, b"recreated user file"));
+    }
+
+    #[test]
+    fn creation_does_not_replace_a_file_created_after_the_final_guard() {
+        let (_temp, root) = temporary();
+        let path = &root.join("file");
+        write_guarded_with_hook(
+            &root,
+            "file",
+            "file",
+            b"vm",
+            0o644,
+            Some((ABSENT, &None)),
+            &mut Listings::default(),
+            &mut || {
+                fs::write(&path, b"new user file").unwrap();
+            },
+        )
+        .unwrap();
+        assert_eq!(fs::read(path).unwrap(), b"new user file");
+    }
+
+    #[test]
+    fn displaced_inode_retains_writes_through_an_open_descriptor_after_return() {
+        for kind in ["file", ABSENT] {
+            let (_temp, root) = temporary();
+            let path = &root.join("file");
+            fs::write(&path, b"base").unwrap();
+            let mut editor = fs::OpenOptions::new().write(true).open(&path).unwrap();
+            let stamp = FileStamp::read(&path).unwrap();
+            write_guarded(
+                &root,
+                "file",
+                kind,
+                b"vm",
+                0o644,
+                Some((&hex_sha(b"base"), &stamp)),
+                &mut Listings::default(),
+            )
+            .unwrap();
+            editor.set_len(0).unwrap();
+            editor.seek(SeekFrom::Start(0)).unwrap();
+            editor.write_all(b"late editor save").unwrap();
+            editor.sync_all().unwrap();
+            drop(editor);
+            assert!(matches!(
+                scan(&root, &Rules::new(&root).unwrap(), &Manifest::new(), None),
+                Err(MacSyncError::PreservedConflict { .. })
+            ));
+            assert!(has_bytes(&root, b"late editor save"), "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_scan_never_deletes_an_uncertain_legacy_temporary() {
+        let (_temp, root) = temporary();
+        let path = &root.join(".file.studio-sync-0123abcd");
+        fs::write(&path, b"possibly the only original").unwrap();
+        assert!(matches!(
+            scan(&root, &Rules::new(&root).unwrap(), &Manifest::new(), None),
+            Err(MacSyncError::PreservedConflict { .. })
+        ));
+        assert_eq!(fs::read(path).unwrap(), b"possibly the only original");
+    }
+
+    fn git(root: &Path, args: &[&str]) -> Vec<u8> {
+        bounded_child::run_without_git_environment(bounded_child::Request {
+            program: std::ffi::OsStr::new("git"),
+            git_directory: Some(root.as_os_str()),
+            args,
+            environment: &[],
+            input: None,
+            stdout_limit: 65_536,
+            stderr_limit: 4_800,
+            timeout: GIT_TIMEOUT,
+        })
+        .unwrap()
+        .stdout
+        .bytes
+    }
+
+    #[test]
+    fn retained_secrets_stay_out_of_git_even_when_git_starts_later() {
+        for git_first in [false, true] {
+            let (_temp, root) = temporary();
+            if git_first {
+                git(&root, &["init", "-q"]);
+            }
+            fs::write(root.join("file"), b"retained private content").unwrap();
+            write_mac(&root, "file", "file", b"vm", 0o644).unwrap();
+            if !git_first {
+                git(&root, &["init", "-q"]);
+            }
+            let untracked = git(&root, &["ls-files", "--others", "--exclude-standard", "-z"]);
+            assert_eq!(untracked, b"file\0", "git_first={git_first}");
+        }
+    }
+
+    #[test]
+    fn an_explicit_review_does_not_remove_the_retained_inode() {
+        let (_temp, root) = temporary();
+        let path = root.join("file");
+        fs::write(&path, b"base").unwrap();
+        let stamp = FileStamp::read(&path).unwrap();
+        let Written::Done(_, Some(outcome)) = write_guarded_with_hook(
+            &root,
+            "file",
+            "file",
+            b"vm",
+            0o644,
+            Some((&hex_sha(b"base"), &stamp)),
+            &mut Listings::default(),
+            &mut || fs::write(&path, b"user save").unwrap(),
+        )
+        .unwrap() else {
+            panic!("the displaced inode must remain available");
+        };
+        assert!(inspect_preserved(&outcome.directory, "file").is_err());
+        let receipt = outcome.directory.join("record.json");
+        let mut record = read_json(&receipt, Value::Null).unwrap();
+        record["phase"] = json!("reviewed");
+        save_json(&receipt, &record).unwrap();
+        inspect_preserved(&outcome.directory, "file").unwrap();
+        assert_eq!(
+            fs::read(outcome.directory.join("original")).unwrap(),
+            b"user save"
+        );
+    }
 }

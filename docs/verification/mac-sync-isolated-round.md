@@ -70,5 +70,26 @@ The existing round lock protects the preview when that lock is present.
 9. Confirm that the retry uses the same operation and preserves the newer Mac content.
 10. Record the exact server commit, guest commit, layr version, requests, receipts, and final file hashes.
 
+## Concurrent editor save
+
+Use only a synthetic scratch file. The deterministic source tests also cover the exact final-check boundary.
+
+1. Open the agreed scratch file for writing and keep its descriptor open.
+2. Change the same file in VM main.
+3. Resume the scratch project for one round, then pause it.
+4. Confirm that the project path contains the VM content.
+5. Confirm that `status.json` names a recovery directory with the original Mac content.
+6. Write different scratch content through the original descriptor and synchronize that descriptor.
+7. Close the descriptor.
+8. Resume the scratch project until its next full scan, then pause it.
+9. Confirm a retained-data error and no later guest apply.
+10. Confirm that the recovery directory's `original` contains the late editor content.
+11. Confirm that the current project file still contains the VM content.
+12. Follow the retained-data review procedure in `docs/vm-mac-sync.md` for this scratch project.
+
+Do not delete recovery directories to make this check pass.
+No automatic expiry removes an inode that an editor can still use.
+Test native atomic exchange and no-replace support on the scratch filesystem before any user project.
+
 Do not reset receipts to make a retry succeed. A permanent uncertain result must remain visible.
 Do not apply this procedure to the live VM or an existing user project.
