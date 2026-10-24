@@ -4,7 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./environment", () => ({ serverViewId: null }));
 vi.mock("./storage", () => ({ serverLocalStorage: {} }));
-import { createMutationJournal } from "./mutationIdentity";
+import {
+  createMutationJournal,
+  pendingMonitorInput,
+  finishMonitorInput,
+} from "./mutationIdentity";
 
 function memoryStorage(): Storage {
   const rows = new Map<string, string>();
@@ -27,6 +31,70 @@ function memoryStorage(): Storage {
 const path = "/api/monitor/input";
 const body = { id: "monitor-one", text: "private stdin text\n" };
 afterEach(() => vi.unstubAllGlobals());
+
+describe("monitor input receipt journal access", () => {
+  it("exposes only the pending request identity after a reload", async () => {
+    const storage = memoryStorage();
+    const first = (await createMutationJournal("local", storage)(path, body))!;
+    first.unknown();
+    expect(pendingMonitorInput(storage, body.id)).toEqual({
+      requestId: first.requestId,
+    });
+    expect(storage.length).toBe(1);
+  });
+
+  it("releases only an exact current monitor and request identity", async () => {
+    const storage = memoryStorage();
+    const journal = createMutationJournal("local", storage);
+    const first = (await journal(path, body))!;
+    first.unknown();
+    expect(
+      finishMonitorInput(storage, "another-monitor", first.requestId),
+    ).toBe(false);
+    expect(finishMonitorInput(storage, body.id, "another-request")).toBe(false);
+    expect(pendingMonitorInput(storage, body.id)).toEqual({
+      requestId: first.requestId,
+    });
+    expect(finishMonitorInput(storage, body.id, first.requestId)).toBe(true);
+    expect(pendingMonitorInput(storage, body.id)).toBeNull();
+    expect(finishMonitorInput(storage, body.id, first.requestId)).toBe(false);
+    const next = (await journal(path, body))!;
+    expect(next.requestId).not.toBe(first.requestId);
+    expect(finishMonitorInput(storage, body.id, first.requestId)).toBe(false);
+    expect(pendingMonitorInput(storage, body.id)).toEqual({
+      requestId: next.requestId,
+    });
+  });
+
+  it("keeps receipt access inside its supplied server storage scope", async () => {
+    const local = memoryStorage();
+    const remote = memoryStorage();
+    const first = (await createMutationJournal("local", local)(path, body))!;
+    const other = (await createMutationJournal("remote", remote)(path, body))!;
+    expect(finishMonitorInput(remote, body.id, first.requestId)).toBe(false);
+    expect(pendingMonitorInput(remote, body.id)).toEqual({
+      requestId: other.requestId,
+    });
+    expect(finishMonitorInput(local, body.id, first.requestId)).toBe(true);
+    expect(pendingMonitorInput(remote, body.id)).toEqual({
+      requestId: other.requestId,
+    });
+  });
+
+  it("preserves malformed pending records and refuses receipt access", async () => {
+    const storage = memoryStorage();
+    const first = (await createMutationJournal("local", storage)(path, body))!;
+    const key = storage.key(0)!;
+    storage.setItem(key, "invalid pending row");
+    expect(() => pendingMonitorInput(storage, body.id)).toThrow(
+      "monitor input journal",
+    );
+    expect(() => finishMonitorInput(storage, body.id, first.requestId)).toThrow(
+      "monitor input journal",
+    );
+    expect(storage.getItem(key)).toBe("invalid pending row");
+  });
+});
 
 describe("durable monitor input journal", () => {
   it("retains the same local identity on HTTP without subtle", async () => {
