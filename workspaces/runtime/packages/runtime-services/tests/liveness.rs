@@ -1,7 +1,7 @@
 //! Liveness detection must never change a chat or its pending input.
 use serde_json::json;
 use std::sync::Arc;
-use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
+use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, SchedulerRepository};
 
 async fn seeded(now: f64) -> (tempfile::TempDir, Arc<RuntimeStore>) {
     let root = tempfile::tempdir().expect("liveness state");
@@ -123,4 +123,94 @@ async fn detection_never_wakes_an_idle_chat_or_changes_held_input() {
             "detection changes no stored state"
         );
     }
+}
+
+#[tokio::test]
+async fn an_exact_manual_delivery_hold_keeps_stall_detection_without_waking_or_stopping() {
+    let now = studio_runtime_services::event_write::unix_time().expect("clock");
+    let root = tempfile::tempdir().expect("manual hold state");
+    let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+    let cwd = root.path().to_path_buf();
+    store
+        .transaction(move |tx| {
+            for (id, changed_field) in [
+                ("exact", None),
+                ("stopped", None),
+                ("plain-pause", None),
+                ("old-epoch", Some("epoch")),
+                ("old-attempt", Some("attemptId")),
+                ("old-account", Some("accountKey")),
+                ("old-thread", Some("threadId")),
+                ("old-turn", Some("turnId")),
+                ("old-generation", Some("generation")),
+            ] {
+                let mut agent = AgentRecord::from_value(json!({
+                    "id":id,"rootId":id,"epoch":3,"status":"running","autoWake":true,
+                    "inFlight":true,"turnEpoch":3,"threadId":"thread","turnId":"turn",
+                    "accountKey":"account","provider":"codex","cwd":cwd,
+                    "created":now - 1000.0,"activity":{"at":now - 700.0},
+                    "startAttempt":{"id":format!("attempt-{id}"),"epoch":3,"accountKey":"account",
+                        "threadId":"thread","turnId":"turn","submitted":true,
+                        "requestTicket":"ticket","connectionGeneration":7}
+                }))?;
+                SchedulerRepository::hold_recovered_delivery(&mut agent)?;
+                if id == "plain-pause" {
+                    agent.extra.remove("manualRecoveryDeliveryHold");
+                }
+                if let Some(field) = changed_field {
+                    agent
+                        .extra
+                        .get_mut("manualRecoveryDeliveryHold")
+                        .expect("hold")[field] = if matches!(field, "epoch" | "generation") {
+                        json!(999)
+                    } else {
+                        json!("stale")
+                    };
+                }
+                AgentRepository::put(tx, &agent)?;
+                if id == "stopped" {
+                    assert!(SchedulerRepository::stop_agent(
+                        tx,
+                        id,
+                        "Explicit user Stop"
+                    )?);
+                }
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .expect("manual recovery holds");
+    let before = stored_state(&store).await;
+    let list = store
+        .read_async("tests/manual-hold-liveness", move |tx| {
+            studio_runtime_services::studio_errors::list(tx, now)
+        })
+        .await
+        .expect("Studio errors");
+    let stalled = list["items"]
+        .as_array()
+        .expect("error rows")
+        .iter()
+        .filter(|row| row["kind"] == "turn_stalled")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        stalled.len(),
+        1,
+        "only the exact current hold has an active native turn: {list}"
+    );
+    assert_eq!(stalled[0]["agentId"], "exact");
+    assert_eq!(stalled[0]["action"], "check");
+    for label in ["Account:", "Start:", "Last provider event:"] {
+        assert!(
+            stalled[0]["detail"]
+                .as_str()
+                .expect("detail")
+                .contains(label)
+        );
+    }
+    assert_eq!(
+        stored_state(&store).await,
+        before,
+        "detection changes no stored state"
+    );
 }

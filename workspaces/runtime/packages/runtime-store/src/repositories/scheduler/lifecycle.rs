@@ -25,6 +25,31 @@ impl SchedulerRepository {
         Ok(())
     }
 
+    /// Read the existing hold proof without changing delivery permission. A
+    /// real Stop or a stale native identity cannot match the current turn.
+    pub fn manual_delivery_hold_tracks(agent: &AgentRecord) -> bool {
+        if agent.status != AgentStatus::Paused || agent.extra.get("inFlight") != Some(&json!(true))
+        {
+            return false;
+        }
+        let Some(turn) = agent.extra.get("turnId").and_then(Value::as_str) else {
+            return false;
+        };
+        let Some(attempt_id) = stored_attempt(agent).and_then(|attempt| attempt["id"].as_str())
+        else {
+            return false;
+        };
+        manual_delivery_hold_tracks(
+            agent,
+            &TurnAttemptIdentity {
+                agent_id: agent.id.0.clone(),
+                epoch: agent.epoch,
+                attempt_id: attempt_id.to_owned(),
+            },
+            turn,
+        )
+    }
+
     /// Unknown delivery is never replayed; a proven unsent request restores only its own batch.
     pub fn settle_start_outcome(
         transaction: &Transaction<'_>,

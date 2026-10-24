@@ -2,8 +2,9 @@
 //! does. Each finding is a row of the Studio errors list with a code and a
 //! plain reason. Detection only reads stored state. It never settles a turn,
 //! wakes a chat, restarts a session, or sends a provider request:
-//! - `turn_stalled`: a running chat whose provider sent nothing for
+//! - `turn_stalled`: an active native turn whose provider sent nothing for
 //!   [`SILENT_TURN_SECONDS`] while no tool runs.
+//!   A manual delivery hold does not stop this turn or hide its stall.
 //! - `input_not_started`: an owner message that waits longer than
 //!   [`PENDING_INPUT_SECONDS`] while its chat is idle. A held chat's row says why.
 //! - `session_not_started`: chats that wait for their account session
@@ -17,7 +18,8 @@
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use studio_runtime_store::{
-    AgentId, AgentRepository, EventWriteRepository, StoreError, Transaction,
+    AgentId, AgentRecord, AgentRepository, EventWriteRepository, SchedulerRepository, StoreError,
+    Transaction,
 };
 /// Unit: seconds without a provider event before a running turn is stalled.
 pub const SILENT_TURN_SECONDS: f64 = 600.0;
@@ -112,9 +114,14 @@ pub fn last_provider_activity(record: &Value) -> Option<f64> {
     }
 }
 
-/// Whether a running chat's provider is silent while no tool runs.
+/// Whether an active native turn's provider is silent while no tool runs.
 pub fn silent_turn(record: &Value, now: f64) -> Option<f64> {
-    if record["status"] != "running"
+    let active = record["status"] == "running"
+        || (record["status"] == "paused"
+            && AgentRecord::from_value(record.clone())
+                .ok()
+                .is_some_and(|agent| SchedulerRepository::manual_delivery_hold_tracks(&agent)));
+    if !active
         || record["inFlight"] != true
         || record["turnId"].as_str().is_none_or(str::is_empty)
         || record["activeTools"]
@@ -179,7 +186,7 @@ fn stalled_turns(
     found: &mut Vec<Finding>,
 ) -> Result<(), StoreError> {
     let mut statement = tx.prepare_cached(
-        "SELECT id FROM runtime_agents WHERE deleted_at IS NULL AND status='running' AND COALESCE(in_flight,0)=1",
+        "SELECT id FROM runtime_agents WHERE deleted_at IS NULL AND status IN ('running','paused') AND COALESCE(in_flight,0)=1",
     )?;
     let ids = statement
         .query_map([], |row| row.get::<_, String>(0))?
