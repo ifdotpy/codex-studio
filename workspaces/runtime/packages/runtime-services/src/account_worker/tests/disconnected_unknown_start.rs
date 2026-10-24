@@ -90,7 +90,7 @@ async fn unknown_start_then_disconnect(state: &State, generation: u64) -> (Peer,
             .await
             .unwrap();
             crate::scheduler::lifecycle_transaction(&store, |tx| {
-                store::disconnect_provider_generation(tx, "default", 1)
+                store::disconnect_provider_generation(tx, "default", 1, false)
             })
             .await?;
             Ok(())
