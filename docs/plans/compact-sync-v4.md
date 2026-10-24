@@ -96,6 +96,23 @@ readback without repeating a dismissal. The
 Studio Errors GET remains available for explicit recovery only. User refresh of
 limits may make one explicit read; no idle limits hydration or watcher is used.
 
+Receipt summaries are persisted `messageReceipt` entities published from
+event/meta/item writes and reconciled into visible and hidden outbox entries.
+Plan summaries and annotations are `plan`/`annotation` entities published at
+source writes and deletes. Bounded task cards come from `task`/`monitor`
+entities; task output and details are explicit-open reads. Workspace
+plan/annotation sections read projections; file diffs, checkpoints/history and
+search stay explicit-open bounded reads.
+
+Server discovery snapshots and voice record batches (at most
+`SYNC_VOICE_STREAM_MAX_RECORDS`) travel as transient typed payloads in the
+stream; HTTP remains for recovery and explicit management.
+
+T18's integration contract covers accounts summary, costs, session cost,
+desktop, queue and terminals summary as entity collections published by their
+source owner; login data never enters entities. The table below tracks that
+work separately until it lands.
+
 The following inventory records the client read paths found during the T17 audit.
 The table names the implementation owner for work delivered alongside T17. These
 assignments describe the integration contract; they do not claim that T17 verifies
