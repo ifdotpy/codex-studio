@@ -143,3 +143,80 @@ async fn a_silent_turn_that_native_history_shows_running_is_left_alone() {
     );
     worker.shutdown().await.unwrap();
 }
+
+/// The chat is a Claude chat: its bridge holds a turn in memory.
+async fn make_claude(state: &State) {
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction(move |tx| {
+                    let id = studio_runtime_store::AgentId::from(agent.as_str());
+                    let mut record = AgentRepository::get(tx, &id)?.unwrap();
+                    record.extra.insert("provider".into(), json!("claude"));
+                    AgentRepository::put(tx, &record)?;
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .map_err(WorkerError::from)
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_silent_claude_turn_is_asked_to_reconcile_once() {
+    let (state, mut peer, mut worker) = running_turn().await;
+    make_claude(&state).await;
+    let check = tokio::spawn(silent_turns::check_account(pass(&state, &worker)));
+    let request = peer.write("turn/reconcile").await;
+    assert_eq!(
+        request["params"],
+        json!({"threadId":"fake-thread-0","turnId":"turn"})
+    );
+    peer.reply(&request, json!({"status":"completed"})).await;
+    check.await.unwrap();
+    // The bridge's own turn/completed settles the chat.
+    peer.completed().await;
+    worker_barrier(&worker).await;
+    let record = state.record().await;
+    assert_eq!(record["inFlight"], false, "{record}");
+    assert_eq!(record["lastCompletedTurn"], "turn", "{record}");
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "the reconcile sends no input"
+    );
+    silent_turns::check_account(pass(&state, &worker)).await;
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "a settled turn is asked once"
+    );
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_silent_claude_turn_that_native_history_does_not_confirm_is_shown() {
+    let (state, mut peer, mut worker) = running_turn().await;
+    make_claude(&state).await;
+    let check = tokio::spawn(silent_turns::check_account(pass(&state, &worker)));
+    let request = peer.write("turn/reconcile").await;
+    peer.reply(&request, json!({"status":"unconfirmed"})).await;
+    check.await.unwrap();
+    let rows = liveness_rows(&state).await;
+    let row = rows
+        .iter()
+        .find(|finding| finding.agent == state.agent)
+        .expect("the stalled Claude turn is a row");
+    assert!(
+        row.detail.contains("Native history does not show"),
+        "{row:?}"
+    );
+    assert_eq!(state.record().await["status"], "running");
+    silent_turns::check_account(pass(&state, &worker)).await;
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "one question per silence step"
+    );
+    worker.shutdown().await.unwrap();
+}

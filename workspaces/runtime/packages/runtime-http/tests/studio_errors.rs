@@ -409,7 +409,7 @@ async fn liveness_rows_name_each_stuck_state() {
             for record in [
                 agent("silent", "Silent chat", json!({"status":"running","provider":"claude",
                     "accountKey":"claude-local","inFlight":true,"turnId":"turn-s","threadId":"t-silent",
-                    "activity":{"phase":"thinking","at":now - 700.0},"activeTools":[]}))?,
+                    "activity":{"phase":"thinking","at":now - 800.0},"activeTools":[]}))?,
                 agent("busy", "Busy chat", json!({"status":"running","provider":"claude",
                     "accountKey":"claude-local","inFlight":true,"turnId":"turn-b","threadId":"t-busy",
                     "activity":{"phase":"tool","at":now - 700.0},
