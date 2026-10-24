@@ -415,9 +415,10 @@ mod tests {
         connection
     }
 
-    #[test]
-    fn dictionary_records_survive_a_process_restart() {
+    #[tokio::test]
+    async fn dictionary_records_survive_a_process_restart() {
         const FIXTURE_ENV: &str = "STUDIO_STORED_TEXT_RESTART_FIXTURE";
+        const READER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         let text = record(12_345);
         if let Some(path) = std::env::var_os(FIXTURE_ENV) {
             let path = std::path::PathBuf::from(path);
@@ -466,20 +467,27 @@ mod tests {
             StoredTextValue::Compressed(encode_with(&text, dictionary)),
         );
         drop(connection);
-        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        let mut child = tokio::process::Command::new(std::env::current_exe().expect("test binary"))
             .args([
                 "--exact",
                 "stored_text_dictionary::tests::dictionary_records_survive_a_process_restart",
             ])
             .env(FIXTURE_ENV, &path)
-            .output()
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
             .expect("restart reader");
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        // The child inherits diagnostics without an unbounded capture buffer.
+        let status = match tokio::time::timeout(READER_TIMEOUT, child.wait()).await {
+            Ok(status) => status.expect("wait for restart reader"),
+            Err(_) => {
+                child.kill().await.expect("kill and reap restart reader");
+                panic!("restart reader exceeded its {READER_TIMEOUT:?} deadline");
+            }
+        };
+        assert!(status.success(), "restart reader exited with {status}");
         assert_eq!(
             std::fs::read(path.with_extension("verified")).expect("the child verified rows"),
             b"3"
