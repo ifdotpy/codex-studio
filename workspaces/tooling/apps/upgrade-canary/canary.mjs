@@ -12,12 +12,13 @@
 // owns the contract.
 //
 // Isolation: every job runs in a sandbox that writes only below the run folder
-// and the user temporary folder, cannot reach the Keychain, the live state
+// and the user temporary folder, cannot reach the live state
 // sockets, /Applications or the live app, and can reach the network only
 // through the canary's proxy. The proxy refuses auth.openai.com, so a clone
 // never refreshes (and never rotates) a live Codex login; the Codex homes only
 // link the live auth.json and config.toml, which the sandbox keeps read-only.
 // The Claude login is the canary's own (CANARY_CLAUDE_CONFIG_DIR), never a live one.
+// Keychain stays denied unless --claude-keychain or CANARY_CLAUDE_KEYCHAIN=1 is explicit.
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
@@ -29,6 +30,13 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import {
+  claudeAccount,
+  claudeConfigEnvironment,
+  defaultKeychainConfig,
+  fileConfig,
+  keychainConfig,
+} from "./claude-auth.mjs";
 import {
   CheckFailed,
   Report,
@@ -169,7 +177,7 @@ export function proxyDecision(host) {
 }
 
 /** A CONNECT proxy that forwards only the allowed hosts and counts every request. */
-function startProxy() {
+export function startProxy() {
   const seen = new Map();
   const server = http.createServer((request, response) => {
     // Plain HTTP is never needed by the providers; refuse and count it.
@@ -232,6 +240,7 @@ export function profiles({
   proxyPort,
   readable,
   writable = [],
+  claudeKeychain = false,
 }) {
   const quote = (value) => JSON.stringify(value);
   const common = `(version 1)
@@ -247,7 +256,11 @@ export function profiles({
 (allow system-socket)
 (allow pseudo-tty)
 (allow file-write* (subpath ${quote(root)}) (subpath ${quote(tmp)})${writable.map((folder) => ` (subpath ${quote(folder)})`).join("")} (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper"))
-(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc") (global-name "com.apple.security.agent") (global-name "com.apple.security.authhost"))`;
+`;
+  const keychainDeny = `(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc") (global-name "com.apple.security.agent") (global-name "com.apple.security.authhost"))`;
+  const auth = claudeKeychain
+    ? common.trimEnd()
+    : `${common.trimEnd()}\n${keychainDeny}`;
   const live = `(deny file-write* (subpath ${quote(liveState)}) (subpath "/Applications") (subpath ${quote(path.join(home, ".codex"))}) (subpath ${quote(path.join(home, ".claude"))}) (subpath ${quote(path.join(home, "Library/LaunchAgents"))}))
 ${readable.map((file) => `(deny file-write* (literal ${quote(file)}))`).join("\n")}
 (deny network-outbound (remote unix-socket (subpath ${quote(liveState)})))
@@ -256,24 +269,27 @@ ${readable.map((file) => `(deny file-write* (literal ${quote(file)}))`).join("\n
 ;; Last, so that it wins: /bin/ps is setuid, and a sandbox cannot run a setuid program.
 ;; Recovery and the installer read process start times with it; it only lists processes.
 (allow process-exec (literal "/bin/ps") (with no-sandbox))`;
-  const loopback = `(allow network-outbound (remote tcp ${quote(`localhost:${proxyPort}`)}) (remote tcp ${quote(`localhost:${port}`)}) (remote unix-socket (subpath ${quote(root)})))
-(allow network-bind (local tcp ${quote(`localhost:${port}`)}) (local unix-socket (subpath ${quote(root)})))
-(allow network-inbound (local tcp ${quote(`localhost:${port}`)}) (local unix-socket (subpath ${quote(root)})))`;
+  // Native login has no clone backend. Its only outbound TCP destination is the proxy.
+  const backend = (direction) =>
+    port === null ? "" : ` (${direction} tcp ${quote(`localhost:${port}`)})`;
+  const loopback = `(allow network-outbound (remote tcp ${quote(`localhost:${proxyPort}`)})${backend("remote")} (remote unix-socket (subpath ${quote(root)})))
+(allow network-bind${backend("local")} (local unix-socket (subpath ${quote(root)})))
+(allow network-inbound${backend("local")} (local unix-socket (subpath ${quote(root)})))`;
   return {
     // The supervisor and its providers: real CLIs, network only through the proxy.
-    supervisor: `${common}
+    supervisor: `${auth}
 (allow process-exec)
 ${loopback}
 ${live}
 (deny process-exec (literal "/usr/bin/ssh") (literal "/usr/bin/scp") (literal "/usr/bin/git"))`,
     // The recovery job and the server.
-    recovery: `${common}
+    recovery: `${auth}
 (allow process-exec)
 ${loopback}
 ${live}
 (deny process-exec (literal "/usr/bin/osascript") (literal "/usr/bin/open"))`,
     // The installer of build N: no window tools, writes only below the run folder.
-    installer: `${common}
+    installer: `${common.trimEnd()}\n${keychainDeny}
 (allow process-exec)
 (allow signal)
 ${loopback}
@@ -404,6 +420,10 @@ export class Canary {
       options["claude-config"] && !options["no-claude"]
         ? path.resolve(options["claude-config"])
         : null;
+    this.claudeKeychain = options["claude-keychain"] === true;
+    this.claudeProfileHome = os.homedir();
+    if (this.claudeKeychain && !this.claudeConfig)
+      throw new CheckFailed("Keychain mode requires a canary Claude profile.");
     this.python = options.python;
     this.node = options.node;
     this.keep = options.keep;
@@ -464,6 +484,10 @@ export class Canary {
 
   /** The clone registry: the chosen Codex login (linked read-only) and the canary Claude login. */
   accountsFile() {
+    if (this.claudeConfig)
+      (this.claudeKeychain ? keychainConfig : fileConfig)(this.claudeConfig, {
+        home: this.claudeProfileHome,
+      });
     const live = readJSON(path.join(this.liveState, "accounts/registry.json"));
     const codex = live.accounts?.[this.codexAccount];
     if (!codex || codex.provider === "claude")
@@ -487,15 +511,11 @@ export class Canary {
     this.accounts = [{ key: this.codexAccount, provider: "codex" }];
     const credentials =
       this.claudeConfig && path.join(this.claudeConfig, ".credentials.json");
-    if (credentials && !fs.existsSync(credentials)) {
+    if (credentials && !this.claudeKeychain && !fs.existsSync(credentials)) {
       // The Claude part fails alone; the Codex part still runs.
       this.claudeProblem = `the canary Claude login ${credentials} is missing; see docs/testing.md, "Upgrade canary"`;
     } else if (credentials) {
-      const profile =
-        readJSON(path.join(this.claudeConfig, ".claude.json")).oauthAccount ??
-        {};
-      if (!profile.emailAddress)
-        throw new CheckFailed("the canary Claude login has no account email");
+      const profile = claudeAccount(this.claudeConfig);
       accounts["claude-canary"] = {
         id: "claude-canary",
         provider: "claude",
@@ -506,6 +526,7 @@ export class Canary {
         accountId: `claude:${profile.emailAddress}`,
         _credentialIdentity: `claude:${profile.emailAddress}`,
         home: this.claudeConfig,
+        claudeOptions: { configDir: this.claudeConfig },
       };
       this.accounts.push({ key: "claude-canary", provider: "claude" });
     }
@@ -622,6 +643,13 @@ export class Canary {
     return `port ${this.port}; recovery runs ${this.jobArguments.recovery[0]}`;
   }
 
+  /** Native startup discovery must never fall back to the owner's live profile. */
+  claudeEnvironment() {
+    return claudeConfigEnvironment(
+      this.claudeConfig ?? path.join(this.root, "homes", "claude-disabled"),
+    );
+  }
+
   /** The proxy, the clone port, the sandbox profiles and the launchd environment of the jobs. */
   async sandbox() {
     const proxy = await startProxy();
@@ -641,6 +669,7 @@ export class Canary {
       port: this.port,
       proxyPort: proxy.port,
       readable: this.readable,
+      claudeKeychain: this.claudeKeychain,
       // The canary's own Claude login: the CLI keeps its sessions and refreshed login there.
       writable: this.accounts.some((account) => account.provider === "claude")
         ? [fs.realpathSync(this.claudeConfig)]
@@ -668,6 +697,7 @@ export class Canary {
       http_proxy: proxyURL,
       NO_PROXY: "localhost,127.0.0.1",
       no_proxy: "localhost,127.0.0.1",
+      ...this.claudeEnvironment(),
       // The image workspace store defaults to the live state's folder whatever the state
       // folder is (image_workspace.rs); the clone keeps its own.
       CODEX_WORKSPACE_STORE: path.join(
@@ -1285,7 +1315,12 @@ export class Canary {
   }
 }
 
-function options(argv) {
+export function options(argv, environment = process.env) {
+  if (
+    environment.CANARY_CLAUDE_KEYCHAIN !== undefined &&
+    !["0", "1"].includes(environment.CANARY_CLAUDE_KEYCHAIN)
+  )
+    throw new CheckFailed("Set CANARY_CLAUDE_KEYCHAIN to 1 or 0.");
   const { values } = parseArgs({
     args: argv,
     options: {
@@ -1294,9 +1329,10 @@ function options(argv) {
       "codex-account": { type: "string", default: "default" },
       "claude-config": {
         type: "string",
-        default:
-          process.env.CANARY_CLAUDE_CONFIG_DIR ||
-          path.join(os.homedir(), ".config/codex-studio/canary-claude"),
+      },
+      "claude-keychain": {
+        type: "boolean",
+        default: environment.CANARY_CLAUDE_KEYCHAIN === "1",
       },
       "no-claude": { type: "boolean", default: false },
       python: { type: "string", default: "/opt/homebrew/bin/python3" },
@@ -1309,10 +1345,15 @@ function options(argv) {
       help: { type: "boolean", default: false },
     },
   });
+  values["claude-config"] ??=
+    environment.CANARY_CLAUDE_CONFIG_DIR ||
+    (values["claude-keychain"]
+      ? defaultKeychainConfig()
+      : path.join(os.homedir(), ".config/codex-studio/canary-claude"));
   return values;
 }
 
-const usage = `Usage: just upgrade-canary --to <N+1 app> [--from <N app>] [--codex-account key] [--claude-config dir] [--keep]
+const usage = `Usage: just upgrade-canary --to <N+1 app> [--from <N app>] [--codex-account key] [--claude-config dir] [--claude-keychain] [--keep]
 Installs build N+1 over build N on an isolated clone with real processes; see docs/testing.md, "Upgrade canary".
 `;
 

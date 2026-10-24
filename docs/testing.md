@@ -197,7 +197,8 @@ and their time limits:
    `default`), whose `auth.json` and `config.toml` the clone only links; the
    sandbox keeps them read-only. A Claude login of the canary itself, in
    `~/.config/codex-studio/canary-claude` (`--claude-config`, or
-   `CANARY_CLAUDE_CONFIG_DIR`); without it the Claude row fails and the Codex part
+   `CANARY_CLAUDE_CONFIG_DIR`). Explicit Keychain mode uses a separate native profile
+   described below. Without a file login the Claude row fails and the Codex part
    still runs (`--no-claude` skips it).
 3. Start build N as a new Mac does: a first app start creates the state, build N's
    recovery helper registers the jobs with the launchd stand-in, and the real
@@ -220,14 +221,62 @@ and their time limits:
    the run folder by its marker (`--keep` keeps it).
 
 Isolation: every clone process runs in a sandbox that writes only below the run
-folder and the user temporary folder, cannot reach the Keychain, the live state
+folder, the canary Claude profile, and the user temporary folder. By default, it cannot reach the Keychain, the live state
 sockets, `/Applications` or the live app, and reaches the network only through
 the canary's proxy. The proxy refuses `auth.openai.com`, so the clone never
 refreshes, and never rotates, a live Codex login: when the live access token has
 expired, the turns fail. The installer never touches `/Applications` or the live
-window, which has the same bundle id. The canary Claude login is set up once in
-the owner's terminal under a Keychain-denied sandbox, so that the CLI keeps it as
-a file that only the canary uses and refreshes.
+window, which has the same bundle id.
+
+### Native Claude login for the upgrade canary
+
+Current native Claude releases can refuse a file login when the sandbox denies Keychain access.
+Do not change the Keychain settings or copy a live login to correct this refusal.
+The canary supports two explicit sources:
+
+- File mode: an existing private `.credentials.json` in `~/.config/codex-studio/canary-claude`, or a directory below it.
+  This mode still denies Keychain access.
+- Keychain mode: a new full native login in `~/.config/codex-studio/canary-claude-keychain/native`.
+  Use `--claude-keychain`, or set `CANARY_CLAUDE_KEYCHAIN=1` for the command that invokes the canary.
+  `CANARY_CLAUDE_KEYCHAIN=0`, or an unset variable, keeps Keychain access disabled.
+  Profile existence never enables this mode.
+
+Keychain mode requires user approval. It permits the supervisor, provider processes, and recovery server to contact Keychain services.
+The installer still cannot contact these services. Other canary file and network restrictions remain unchanged.
+This permission does not restrict Keychain access to one service label.
+The native CLI selects its separate service from the exact private profile path.
+Do not treat this mode as Keychain isolation from a provider process.
+
+Prepare the private profile without starting a login:
+
+```sh
+node workspaces/tooling/apps/upgrade-canary/claude-login.mjs --prepare
+```
+
+Start a fresh full subscription login with the absolute native Claude executable path:
+
+```sh
+node workspaces/tooling/apps/upgrade-canary/claude-login.mjs --login --claude /absolute/path/to/claude
+```
+
+The native CLI can open the browser for authorization. The login sandbox permits an ephemeral local OAuth callback.
+Its outbound traffic still uses the canary allowlist proxy. The helper never reads credential values or changes global Keychain settings.
+It does not run `setup-token`, copy a login, or pass a token through command arguments.
+After a lost login result, inspect the canary result before starting another login. The helper does not retry authentication automatically.
+
+Run the upgrade check with the explicit mode:
+
+```sh
+CANARY_CLAUDE_KEYCHAIN=1 just upgrade-canary --to /absolute/path/to/Build.app
+```
+
+Use the same environment opt-in for `just deliver-server` when it runs the upgrade canary.
+The helper, registry, and provider environment use the same exact path for `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR`.
+Do not copy, rename, or alias the profile. Native Keychain service identity depends on this path text.
+The helper creates `canary-auth.json` with its version, owner ID, exact path, and `native-keychain` source.
+An existing unmarked directory, symbolic link, another owner, or nonprivate profile directory is refused.
+Custom `--config` and `--claude-config` paths must stay inside the corresponding canary namespace.
+The runtime still requires native account email and subscription proof before it submits model input.
 
 ## Add or move a test
 
