@@ -946,7 +946,7 @@ export { browserExecutablePath, waitForFixturePort };
 /** @typedef {Pick<TaskEntityDto, "id" | "turnId" | "agent" | "kind" | "status" | "created" | "finished" | "name" | "command" | "query" | "cwd" | "processId" | "durationMs" | "timeout_ms" | "interactive" | "stdinClosed" | "stdinCloseRequested" | "stdinError" | "cancelRequested" | "exitCode" | "bytes" | "log" | "outputTruncated">} TestTask */
 /** @typedef {Pick<ProjectEntityDto, "homeServerId" | "locations" | "locationsRevision" | "projectAliases" | "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams" | "workerBaseRef" | "workerBaseRevision" | "workerEnvironment" | "workerEnvironmentRevision">} TestProject */
 /** @typedef {Pick<ComplaintEntityDto, "id" | "leadId" | "author" | "authorName" | "leadName" | "title" | "status" | "needsUserResponse" | "created" | "readAt" | "recipient" | "version">} TestComplaint */
-/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], rateLimits: AccountRateLimitsDto | null, rateLimitsByAccount: Record<string, AccountRateLimitsDto>, stateDir?: string }} TestRuntimeView */
+/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], studioErrors?: import("../src/generated/api").components["schemas"]["StudioError"][], rateLimits: AccountRateLimitsDto | null, rateLimitsByAccount: Record<string, AccountRateLimitsDto>, stateDir?: string }} TestRuntimeView */
 /** @typedef {{ token: string, stateDir?: string, chats: ChatEntityDto[], edges: EdgeEntityDto[], runtime: TestRuntimeView, threads: TestAgent[] }} TestStateView */
 /** @typedef {Omit<TestStateView, "token" | "threads">} EntityFixtureState */
 
@@ -1333,6 +1333,7 @@ function entityValuesFromSnapshot(snapshot) {
   append("peerTeam", runtime.peerTeams);
   append("rule", runtime.rules);
   append("work", runtime.work);
+  append("studioError", runtime.studioErrors);
   append("chat", snapshot.chats);
   append("edge", snapshot.edges);
   const limits = isJsonObject(runtime.rateLimitsByAccount)

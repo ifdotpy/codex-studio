@@ -87,9 +87,9 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
           if (id !== "\0entity-fixture") return;
           return `import React from 'react'; import {createRoot} from 'react-dom/client';
           import {MantineProvider} from '@mantine/core'; import '@mantine/core/styles.css';
-          import App from '/src/App.tsx'; import {theme} from '/src/theme.ts';
+          import App from '/src/App.tsx'; import {SidebarWarningsProvider} from '/src/components/SidebarWarnings.tsx'; import {theme} from '/src/theme.ts';
           import '/src/style.css';
-          createRoot(document.getElementById('root')).render(React.createElement(MantineProvider,{theme},React.createElement(App)));`;
+          createRoot(document.getElementById('root')).render(React.createElement(MantineProvider,{theme},React.createElement(SidebarWarningsProvider,null,React.createElement(App))));`;
         },
       },
     ],
