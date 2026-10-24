@@ -229,15 +229,18 @@ const sessions = sessionStore.sessions;
 // dialog (summary or full history) on their next turn is Studio's own resume,
 // not a user's return to a stale chat: it keeps the full history and never asks.
 const studioUnloaded = new Set();
+const queryHasInput = (active) =>
+  Boolean(
+    active.pendingSteers.size ||
+    active.reservingInput ||
+    active.input.values.length ||
+    active.input.pending.length,
+  );
 const queryBusy = (id, active) =>
   Boolean(
     active.turn ||
     active.tasks.size ||
-    active.pendingSteers.size ||
-    active.unknownSteers.size ||
-    active.reservingInput ||
-    active.input.values.length ||
-    active.input.pending.length ||
+    queryHasInput(active) ||
     operations.get(id),
   );
 // The one stdout writer. Lines of one event-loop turn leave in one write at
@@ -1023,31 +1026,10 @@ function clearDeferredResult(active) {
   active.resultTimer = null;
   active.deferredResult = null;
 }
-function clearUnknownSteer(active, id) {
-  clearTimeout(active.unknownSteers.get(id));
-  active.unknownSteers.delete(id);
-}
-function startContinuation(s, active) {
-  active.turn = {
-    id: randomUUID(),
-    status: "inProgress",
-    items: [],
-    synthetic: true,
-  };
-  active.idleRequestStartedAt = Date.now();
-  active.reportedTurnOutput = 0;
-  s.turns.push(active.turn);
-  emit("turn/started", {
-    threadId: s.id,
-    turn: { id: active.turn.id, status: "inProgress" },
-  });
-  armStallWatch();
-}
 function clearTurnTimers(active) {
   clearDeferredResult(active);
   clearTimeout(active.stopTimer);
   active.stopTimer = null;
-  for (const id of active.unknownSteers.keys()) clearUnknownSteer(active, id);
 }
 function lifecycleFailure(s, active, error) {
   active.persistFailure ??= error;
@@ -1071,13 +1053,33 @@ function deferResult(s, active, result) {
 async function finishTurn(s, active, result, error) {
   const turn = active.turn;
   if (!turn) return;
-  const stall = active.stall?.turnId === turn.id ? active.stall : null;
-  // A closed CLI can write its history until it exits; read it only then.
-  if (stall?.closed) await stall.closed;
-  // One caller finishes a turn; the stall recovery can race the SDK stream.
-  if (active.turn !== turn || finishingTurns.has(turn)) return;
+  const finishing = finishingTurns.get(turn);
+  if (finishing) {
+    await finishing;
+    return;
+  }
   let finished;
   finishingTurns.set(turn, new Promise((resolve) => (finished = resolve)));
+  const stall = active.stall?.turnId === turn.id ? active.stall : null;
+  let closed = Boolean(stall?.closed);
+  if (closed) await stall.closed;
+  // A handed-off steer without an echo cannot coexist with a later turn on
+  // this CLI. Stop it before finishing; only its final native history can
+  // prove whether the server may redeliver that exact input.
+  const unknown = turn.items.some(
+    (item) =>
+      item.delivery === "steer" &&
+      item.deliveryStatus === "submitted" &&
+      !active.input.values.some(
+        (input) => input.studioInputIdentity === item.id,
+      ),
+  );
+  if (unknown && !closed) {
+    closed = true;
+    active.input.close();
+    active.q?.close();
+    await new Promise((resolve) => setTimeout(resolve, limits.exitWaitMs));
+  }
   clearDeferredResult(active);
   clearTimeout(active.stopTimer);
   active.stopTimer = null;
@@ -1172,25 +1174,15 @@ async function finishTurn(s, active, result, error) {
     const queued = active.input.values.findIndex(
       (input) => input.studioInputIdentity === item.id,
     );
-    if (queued < 0) {
-      if (!active.unknownSteers.has(item.id)) {
-        const timer = setTimeout(() => {
-          active.unknownSteers.delete(item.id);
-          catalogCache.activityChanged();
-        }, limits.steerUnknownWaitMs);
-        timer.unref();
-        active.unknownSteers.set(item.id, timer);
-      }
-      continue;
-    }
+    if (queued < 0) continue;
     active.input.values.splice(queued, 1);
     item.deliveryStatus = "not_applied";
     item.error = "Claude finished before reading this steer";
     unappliedSteers.push(item.id);
   }
-  if (stall?.closed) {
+  if (closed) {
+    active.input.withdraw();
     await reconcileClosedSteers(s, turn, unappliedSteers);
-    for (const item of turn.items) clearUnknownSteer(active, item.id);
   }
   for (const response of active.responseUsages.values()) {
     const total =
@@ -1280,6 +1272,7 @@ async function finishTurn(s, active, result, error) {
   active.pendingSteers.clear();
   active.assistantBlocks.clear();
   active.responseUsages.clear();
+  if (closed) discardQuery(s, active);
   emit("turn/completed", {
     threadId: s.id,
     turn: {
@@ -1320,10 +1313,11 @@ async function reconcileClosedSteers(s, turn, unapplied) {
     return;
   }
   for (const item of open) {
-    if (recorded.has(item.nativeId)) {
+    const ids = item.nativeIds || [item.nativeId];
+    if (ids.every((id) => recorded.has(id))) {
       item.deliveryStatus = "delivered";
       turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
-    } else {
+    } else if (ids.every((id) => !recorded.has(id))) {
       item.deliveryStatus = "not_applied";
       item.error = "Claude stopped before reading this steer";
       unapplied.push(item.id);
@@ -1339,11 +1333,7 @@ async function recoverStall(s, active, found) {
   if (!turn || active.stall || finishingTurns.has(turn)) return;
   const message = found.stop
     ? "Studio stopped this turn: Claude Code did not end the turn after Stop."
-    : found.synthetic
-      ? "Studio stopped this turn: Claude continuation sent no event for " +
-        durationText(found.silentMs) +
-        "."
-      : stallMessage({ ...found, tool: item?.tool || found.tool });
+    : stallMessage({ ...found, tool: item?.tool || found.tool });
   let ended;
   const finished = new Promise((resolve) => (ended = resolve));
   active.stall = { turnId: turn.id, ended, closed: null };
@@ -1352,17 +1342,15 @@ async function recoverStall(s, active, found) {
     message,
     data: found.stop
       ? { claudeStopTimeout: true }
-      : found.synthetic
-        ? { claudeContinuationStall: { silentMs: found.silentMs } }
-        : {
-            claudeToolStall: {
-              toolUseId: found.id,
-              tool: item?.tool || found.tool,
-              timeoutMs: found.timeoutMs,
-              elapsedMs: found.elapsedMs,
-              silentMs: found.silentMs,
-            },
+      : {
+          claudeToolStall: {
+            toolUseId: found.id,
+            tool: item?.tool || found.tool,
+            timeoutMs: found.timeoutMs,
+            elapsedMs: found.elapsedMs,
+            silentMs: found.silentMs,
           },
+        },
   };
   if (item)
     finishItem(s, turn, {
@@ -1614,6 +1602,7 @@ async function startSession(s, active, p) {
       if (active.turn && finishingTurns.has(active.turn))
         await finishingTurns.get(active.turn);
       if (active.persistFailure) throw active.persistFailure;
+      if (queries.get(s.id) !== active) break;
       active.lastEventAt = Date.now();
       armStallWatch();
       if (m.type === "system" && m.subtype === "init") {
@@ -1660,15 +1649,11 @@ async function startSession(s, active, p) {
             ? { turn: active.turn, item }
             : submittedSteer(s, m.uuid);
         if (steer?.item.deliveryStatus === "submitted") {
-          clearUnknownSteer(active, steer.item.id);
           steer.item.deliveryStatus = "delivered";
           turnEvent(s, steer.turn, "item/completed", {
             ...steer.item,
             clientId: steer.item.id,
           });
-          // A late echo starts native work before its first assistant output.
-          // Bind it now so another turn/start steers this continuation.
-          if (!active.turn) startContinuation(s, active);
           persistLater(s, active);
         }
         continue;
@@ -1678,7 +1663,19 @@ async function startSession(s, active, p) {
         ["assistant", "stream_event"].includes(m.type) &&
         !m.parent_tool_use_id
       ) {
-        startContinuation(s, active);
+        active.turn = {
+          id: randomUUID(),
+          status: "inProgress",
+          items: [],
+          synthetic: true,
+        };
+        active.idleRequestStartedAt = Date.now();
+        active.reportedTurnOutput = 0;
+        s.turns.push(active.turn);
+        emit("turn/started", {
+          threadId: s.id,
+          turn: { id: active.turn.id, status: "inProgress" },
+        });
       }
       const turn =
         active.turn || (m.parent_tool_use_id ? s.turns.at(-1) : null);
@@ -2161,8 +2158,6 @@ function newActive(turn) {
     tasks: new Map(),
     tools: new Map(),
     pendingSteers: new Set(),
-    // Inputs handed to the CLI whose turn ended before their echo arrived.
-    unknownSteers: new Map(),
     assistantBlocks: new Map(),
     responseUsages: new Map(),
     idleRequestStartedAt: Date.now(),
@@ -2370,7 +2365,7 @@ async function handle(method, p) {
       .metadata(p.session.id)
       .catch(() => null);
     const active = queries.get(p.session.id);
-    if (active?.turn || active?.tasks.size)
+    if (active && (active.turn || active.tasks.size || queryHasInput(active)))
       throw new Error("The destination Claude session is active");
     const owner = existing && (await session(p.session.id));
     if (
@@ -2454,7 +2449,7 @@ async function handle(method, p) {
   if (method === "claude/settings") {
     const s = await session(p.threadId),
       active = queries.get(s.id);
-    if (active?.turn || active?.tasks.size)
+    if (active && (active.turn || active.tasks.size || queryHasInput(active)))
       throw new Error("Pause Claude before changing these settings");
     active?.input.close();
     active?.q?.close();
@@ -2468,7 +2463,7 @@ async function handle(method, p) {
   if (method === "thread/rollback") {
     const s = await session(p.threadId),
       active = queries.get(s.id);
-    if (active?.turn || active?.tasks.size)
+    if (active && (active.turn || active.tasks.size || queryHasInput(active)))
       throw new Error("Pause Claude before rollback");
     active?.input.close();
     active?.q?.close();
@@ -2566,14 +2561,7 @@ async function handle(method, p) {
       const idle = () => {
         const query = queries.get(s.id);
         return (
-          !query ||
-          (!query.turn &&
-            !query.tasks.size &&
-            !query.pendingSteers.size &&
-            !query.unknownSteers.size &&
-            !query.reservingInput &&
-            !query.input.values.length &&
-            !query.input.pending.length)
+          !query || (!query.turn && !query.tasks.size && !queryHasInput(query))
         );
       };
       if (idle())
@@ -2586,11 +2574,8 @@ async function handle(method, p) {
       // Reattach to a live query without changing its settings or background work.
       // turn/start already steers its current turn or queues the next input.
       if (
-        !active?.turn &&
-        !active?.tasks.size &&
-        !active?.unknownSteers.size &&
-        !active?.input.values.length &&
-        !active?.input.pending.length
+        !active ||
+        (!active.turn && !active.tasks.size && !queryHasInput(active))
       ) {
         if (active) clearTurnTimers(active);
         active?.input.close();
@@ -2732,18 +2717,7 @@ async function handle(method, p) {
         ...(steered ? { steered: true } : {}),
       };
     }
-    const query = queries.get(s.id);
-    // Pending native input owns the next continuation even before its echo.
-    // New input must steer that work instead of claiming its future result.
-    if (
-      query &&
-      !query.turn &&
-      (query.unknownSteers.size ||
-        query.input.pending.length ||
-        query.input.values.length)
-    )
-      startContinuation(s, query);
-    const running = query?.turn;
+    const running = queries.get(s.id)?.turn;
     if (running) {
       try {
         await handle("turn/steer", {

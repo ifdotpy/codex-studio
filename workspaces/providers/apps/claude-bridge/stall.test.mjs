@@ -291,7 +291,7 @@ async function read(bridge, value) {
   }
 }
 
-test("a tool call that never returns ends the turn as a stall and keeps held steers", async () => {
+test("a tool stall closes a CLI with unconfirmed input without resending it", async () => {
   const bridge = await startBridge();
   const turn = await start(bridge, "stall", [
     ["late-question", "question during the stall"],
@@ -307,13 +307,10 @@ test("a tool call that never returns ends the turn as a stall and keeps held ste
   );
   assert.equal(tool.params.item.status, "failed");
   assert.equal(tool.params.item.stalled, true);
-  // Claude Code runs the held steer as its next turn: delivered once, never resent.
-  const delivered = await bridge.note(
-    (n) => acks(bridge, "late-question")[0] === n,
-  );
-  assert.equal(delivered.params.turnId, turn);
-  await sleep(100);
-  assert.equal(acks(bridge, "late-question").length, 1);
+  // The CLI cannot retain ambiguous queued input after this turn. Without
+  // authoritative native history it remains unknown and is never resent.
+  assert.equal(acks(bridge, "late-question").length, 0);
+  assert.deepEqual((await bridge.call("thread/loaded/list", {})).data, []);
   assert.deepEqual(await inputs(bridge), [
     "stall",
     "question during the stall",

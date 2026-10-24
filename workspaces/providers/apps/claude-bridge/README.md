@@ -17,17 +17,14 @@ A successful result waits briefly for pending steer echoes. An echo during the
 grace keeps the continuation in the same turn. When the grace expires, the turn
 completes: unread input is withdrawn and reported for server redelivery with its
 original identity; input already handed to the SDK remains submitted with an
-unknown outcome and is never automatically resent. The CLI stays loaded for a
-bounded late-echo window. A late echo acknowledges the original turn even when
-Claude starts a separate continuation turn. The echo starts that continuation
-immediately, so new input steers it even before its first assistant output.
-[The lifecycle limits](stall-watch.mjs)
-own the grace, retention window, and interrupt deadlines in milliseconds.
-New input arriving before a pending steer echoes also joins the continuation.
-Partially consumed input batches keep the CLI loaded, and retried starts reuse
-recorded user-message identities even when they were auto-steered. A synthetic
-continuation with no SDK events uses the same silence watchdog as an unbudgeted
-tool call; Studio-owned waits pause that watchdog.
+unknown outcome and is never automatically resent. Before completing a turn
+with such input, the bridge closes the CLI and reconciles its final native
+history. A split input is delivered only if every part is recorded; no recorded
+parts proves it unapplied, while partial or unavailable evidence stays unknown.
+The next start resumes a fresh CLI, and retries reuse recorded user-message
+identities even for auto-steered input. Query-closing controls refuse unsettled
+unread input. [The lifecycle limits](stall-watch.mjs) own the echo grace and
+interrupt/exit deadlines in milliseconds.
 
 Stop finalizes an already deferred result as interrupted. If running Claude does
 not end its turn by the interrupt deadline, the existing stall recovery closes
