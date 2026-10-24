@@ -36,6 +36,8 @@ test("Team panel ui", async ({
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
     const page = runnerPage;
+    const now = Date.now();
+    await page.clock.setFixedTime(now);
     await page.setViewportSize({ width: 1440, height: 960 });
     page.setDefaultTimeout(12000);
     const errors = [],
@@ -83,7 +85,7 @@ test("Team panel ui", async ({
         {
           monitorId: "fixture-gate",
           stage: "just test-fast",
-          startedAt: Date.now() / 1000 - 720,
+          startedAt: now / 1000 - 720,
           lastOutputLine: "Rust checks passed; browser checks running",
         },
       ],
@@ -105,13 +107,13 @@ test("Team panel ui", async ({
       name: "Stalled worker",
       status: "completed",
       error: undefined,
-      stall: { taskId: "task-14", since: Date.now() / 1000 - 300 },
+      stall: { taskId: "task-14", since: now / 1000 - 300 },
     };
     lead.commandProgress = [
       {
         monitorId: "fixture-lead-gate",
         stage: "Final review",
-        startedAt: Date.now() / 1000 - 60,
+        startedAt: now / 1000 - 60,
         lastOutputLine: "Reviewing changes",
       },
     ];

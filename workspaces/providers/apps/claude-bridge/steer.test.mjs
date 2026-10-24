@@ -1,17 +1,14 @@
+import {
+  startBridge as startScriptedBridge,
+  HANG_GUARD_MS,
+} from "./testing/bridge-harness.mjs";
 // Busy-turn steer delivery through the real bridge with a scripted SDK.
 // No model calls: the fake query echoes, reads or withholds input on cue.
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const HANG_GUARD_MS = 10_000;
 
 // Scenario by the turn's first input text:
 // ack: read the steer and echo it inside the turn.
@@ -96,94 +93,14 @@ afterEach(async () => {
 });
 
 async function startBridge(env = {}, sdk = FAKE_SDK) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-steer-"));
-  for (const name of await fs.readdir(HERE)) {
-    if (!name.endsWith(".mjs") || name.endsWith(".test.mjs")) continue;
-    const source = await fs.readFile(path.join(HERE, name), "utf8");
-    await fs.writeFile(
-      path.join(root, name),
-      source.replaceAll("@anthropic-ai/claude-agent-sdk", "./fake.mjs"),
-    );
-  }
-  await fs.writeFile(path.join(root, "fake.mjs"), sdk);
-  await fs.symlink(
-    path.join(HERE, "node_modules"),
-    path.join(root, "node_modules"),
-  );
-  const child = spawn(
-    process.execPath,
-    [path.join(root, "bridge.mjs"), path.join(root, "state")],
-    {
-      cwd: root,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        STUDIO_CLAUDE_ACCOUNT: "test@example.test",
-        CLAUDE_CONFIG_DIR: path.join(root, "native-config"),
-        STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "150",
-        STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50",
-        ...env,
-      },
+  const bridge = await startScriptedBridge(sdk, "claude-steer-", {
+    env: {
+      STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "150",
+      STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50",
+      ...env,
     },
-  );
-  let stderr = "";
-  child.stderr.on("data", (chunk) => (stderr += chunk));
-  const notes = [];
-  const waiting = new Map();
-  let wake = () => {};
-  createInterface({ input: child.stdout }).on("line", (line) => {
-    const message = JSON.parse(line);
-    if (message.method) notes.push(message);
-    else waiting.get(message.id)?.(message);
-    wake();
   });
-  let sequence = 0;
-  const bridge = {
-    root,
-    notes,
-    async call(method, params) {
-      const id = ++sequence;
-      const reply = new Promise((resolve) => waiting.set(id, resolve));
-      child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
-      const message = await Promise.race([
-        reply,
-        new Promise((_, reject) =>
-          setTimeout(
-            () => reject(new Error(method + " hung\n" + stderr)),
-            HANG_GUARD_MS,
-          ),
-        ),
-      ]);
-      if (message.error)
-        throw Object.assign(new Error(message.error.message), {
-          data: message.error.data,
-        });
-      return message.result;
-    },
-    async note(predicate) {
-      const deadline = Date.now() + HANG_GUARD_MS;
-      for (;;) {
-        const found = notes.find(predicate);
-        if (found) return found;
-        if (Date.now() > deadline)
-          throw new Error("notification missing\n" + stderr);
-        await new Promise((resolve) => {
-          wake = resolve;
-          setTimeout(resolve, 50);
-        });
-      }
-    },
-    async close() {
-      child.stdin.end();
-      if (child.exitCode === null)
-        await new Promise((resolve) => child.once("exit", resolve));
-      await fs.rm(root, { recursive: true, force: true });
-    },
-  };
   bridges.push(bridge);
-  bridge.thread = (
-    await bridge.call("thread/start", { cwd: root, dynamicTools: [] })
-  ).thread.id;
   return bridge;
 }
 
@@ -192,13 +109,15 @@ const completed = (bridge, turn) =>
   bridge.note(
     (n) => n.method === "turn/completed" && n.params.turn.id === turn,
   );
-const ack = (bridge, id) =>
-  bridge.notes.find(
+const acks = (bridge, id) =>
+  bridge.notes.filter(
     (n) =>
       n.method === "item/completed" &&
       n.params.item.type === "userMessage" &&
       n.params.item.clientId === id,
   );
+
+const ack = (bridge, id) => acks(bridge, id)[0];
 
 async function running(bridge, scenario) {
   const turn = (
@@ -251,9 +170,12 @@ test("an echoed steer is acknowledged once inside its running turn", async () =>
   assert.equal(done.params.turn.status, "completed");
   assert.equal(done.params.turn.unappliedSteers, undefined);
   assert.deepEqual(await inputs(bridge), ["ack", "steer text"]);
+  assert.equal(acks(bridge, "event-1").length, 1);
+  bridge.notes.push(structuredClone(delivered));
   assert.equal(
-    bridge.notes.filter((n) => ack(bridge, "event-1") === n).length,
-    1,
+    acks(bridge, "event-1").length,
+    2,
+    "count every matching acknowledgement",
   );
 });
 
@@ -1069,4 +991,25 @@ test("a throwing CLI close still completes the turn and preserves unknown input"
     bridge.notes.filter((n) => n.method === "turn/completed").length,
     1,
   );
+});
+
+test("bridge request and notification guards are disposed after settlement", async () => {
+  const bridge = await startBridge();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await bridge.call("thread/loaded/list", { limit: 100 });
+    await assert.rejects(bridge.call("not/a/method", {}));
+    await bridge.restart();
+    assert.equal(vi.getTimerCount(), 0);
+    const missing = assert.rejects(
+      bridge.note(() => false),
+      /notification missing/,
+    );
+    assert.equal(vi.getTimerCount(), 1);
+    await vi.advanceTimersByTimeAsync(HANG_GUARD_MS);
+    await missing;
+    assert.equal(vi.getTimerCount(), 0);
+  } finally {
+    vi.useRealTimers();
+  }
 });

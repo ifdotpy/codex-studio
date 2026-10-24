@@ -1,19 +1,17 @@
+import {
+  startBridge as startScriptedBridge,
+  HANG_GUARD_MS,
+} from "./testing/bridge-harness.mjs";
 // Stalled tool calls through the real bridge with a scripted SDK. The fake CLI
 // emits a Bash tool_use and then never returns its result, as in the
 // 2026-10-17 incident. No model calls.
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
 import { bashTimeoutMs, findStall, recordedInputIds } from "./stall-watch.mjs";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const HANG_GUARD_MS = 10_000;
 const GRACE_MS = 300;
 
 // Scenario by the turn's first input text:
@@ -138,95 +136,16 @@ afterEach(async () => {
 });
 
 async function startBridge({ env = {}, thread = {} } = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-stall-"));
-  for (const name of await fs.readdir(HERE)) {
-    if (!name.endsWith(".mjs") || name.endsWith(".test.mjs")) continue;
-    const source = await fs.readFile(path.join(HERE, name), "utf8");
-    await fs.writeFile(
-      path.join(root, name),
-      source.replaceAll("@anthropic-ai/claude-agent-sdk", "./fake.mjs"),
-    );
-  }
-  await fs.writeFile(path.join(root, "fake.mjs"), FAKE_SDK);
-  await fs.symlink(
-    path.join(HERE, "node_modules"),
-    path.join(root, "node_modules"),
-  );
-  const child = spawn(
-    process.execPath,
-    [path.join(root, "bridge.mjs"), path.join(root, "state")],
-    {
-      cwd: root,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        STUDIO_CLAUDE_ACCOUNT: "test@example.test",
-        STUDIO_CLAUDE_IDLE_SECONDS: "60",
-        CLAUDE_CONFIG_DIR: path.join(root, "native-config"),
-        STUDIO_CLAUDE_TOOL_STALL_GRACE_MS: String(GRACE_MS),
-        STUDIO_CLAUDE_STALL_INTERRUPT_WAIT_MS: "300",
-        STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "100",
-        ...env,
-      },
+  const bridge = await startScriptedBridge(FAKE_SDK, "claude-stall-", {
+    env: {
+      STUDIO_CLAUDE_TOOL_STALL_GRACE_MS: String(GRACE_MS),
+      STUDIO_CLAUDE_STALL_INTERRUPT_WAIT_MS: "300",
+      STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "100",
+      ...env,
     },
-  );
-  let stderr = "";
-  child.stderr.on("data", (chunk) => (stderr += chunk));
-  const notes = [];
-  const waiting = new Map();
-  createInterface({ input: child.stdout }).on("line", (line) => {
-    const message = JSON.parse(line);
-    if (message.method) notes.push(message);
-    else waiting.get(message.id)?.(message);
+    thread,
   });
-  let sequence = 0;
-  const bridge = {
-    root,
-    notes,
-    async call(method, params) {
-      const id = ++sequence;
-      const reply = new Promise((resolve) => waiting.set(id, resolve));
-      child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
-      const message = await Promise.race([
-        reply,
-        new Promise((_, reject) =>
-          setTimeout(
-            () => reject(new Error(method + " hung\n" + stderr)),
-            HANG_GUARD_MS,
-          ),
-        ),
-      ]);
-      if (message.error) throw new Error(message.error.message);
-      return message.result;
-    },
-    answer(id, result) {
-      child.stdin.write(JSON.stringify({ id, result }) + "\n");
-    },
-    async note(predicate) {
-      const deadline = Date.now() + HANG_GUARD_MS;
-      for (;;) {
-        const found = notes.find(predicate);
-        if (found) return found;
-        if (Date.now() > deadline)
-          throw new Error("notification missing\n" + stderr);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-    },
-    async close() {
-      child.stdin.end();
-      if (child.exitCode === null)
-        await new Promise((resolve) => child.once("exit", resolve));
-      await fs.rm(root, { recursive: true, force: true });
-    },
-  };
   bridges.push(bridge);
-  bridge.thread = (
-    await bridge.call("thread/start", {
-      cwd: root,
-      dynamicTools: [],
-      ...thread,
-    })
-  ).thread.id;
   return bridge;
 }
 

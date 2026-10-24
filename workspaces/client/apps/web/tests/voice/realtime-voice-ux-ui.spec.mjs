@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { join } from "node:path";
 import {
+  createFixtureViteServer as createServer,
   apiSchemaHeaders,
   apiSchemaHandshakeSse,
   syncIdentityFixture,
@@ -13,13 +13,11 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
   test.setTimeout(180_000);
   // React fixture: no microphone, native account, or model request.
   const root = fileURLToPath(new URL("../..//", import.meta.url));
-  const require = createRequire(root + "/package.json");
-  const { createServer } = await import(require.resolve("vite"));
   const entryPath = join(root, "audit-entry.tsx");
   const workspaceId = "0123456789abcdef0123456789abcdef";
   const identityFixture = JSON.stringify(syncIdentityFixture(workspaceId));
   const responseHeaders = JSON.stringify(apiSchemaHeaders());
-  const entry = `import React from 'react';import{createRoot}from'react-dom/client';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import RealtimeVoice from '/src/components/RealtimeVoice.tsx';
+  const entry = `import React from 'react';import{createRoot}from'react-dom/client';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import RealtimeVoice from '/src/components/RealtimeVoice.tsx';import{watchVoiceTransport}from'/src/components/voiceTransport.ts';watchVoiceTransport(state=>window.voiceTransport=state,()=>{});
   window.calls=[];window.order=[];window.stops=0;window.records=[];window.pending=false;window.voiceError='';window.codexDesktop={requestMicrophone:async()=>{window.order.push('permission');if(window.holdPermission)await new Promise(r=>window.releasePermission=r);}};
   window.RTCPeerConnection=class{constructor(){window.pc=this;}addTrack(){}createDataChannel(){return window.dc={close(){},send(){throw Error('Native Core owns messages');}};}async createOffer(){return {sdp:'v=0\\noffer'};}async setLocalDescription(){}async setRemoteDescription(sdp){window.answers=(window.answers||0)+1;window.answer=sdp;window.emit({type:"session.started"});}close(){}};
   const track=window.track={enabled:true,stop(){window.stops++;}};
@@ -31,7 +29,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
   const server = await createServer({
     configFile: false,
     root,
-    server: { host: "127.0.0.1", port: 0 },
+    server: { host: "127.0.0.1", port: 0, hmr: false, watch: null },
     plugins: [
       {
         name: "voice-fixture",
@@ -99,6 +97,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
   await server.listen();
   try {
     const page = await context.newPage();
+    await page.clock.install();
     await page.setViewportSize({ width: 500, height: 700 });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
@@ -109,6 +108,9 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
         .click();
     }
     async function start() {
+      await page.waitForFunction(() => window.voiceTransport === "live", null, {
+        timeout: 10000,
+      });
       await page
         .getByRole("button", { name: "Start voice", exact: true })
         .click();
@@ -185,7 +187,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     await page.waitForFunction(() =>
       window.calls.some((call) => call[0] === "records"),
     );
-    await page.waitForTimeout(100);
+    await page.waitForFunction(() => window.voiceTransport === "live");
     const readsBeforeOffline = await page.evaluate(
       () => window.calls.filter((call) => call[0] === "records").length,
     );
@@ -218,7 +220,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
         count + 1,
       readsBeforeOffline,
     );
-    await page.waitForTimeout(100);
+    await page.waitForFunction(() => window.voiceTransport === "live");
     assert.equal(
       await page.evaluate(
         () => window.calls.filter((call) => call[0] === "records").length,
@@ -332,19 +334,23 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     assert.equal(await page.evaluate(() => window.stops), 1);
     await reset();
     await start();
+    await page.waitForFunction(() => window.answer?.sdp === "answer");
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
     await page.evaluate(() => {
       window.pc.connectionState = "disconnected";
       window.pc.onconnectionstatechange();
     });
     assert.equal(await page.evaluate(() => window.track.enabled), false);
-    await page.waitForFunction(
-      () =>
-        [...document.querySelectorAll('[role="alert"]')].some((alert) =>
-          alert.textContent?.includes("Voice could not reconnect"),
-        ),
-      { timeout: 18000 },
-    );
+    assert.equal(await page.evaluate(() => window.stops), 0);
+    await page.clock.runFor(11999);
+    assert.equal(await page.evaluate(() => window.stops), 0);
+    await page.clock.runFor(1);
+    await page
+      .getByRole("alert")
+      .filter({ hasText: "Voice could not reconnect" })
+      .waitFor();
     assert.equal(await page.evaluate(() => window.stops), 1);
+    await page.clock.resume();
     await reset();
     await page.evaluate(() =>
       localStorage.setItem(
