@@ -34,6 +34,22 @@ pub struct SessionRequest {
 /// provider query whose result is not worth a durable record.
 pub const DIAGNOSTICS_OPERATION_PREFIX: &str = "diagnostics:";
 
+/// Any retained transport evidence prevents a transfer from changing an old
+/// read intent. This includes an unknown result and a prepared submission.
+pub(crate) fn has_transport_evidence(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    operation: &str,
+) -> Result<bool, WorkerError> {
+    let key = Call::operation_key(account, operation);
+    for phase in ["submitted", "written", "result"] {
+        if store::receipt(tx, &key, phase)?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 impl SessionRequest {
     /// Configuration reads have no side effects and can be repeated after a lost
     /// reply. Diagnostics probes are also read-only. Neither needs a durable
@@ -263,7 +279,7 @@ impl RetainedSessionPort {
             .map_err(|_| PortError::Unknown)?
     }
 }
-fn validate(request: &SessionRequest) -> Result<(), PortError> {
+pub(crate) fn validate(request: &SessionRequest) -> Result<(), PortError> {
     let turn_view = request.params.get("itemsView").and_then(Value::as_str);
     let turn_limit = request.params.get("limit").and_then(Value::as_u64);
     let valid_turn_view = turn_view == Some("full")
@@ -365,22 +381,19 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                         .is_some_and(|id| !id.is_empty())
             }));
     let transfer_method = request.transfer.as_ref().is_some_and(|transfer| {
-        matches!(
-            request.method,
-            Method::ThreadQueueList
-                | Method::ThreadBackgroundTerminalsList
-                | Method::ThreadUnsubscribe
-        ) && !transfer.transfer_id.is_empty()
+        request.actor.is_none()
+            && request.deleted_actor_session.is_none()
+            && request.expected_scope.as_ref() == Some(&request.scope)
+            && !transfer.transfer_id.is_empty()
             && !transfer.member.is_empty()
             && !transfer.source_account.is_empty()
             && !transfer.thread_id.is_empty()
             && request.scope.account == transfer.source_account
-            && request
-                .params
-                .as_object()
-                .is_some_and(|params| params.len() == 1 && params.contains_key("threadId"))
-            && request.params.get("threadId").and_then(Value::as_str)
-                == Some(transfer.thread_id.as_str())
+            && crate::account_transfer::valid_source_preflight_params(
+                request.method.as_str(),
+                &transfer.thread_id,
+                &request.params,
+            )
             && request.operation.starts_with(&format!(
                 "transfer:{}:{}:",
                 transfer.transfer_id, transfer.member
@@ -468,7 +481,10 @@ fn valid_background_terminals_list(params: &Value) -> bool {
         .get("threadId")
         .and_then(Value::as_str)
         .is_some_and(|id| !id.is_empty())
-        && params.get("limit") == Some(&json!(100))
+        && params.get("limit")
+            == Some(&json!(
+                studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE
+            ))
         && params
             .keys()
             .all(|key| matches!(key.as_str(), "threadId" | "limit" | "cursor"))
@@ -1478,5 +1494,61 @@ mod validation_tests {
         assert!(validate(&request).is_ok());
         request.method = Method::ThreadFork;
         assert_eq!(validate(&request), Err(PortError::Invalid));
+    }
+
+    #[test]
+    fn transfer_background_preflight_accepts_only_the_exact_bounded_source_shape() {
+        let mut request = turns_request("full", 1, false);
+        request.scope.account = "source-account".into();
+        request.expected_scope = Some(request.scope.clone());
+        request.operation = "transfer:transfer-a:agent-a:background-before".into();
+        request.method = Method::ThreadBackgroundTerminalsList;
+        request.params = json!({"threadId":"source-thread","limit":100});
+        request.transfer = Some(TransferAuthorization {
+            transfer_id: "transfer-a".into(),
+            member: "agent-a".into(),
+            source_account: "source-account".into(),
+            thread_id: "source-thread".into(),
+        });
+        assert!(
+            validate(&request).is_ok(),
+            "the bounded source read must reach its owner"
+        );
+        for params in [
+            json!({"threadId":"source-thread"}),
+            json!({"threadId":"source-thread","limit":1}),
+            json!({"threadId":"source-thread","limit":99}),
+            json!({"threadId":"source-thread","limit":101}),
+            json!({"threadId":"source-thread","limit":100,"cursor":"page"}),
+            json!({"threadId":"source-thread","limit":100,"extra":true}),
+            json!({"threadId":"other-thread","limit":100}),
+        ] {
+            let mut invalid = request.clone();
+            invalid.params = params;
+            assert_eq!(validate(&invalid), Err(PortError::Invalid));
+        }
+        for field in ["account", "scope", "missing-scope", "operation"] {
+            let mut invalid = request.clone();
+            match field {
+                "account" => invalid.scope.account = "other-account".into(),
+                "scope" => invalid.expected_scope.as_mut().unwrap().generation += 1,
+                "missing-scope" => invalid.expected_scope = None,
+                _ => invalid.operation = "other:background-before".into(),
+            }
+            let expected = if matches!(field, "account" | "scope") {
+                PortError::ScopeMismatch
+            } else {
+                PortError::Invalid
+            };
+            assert_eq!(validate(&invalid), Err(expected), "{field}");
+        }
+        for method in [Method::ThreadQueueList, Method::ThreadUnsubscribe] {
+            let mut exact = request.clone();
+            exact.method = method;
+            exact.params = json!({"threadId":"source-thread"});
+            assert!(validate(&exact).is_ok());
+            exact.params["limit"] = json!(100);
+            assert_eq!(validate(&exact), Err(PortError::Invalid));
+        }
     }
 }

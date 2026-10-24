@@ -631,11 +631,12 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
             {
                 return Ok(not_sent(NotSentReason::ExpectedScopeMismatch));
             }
-            let allowed_params = request.params.as_object().is_some_and(|params| {
-                params.len() == 1
-                    && params.get("threadId").and_then(serde_json::Value::as_str)
-                        == Some(request.thread_id.as_str())
-            });
+            let allowed_params =
+                studio_runtime_services::account_transfer::valid_source_preflight_params(
+                    request.method.as_str(),
+                    &request.thread_id,
+                    &request.params,
+                );
             if !allowed_params
                 || !matches!(
                     request.method.as_str(),

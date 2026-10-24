@@ -114,7 +114,7 @@ impl<'a> HistoryRead<'a> {
         let mut seen = BTreeSet::new();
         let mut result = Vec::new();
         loop {
-            let mut params = json!({"threadId":thread,"limit":100});
+            let mut params = json!({"threadId":thread,"limit":studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE});
             if let Some(value) = &cursor {
                 params["cursor"] = json!(value);
             }

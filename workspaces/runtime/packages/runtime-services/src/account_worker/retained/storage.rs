@@ -43,6 +43,11 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 && call.scope.account == transfer.source_account
                 && call.params.get("threadId").and_then(Value::as_str)
                     == Some(transfer.thread_id.as_str())
+                && crate::account_transfer::valid_source_preflight_params(
+                    &call.method,
+                    &transfer.thread_id,
+                    &call.params,
+                )
                 && call.operation.starts_with(&format!(
                     "transfer:{}:{}:",
                     transfer.transfer_id, transfer.member

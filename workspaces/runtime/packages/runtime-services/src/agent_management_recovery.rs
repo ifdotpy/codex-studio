@@ -551,7 +551,7 @@ async fn inspect(
         (
             Method::ThreadBackgroundTerminalsList,
             "terminals",
-            json!({"threadId":thread,"limit":1}),
+            json!({"threadId":thread,"limit":studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE}),
         ),
         (Method::ThreadQueueList, "queue", json!({"threadId":thread})),
     ] {
@@ -727,6 +727,24 @@ mod tests {
             request: ProviderRequest,
         ) -> AccountSessionFuture<'a, SessionReceipt> {
             Box::pin(async move {
+                crate::account_worker::retained::validate(
+                    &crate::account_worker::retained::SessionRequest {
+                        scope: Self::scope(),
+                        expected_scope: request.expected_scope.clone(),
+                        operation: request.operation.clone(),
+                        actor: request.actor.clone(),
+                        transfer: None,
+                        deleted_actor_session: request.deleted_actor_session.clone(),
+                        method: request.method,
+                        params: request.params.clone(),
+                        deadline: request.deadline,
+                    },
+                )
+                .map_err(|_| {
+                    crate::account_session_runtime::AccountSessionError::Refused(
+                        "The real retained validator refused this fixture request",
+                    )
+                })?;
                 self.calls
                     .lock()
                     .expect("calls")

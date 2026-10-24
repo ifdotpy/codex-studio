@@ -15,6 +15,37 @@ pub const SETTINGS_REQUIRED: &str = "account-transfer/destination-settings";
 /// Internal receipt-hold identity mapped to native admission by preparation.
 pub(crate) const RECEIPT_HOLD: &str = "account-transfer/receipt-hold";
 
+/// Exact source preflight shapes. A background read checks one bounded page;
+/// a nonempty result or continuation cursor keeps the transfer on its source.
+pub fn valid_source_preflight_params(method: &str, thread: &str, params: &Value) -> bool {
+    if thread.is_empty() || params["threadId"] != thread {
+        return false;
+    }
+    match method {
+        "thread/queue/list" | "thread/unsubscribe" => params == &json!({"threadId":thread}),
+        "thread/backgroundTerminals/list" => {
+            params
+                == &json!({
+                    "threadId":thread,
+                    "limit":studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE,
+                })
+        }
+        _ => false,
+    }
+}
+
+fn valid_read_scope(scope: &Value, account: &Value) -> bool {
+    scope.as_object().is_some_and(|scope| scope.len() == 3)
+        && scope["account"] == *account
+        && account.as_str().is_some_and(|account| !account.is_empty())
+        && scope["connection"]
+            .as_str()
+            .is_some_and(|connection| !connection.is_empty())
+        && scope["generation"]
+            .as_u64()
+            .is_some_and(|generation| generation > 0)
+}
+
 #[derive(Debug, Error)]
 pub enum TransferError {
     #[error("invalid stored {object} at {pointer}")]
@@ -601,6 +632,149 @@ impl Snapshot {
         Ok(self.decision(op, self.agents.clone(), vec![]))
     }
 
+    /// Correct only the legacy background shape that retained admission refused.
+    /// The driver must prove no native transport evidence exists before commit.
+    pub(crate) fn correct_unsubmitted_background_read(
+        &self,
+        agent: &str,
+        operation: &str,
+        next: &Value,
+    ) -> Result<Option<Decision>, TransferError> {
+        let member = &self.operation["members"][agent];
+        let thread = member["sourceThreadId"].as_str().unwrap_or_default();
+        if !self.pending()
+            || self.phase(agent)? != Phase::Reading
+            || operation != format!("transfer:{}:{agent}:background-before", self.identity.id)
+            || next["operation"] != operation
+            || next["account"] != member["sourceAccountKey"]
+            || !valid_read_scope(&next["scope"], &member["sourceAccountKey"])
+            || next["method"] != "thread/backgroundTerminals/list"
+            || !valid_source_preflight_params(
+                "thread/backgroundTerminals/list",
+                thread,
+                &next["params"],
+            )
+            || member
+                .get("providerReadReceipts")
+                .and_then(|receipts| receipts.get(operation))
+                .is_some()
+        {
+            return Ok(None);
+        }
+        let Some(saved) = member
+            .get("providerReadIntents")
+            .and_then(|intents| intents.get(operation))
+        else {
+            return Ok(None);
+        };
+        let correction = member
+            .get("providerReadIntentCorrections")
+            .and_then(|corrections| corrections.get(operation));
+        let legacy = correction.unwrap_or(saved);
+        let mut expected_legacy = next.clone();
+        expected_legacy["params"] = json!({"threadId":thread});
+        expected_legacy["scope"] = legacy["scope"].clone();
+        if legacy != &expected_legacy
+            || !valid_read_scope(&legacy["scope"], &member["sourceAccountKey"])
+        {
+            return Ok(None);
+        }
+        if correction.is_some() {
+            let mut expected_saved = next.clone();
+            expected_saved["scope"] = saved["scope"].clone();
+            if saved != &expected_saved
+                || !valid_read_scope(&saved["scope"], &member["sourceAccountKey"])
+            {
+                return Ok(None);
+            }
+        }
+        // The driver proves that no retained transport record exists before
+        // this decision can commit. Preserve the exact old fingerprint.
+        let mut operation_record = self.operation.clone();
+        operation_record["members"][agent]["providerReadIntents"][operation] = next.clone();
+        operation_record["members"][agent]["providerReadIntentCorrections"][operation] =
+            legacy.clone();
+        Ok(Some(self.decision(
+            operation_record,
+            self.agents.clone(),
+            vec![],
+        )))
+    }
+
+    /// Replay an exact read or source-unsubscribe reply with its original scope.
+    /// A new authenticated connection does not authorize another native send.
+    pub(crate) fn written_read_replay(
+        &self,
+        agent: &str,
+        next: &Value,
+    ) -> Result<Option<Value>, TransferError> {
+        if !matches!(
+            next["method"].as_str(),
+            Some(
+                "model/list"
+                    | "thread/read"
+                    | "thread/turns/list"
+                    | "thread/queue/list"
+                    | "thread/backgroundTerminals/list"
+                    | "thread/unsubscribe"
+            )
+        ) {
+            return Ok(None);
+        }
+        let Some(operation) = next["operation"].as_str() else {
+            return Ok(None);
+        };
+        let member = &self.operation["members"][agent];
+        let Some(saved) = member
+            .get("providerReadIntents")
+            .and_then(|intents| intents.get(operation))
+        else {
+            return Ok(None);
+        };
+        let Some(result) = member
+            .get("providerReadReceipts")
+            .and_then(|receipts| receipts.get(operation))
+        else {
+            return Ok(None);
+        };
+        if result["certainty"] != "written" {
+            return Ok(None);
+        }
+        let receipt = &result["receipt"];
+        let ticket = &receipt["ticket"];
+        let mut original = next.clone();
+        original["scope"] = saved["scope"].clone();
+        let authorized_unsubscribe = next["method"] != "thread/unsubscribe"
+            || (next["account"] == member["sourceAccountKey"]
+                && operation == format!("transfer:{}:{agent}:unsubscribe", self.identity.id)
+                && valid_source_preflight_params(
+                    "thread/unsubscribe",
+                    member["sourceThreadId"].as_str().unwrap_or_default(),
+                    &next["params"],
+                ));
+        if !self.pending()
+            || self.phase(agent)? != Phase::Reading
+            || !authorized_unsubscribe
+            || saved != &original
+            || !valid_read_scope(&next["scope"], &next["account"])
+            || !valid_read_scope(&saved["scope"], &next["account"])
+            || receipt["operation"] != operation
+            || receipt["certainty"] != "written"
+            || receipt["scope"] != saved["scope"]
+            || ticket["generation"] != saved["scope"]["generation"]
+            || ticket["method"] != saved["method"]
+            || serde_json::from_value::<studio_runtime_providers::RequestId>(ticket["id"].clone())
+                .is_err()
+            || result["result"]["kind"] != "reply"
+            || result["result"].get("value").is_none()
+        {
+            return Err(TransferError::Refused(
+                "The Written read receipt does not match its original intent",
+            ));
+        }
+        Ok(Some(result.clone()))
+    }
+
     /// Journal a provider read independently from the final thread mutation.
     /// An existing Written receipt is replayed, NotSent may retry the same
     /// operation, and an intent without a receipt is held as uncertain.
@@ -621,9 +795,11 @@ impl Snapshot {
             == Some(account)
             && member.get("sourceThreadId").and_then(Value::as_str)
                 == params.get("threadId").and_then(Value::as_str)
-            && params
-                .as_object()
-                .is_some_and(|params| params.len() == 1 && params.contains_key("threadId"))
+            && valid_source_preflight_params(
+                method,
+                params["threadId"].as_str().unwrap_or_default(),
+                &params,
+            )
             && operation.starts_with(&format!("transfer:{}:{agent}:", self.identity.id));
         if !self.pending()
             || self.phase(agent)? != Phase::Reading

@@ -245,6 +245,283 @@ struct ProviderReadCall {
     deadline: Duration,
 }
 
+#[cfg(test)]
+mod reconnect_read_tests {
+    use super::*;
+    use crate::recovery_history::ConnectionScope;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ReconnectedSession(AtomicUsize);
+    impl AccountSessionPort for ReconnectedSession {
+        fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            Some(ConnectionScope {
+                account: account.into(),
+                connection: "new-connection".into(),
+                generation: 8,
+            })
+        }
+        fn provider_request<'a>(
+            &'a self,
+            _request: ProviderRequest,
+        ) -> crate::account_session_runtime::AccountSessionFuture<'a, SessionReceipt> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(AccountSessionError::Refused("no native write is permitted")) })
+        }
+        fn transfer_provider_request<'a>(
+            &'a self,
+            _request: TransferProviderRequest,
+        ) -> crate::account_session_runtime::AccountSessionFuture<'a, SessionReceipt> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(AccountSessionError::Refused("no native write is permitted")) })
+        }
+    }
+
+    async fn fixture(change: &'static str) -> (tempfile::TempDir, RuntimeStore, Value) {
+        let root = tempfile::tempdir().expect("reconnect state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let old_scope = json!({"account":"source","connection":"old-connection","generation":7});
+        let mut saved = json!({"receipt":{"operation":"read","scope":old_scope,
+            "certainty":"written","ticket":{"generation":7,"id":"old-request","method":"thread/read"}},
+            "certainty":"written","result":{"kind":"reply","value":{"thread":{"id":"source-thread"}}}});
+        match change {
+            "receipt-scope" => saved["receipt"]["scope"]["connection"] = json!("wrong-connection"),
+            "ticket-generation" => saved["receipt"]["ticket"]["generation"] = json!(8),
+            "ticket-method" => saved["receipt"]["ticket"]["method"] = json!("thread/start"),
+            "ticket-id" => saved["receipt"]["ticket"]["id"] = Value::Null,
+            "unknown" => saved["certainty"] = json!("unknown"),
+            "not-sent" => saved["certainty"] = json!("not_sent"),
+            "rejected" => saved["result"]["kind"] = json!("rejected"),
+            _ => {}
+        }
+        let expected = saved.clone();
+        store.transaction(move |tx| {
+            let agent = studio_runtime_store::AgentRecord::from_value(json!({"id":"member","rootId":"member","epoch":3,
+                "status":"completed","isLead":true,"autoWake":false,"accountKey":"target","accountTransferId":"move"}))?;
+            studio_runtime_store::AgentRepository::put(tx, &agent)?;
+            let operation = json!({"id":"move","leadId":"member","targetAccountKey":"target",
+                "status":"pending","scope":"team","created":1.0,"members":{"member":{
+                    "phase":"reading","sourceAccountKey":"source","sourceThreadId":"source-thread",
+                    "providerReadIntents":{"read":{"operation":"read","account":"source","scope":old_scope,
+                        "method":"thread/read","params":{"threadId":"source-thread","includeTurns":false}}},
+                    "providerReadReceipts":{"read":saved}}},"requests":{}});
+            studio_runtime_store::AccountTransferRepository::put(tx, "move", &operation.to_string())
+        }).await.expect("written read");
+        (root, store, expected)
+    }
+
+    async fn read(
+        store: &RuntimeStore,
+        session: &ReconnectedSession,
+        changed_content: bool,
+    ) -> Result<(SessionReceipt, Value), TransferError> {
+        session_reply(&ProviderReadContext { store, session, transfer:"move", agent:"member", account:"source", now:2.0 },
+            ProviderReadCall { actor:None, transfer_source_thread:None, operation:"read".into(), method:Method::ThreadRead,
+                params:json!({"threadId":if changed_content { "another-thread" } else { "source-thread" },"includeTurns":false}), deadline:Duration::from_secs(1) }).await
+    }
+
+    #[tokio::test]
+    async fn written_read_replays_its_original_receipt_after_reconnect_without_native_writes() {
+        let (_root, store, expected) = fixture("").await;
+        let session = ReconnectedSession(AtomicUsize::new(0));
+        let before = store
+            .read_async("before replay", |tx| {
+                driver::load(tx, "move").map(|s| s.operation().clone())
+            })
+            .await
+            .expect("operation");
+        let (receipt, value) = read(&store, &session, false)
+            .await
+            .expect("replay the durable reply");
+        assert_eq!(
+            serde_json::to_value(&receipt.scope).expect("scope"),
+            expected["receipt"]["scope"]
+        );
+        assert_eq!(
+            receipt.ticket.as_ref().expect("original ticket").id,
+            studio_runtime_providers::RequestId::String("old-request".into())
+        );
+        assert_eq!(value, expected["result"]["value"]);
+        assert!(receipt.replayed);
+        assert_eq!(session.0.load(Ordering::SeqCst), 0);
+        let after = store
+            .read_async("after replay", |tx| {
+                driver::load(tx, "move").map(|s| s.operation().clone())
+            })
+            .await
+            .expect("operation");
+        assert_eq!(after, before);
+    }
+
+    #[tokio::test]
+    async fn reconnect_read_refuses_changed_content_or_unproven_receipts_without_native_writes() {
+        for change in [
+            "content",
+            "receipt-scope",
+            "ticket-generation",
+            "ticket-method",
+            "ticket-id",
+            "unknown",
+            "not-sent",
+            "rejected",
+        ] {
+            let (_root, store, _) = fixture(change).await;
+            let session = ReconnectedSession(AtomicUsize::new(0));
+            assert!(
+                read(&store, &session, change == "content").await.is_err(),
+                "{change}"
+            );
+            assert_eq!(session.0.load(Ordering::SeqCst), 0, "{change}");
+        }
+    }
+
+    #[tokio::test]
+    async fn written_source_unsubscribe_replays_only_its_exact_receipt_after_reconnect() {
+        let (_root, store, _) = fixture("").await;
+        const OPERATION: &str = "transfer:move:member:unsubscribe";
+        store
+            .transaction(|tx| {
+                let mut operation: Value = serde_json::from_str(
+                    &studio_runtime_store::AccountTransferRepository::get(tx, "move")?
+                        .expect("transfer"),
+                )?;
+                let member = &mut operation["members"]["member"];
+                let mut intent = member["providerReadIntents"]["read"].take();
+                intent["operation"] = json!(OPERATION);
+                intent["method"] = json!("thread/unsubscribe");
+                intent["params"] = json!({"threadId":"source-thread"});
+                member["providerReadIntents"] = json!({(OPERATION):intent});
+                let mut result = member["providerReadReceipts"]["read"].take();
+                result["receipt"]["operation"] = json!(OPERATION);
+                result["receipt"]["ticket"]["method"] = json!("thread/unsubscribe");
+                result["result"]["value"] = json!({});
+                member["providerReadReceipts"] = json!({(OPERATION):result});
+                studio_runtime_store::AccountTransferRepository::put(
+                    tx,
+                    "move",
+                    &operation.to_string(),
+                )
+            })
+            .await
+            .expect("written source unsubscribe");
+        let session = ReconnectedSession(AtomicUsize::new(0));
+        let before = store
+            .read_async("before unsubscribe replay", |tx| {
+                driver::load(tx, "move").map(|s| s.operation().clone())
+            })
+            .await
+            .expect("operation");
+        let (receipt, value) = session_reply(
+            &ProviderReadContext {
+                store: &store,
+                session: &session,
+                transfer: "move",
+                agent: "member",
+                account: "source",
+                now: 2.0,
+            },
+            ProviderReadCall {
+                actor: None,
+                transfer_source_thread: Some("source-thread".into()),
+                operation: OPERATION.into(),
+                method: Method::ThreadUnsubscribe,
+                params: json!({"threadId":"source-thread"}),
+                deadline: Duration::from_secs(1),
+            },
+        )
+        .await
+        .expect("replay without another unsubscribe");
+        assert_eq!(receipt.operation, OPERATION);
+        assert_eq!(receipt.scope.connection, "old-connection");
+        assert_eq!(
+            receipt.ticket.as_ref().expect("ticket").method,
+            Method::ThreadUnsubscribe
+        );
+        assert!(receipt.replayed);
+        assert_eq!(value, json!({}));
+        assert_eq!(session.0.load(Ordering::SeqCst), 0);
+        let after = store
+            .read_async("after unsubscribe replay", |tx| {
+                driver::load(tx, "move").map(|s| s.operation().clone())
+            })
+            .await
+            .expect("operation");
+        assert_eq!(after, before);
+        for field in ["sourceAccountKey", "sourceThreadId"] {
+            let mut changed = before.clone();
+            changed["members"]["member"][field] = json!("another-source");
+            store
+                .transaction(move |tx| {
+                    studio_runtime_store::AccountTransferRepository::put(
+                        tx,
+                        "move",
+                        &changed.to_string(),
+                    )
+                })
+                .await
+                .expect("changed source ownership");
+            assert!(
+                session_reply(
+                    &ProviderReadContext {
+                        store: &store,
+                        session: &session,
+                        transfer: "move",
+                        agent: "member",
+                        account: "source",
+                        now: 3.0
+                    },
+                    ProviderReadCall {
+                        actor: None,
+                        transfer_source_thread: Some("source-thread".into()),
+                        operation: OPERATION.into(),
+                        method: Method::ThreadUnsubscribe,
+                        params: json!({"threadId":"source-thread"}),
+                        deadline: Duration::from_secs(1)
+                    }
+                )
+                .await
+                .is_err(),
+                "{field}"
+            );
+            assert_eq!(session.0.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn written_replay_never_authorizes_other_native_mutations() {
+        for method in [
+            Method::ThreadStart,
+            Method::ThreadFork,
+            Method::ThreadUnsubscribe,
+        ] {
+            let (_root, store, _) = fixture("").await;
+            let session = ReconnectedSession(AtomicUsize::new(0));
+            assert!(
+                session_reply(
+                    &ProviderReadContext {
+                        store: &store,
+                        session: &session,
+                        transfer: "move",
+                        agent: "member",
+                        account: "source",
+                        now: 2.0
+                    },
+                    ProviderReadCall {
+                        actor: None,
+                        transfer_source_thread: None,
+                        operation: "read".into(),
+                        method,
+                        params: json!({"threadId":"source-thread"}),
+                        deadline: Duration::from_secs(1)
+                    }
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(session.0.load(Ordering::SeqCst), 0);
+        }
+    }
+}
+
 async fn session_reply(
     context: &ProviderReadContext<'_>,
     call: ProviderReadCall,
@@ -309,7 +586,7 @@ async fn session_reply(
                 result: Some(ProviderResponse::Reply(value.clone())),
                 not_sent_reason: None,
 
-                replayed: false,
+                replayed: true,
             },
             value,
         ));
@@ -838,7 +1115,7 @@ impl TransferExecutor for AccountTransferExecutor {
                             thread: thread_id,
                             suffix: "background-before",
                             method: Method::ThreadBackgroundTerminalsList,
-                            params: json!({"threadId":thread_id}),
+                            params: json!({"threadId":thread_id,"limit":studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE}),
                         },
                     )
                     .await?;
@@ -1585,7 +1862,29 @@ mod retained_executor_tests {
                 assert_eq!(request.member, "lead");
                 assert_eq!(request.source_account, "source");
                 assert_eq!(request.thread_id, "source-thread");
-                assert_eq!(request.params, json!({"threadId":"source-thread"}));
+                crate::account_worker::retained::validate(
+                    &crate::account_worker::retained::SessionRequest {
+                        scope: request.expected_scope.clone(),
+                        expected_scope: Some(request.expected_scope.clone()),
+                        operation: request.operation.clone(),
+                        actor: None,
+                        transfer: Some(crate::account_worker::retained::TransferAuthorization {
+                            transfer_id: request.transfer_id.clone(),
+                            member: request.member.clone(),
+                            source_account: request.source_account.clone(),
+                            thread_id: request.thread_id.clone(),
+                        }),
+                        deleted_actor_session: None,
+                        method: request.method,
+                        params: request.params.clone(),
+                        deadline: request.deadline,
+                    },
+                )
+                .map_err(|_| {
+                    AccountSessionError::Refused(
+                        "The real retained validator refused the transfer preflight",
+                    )
+                })?;
                 assert!(
                     request
                         .operation
