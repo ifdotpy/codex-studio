@@ -133,6 +133,50 @@ impl OrchestrationSettingsRepository {
         Ok(())
     }
 
+    /// Claude idle compaction is off until the server setting enables it.
+    pub fn idle_compaction(
+        connection: &Connection,
+    ) -> StoreResult<studio_runtime_schema::idle_compaction::Settings> {
+        if !crate::schema::table_exists(connection, TABLE)? {
+            return Ok(Default::default());
+        }
+        let raw: Option<String> = connection
+            .query_row(
+                &format!("SELECT json_extract(record,'$.idleCompaction') FROM {TABLE} WHERE id=?1"),
+                [ROW],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let settings: studio_runtime_schema::idle_compaction::Settings = raw
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()
+            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
+            .unwrap_or_default();
+        if !settings.valid() {
+            return Err(StoreError::SchemaMismatch(
+                "idleCompaction.minTokens is below the minimum".into(),
+            ));
+        }
+        Ok(settings)
+    }
+
+    pub fn set_idle_compaction(
+        connection: &Connection,
+        settings: &studio_runtime_schema::idle_compaction::Settings,
+    ) -> StoreResult<()> {
+        if !settings.valid() {
+            return Err(StoreError::SchemaMismatch(
+                "idleCompaction.minTokens is below the minimum".into(),
+            ));
+        }
+        connection.execute(
+            &format!("INSERT INTO {TABLE}(id,record) VALUES(?1,json_object('idleCompaction',json(?2))) ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.idleCompaction',json(?2))"),
+            params![ROW, serde_json::to_string(settings).map_err(|error| StoreError::SchemaMismatch(error.to_string()))?],
+        )?;
+        Ok(())
+    }
+
     /// The effective child-result hold.
     pub fn child_result_coalesce(connection: &Connection) -> StoreResult<Duration> {
         Self::value(connection, CHILD_RESULT_COALESCE_SETTING).map(Duration::from_secs)

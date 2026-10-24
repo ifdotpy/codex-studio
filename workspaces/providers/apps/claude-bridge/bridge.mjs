@@ -1,4 +1,9 @@
 import {
+  cacheReport,
+  idleRefusal,
+  compactionEnabled,
+} from "./idle-compaction.mjs";
+import {
   prepareFileRestore,
   verifyFileRestore,
   fileBackups,
@@ -15,6 +20,7 @@ import { interruptInputQueue } from "./stop-inputs.mjs";
 import { browserEnvironment } from "./browser-environment.mjs";
 import {
   query,
+  resolveSettings,
   createSdkMcpServer,
   tool,
   forkSession,
@@ -978,6 +984,8 @@ const permissionMode = (s, p = {}) =>
 async function flags(s, p = {}, live = false) {
   const native = await catalog();
   return {
+    // Studio owns the durable idle timer. Disable the CLI's private timer.
+    idleCompaction: false,
     fastMode: p.serviceTier === "priority",
     ...(p.effort !== undefined ? { effortLevel: p.effort } : {}),
     ...thinkingFlag(
@@ -1649,6 +1657,13 @@ async function startSession(s, active, p) {
         continue;
       }
       if (m.type === "system") {
+        if (
+          m.subtype === "status" &&
+          m.status === "requesting" &&
+          !m.parent_tool_use_id
+        ) {
+          active.idleRequestStartedAt = Date.now();
+        }
         if (m.subtype === "compact_boundary" && turn) {
           const item = {
             id: m.uuid || randomUUID(),
@@ -1777,6 +1792,13 @@ async function startSession(s, active, p) {
         const e = m.event;
         if (e.type === "message_start") {
           active.messageId = e.message.id;
+          active.idleRequest = {
+            id: e.message.id,
+            at:
+              Number.isFinite(m.ttft_ms) && m.ttft_ms >= 0
+                ? Date.now() - m.ttft_ms
+                : active.idleRequestStartedAt || Date.now(),
+          };
           emit("provider/generationStarted", {
             threadId: s.id,
             turnId: turn.id,
@@ -1852,6 +1874,33 @@ async function startSession(s, active, p) {
         }
         active.lastModel = m.message.model || active.lastModel;
         active.lastMessageId = m.message.id || active.lastMessageId;
+        if (
+          turn &&
+          !turn.idleCompaction &&
+          !m.parent_tool_use_id &&
+          m.message.id &&
+          m.message.usage
+        ) {
+          const { effective } = await resolveSettings({
+            cwd: s.cwd,
+            settingSources: settings(s).settingSources,
+          });
+          s.idleCache = cacheReport(
+            s,
+            m.message.usage,
+            m.message.id,
+            active.idleRequest?.id === m.message.id
+              ? active.idleRequest.at
+              : active.idleRequestStartedAt || Date.now(),
+            effective,
+          );
+          emit("thread/idleCompaction/updated", {
+            threadId: s.id,
+            turnId: turn.id,
+            report: s.idleCache,
+          });
+          persistLater(s, active);
+        }
         const responseUsage = usageTokens(m.message.usage);
         active.lastUsage = responseUsage || active.lastUsage;
         const output = m.message.usage?.output_tokens;
@@ -2059,6 +2108,7 @@ function newActive(turn) {
     pendingSteers: new Set(),
     assistantBlocks: new Map(),
     responseUsages: new Map(),
+    idleRequestStartedAt: Date.now(),
     reportedUsage: 0,
     reportedOutput: 0,
     reportedTurnOutput: 0,
@@ -2560,6 +2610,25 @@ async function handle(method, p) {
   }
   if (method === "thread/compact/start") {
     const s = await session(p.threadId);
+    if (p.idleCompaction) {
+      const { effective: options } = await resolveSettings({
+        cwd: s.cwd,
+        settingSources: settings(s).settingSources,
+      });
+      const refusal = idleRefusal(
+        s,
+        queries.get(s.id),
+        p.idleCompaction,
+        options,
+      );
+      const disabled = !compactionEnabled(options);
+      const reason = disabled
+        ? "compaction_off"
+        : options.idleCompaction === false
+          ? "idle_compaction_off"
+          : refusal;
+      if (reason) throw new Error("Idle compaction skipped: " + reason);
+    }
     return handle("turn/start", {
       ...p,
       model: s.model,
@@ -2624,6 +2693,7 @@ async function handle(method, p) {
     const turn = {
       id: turnId,
       clientUserMessageId: p.clientUserMessageId,
+      ...(p.idleCompaction ? { idleCompaction: true } : {}),
       startOutcome: "preparing",
       status: "inProgress",
       items: [
@@ -2725,6 +2795,7 @@ async function handle(method, p) {
           "Claude background work started a turn; wait or steer that turn",
         );
       active.turn = turn;
+      active.idleRequestStartedAt = Date.now();
       active.reportedTurnOutput = 0;
       active.reservingInput = true;
     }

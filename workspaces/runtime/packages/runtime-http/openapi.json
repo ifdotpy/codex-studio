@@ -28678,6 +28678,31 @@
         "title": "IdentityAlert",
         "type": "object"
       },
+      "IdleCompactionSettings": {
+        "additionalProperties": false,
+        "properties": {
+          "minTokens": {
+            "default": 200000,
+            "maximum": 9007199254740991,
+            "minimum": 100000,
+            "type": "integer"
+          },
+          "mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "log",
+              "compact"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "minTokens"
+        ],
+        "type": "object"
+      },
       "ImageMountDiagnostics": {
         "additionalProperties": false,
         "description": "Startup image workspace mount check. Paths and details stay in `mounts check`.",
@@ -35152,6 +35177,9 @@
             "minimum": 0,
             "title": "Childresultcoalesceseconds",
             "type": "integer"
+          },
+          "idleCompaction": {
+            "$ref": "#/components/schemas/IdleCompactionSettings"
           },
           "idleSessionUnloadMinutes": {
             "description": "Minutes a lead's or ordinary chat's idle Codex thread or Claude session stays loaded, and an account's provider process keeps running after its last thread unloaded. A managed worker without a running turn, pending input, or active monitor unloads at once. The next message resumes a thread. 0 never unloads.",
@@ -56092,6 +56120,10 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "idleCompaction": {
+            "description": "The notice confirms a completed idle compaction of a Claude session.",
+            "type": "boolean"
           },
           "inputs": {
             "anyOf": [

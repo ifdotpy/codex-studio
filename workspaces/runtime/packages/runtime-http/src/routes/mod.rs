@@ -2,7 +2,7 @@ mod account_login;
 mod account_transfer;
 mod agent_limits;
 mod agent_management;
-pub use agent_management::NativeContextRepairPort;
+pub use agent_management::{NativeContextRepairPort, IdleCompactionHost};
 pub use agents_create::managed_creation_environment;
 pub use work_write::managed_work_port;
 mod agents_create;

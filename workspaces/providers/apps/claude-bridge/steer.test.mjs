@@ -19,6 +19,7 @@ const HANG_GUARD_MS = 10_000;
 // late: read the steer, end the turn with an error, then echo the steer.
 // anything else: never read further input until `.end` exists.
 const FAKE_SDK = String.raw`
+export const resolveSettings=async()=>({effective:{}});
 import fs from 'node:fs';
 export const tool=(name,description,schema,call)=>({name,description,schema,call});
 export const createSdkMcpServer=value=>({...value});

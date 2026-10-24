@@ -80,6 +80,7 @@ pub mod host_exec;
 pub mod host_exec_service;
 pub mod host_project_runtime;
 pub mod host_worker_create;
+pub mod idle_compaction;
 pub mod image_workspace;
 pub mod image_workspace_agents;
 pub mod lifecycle_effects;
