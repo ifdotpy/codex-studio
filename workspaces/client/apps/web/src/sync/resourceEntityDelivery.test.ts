@@ -216,7 +216,8 @@ it("persists an added transcript baseline before dispatching its initial notific
         finish = resolve;
       }),
   );
-  const dispatch = vi.fn();
+  const dispatched = Promise.withResolvers<void>();
+  const dispatch = vi.fn(() => dispatched.resolve());
   const delivery = new ResourceEntityDelivery(persist, dispatch);
   const initial = {
     protocol: 4,
@@ -233,5 +234,6 @@ it("persists an added transcript baseline before dispatching its initial notific
   expect(persist).toHaveBeenCalledTimes(1);
   expect(dispatch).not.toHaveBeenCalled();
   finish();
-  await vi.waitFor(() => expect(dispatch).toHaveBeenCalledWith(initial));
+  await dispatched.promise;
+  expect(dispatch).toHaveBeenCalledWith(initial);
 });

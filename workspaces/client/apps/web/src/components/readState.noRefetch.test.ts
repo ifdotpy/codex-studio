@@ -63,7 +63,7 @@ it.each([false, true])(
       "workspace",
     );
     state.observeRead({ id: "lead", threadId: "thread", turnId: "turn" });
-    await vi.waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
+    expect(h.post).toHaveBeenCalledTimes(1);
     await Promise.resolve();
     await Promise.resolve();
     expect(refresh).not.toHaveBeenCalled();

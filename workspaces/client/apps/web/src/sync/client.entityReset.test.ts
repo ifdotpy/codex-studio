@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptPageData } from "../types";
 import type { ResourceChangeEvent } from "./resourceEvents";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
@@ -98,6 +98,7 @@ vi.mock("./entityCacheStorage", () => ({
 }));
 
 describe("entity pull reset wiring", () => {
+  beforeEach(() => vi.useFakeTimers());
   afterEach(() => {
     vi.useRealTimers();
     vi.resetModules();
@@ -236,8 +237,7 @@ describe("entity pull reset wiring", () => {
           ids.every((id) => id.startsWith("transcript:item:agent:")),
       ).length;
     const settle = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
     };
 
     // The writer patches its own cache entry, so no full read is needed.
@@ -437,12 +437,13 @@ describe("entity pull reset wiring", () => {
 
     const client = await import("./client");
     const stop = client.subscribeStateProjection(vi.fn(), vi.fn());
-    await vi.waitFor(() => expect(mocks.invalidation).toBeTypeOf("function"));
+    await vi.advanceTimersByTimeAsync(0);
     expect(mocks.invalidation).toBeTypeOf("function");
     mocks.invalidation?.({ epoch: "before-restore", entitySequence: 1000 });
     mocks.invalidation?.({ epoch: "after-restore", entitySequence: 900 });
 
-    await vi.waitFor(() => expect(pulls).toEqual([1000, 0]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pulls).toEqual([1000, 0]);
     expect(rows.get("state:entities:checkpoint")?.seq).toBe(900);
     stop();
   });
