@@ -142,6 +142,7 @@ fn event_kind(status: &str, error: &str, age: f64) -> Option<Kind> {
     }
 }
 
+#[derive(Clone)]
 struct Agent {
     name: String,
     deleted: bool,
@@ -151,8 +152,13 @@ struct Agent {
 pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
     let since = now - WINDOW_SECONDS;
     let dismissed = dismissed(tx)?;
-    let agent = |id: &str| -> Result<Option<Agent>, StoreError> {
-        Ok(studio_runtime_store::AgentRepository::get(
+    // Many rows share an owner; each owner record is read and decoded once.
+    let mut owners = std::collections::HashMap::<String, Option<Agent>>::new();
+    let mut agent = |id: &str| -> Result<Option<Agent>, StoreError> {
+        if let Some(owner) = owners.get(id) {
+            return Ok(owner.clone());
+        }
+        let owner = studio_runtime_store::AgentRepository::get(
             tx,
             &studio_runtime_store::AgentId::from(id),
         )?
@@ -164,7 +170,9 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
                 .unwrap_or("Agent")
                 .to_owned(),
             deleted: studio_runtime_store::truthy(record.extra.get("deletedAt")),
-        }))
+        });
+        owners.insert(id.to_owned(), owner.clone());
+        Ok(owner)
     };
     let mut rows = Vec::new();
     let push = |rows: &mut Vec<Value>, row: Value| {
@@ -173,15 +181,8 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
         }
     };
 
-    let mut monitors = tx.prepare_cached(
-        "SELECT id,record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('lost','failed') AND json_extract(record,'$.created')>=?1",
-    )?;
-    let found = monitors
-        .query_map([since], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(monitors);
+    // The store read selects only rows that `monitor_kind` may accept.
+    let found = studio_runtime_store::MonitorsRepository::studio_error_candidates(tx, since)?;
     for (id, raw) in found {
         let Ok(record) = serde_json::from_str::<Value>(&raw) else {
             continue;
@@ -519,5 +520,128 @@ mod tests {
         ] {
             assert_eq!(kind.action(), "check", "{kind:?}");
         }
+    }
+
+    /// The monitor read selects rows in SQL so that the list no longer parses
+    /// every command that ended with its own exit code. The list must stay
+    /// identical to the former read of every lost or failed monitor in the
+    /// window, and the SQL selection must hold every row `monitor_kind`
+    /// accepts.
+    #[tokio::test]
+    async fn monitor_rows_equal_the_full_read_and_the_sql_selection_holds_every_kind() {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("store opens");
+        let now = 1_000_000_000.0;
+        store
+            .transaction(move |tx| {
+                for (id, extra) in [
+                    ("owner", json!({"name":"Fixture worker"})),
+                    ("gone", json!({"name":"Deleted worker","deletedAt":now})),
+                ] {
+                    let mut agent = json!({"id":id,"rootId":id,"epoch":0,"status":"waiting",
+                        "autoWake":true,"cwd":"/tmp","accountKey":"default","provider":"codex"});
+                    agent.as_object_mut().expect("object").extend(
+                        extra.as_object().expect("object").clone(),
+                    );
+                    studio_runtime_store::AgentRepository::put(
+                        tx,
+                        &studio_runtime_store::AgentRecord::from_value(agent)?,
+                    )?;
+                }
+                let stopped = format!("The command was not started: {MONITOR_OWNER_STOPPED_ERROR}");
+                let old = now - WINDOW_SECONDS - 1.0;
+                let monitors = [
+                    ("lost", json!({"status":"lost","exitCode":null,"error":"lost result"})),
+                    ("lost-no-error", json!({"status":"lost"})),
+                    ("not-recorded", json!({"status":"failed","exitCode":null,"error":"Server restarted"})),
+                    ("probe-no-session", json!({"status":"failed","exitCode":null,"error":"No live provider session","ruleId":"rule"})),
+                    ("no-exit-key", json!({"status":"failed","error":"Callback barrier was not completed"})),
+                    ("probe-exit", json!({"status":"failed","exitCode":1,"error":"","ruleId":"rule"})),
+                    ("own-exit-error", json!({"status":"failed","exitCode":2,"error":"boom"})),
+                    ("owner-stopped", json!({"status":"failed","exitCode":null,"error":MONITOR_OWNER_STOPPED_ERROR})),
+                    ("owner-stopped-prefixed", json!({"status":"failed","exitCode":null,"error":stopped})),
+                    ("empty-error", json!({"status":"failed","exitCode":null,"error":""})),
+                    ("number-error", json!({"status":"failed","exitCode":null,"error":7})),
+                    ("completed", json!({"status":"completed","exitCode":null,"error":"x"})),
+                    ("deleted-owner", json!({"status":"lost","agent":"gone"})),
+                    ("missing-owner", json!({"status":"lost","agent":"nobody"})),
+                    ("old-lost", json!({"status":"lost","created":old})),
+                ];
+                for (id, fields) in monitors {
+                    let mut record = json!({"id":id,"agent":"owner","command":format!("run {id}"),
+                        "created":now - 5.0,"finished":now - 1.0});
+                    record.as_object_mut().expect("object").extend(
+                        fields.as_object().expect("object").clone(),
+                    );
+                    tx.execute(
+                        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+                        rusqlite::params![id, record.to_string()],
+                    )?;
+                }
+
+                let since = now - WINDOW_SECONDS;
+                let selected = studio_runtime_store::MonitorsRepository::studio_error_candidates(
+                    tx, since,
+                )?
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<std::collections::BTreeSet<_>>();
+                // The former read: every lost or failed monitor in the window.
+                let mut statement = tx.prepare(
+                    "SELECT id,record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('lost','failed') AND json_extract(record,'$.created')>=?1",
+                )?;
+                let full = statement
+                    .query_map([since], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                drop(statement);
+                let mut expected = std::collections::BTreeMap::new();
+                for (id, raw) in full {
+                    let record: Value = serde_json::from_str(&raw).expect("fixture JSON");
+                    if let Some(kind) = monitor_kind(&record) {
+                        assert!(selected.contains(&id), "SQL selection drops {id}");
+                        if record["agent"] == "owner" {
+                            expected.insert(format!("monitor:{id}"), (kind.code(), "Fixture worker"));
+                        }
+                    }
+                }
+                assert_eq!(
+                    expected.keys().map(String::as_str).collect::<Vec<_>>(),
+                    [
+                        "monitor:lost",
+                        "monitor:lost-no-error",
+                        "monitor:no-exit-key",
+                        "monitor:not-recorded",
+                        "monitor:probe-no-session",
+                    ]
+                );
+                assert!(!selected.contains("probe-exit") && !selected.contains("own-exit-error"));
+
+                let listed = list(tx, now)?["items"]
+                    .as_array()
+                    .expect("items")
+                    .iter()
+                    .filter(|row| row["monitorId"].is_string())
+                    .map(|row| {
+                        let id = row["id"].as_str().expect("id").to_owned();
+                        let monitor = row["monitorId"].as_str().expect("monitor id").to_owned();
+                        assert_eq!(row["subject"], format!("run {monitor}"));
+                        assert_eq!(row["at"], now - 1.0);
+                        (id, (row["kind"].as_str().expect("kind"), row["agentName"].as_str().expect("name")))
+                    })
+                    .map(|(id, (kind, name))| (id, (kind.to_owned(), name.to_owned())))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                let expected = expected
+                    .into_iter()
+                    .map(|(id, (kind, name))| (id, (kind.to_owned(), name.to_owned())))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                assert_eq!(listed, expected);
+                Ok(())
+            })
+            .await
+            .expect("fixture transaction");
     }
 }
