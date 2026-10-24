@@ -134,6 +134,8 @@ test("a transcript window streams without pulls and older history uses one bound
     await page.evaluate(
       async ({ workspaceId }) => {
         const { useMessages } = await import("/src/hooks.ts");
+        const { useConversationScroll, TRANSCRIPT_HISTORY_START_PX } =
+          await import("/src/components/useConversationScroll.ts");
         const reactModule = await import("/node_modules/.vite/deps/react.js");
         const domModule =
           await import("/node_modules/.vite/deps/react-dom_client.js");
@@ -147,6 +149,10 @@ test("a transcript window streams without pulls and older history uses one bound
             "fixture",
             workspaceId,
           );
+          const scrolling = useConversationScroll(
+            "window-check",
+            history.loaded,
+          );
           return React.createElement(
             "section",
             null,
@@ -154,6 +160,40 @@ test("a transcript window streams without pulls and older history uses one bound
               "button",
               { onClick: history.older, disabled: !history.before },
               "Older history",
+            ),
+            React.createElement(
+              "div",
+              {
+                id: "history-scroll",
+                ref: scrolling.scroll,
+                style: { height: "100px", overflowY: "auto" },
+                onScroll: () => {
+                  scrolling.onScroll();
+                  if (
+                    history.before &&
+                    !history.pageLoading &&
+                    scrolling.scroll.current.scrollTop <=
+                      TRANSCRIPT_HISTORY_START_PX &&
+                    scrolling.consumeHistoryScrollInput()
+                  )
+                    void history.older();
+                },
+              },
+              React.createElement(
+                "div",
+                { ref: scrolling.content },
+                history.items.map((item) =>
+                  React.createElement(
+                    "div",
+                    {
+                      key: item.id,
+                      "data-message": item.id,
+                      style: { height: "20px" },
+                    },
+                    item.text,
+                  ),
+                ),
+              ),
             ),
             React.createElement(
               "output",
@@ -176,7 +216,13 @@ test("a transcript window streams without pulls and older history uses one bound
       [],
       "a normal initial stream window requires zero pulls",
     );
-    await page.getByRole("button", { name: "Older history" }).click();
+    await page.locator("#history-scroll").evaluate((root) => {
+      root.dispatchEvent(
+        new WheelEvent("wheel", { deltaY: -2000, bubbles: true }),
+      );
+      root.scrollTop = 0;
+      root.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
     await expect(page.locator("output")).toHaveAttribute(
       "data-count",
       String(2 * SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS),

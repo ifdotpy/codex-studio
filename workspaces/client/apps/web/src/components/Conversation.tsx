@@ -72,7 +72,10 @@ import {
 import { useRemovedMessages } from "./removedMessages";
 import { isSendingMessage } from "./removeSendingMessages";
 
-import { useConversationScroll } from "./useConversationScroll";
+import {
+  useConversationScroll,
+  TRANSCRIPT_HISTORY_START_PX,
+} from "./useConversationScroll";
 import { useAttachmentDrafts } from "./useAttachmentDrafts";
 import { useUploadRecovery } from "./useUploadRecovery";
 import { useServerUploads } from "../servers/ServerServicesContext";
@@ -496,6 +499,7 @@ export default function Conversation(p: {
     setFollow,
     onScroll,
     hasRecentScrollInput,
+    consumeHistoryScrollInput,
     remember,
     revealRequest,
     getAnchorId,
@@ -1600,6 +1604,17 @@ export default function Conversation(p: {
         onScroll={() => {
           onScroll();
           if (!getFollow()) setPageAnchor(getAnchorId());
+          if (
+            before &&
+            !pageLoading &&
+            scroll.current &&
+            scroll.current.scrollTop <= TRANSCRIPT_HISTORY_START_PX &&
+            consumeHistoryScrollInput()
+          ) {
+            setFollow(false);
+            setPageAnchor(getAnchorId());
+            void older().catch((error) => p.notify(errorText(error)));
+          }
         }}
       >
         <div ref={content} className="message-content">
