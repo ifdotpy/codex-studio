@@ -1,5 +1,6 @@
 import {
   handleEntitySyncFixtureRequest,
+  entityMutationFixtureResponse,
   syncIdentityFixture,
   test,
 } from "../playwright.mjs";
@@ -132,6 +133,7 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       rateLimitsByAccount: {},
     },
   };
+  const stateListeners = new Set();
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     let body = {};
@@ -143,15 +145,24 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
     }
     const json = (data) => {
       res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify(data));
+      const reply =
+        req.method === "POST" && res.statusCode < 400 && !data._syncEntities
+          ? entityMutationFixtureResponse(stateForEntities, data)
+          : data;
+      res.end(JSON.stringify(reply));
+      if (reply._syncEntities?.length) {
+        for (const notify of stateListeners) notify([{ kind: "state" }]);
+      }
     };
     if (
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
         subscriptionUpdate: body,
-        onStreamReady: (notify) =>
-          notify(JSON.parse(url.searchParams.get("resources") || "[]")),
+        onStreamReady: (notify) => {
+          stateListeners.add(notify);
+          return () => stateListeners.delete(notify);
+        },
       })
     )
       return;
@@ -230,6 +241,11 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
         },
       });
     }
+    if (url.pathname === "/api/retained-worktrees")
+      return json({
+        rootId: url.searchParams.get("agent") || "fixture",
+        retainedWorktrees: [],
+      });
     if (url.pathname.startsWith("/api/"))
       return json({ items: [], sessions: [] });
     try {

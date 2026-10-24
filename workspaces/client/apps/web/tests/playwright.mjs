@@ -1,6 +1,11 @@
 // @ts-check
 
 import { spawn } from "node:child_process";
+import { SYNC_PROTOCOL_VERSION } from "../src/generated/api.ts";
+import {
+  SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+  SYNC_STREAM_EVENT_MAX_BYTES,
+} from "../src/generated/sharedValues.ts";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { join, resolve, sep } from "node:path";
@@ -953,7 +958,7 @@ export { browserExecutablePath, waitForFixturePort };
 /** @type {number} */
 const ENTITY_PAGE_SIZE = 500;
 /** @type {ResourceChangeEvent["protocol"]} */
-const RESOURCE_STREAM_PROTOCOL = 4;
+const RESOURCE_STREAM_PROTOCOL = SYNC_PROTOCOL_VERSION;
 
 async function readJson(response, path) {
   if (!response.ok)
@@ -1362,8 +1367,8 @@ export function syncIdentityFixture(
 /** @param {{ unixSocket?: boolean }} [options] @returns {SyncProtocolResponse} */
 export function syncProtocolFixture({ unixSocket = false } = {}) {
   return {
-    protocolVersion: 4,
-    supportedVersions: [4],
+    protocolVersion: SYNC_PROTOCOL_VERSION,
+    supportedVersions: [SYNC_PROTOCOL_VERSION],
     capabilities: [
       "pull",
       "stream",
@@ -1371,6 +1376,8 @@ export function syncProtocolFixture({ unixSocket = false } = {}) {
       "entityReset",
       "typedResources",
       "tokenRates",
+      "entitySeedExcluded:canvasAgentThreads",
+      "entitySeedExcluded:canvasSpawnEdges",
       ...(unixSocket ? ["unixSocket"] : []),
     ],
     scopes: ["state:entities:v1", "transcript:<agent-id>", "drafts"],
@@ -1378,8 +1385,8 @@ export function syncProtocolFixture({ unixSocket = false } = {}) {
     streamEndpoint: "/api/sync/stream",
     maxEntityPage: 500,
     maxOtherPage: 100,
-    maxStreamDocuments: 100,
-    maxStreamBytes: 1_048_576,
+    maxStreamDocuments: SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+    maxStreamBytes: SYNC_STREAM_EVENT_MAX_BYTES,
   };
 }
 
@@ -1410,7 +1417,7 @@ export async function readFixtureSyncContract(origin) {
   if (
     !/^[a-f0-9]{32}$/.test(identity.workspaceId) ||
     identity.syncProtocol !== 2 ||
-    protocol.protocolVersion !== 4
+    protocol.protocolVersion !== SYNC_PROTOCOL_VERSION
   )
     throw new Error("Fixture server returned an invalid sync contract");
   return { identity, protocol };
@@ -1438,7 +1445,7 @@ function reconcileMutableEntityPullState(pullState, snapshot) {
   const nextById = new Map(
     entityValuesFromSnapshot(snapshot).map((entity) => [
       `entity:${entity.collection}:${entity.id}`,
-      entity,
+      structuredClone(entity),
     ]),
   );
   for (const [key, previous] of pullState.documents) {
@@ -1903,7 +1910,7 @@ export function validateSyncPullRequest(requestUrl) {
     return {
       ok: false,
       status: 400,
-      body: { error: "Invalid sync scope" },
+      body: { error: "Invalid request", location: ["query", "scope"] },
     };
   return {
     ok: true,
@@ -1955,7 +1962,7 @@ export async function stubEntityState(page, snapshot, contract) {
   if (
     !/^[a-f0-9]{32}$/.test(identityResponse.workspaceId) ||
     identityResponse.syncProtocol !== 2 ||
-    protocolResponse.protocolVersion !== 4
+    protocolResponse.protocolVersion !== SYNC_PROTOCOL_VERSION
   )
     throw new Error(
       "stubEntityState requires the fixture backend's generated sync contract",
