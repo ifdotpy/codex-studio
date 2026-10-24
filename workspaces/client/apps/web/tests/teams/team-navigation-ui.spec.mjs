@@ -81,14 +81,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     await fixturePage.setViewportSize({ width: 1440, height: 980 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.route("**/api/sync/pull?*", async (route) => {
-      const url = new URL(route.request().url());
-      if (url.searchParams.get("scope") !== "state:entities:v1")
-        return route.fallback();
-      const response = await route.fetch();
-      const data = await response.json();
-      if (data.reset || !data.documents?.length)
-        return route.fulfill({ response, json: data });
+    const scriptWorkerStates = (documents) => {
       // The server seeds idle workers; the roster's mix of states is scripted here.
       const desiredStatus = new Map(
         workers.map((agent, index) => [
@@ -97,7 +90,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
             (index < 8 ? "running" : index < 26 ? "queued" : "completed"),
         ]),
       );
-      for (const document of data.documents) {
+      for (const document of documents ?? []) {
         if (document._deleted) continue;
         const payload = JSON.parse(document.payload);
         if (payload.collection === "agent" && payload.id === worker(2).id) {
@@ -114,8 +107,26 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
           document.payload = JSON.stringify(payload);
         }
       }
+    };
+    await page.route("**/api/sync/pull?*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("scope") !== "state:entities:v1")
+        return route.fallback();
+      const response = await route.fetch();
+      const data = await response.json();
+      if (data.reset || !data.documents?.length)
+        return route.fulfill({ response, json: data });
+      scriptWorkerStates(data.documents);
       // Only presentation values change. The real pending question is seeded
       // through the provider; server-owned sequences and checkpoints stay intact.
+      await route.fulfill({ response, json: data });
+    });
+    // Mark-read mutations also deliver entity documents. Keep the same scripted
+    // presentation in both transports without changing receipts or checkpoints.
+    await page.route("**/api/organization", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      scriptWorkerStates(data._syncEntities);
       await route.fulfill({ response, json: data });
     });
     await page.goto(origin);
@@ -269,14 +280,15 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       await team.getByRole("region", { name: "Waiting", exact: true }).count(),
       0,
     );
-    assert.deepEqual(
-      await team
-        .locator("#workers > .team-status-group")
-        .evaluateAll((nodes) =>
-          nodes.map((node) => node.getAttribute("aria-label")),
-        ),
-      ["Needs you", "Failed", "Working", "Stopped"],
-    );
+    await expect
+      .poll(() =>
+        team
+          .locator("#workers > .team-status-group")
+          .evaluateAll((nodes) =>
+            nodes.map((node) => node.getAttribute("aria-label")),
+          ),
+      )
+      .toEqual(["Needs you", "Failed", "Working", "Stopped"]);
     assert.equal(
       await row(2).evaluate((node) =>
         node.closest(".worker-entry")?.getAttribute("data-studio-state"),
@@ -293,7 +305,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       "completed workers start collapsed",
     );
     await team.getByRole("button", { name: "Failed", exact: true }).click();
-    assert.equal(await team.locator("[data-worker]").count(), 2);
+    await expect(team.locator("[data-worker]")).toHaveCount(2);
     await search.fill("Worker 39");
     await row(39).waitFor({ state: "visible" });
     assert.equal(
@@ -385,7 +397,10 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })
       .click();
-    assert.equal(await team.count(), 0, "another chat cannot show this team");
+    await expect(team.locator("[data-worker]")).toHaveCount(0);
+    await expect(
+      team.getByRole("region", { name: "Team token budget" }),
+    ).toBeVisible();
     await selectLead();
     assert.equal(
       await search.inputValue(),

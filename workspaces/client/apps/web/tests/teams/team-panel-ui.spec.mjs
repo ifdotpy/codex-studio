@@ -217,7 +217,7 @@ test("Team panel ui", async ({
             gutter,
           edges: [
             ...team.querySelectorAll(
-              ".team-heading h2, .team-summary-filters, .mantine-TextInput-root, .team-status-group h3, .worker-entry:not([data-has-parent])",
+              ".team-heading h2, .team-summary-filters, :scope > .mantine-TextInput-root, .team-status-group h3, .worker-entry:not([data-has-parent])",
             ),
           ].map((node) => node.getBoundingClientRect().left),
         };

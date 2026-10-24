@@ -227,6 +227,15 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
         .first()
         .click();
       assert.equal(await page.evaluate(() => window.signedInAccount), "claude");
+      await page
+        .getByRole("button", {
+          name: "Limit details for research@example.test",
+          exact: true,
+        })
+        .click();
+      await expect(
+        page.locator('[data-account="claude"] .claude-organization').first(),
+      ).toBeVisible();
       assert.ok((await page.locator(".claude-organization").count()) >= 2);
       assert.equal(
         await page.evaluate(
