@@ -1,3 +1,4 @@
+import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
 import { useWorkspaceLayout } from "./layout/useWorkspaceLayout";
 import {
   layoutQueries,
@@ -624,8 +625,6 @@ export default function App({ active = true }: { active?: boolean }) {
   const createdSelection = useRef<string | null>(null);
   useMobileViewport(active, mobileClient);
   const teamViewportCompact = useMediaQuery(layoutQueries.teamCompact);
-  const rowLayout = useWorkspaceLayout({ teamPreferred: wideTeamOpen });
-  const narrowTeam = teamViewportCompact || !rowLayout.teamCanInline;
   const [workspacePanelSlot, setWorkspacePanelSlot] =
     useState<HTMLDivElement | null>(null);
   const {
@@ -661,6 +660,15 @@ export default function App({ active = true }: { active?: boolean }) {
     [modal, setModal] = useState<{ title: string; body: ReactNode } | null>(
       null,
     );
+  const workspacePanelWidth = useWorkspacePanelWidth(
+    `${serverViewId || "local"}:${workspaceId || "pending"}`,
+  );
+  const rowLayout = useWorkspaceLayout({
+    workspaceOpen,
+    teamPreferred: wideTeamOpen,
+    preferredPanelWidthRem: workspacePanelWidth.preferredWidthRem,
+  });
+  const narrowTeam = teamViewportCompact || !rowLayout.teamCanInline;
   useEffect(() => {
     if (!workspaceId) return;
     const key = `studio-server-workspace-id:${serverViewId || "local"}`;
@@ -3301,6 +3309,10 @@ export default function App({ active = true }: { active?: boolean }) {
             initialSection={workspaceSection}
             initialFocus={workspaceFocus}
             opened={workspaceOpen}
+            inlineTarget={workspacePanelSlot}
+            panelLayout={rowLayout.panelLayout}
+            onPanelWidthChange={workspacePanelWidth.setPreferredWidthRem}
+            resizeScope={`${serverViewId || "local"}:${workspaceId || "pending"}`}
             onClose={() => setWorkspaceOpen(false)}
             agent={agent || lead}
             data={chatData!}
