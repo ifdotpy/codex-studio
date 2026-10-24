@@ -116,8 +116,10 @@
   background: var(--raised);
   color: var(--text);
   font: inherit;
-  /* 16px stops phone browsers from zooming into the field. */
-  font-size: max(16px, var(--studio-text-body));
+  font-size: max(
+    var(--studio-touch-input-min-font-size),
+    var(--studio-text-body)
+  );
 }
 .sign-in-card-error {
   margin: 8px 0 0;

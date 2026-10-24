@@ -1,7 +1,8 @@
+@import "./layout/layout-contract.generated.css";
 @import "./studio-theme.css";
 
 :root {
-  --studio-chat-max: 760px;
+  --studio-chat-max: var(--layout-conversation-composer-max);
 }
 
 * {
@@ -17,7 +18,8 @@ body {
   overflow: hidden;
 }
 /* The desktop shell never scrolls; focus must not shift it out of view. */
-@media (min-width: 761px) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) {
   html,
   body {
     overflow: hidden;
@@ -86,8 +88,8 @@ p {
 
 /* Navigation. Lead conversations deliberately have no messenger metadata. */
 #sidebar {
-  width: 256px;
-  flex: 0 0 256px;
+  width: var(--layout-sidebar-preferred);
+  flex: 0 0 var(--layout-sidebar-preferred);
   background: var(--sidebar);
   border-right: 1px solid var(--line);
   padding: 22px 12px 12px;
@@ -284,7 +286,8 @@ p {
 .desktop-inset-titlebar #sidebar {
   padding-top: 0;
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .desktop-inset-titlebar .workspace-header {
     padding-left: 96px;
   }
@@ -331,7 +334,7 @@ p {
 }
 #toast {
   position: fixed;
-  z-index: 400;
+  z-index: var(--layout-layers-overlay);
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
@@ -729,8 +732,8 @@ p {
 
 /* Team: compact rows, with independent scroll for dozens of workers. */
 #team {
-  width: 248px;
-  flex: 0 0 248px;
+  width: var(--layout-team-preferred);
+  flex: 0 0 var(--layout-team-preferred);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -968,7 +971,8 @@ p {
   margin: 4px 0 12px;
 }
 
-@media (max-width: 1199px) {
+/* layout-query: team.inlineMin < */
+@media (width < 1200px) {
   #team-toggle,
   #team-close {
     display: inline-flex;
@@ -978,7 +982,8 @@ p {
     height: 100dvh;
   }
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   #sidebar-toggle {
     display: inline-flex;
   }
@@ -1720,8 +1725,11 @@ p {
 }
 
 /* Reserve space only in the document that contains the terminal dock. */
-html[data-terminal-dock] body #root {
-  height: calc(100dvh - var(--terminal-dock-height, 38px));
+html[data-terminal-dock]:not([data-terminal-shell]) body #root {
+  height: calc(
+    var(--mobile-viewport-height, 100dvh) -
+      var(--terminal-dock-height, var(--layout-terminal-closed-bar))
+  );
   min-height: 0;
 }
 
@@ -1759,8 +1767,25 @@ html[data-terminal-dock] body #root {
   min-width: 0;
 }
 
+/* Touch screens can exceed the phone layout width, including with a mouse attached.
+   The input font floor must override normal component font sizes. */
+/* layout-query: navigation.inlineMin < */
+@media (any-pointer: coarse), (width < 761px) {
+  #chat-search,
+  #composer textarea,
+  :root input,
+  :root textarea,
+  :root select {
+    font-size: max(
+      var(--studio-touch-input-min-font-size),
+      var(--input-fz, var(--studio-text-body))
+    ) !important;
+  }
+}
+
 /* The phone keeps the selected orchestrator chat in the full viewport. */
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   html,
   body {
     width: 100%;
@@ -1771,16 +1796,6 @@ html[data-terminal-dock] body #root {
   body {
     position: fixed;
     inset: 0;
-  }
-  html body #root {
-    position: fixed;
-    top: var(--mobile-viewport-top, 0px);
-    left: 0;
-    width: 100%;
-    height: var(--mobile-viewport-height, 100dvh);
-    padding-top: var(--mobile-safe-area-top, env(safe-area-inset-top));
-    padding-left: env(safe-area-inset-left);
-    padding-right: env(safe-area-inset-right);
   }
   .workspace-header {
     flex-wrap: nowrap;
@@ -1799,34 +1814,8 @@ html[data-terminal-dock] body #root {
   #conversation-status {
     font-size: 12px;
   }
-  #sidebar {
-    height: var(--mobile-viewport-height, 100dvh);
-    padding-top: max(
-      16px,
-      var(--mobile-safe-area-top, env(safe-area-inset-top))
-    );
-    padding-bottom: max(
-      16px,
-      var(--mobile-safe-area-bottom, env(safe-area-inset-bottom))
-    );
-  }
-  .mantine-Drawer-inner,
-  .mantine-Modal-inner {
-    top: var(--mobile-viewport-top, 0px);
-    bottom: auto;
-    height: var(--mobile-viewport-height, 100dvh);
-  }
   .mantine-Modal-root {
     --modal-y-offset: 16px;
-  }
-  .mantine-Modal-content {
-    max-height: calc(
-      var(--mobile-viewport-height, 100dvh) - var(--modal-y-offset) * 2
-    );
-  }
-  .mantine-Modal-root[data-full-screen] .mantine-Modal-content {
-    height: var(--mobile-viewport-height, 100dvh);
-    max-height: var(--mobile-viewport-height, 100dvh);
   }
   #sidebar .row-actions,
   #sidebar .project-tree-action {
@@ -1844,10 +1833,7 @@ html[data-terminal-dock] body #root {
     min-height: 44px;
   }
   #conversation {
-    padding-bottom: max(
-      8px,
-      var(--mobile-safe-area-bottom, env(safe-area-inset-bottom))
-    );
+    padding-bottom: 0;
   }
   #messages {
     padding: 16px 14px;
@@ -1858,13 +1844,6 @@ html[data-terminal-dock] body #root {
     width: calc(100% - 16px);
     margin-bottom: 0;
     padding: 8px 10px;
-  }
-  #chat-search,
-  #composer textarea,
-  html body input,
-  html body textarea,
-  html body select {
-    font-size: 16px;
   }
   #composer .composer-bar {
     flex-wrap: wrap;
@@ -1918,22 +1897,12 @@ html[data-terminal-dock] body #root {
   gap: 8px;
 }
 
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   #team-toggle {
     flex-shrink: 0;
     width: 40px;
     min-height: 40px;
-  }
-  #team {
-    height: var(--mobile-viewport-height, 100dvh);
-    padding-top: max(
-      16px,
-      var(--mobile-safe-area-top, env(safe-area-inset-top))
-    );
-    padding-bottom: max(
-      16px,
-      var(--mobile-safe-area-bottom, env(safe-area-inset-bottom))
-    );
   }
   #team-close {
     width: 40px;
@@ -1941,7 +1910,8 @@ html[data-terminal-dock] body #root {
   }
 }
 
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .workspace-header:has(#back-lead) {
     height: 84px;
     min-height: 84px;
@@ -2089,7 +2059,8 @@ html[data-terminal-dock] body #root {
   > .chat-row {
   padding-right: 62px;
 }
-@media (hover: none), (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (hover: none), (width < 761px) {
   #sidebar .project-tree-action[aria-haspopup="menu"] {
     opacity: 1;
     pointer-events: auto;
@@ -2156,7 +2127,8 @@ html[data-terminal-dock] body #root {
 .ai-conversation .message.user .message-bottom {
   display: flex;
 }
-@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) and (hover: hover) and (pointer: fine) {
   .ai-conversation .message.user .message-bottom,
   .agent-conversation .message.bubble.outgoing .message-bottom {
     position: absolute;
@@ -2220,7 +2192,8 @@ html[data-terminal-dock] body #root {
 
 /* Delivery status and message actions both sit under a user bubble. Stack
    them so the status never covers the action buttons. */
-@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) and (hover: hover) and (pointer: fine) {
   .ai-conversation
     .message.user:has(.message-delivery-heading, .message-delivery-inline)
     .message-bottom {
@@ -2230,4 +2203,9 @@ html[data-terminal-dock] body #root {
     .message.user:has(.message-delivery-heading, .message-delivery-inline) {
     margin-bottom: 52px;
   }
+}
+
+/* Portals reserve safe insets. Navigation keeps its ordinary content gap. */
+.mantine-Drawer-content :is(#sidebar, #team) {
+  padding-block: 16px;
 }

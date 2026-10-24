@@ -373,9 +373,9 @@ for (const [platform, userAgent] of mobileBrowsers) {
       await page.setViewportSize({ width: 844, height: 390 });
       await page.waitForFunction(
         () =>
-          !document.documentElement.style.getPropertyValue(
+          document.documentElement.style.getPropertyValue(
             "--mobile-viewport-height",
-          ),
+          ) === "390px",
       );
       assert.deepEqual(
         await composer.evaluate((node) => ({
@@ -433,23 +433,16 @@ for (const [platform, userAgent] of mobileBrowsers) {
         window.setTestViewport({ width: 390, height: 844, offsetTop: 0 }),
       );
       await settle(844, 0);
-      // Desktop must regain its normal document layout and terminal space.
+      // A wider window keeps touch viewport support without changing the draft.
       await page.setViewportSize({ width: 1440, height: 960 });
+      await page.evaluate(() =>
+        window.setTestViewport({ width: 1440, height: 960, offsetTop: 0 }),
+      );
       await page.waitForFunction(
         () =>
-          getComputedStyle(document.querySelector("#root")).position !==
-            "fixed" &&
-          !document.documentElement.style.getPropertyValue(
-            "--mobile-viewport-height",
-          ),
-      );
-      assert.equal(
-        await page.evaluate(() =>
           document.documentElement.style.getPropertyValue(
             "--mobile-viewport-height",
-          ),
-        ),
-        "",
+          ) === "960px",
       );
       await page.setViewportSize({ width: 390, height: 844 });
       await page.evaluate(() =>
@@ -483,7 +476,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
         (await page.locator("#composer").boundingBox()).height,
         shortDraftComposerHeight,
       );
-      assert.equal(minimumViewport.footerBottom, 378);
+      assert.equal(minimumViewport.footerBottom, 394);
 
       await page.getByLabel("Toggle conversations").click();
       await page

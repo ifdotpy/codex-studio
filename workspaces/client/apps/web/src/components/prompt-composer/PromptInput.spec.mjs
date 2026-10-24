@@ -142,3 +142,89 @@ test.afterAll(async () => {
   await server?.close();
   if (cacheDir) await rm(cacheDir, { recursive: true, force: true });
 });
+
+test("touch inputs keep the focus zoom font floor across layout widths", async ({
+  browser,
+}) => {
+  for (const hasTouch of [true, false]) {
+    const context = await browser.newContext({ hasTouch });
+    try {
+      const page = await context.newPage();
+      await page.route("**/touch-input-test", (route) =>
+        route.fulfill({
+          contentType: "text/html",
+          body: `<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">
+            <div class="workspace">
+              <aside id="sidebar"><input id="chat-search"></aside>
+              <main id="conversation"><form id="composer"><div id="root"></div></form></main>
+              <div id="controls"></div>
+            </div>`,
+        }),
+      );
+      await page.goto(`${server.resolvedUrls.local[0]}touch-input-test`);
+      await page.evaluate(async () => {
+        await import("/node_modules/@mantine/core/styles.css");
+        await import("/src/style.css");
+        await import("/src/studio-preferences.css");
+        await import("/src/components/Analytics.css");
+        const { mount, mountControls } =
+          await import("/src/components/prompt-composer/PromptInput.test-entry.tsx");
+        mount();
+        mountControls();
+      });
+      await page.locator("#message").waitFor({ state: "attached" });
+      await page.locator("#form-select").waitFor({ state: "attached" });
+      for (const width of [390, 760, 761, 844, 1024, 1440]) {
+        await page.setViewportSize({ width, height: 900 });
+        for (const typography of ["original", "custom"]) {
+          for (const fontSize of [12, 18, 24]) {
+            await page.evaluate(
+              ({ typography, fontSize }) => {
+                const root = document.documentElement;
+                root.dataset.studioTypography = typography;
+                root.style.setProperty(
+                  "--studio-main-font-size",
+                  `${fontSize}px`,
+                );
+                root.style.setProperty(
+                  "--studio-sidebar-font-size",
+                  `${fontSize}px`,
+                );
+              },
+              { typography, fontSize },
+            );
+            const floor = hasTouch || width <= 760;
+            for (const id of [
+              "message",
+              "chat-search",
+              "form-input",
+              "form-textarea",
+              "form-select",
+              "worker-search",
+              "analytics-select",
+            ]) {
+              const actual = await page
+                .locator(`#${id}`)
+                .evaluate((node) =>
+                  parseFloat(getComputedStyle(node).fontSize),
+                );
+              const preferred =
+                typography === "custom" &&
+                ["message", "chat-search"].includes(id)
+                  ? fontSize
+                  : id === "message"
+                    ? 14
+                    : 12;
+              expect(
+                actual,
+                JSON.stringify({ id, width, hasTouch, typography, fontSize }),
+              ).toBe(floor ? Math.max(16, preferred) : preferred);
+            }
+          }
+        }
+      }
+    } finally {
+      await context.close();
+    }
+  }
+});

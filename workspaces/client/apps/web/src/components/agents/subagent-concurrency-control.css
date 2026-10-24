@@ -71,6 +71,6 @@
   }
   .agent-mode-limit-label input {
     min-height: 36px;
-    font-size: 16px;
+    font-size: var(--studio-touch-input-min-font-size);
   }
 }

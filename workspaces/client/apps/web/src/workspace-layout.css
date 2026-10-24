@@ -1,12 +1,12 @@
 :root {
-  --studio-sidebar-width: 240px;
+  --studio-sidebar-width: var(--layout-sidebar-preferred);
 }
 
 /* Shared geometry for the conversation and its persistent controls. */
 .workspace {
-  --chat-width: 860px;
-  --chat-text-width: 680px;
-  --chat-gutter: 24px;
+  --chat-width: var(--layout-conversation-composer-max);
+  --chat-text-width: var(--layout-conversation-text-max);
+  --chat-gutter: var(--layout-spacing-conversation-gutter);
   --chat-inset: max(
     var(--chat-gutter),
     calc((100% - var(--chat-text-width)) / 2)
@@ -14,7 +14,8 @@
   container: workspace / inline-size;
 }
 
-@media (min-width: 761px) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) {
   .workspace-header,
   .workspace-header:has(.execution-menu) {
     display: grid;
@@ -114,15 +115,17 @@
   }
 }
 
-@container workspace (max-width: 660px) {
+/* layout-query: tools.teamToggleContainerMax <= */
+@container workspace (width <= 660px) {
   .workspace-header #team-toggle {
     padding-inline: 8px;
   }
 }
 
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .workspace {
-    --chat-gutter: 14px;
+    --chat-gutter: var(--layout-spacing-compact-gutter);
   }
   #conversation :is(#composer, .message-queue) {
     width: calc(100% - 2 * var(--chat-gutter));
@@ -160,7 +163,8 @@
   :is(#chat-settings-toggle, #team-toggle) {
   display: none;
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   header.workspace-header.simple-workspace-header {
     gap: 1px;
     padding-inline: 6px;
@@ -268,12 +272,15 @@
 .conversation-header-tools-menu[data-compact="yes"][open]
   > .conversation-header-tools-content {
   position: fixed;
-  z-index: 300;
+  z-index: var(--layout-layers-popover);
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
-  width: min(360px, calc(100vw - 16px));
+  width: min(
+    var(--layout-tools-menu-max),
+    calc(100vw - 2 * var(--layout-tools-menu-gutter))
+  );
   max-height: min(620px, 78dvh);
   overflow: auto;
   padding: 8px;
@@ -296,12 +303,14 @@
 .message-bottom .message-delivery-status {
   margin: 0;
 }
-@media (min-width: 761px) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) {
   #conversation-status {
     width: 120px;
   }
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .conversation-header-tools-menu[data-compact="yes"] > summary {
     width: 44px;
     height: 44px;
@@ -332,7 +341,7 @@
   top: 100%;
   right: 0;
   width: max-content;
-  max-width: min(680px, calc(100vw - 48px));
+  max-width: min(var(--chat-text-width), calc(100% - 2 * var(--chat-gutter)));
   height: 24px;
   margin: 0;
   line-height: 24px;
@@ -367,4 +376,39 @@ header.workspace-header.simple-workspace-header {
   font-size: var(--studio-text-meta);
   line-height: 1.4;
   white-space: normal;
+}
+
+/* The measured row excludes the navigation column exactly once. */
+.workspace-layout-row {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: clip;
+}
+.workspace-layout-row > .workspace {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+.workspace-panel-slot {
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+}
+.workspace-panel-slot:empty {
+  display: none;
+}
+.workspace-header {
+  padding-inline: var(--chat-gutter);
+}
+#conversation-header-tools {
+  max-width: 100%;
+}
+@media (any-pointer: coarse) {
+  .conversation-header-tools-menu[data-compact="yes"] > summary {
+    min-width: var(--layout-controls-touch-min);
+    min-height: var(--layout-controls-touch-min);
+  }
 }

@@ -960,6 +960,13 @@ function fastTierCommands(root) {
       commands: [
         ["node", [facade, "contracts-check"]],
         ["node", [facade, "boundaries-check"]],
+        [
+          "node",
+          [
+            "--test",
+            "workspaces/client/apps/web/scripts/check-layout-contract.test.mjs",
+          ],
+        ],
       ],
       options: {
         selector: "generated contract and workspace boundary checks",

@@ -3,6 +3,8 @@
   --studio-text-body: 14px;
   --studio-text-meta: 12px;
   --studio-text-code: 13px;
+  /* Minimum input font size in CSS pixels to prevent iOS focus zoom. */
+  --studio-touch-input-min-font-size: 16px;
   --studio-action-size: 32px;
   --studio-warning: #ffc078;
   --studio-warning-hover: #ffd8a8;

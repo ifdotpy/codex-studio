@@ -1,0 +1,46 @@
+.edge-rail {
+  position: fixed;
+  z-index: var(--layout-layers-app);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  box-sizing: border-box;
+}
+
+.edge-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.edge-rail .edge-rail-button {
+  position: relative;
+  flex: 0 0 var(--edge-rail-target);
+  width: var(--edge-rail-target);
+  height: var(--edge-rail-target);
+  min-width: var(--edge-rail-target);
+  min-height: var(--edge-rail-target);
+}
+
+.edge-rail .edge-rail-button:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: -2px;
+}
+
+.edge-rail-badge {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--mantine-color-body);
+  color: var(--mantine-color-text);
+  font-size: 10px;
+  line-height: 1.2;
+  padding: 1px 3px;
+  pointer-events: none;
+}

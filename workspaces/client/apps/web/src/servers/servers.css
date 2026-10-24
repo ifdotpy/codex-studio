@@ -1,12 +1,13 @@
 .multi-server-shell {
+  position: relative;
   display: flex;
   width: 100%;
-  height: 100dvh;
+  height: 100%;
   min-width: 0;
 }
 .server-sidebar {
-  flex: 0 0 270px;
-  width: 270px;
+  flex: 0 0 var(--layout-server-selector-preferred);
+  width: var(--layout-server-selector-preferred);
   overflow: auto;
   padding: 16px 12px;
   border-right: 1px solid var(--line);
@@ -213,7 +214,8 @@
   justify-content: flex-end;
   gap: 8px;
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .server-card-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -272,6 +274,17 @@
   min-width: 0;
   display: flex;
 }
+.multi-server-shell[data-navigation-compact="true"] {
+  flex-direction: column;
+}
+.multi-server-shell[data-navigation-compact="true"] .server-mobile-toggle {
+  display: block;
+  flex-shrink: 0;
+}
+.multi-server-shell[data-navigation-compact="true"] .server-views {
+  width: 100%;
+  min-height: 0;
+}
 .server-mobile-toggle {
   display: none;
 }
@@ -284,7 +297,8 @@ html[data-server-view][data-server-projects] #sidebar {
 html[data-server-view] .workspace {
   min-width: 0;
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .multi-server-shell {
     padding-top: 40px;
   }
@@ -294,14 +308,14 @@ html[data-server-view] .workspace {
     inset: 0 0 auto;
     height: 40px;
     border-radius: 0;
-    z-index: 201;
+    z-index: var(--layout-layers-navigation-toggle);
   }
   .server-sidebar {
     display: none;
     position: fixed;
     inset: 40px 0 0;
     width: 100%;
-    z-index: 200;
+    z-index: var(--layout-layers-modal);
   }
   .server-sidebar-open {
     display: block;
@@ -340,30 +354,32 @@ html[data-server-view] .workspace {
 .shell-terminal-bar {
   display: none;
 }
-@media (min-width: 761px) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) {
   .multi-server-shell[data-shell-terminal] > #sidebar {
     position: relative;
     z-index: 2;
   }
   .multi-server-shell[data-shell-terminal="closed"] > #sidebar {
-    height: calc(100% - 38px);
+    height: calc(100% - var(--shell-terminal-height));
   }
   .multi-server-shell[data-shell-terminal="open"] > #sidebar {
     height: calc(100% - var(--shell-terminal-height));
   }
   .multi-server-shell[data-shell-terminal="open"] > .server-views {
-    position: fixed;
-    inset: 0;
+    position: absolute;
+    inset: 0 0 var(--shell-terminal-height) 0;
+    padding-left: var(--shell-sidebar-width);
     z-index: 1;
   }
   .multi-server-shell[data-shell-terminal="closed"] .shell-terminal-bar {
-    position: fixed;
+    position: absolute;
     left: 0;
     bottom: 0;
     z-index: 3;
     box-sizing: border-box;
     width: var(--shell-sidebar-width);
-    height: 38px;
+    height: var(--shell-terminal-height);
     display: flex;
     align-items: center;
     gap: 8px;

@@ -1,3 +1,6 @@
+import { restoreSidebarFocus } from "../components/sidebar/SidebarFrame";
+import { readTerminalDockHeight } from "../layout/terminalGeometry";
+import { layoutQueries } from "../layout/layout-contract.generated";
 import { ScreenContext } from "./ScreenContext";
 import {
   createScreenChannel,
@@ -180,6 +183,9 @@ function MultiServerShell({
   const notificationState = useRef(
     new Map<string, { seen: Set<string>; started: number }>(),
   );
+  const [sidebarCompact, setSidebarCompact] = useState(
+    () => window.matchMedia(layoutQueries.navigationCompact).matches,
+  );
   const [sidebarHidden, setSidebarHidden] = useState(false);
   // Each server view reports its terminal panel; the shell draws the closed bar under
   // its sidebar and makes room for the open panel (servers.css "Terminal under the sidebar").
@@ -197,10 +203,10 @@ function MultiServerShell({
   >({});
   const [shellSidebarWidth, setShellSidebarWidth] = useState(0);
   const toggleSidebar = useCallback(() => {
-    if (window.matchMedia("(max-width: 760px)").matches)
-      setMobileOpen((old) => !old);
+    restoreSidebarFocus();
+    if (sidebarCompact) setMobileOpen((old) => !old);
     else setSidebarHidden((old) => !old);
-  }, []);
+  }, [sidebarCompact]);
   const { setColorScheme } = useMantineColorScheme();
   const [preferences, setPreferences] = useState(() => {
     try {
@@ -649,9 +655,10 @@ function MultiServerShell({
       } catch {}
     } else if (data.kind === "studio-server-terminal") {
       const value = data;
+      const height = readTerminalDockHeight(value.height);
       if (
         typeof value.opened !== "boolean" ||
-        !Number.isFinite(value.height) ||
+        height === undefined ||
         !Number.isInteger(value.count) ||
         !Number.isInteger(value.active) ||
         typeof value.canCreate !== "boolean"
@@ -661,7 +668,7 @@ function MultiServerShell({
         ...old,
         [id]: {
           opened: value.opened,
-          height: Math.max(0, Math.min(4000, value.height)),
+          height,
           count: value.count,
           active: value.active,
           canCreate: value.canCreate,
@@ -845,7 +852,7 @@ function MultiServerShell({
     </Modal>
   );
   useEffect(() => {
-    const narrow = window.matchMedia("(max-width: 760px)");
+    const narrow = window.matchMedia(layoutQueries.navigationCompact);
     let observed: Element | null = null;
     const measure = () => {
       const sidebar = document.querySelector(".multi-server-shell > #sidebar");
@@ -873,7 +880,12 @@ function MultiServerShell({
       observer.disconnect();
       narrow.removeEventListener("change", measure);
     };
-  }, [sidebarHidden, mergedSidebar?.sources.length, servers.length]);
+  }, [
+    sidebarHidden,
+    sidebarCompact,
+    mergedSidebar?.sources.length,
+    servers.length,
+  ]);
   if (!uiOnly && !paired.length && accountsServers.length === servers.length)
     return (
       <ServerSettingsContext.Provider
@@ -902,6 +914,7 @@ function MultiServerShell({
     <div
       className={`multi-server-shell ${sidebarHidden ? "server-sidebar-hidden" : ""}`}
       data-navigation="combined"
+      data-navigation-compact={sidebarCompact}
       data-shell-terminal={terminalLayout}
       style={
         {
@@ -934,9 +947,10 @@ function MultiServerShell({
             }
             mobile={mobileOpen}
             hidden={sidebarHidden}
+            onCompactChange={setSidebarCompact}
             close={() => {
               setMobileOpen(false);
-              setSidebarHidden(true);
+              if (!sidebarCompact) setSidebarHidden(true);
             }}
             settings={openManager}
             search={() => setSearchOpen(true)}

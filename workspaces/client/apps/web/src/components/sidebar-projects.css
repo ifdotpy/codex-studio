@@ -189,7 +189,8 @@
   min-width: 28px;
   height: 28px;
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .project-chats .chat-row {
     padding-right: 56px;
   }
@@ -309,7 +310,8 @@
 #sidebar [data-drop-edge="after"]::after {
   bottom: 0;
 }
-@media (hover: none), (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (hover: none), (width < 761px) {
   #sidebar .row-pin-action {
     display: none;
   }
@@ -349,7 +351,8 @@
   .project-tree-toggle {
   margin-right: 28px;
 }
-@media (hover: none), (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (hover: none), (width < 761px) {
   #sidebar
     .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
     .project-tree-toggle {
