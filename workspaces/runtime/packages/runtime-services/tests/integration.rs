@@ -64,6 +64,7 @@ mod turn_fixtures;
 mod turn_lifecycle_corpus;
 mod turn_prepare_corpus;
 mod vm_macsync_corpus;
+mod vm_macsync_round;
 mod voice_provider_corpus;
 mod wave7_p03_message_ingress;
 mod wave7_p04_callback_runtime;

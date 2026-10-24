@@ -16,6 +16,7 @@ import base64
 import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import shutil
@@ -28,14 +29,17 @@ from common import GuestError, atomic_json, require
 from host_exec_protocol import inside, relative
 from layr_share import command, project_id
 
-METHODS = {"sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.head", "sync.mac.handoff",
+METHODS = {"sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.preview", "sync.mac.head", "sync.mac.handoff",
            "sync.mac.worktree"}
-READ_METHODS = {"sync.mac.read", "sync.mac.hashes", "sync.mac.head"}
+READ_METHODS = {"sync.mac.read", "sync.mac.hashes", "sync.mac.preview", "sync.mac.head"}
 KEPT_RECEIPTS = 200
 LINE, VIEW = "mac", "mac-view"
 CHUNK = 512 * 1024
 MAX_ENTRIES = 20_000
-STATE_ID = re.compile(r"[0-9a-f]{7,64}")
+# Mac sync state syntax, shared by every request and layr response in this module.
+# Current layr uses canonical UUIDs (layr model::is_uuid); legacy IDs use hex.
+# Syntax is not authorization. layr resolves the state as the project owner.
+STATE_ID = re.compile(r"(?:[0-9a-f]{7,64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})")
 OPERATION = re.compile(r"[A-Za-z0-9_-]{1,100}")
 UPLOADS = Path("/var/lib/codex-studio/projects")
 SKIPPED = {".git"}
@@ -465,10 +469,10 @@ class MacSync:
 
     async def main_head(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
         project = project_id(params.get("projectId"))
-        owner = self.projects.owner(project)["owner"]
         main = self.projects.folder(project) / "lines/main"
         if not main.is_dir():
             raise GuestError("not_found", "The layr project does not exist")
+        owner = pwd.getpwuid(main.stat().st_uid).pw_name
         return {"projectId": project, "mainStateId": await self.head(main, owner)}
 
     async def read(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -505,11 +509,29 @@ class MacSync:
         state = _state(params.get("stateId"))
         after = params.get("after", "")
         require(isinstance(after, str), "Invalid page start")
-        owner, _main, _mac, view = await self.lines(project)
+        read_only = params.get("readOnly", False)
+        require(type(read_only) is bool, "Invalid read-only flag")
+        if read_only:
+            # Linux layr states are immutable, complete btrfs snapshots. Resolve the
+            # state as the existing project owner before accessing its snapshot.
+            folder = self.projects.folder(project)
+            main = folder / "lines/main"
+            if not main.is_dir():
+                raise GuestError("not_found", "The layr project does not exist")
+            owner = pwd.getpwuid(main.stat().st_uid).pw_name
+            resolved = _state(await self.layr(["rev-parse", state], cwd=main, owner=owner))
+            view = folder / "states" / resolved
+            if not view.is_dir() or view.is_symlink():
+                raise GuestError("not_found", "The immutable layr state is unavailable")
+        else:
+            owner, _main, _mac, view = await self.lines(project)
         async with self.locks.setdefault(project, asyncio.Lock()):
-            await self.checkout(view, owner, state)
+            if not read_only:
+                await self.checkout(view, owner, state)
             found = []
-            for directory, folders, files in os.walk(view, followlinks=False):
+            def fail(error):
+                raise error
+            for directory, folders, files in os.walk(view, followlinks=False, onerror=fail):
                 folders[:] = [name for name in folders if name not in SKIPPED]
                 for name in files + [name for name in folders if (Path(directory) / name).is_symlink()]:
                     rel = (Path(directory) / name).relative_to(view).as_posix()
@@ -518,9 +540,15 @@ class MacSync:
             found.sort()
             page = found[:5000]
             items = {rel: _describe(_entry(view / rel)) for rel in page}
-        return {"stateId": state, "items": items, "next": page[-1] if len(found) > len(page) else None}
+        result = {"stateId": state, "items": items, "next": page[-1] if len(found) > len(page) else None}
+        if read_only:
+            # The host requires this acknowledgement before accepting a preview.
+            result["readOnly"] = True
+        return result
 
     async def dispatch(self, request_id: str, method: str, params: dict[str, Any], emit: Any) -> dict[str, Any]:
+        if method == "sync.mac.preview":
+            return await self.hashes(request_id, {**params, "readOnly": True})
         if method == "sync.mac.apply":
             return await self.apply(request_id, params)
         if method == "sync.mac.read":

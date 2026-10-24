@@ -60,7 +60,8 @@ so a lost response repeats the same step with the same ID and never applies it t
    round sends the same Mac files again and folds them onto the new main file by file.
 4. **Outbound.** For each path that changed from A to main': when the Mac file still has
    its agreed content, or the content that main took from this round, write the main'
-   version atomically (temporary file and rename). When the user changed it again during
+   version with an atomic inode exchange. The displaced inode stays in recovery storage.
+   When the user changed it again during
    the round, skip it; the next round uploads it, with the content main took as its base.
    A Mac edit that main did not take (a refused merge or a conflict) is never written
    over.
@@ -102,10 +103,56 @@ has a file where the other has a folder.
 - A round that would delete more than 25 % of the files or more than 500 files on
   either side pauses for the user's confirmation (an accidental `rm -rf`, a wrong path,
   an agent's mass delete in main).
-- A guest error that is not a lost reply ends the round's operation; the next round
-  starts a new one. A failed fold leaves nothing in the `mac` line.
-- Mac writes never go through symbolic links and never leave the project folder.
+- An uncertain guest response keeps the exact operation ID and payload in `pending.json`.
+  This includes every `outcome_unknown` response, regardless of its error text.
+  A later round repeats that request until the guest gives a proven result.
+  A definite refusal ends the operation. A failed fold leaves nothing in the `mac` line.
+- A legacy `recover.json` record stops sync. The original request or a final receipt
+  must establish the result before another operation can start. Equal hashes alone
+  cannot prove that an old operation has stopped.
+- A scan error stops the round before any upload. An unreadable folder is not a deletion.
+- A case or Unicode form rename keeps the file on the Mac. A name collision waits.
+- A Mac save during a round remains recoverable, including a save after the last content check.
+  Replacement exchanges the current inode with the staged VM inode. Deletion moves the current
+  inode into recovery storage. Creation uses a no-replace rename.
+  The filesystem must support these atomic operations. Recovery storage must use the same filesystem.
+  An unsupported operation stops the round. No copy-and-delete fallback runs.
+- Displaced inodes remain in private `.studio-sync-preserved-<uuid>` directories.
+  Git projects use their Git metadata directory. Other projects use the target file's parent directory.
+  Each directory has a Git exclusion before it receives content, including before a later Git initialization.
+  `record.json` records the path, operation phase, original hash, and conflict state.
+  Files and records receive filesystem synchronization before the round reports success.
+  Studio never removes these directories or their original inodes automatically.
+- A concurrent save can change the displaced inode through an existing open descriptor.
+  The save stays in `original`, not necessarily at the current project path.
+  A detected change stops later rounds and reports the recovery directory in `reason`.
+  Full scans also inspect recovery directories inside Git metadata.
+  The guard cannot promise that the visible project path always contains the latest uncoordinated save.
+  It protects the displaced bytes instead. Storage grows until the user reviews retained data.
+- An old `.name.studio-sync-<8 hex>` temporary file stops sync for review.
+  It can contain the only original file. Studio does not delete it automatically.
+- Changes to project paths never follow symbolic links through parent directories.
 - Sync writes in the VM run as the project user, never as root, so layr rules apply.
+
+### Review retained data
+
+This procedure requires an operator. The normal conflict buttons do not clear a retained-inode error.
+
+1. Pause the project and wait for its active round to finish.
+2. Close editors and other processes that can write through an old file descriptor.
+3. Stop the backend through its normal controls before changing its sync records.
+4. Read the reported recovery directory and its `record.json`.
+5. Compare the current project file with the retained `original` without changing either file.
+6. Make independent copies of both versions before selecting the desired project content.
+7. Restore the selected content to the project path.
+8. Set that recovery record's `phase` to `reviewed` only after completing the comparison.
+9. Clear the matching entry from `status.json`'s `preservedConflicts` array.
+10. Restart the same backend with the same runtime state identity.
+11. Run the preview before resuming the project.
+
+The `reviewed` phase permits sync without deleting the retained inode.
+An incomplete `prepared` record requires the same review. Never infer completion from equal hashes alone.
+Keep independent copies if you later remove recovery storage yourself.
 
 ## Watcher
 
@@ -140,33 +187,52 @@ changed, and `{"ready"}` once. It exits when the backend closes its input.
 
 ## Implementation
 
-- Mac side: `workspaces/runtime/apps/server/src/codex_vm_mac_sync.py`. The runtime
-  maintenance tick schedules rounds (see Watcher) for each VM project with a Mac folder
-  (`layr-projects/<id>/project.json`), only while the VM runs. Per project, the folder
+- Mac side: `workspaces/runtime/packages/runtime-services/src/mac_sync.rs` (choices,
+  configuration, sidebar report), `mac_sync/round.rs` (the round) and
+  `mac_sync/schedule.rs` (the schedule and the file event helper). The server starts the
+  schedule on macOS next to the VM watchdog; it ticks every second and runs rounds (see
+  Watcher) for each VM project with a Mac folder (`layr-projects/<id>/project.json` in the
+  VM state directory, `linux-vm/`), only while the VM runs. Per project, the folder
   `layr-projects/<id>/sync/` holds:
   - `manifest.json`: agreed content and its base state per path;
   - `held.json`: Mac content in a conflict, or handed to the lead (`why`: `conflict` or
     `agent`, with the handoff's main state as `base`);
   - `pending.json`: the round to repeat after a lost reply;
+  - `recover.json`: a legacy record of an operation whose request was discarded.
+    Sync stops until its receipt can be reconciled. New rounds never create this record;
   - `allow-deletes.json`: the user's confirmation of the Mac deletions that paused the
     project, used by the next round;
   - `config.json`: `{"enabled": false}` pauses the project;
   - `status.json`: `state` (`syncing`, `synced`, `waiting`, `conflict`, `paused` or
     `error`), `conflicts`, `choices`, `withAgent`, `deletes`, `reason`, and `rescan` (paths
-    that a refused merge or a choice left unsent).
+    that a refused merge or a choice left unsent). Internal `preserved` and
+    `preservedConflicts` arrays name retained inodes and those that require operator review.
 - Guest side: `workspaces/runtime/apps/vm-guest/mac_sync.py`, broker methods
   `sync.mac.apply`, `sync.mac.read`, `sync.mac.hashes`, `sync.mac.head` and
   `sync.mac.handoff`. Receipts per operation make a repeated call return the first
-  result. The project user owns the `mac`, `mac-view` and `mac-conflict` lines; layr adds
+  result. The broker writes its receipt row before an operation and the response after
+  it; a stop of the guest service or the broker between the two leaves the row without a
+  result. `sync.mac.apply` then runs again with the same ID (it starts from main and keeps
+  its own receipt); other methods answer `outcome_unknown`. The project user owns the `mac`, `mac-view` and `mac-conflict` lines; layr adds
   Mac files that Git ignores by name, so they reach main. The first round of a synced
   project denies `push` to the agents group.
+- Preview: `studio-runtime-server mac-sync plan PROJECT --state DIRECTORY` reads an
+  existing runtime state without opening its server database or starting a backend.
+  It reads `sync.mac.head` and `sync.mac.preview`. The guest reads immutable Linux
+  layr snapshots without creating users or lines or changing `mac-view`.
+  An older guest rejects the new preview method. No fallback runs the old mutable hash method.
+  The lists include content, file kind, and executable bit changes.
+  The preview reports a pending operation separately. Its lists do not authorize a
+  replacement operation or bypass the guards of a real round.
+  Use the [isolated round procedure](verification/mac-sync-isolated-round.md) before a real guest trial.
 - HTTP API: `POST /api/mac-sync/resolve` (`projectId`, `path`, `choice`: `mac`, `vm` or
   `agent`) and `POST /api/mac-sync/config` (`projectId`, `enabled`, `allowDeletes`). The
   lead message has one ID per handoff state, so a repeated request does not repeat it.
 - `project.json` records `importStateId`, the base of a project's first round. A project
   imported before this change has none: its first round agrees only on files equal to
   main, and every other difference waits in `status.json` (`choices`).
-- Checks: `test_codex_vm_mac_sync.py` (Mac side), and the opt-in guest end-to-end tests
+- Checks: `runtime-services/tests/vm_macsync_round.rs` (Mac side, ported from the
+  Python `test_codex_vm_mac_sync.py`), and the opt-in guest end-to-end tests
   `test_layr_e2e.py` and `test_mac_sync_e2e.py` with a real layr daemon.
 
 ## Phases

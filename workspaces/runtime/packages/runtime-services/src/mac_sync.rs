@@ -1,4 +1,7 @@
-//! Mac folder conflict resolution and configuration, using the Linux VM guest RPC boundary.
+//! Mac folder sync of VM projects (docs/vm-mac-sync.md): configuration, conflict
+//! resolution and the sidebar report here, the sync round in [`round`] and its schedule
+//! in [`schedule`]. Every function takes the VM state directory, which holds
+//! `layr-projects/<id>/project.json` and its `sync/` records.
 //!
 //! Registered Python compatibility difference: after an uncertain `sync.mac.handoff`, Python
 //! retries the same guest operation ID and relies on guest deduplication. Rust persists the
@@ -6,7 +9,7 @@
 //! to finish local writes after restart.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use studio_runtime_store::path_identity::CanonicalPath;
@@ -21,6 +24,9 @@ use crate::{
     linux_vm_guest::{GuestError, GuestRpc},
     tar_gzip::TarGzipWriter,
 };
+
+pub mod round;
+pub mod schedule;
 
 const MAX_SYNC_FILE_BYTES: u64 = 256 * 1024 * 1024;
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(600);
@@ -45,6 +51,100 @@ pub enum MacSyncError {
     Io(#[source] std::io::Error),
     #[error("Mac sync state is invalid")]
     Json(#[source] serde_json::Error),
+    /// A legacy recovery record lacks the original request and its proven result.
+    #[error(
+        "Linux guest sync.mac.apply: outcome_unknown for legacy operation {operation} ({paths} paths); sync waits for receipt reconciliation"
+    )]
+    Unproven { operation: String, paths: usize },
+    #[error("Mac sync waits for review of {path}; retained data: {recovery}")]
+    PreservedConflict { path: String, recovery: PathBuf },
+}
+
+/// The text of a failed round for `status.json`: the error and its causes, at most
+/// 500 characters, like the `reason` of the Python rounds.
+pub fn error_reason(error: &MacSyncError) -> String {
+    let mut reason = error.to_string();
+    if let MacSyncError::Guest(guest) = error {
+        for part in [guest.code(), guest.detail()].into_iter().flatten() {
+            reason.push_str(": ");
+            reason.push_str(part);
+        }
+        if guest.code().is_none() {
+            reason.push_str(": ");
+            reason.push_str(&guest.to_string());
+        }
+    } else {
+        let mut source = std::error::Error::source(error);
+        while let Some(cause) = source {
+            reason.push_str(": ");
+            reason.push_str(&cause.to_string());
+            source = cause.source();
+        }
+    }
+    reason.chars().take(500).collect()
+}
+
+/// The sync report of a project for the API: `None` when the project has no Mac folder.
+pub fn sync_status(state_dir: &Path, project_id: &str) -> Result<Option<Value>, MacSyncError> {
+    let Ok(project) = project_directory(state_dir, project_id) else {
+        return Ok(None);
+    };
+    let Ok(record) = project_record(&project) else {
+        return Ok(None);
+    };
+    let source = record["source"].as_str().unwrap_or_default();
+    if source.is_empty() {
+        return Ok(None);
+    }
+    let status = read_json(&project.join("sync/status.json"), json!({}))?;
+    let enabled = read_json(&project.join("sync/config.json"), json!({}))?["enabled"]
+        .as_bool()
+        .unwrap_or(true);
+    Ok(Some(status_view(&status, source, enabled)))
+}
+
+/// The sidebar's Mac folder sync report of a project (Python
+/// `codex_vm_agents.project_sync`). The time of the last round stays out, so an
+/// unchanged report keeps its sync version.
+pub fn sidebar_view(state_dir: &Path, project_id: &str) -> Option<Value> {
+    match sync_status(state_dir, project_id) {
+        Ok(None) => None,
+        Ok(Some(status)) => Some(json!({
+            "projectId": project_id,
+            "state": status["state"],
+            "enabled": status["enabled"],
+            "conflicts": status["conflicts"],
+            "choices": status["choices"],
+            "withAgent": status["withAgent"],
+            "deletes": status["deletes"],
+            "reason": status["reason"],
+        })),
+        Err(error) => Some(json!({
+            "projectId": project_id, "state": "error", "enabled": true, "conflicts": [],
+            "choices": [], "withAgent": [], "deletes": 0,
+            "reason": format!("The sync records are unreadable: {}", error_reason(&error))
+                .chars().take(330).collect::<String>(),
+        })),
+    }
+}
+
+/// One round or choice of a project at a time.
+fn lock_round(directory: &Path) -> Result<Flock<File>, MacSyncError> {
+    fs::create_dir_all(directory).map_err(MacSyncError::Io)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory.join("round.lock"))
+        .map_err(MacSyncError::Io)?;
+    Flock::lock(lock, FlockArg::LockExclusiveNonblock).map_err(|(_file, error)| {
+        if error == nix::errno::Errno::EWOULDBLOCK || error == nix::errno::Errno::EAGAIN {
+            MacSyncError::Busy
+        } else {
+            MacSyncError::Io(std::io::Error::from_raw_os_error(error as i32))
+        }
+    })
 }
 
 pub struct ResolveResult {
@@ -67,6 +167,15 @@ pub fn configure(
     let enabled_changed = enabled.is_some();
     let directory = project.join("sync");
     fs::create_dir_all(&directory).map_err(MacSyncError::Io)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory.join("round.lock"))
+        .map_err(MacSyncError::Io)?;
+    let _lock = Flock::lock(lock, FlockArg::LockExclusive)
+        .map_err(|(_, error)| MacSyncError::Io(std::io::Error::from_raw_os_error(error as i32)))?;
     let config_path = directory.join("config.json");
     if let Some(enabled) = enabled {
         let mut config = read_json(&config_path, json!({}))?;
@@ -136,21 +245,7 @@ pub fn resolve(
     );
     let root = CanonicalPath::existing(root).map_err(MacSyncError::Io)?;
     let directory = project.join("sync");
-    fs::create_dir_all(&directory).map_err(MacSyncError::Io)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(directory.join("round.lock"))
-        .map_err(MacSyncError::Io)?;
-    let _lock = Flock::lock(lock, FlockArg::LockExclusiveNonblock).map_err(|(_file, error)| {
-        if error == nix::errno::Errno::EWOULDBLOCK || error == nix::errno::Errno::EAGAIN {
-            MacSyncError::Busy
-        } else {
-            MacSyncError::Io(std::io::Error::from_raw_os_error(error as i32))
-        }
-    })?;
+    let _lock = lock_round(&directory)?;
 
     let manifest_path = directory.join("manifest.json");
     let held_path = directory.join("held.json");
@@ -188,17 +283,17 @@ pub fn resolve(
     let mut handoff_id = None;
     match choice {
         "vm" => {
-            write_mac(&root, rel, &kind, &data, mode)?;
-            if kind == ABSENT {
-                manifest
-                    .as_object_mut()
-                    .ok_or(MacSyncError::Invalid)?
-                    .remove(rel);
-            } else {
-                let mut entry =
-                    describe(&contained_path(&root, rel)?)?.ok_or(MacSyncError::Invalid)?;
-                entry["b"] = json!(main_state);
-                manifest[rel] = entry;
+            match round::write_mac(&root, rel, &kind, &data, mode)? {
+                None => {
+                    manifest
+                        .as_object_mut()
+                        .ok_or(MacSyncError::Invalid)?
+                        .remove(rel);
+                }
+                Some(mut entry) => {
+                    entry.b = Some(main_state.clone());
+                    manifest[rel] = serde_json::to_value(entry).map_err(MacSyncError::Json)?;
+                }
             }
             held.as_object_mut()
                 .ok_or(MacSyncError::Invalid)?
@@ -504,6 +599,15 @@ fn contained_path(root: &Path, rel: &str) -> Result<PathBuf, MacSyncError> {
         return Err(MacSyncError::Invalid);
     }
     let path = root.join(rel);
+    // The path itself may be a link, which sync reads and replaces but never follows;
+    // its parents are no links.
+    let mut parent = path.parent();
+    while let Some(folder) = parent.filter(|folder| *folder != root) {
+        if fs::symlink_metadata(folder).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err(MacSyncError::Invalid);
+        }
+        parent = folder.parent();
+    }
     let mut ancestor = path.parent().ok_or(MacSyncError::Invalid)?;
     while !ancestor.exists() {
         ancestor = ancestor.parent().ok_or(MacSyncError::Invalid)?;
@@ -559,50 +663,6 @@ fn read_sync_file(path: &Path, kind: &str) -> Result<Vec<u8>, MacSyncError> {
             .map_err(MacSyncError::Io);
     }
     fs::read(path).map_err(MacSyncError::Io)
-}
-
-fn write_mac(
-    root: &Path,
-    rel: &str,
-    kind: &str,
-    bytes: &[u8],
-    mode: u32,
-) -> Result<(), MacSyncError> {
-    let path = contained_path(root, rel)?;
-    let parent = path.parent().ok_or(MacSyncError::Invalid)?;
-    fs::create_dir_all(parent).map_err(MacSyncError::Io)?;
-    if kind == ABSENT {
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(MacSyncError::Io(error)),
-        }
-        return Ok(());
-    }
-    let temp = path.with_file_name(format!(
-        ".{}.sync-{}",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .ok_or(MacSyncError::Invalid)?,
-        std::process::id()
-    ));
-    if kind == "link" {
-        let target = std::str::from_utf8(bytes).map_err(|_| MacSyncError::Invalid)?;
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(target, &temp).map_err(MacSyncError::Io)?;
-        #[cfg(not(unix))]
-        return Err(MacSyncError::Invalid);
-    } else {
-        let mut file = File::create(&temp).map_err(MacSyncError::Io)?;
-        file.write_all(bytes).map_err(MacSyncError::Io)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(fs::Permissions::from_mode(mode & 0o777))
-                .map_err(MacSyncError::Io)?;
-        }
-    }
-    fs::rename(temp, path).map_err(MacSyncError::Io)
 }
 
 fn make_archive(

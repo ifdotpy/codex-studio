@@ -148,7 +148,7 @@ class Broker:
                 if previous != fingerprint:
                     raise GuestError("id_conflict", "The request ID has different content")
                 return await asyncio.shield(task)
-            prior = receipt(self.db, request_id, fingerprint)
+            prior = receipt(self.db, request_id, fingerprint, method)
             if prior is not None:
                 return prior
 
