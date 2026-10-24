@@ -4,6 +4,7 @@ import {
   legacySnapshotRoute,
   syncIdentityFixture,
   test,
+  createFixtureViteServer,
   expect,
 } from "../playwright.mjs";
 // Replicated state uses the current credential endpoint and reports failures.
@@ -30,11 +31,8 @@ test("Session Poll Browser", async ({
     },
   };
 
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
   let streamResponse;
-  const server = await createServer({
+  const server = await createFixtureViteServer({
     configFile: false,
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
