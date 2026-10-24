@@ -154,6 +154,8 @@ async fn idle_claude_dispatches_once_and_restart_does_not_repeat() {
     .unwrap();
     stop.send(true).unwrap();
     timer.await.unwrap();
+    // Cancelled fire jobs can leave actor writes holding the runtime lock; drain before reopening.
+    store.transaction(|_| Ok(())).await.unwrap();
 
     assert_eq!(session.calls.lock().unwrap().len(), 1);
     assert_eq!(
