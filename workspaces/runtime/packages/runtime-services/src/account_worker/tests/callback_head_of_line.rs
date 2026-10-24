@@ -26,7 +26,8 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(60);
 const FLOOD_FRAMES: u64 =
     (crate::provider_session_task::MAX_UNSETTLED + 3 * PEER_JOURNAL_CAPACITY) as u64;
 const HELD_CALLBACK: &str = "held-callback";
-const UNKNOWN_HOLD: &str = "Provider thread resume outcome is unknown";
+/// Both thread request hold reasons (resume and start) contain this text.
+const UNKNOWN_HOLD: &str = "outcome is unknown; input remains pending";
 
 /// A clone of the fixture agent on its own thread; no thread means a new one.
 async fn clone_agent(state: &State, id: &str, thread: Option<&str>, input: &str) {
