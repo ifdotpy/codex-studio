@@ -21677,6 +21677,13 @@ export interface components {
           value: components["schemas"]["AnnotationEntityDto"];
         }
       | {
+          /** @constant */
+          collection: "studioError";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["StudioError"];
+        }
+      | {
           /** @enum {string} */
           collection:
             | "agent"
@@ -21698,7 +21705,8 @@ export interface components {
             | "rateLimit"
             | "messageReceipt"
             | "plan"
-            | "annotation";
+            | "annotation"
+            | "studioError";
           /** @constant */
           op: "delete";
         }
@@ -21723,7 +21731,8 @@ export interface components {
       | components["schemas"]["SyncRateLimitEntityPayload"]
       | components["schemas"]["SyncMessageReceiptEntityPayload"]
       | components["schemas"]["SyncPlanEntityPayload"]
-      | components["schemas"]["SyncAnnotationEntityPayload"];
+      | components["schemas"]["SyncAnnotationEntityPayload"]
+      | components["schemas"]["SyncStudioErrorEntityPayload"];
     /** SyncEventEntityPayload */
     SyncEventEntityPayload: {
       /**
@@ -21947,6 +21956,17 @@ export interface components {
     /** SyncSessionEvent */
     SyncSessionEvent: {
       sessionId: string;
+    };
+    /** SyncStudioErrorEntityPayload */
+    SyncStudioErrorEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "studioError";
+      /** Id */
+      id: string;
+      value: components["schemas"]["StudioError"];
     };
     /** SyncSubscriptionAck */
     SyncSubscriptionAck: {

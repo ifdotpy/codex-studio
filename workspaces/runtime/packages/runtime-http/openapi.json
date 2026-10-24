@@ -48025,6 +48025,27 @@
             "type": "object"
           },
           {
+            "properties": {
+              "collection": {
+                "const": "studioError",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/StudioError"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
             "not": {
               "required": [
                 "value"
@@ -48052,7 +48073,8 @@
                   "rateLimit",
                   "messageReceipt",
                   "plan",
-                  "annotation"
+                  "annotation",
+                  "studioError"
                 ],
                 "type": "string"
               },

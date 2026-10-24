@@ -966,6 +966,69 @@ mod tests {
     };
 
     #[test]
+    fn entity_v4_collection_wire_contracts_match_payload_owner() {
+        use std::collections::BTreeMap;
+        let openapi: serde_json::Value = serde_json::from_slice(super::OPENAPI).expect("OpenAPI");
+        let schemas = &openapi["components"]["schemas"];
+        // SyncEntityPayload's discriminator owns the collection set and value DTOs.
+        let owner: BTreeMap<_, _> = schemas["SyncEntityPayload"]["discriminator"]["mapping"]
+            .as_object()
+            .expect("payload owner")
+            .iter()
+            .map(|(collection, reference)| {
+                let name = reference
+                    .as_str()
+                    .expect("payload ref")
+                    .rsplit('/')
+                    .next()
+                    .expect("name");
+                (
+                    collection.as_str(),
+                    schemas[name]["properties"]["value"]["$ref"]
+                        .as_str()
+                        .expect("value DTO"),
+                )
+            })
+            .collect();
+        let variants = schemas["SyncEntity"]["oneOf"]
+            .as_array()
+            .expect("wire variants");
+        let upserts: BTreeMap<_, _> = variants
+            .iter()
+            .filter(|variant| variant["properties"]["op"]["const"] == "upsert")
+            .map(|variant| {
+                (
+                    variant["properties"]["collection"]["const"]
+                        .as_str()
+                        .expect("wire collection"),
+                    variant["properties"]["value"]["$ref"]
+                        .as_str()
+                        .expect("wire value DTO"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            upserts, owner,
+            "SyncEntity upserts must consume the SyncEntityPayload owner"
+        );
+        let deletes = variants
+            .iter()
+            .find(|variant| variant["properties"]["op"]["const"] == "delete")
+            .expect("delete variant");
+        let deleted: std::collections::BTreeSet<_> = deletes["properties"]["collection"]["enum"]
+            .as_array()
+            .expect("delete collections")
+            .iter()
+            .map(|value| value.as_str().expect("collection"))
+            .collect();
+        assert_eq!(
+            deleted,
+            owner.keys().copied().collect(),
+            "SyncEntity deletes must consume the SyncEntityPayload owner"
+        );
+    }
+
+    #[test]
     fn preparing_named_schemas_does_not_compile_validators() {
         let mut schemas = super::prepare_schemas().expect("registry prepares");
         assert!(
