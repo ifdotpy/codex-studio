@@ -823,14 +823,23 @@ export default function Usage({
                     <small>{activeAccount?.key || fallbackKey}</small>
                   )}
               </div>
-              {selectedAccountKey === fallbackKey && !recovery?.eligibility && (
-                <ModelLimitEligibility eligibility={eligibility} now={now} />
-              )}
               {recovery && (
                 <LimitRecoveryNotice
                   key={JSON.stringify(recovery)}
                   recovery={recovery}
+                  onRefresh={() =>
+                    activeAccount?.reload(true) ?? refreshLimits()
+                  }
                 />
+              )}
+              {selectedAccountKey === fallbackKey && (
+                <details className="model-limit-details">
+                  <summary>Model eligibility details</summary>
+                  <ModelLimitEligibility
+                    eligibility={recovery?.eligibility ?? eligibility}
+                    now={now}
+                  />
+                </details>
               )}
               <div
                 className="account-limits-groups"
