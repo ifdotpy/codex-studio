@@ -142,3 +142,103 @@ pub(super) async fn attach_scoped_entity_changes(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
+
+    #[tokio::test]
+    async fn view_scoped_entities_publish_list_and_detail_through_real_handlers() {
+        let directory = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        studio_runtime_services::entity_publication::install(&store)
+            .await
+            .expect("publisher");
+        store.transaction_with(|tx| {
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"chat","rootId":"chat","epoch":1,"status":"completed","name":"List chat","threadId":"thread","lastCompletedTurn":"turn","lastCompletedTurnStatus":"completed","lastAnswer":"Detailed answer","tail":"Detailed output"}))?)
+        }).await.expect("source commit publishes both views");
+        let workspace = store
+            .test_read_transaction(|tx| SyncDocumentsRepository::workspace_id(tx))
+            .expect("workspace");
+        let state = HttpState::new(
+            "token".into(),
+            workspace,
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let list_ref: ResourceRef =
+            serde_json::from_value(json!({"kind":"state"})).expect("state ref");
+        let detail_ref: ResourceRef =
+            serde_json::from_value(json!({"kind":"agentDetail","agentId":"chat"}))
+                .expect("detail ref");
+        let before = content_fingerprint(state.clone(), list_ref.clone())
+            .await
+            .expect("list fingerprint");
+        let list = initial_snapshot(state.clone(), list_ref.clone(), None)
+            .await
+            .expect("global snapshot");
+        let list = serde_json::to_value(list).expect("typed entry");
+        let documents = list["entityChanges"]["documents"]
+            .as_array()
+            .expect("complete list");
+        assert!(
+            documents
+                .iter()
+                .any(|row| row["collection"] == "agentSummary")
+        );
+        assert!(
+            !documents
+                .iter()
+                .any(|row| row["collection"] == "agent" || row["collection"] == "agentDetail")
+        );
+        let summary = documents
+            .iter()
+            .find(|row| row["collection"] == "agentSummary")
+            .expect("summary");
+        assert_eq!(summary["value"]["name"], "List chat");
+        assert!(summary["value"].get("lastAnswer").is_none());
+        let detail = initial_snapshot(state.clone(), detail_ref.clone(), None)
+            .await
+            .expect("detail snapshot");
+        let detail = serde_json::to_value(detail).expect("typed detail");
+        assert_eq!(
+            detail["entityChanges"]["documents"][0]["value"]["lastAnswer"],
+            "Detailed answer"
+        );
+        store
+            .transaction_with(|tx| {
+                let mut agent =
+                    AgentRepository::get(tx, &studio_runtime_store::AgentId::from("chat"))?
+                        .expect("agent")
+                        .value();
+                agent["lastAnswer"] = json!("Changed answer");
+                AgentRepository::put(tx, &AgentRecord::from_value(agent.clone())?)?;
+                studio_runtime_services::agents_create::publish_agent(tx, &agent)?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("detail output commit");
+        assert_eq!(
+            content_fingerprint(state.clone(), list_ref)
+                .await
+                .expect("list fingerprint"),
+            before
+        );
+        let mut event: ResourceChangeEvent = serde_json::from_value(json!({"protocol":studio_runtime_schema::SYNC_PROTOCOL_VERSION,"workspaceId":state.workspace_id,"epoch":"epoch","revision":1,"reason":"change","resources":[detail_ref],"resourceVersions":[{"revision":1}]})).expect("event");
+        attach_scoped_entity_changes(Some(&state), &mut event).await;
+        assert_eq!(
+            serde_json::to_value(event).expect("live frame")["resourceVersions"][0]["entityChanges"]
+                ["documents"][0]["value"]["lastAnswer"],
+            "Changed answer"
+        );
+    }
+}

@@ -11,6 +11,83 @@ use studio_runtime_store::{AgentRecord, AgentRepository, StoreError};
 const CHAT: &str = "published-chat";
 
 #[tokio::test]
+async fn agent_projections_fresh_seed_and_upgrade_marker_are_complete() {
+    let (_dir, store) = store().await;
+    assert!(
+        store
+            .test_read_transaction(|tx| crate::sync_policy::has_complete_entity_seed(tx))
+            .expect("fresh seed reads")
+    );
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "DELETE FROM sync_entity_meta WHERE key=?1",
+                [studio_runtime_store::AGENT_PROJECTIONS_SEED_MARKER],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("simulate older store marker");
+    assert!(
+        !store
+            .test_read_transaction(|tx| crate::sync_policy::has_complete_entity_seed(tx))
+            .expect("upgrade needs seed")
+    );
+    store
+        .transaction(|tx| {
+            let rooms = crate::sync_entity_context::RoomDirectory::load(tx)?;
+            crate::sync_policy::maintain_entity_projections(
+                tx,
+                "",
+                &Default::default(),
+                &rooms,
+                |_, _, _, _| true,
+            )
+        })
+        .await
+        .expect("upgrade seeds projections and marker");
+    assert!(
+        store
+            .test_read_transaction(|tx| crate::sync_policy::has_complete_entity_seed(tx))
+            .expect("upgraded seed reads")
+    );
+}
+
+#[tokio::test]
+async fn agent_projections_roll_back_with_the_source_if_detail_validation_fails() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({"name":"Before"}))).await;
+    let before = client_entity(&store, "agentSummary", CHAT).expect("summary");
+    let failure = store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.name','After') WHERE id=?1",
+                [CHAT],
+            )?;
+            crate::sync_policy::publish_agent_projection(
+                tx,
+                CHAT,
+                json!({"id":CHAT,"name":"After"}),
+                false,
+                &|collection, _, _, _| collection != "agentDetail",
+            )
+        })
+        .await;
+    assert!(failure.is_err());
+    assert_eq!(
+        client_entity(&store, "agentSummary", CHAT).expect("summary"),
+        before
+    );
+    let source = store
+        .test_read_transaction(|tx| {
+            AgentRepository::get(tx, &studio_runtime_store::AgentId::from(CHAT))
+        })
+        .expect("source")
+        .expect("agent");
+    assert_eq!(source.value()["name"], "Before");
+}
+
+#[tokio::test]
 async fn agent_projections_publish_together_and_summary_skips_detail_changes() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({"name":"Visible", "threadId":"thread", "lastCompletedTurn":"turn", "lastCompletedTurnStatus":"completed", "lastAnswer":"Answer", "tail":"Output"}))).await;

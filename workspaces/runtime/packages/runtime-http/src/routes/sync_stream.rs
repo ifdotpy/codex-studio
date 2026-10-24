@@ -731,42 +731,6 @@ async fn read_entity_changes(
         .await
 }
 
-/// Convert the complete record interval; final SSE serialization owns the byte limit.
-#[cfg(test)]
-fn entity_change_batch(
-    connection: &Connection,
-    after: Option<i64>,
-    floor: i64,
-    through: i64,
-) -> Option<EntityChangeBatch> {
-    let after = after?;
-    if after < floor || after >= through {
-        return None;
-    }
-    let rows = SyncDocumentsRepository::entities_after(
-        connection,
-        after,
-        SYNC_ENTITY_STREAM_MAX_DOCUMENTS + 1,
-    )
-    .ok()?;
-    if rows.len() as i64 > SYNC_ENTITY_STREAM_MAX_DOCUMENTS {
-        return None;
-    }
-    let mut documents = Vec::with_capacity(rows.len());
-    for row in &rows {
-        documents.push(super::sync_documents::entity_document(row)?);
-    }
-    if documents.last()?.seq != through {
-        return None;
-    }
-    let batch = EntityChangeBatch {
-        after,
-        through,
-        documents,
-    };
-    Some(batch)
-}
-
 enum TranscriptStreamUpdate {
     Unchanged,
     Snapshot {
@@ -1345,6 +1309,11 @@ async fn next_frame(
             )
             .ok()?;
             attach_transcript_changes(&mut event, transcript_updates);
+            super::subscription_entities::attach_scoped_entity_changes(
+                state.http_state.as_ref(),
+                &mut event,
+            )
+            .await;
             attach_transient_snapshots(
                 state.http_state.as_ref(),
                 &mut event,
@@ -3743,19 +3712,25 @@ mod tests {
             .transaction(|tx| {
                 SyncDocumentsRepository::put_entity(
                     tx,
-                    "agent",
+                    "agentSummary",
                     "first",
                     json!({"id":"first","name":"superseded","status":"idle","source":"managed"}),
                     false,
                 )?;
                 SyncDocumentsRepository::put_entity(
                     tx,
-                    "agent",
+                    "agentSummary",
                     "first",
                     json!({"id":"first","name":"First","status":"idle","source":"managed"}),
                     false,
                 )?;
-                SyncDocumentsRepository::put_entity(tx, "agent", "removed", json!({}), true)?;
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "agentSummary",
+                    "removed",
+                    json!({}),
+                    true,
+                )?;
                 Ok(())
             })
             .await
@@ -3793,7 +3768,7 @@ mod tests {
                 for index in 0..SYNC_ENTITY_STREAM_MAX_DOCUMENTS {
                     SyncDocumentsRepository::put_entity(
                         tx,
-                        "agent",
+                        "agentSummary",
                         &format!("deleted-{index}"),
                         json!({}),
                         true,
@@ -3830,7 +3805,7 @@ mod tests {
                 for index in 0..count {
                     let id = format!("agent-{index}");
                     let name = if scenario == "bytes" { "é".repeat(262144) } else { "Agent".into() };
-                    SyncDocumentsRepository::put_entity(tx, "agent", &id, json!({"id":id,"name":name,"status":"idle","source":"managed"}), false)?;
+                    SyncDocumentsRepository::put_entity(tx, "agentSummary", &id, json!({"id":id,"name":name,"status":"idle","source":"managed"}), false)?;
                 }
                 if scenario == "pruned" {
                     tx.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor','1')", [])?;

@@ -129,7 +129,8 @@ fn entity_snapshot(rows: &[Value]) -> Value {
                 .collect(),
         )
     };
-    let agents = if let Some(summaries) = collections.get("agentSummary") {
+    let agents = if rows.iter().any(|row| row["collection"] == "agentSummary") {
+        let summaries = collections.get("agentSummary").cloned().unwrap_or_default();
         Value::Array(
             summaries
                 .iter()

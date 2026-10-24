@@ -1161,7 +1161,7 @@ export async function readTestState(origin) {
 
   // Materialize only the collections used by browser specs. Keeping these as
   // ordinary arrays also lets fixture specs adjust the data they serve.
-  const agents = /** @type {TestAgent[]} */ (list("agent"));
+  const agents = /** @type {TestAgent[]} */ (list("agentSummary"));
   const rooms = /** @type {TestRoom[]} */ (list("room"));
   const tasks = /** @type {TestTask[]} */ (list("task"));
   const monitors = /** @type {MonitorEntityDto[]} */ (list("monitor"));

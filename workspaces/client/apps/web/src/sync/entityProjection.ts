@@ -104,6 +104,7 @@ export type EntityProjection = {
   changed: Set<EntityCollection>;
   values: EntityValues;
   snapshot: Snapshot | null;
+  agentSummarySeen: boolean;
 };
 
 function emptyEntityValues(): EntityValues {
@@ -180,6 +181,7 @@ function projectSnapshotCollections(
   prior: Snapshot | null,
   changed: ReadonlySet<EntityCollection>,
   values: EntityValues,
+  agentSummarySeen: boolean,
 ): Snapshot {
   const agents =
     prior &&
@@ -187,7 +189,7 @@ function projectSnapshotCollections(
     !changed.has("agentSummary") &&
     !changed.has("agentDetail")
       ? prior.runtime.agents
-      : values.agentSummary.size
+      : agentSummarySeen
         ? entityValues(values, "agentSummary").map((summary) => ({
             ...values.agentDetail.get(summary.id),
             ...summary,
@@ -351,6 +353,7 @@ export function emptyEntityProjection(): EntityProjection {
     changed: new Set(),
     values: emptyEntityValues(),
     snapshot: null,
+    agentSummarySeen: false,
   };
 }
 
@@ -444,6 +447,7 @@ export function applyEntityChanges(
         state.values.annotation.set(payload.id, payload.value);
         break;
       case "agentSummary":
+        state.agentSummarySeen = true;
         state.values.agentSummary.set(payload.id, payload.value);
         break;
       case "agentDetail":
@@ -538,7 +542,12 @@ export function applyEntityChanges(
   if (!ready) return null;
   const prior = state.snapshot;
   if (prior && !changed.size) return prior;
-  const next = projectSnapshotCollections(prior, changed, state.values);
+  const next = projectSnapshotCollections(
+    prior,
+    changed,
+    state.values,
+    state.agentSummarySeen,
+  );
   changed.clear();
   state.snapshot = next;
   return next;

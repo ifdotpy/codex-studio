@@ -327,7 +327,7 @@ export async function readEntities(origin, collection) {
   }
 }
 
-const readAgents = (origin) => readEntities(origin, "agent");
+const readAgents = (origin) => readEntities(origin, "agentSummary");
 
 /**
  * Wait until the seeded agents are quiet: no agent that is not held has a turn
