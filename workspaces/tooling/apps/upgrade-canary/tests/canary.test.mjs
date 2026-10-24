@@ -119,11 +119,11 @@ test("disabled Claude and a missing file login never select the live discovery p
 
 test("native login adds only an inbound local OAuth callback to the provider sandbox", () => {
   const args = {
-    root: "/tmp/canary",
-    tmp: "/tmp",
+    root: path.join(os.tmpdir(), "canary"),
+    tmp: os.tmpdir(),
     home: "/Users/owner",
     liveState: "/Users/owner/state",
-    app: "/tmp/canary/app",
+    app: path.join(os.tmpdir(), "canary/app"),
     port: null,
     proxyPort: 4900,
     readable: [],
@@ -267,11 +267,11 @@ test("native login uses full auth and exact profile identity without inherited c
 
 test("Keychain mode grants securityd only to provider and recovery profiles", () => {
   const args = {
-    root: "/tmp/canary",
-    tmp: "/tmp",
+    root: path.join(os.tmpdir(), "canary"),
+    tmp: os.tmpdir(),
     home: "/Users/owner",
     liveState: "/Users/owner/state",
-    app: "/tmp/canary/app",
+    app: path.join(os.tmpdir(), "canary/app"),
     port: 4800,
     proxyPort: 4900,
     readable: [],
