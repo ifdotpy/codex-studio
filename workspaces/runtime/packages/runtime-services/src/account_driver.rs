@@ -3718,12 +3718,12 @@ exit 0
             )),
         )
         .expect("open registry");
-        let baseline = driver.state.lock().unwrap().value.clone();
+        let baseline = driver.state.lock().expect("driver state").value.clone();
         for flag in ["disconnected", "deleted"] {
             let mut candidate = baseline.clone();
             candidate["accounts"]["default"]["status"] = serde_json::json!("ready");
             candidate["accounts"]["default"][flag] = Value::Bool(true);
-            driver.state.lock().unwrap().value = candidate;
+            driver.state.lock().expect("driver state").value = candidate;
             assert_eq!(
                 driver.get("default").expect("admission status"),
                 AccountStatus::Unavailable,

@@ -1234,13 +1234,13 @@ mod request_tests {
             let agents = ["lead", "child"].map(|id| stored(&store, id));
             let transfers = db
                 .prepare("SELECT id, record FROM runtime_account_transfers ORDER BY id")
-                .unwrap()
+                .expect("prepare transfers")
                 .query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })
-                .unwrap()
+                .expect("query transfers")
                 .collect::<Result<Vec<_>, _>>()
-                .unwrap();
+                .expect("decode transfers");
             (agents, transfers)
         };
         let before = snapshot();

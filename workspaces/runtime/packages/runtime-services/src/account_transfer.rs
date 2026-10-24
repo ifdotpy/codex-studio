@@ -1835,7 +1835,7 @@ mod provider_receipt_tests {
             );
             *ready.operation["members"]["agent"]
                 .pointer_mut(path)
-                .unwrap() = original;
+                .expect("member field") = original;
         }
         let adopted = after(
             ready
