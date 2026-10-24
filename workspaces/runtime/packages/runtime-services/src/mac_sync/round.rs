@@ -2450,7 +2450,7 @@ mod tests {
     #[test]
     fn replacement_retains_a_save_after_the_final_guard() {
         let (_temp, root) = temporary();
-        let path = &root.join("file");
+        let path = root.join("file");
         fs::write(&path, b"base").unwrap();
         let stamp = FileStamp::read(&path).unwrap();
         write_guarded_with_hook(
@@ -2472,7 +2472,7 @@ mod tests {
     #[test]
     fn deletion_retains_a_file_recreated_after_the_final_guard() {
         let (_temp, root) = temporary();
-        let path = &root.join("file");
+        let path = root.join("file");
         fs::write(&path, b"base").unwrap();
         let stamp = FileStamp::read(&path).unwrap();
         write_guarded_with_hook(
@@ -2495,7 +2495,7 @@ mod tests {
     #[test]
     fn creation_does_not_replace_a_file_created_after_the_final_guard() {
         let (_temp, root) = temporary();
-        let path = &root.join("file");
+        let path = root.join("file");
         write_guarded_with_hook(
             &root,
             "file",
@@ -2516,7 +2516,7 @@ mod tests {
     fn displaced_inode_retains_writes_through_an_open_descriptor_after_return() {
         for kind in ["file", ABSENT] {
             let (_temp, root) = temporary();
-            let path = &root.join("file");
+            let path = root.join("file");
             fs::write(&path, b"base").unwrap();
             let mut editor = fs::OpenOptions::new().write(true).open(&path).unwrap();
             let stamp = FileStamp::read(&path).unwrap();
@@ -2546,7 +2546,7 @@ mod tests {
     #[test]
     fn a_scan_never_deletes_an_uncertain_legacy_temporary() {
         let (_temp, root) = temporary();
-        let path = &root.join(".file.studio-sync-0123abcd");
+        let path = root.join(".file.studio-sync-0123abcd");
         fs::write(&path, b"possibly the only original").unwrap();
         assert!(matches!(
             scan(&root, &Rules::new(&root).unwrap(), &Manifest::new(), None),
