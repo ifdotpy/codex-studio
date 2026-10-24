@@ -312,7 +312,9 @@ describe("shared resource event transport", () => {
     await vi.advanceTimersByTimeAsync(0);
     const api = await import("../api");
     api.markApiSchemaMismatch();
-    await vi.advanceTimersByTimeAsync(1_000);
+    // Drain deferred coordinator shutdown without assuming a fixed timer deadline.
+    // The assertion still rejects recurring timers after cleanup.
+    await vi.runOnlyPendingTimersAsync();
     expect(vi.getTimerCount()).toBe(0);
     vi.resetModules();
     vi.restoreAllMocks();
