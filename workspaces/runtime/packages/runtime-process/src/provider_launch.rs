@@ -32,6 +32,10 @@ pub struct ProviderLaunchSpec {
     /// with one of them is reattached with its own command, so a changed
     /// launch command reaches new children without refusing running ones.
     pub reattach_commands: Vec<Vec<String>>,
+    /// Earlier values of launch variables whose value the owner learns over
+    /// time, by variable. A running child launched with one of them is the
+    /// same provider and reattaches with its own environment.
+    pub retained_values: BTreeMap<String, Vec<String>>,
 }
 
 impl ProviderLaunchSpec {
@@ -51,6 +55,7 @@ impl ProviderLaunchSpec {
             retained_response_ids: BTreeMap::new(),
             handled_cursor: 0,
             reattach_commands: Vec::new(),
+            retained_values: BTreeMap::new(),
         }
     }
 }

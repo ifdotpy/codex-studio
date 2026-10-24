@@ -285,6 +285,7 @@ fn actor(
             extra: Default::default(),
         },
         reattach_commands: Vec::new(),
+        retained_values: BTreeMap::new(),
         identity: BackendIdentity {
             backend_id: BackendId("unit".into()),
             state_dir: "/unused".into(),
@@ -930,9 +931,16 @@ async fn retained_environment_settles_after_a_transient_launch_record() {
     let shutdown = Shutdown::default();
     let mut stop = shutdown.subscribe();
     let slots = Arc::new(Semaphore::new(1));
-    let settled = settled_environment(&mut stop, &slots, &clean, Duration::from_secs(5), read)
-        .await
-        .unwrap();
+    let settled = settled_environment(
+        &mut stop,
+        &slots,
+        &clean,
+        &BTreeMap::new(),
+        Duration::from_secs(5),
+        read,
+    )
+    .await
+    .unwrap();
     assert_eq!(settled, clean);
     assert_eq!(reads.load(Ordering::SeqCst), 3);
     assert_eq!(slots.available_permits(), 1);
@@ -950,8 +958,15 @@ async fn retained_environment_refuses_a_record_that_never_matches() {
     let shutdown = Shutdown::default();
     let mut stop = shutdown.subscribe();
     let slots = Arc::new(Semaphore::new(1));
-    let result =
-        settled_environment(&mut stop, &slots, &clean, Duration::from_millis(50), read).await;
+    let result = settled_environment(
+        &mut stop,
+        &slots,
+        &clean,
+        &BTreeMap::new(),
+        Duration::from_millis(50),
+        read,
+    )
+    .await;
     assert!(matches!(result, Err(AdapterError::UnverifiableChild)));
     assert!(reads.load(Ordering::SeqCst) >= 2);
     assert_eq!(slots.available_permits(), 1);
@@ -973,8 +988,15 @@ async fn retained_environment_wait_ends_on_shutdown() {
             shutdown.cancel();
         })
     };
-    let result =
-        settled_environment(&mut stop, &slots, &clean, Duration::from_secs(60), read).await;
+    let result = settled_environment(
+        &mut stop,
+        &slots,
+        &clean,
+        &BTreeMap::new(),
+        Duration::from_secs(60),
+        read,
+    )
+    .await;
     assert!(matches!(result, Err(AdapterError::Cancelled)));
     cancel.await.unwrap();
 }

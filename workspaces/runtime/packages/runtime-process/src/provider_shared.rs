@@ -61,6 +61,7 @@ pub(crate) fn clean_environment(requested: &BTreeMap<String, String>) -> BTreeMa
 pub(crate) fn verify_environment(
     original: &BTreeMap<String, String>,
     clean: &BTreeMap<String, String>,
+    retained_values: &BTreeMap<String, Vec<String>>,
 ) -> io::Result<()> {
     let without_launcher = |values: &BTreeMap<String, String>| {
         values
@@ -78,6 +79,14 @@ pub(crate) fn verify_environment(
             expected.remove(*key);
         }
     }
+    for (key, values) in retained_values {
+        if let Some(value) = original.get(key)
+            && expected.contains_key(key)
+            && values.contains(value)
+        {
+            expected.insert(key.clone(), value.clone());
+        }
+    }
     if without_launcher(original) != expected {
         return Err(io::Error::other("retained provider environment differs"));
     }
@@ -90,9 +99,14 @@ pub(crate) fn verify_environment(
 #[must_use]
 pub fn retained_environment_accepted(
     original: &BTreeMap<String, String>,
-    launch: &BTreeMap<String, String>,
+    launch: &crate::ProviderLaunchSpec,
 ) -> bool {
-    verify_environment(original, &clean_environment(launch)).is_ok()
+    verify_environment(
+        original,
+        &clean_environment(&launch.environment),
+        &launch.retained_values,
+    )
+    .is_ok()
 }
 
 /// Upper bound in bytes for one retained child's launch environment record.

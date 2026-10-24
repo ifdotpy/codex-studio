@@ -173,6 +173,7 @@ impl SupervisorProviderTaskFactory {
                 handle,
                 open,
                 reattach_commands: options.launch.reattach_commands,
+                retained_values: options.launch.retained_values,
                 identity: self.identity.clone(),
                 endpoint: self.endpoint.clone(),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -366,6 +367,8 @@ struct AdapterTask {
     open: OpenRequest,
     /// Earlier commands of this launch that a running child may keep.
     reattach_commands: Vec<Vec<String>>,
+    /// Earlier values of learned launch variables that a running child may keep.
+    retained_values: BTreeMap<String, Vec<String>>,
     identity: BackendIdentity,
     endpoint: PathBuf,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -578,6 +581,7 @@ impl AdapterTask {
             &mut self.stop,
             &self.environment_reads,
             &self.open.env,
+            &self.retained_values,
             RETAINED_ENVIRONMENT_SETTLE,
             move || read_process_environment(pid),
         )
@@ -1113,6 +1117,7 @@ async fn settled_environment(
     stop: &mut watch::Receiver<bool>,
     slots: &Arc<Semaphore>,
     clean: &BTreeMap<String, String>,
+    retained_values: &BTreeMap<String, Vec<String>>,
     settle: Duration,
     read: impl Fn() -> std::io::Result<BTreeMap<String, String>> + Clone + Send + 'static,
 ) -> Result<BTreeMap<String, String>, AdapterError> {
@@ -1134,7 +1139,7 @@ async fn settled_environment(
             });
         // Reap the bounded filesystem job; never detach a started blocking job.
         if let Ok(original) = reap_environment_job(job, stop).await?
-            && verify_environment(&original, clean).is_ok()
+            && verify_environment(&original, clean, retained_values).is_ok()
         {
             return Ok(original);
         }

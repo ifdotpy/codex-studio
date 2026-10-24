@@ -502,3 +502,94 @@ async fn running_child_started_before_a_launch_variable_existed_reattaches() {
     .await
     .unwrap();
 }
+
+/// A launch variable whose value the owner learns over time: the Claude
+/// credential identity gains the organization and account UUIDs after a bridge
+/// starts, so the next build's launch has another value. A child launched with
+/// an earlier value that the launch lists in `retained_values` reattaches with
+/// its own environment; without that entry it stays unverifiable.
+#[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture; `which` exits at once"
+)]
+async fn running_child_started_with_an_earlier_learned_value_reattaches() {
+    const IDENTITY: &str = "STUDIO_CLAUDE_CREDENTIAL_IDENTITY";
+    let earlier = "claude:a@example.test";
+    let learned = "claude:v2:[\"a@example.test\",\"org\",\"acct\"]";
+    let (state, mut supervisor) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-process/tests/wave7_p01_factory",
+        || {
+            let state = support::DisposableState::new();
+            let supervisor = support::SupervisorProcess::start(&state);
+            (state, supervisor)
+        },
+    )
+    .await
+    .unwrap();
+    let state = std::sync::Arc::new(state);
+    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let handle = ProviderHandle::for_account("retained");
+    let node = std::process::Command::new("which")
+        .arg("node")
+        .output()
+        .unwrap();
+    assert!(node.status.success());
+    let node = String::from_utf8(node.stdout).unwrap().trim().to_owned();
+    let command = vec![node, "-e".to_owned(), "process.stdin.resume()".to_owned()];
+    let environment = |identity: &str| {
+        let mut environment = support::child_environment(&state.0);
+        environment.insert(IDENTITY.to_owned(), identity.to_owned());
+        environment
+    };
+    let launch = |identity: &str, retained: &[&str]| {
+        let mut launch =
+            ProviderLaunchSpec::new(command.clone(), environment(identity), state.0.clone());
+        if !retained.is_empty() {
+            launch.retained_values.insert(
+                IDENTITY.to_owned(),
+                retained.iter().map(|value| (*value).to_owned()).collect(),
+            );
+        }
+        OpenOptions {
+            clock: SessionClock::default(),
+            launch,
+            expected_generation: None,
+        }
+    };
+    let attach = |identity: &'static str, retained: &'static [&'static str]| {
+        let factory = &factory;
+        let handle = handle.clone();
+        let options = launch(identity, retained);
+        let mut reopened = launch(identity, retained);
+        async move {
+            let prepared = factory
+                .prepare(handle.clone(), options, Shutdown::default())
+                .await?;
+            reopened.expected_generation = Some(prepared.generation());
+            prepared.open(handle, reopened, Shutdown::default()).await
+        }
+    };
+    let mut attachment = attach(earlier, &[]).await.unwrap();
+    let started = attachment.status.borrow().info.clone().unwrap();
+    supervisor.own_child(started.pid);
+    let _exit = attachment.shutdown().await;
+
+    assert!(
+        attach(learned, &[]).await.is_err(),
+        "a learned value without its earlier form is refused"
+    );
+    let mut attachment = attach(learned, &["claude:a@example.test"]).await.unwrap();
+    let info = attachment.status.borrow().info.clone().unwrap();
+    assert!(info.resumed);
+    assert_eq!(info.pid, started.pid);
+    assert_eq!(info.generation, started.generation);
+    let _exit = attachment.shutdown().await;
+    // Fixture teardown owns the supervisor and its surviving child.
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-process/tests/wave7_p01_factory",
+        move || drop(supervisor),
+    )
+    .await
+    .unwrap();
+}

@@ -5,6 +5,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf};
 use studio_runtime_process::ProviderLaunchSpec;
+/// Launch variable that binds a bridge to its credential identity.
+pub const CREDENTIAL_IDENTITY_ENVIRONMENT: &str = "STUDIO_CLAUDE_CREDENTIAL_IDENTITY";
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeHold {
     #[error("Cannot verify the pinned Claude account")]
@@ -145,16 +147,18 @@ impl BridgeSnapshot {
                 .map_err(|_| BridgeHold::Options)?,
         );
         env.insert("STUDIO_CLAUDE_ACCOUNT".into(), identity);
-        env.insert(
-            "STUDIO_CLAUDE_CREDENTIAL_IDENTITY".into(),
-            metadata
-                .credential_identity
-                .clone()
-                .filter(|observed| {
-                    crate::account_driver::claude_identity::accepts(credential, observed)
-                })
-                .unwrap_or_else(|| credential.to_owned()),
-        );
+        let credential_identity = metadata
+            .credential_identity
+            .clone()
+            .filter(|observed| {
+                crate::account_driver::claude_identity::accepts(credential, observed)
+            })
+            .unwrap_or_else(|| credential.to_owned());
+        // The pin learns organization and account UUIDs after a bridge starts.
+        // A bridge launched with an earlier form holds the same credential.
+        let earlier_identities =
+            crate::account_driver::claude_identity::earlier_forms(&credential_identity);
+        env.insert(CREDENTIAL_IDENTITY_ENVIRONMENT.into(), credential_identity);
         env.insert(
             "STUDIO_CLAUDE_BIN".into(),
             paths.executable.to_string_lossy().into_owned(),
@@ -167,7 +171,7 @@ impl BridgeSnapshot {
                 env.get("PATH").map(String::as_str).unwrap_or("")
             ),
         );
-        Ok(ProviderLaunchSpec::new(
+        let mut spec = ProviderLaunchSpec::new(
             vec![
                 paths.node.to_string_lossy().into_owned(),
                 paths.bridge.to_string_lossy().into_owned(),
@@ -175,7 +179,12 @@ impl BridgeSnapshot {
             ],
             env,
             paths.root,
-        ))
+        );
+        if !earlier_identities.is_empty() {
+            spec.retained_values
+                .insert(CREDENTIAL_IDENTITY_ENVIRONMENT.into(), earlier_identities);
+        }
+        Ok(spec)
     }
 }
 /// Path discovery performs no native invocation. SDK presence is checked by the owner.

@@ -814,25 +814,29 @@ mod tests {
             .join("node_modules/@anthropic-ai/claude-agent-sdk");
         std::fs::create_dir_all(&sdk).expect("sdk dir");
         std::fs::write(sdk.join("package.json"), "{}").expect("sdk package");
-        let profile = json!({
-            "id": "account", "provider": "claude", "status": "ready", "home": dir.path(),
-            "email": "a@example.test", "accountId": "claude:a@example.test",
-            "_credentialIdentity": "claude:a@example.test",
-            "claudeOptions": {"binaryPath": binary, "configDir": dir.path().join("config"),
-                "customModels": [], "launchArgs": ""}
-        });
-        let mut claude_input = input.clone();
-        claude_input.insert(
-            "STUDIO_NODE_BIN".to_owned(),
-            binary.to_string_lossy().into_owned(),
-        );
-        let (claude, _) = super::claude_launch(
-            &profile,
-            dir.path(),
-            dir.path().join("account-servers/account"),
-            claude_input,
-        )
-        .expect("Claude launch");
+        let claude_with = |pin: &str| {
+            let profile = json!({
+                "id": "account", "provider": "claude", "status": "ready", "home": dir.path(),
+                "email": "a@example.test", "accountId": "claude:a@example.test",
+                "_credentialIdentity": pin,
+                "claudeOptions": {"binaryPath": binary, "configDir": dir.path().join("config"),
+                    "customModels": [], "launchArgs": ""}
+            });
+            let mut claude_input = input.clone();
+            claude_input.insert(
+                "STUDIO_NODE_BIN".to_owned(),
+                binary.to_string_lossy().into_owned(),
+            );
+            super::claude_launch(
+                &profile,
+                dir.path(),
+                dir.path().join("account-servers/account"),
+                claude_input,
+            )
+            .expect("Claude launch")
+            .0
+        };
+        let claude = claude_with("claude:a@example.test");
         let history: BTreeMap<String, Vec<Recorded>> =
             serde_json::from_str(include_str!("provider-launch-history.json"))
                 .expect("launch history");
@@ -872,9 +876,11 @@ mod tests {
                         "{name} {release}: its command has no reattach command"
                     ));
                 }
+                let mut normalized = spec.clone();
+                normalized.environment = current.environment.clone();
                 if !studio_runtime_process::retained_environment_accepted(
                     &earlier.environment,
-                    &current.environment,
+                    &normalized,
                 ) {
                     failures.push(format!(
                         "{name} {release}: its environment fails the retained check"
@@ -885,6 +891,106 @@ mod tests {
                 }
             }
         }
+        // State that changes between launches of the same code: the credential
+        // identity pin learns organization and account UUIDs after a bridge
+        // starts. A bridge launched in each earlier state must reattach under
+        // the launch of each later state.
+        let pins = [
+            crate::account_driver::claude_identity::identity("a@example.test", None, None),
+            crate::account_driver::claude_identity::identity("a@example.test", Some("org"), None),
+            crate::account_driver::claude_identity::identity(
+                "a@example.test",
+                Some("org"),
+                Some("acct"),
+            ),
+        ];
+        let launches: Vec<_> = pins.iter().map(|pin| claude_with(pin)).collect();
+        for (index, later) in launches.iter().enumerate() {
+            for (earlier_pin, earlier) in pins.iter().zip(&launches).take(index) {
+                if earlier.command != later.command
+                    || earlier.cwd != later.cwd
+                    || !studio_runtime_process::retained_environment_accepted(
+                        &earlier.environment,
+                        later,
+                    )
+                {
+                    failures.push(format!(
+                        "claude: a bridge launched with the pin {earlier_pin} does not \
+                         reattach under the pin {}",
+                        pins[index]
+                    ));
+                }
+            }
+        }
         assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+    }
+
+    /// The credential identity pin learns the organization and account UUIDs
+    /// after a bridge starts, so the next launch of the same code computes
+    /// another `STUDIO_CLAUDE_CREDENTIAL_IDENTITY`. A bridge launched with the
+    /// pin before it learned them is the same credential and must reattach.
+    /// A bridge of another email must not.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_bridge_launched_before_its_identity_pin_learned_more_fields_reattaches() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let binary = dir.path().join("claude");
+        std::fs::write(&binary, "#!/bin/sh\n").expect("fake executable");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
+            .expect("make executable");
+        let sdk = dir
+            .path()
+            .join("node_modules/@anthropic-ai/claude-agent-sdk");
+        std::fs::create_dir_all(&sdk).expect("sdk dir");
+        std::fs::write(sdk.join("package.json"), "{}").expect("sdk package");
+        let launch = |email: &str, pin: String| {
+            let profile = json!({
+                "id": "account", "provider": "claude", "status": "ready", "home": dir.path(),
+                "email": email, "accountId": format!("claude:{email}"),
+                "_credentialIdentity": pin,
+                "claudeOptions": {"binaryPath": binary, "configDir": dir.path(), "customModels": []}
+            });
+            let environment = std::collections::BTreeMap::from([(
+                "STUDIO_NODE_BIN".to_owned(),
+                binary.to_string_lossy().into_owned(),
+            )]);
+            super::claude_launch(
+                &profile,
+                dir.path(),
+                dir.path().join("account-servers/account"),
+                environment,
+            )
+            .expect("Claude launch")
+            .0
+        };
+        let learned = |email: &str, organization: Option<&str>, account: Option<&str>| {
+            crate::account_driver::claude_identity::identity(email, organization, account)
+        };
+        let full = launch(
+            "a@example.test",
+            learned("a@example.test", Some("org"), Some("acct")),
+        );
+        for earlier in [
+            learned("a@example.test", None, None),
+            learned("a@example.test", Some("org"), None),
+            learned("a@example.test", None, Some("acct")),
+        ] {
+            let started = launch("a@example.test", earlier.clone());
+            assert!(
+                studio_runtime_process::retained_environment_accepted(&started.environment, &full),
+                "a bridge launched with {earlier} reattaches"
+            );
+        }
+        let other = launch("b@example.test", learned("b@example.test", None, None));
+        let mut foreign = full.environment.clone();
+        foreign.insert(
+            "STUDIO_CLAUDE_CREDENTIAL_IDENTITY".to_owned(),
+            other.environment["STUDIO_CLAUDE_CREDENTIAL_IDENTITY"].clone(),
+        );
+        assert!(
+            !studio_runtime_process::retained_environment_accepted(&foreign, &full),
+            "a bridge of another credential is refused"
+        );
     }
 }
