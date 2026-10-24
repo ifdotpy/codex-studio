@@ -51,11 +51,13 @@ pub(crate) fn verify_core(canvas_path: &Path, analytics_path: &Path) -> StoreRes
     verify_payload_migration(&canvas)?;
     verify_analytics_migration(&canvas, &analytics)?;
 
+    // `synchronous` is connection-local, so it is checked on the serving
+    // connections by [`verify_serving_pragmas`], not on these verifiers.
     for (database, connection) in [
         ("canvas.sqlite3", &canvas),
         ("analytics.sqlite3", &analytics),
     ] {
-        let (journal, synchronous) = connection_pragmas(connection)?;
+        let (journal, _) = connection_pragmas(connection)?;
         if journal != "wal" {
             return Err(object_mismatch(
                 database,
@@ -63,13 +65,27 @@ pub(crate) fn verify_core(canvas_path: &Path, analytics_path: &Path) -> StoreRes
                 "expected WAL",
             ));
         }
-        if synchronous != 2 {
-            return Err(object_mismatch(
-                database,
-                "PRAGMA synchronous",
-                "expected FULL (2)",
-            ));
-        }
+    }
+    Ok(())
+}
+
+/// Refuse a serving writer connection that is not WAL with `synchronous=NORMAL`
+/// (`crate::sqlite_durability`).
+pub(crate) fn verify_serving_pragmas(connection: &Connection, database: &str) -> StoreResult<()> {
+    let (journal, synchronous) = connection_pragmas(connection)?;
+    if journal != "wal" {
+        return Err(object_mismatch(
+            database,
+            "PRAGMA journal_mode",
+            "expected WAL",
+        ));
+    }
+    if synchronous != crate::sqlite_durability::SYNCHRONOUS_NORMAL {
+        return Err(object_mismatch(
+            database,
+            "PRAGMA synchronous",
+            "expected NORMAL (1)",
+        ));
     }
     Ok(())
 }
@@ -689,7 +705,12 @@ mod tests {
             serde_json::json!([])
         );
         assert_eq!(snapshot["pragmas"]["main"]["journal_mode"], "wal");
-        assert_eq!(snapshot["pragmas"]["analytics"]["synchronous"], 2);
+        for database in ["main", "analytics"] {
+            assert_eq!(
+                snapshot["pragmas"][database]["synchronous"],
+                crate::sqlite_durability::SYNCHRONOUS_NORMAL
+            );
+        }
     }
 
     #[test]

@@ -138,7 +138,8 @@ pub(crate) struct HostService {
     token: String,
     build_id: String,
     _lease: fs::File,
-    db: Mutex<rusqlite::Connection>,
+    /// Shared with the periodic WAL flush thread, which ends when the service drops.
+    db: Arc<Mutex<rusqlite::Connection>>,
     inner: Mutex<Inner>,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     stopped: tokio::sync::Notify,
@@ -252,12 +253,21 @@ impl HostService {
             .map_err(std::io::Error::from)?;
         let db =
             rusqlite::Connection::open(state.join(DATABASE_FILE)).map_err(std::io::Error::other)?;
+        studio_runtime_store::sqlite_durability::configure_writer(&db)
+            .map_err(std::io::Error::other)?;
         db.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
-             CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, digest TEXT, response TEXT);
+            "CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, digest TEXT, response TEXT);
              CREATE TABLE IF NOT EXISTS events (operation TEXT, seq INTEGER, value TEXT, PRIMARY KEY(operation,seq));",
         )
         .map_err(std::io::Error::other)?;
+        let db = Arc::new(Mutex::new(db));
+        if let Err(error) = studio_runtime_store::sqlite_durability::spawn_periodic_flush(
+            "host-exec",
+            Arc::downgrade(&db),
+        ) {
+            // Automatic checkpoints and the close checkpoint still flush the database.
+            eprintln!("host_exec service periodic WAL flush did not start: {error}");
+        }
         Ok(Self {
             state,
             browser_host: None,
@@ -267,7 +277,7 @@ impl HostService {
             token,
             build_id,
             _lease: lease,
-            db: Mutex::new(db),
+            db,
             inner: Mutex::new(Inner::default()),
             locks: Mutex::new(HashMap::new()),
             stopped: tokio::sync::Notify::new(),

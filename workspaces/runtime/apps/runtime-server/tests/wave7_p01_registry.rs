@@ -4607,3 +4607,68 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
     drop(fixture);
     eprintln!("restart witness ran in {:?}", started.elapsed());
 }
+
+/// Wait in real time until the store reports no pending WAL flush. Paused time
+/// would advance past a bounded poll while the writer thread is still busy.
+async fn wait_for_wal_flush(store: &RuntimeStore) -> bool {
+    tokio::time::resume();
+    let flushed = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, async {
+        while store.wal_checkpoint_retry_after().unwrap().is_some() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .is_ok();
+    tokio::time::pause();
+    flushed
+}
+
+// With synchronous=NORMAL the registry's checkpoint is the flush that makes
+// commits durable. A commit that wakes no scheduler (here a table nobody
+// observes) must still be flushed one interval later, every time.
+#[tokio::test(start_paused = true)]
+async fn a_commit_without_a_registry_wake_is_flushed_after_one_interval() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    let (launcher, _writes) = scripted_with_unknown_writes(false);
+    let registry = AccountRegistry::new(store.clone(), launcher, test_registry_config())
+        .await
+        .unwrap();
+    let stop = Shutdown::default();
+    let task = tokio::spawn(registry.run(
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        stop.clone(),
+    ));
+    let commit = |value: i64| {
+        let store = store.clone();
+        async move {
+            store
+                .transaction(move |tx| {
+                    tx.execute_batch("CREATE TABLE IF NOT EXISTS unobserved_flush(v INTEGER);")?;
+                    tx.execute("INSERT INTO unobserved_flush VALUES (?1)", [value])?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+    };
+    let interval = studio_runtime_store::WAL_FLUSH_INTERVAL;
+    for value in 0..2 {
+        commit(value).await;
+        assert!(store.wal_checkpoint_retry_after().unwrap().is_some());
+        tokio::time::sleep(interval).await;
+        assert!(
+            wait_for_wal_flush(&store).await,
+            "commit {value} was not flushed one interval later"
+        );
+    }
+    // Paused time would let the hang guard expire while shutdown awaits SQLite work.
+    tokio::time::resume();
+    stop.cancel();
+    tokio::time::timeout(TEST_HANG_GUARD, task)
+        .await
+        .expect("account registry shutdown hang guard")
+        .unwrap()
+        .unwrap();
+}

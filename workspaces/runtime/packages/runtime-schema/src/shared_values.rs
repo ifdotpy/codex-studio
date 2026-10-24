@@ -85,6 +85,18 @@ pub const SYNC_DRAFT_STREAM_MAX_DOCUMENTS: i64 = 512;
 /// Seconds between sync resource heartbeats.
 pub const SYNC_RESOURCE_HEARTBEAT_SECONDS: u64 = 15;
 
+// SQLite durability (docs/decisions/2026-10-24-sqlite-normal-with-periodic-flush.md).
+// Studio databases use WAL with synchronous=NORMAL: a commit survives a process crash
+// at once, and a later checkpoint flushes it to disk, so an OS crash or power loss
+// loses at most the commits of one flush interval.
+/// Longest time a committed SQLite change waits for its flush to disk, and the
+/// shortest time between two periodic flushes of one database, in seconds.
+pub const SQLITE_WAL_FLUSH_INTERVAL_SECONDS: u64 = 15;
+/// Size a WAL file is truncated to when a checkpoint lets SQLite restart it
+/// (`PRAGMA journal_size_limit`), in bytes. Without a limit a WAL file keeps
+/// its largest size forever.
+pub const SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES: i64 = 16777216;
+
 // Codex model/list catalog response contract; byte values count encoded UTF-8.
 /// Largest model catalog frame, in bytes.
 pub const MODEL_CATALOG_MAX_FRAME_BYTES: usize = 2097152;

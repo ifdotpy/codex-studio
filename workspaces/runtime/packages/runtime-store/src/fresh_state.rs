@@ -300,8 +300,7 @@ fn seed_python_lazy_markers(
 
 fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreResult<()> {
     let mut connection = Connection::open(path)?;
-    connection.pragma_update(None, "journal_mode", "WAL")?;
-    connection.pragma_update(None, "synchronous", "FULL")?;
+    crate::sqlite_durability::configure_writer(&connection)?;
     let transaction = connection.transaction()?;
 
     let catalog =

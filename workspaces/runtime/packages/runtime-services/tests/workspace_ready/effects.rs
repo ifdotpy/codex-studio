@@ -155,8 +155,7 @@ fn seed_schema(root: &Path, cwd: &Path) {
     .expect("Python schema fixture");
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
         let mut db = rusqlite::Connection::open(root.join(name)).expect("fixture database");
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
-            .expect("durable fixture");
+        studio_runtime_store::sqlite_durability::configure_writer(&db).expect("durable fixture");
         let tx = db.transaction().expect("one fixture transaction");
         let mut objects = schema[name]["sqlite_master"]
             .as_array()
