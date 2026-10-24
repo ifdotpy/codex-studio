@@ -326,7 +326,6 @@ describe("OpenAPI transport facade", () => {
       const request = post("/api/sync/drafts", { rows: [] });
       await started;
       expect(checkpoint.effectiveCoverage()).toBe(12);
-      const pull = vi.fn(async () => "unexpected pull");
       const covered = entitySequenceInvalidationCovered(
         checkpoint.effectiveCoverage(),
         12,
@@ -334,7 +333,6 @@ describe("OpenAPI transport facade", () => {
       );
       expect(covered).toBe(true);
       checkpoint.markInFlightCoverageUsed(12);
-      expect(pull).not.toHaveBeenCalled();
       releasePersistence();
       await request;
       expect(checkpoint.value).toBe(12);
@@ -346,8 +344,6 @@ describe("OpenAPI transport facade", () => {
           false,
         ),
       ).toBe(true);
-      expect(pull).not.toHaveBeenCalled();
-      const foreignPull = vi.fn(async () => "foreign change pulled");
       expect(
         entitySequenceInvalidationCovered(
           checkpoint.effectiveCoverage(),
@@ -355,8 +351,6 @@ describe("OpenAPI transport facade", () => {
           false,
         ),
       ).toBe(false);
-      await foreignPull();
-      expect(foreignPull).toHaveBeenCalledOnce();
     } finally {
       unregister();
     }

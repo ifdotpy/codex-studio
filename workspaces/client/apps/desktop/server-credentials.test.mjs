@@ -15,6 +15,38 @@ const safeStorage = {
   encryptString: (text) => Buffer.from(text).reverse(),
   decryptString: (bytes) => Buffer.from(bytes).reverse().toString(),
 };
+test("canonical request matches the frozen Rust signing contract", async () => {
+  const vector = JSON.parse(
+    await readFile(
+      new URL(
+        "../../../runtime/packages/runtime-services/tests/multi_server/signature.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const key = crypto.createPrivateKey({
+    key: Buffer.from(
+      "302e020100300506032b6570042204209d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "hex",
+    ),
+    format: "der",
+    type: "pkcs8",
+  });
+  const signed = canonicalRequest(
+    "POST",
+    "/api/multi-server/v1/auto-pair",
+    "peer-server",
+    "rust-server",
+    "1700000000",
+    "abcdefghijklmnopqrstuvwxyz012345",
+    "rust-request",
+    Buffer.from('{"clientId":"rust-server","requestId":"rust-request"}'),
+  );
+  expect(crypto.sign(null, Buffer.from(signed), key).toString("base64")).toBe(
+    vector.pythonSignature,
+  );
+});
 test("pair retry keeps its key and body, signs exact bytes and refuses another server origin", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "studio-server-keys-"));
   const invitation = {
@@ -37,16 +69,15 @@ test("pair retry keeps its key and body, signs exact bytes and refuses another s
     const headers = request.headers;
     expect(headers.get("x-canvas-token")).toBeNull();
     expect(request.redirect).toBe("error");
-    const signed = canonicalRequest(
-      request.method,
-      new URL(request.url).pathname + new URL(request.url).search,
-      headers.get("x-studio-server"),
-      headers.get("x-studio-client"),
-      headers.get("x-studio-timestamp"),
-      headers.get("x-studio-nonce"),
-      headers.get("x-studio-request-id"),
-      Buffer.from(text),
-    );
+    const signed = `studio-multi-server-v1
+${request.method}
+${new URL(request.url).pathname + new URL(request.url).search}
+${headers.get("x-studio-server")}
+${headers.get("x-studio-client")}
+${headers.get("x-studio-timestamp")}
+${headers.get("x-studio-nonce")}
+${headers.get("x-studio-request-id")}
+${crypto.createHash("sha256").update(text).digest("hex")}`;
     expect(
       crypto.verify(
         null,

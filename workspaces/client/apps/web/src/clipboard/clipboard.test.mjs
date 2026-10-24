@@ -26,16 +26,33 @@ afterEach(() => {
 
 test("copyText awaits the Clipboard API and does not touch the fallback", async () => {
   const calls = [];
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  setGlobal("document", {
+    get activeElement() {
+      throw new Error("Unexpected clipboard fallback");
+    },
+  });
   setGlobal("navigator", {
     clipboard: {
-      writeText: async (text) => {
+      writeText: (text) => {
         calls.push(text);
+        return pending;
       },
     },
   });
 
-  await copyText("secret code");
-
+  let settled = false;
+  const copied = copyText("secret code").then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  release();
+  await copied;
+  assert.equal(settled, true);
   assert.deepEqual(calls, ["secret code"]);
 });
 
@@ -97,55 +114,21 @@ test("copyText falls back and restores textarea, selection and focus state", asy
     top: "-1000px",
     opacity: "0",
   });
-  assert.deepEqual(
-    calls.find(([name]) => name === "createElement"),
+  assert.deepEqual(calls, [
+    ["clipboard", "secret code"],
+    ["getRangeAt", 0],
+    ["getRangeAt", 1],
     ["createElement", "textarea"],
-  );
-  assert.deepEqual(
-    calls.map(([name]) => name),
-    [
-      "clipboard",
-      "getRangeAt",
-      "getRangeAt",
-      "createElement",
-      "append",
-      "select",
-      "setSelectionRange",
-      "command",
-      "remove",
-      "clearSelection",
-      "restoreRange",
-      "restoreRange",
-      "focus",
-    ],
-  );
-  assert.deepEqual(
-    calls.filter(([name]) => name === "getRangeAt"),
-    [
-      ["getRangeAt", 0],
-      ["getRangeAt", 1],
-    ],
-  );
-  assert.deepEqual(
-    calls.find(([name]) => name === "setSelectionRange"),
-    ["setSelectionRange", 0, "secret code".length],
-  );
-  assert.deepEqual(
-    calls.find(([name]) => name === "append"),
     ["append", textarea],
-  );
-  assert.deepEqual(
-    calls.find(([name]) => name === "command"),
+    ["select", "secret code"],
+    ["setSelectionRange", 0, "secret code".length],
     ["command", "copy"],
-  );
-  assert.deepEqual(
-    calls.find(([name]) => name === "restoreRange"),
+    ["remove"],
+    ["clearSelection"],
     ["restoreRange", "first"],
-  );
-  assert.deepEqual(
-    calls.find(([name]) => name === "focus"),
+    ["restoreRange", "second"],
     ["focus", { preventScroll: true }],
-  );
+  ]);
 });
 
 test("copyText cleans up and rejects when the fallback command fails without selection", async () => {

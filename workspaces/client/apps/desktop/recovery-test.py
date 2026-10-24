@@ -98,6 +98,7 @@ class RecoveryTest(unittest.TestCase):
         finally:
             process.terminate()
             process.wait(timeout=5)
+            process.stdout.close()
 
     def test_identity_refuses_the_removed_python_backend(self):
         body = json.dumps({"application": "codex-agents", "protocol": 1,
@@ -146,6 +147,14 @@ class RecoveryTest(unittest.TestCase):
         with patch.object(recovery.subprocess, "check_output", return_value=""), patch.object(recovery.subprocess, "Popen") as spawn:
             with self.assertRaisesRegex(RuntimeError, "identity is unavailable"):
                 recovery.desktop_tick(self.config, self.state)
+            spawn.assert_not_called()
+
+        def withdraw_intent(*args, **kwargs):
+            filename.write_text(json.dumps({**intent, "desiredOpen": False}))
+            return "different process start"
+
+        with patch.object(recovery.subprocess, "check_output", side_effect=withdraw_intent), patch.object(recovery.subprocess, "Popen") as spawn:
+            self.assertEqual(recovery.desktop_tick(self.config, self.state), (None, "desktop intent changed"))
             spawn.assert_not_called()
 
     def test_authoritative_absent_environment_stays_absent(self):
