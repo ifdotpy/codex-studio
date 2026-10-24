@@ -202,13 +202,55 @@ pub(super) async fn managed_response(
     })
 }
 
+/// Managed tools that check a model against an account's catalog: a spawn checks the
+/// worker models, a native review its reviewer model. The catalog cache expires, so
+/// each waits for a fresh catalog before its synchronous check.
+const CATALOG_TOOLS: [&str; 2] = ["orchestration_spawn", "orchestration_review"];
+
+/// The bounded wait for a fresh model catalog of an account and its worker accounts.
+pub(super) trait CatalogWait: Send + Sync {
+    fn wait_for_catalog<'a>(
+        &'a self,
+        account_key: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        (),
+                        crate::managed_child_create::ManagedCreationEnvironmentError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    >;
+}
+
+impl CatalogWait for crate::provider_callbacks::ManagedToolRuntime {
+    fn wait_for_catalog<'a>(
+        &'a self,
+        account_key: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        (),
+                        crate::managed_child_create::ManagedCreationEnvironmentError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(crate::provider_callbacks::ManagedToolRuntime::wait_for_catalog(self, account_key))
+    }
+}
+
 pub(super) async fn wait_for_managed_catalog(
     store: &Arc<RuntimeStore>,
     account: &str,
     generation: u64,
     emitting_actor: Option<&str>,
     frame: &Frame,
-    runtime: Option<&crate::provider_callbacks::ManagedToolRuntime>,
+    runtime: Option<&dyn CatalogWait>,
 ) -> Result<(), &'static str> {
     let Some(runtime) = runtime else {
         return Ok(());
@@ -216,13 +258,13 @@ pub(super) async fn wait_for_managed_catalog(
     let Frame::Request(request) = frame else {
         return Ok(());
     };
+    let tool = request
+        .params
+        .as_ref()
+        .and_then(|params| params.get("tool"))
+        .and_then(Value::as_str);
     if request.method.as_str() != "item/tool/call"
-        || request
-            .params
-            .as_ref()
-            .and_then(|params| params.get("tool"))
-            .and_then(Value::as_str)
-            != Some("orchestration_spawn")
+        || !tool.is_some_and(|tool| CATALOG_TOOLS.contains(&tool))
     {
         return Ok(());
     }
@@ -612,7 +654,10 @@ mod catalog_wait_tests {
                     + 'a,
             >,
         > {
-            self.0.lock().unwrap().push(account_key.to_owned());
+            self.0
+                .lock()
+                .expect("wait log")
+                .push(account_key.to_owned());
             Box::pin(async { Ok(()) })
         }
     }
@@ -657,13 +702,17 @@ mod catalog_wait_tests {
             .await
             .expect("callback agent write");
         let waits = Waits::default();
-        for tool in ["orchestration_spawn", "orchestration_review", "orchestration_read"] {
+        for tool in [
+            "orchestration_spawn",
+            "orchestration_review",
+            "orchestration_read",
+        ] {
             wait_for_managed_catalog(&store, "account-a", 7, None, &call(tool), Some(&waits))
                 .await
                 .expect("catalog wait");
         }
         assert_eq!(
-            *waits.0.lock().unwrap(),
+            *waits.0.lock().expect("wait log"),
             vec!["account-a".to_owned(), "account-a".to_owned()],
             "spawn and review wait for the catalog; a read does not"
         );
