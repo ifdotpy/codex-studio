@@ -530,7 +530,16 @@ export function createSyncClient(options: SyncClientOptions) {
       [await cursorDocumentId(resource)],
       false,
     );
-    return parseAppliedCursor(row?.payload, workspaceId);
+    const cursor = parseAppliedCursor(row?.payload, workspaceId);
+    if (cursor && resource.kind === "transcript") {
+      const [base] = await db.projections.storageInstance.findDocumentsById(
+        [`transcript:${resource.agentId}`],
+        false,
+      );
+      if (!base || base.seq < cursor.seq || !readTranscriptMeta(base.payload))
+        return undefined;
+    }
+    return cursor;
   }
 
   async function persistSubscriptionCursor(
@@ -1806,7 +1815,9 @@ export function createSyncClient(options: SyncClientOptions) {
                 !row ||
                 !meta ||
                 row.seq < through ||
-                (meta.epoch !== undefined && meta.epoch !== version.epoch)
+                (meta.epoch !== undefined &&
+                  meta.epoch !== version.epoch &&
+                  !version.cursor)
               )
                 invalidate();
             })

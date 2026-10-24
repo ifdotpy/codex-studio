@@ -1,12 +1,9 @@
+import { subscriptionKey } from "./contracts";
+export { subscriptionKey } from "./contracts";
 import type { components } from "../../generated/api";
 
 type ResourceRef = components["schemas"]["ResourceRef"];
 export type SubscriptionCursor = components["schemas"]["SubscriptionCursor"];
-
-/** Canonical refs are shared by the transport and durable cursor keys. */
-export function subscriptionKey(resource: ResourceRef): string {
-  return JSON.stringify(resource, Object.keys(resource).sort());
-}
 
 /** Hash unbounded selector text to fit the projection's primary-key contract. */
 export async function cursorDocumentId(resource: ResourceRef): Promise<string> {

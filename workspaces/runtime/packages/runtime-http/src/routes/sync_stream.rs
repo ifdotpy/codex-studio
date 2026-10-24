@@ -2773,6 +2773,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn state_stream_resume_current_old_and_expired_transcript_cursor() {
+        let root = tempfile::tempdir().expect("isolated resume state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('recent',?1)", [json!({"id":"recent","rootId":"recent","epoch":0,"status":"running","threadId":"recent","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            for index in 0..20 {
+                let id = format!("recent:{index}");
+                tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'recent',?2,?3)", rusqlite::params![id,json!({"id":id,"role":"assistant","text":"message ".repeat(64)}).to_string(),index])?;
+            }
+            Ok(())
+        }).await.expect("transcript fixture");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let resource: ResourceRef =
+            serde_json::from_value(json!({"kind":"transcript","agentId":"recent"})).expect("ref");
+        let snapshot =
+            super::super::subscriptions::initial_snapshot(http.clone(), resource.clone(), None)
+                .await
+                .expect("snapshot");
+        assert!(matches!(
+            snapshot.reply_kind,
+            Some(crate::generated::SubscriptionReplyKind::Snapshot)
+        ));
+        let cursor = snapshot.cursor.clone().expect("snapshot cursor");
+        let current = super::super::subscriptions::initial_snapshot(
+            http.clone(),
+            resource.clone(),
+            Some(cursor.clone()),
+        )
+        .await
+        .expect("current cursor");
+        assert!(matches!(
+            current.reply_kind,
+            Some(crate::generated::SubscriptionReplyKind::Delta)
+        ));
+        assert!(current.transcript_snapshot.is_none() && current.transcript_changes.is_none());
+        assert_eq!(
+            current.cursor.as_ref().map(|cursor| cursor.seq),
+            Some(cursor.seq)
+        );
+        let snapshot_bytes = serde_json::to_vec(&snapshot).expect("snapshot bytes").len();
+        let current_bytes = serde_json::to_vec(&current).expect("resume bytes").len();
+        assert!(current_bytes * 10 < snapshot_bytes);
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','changed recent message') WHERE id='recent:19'", [])?;
+            Ok(())
+        }).await.expect("new message revision");
+        let old = super::super::subscriptions::initial_snapshot(
+            http.clone(),
+            resource.clone(),
+            Some(cursor.clone()),
+        )
+        .await
+        .expect("old cursor");
+        let batch = old
+            .transcript_changes
+            .as_ref()
+            .and_then(Option::as_ref)
+            .expect("only newer records");
+        assert_eq!(batch.after, cursor.seq);
+        assert_eq!(batch.delta.items.len(), 1);
+        assert_eq!(batch.delta.items[0].id, "recent:19");
+        let through = old.revision;
+        store.transaction(move |tx| {
+            tx.execute("UPDATE sync_entities SET seq=?1 WHERE collection='transcript:recent' AND id='@floor'", [through])?;
+            Ok(())
+        }).await.expect("expire retained history");
+        let expired = super::super::subscriptions::initial_snapshot(
+            http.clone(),
+            resource.clone(),
+            Some(cursor),
+        )
+        .await
+        .expect("expired cursor");
+        assert!(matches!(
+            expired.reply_kind,
+            Some(crate::generated::SubscriptionReplyKind::Snapshot)
+        ));
+        assert!(expired.transcript_changes.is_none());
+        assert!(expired.transcript_snapshot.is_some());
+        let replacement = super::super::subscriptions::initial_snapshot(
+            http,
+            resource,
+            Some(SubscriptionCursor {
+                workspace_id: "replaced-database".into(),
+                seq: through,
+            }),
+        )
+        .await
+        .expect("foreign cursor");
+        assert!(matches!(
+            replacement.reply_kind,
+            Some(crate::generated::SubscriptionReplyKind::Snapshot)
+        ));
+        eprintln!(
+            "V4 recent-chat JSON bytes: snapshot={snapshot_bytes}, current-cursor={current_bytes}, old-cursor={}",
+            serde_json::to_vec(&old).expect("delta bytes").len()
+        );
+    }
+
+    #[tokio::test]
     async fn subscription_add_streams_bounded_transcript_snapshot_after_ack() {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));

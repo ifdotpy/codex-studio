@@ -1161,4 +1161,122 @@ describe("entity pull reset wiring", () => {
     );
     expect(projectedWorkspaceId).toBe(workspaceId);
   });
+  it("advances a scoped resume cursor only after the projection is fully applied", async () => {
+    const workspaceId = "7".repeat(32);
+    const rows = new Map<string, Record<string, unknown>>();
+    rows.set("entity:task:removed", {
+      id: "entity:task:removed",
+      seq: 2,
+      payload: "",
+      entity: { collection: "task", id: "removed", value: { id: "removed" } },
+    });
+    const storageInstance = {
+      findDocumentsById: vi.fn(async (ids: string[]) =>
+        ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
+      ),
+      bulkWrite: vi.fn(
+        async (writes: { document: Record<string, unknown> }[]) => {
+          for (const { document } of writes)
+            rows.set(String(document.id), document);
+          return { error: [] };
+        },
+      ),
+    };
+    const projections = {
+      database: { name: "resume-projection" },
+      storageInstance,
+      $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
+      find: vi.fn(
+        ({
+          selector,
+        }: {
+          selector: { id: { $gte: string; $lt: string } };
+        }) => ({
+          exec: async () =>
+            [...rows.values()]
+              .filter(
+                (row) =>
+                  !row._deleted &&
+                  String(row.id) >= selector.id.$gte &&
+                  String(row.id) < selector.id.$lt,
+              )
+              .map((row) => ({ toJSON: () => row })),
+        }),
+      ),
+    };
+    mocks.createRxDatabase
+      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+      .mockResolvedValueOnce({
+        addCollections: vi.fn(async () => ({ projections })),
+      });
+    mocks.syncGet.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (_key: string, callback: () => Promise<unknown>) => callback(),
+      },
+    });
+    const client = await import("./client");
+    const resource = { kind: "tasks" } as const;
+    const event = (seq: number, replyKind: "snapshot" | "delta") =>
+      ({
+        protocol: SYNC_PROTOCOL_VERSION,
+        workspaceId,
+        epoch: "new-epoch",
+        revision: seq,
+        reason: "initial",
+        resources: [resource],
+        resourceVersions: [
+          {
+            revision: seq,
+            cursor: { workspaceId, seq },
+            replyKind,
+            entityChanges: {
+              after: replyKind === "snapshot" ? 0 : seq - 1,
+              through: seq,
+              documents: [
+                {
+                  op: "upsert",
+                  collection: "task",
+                  id: "kept",
+                  seq: replyKind === "snapshot" ? 8 : seq,
+                  value: { id: "kept" },
+                },
+              ],
+            },
+          },
+        ],
+      }) as ResourceChangeEvent;
+    await client.persistResourceEntityChanges(
+      event(10, "snapshot"),
+      () => true,
+    );
+    expect(rows.get("entity:task:removed")?._deleted).toBe(true);
+    expect(rows.get("entity:task:kept")?.seq).toBe(8);
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 10,
+    });
+    storageInstance.bulkWrite.mockRejectedValueOnce(
+      new Error("disk unavailable"),
+    );
+    await expect(
+      client.persistResourceEntityChanges(event(11, "delta"), () => true),
+    ).rejects.toThrow("disk unavailable");
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 10,
+    });
+    await client.persistResourceEntityChanges(event(11, "delta"), () => false);
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 10,
+    });
+    await client.persistResourceEntityChanges(event(11, "delta"), () => true);
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 11,
+    });
+  });
 });
