@@ -504,6 +504,19 @@ export default function Conversation(p: {
     revealRequest,
     getAnchorId,
   } = useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
+  const loadOlderAtStart = () => {
+    if (
+      !before ||
+      pageLoading ||
+      !scroll.current ||
+      scroll.current.scrollTop > TRANSCRIPT_HISTORY_START_PX ||
+      !consumeHistoryScrollInput()
+    )
+      return;
+    setFollow(false);
+    setPageAnchor(getAnchorId());
+    void older().catch((error) => p.notify(errorText(error)));
+  };
   const input = useRef<HTMLTextAreaElement>(null);
   const navigationAttempt = useRef(0);
   const handledJump = useRef("");
@@ -1604,17 +1617,10 @@ export default function Conversation(p: {
         onScroll={() => {
           onScroll();
           if (!getFollow()) setPageAnchor(getAnchorId());
-          if (
-            before &&
-            !pageLoading &&
-            scroll.current &&
-            scroll.current.scrollTop <= TRANSCRIPT_HISTORY_START_PX &&
-            consumeHistoryScrollInput()
-          ) {
-            setFollow(false);
-            setPageAnchor(getAnchorId());
-            void older().catch((error) => p.notify(errorText(error)));
-          }
+          loadOlderAtStart();
+        }}
+        onWheel={(event) => {
+          if (event.deltaY < 0) loadOlderAtStart();
         }}
       >
         <div ref={content} className="message-content">
