@@ -64,11 +64,16 @@ async function runMessageReceiptScenario(
     );
     db.exec("PRAGMA busy_timeout=5000");
     // The store's entity triggers call functions the server registers. This
-    // connection supplies stand-ins; the server rebuilds the entities it serves.
+    // connection preserves the event envelope owned by runtime-store/schema.rs.
     db.function(
       "sync_entity_payload",
       { deterministic: true, varargs: true },
-      (_c, _id, json) => String(json),
+      (collection, key, json, deleted) =>
+        JSON.stringify({
+          collection,
+          id: key,
+          value: deleted ? {} : JSON.parse(String(json)),
+        }),
     );
     db.function("sync_entity_hash", { deterministic: true }, (payload) =>
       createHash("sha256").update(String(payload)).digest("hex"),

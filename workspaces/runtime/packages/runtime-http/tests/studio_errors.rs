@@ -277,3 +277,58 @@ async fn startup_models_http_reports_pending_and_refuses_an_unknown_explicit_acc
     );
     assert_ne!(value["catalogPending"], true);
 }
+
+#[tokio::test]
+async fn studio_errors_sync_pull_carries_upserts_and_bulk_dismissal_tombstones() {
+    let (_root, store, app) = batch_fixture().await;
+    studio_runtime_services::entity_publication::install(&store)
+        .await
+        .unwrap();
+    let (status, page) = call(
+        &app,
+        "GET",
+        "/api/sync/pull?scope=state:entities:v1&after=0&fresh=1&limit=500",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "published errors must cross the HTTP boundary: {page}"
+    );
+    let rows: Vec<_> = page["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["collection"] == "studioError")
+        .collect();
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().all(|row| row["op"] == "upsert"));
+    let after = page["checkpoint"]["seq"].as_i64().unwrap();
+    let (status, result) = call(
+        &app,
+        "POST",
+        "/api/studio-errors/dismiss",
+        Some(json!({"ids":["monitor:one", "monitor:three"]})),
+    )
+    .await;
+    assert_eq!(status, 200, "{result}");
+    let (status, page) = call(
+        &app,
+        "GET",
+        &format!("/api/sync/pull?scope=state:entities:v1&after={after}&limit=500"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "dismissal tombstones must cross the HTTP boundary: {page}"
+    );
+    let rows: Vec<_> = page["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["collection"] == "studioError")
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["op"] == "delete"));
+}

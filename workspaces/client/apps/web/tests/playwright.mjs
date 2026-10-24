@@ -962,7 +962,9 @@ const RESOURCE_STREAM_PROTOCOL = SYNC_PROTOCOL_VERSION;
 
 async function readJson(response, path) {
   if (!response.ok)
-    throw new Error(`GET ${path} failed with HTTP ${response.status}`);
+    throw new Error(
+      `GET ${path} failed with HTTP ${response.status}: ${(await response.text()).slice(0, 1000)}`,
+    );
   return response.json();
 }
 
