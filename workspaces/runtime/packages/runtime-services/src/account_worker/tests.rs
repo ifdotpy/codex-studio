@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)]
+mod account_transfer;
 mod agent_isolation;
 #[cfg(unix)]
 mod auth_hold;
