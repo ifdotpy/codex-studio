@@ -1983,6 +1983,10 @@ describe("shared resource event transport", () => {
 
   it("reconciles an unchanged owner baseline once after reconnect", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
+    const api = await import("../api");
+    const identityProbe = vi
+      .spyOn(api, "get")
+      .mockRejectedValue(new Error("Unexpected identity probe"));
     vi.stubGlobal("navigator", {
       onLine: true,
       locks: {
@@ -2002,6 +2006,8 @@ describe("shared resource event transport", () => {
     const stop = transport.watchResourceChanges(local, onChange);
     await vi.advanceTimersByTimeAsync(20);
     expect(Source.instances).toHaveLength(1);
+    // A warm reconnect follows an open stream, not a pre-open rejection.
+    Source.instances[0]!.open();
     const initial = {
       protocol: 4,
       workspaceId,
@@ -2018,6 +2024,7 @@ describe("shared resource event transport", () => {
     Source.instances[0]!.onerror?.();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.open();
     Source.instances[1]!.emit("resources", {
       ...initial,
       reason: "reconnect",
@@ -2040,12 +2047,17 @@ describe("shared resource event transport", () => {
     } as MessageEvent);
     await vi.advanceTimersByTimeAsync(20);
     expect(onChange).toHaveBeenCalledTimes(2);
+    expect(identityProbe).not.toHaveBeenCalled();
     stop();
   });
 
   it("recovers from a replaced stream with a new server epoch", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
     syncDatabase.mockResolvedValue({ workspaceId });
+    const api = await import("../api");
+    const identityProbe = vi
+      .spyOn(api, "get")
+      .mockRejectedValue(new Error("Unexpected identity probe"));
 
     const transport = await loadTransport();
     const resource = { kind: "state" } as const;
@@ -2059,6 +2071,7 @@ describe("shared resource event transport", () => {
       await vi.advanceTimersByTimeAsync(20);
       expect(Source.instances).toHaveLength(1);
       const original = Source.instances[0]!;
+      original.open();
       original.emit("resources", {
         protocol: 4,
         workspaceId,
@@ -2073,6 +2086,7 @@ describe("shared resource event transport", () => {
       original.onerror?.();
       await vi.advanceTimersByTimeAsync(500);
       expect(Source.instances).toHaveLength(2);
+      Source.instances[1]!.open();
       Source.instances[1]!.emit("resources", {
         protocol: 4,
         workspaceId,
@@ -2085,6 +2099,7 @@ describe("shared resource event transport", () => {
 
       expect(states.at(-1)).toBe("live");
       expect(onChange).toHaveBeenCalledTimes(2);
+      expect(identityProbe).not.toHaveBeenCalled();
     } finally {
       stopChanges();
       stopStatus();
@@ -2176,6 +2191,10 @@ describe("shared resource event transport", () => {
 
   it("drops a recovery marker when its last local subscriber leaves", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
+    const api = await import("../api");
+    const identityProbe = vi
+      .spyOn(api, "get")
+      .mockRejectedValue(new Error("Unexpected identity probe"));
     vi.stubGlobal("navigator", {
       onLine: true,
       locks: {
@@ -2198,6 +2217,7 @@ describe("shared resource event transport", () => {
     const stopB = transport.watchResourceChanges(b, onB);
     await vi.advanceTimersByTimeAsync(20);
     expect(Source.instances).toHaveLength(1);
+    Source.instances[0]!.open();
 
     const baseline = {
       protocol: 4,
@@ -2220,6 +2240,7 @@ describe("shared resource event transport", () => {
     stopA();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.open();
     Source.instances[1]!.emit("resources", {
       ...baseline,
       reason: "reconnect",
@@ -2233,6 +2254,7 @@ describe("shared resource event transport", () => {
     Source.instances[1]!.emit("resources", baseline);
     await vi.advanceTimersByTimeAsync(20);
     expect(resumedA).toHaveBeenCalledTimes(1);
+    expect(identityProbe).not.toHaveBeenCalled();
     stopA();
     stopB();
   });
