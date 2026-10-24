@@ -34,7 +34,7 @@ test("new chat controls are inline, save settings and keep the compact composer 
       .first()
       .click();
     await page
-      .locator(".sidebar-nav")
+      .locator("#sidebar .projects-heading")
       .getByRole("button", { name: "New chat", exact: true })
       .click();
     const creation = page.getByRole("dialog", {
