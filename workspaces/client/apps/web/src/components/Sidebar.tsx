@@ -9,6 +9,7 @@ import {
 } from "./sidebar/services";
 import {
   Fragment,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -18,14 +19,17 @@ import {
 import {
   ActionIcon,
   Button,
-  Drawer,
   Menu,
   Modal,
   TextInput,
   Tooltip,
   UnstyledButton,
 } from "@mantine/core";
-import { useMediaQuery } from "@mantine/hooks";
+import {
+  layoutQueries,
+  layoutValues,
+} from "../layout/layout-contract.generated";
+import { SidebarFrame, restoreSidebarFocus } from "./sidebar/SidebarFrame";
 import {
   Users,
   FolderOpen,
@@ -130,6 +134,7 @@ export type SidebarProps = {
   remove: (id: string, room: boolean) => void;
   mobile: boolean;
   collapsed?: boolean;
+  onCompactChange?: (compact: boolean) => void;
   onSearch: () => void;
   close: () => void;
   refresh?: () => Promise<void>;
@@ -209,7 +214,24 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   reportPromptComposerRender("sidebar");
   const runtime = p.data.runtime;
   const aliases = useServerAliases(readServerAliases);
-  const compact = useMediaQuery("(max-width: 760px)");
+  const [compact, setCompact] = useState(
+    () => window.matchMedia(layoutQueries.navigationCompact).matches,
+  );
+  const reportCompact = useCallback(
+    (value: boolean) => {
+      setCompact(value);
+      p.onCompactChange?.(value);
+    },
+    [p.onCompactChange],
+  );
+  const closeSidebar = () => {
+    restoreSidebarFocus();
+    p.close();
+  };
+  const openChat = (id: string) => {
+    if (compact) closeSidebar();
+    p.open(id);
+  };
   const [query, setQuery] = useState(""),
     [renaming, setRenaming] = useState<string | null>(null),
     [name, setName] = useState(""),
@@ -873,7 +895,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       }}
       actions={{
         prepare: () => p.prepareChat?.(row.id),
-        open: () => p.open(row.id),
+        open: () => openChat(row.id),
         pin: () => {
           void organize(row.id, { pinned: !row.pinned });
         },
@@ -970,7 +992,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           }
           roomId={runtime?.rooms?.find((r) => r.radio?.teamId === team.id)?.id}
           scope={p.data.stateDir}
-          openRoom={p.open}
+          openRoom={openChat}
           refresh={p.refresh}
           reorder={teamDrop(
             sorting.bindings(
@@ -1008,7 +1030,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                   key={r.id}
                   className="peer-team-shared-chat"
                   aria-current={r.id === p.opened ? "page" : undefined}
-                  onClick={() => p.open(r.id)}
+                  onClick={() => openChat(r.id)}
                 >
                   Shared chat
                 </UnstyledButton>
@@ -1246,7 +1268,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     );
   };
   const content = (
-    <aside id="sidebar" aria-label="Conversations">
+    <>
       <span className="sr-only" role="status">
         {sorting.announcement}
       </span>
@@ -1270,7 +1292,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           </ActionIcon>
         )}
         {
-          <ActionIcon aria-label="Close conversations" onClick={p.close}>
+          <ActionIcon aria-label="Close conversations" onClick={closeSidebar}>
             <X size={20} />
           </ActionIcon>
         }
@@ -1286,7 +1308,10 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             className="sidebar-nav-button sidebar-search"
             aria-label="Search chats"
             leftSection={<Search size={15} />}
-            onClick={p.onSearch}
+            onClick={() => {
+              restoreSidebarFocus();
+              p.onSearch();
+            }}
           >
             Search{" "}
             <kbd>
@@ -1856,7 +1881,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                           aria-current={
                             p.opened === room.id ? "page" : undefined
                           }
-                          onClick={() => p.open(room.id)}
+                          onClick={() => openChat(room.id)}
                         >
                           <span className="row-copy">
                             <strong>{room.name}</strong>
@@ -1914,7 +1939,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           </p>
         )}
       </nav>
-    </aside>
+    </>
   );
   const dialogProject = dialog ? groupMap.get(dialog.path) : undefined;
   const dialogAgent = dialog?.agentId
@@ -1929,22 +1954,16 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     (!dialog?.folder || dialog.folder === "new" || dialogFolder);
   return (
     <>
-      {compact ? (
-        <Drawer
-          zIndex={p.settings ? 190 : undefined}
-          opened={p.mobile}
-          onClose={p.close}
-          size="min(360px, 100vw)"
-          padding={0}
-          withCloseButton={false}
-          title="Conversations"
-          classNames={{ header: "sr-only" }}
-        >
-          {content}
-        </Drawer>
-      ) : p.collapsed ? null : (
-        content
-      )}
+      <SidebarFrame
+        scope={`${p.services.cache.ownerId}:${p.data.stateDir}`}
+        opened={p.mobile}
+        collapsed={p.collapsed}
+        close={closeSidebar}
+        onCompactChange={reportCompact}
+        drawerZIndex={p.settings ? layoutValues.layers.navigation : undefined}
+      >
+        {content}
+      </SidebarFrame>
       <Modal
         opened={!!conversion}
         onClose={closeConversion}
@@ -1965,7 +1984,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                 scope={p.data.stateDir}
                 saved={async () => {
                   await p.refresh?.();
-                  p.open(conversion.target.id);
+                  openChat(conversion.target.id);
                   setConversion(null);
                 }}
               />
