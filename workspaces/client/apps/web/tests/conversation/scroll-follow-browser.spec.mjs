@@ -150,7 +150,8 @@ async function scrollFollow(page, full) {
       const next = resources.filter(
         (resource) => !removed.has(JSON.stringify(resource)),
       );
-      for (const added of update.add) {
+      const addedResources = update.add.map(({ resource }) => resource);
+      for (const added of addedResources) {
         if (
           !next.some(
             (resource) => JSON.stringify(resource) === JSON.stringify(added),
@@ -162,7 +163,10 @@ async function scrollFollow(page, full) {
       stream.write(protocol3SseEvent("subscriptions", { gen: update.gen }));
       if (update.add.length)
         stream.write(
-          protocol3SseEvent("resources", streamFrame(update.add, "initial")),
+          protocol3SseEvent(
+            "resources",
+            streamFrame(addedResources, "initial"),
+          ),
         );
       response.writeHead(200, {
         "Content-Type": "application/json",

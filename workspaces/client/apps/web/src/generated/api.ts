@@ -3898,6 +3898,187 @@ export interface components {
       /** Format: double */
       startedAt: number;
     };
+    /**
+     * AgentDetailEntityDto
+     * @description Open chat fields. Merge with the current agentSummary by id; summaries own shared list fields.
+     */
+    AgentDetailEntityDto: {
+      accountTransfer?:
+        | components["schemas"]["AccountTransferSummaryDto"]
+        | null;
+      /** Accounttransferid */
+      accountTransferId?: null | string;
+      activity?: components["schemas"]["AgentActivity"] | null;
+      agentMode?: components["schemas"]["AgentMode"] | null;
+      /** Agentmoderevision */
+      agentModeRevision?: number | null;
+      /** Agentmodesupported */
+      agentModeSupported?: boolean | null;
+      /** Cansend */
+      canSend?: boolean | null;
+      /** @description Claude permission mode for the worker launch preview. Other session options remain private. */
+      claudeOptions?: {
+        /** @enum {string} */
+        permissionMode?:
+          | "default"
+          | "acceptEdits"
+          | "auto"
+          | "plan"
+          | "bypassPermissions";
+      } | null;
+      /**
+       * Commandprogress
+       * @default []
+       */
+      commandProgress?: components["schemas"]["AgentCommandProgress"][];
+      /** Compactions */
+      compactions?: number | null;
+      /** Concurrency */
+      concurrency?: number | null;
+      connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
+      contextRepairWait?:
+        | components["schemas"]["AgentEntityContextRepairWaitDto"]
+        | null;
+      contextUsage?: components["schemas"]["ContextUsageDto"] | null;
+      convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: null | string;
+      /** Daybreakenabled */
+      daybreakEnabled?: boolean | null;
+      /** Deletedat */
+      deletedAt?: null | number;
+      /** Effort */
+      effort?: null | string;
+      /** Environment */
+      environment?: ("host" | "linux") | null;
+      /** Error */
+      error?: components["schemas"]["NativeProviderError"] | null | string;
+      /** Excludedaccountkeys */
+      excludedAccountKeys?: string[] | null;
+      /** Executionmode */
+      executionMode?: ("vm" | "native") | null;
+      /** Fastmode */
+      fastMode?: boolean | null;
+      /** Hostprojectpath */
+      hostProjectPath?: null | string;
+      /** Id */
+      id: string;
+      /** Imageworkspace */
+      imageWorkspace?: boolean | null;
+      /** Imageworkspacebaseref */
+      imageWorkspaceBaseRef?: null | string;
+      /** Imageworkspacebaserepo */
+      imageWorkspaceBaseRepo?: null | string;
+      /** Imageworkspacecreatedat */
+      imageWorkspaceCreatedAt?: null | number;
+      /** Imageworkspaceerror */
+      imageWorkspaceError?: null | string;
+      /** Imageworkspacehasgit */
+      imageWorkspaceHasGit?: boolean | null;
+      /** Imageworkspacephase */
+      imageWorkspacePhase?: null | string;
+      /** Imageworkspaceready */
+      imageWorkspaceReady?: boolean | null;
+      /** Imageworkspacerepo */
+      imageWorkspaceRepo?: null | string;
+      /** Imageworkspacesubpath */
+      imageWorkspaceSubpath?: null | string;
+      /** Lastanswer */
+      lastAnswer?: null | string;
+      /** Lastevent */
+      lastEvent?: null | string;
+      /** Launcheralive */
+      launcherAlive?: boolean | null;
+      /** Layrerror */
+      layrError?: null | string;
+      /** Layrline */
+      layrLine?: null | string;
+      /** Layrprojectid */
+      layrProjectId?: null | string;
+      /** Layrready */
+      layrReady?: boolean | null;
+      /** Layrstateid */
+      layrStateId?: null | string;
+      /** Manualname */
+      manualName?: boolean | null;
+      movedFrom?: components["schemas"]["MovePointerDto"] | null;
+      /** Nativeerror */
+      nativeError?: null | string;
+      /** Nativelimiterrorat */
+      nativeLimitErrorAt?: null | number;
+      nativeRelease?: components["schemas"]["AgentNativeRelease"] | null;
+      nativeSafetyBuffering?:
+        | components["schemas"]["NativeSafetyBufferingRecord"]
+        | null;
+      nativeSafetyRetry?: components["schemas"]["NativeSafetyRetryDto"] | null;
+      /** Nativestatus */
+      nativeStatus?:
+        | components["schemas"]["AgentNativeStatus"]
+        | components["schemas"]["AgentNativeStatusValue"]
+        | null;
+      nativeThreadBlock?: components["schemas"]["NativeThreadBlockDto"] | null;
+      nativeTurnError?: components["schemas"]["NativeTurnErrorDto"] | null;
+      /** Nextturnsettingssupported */
+      nextTurnSettingsSupported?: boolean | null;
+      /** Orchestratorid */
+      orchestratorId?: null | string;
+      /** Orchestratorname */
+      orchestratorName?: null | string;
+      overview?: components["schemas"]["AgentOverview"] | null;
+      /** Paneldataversion */
+      panelDataVersion?: number | null;
+      /** Panelversion */
+      panelVersion?: number | null;
+      pendingSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
+      /** Pendingsettingsaccountkey */
+      pendingSettingsAccountKey?: null | string;
+      /** Projectserverid */
+      projectServerId?: null | string;
+      queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
+      quickCreate?: components["schemas"]["JsonValue"] | null;
+      /** Retryat */
+      retryAt?: null | number;
+      reviewDefaults?: components["schemas"]["ReviewDefaultsDto"] | null;
+      startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
+      startWait?: components["schemas"]["AgentEntityStartWaitDto"] | null;
+      /** Statusdetail */
+      statusDetail?: null | string;
+      /** Subagentconcurrencyversion */
+      subagentConcurrencyVersion?: number | null;
+      /** Tail */
+      tail?: null | string;
+      /** Tokensused */
+      tokensUsed?: number | null;
+      turnStatus?: components["schemas"]["AgentStatus"] | null;
+      usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
+      voiceState?: components["schemas"]["JsonValue"] | null;
+      workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
+      /** Workspacebackend */
+      workspaceBackend?: ("asif" | "vm") | null;
+      workspaceCleanupIntent?:
+        | components["schemas"]["WorkspaceCleanupSummaryDto"]
+        | null;
+      /** Workspacemode */
+      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      /** Workspaceoperation */
+      workspaceOperation?: null | string;
+      /** Worktree */
+      worktree?: boolean | null | string;
+      /** Worktreepreparation */
+      worktreePreparation?: ("waiting" | "preparing") | null;
+      /** Yolomode */
+      yoloMode?: boolean | null;
+    };
+    /** AgentDetailResource */
+    AgentDetailResource: {
+      /** Agentid */
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "agentDetail";
+    };
     /** AgentDraftRecordResponse */
     AgentDraftRecordResponse: {
       /**
@@ -4042,6 +4223,8 @@ export interface components {
       fastMode?: boolean | null;
       /** Hasapproval */
       hasApproval?: boolean | null;
+      /** @description Whether managed commands or monitors are active; no command output is included. */
+      hasBackgroundWork?: boolean;
       /** Hasquestion */
       hasQuestion?: boolean | null;
       /** Hasunread */
@@ -6174,6 +6357,100 @@ export interface components {
       | "abandoned"
       | "capacity-retry"
       | "waiting_on_monitor";
+    /**
+     * AgentSummaryEntityDto
+     * @description Chat list identity, ordering, operational attention and durable read state. OpenAPI owns the exact summary field set; runtime projections filter through this schema.
+     */
+    AgentSummaryEntityDto: {
+      /** Accountkey */
+      accountKey?: null | string;
+      /** Archived */
+      archived?: boolean | null;
+      /** Autowake */
+      autoWake?: boolean | null;
+      capacityRetry?:
+        | components["schemas"]["AgentEntityCapacityRetryDto"]
+        | null;
+      /** Created */
+      created?: null | number;
+      /** Cwd */
+      cwd?: null | string;
+      /** Empty */
+      empty?: boolean | null;
+      /** Epoch */
+      epoch?: number | null;
+      /** Hasapproval */
+      hasApproval?: boolean | null;
+      /** @description Whether managed commands or monitors are active; no command output is included. */
+      hasBackgroundWork?: boolean;
+      /** Hasquestion */
+      hasQuestion?: boolean | null;
+      /** Hasunread */
+      hasUnread?: boolean | null;
+      /** Id */
+      id: string;
+      /** Inflight */
+      inFlight?: boolean | null;
+      /** Islead */
+      isLead?: boolean | null;
+      /** Kind */
+      kind?: "agent" | null;
+      /** Lastcompletedturn */
+      lastCompletedTurn?: null | string;
+      /** Lastcompletedturnstatus */
+      lastCompletedTurnStatus?: null | string;
+      /** Lastreadat */
+      lastReadAt?: null | number;
+      /** Model */
+      model?: null | string;
+      movedTo?: components["schemas"]["MovePointerDto"] | null;
+      /**
+       * Moveimportpending
+       * @default false
+       */
+      moveImportPending?: boolean;
+      /** Name */
+      name?: null | string;
+      /** Parentid */
+      parentId?: null | string;
+      /** Parkedevent */
+      parkedEvent?: null | string;
+      /** Pinned */
+      pinned?: boolean | null;
+      /** Project */
+      project?: null | string;
+      /** Projectfolder */
+      projectFolder?: null | string;
+      /** Projectfolderrevision */
+      projectFolderRevision?: number | null;
+      /** Projectid */
+      projectId?: null | string;
+      provider?: components["schemas"]["AgentProvider"] | null;
+      readState?: components["schemas"]["ReadStateDto"] | null;
+      /** Readstatesupported */
+      readStateSupported?: boolean | null;
+      remoteAnchor?: components["schemas"]["RemoteParentLinkDto"] | null;
+      remoteOrigin?: components["schemas"]["RemoteParentLinkDto"] | null;
+      remoteWorker?: components["schemas"]["RemoteWorkerLinkDto"] | null;
+      role?: components["schemas"]["AgentRole"] | null;
+      /** Rootid */
+      rootId?: null | string;
+      /** Serverid */
+      serverId?: null | string;
+      /** Sharedroomid */
+      sharedRoomId?: null | string;
+      source?: components["schemas"]["AgentSource"] | null;
+      stall?: components["schemas"]["AgentStall"] | null;
+      status?: components["schemas"]["AgentStatus"] | null;
+      /** Threadid */
+      threadId?: null | string;
+      /** Turnid */
+      turnId?: null | string;
+      /** Unreadcount */
+      unreadCount?: number | null;
+      /** Updated */
+      updated?: null | number;
+    };
     /** AmbiguousToolRequestResponse */
     AmbiguousToolRequestResponse: {
       /** Id */
@@ -14379,6 +14656,16 @@ export interface components {
       outputPatterns: string[];
       requestId: string;
     };
+    /** MonitorsResource */
+    MonitorsResource: {
+      /** Agentid */
+      agentId?: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "monitors";
+    };
     /**
      * MonitorState
      * @enum {string}
@@ -18749,7 +19036,9 @@ export interface components {
       | components["schemas"]["AuthProgressResource"]
       | components["schemas"]["VaultReadinessResource"]
       | components["schemas"]["VaultJobProgressResource"]
-      | components["schemas"]["RenameProgressResource"];
+      | components["schemas"]["RenameProgressResource"]
+      | components["schemas"]["AgentDetailResource"]
+      | components["schemas"]["MonitorsResource"];
     /**
      * ResourceRevisionEntry
      * @description Per-resource revision; StateResource uses the entity sequence.
@@ -21396,12 +21685,14 @@ export interface components {
     /** @description Authoritative resource kind to domain data mapping for the screen subscription API. Keys must equal ResourceRef kinds. Transport metadata never belongs in this map. */
     SubscriptionDataMap: {
       accounts: components["schemas"]["AccountsResponse"];
+      agentDetail: components["schemas"]["AgentDetailEntityDto"];
       "auth-progress": components["schemas"]["ClaudeLoginResponse"] | null;
-      costs: components["schemas"]["AccountCostResponse"];
+      costs: components["schemas"]["AccountCostResponse"][];
       desktop: components["schemas"]["DesktopResponse"];
       drafts: components["schemas"]["DraftChangeBatch"];
       limits: components["schemas"]["UsageLimitsResponse"];
       models: components["schemas"]["SyncEntityPayload"][];
+      monitors: components["schemas"]["MonitorEntityDto"][];
       "multi-server": components["schemas"]["AccessSnapshot"];
       queue: components["schemas"]["SyncEntityPayload"][];
       receipts: components["schemas"]["SyncEntityPayload"][];
@@ -21409,10 +21700,10 @@ export interface components {
       room: components["schemas"]["SyncEntityPayload"][];
       "session-cost": components["schemas"]["SessionCostResponse"];
       state: components["schemas"]["SyncEntityPayload"][];
-      task: components["schemas"]["TaskDetailResponse"];
-      tasks: components["schemas"]["SyncEntityPayload"][];
-      terminal: components["schemas"]["SyncEntityPayload"][];
-      terminals: components["schemas"]["TerminalList"];
+      task: components["schemas"]["TaskEntityDto"];
+      tasks: components["schemas"]["TaskEntityDto"][];
+      terminal: components["schemas"]["TerminalRecord"];
+      terminals: components["schemas"]["TerminalRecord"][];
       transcript: components["schemas"]["TranscriptPageResponse"];
       transcripts: components["schemas"]["SyncEntityPayload"][];
       "vault-job-progress":
@@ -21712,6 +22003,17 @@ export interface components {
       id: string;
       value: components["schemas"]["AccountsSummaryDto"];
     };
+    /** SyncAgentDetailEntityPayload */
+    SyncAgentDetailEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "agentDetail";
+      /** Id */
+      id: string;
+      value: components["schemas"]["AgentDetailEntityDto"];
+    };
     /** SyncAgentEntityPayload */
     SyncAgentEntityPayload: {
       /**
@@ -21722,6 +22024,17 @@ export interface components {
       /** Id */
       id: string;
       value: components["schemas"]["AgentEntityDto"];
+    };
+    /** SyncAgentSummaryEntityPayload */
+    SyncAgentSummaryEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "agentSummary";
+      /** Id */
+      id: string;
+      value: components["schemas"]["AgentSummaryEntityDto"];
     };
     /** SyncAnnotationEntityPayload */
     SyncAnnotationEntityPayload: {
@@ -21983,7 +22296,9 @@ export interface components {
             | "desktop"
             | "terminal"
             | "retainedWorktree"
-            | "questionHistory";
+            | "questionHistory"
+            | "agentSummary"
+            | "agentDetail";
           /** @constant */
           op: "delete";
         }
@@ -22043,6 +22358,20 @@ export interface components {
           op: "upsert";
           value: components["schemas"]["AgentRequest"];
         }
+      | {
+          /** @constant */
+          collection: "agentSummary";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["AgentSummaryEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "agentDetail";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["AgentDetailEntityDto"];
+        }
     );
     SyncEntityPayload:
       | components["schemas"]["SyncAgentEntityPayload"]
@@ -22073,7 +22402,9 @@ export interface components {
       | components["schemas"]["SyncDesktopEntityPayload"]
       | components["schemas"]["SyncTerminalEntityPayload"]
       | components["schemas"]["SyncRetainedWorktreeEntityPayload"]
-      | components["schemas"]["SyncQuestionHistoryEntityPayload"];
+      | components["schemas"]["SyncQuestionHistoryEntityPayload"]
+      | components["schemas"]["SyncAgentSummaryEntityPayload"]
+      | components["schemas"]["SyncAgentDetailEntityPayload"];
     /** SyncEventEntityPayload */
     SyncEventEntityPayload: {
       /**
@@ -22686,7 +23017,7 @@ export interface components {
     /** TasksResource */
     TasksResource: {
       /** Agentid */
-      agentId: string;
+      agentId?: string;
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
@@ -35040,6 +35371,8 @@ export interface operations {
         reconnect?: boolean;
         resources?: string;
         scope?: string;
+        /** @description JSON array of SubscriptionAdd entries carrying the last applied cursor for refs in resources. */
+        since?: string;
         /** @description Whether this stream includes token-rate snapshots. Omitted selectors preserve native and signed-client behavior. Browser owners send the aggregate interest of their tabs. */
         tokenRates?: boolean;
       };
@@ -37503,7 +37836,11 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 export type AccountCostEntityDto =
   components["schemas"]["AccountCostEntityDto"];
+export type AgentDetailEntityDto =
+  components["schemas"]["AgentDetailEntityDto"];
 export type AgentEntityDto = components["schemas"]["AgentEntityDto"];
+export type AgentSummaryEntityDto =
+  components["schemas"]["AgentSummaryEntityDto"];
 export type AnnotationEntityDto = components["schemas"]["AnnotationEntityDto"];
 export type ChatEntityDto = components["schemas"]["ChatEntityDto"];
 export type ComplaintEntityDto = components["schemas"]["ComplaintEntityDto"];

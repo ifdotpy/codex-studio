@@ -335,7 +335,7 @@ mod tests {
                     .and_then(Value::as_str)
                     .and_then(|path| document.pointer(path.trim_start_matches('#')))
                     .unwrap_or(schema);
-                let value = schema
+                let field_value = schema
                     .get("const")
                     .cloned()
                     .or_else(|| {
@@ -352,7 +352,7 @@ mod tests {
                             json!("test")
                         }
                     });
-                value.insert(field.clone(), value);
+                value.insert(field.clone(), field_value);
             }
             value.insert("kind".into(), json!(kind));
             let resource: ResourceRef =

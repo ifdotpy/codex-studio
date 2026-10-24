@@ -1858,7 +1858,8 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
         (resource) => !removed.has(JSON.stringify(resource)),
       );
       const keys = new Set(next.map((resource) => JSON.stringify(resource)));
-      for (const resource of update.add) {
+      const addedResources = update.add.map(({ resource }) => resource);
+      for (const resource of addedResources) {
         if (!keys.has(JSON.stringify(resource))) next.push(resource);
         keys.add(JSON.stringify(resource));
       }
@@ -1868,13 +1869,13 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       if (update.add.length)
         writeFrame("resources", {
           ...initial,
-          resources: update.add,
+          resources: addedResources,
           resourceVersions: fixture.versionedResources
-            ? withResourceVersions(update.add)
+            ? withResourceVersions(addedResources)
             : [],
           revision: ++revision,
         });
-      writeProgress(update.add);
+      writeProgress(addedResources);
     });
     response.once("close", () => sessions.delete(sessionId));
     const cleanup = fixture.onStreamReady?.((resources, reason = "change") => {
