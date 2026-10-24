@@ -77,7 +77,9 @@ async fn configure(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::MacSyncConfigRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let root = std::path::PathBuf::from(state.state_dir);
+    // The VM state directory holds the layr project records (`layr-projects/<id>`).
+    let root =
+        studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state.state_dir));
     let status = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/mac_sync",
         move || {
@@ -101,7 +103,8 @@ async fn resolve(
     ApiJson(body): ApiJson<generated::MacSyncResolveRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let notifications = state.sync_changes.clone();
-    let root = std::path::PathBuf::from(state.state_dir.clone());
+    let root =
+        studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state.state_dir));
     let guest = UnixGuestRpc::for_runtime_state(std::path::Path::new(&state.state_dir));
     let project_id = body.project_id;
     let resolve_project_id = project_id.clone();
@@ -287,7 +290,8 @@ mod tests {
     #[tokio::test]
     async fn resolve_http_uses_a_fake_guest_endpoint_and_writes_vm_choice() {
         let state_dir = tempfile::tempdir().expect("fixture operation succeeds");
-        let project = state_dir.path().join("layr-projects/p1");
+        // The VM state directory owns the layr project records, as on a real install.
+        let project = state_dir.path().join("linux-vm/layr-projects/p1");
         let folder = state_dir.path().join("mac-folder");
         let socket_dir = state_dir.path().join("linux-vm");
         std::fs::create_dir_all(project.join("sync")).expect("fixture operation succeeds");
@@ -382,7 +386,8 @@ mod tests {
     #[tokio::test]
     async fn config_http_contract_and_invalid_resolve_refusal_are_quiescent() {
         let state_dir = tempfile::tempdir().expect("fixture operation succeeds");
-        let project = state_dir.path().join("layr-projects/p1");
+        // The VM state directory owns the layr project records, as on a real install.
+        let project = state_dir.path().join("linux-vm/layr-projects/p1");
         let folder = state_dir.path().join("mac-folder");
         std::fs::create_dir_all(project.join("sync")).expect("fixture operation succeeds");
         std::fs::create_dir_all(&folder).expect("fixture operation succeeds");

@@ -581,7 +581,7 @@ class Service:
                 if method == "exec" and "result" in response:
                     await self.replay_exec(response["result"], emit)
                 return response
-            prior = receipt(self.db, request_id, request_digest)
+            prior = receipt(self.db, request_id, request_digest, method)
             if prior is not None:
                 if method == "exec" and "result" in prior:
                     await self.replay_exec(prior["result"], emit)

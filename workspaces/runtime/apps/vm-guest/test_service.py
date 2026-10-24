@@ -296,6 +296,25 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.exception.code, "outcome_unknown")
         self.assertEqual(self.service.list_providers(), [])
 
+    async def test_an_unfinished_mac_sync_apply_is_asked_of_the_broker_again(self):
+        # The broker keeps the receipt of a Mac sync round and runs an interrupted round
+        # again; a service stop during the round must not answer outcome_unknown forever.
+        from common import digest
+        params = {"projectId": "app", "operationId": "mac-2", "since": [], "entries": []}
+        self.service.db.execute("INSERT INTO receipts VALUES (?,?,NULL)", ("mac-2", digest("sync.mac.apply", params)))
+        self.service.db.commit()
+        forwarded = []
+
+        async def admin_request(request_id, method, params, emit=None):
+            forwarded.append((request_id, method))
+            return {"mainStateId": "abcdef0"}
+
+        with patch("layr_admin_client.admin_request", admin_request):
+            result = await self.call("sync.mac.apply", params, "mac-2")
+            self.assertEqual(await self.call("sync.mac.apply", params, "mac-2"), result)
+        self.assertEqual(result, {"mainStateId": "abcdef0"})
+        self.assertEqual(forwarded, [("mac-2", "sync.mac.apply")])
+
     async def test_credentials_private_and_confined(self):
         await self.call("credentials.put", {"files": [{"path": ".codex/auth.json", "data": encoded(b"private")}]})
         path = self.home / ".codex/auth.json"
