@@ -167,6 +167,8 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
           servers: [],
         });
       if (url.pathname === "/api/ui-summary") return json({ system: "Linux" });
+      if (url.pathname === "/api/retained-worktrees")
+        return json({ retainedWorktrees: [] });
       if (url.pathname === "/api/queue") return json({ items: [] });
       if (url.pathname === "/api/terminals") return json({ items: [] });
       return json({ items: [], data: [], accounts: [], total: 0 });
@@ -211,7 +213,12 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
         { cause: error },
       );
     }
-    await expect(page.locator("body")).toContainText("11%");
+    const quota = page.getByRole("button", {
+      name: "Account limits",
+      exact: true,
+    });
+    await quota.click();
+    await expect(page.locator("body")).toContainText("89% left");
     const idleStart = requests.length;
     const item = {
       id: "agent:lead:turn",
@@ -233,7 +240,8 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
       },
       { op: "upsert", collection: "studioError", id: item.id, value: item },
     ]);
-    await expect(page.locator("body")).toContainText("37%");
+    await expect(page.locator("body")).toContainText("63% left");
+    await quota.click();
     await expect(
       page.getByRole("button", { name: /Studio errors/ }),
     ).toBeVisible();
