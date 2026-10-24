@@ -137,6 +137,21 @@ async fn fixture(path: &std::path::Path, mode: Mode) -> (Arc<RuntimeStore>, Epis
     (store, episode)
 }
 
+/// Opens the store again after a simulated restart. The stopped timer aborts its
+/// job, but a blocking write that the job already started still runs to its end
+/// and holds the state lock until then. Wait for that owner, with a bound.
+async fn reopen(path: &std::path::Path) -> RuntimeStore {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match RuntimeStore::open(Some(path)).await {
+            Err(StoreError::AlreadyOwned) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            result => return result.unwrap(),
+        }
+    }
+}
+
 #[tokio::test]
 async fn idle_claude_dispatches_once_and_restart_does_not_repeat() {
     let root = tempfile::tempdir().unwrap();
@@ -174,7 +189,7 @@ async fn idle_claude_dispatches_once_and_restart_does_not_repeat() {
     assert!(idle::next(&store).await.unwrap().is_none());
     drop(host);
     drop(store);
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    let store = Arc::new(reopen(root.path()).await);
     let host = HostPort {
         store: store.clone(),
         session: session.clone(),
