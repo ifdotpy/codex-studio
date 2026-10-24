@@ -86,9 +86,11 @@ for (const width of [1440, 390]) {
             name: "Select error monitor:two for Worker two",
           })
           .uncheck();
-        await mkdir("/tmp/app-errors", { recursive: true });
+        await mkdir(test.info().outputPath("screenshots"), { recursive: true });
         await page.screenshot({
-          path: `/tmp/app-errors/${width}-${colorScheme}.png`,
+          path: test
+            .info()
+            .outputPath("screenshots", `${width}-${colorScheme}.png`),
           animations: "disabled",
         });
         await remove.click();
