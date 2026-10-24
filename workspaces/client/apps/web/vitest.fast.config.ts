@@ -54,6 +54,7 @@ export default {
       "src/components/SupervisorRecoveryNotice.test.ts",
       "src/components/desktopNotices.test.ts",
       "src/components/watchResourceReads.test.ts",
+      "src/components/RealtimeVoice.test.ts",
       // Normal draft changes use RxDB's master stream; recovery reads its durable checkpoint.
       "src/sync/client.draftStream.test.ts",
       // A complete state batch advances the durable projection with no new pull; storage failures, gaps, reconnects and epochs still reconcile.
@@ -64,6 +65,7 @@ export default {
       "src/servers/eventSource.test.ts",
       // Prevent duplicate entity pulls and preserve server storage and API ownership.
       "src/servers/useUiPreferenceSync.test.ts",
+      "src/servers/useServerDiscovery.test.ts",
       "src/sync/uiPreferenceBridge.test.ts",
       // Prevent idle polling and lost draft notifications during a refresh.
       "src/native/useNativeDrafts.test.ts",

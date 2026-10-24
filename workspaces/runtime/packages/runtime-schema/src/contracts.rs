@@ -408,6 +408,11 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         "/components/schemas/EntityChangeBatch/properties/documents/maxItems",
         values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
     )?;
+    expect_number(
+        openapi,
+        "/components/schemas/VoiceRecordBatch/properties/records/maxItems",
+        values::SYNC_VOICE_STREAM_MAX_RECORDS,
+    )?;
     for field in ["items", "removed", "order"] {
         expect_number(
             openapi,

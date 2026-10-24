@@ -57,6 +57,10 @@ export type ResourceVersion = {
   revision: number;
   reason?: ResourceChangeEvent["reason"];
   draftChanges?: components["schemas"]["DraftChangeBatch"];
+  /** Transient access metadata; never written to the entity cache. */
+  discoverySnapshot?: components["schemas"]["AccessSnapshot"];
+  /** Transient cursor interval and media session state. */
+  voiceRecords?: components["schemas"]["VoiceRecordBatch"];
   /** Highest entity row represented by this StateResource revision, when present. */
   entitySequence?: number;
   /** Transcript cursor persisted before this notification; readers verify local coverage. */
@@ -610,6 +614,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       if (resource.kind === "drafts") {
         version.reason = event.reason;
         version.draftChanges = revisionEntry?.draftChanges ?? undefined;
+      }
+      if (resource.kind === "multi-server")
+        version.discoverySnapshot =
+          revisionEntry?.discoverySnapshot ?? undefined;
+      if (resource.kind === "voice") {
+        version.reason = event.reason;
+        version.voiceRecords = revisionEntry?.voiceRecords ?? undefined;
       }
       const entitySequences =
         resource.kind === "state" ? revisionEntry?.entitySequences : undefined;

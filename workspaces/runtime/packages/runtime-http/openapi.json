@@ -44467,6 +44467,17 @@
         "additionalProperties": false,
         "description": "Per-resource revision; StateResource uses the entity sequence.",
         "properties": {
+          "discoverySnapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccessSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Transient owner access snapshot. Never persist in the client entity cache. Omission requires HTTP recovery."
+          },
           "draftChanges": {
             "anyOf": [
               {
@@ -44539,6 +44550,17 @@
                 "type": "null"
               }
             ]
+          },
+          "voiceRecords": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoiceRecordBatch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Transient voice records and session state. Recover through HTTP if the cursor interval is missing or incomplete."
           }
         },
         "required": [
@@ -60530,6 +60552,49 @@
         ],
         "title": "VoicePlaybackConfirmation",
         "type": "string"
+      },
+      "VoiceRecordBatch": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "cursor": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceRecordResponse"
+            },
+            "maxItems": 128,
+            "title": "Records",
+            "type": "array"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoiceSessionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "after",
+          "cursor",
+          "records",
+          "session"
+        ],
+        "title": "VoiceRecordBatch",
+        "type": "object"
       },
       "VoiceRecordKind": {
         "enum": [

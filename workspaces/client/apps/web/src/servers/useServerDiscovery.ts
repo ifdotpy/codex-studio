@@ -6,13 +6,14 @@ import {
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
 import { ServerManagementRequests } from "./managementRequests";
 import { useEffect, useRef, useState } from "react";
+import type { ResourceVersion } from "../sync/resourceEvents";
 import { errorText } from "../api";
 import {
   discoverySnapshot,
   effectiveDiscoveryAliases,
   type DiscoverySnapshot,
 } from "./discoveryModel";
-import type { ServerAccessRequest, ServerAccessState } from "./accessContract";
+import type { ServerAccessRequest } from "./accessContract";
 import { AutomaticUiAccess } from "./automaticUiAccess";
 import {
   automaticAccessStore,
@@ -83,6 +84,8 @@ export function useServerDiscovery(
   if (!controller.current)
     controller.current = new AutomaticUiAccess(attempts.current, {
       current: async () => {
+        // Revalidate permission before/after automatic pairing. A cached stream
+        // snapshot cannot authorize a remote credential change.
         const value = await serverAccess("GET");
         if (!("identity" in value))
           throw new Error("The server discovery response is invalid.");
@@ -166,7 +169,7 @@ export function useServerDiscovery(
     },
   );
   const loading = useRef<Promise<void> | null>(null);
-  const apply = async (state: ServerAccessState) => {
+  const apply = async (state: Parameters<typeof discoverySnapshot>[0]) => {
     const next = discoverySnapshot(state);
     if (!active.current && !localAvailable) return;
     if (
@@ -237,14 +240,24 @@ export function useServerDiscovery(
         ),
       }
     : null;
-  const load = () => {
+  const loadGeneration = useRef(0);
+  const load = (version?: ResourceVersion) => {
+    const snapshot = version?.discoverySnapshot;
+    if (snapshot) {
+      const generation = ++loadGeneration.current;
+      return attempts.current!.initialize().then(() => {
+        if (generation === loadGeneration.current) return apply(snapshot);
+      });
+    }
     if (loading.current) return loading.current;
+    const generation = ++loadGeneration.current;
     loading.current = (async () => {
       await attempts.current!.initialize();
       const value = await serverAccess("GET");
       if (!("identity" in value))
         throw new Error("The server discovery response is invalid.");
-      await apply(value);
+      // A newer inline snapshot supersedes a recovery already in flight.
+      if (generation === loadGeneration.current) await apply(value);
     })().finally(() => {
       loading.current = null;
     });
@@ -256,8 +269,8 @@ export function useServerDiscovery(
     if (!localAvailable) return;
     const watcher = watchResourceReads(
       { kind: "multi-server" },
-      async () => {
-        await loadRef.current();
+      async (version) => {
+        await loadRef.current(version);
         setError("");
       },
       (failure) => setError(errorText(failure)),

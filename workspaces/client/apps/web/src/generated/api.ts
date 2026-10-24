@@ -20010,6 +20010,8 @@ export interface components {
      * @description Per-resource revision; StateResource uses the entity sequence.
      */
     ResourceRevisionEntry: {
+      /** @description Transient owner access snapshot. Never persist in the client entity cache. Omission requires HTTP recovery. */
+      discoverySnapshot?: components["schemas"]["AccessSnapshot"] | null;
       draftChanges?: components["schemas"]["DraftChangeBatch"] | null;
       entityChanges?: components["schemas"]["EntityChangeBatch"] | null;
       /** Entitysequencereset */
@@ -20020,6 +20022,8 @@ export interface components {
       /** Revision */
       revision: number;
       transcriptChanges?: components["schemas"]["TranscriptChangeBatch"] | null;
+      /** @description Transient voice records and session state. Recover through HTTP if the cursor interval is missing or incomplete. */
+      voiceRecords?: components["schemas"]["VoiceRecordBatch"] | null;
     };
     /**
      * ResourceTokenRatesEvent
@@ -26436,6 +26440,16 @@ export interface components {
      * @enum {string}
      */
     VoicePlaybackConfirmation: "not confirmed";
+    /** VoiceRecordBatch */
+    VoiceRecordBatch: {
+      /** Cursor */
+      after: number;
+      /** Cursor */
+      cursor: number;
+      /** Records */
+      records: components["schemas"]["VoiceRecordResponse"][];
+      session: components["schemas"]["VoiceSessionResponse"] | null;
+    };
     /**
      * VoiceRecordKind
      * @enum {string}

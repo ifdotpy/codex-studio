@@ -78,6 +78,8 @@ pub const SYNC_ENTITY_STREAM_MAX_DOCUMENTS: i64 = 512;
 pub const SYNC_STREAM_EVENT_MAX_BYTES: usize = 262144;
 /// Maximum changed and removed transcript records in a complete stream interval, in items.
 pub const SYNC_TRANSCRIPT_STREAM_MAX_ITEMS: usize = 512;
+/// Maximum voice records in a complete transient stream interval, in records.
+pub const SYNC_VOICE_STREAM_MAX_RECORDS: i64 = 128;
 /// Maximum records in a complete draft stream interval, in documents.
 pub const SYNC_DRAFT_STREAM_MAX_DOCUMENTS: i64 = 512;
 /// Seconds between sync resource heartbeats.

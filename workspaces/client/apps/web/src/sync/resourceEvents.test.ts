@@ -192,8 +192,15 @@ beforeEach(() => {
 describe("shared resource event transport", () => {
   it("delivers transient discovery and cursor voice payloads without entity persistence", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
-    vi.stubGlobal("window", { addEventListener: vi.fn(), removeEventListener: vi.fn() });
-    vi.stubGlobal("document", { hidden: false, addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
     vi.stubGlobal("navigator", { onLine: true });
     vi.stubGlobal("location", { origin: "http://studio.test" });
     vi.stubGlobal("crypto", { randomUUID: () => "transient-tab" });
@@ -204,12 +211,30 @@ describe("shared resource event transport", () => {
     transport.watchResourceChanges({ kind: "multi-server" }, discovery);
     transport.watchResourceChanges({ kind: "voice", agentId: "chat" }, voice);
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
-    const snapshot = { protocol: 1, identity: { serverId: "owner" }, clients: [], servers: [], invites: [] };
-    const batch = { after: 0, cursor: 1, records: [{ id: "record" }], session: null };
+    const snapshot = {
+      protocol: 1,
+      identity: { serverId: "owner" },
+      clients: [],
+      servers: [],
+      invites: [],
+    };
+    const batch = {
+      after: 0,
+      cursor: 1,
+      records: [{ id: "record" }],
+      session: null,
+    };
     Source.instances[0]!.emit("resources", {
-      protocol: 4, workspaceId, epoch: "transient", revision: 1, reason: "initial",
+      protocol: 4,
+      workspaceId,
+      epoch: "transient",
+      revision: 1,
+      reason: "initial",
       resources: [{ kind: "multi-server" }, { kind: "voice", agentId: "chat" }],
-      resourceVersions: [{ revision: 1, discoverySnapshot: snapshot }, { revision: 1, voiceRecords: batch }],
+      resourceVersions: [
+        { revision: 1, discoverySnapshot: snapshot },
+        { revision: 1, voiceRecords: batch },
+      ],
     });
     await vi.waitFor(() => expect(voice).toHaveBeenCalledOnce());
     expect(discovery.mock.calls[0][0].discoverySnapshot).toEqual(snapshot);

@@ -295,6 +295,7 @@ async fn sync_stream(
         Ok(view) if !view.cursor.closed => view,
         _ => return ApiError::internal().into_response(),
     };
+    let mut voice_sequences = BTreeMap::new();
     let mut transcript_sequences = BTreeMap::new();
     let transcript_updates = read_transcript_changes(
         Some(store.clone()),
@@ -317,6 +318,7 @@ async fn sync_stream(
         Err(error) => return error.into_response(),
     };
     attach_transcript_changes(&mut initial_event, transcript_updates);
+    attach_transient_snapshots(Some(&state), &mut initial_event, &mut voice_sequences).await;
     let mut initial = VecDeque::new();
     let session_id = uuid::Uuid::new_v4().to_string();
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
@@ -380,6 +382,7 @@ async fn sync_stream(
         resources,
         entity_sequence: initial_entity_sequence,
         transcript_sequences,
+        voice_sequences,
         draft_sequence: initial_draft_sequence,
         store: Some(store),
         changes,
@@ -456,6 +459,25 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
             .ok()
             .and_then(|ready| serde_json::to_vec(&ready).ok())
         }
+        ResourceRef::MultiServerResource(_) if cfg!(unix) => {
+            serde_json::to_vec(&super::multi_server::read_snapshot(&state).await.ok()?).ok()
+        }
+        ResourceRef::VoiceResource(resource) => state
+            .store?
+            .read_async("runtime-http/voice-resource-revision", move |connection| {
+                let cursor = studio_runtime_store::VoiceRepository::record_sequence(
+                    connection,
+                    &resource.agent_id,
+                )?;
+                let session = studio_runtime_store::VoiceRepository::latest_session(
+                    connection,
+                    &resource.agent_id,
+                )?;
+                serde_json::to_vec(&(cursor, session))
+                    .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await
+            .ok(),
         ResourceRef::AccountsResource(_) => {
             serde_json::to_vec(&super::catalog::accounts(State(state)).await.ok()?.0).ok()
         }
@@ -952,6 +974,44 @@ fn attach_transcript_changes(
     }
 }
 
+/// Access metadata and live voice signaling remain in memory, outside persisted entities.
+/// Missing or oversized intervals deliberately retain the resource's HTTP recovery hint.
+async fn attach_transient_snapshots(
+    state: Option<&HttpState>,
+    event: &mut ResourceChangeEvent,
+    voice_sequences: &mut BTreeMap<String, i64>,
+) {
+    let Some(state) = state else { return };
+    for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
+        match resource {
+            ResourceRef::MultiServerResource(_) if cfg!(unix) => {
+                entry.discovery_snapshot = super::multi_server::read_snapshot(state)
+                    .await
+                    .ok()
+                    .and_then(|snapshot| serde_json::from_value(snapshot).ok())
+                    .map(Some);
+            }
+            ResourceRef::VoiceResource(resource) => {
+                let Some(store) = &state.store else { continue };
+                let after = voice_sequences
+                    .get(&resource.agent_id)
+                    .copied()
+                    .unwrap_or_default();
+                if let Ok((cursor, payload)) =
+                    studio_runtime_services::voice::stream_records(store, &resource.agent_id, after)
+                        .await
+                {
+                    voice_sequences.insert(resource.agent_id.clone(), cursor);
+                    entry.voice_records = payload
+                        .and_then(|payload| serde_json::from_value(payload).ok())
+                        .map(Some);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 struct ResourceStream {
     subscription: Option<LiveSubscription>,
     http_state: Option<HttpState>,
@@ -963,6 +1023,7 @@ struct ResourceStream {
     resources: Vec<Value>,
     entity_sequence: i64,
     transcript_sequences: BTreeMap<String, i64>,
+    voice_sequences: BTreeMap<String, i64>,
     draft_sequence: i64,
     store: Option<Arc<RuntimeStore>>,
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
@@ -998,6 +1059,12 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
     {
         state.vault_readiness = readiness_source(http, &state.resources).await.ok()?;
     }
+    state.voice_sequences.retain(|id, _| {
+        state
+            .resources
+            .iter()
+            .any(|resource| resource["kind"] == "voice" && resource["agentId"] == *id)
+    });
     state.transcript_sequences.retain(|id, _| {
         state
             .resources
@@ -1060,6 +1127,12 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         )
         .ok()?;
         attach_transcript_changes(&mut event, updates);
+        attach_transient_snapshots(
+            state.http_state.as_ref(),
+            &mut event,
+            &mut state.voice_sequences,
+        )
+        .await;
         state
             .initial
             .push_back(resource_sse_event(view.cursor.revision, event));
@@ -1196,6 +1269,12 @@ async fn next_frame(
             )
             .ok()?;
             attach_transcript_changes(&mut event, transcript_updates);
+            attach_transient_snapshots(
+                state.http_state.as_ref(),
+                &mut event,
+                &mut state.voice_sequences,
+            )
+            .await;
             if event.resources.is_empty() {
                 continue;
             }
@@ -1308,6 +1387,8 @@ fn resource_changes_event(
             let state = matches!(resource, ResourceRef::StateResource(_));
             let drafts = matches!(resource, ResourceRef::DraftsResource(_));
             ResourceRevisionEntry {
+                discovery_snapshot: None,
+                voice_records: None,
                 revision: if state {
                     sequence
                 } else if drafts {
@@ -1431,6 +1512,8 @@ fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event 
         entry.entity_changes = None;
         entry.transcript_changes = None;
         entry.draft_changes = None;
+        entry.discovery_snapshot = None;
+        entry.voice_records = None;
     }
     sse_event("resources", Some(revision), payload)
 }
@@ -3771,6 +3854,7 @@ mod tests {
             resources: vec![json!({"kind": "queue", "agentId": "agent-a"})],
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
             changes,
@@ -3819,6 +3903,7 @@ mod tests {
             resources: vec![json!({"kind":"accounts"})],
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
             changes,
@@ -3926,7 +4011,95 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn voice_stream_delivers_records_and_session_without_a_followup_read() {
+    async fn state_stream_discovery_delivers_current_access_snapshot_and_later_changes() {
+        let root = tempfile::tempdir().expect("isolated discovery state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            Some("https://owner.example".into()),
+            Some(store.clone()),
+            None,
+        );
+        let resource = json!({"kind":"multi-server"});
+        let mut state = test_stream(
+            &http.sync_changes,
+            &http.token_rates,
+            http.resource_notifications.clone(),
+            vec![],
+        );
+        state.http_state = Some(http.clone());
+        state.store = Some(store.clone());
+        subscription_frame(
+            &mut state,
+            SubscriptionChange {
+                generation: 1,
+                resources: vec![resource.clone()],
+                added: vec![resource.clone()],
+                token_rates: None,
+            },
+        )
+        .await
+        .expect("subscription");
+        let ack = event_document(Ok(state
+            .initial
+            .pop_front()
+            .expect("subscription acknowledgement")))
+        .await;
+        assert_eq!(ack["gen"], 1);
+        let event = event_document(Ok(state.initial.pop_front().expect("baseline"))).await;
+        let snapshot = &event["resourceVersions"][0]["discoverySnapshot"];
+        assert_eq!(snapshot["protocol"], 1);
+        assert!(snapshot["identity"]["serverId"].as_str().is_some());
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_access_settings(id,auto_pair) VALUES(1,0) ON CONFLICT(id) DO UPDATE SET auto_pair=0", [])?;
+            Ok(())
+        }).await.expect("settings change");
+        http.resource_notifications.publish_once(&json!({"requestId":"discovery-settings-change","resources":[{"kind":"multi-server"}]})).expect("committed discovery hint");
+        let (frame, _) = next_frame(state).await.expect("discovery update");
+        let event = event_document(frame).await;
+        assert_eq!(
+            event["resourceVersions"][0]["discoverySnapshot"]["settings"]["autoPair"],
+            false
+        );
+    }
+
+    #[tokio::test]
+    async fn state_stream_oversized_transient_voice_payload_retains_only_a_recovery_hint() {
+        let mut value = resource_event(
+            "workspace",
+            "epoch",
+            1,
+            "change",
+            &[json!({"kind":"voice","agentId":"chat"})],
+            0,
+            false,
+        );
+        value["resourceVersions"][0]["voiceRecords"] = json!({"after":0,"cursor":1,"session":null,"records":[{
+            "id":"large","agent":"chat","session":"session","kind":"user","seq":1,"text":"x".repeat(SYNC_STREAM_EVENT_MAX_BYTES),"item_id":"","previous_item_id":"","payload":"{}","created":1.0
+        }]});
+        let event = serde_json::from_value(value).expect("typed transient payload");
+        let bytes = frame_bytes(resource_sse_event(1, event)).await;
+        assert!(bytes.len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+        let event: Value = serde_json::from_str(
+            std::str::from_utf8(&bytes)
+                .expect("UTF8")
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data"),
+        )
+        .expect("JSON");
+        assert_eq!(
+            event["resources"],
+            json!([{"kind":"voice","agentId":"chat"}])
+        );
+        assert!(event["resourceVersions"][0].get("voiceRecords").is_none());
+    }
+
+    #[tokio::test]
+    async fn state_stream_voice_delivers_records_and_session_without_a_followup_read() {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
@@ -3936,8 +4109,21 @@ mod tests {
             tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('first','voice-chat','session','user','hello','','','{}',1)", [])?;
             Ok(())
         }).await.expect("voice fixture");
-        let http = HttpState::new("token".into(), "workspace".into(), root.path().display().to_string(), 4321, None, Some(store.clone()), None);
-        let mut state = test_stream(&http.sync_changes, &http.token_rates, http.resource_notifications.clone(), vec![json!({"kind":"voice","agentId":"voice-chat"})]);
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let mut state = test_stream(
+            &http.sync_changes,
+            &http.token_rates,
+            http.resource_notifications.clone(),
+            vec![json!({"kind":"voice","agentId":"voice-chat"})],
+        );
         state.http_state = Some(http.clone());
         state.store = Some(store.clone());
         http.sync_changes.notify_one();
@@ -3952,12 +4138,36 @@ mod tests {
             Ok(())
         }).await.expect("voice update");
         http.sync_changes.notify_one();
-        let (frame, _) = next_frame(state).await.expect("voice delta");
+        let (frame, state) = next_frame(state).await.expect("voice delta");
         let event = event_document(frame).await;
         let batch = &event["resourceVersions"][0]["voiceRecords"];
         assert_eq!(batch["after"], cursor);
         assert_eq!(batch["records"].as_array().expect("records").len(), 1);
         assert_eq!(batch["records"][0]["id"], "second");
+        store.transaction(|tx| {
+            for index in 0..=studio_runtime_schema::shared_values::SYNC_VOICE_STREAM_MAX_RECORDS {
+                tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES(?1,'voice-chat','session','user','burst','','','{}',3)", [format!("burst-{index}")])?;
+            }
+            Ok(())
+        }).await.expect("bounded history fixture");
+        http.sync_changes.notify_one();
+        let (frame, state) = next_frame(state).await.expect("large interval hint");
+        let event = event_document(frame).await;
+        assert!(
+            event["resourceVersions"][0].get("voiceRecords").is_none(),
+            "large intervals require HTTP recovery"
+        );
+        let after_recovery = state.voice_sequences["voice-chat"];
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('after-recovery','voice-chat','session','user','next','','','{}',4)", [])?;
+            Ok(())
+        }).await.expect("later record");
+        http.sync_changes.notify_one();
+        let (frame, _) = next_frame(state).await.expect("resume inline delivery");
+        let event = event_document(frame).await;
+        let batch = &event["resourceVersions"][0]["voiceRecords"];
+        assert_eq!(batch["after"], after_recovery);
+        assert_eq!(batch["records"][0]["id"], "after-recovery");
     }
 
     fn test_stream(
@@ -3979,6 +4189,7 @@ mod tests {
             resources,
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
             changes,
@@ -4196,6 +4407,7 @@ mod tests {
             resources: Vec::new(),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
             changes,
