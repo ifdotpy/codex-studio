@@ -1160,23 +1160,47 @@ export function createSyncClient(options: SyncClientOptions) {
       if (isDelta && !base)
         throw new Error("Transcript delta has no local item base.");
 
-      const changedItems = incoming?.items ?? [];
+      let changedItems = incoming?.items ?? [];
+      // A window baseline omits older rows present in the shared pull projection.
+      // Keep only a contiguous retained suffix when that projection sends its
+      // complete order; an edit outside the window must not bridge a missing row.
+      let windowOrder: string[] | undefined;
+      let windowTruncated = false;
+      if (delta && base?.metadata.truncated) {
+        const available = new Set(
+          oldOrder.filter((key) => !delta.removed.includes(key)),
+        );
+        if (delta.order) {
+          for (const item of changedItems) available.add(item.id);
+          let start = delta.order.length;
+          while (start > 0 && available.has(delta.order[start - 1])) start--;
+          windowOrder = delta.order.slice(start);
+          windowTruncated = start > 0;
+        } else {
+          windowOrder = oldOrder.filter((key) => available.has(key));
+          windowTruncated = true;
+        }
+        const retained = new Set(windowOrder);
+        changedItems = changedItems.filter((item) => retained.has(item.id));
+      }
       const removed =
         incoming === null ? [...oldOrder] : delta ? [...delta.removed] : [];
       const order =
         incoming === null
           ? []
-          : delta?.order
-            ? delta.order
-            : isDelta
-              ? oldOrder
-                  .filter((key) => !removed.includes(key))
-                  .concat(
-                    changedItems
-                      .map((item) => item.id)
-                      .filter((key: string) => !oldOrder.includes(key)),
-                  )
-              : changedItems.map((item) => item.id);
+          : windowOrder
+            ? windowOrder
+            : delta?.order
+              ? delta.order
+              : isDelta
+                ? oldOrder
+                    .filter((key) => !removed.includes(key))
+                    .concat(
+                      changedItems
+                        .map((item) => item.id)
+                        .filter((key: string) => !oldOrder.includes(key)),
+                    )
+                : changedItems.map((item) => item.id);
       if (!document._deleted && !isDelta)
         removed.push(...oldOrder.filter((key) => !order.includes(key)));
       const previousMetadata = isDelta ? base?.metadata || {} : {};
@@ -1184,6 +1208,10 @@ export function createSyncClient(options: SyncClientOptions) {
         incoming === null
           ? {}
           : { ...previousMetadata, ...transcriptMetadata(incoming) };
+      if (windowTruncated) {
+        metadata.truncated = true;
+        metadata.nextCursor = order[0] ?? base?.metadata.nextCursor ?? null;
+      }
       const itemRevisions =
         incoming === null
           ? {}
@@ -1254,7 +1282,7 @@ export function createSyncClient(options: SyncClientOptions) {
           document.payload.length * 2,
         );
       } else if (incoming !== null) {
-        const cacheMetadata = transcriptMetadata(incoming);
+        const cacheMetadata = metadata;
         // Patch only a cache entry at this delta's durable base. A write that
         // stopped after its durable update can leave the cache behind it.
         const patched =
@@ -1266,7 +1294,7 @@ export function createSyncClient(options: SyncClientOptions) {
             document.seq,
             changedItems,
             removed,
-            delta?.order ? order : undefined,
+            delta?.order || windowOrder ? order : undefined,
           );
         if (!patched)
           await cacheStoredTranscript(

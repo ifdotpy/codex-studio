@@ -448,7 +448,16 @@ describe("entity pull reset wiring", () => {
     stop();
   });
 
-  it.each(["delta", "retry", "gap", "epoch", "storage", "snapshot"])(
+  it.each([
+    "delta",
+    "retry",
+    "gap",
+    "epoch",
+    "storage",
+    "snapshot",
+    "window",
+    "window-order",
+  ])(
     "applies or rejects a transcript stream %s through the pulled delta applier",
     async (scenario) => {
       const workspaceId = "8".repeat(32);
@@ -459,7 +468,10 @@ describe("entity pull reset wiring", () => {
         payload: JSON.stringify({
           format: 2,
           epoch: scenario === "epoch" ? "old" : "epoch",
-          metadata: { truncated: false },
+          metadata: {
+            truncated: scenario.startsWith("window"),
+            nextCursor: scenario.startsWith("window") ? "answer" : null,
+          },
           order: ["answer"],
           itemRevisions: {},
         }),
@@ -531,6 +543,16 @@ describe("entity pull reset wiring", () => {
           },
         ],
       };
+      if (scenario.startsWith("window")) {
+        const delta = event.resourceVersions[0].transcriptChanges!.delta;
+        delta.items.unshift({
+          id: "older",
+          role: "assistant",
+          text: "outside the window",
+        });
+        if (scenario === "window-order")
+          delta.order = ["older", "missing", "answer"];
+      }
       if (scenario === "snapshot") {
         event.reason = "initial";
         delete event.resourceVersions[0].transcriptChanges;
@@ -556,6 +578,19 @@ describe("entity pull reset wiring", () => {
         event.resourceVersions[0].transcriptChanges,
       );
       const writes = storageInstance.bulkWrite.mock.calls.length;
+      if (scenario.startsWith("window")) {
+        const meta = JSON.parse(String(rows.get("transcript:agent")?.payload));
+        expect(meta.order).toEqual(["answer"]);
+        expect(meta.metadata).toMatchObject({
+          truncated: true,
+          nextCursor: "answer",
+        });
+        expect(rows.has("transcript:item:agent:older")).toBe(false);
+        expect(mocks.syncGet).not.toHaveBeenCalledWith(
+          "/api/sync/pull",
+          expect.anything(),
+        );
+      }
       if (scenario === "retry") {
         await client.persistResourceEntityChanges(event, () => true);
         expect(storageInstance.bulkWrite).toHaveBeenCalledTimes(writes);
