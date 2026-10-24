@@ -14,11 +14,16 @@ test("the scroll fixture publishes only when the witness requests a commit", asy
 test("the scroll fixture waits for the requested delta to render", async () => {
   const admission = Promise.withResolvers();
   const publish = vi.fn(async () => "first delta");
-  const rendered = vi.fn(() => admission.promise);
+  const entered = Promise.withResolvers();
+  const rendered = vi.fn(() => {
+    entered.resolve();
+    return admission.promise;
+  });
   const nextRender = streamTranscriptFixture({ publish, rendered });
   const committed = vi.fn();
   const update = nextRender().then(committed);
-  await vi.waitFor(() => expect(rendered).toHaveBeenCalledWith("first delta"));
+  await entered.promise;
+  expect(rendered).toHaveBeenCalledWith("first delta");
   expect(committed).not.toHaveBeenCalled();
   admission.resolve();
   await update;

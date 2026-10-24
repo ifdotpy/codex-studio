@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -186,13 +186,10 @@ async function setup({ ready = true } = {}) {
       failureWaiters.clear();
     }
   });
-  await vi
-    .waitFor(() => expect(mocks.invalidate).toBeTypeOf("function"))
-    .catch(() => {
-      throw new Error(
-        `watch not installed: ${failures.map(String).join("; ")}`,
-      );
-    });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.invalidate, failures.map(String).join("; ")).toBeTypeOf(
+    "function",
+  );
   return {
     accepted,
     client,
@@ -316,6 +313,8 @@ describe("entity pull dispatch gate", () => {
     stop();
   });
 
+  beforeEach(() => vi.useFakeTimers());
+
   afterEach(() => {
     vi.useRealTimers();
     vi.resetModules();
@@ -394,7 +393,8 @@ describe("entity pull dispatch gate", () => {
     // Reconfiguring a live stream replays its current state baseline as an
     // initial frame. Its entity sequence is already covered locally.
     mocks.invalidate?.({ epoch: "server-epoch-a", entitySequence: 1027 });
-    await vi.waitFor(() => expect(checkpoint.value).toBe(1027));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(checkpoint.value).toBe(1027);
 
     expect(pulls).toEqual([]);
     stop();
@@ -411,7 +411,8 @@ describe("entity pull dispatch gate", () => {
     configurePulls(workspaceId, pulls);
 
     mocks.invalidate?.({ epoch: "server-epoch-a", entitySequence: 101 });
-    await vi.waitFor(() => expect(pulls).toEqual([100]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pulls).toEqual([100]);
 
     expect(rows.get("state:entities:checkpoint")?.seq).toBe(101);
     stop();
@@ -445,8 +446,8 @@ describe("entity pull dispatch gate", () => {
     });
 
     const refresh = client.refreshProjection();
-    await vi.waitFor(() => expect(pulls).toEqual([100]));
     await checkpointWrite;
+    expect(pulls).toEqual([100]);
 
     // The pull response has arrived, but its checkpoint write has not. The
     // initial frame will be covered once that in-flight write commits.
@@ -487,7 +488,8 @@ describe("entity pull dispatch gate", () => {
           };
     mocks.invalidate?.({ epoch: "server-epoch-b", entitySequence: 5 });
 
-    await vi.waitFor(() => expect(pulls).toHaveLength(2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pulls).toHaveLength(2);
     expect(pulls).toEqual([2123, 0]);
     expect(checkpoint.value).toBe(5);
     expect(rows.get("state:entities:checkpoint")?.seq).toBe(5);
@@ -503,7 +505,8 @@ describe("entity pull dispatch gate", () => {
     expect(mocks.accountsBaseline).toBeUndefined();
     mocks.invalidate?.({ epoch: "state-only-frame", entitySequence: 101 });
 
-    await vi.waitFor(() => expect(pulls).toEqual([100]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pulls).toEqual([100]);
     stop();
   });
 
@@ -519,7 +522,8 @@ describe("entity pull dispatch gate", () => {
     const pulls: number[] = [];
     configurePulls(workspaceId, pulls);
     mocks.invalidate?.({ epoch: "validity", entitySequence: 100 });
-    await vi.waitFor(() => expect(pulls).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pulls).toHaveLength(1);
     expect(pulls).toHaveLength(1);
     stop();
   });
@@ -545,7 +549,8 @@ describe("entity pull dispatch gate", () => {
       };
     };
     mocks.invalidate?.({ epoch: "epoch", entitySequence: 101 });
-    await vi.waitFor(() => expect(pulls).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pulls).toHaveLength(1);
     mocks.invalidate?.();
     finishFirst({
       workspaceId: "e".repeat(32),
@@ -554,13 +559,9 @@ describe("entity pull dispatch gate", () => {
       maxSeq: 101,
       initialHigh: 100,
     });
-    await vi
-      .waitFor(() => expect(pulls).toHaveLength(2), { timeout: 3000 })
-      .catch(() => {
-        throw new Error(
-          `pagination pulls=${JSON.stringify(pulls)} failures=${String(failures.at(-1))}`,
-        );
-      });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failures.at(-1)).toBeNull();
+    expect(pulls).toHaveLength(2);
     expect(pulls).toEqual([100, 101]);
     stop();
   });
@@ -599,13 +600,9 @@ describe("entity pull dispatch gate", () => {
       };
     };
     mocks.invalidate?.({ epoch: "epoch", entitySequence: 500 });
-    await vi
-      .waitFor(() => expect(pulls).toHaveLength(2), { timeout: 3000 })
-      .catch(() => {
-        throw new Error(
-          `pagination pulls=${JSON.stringify(pulls)} failures=${String(failures.at(-1))}`,
-        );
-      });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failures.at(-1)).toBeNull();
+    expect(pulls).toHaveLength(2);
     expect(pulls).toEqual([100, 600]);
     stop();
   });
@@ -687,7 +684,8 @@ describe("entity pull dispatch gate", () => {
     const pulls: number[] = [];
     const { accepted, failures, stop } = await setup();
     try {
-      await vi.waitFor(() => expect(accepted).toHaveBeenCalled());
+      await vi.advanceTimersToNextTimerAsync();
+      expect(accepted).toHaveBeenCalled();
       mocks.connectionListener?.("live");
       mocks.pulls = pulls;
       mocks.pullResponse = (after) => {

@@ -210,7 +210,8 @@ describe("shared resource event transport", () => {
     const voice = vi.fn();
     transport.watchResourceChanges({ kind: "multi-server" }, discovery);
     transport.watchResourceChanges({ kind: "voice", agentId: "chat" }, voice);
-    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(Source.instances).toHaveLength(1);
     const snapshot = {
       protocol: 1,
       identity: { serverId: "owner" },
@@ -236,7 +237,8 @@ describe("shared resource event transport", () => {
         { revision: 1, voiceRecords: batch },
       ],
     });
-    await vi.waitFor(() => expect(voice).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(20);
+    expect(voice).toHaveBeenCalledOnce();
     expect(discovery.mock.calls[0][0].discoverySnapshot).toEqual(snapshot);
     expect(voice.mock.calls[0][0].voiceRecords).toEqual(batch);
   });
@@ -479,6 +481,75 @@ describe("shared resource event transport", () => {
     stopBaseline();
     stopFirst();
   });
+
+  it.each(["success", "failure", "pending"] as const)(
+    "delivers other writers' stream changes while a mutation is %s",
+    async (outcome) => {
+      syncDatabase.mockResolvedValue({ workspaceId });
+      const api = await import("../api");
+      // Keep the real mutation caller; loadTransport mocks subscription updates.
+      const post = api.post;
+      const transport = await loadTransport();
+      api.setToken("test-token");
+      api.setWorkspace(workspaceId);
+      let resolve!: (response: Response) => void;
+      let reject!: (error: Error) => void;
+      const fetch = vi.fn(
+        () =>
+          new Promise<Response>((done, fail) => {
+            resolve = done;
+            reject = fail;
+          }),
+      );
+      vi.stubGlobal("fetch", fetch);
+      const onChange = vi.fn();
+      const stop = transport.watchResourceChanges({ kind: "state" }, onChange);
+      await vi.advanceTimersByTimeAsync(20);
+      const emit = (revision: number, reason = "change") =>
+        Source.instances[0]!.emit("resources", {
+          protocol: 4,
+          workspaceId,
+          epoch: "mutation",
+          revision,
+          reason,
+          resources: [{ kind: "state" }],
+        });
+      emit(40, "initial");
+      await vi.advanceTimersByTimeAsync(20);
+      expect(onChange).toHaveBeenCalledOnce();
+      const pending = post("/api/stop" as never, { id: "chat" } as never).catch(
+        (error) => error,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetch).toHaveBeenCalledOnce();
+      // Both writers publish before the mutation response arrives.
+      emit(41);
+      await vi.advanceTimersByTimeAsync(5);
+      emit(42);
+      if (outcome === "failure") reject(new TypeError("response lost"));
+      else if (outcome === "success") resolve(Response.json({ ok: true }));
+      if (outcome !== "pending") await pending;
+      await vi.advanceTimersByTimeAsync(20);
+      expect(onChange.mock.calls.map(([version]) => version.revision)).toEqual([
+        40, 41, 42,
+      ]);
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ revision: 42 }),
+      );
+      await vi.advanceTimersByTimeAsync(20_000);
+      emit(43);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(onChange).toHaveBeenCalledTimes(4);
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ revision: 43 }),
+      );
+      if (outcome === "pending") {
+        resolve(Response.json({ ok: true }));
+        await pending;
+      }
+      stop();
+    },
+  );
 
   it("suppresses only the exact entity sequence batch applied from a response", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
