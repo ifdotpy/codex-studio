@@ -232,12 +232,13 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn rejected_priority_returns_with_a_full_undrained_stderr_pipe() {
+    #[tokio::test]
+    async fn rejected_priority_returns_with_a_full_undrained_stderr_pipe() {
         use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
-        use std::io::{Read, Write};
+        use std::io::Write;
         use std::process::Stdio;
-        use std::time::{Duration, Instant};
+        use std::time::Duration;
+        use tokio::io::AsyncReadExt;
 
         // Fill one small pipe, not system resources. Keep the read end open
         // and undrained until the isolated priority test has completed.
@@ -254,35 +255,34 @@ mod tests {
             }
         }
         fcntl_setfl(&writer, flags).expect("restore blocking stderr");
-        let mut child = Command::new(std::env::current_exe().expect("test executable"))
-            .args([
-                "--exact",
-                "child_priority::tests::rejected_priority_is_advisory_and_child_still_completes",
-                "--nocapture",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(writer)
-            .spawn()
-            .expect("full-pipe regression fixture");
-        let deadline = Instant::now() + SPAWN_HANG_GUARD;
-        let status = loop {
-            if let Some(status) = child.try_wait().expect("probe status") {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                child.kill().expect("kill stalled probe");
-                child.wait().expect("reap stalled probe");
-                panic!("priority hook blocked on a full stderr pipe");
-            }
-            std::thread::yield_now();
-        };
+        let mut child = tokio::process::Command::new(
+            std::env::current_exe().expect("test executable"),
+        )
+        .args([
+            "--exact",
+            "child_priority::tests::rejected_priority_is_advisory_and_child_still_completes",
+            "--nocapture",
+        ])
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(writer)
+        .spawn()
+        .expect("full-pipe regression fixture");
+        let mut output = child.stdout.take().expect("probe stdout");
         let mut stdout = String::new();
-        child
-            .stdout
-            .take()
-            .expect("probe stdout")
-            .read_to_string(&mut stdout)
-            .expect("probe output");
+        let (status, drained) = tokio::join!(
+            async {
+                match tokio::time::timeout(SPAWN_HANG_GUARD, child.wait()).await {
+                    Ok(result) => result.expect("probe exits"),
+                    Err(_) => {
+                        child.kill().await.expect("kill and reap stalled probe");
+                        panic!("priority hook blocked on a full stderr pipe");
+                    }
+                }
+            },
+            output.read_to_string(&mut stdout),
+        );
+        drained.expect("probe output");
         assert!(status.success(), "{stdout}");
     }
 }

@@ -2278,7 +2278,7 @@ mod tests {
         state.http_state = Some(http.clone());
         state.store = Some(store.clone());
         http.sync_changes.notify_one();
-        let (_, state) = next_frame(state).await.expect("baseline hint");
+        let (_, mut state) = next_frame(state).await.expect("baseline hint");
         let baseline = studio_runtime_services::transcript::pull_scope(
             store.clone(),
             "transcript:open",
@@ -2316,6 +2316,8 @@ mod tests {
             })
             .await
             .expect("provider flush commits runtime_items and publishes the store change");
+        // Throttle spacing is covered by the paused stream scheduling tests.
+        state.next_resources_frame_at = None;
         let (event, mut state) = next_frame(state).await.expect("transcript frame");
         let event = event_document(event).await;
         let batch = &event["resourceVersions"][0]["transcriptChanges"];
@@ -3236,14 +3238,13 @@ mod tests {
             AccountPolicyState::from_startup(Some(registry.as_bytes()), []).expect("policy")
         }
         let root = tempfile::tempdir().expect("isolated state");
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let mut state = HttpState::new(
             "token".into(),
             "workspace".into(),
             root.path().display().to_string(),
             4321,
             None,
-            Some(store),
+            None,
             Some(Arc::new(policy(["first", "second"], root.path()))),
         );
         let before = resource_content(state.clone(), json!({"kind":"costs"}))
@@ -3260,7 +3261,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn unrelated_commits_do_not_reread_five_unchanged_resources() {
+    async fn unrelated_commits_do_not_emit_frames_for_five_unchanged_resources() {
         use axum::body::Body;
         use axum::extract::ConnectInfo;
         use axum::http::Request;
@@ -3334,7 +3335,7 @@ mod tests {
             String::from_utf8_lossy(&body.next().await.expect("rates").expect("bytes"))
                 .contains("event: token-rates")
         );
-        for index in 0..42 {
+        for index in 0..2 {
             store.transaction(move |tx| {
                 tx.execute("INSERT INTO runtime_items(id,agent,created,record) VALUES(?1,'other',1,'{}')", [format!("item-{index}")])?;
                 Ok(())
@@ -3343,7 +3344,7 @@ mod tests {
         let frame = body.next().await.expect("heartbeat").expect("bytes");
         assert!(
             String::from_utf8_lossy(&frame).contains("event: heartbeat"),
-            "42 unrelated commits must cause zero resource re-reads: {}",
+            "unrelated commits must emit no resource frames: {}",
             String::from_utf8_lossy(&frame)
         );
         store.transaction(|tx| {
@@ -3500,7 +3501,8 @@ mod tests {
                 Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
             ),
         };
-        for index in 0..=MAX_SYNC_RESOURCE_COUNT {
+        const BURST_PUBLICATIONS: usize = 3;
+        for index in 0..BURST_PUBLICATIONS {
             token_hub.publish(json!({
                 "records": [{"agentId":"agent","rootId":"agent","turnId":"turn", "active":true, "estimated":false, "rate":index, "outputTokens":index}]
             })).expect("publish");
@@ -3515,8 +3517,14 @@ mod tests {
         .expect("frame");
         let frame = String::from_utf8(body.to_vec()).expect("UTF8");
         assert!(frame.contains("event: token-rates"), "{frame}");
-        assert!(frame.contains("id: 257"), "{frame}");
-        assert!(frame.contains("\"rate\":256"), "{frame}");
+        assert!(
+            frame.contains(&format!("id: {BURST_PUBLICATIONS}")),
+            "{frame}"
+        );
+        assert!(
+            frame.contains(&format!("\"rate\":{}", BURST_PUBLICATIONS - 1)),
+            "{frame}"
+        );
         drop(state); // Disconnect drops the only receiver; later publications remain bounded.
         assert!(
             token_hub

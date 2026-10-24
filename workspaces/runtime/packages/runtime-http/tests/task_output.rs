@@ -92,7 +92,7 @@ async fn authorized_task_output_read_and_projection() {
 #[tokio::test]
 async fn monitor_restart_http_preserves_identity_and_waits_for_old_exit() {
     use axum::Extension;
-    use studio_runtime_services::monitor_runtime_wiring::MonitorRuntime;
+    use studio_runtime_services::monitor_runtime_wiring::{Delivery, MonitorEvent, MonitorRuntime};
     let root = tempfile::tempdir().unwrap();
     let mut case = crate::monitor_fixtures::corpus(root.path()).remove(0);
     case["actor"]["yoloMode"] = json!(true);
@@ -162,5 +162,20 @@ async fn monitor_restart_http_preserves_identity_and_waits_for_old_exit() {
             .unwrap()
             .unwrap();
     assert_eq!(old.value()["cancelRequested"], true);
+    runtime.tick(2001.0).await.unwrap();
     assert!(port.starts.lock().unwrap().is_empty());
+    port.deliveries.lock().unwrap().push_back(Delivery {
+        id: case["before"]["id"].as_str().unwrap().into(),
+        operation: serde_json::from_value(case["before"]["operation"].clone()).unwrap(),
+        cursor: "old-exit".into(),
+        event: MonitorEvent::Exit {
+            code: Some(0),
+            error: None,
+            finished: 2002.0,
+        },
+    });
+    runtime.tick(2002.0).await.unwrap();
+    let starts = port.starts.lock().unwrap();
+    assert_eq!(starts.len(), 1, "replacement starts after the old exit");
+    assert_eq!(starts[0].0, first.unwrap().as_str().unwrap());
 }

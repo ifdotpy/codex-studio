@@ -1326,12 +1326,18 @@ mod tests {
         let started = std::time::Instant::now();
         studio_runtime_schema::initialize().expect("persisted schemas compile");
         let persisted_elapsed = started.elapsed();
-        let registry = Registry::compile(&[]).expect("HTTP named schemas compile");
+        let operations = crate::schema::operations().expect("OpenAPI operations");
+        let memory_before = resident_kib();
+        let registry = Registry::compile(&operations.iter().cloned().collect::<Vec<_>>())
+            .expect("all authority validators compile");
         eprintln!(
-            "named schema startup: persisted_us={} total_us={} http_named_count={}",
+            "named schema startup: persisted_us={} total_us={} http_named_count={} operations={} rss_before_kib={:?} rss_after_kib={:?}",
             persisted_elapsed.as_micros(),
             started.elapsed().as_micros(),
             registry.stored_schemas.len(),
+            registry.operations.len(),
+            memory_before,
+            resident_kib(),
         );
         assert!(registry.validate_stored(
             "CheckpointSummary",
@@ -1495,30 +1501,20 @@ mod tests {
 
     #[test]
     fn validators_compile_only_for_the_requested_operation_and_enforce_constraints() {
-        let current =
-            super::super::routes::manifest::operation_manifest().expect("registered routes");
-        let rss_before = resident_kib();
-        let started = std::time::Instant::now();
-        let current_registry = Registry::compile(
-            &current
-                .iter()
-                .map(|operation| operation.key())
-                .collect::<Vec<_>>(),
-        )
-        .expect("registered validators compile");
-        eprintln!(
-            "registered_validator_compile_ms={} operations={} rss_before_kib={:?} rss_after_kib={:?}",
-            started.elapsed().as_millis(),
-            current.len(),
-            rss_before,
-            resident_kib(),
-        );
-        drop(current_registry);
         let registry = Registry::compile(&[
             ("POST".to_owned(), "/api/projects".to_owned()),
             ("POST".to_owned(), "/api/agents".to_owned()),
         ])
         .expect("documented validators compile with local references");
+        assert_eq!(
+            registry
+                .operations
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["POST /api/agents", "POST /api/projects"],
+            "unrequested operations must remain uncompiled"
+        );
         let project = registry
             .validate_route(
                 "POST",
@@ -2086,22 +2082,6 @@ mod tests {
                 Some(raw_body.as_bytes()),
             )
             .is_ok()
-        );
-    }
-
-    #[test]
-    fn full_authority_validator_cost_estimate() {
-        let operations = crate::schema::operations().expect("OpenAPI operations");
-        let memory_before = resident_kib();
-        let started = std::time::Instant::now();
-        Registry::compile(&operations.iter().cloned().collect::<Vec<_>>())
-            .expect("all authority validators compile");
-        eprintln!(
-            "all_authority_validator_compile_ms={} operations={} rss_before_kib={:?} rss_after_kib={:?}",
-            started.elapsed().as_millis(),
-            operations.len(),
-            memory_before,
-            resident_kib(),
         );
     }
 

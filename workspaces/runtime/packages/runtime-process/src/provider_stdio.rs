@@ -1351,7 +1351,7 @@ mod tests {
 
     #[tokio::test]
     async fn stdout_frame_limit_handles_lf_crlf_and_oversized_payloads() {
-        let frame_limit = studio_runtime_providers::MAX_FRAME_BYTES;
+        let frame_limit = 32;
         let mut lf_input = vec![b'x'; frame_limit];
         lf_input.push(b'\n');
         let mut lf_reader = BufReader::new(lf_input.as_slice());
@@ -1361,7 +1361,7 @@ mod tests {
         assert!(
             read_stdout_line(&mut lf_reader, &mut line, &mut total, frame_limit, None,)
                 .await
-                .expect("codec-sized LF frame")
+                .expect("limit-sized LF frame")
         );
         assert_eq!(
             studio_runtime_providers::frame_payload_bytes(&line),
@@ -1380,7 +1380,7 @@ mod tests {
         assert!(
             read_stdout_line(&mut crlf_reader, &mut line, &mut total, frame_limit, None,)
                 .await
-                .expect("codec-sized split CRLF frame")
+                .expect("limit-sized split CRLF frame")
         );
         assert_eq!(
             studio_runtime_providers::frame_payload_bytes(&line),
@@ -1399,6 +1399,8 @@ mod tests {
             Err(AdapterError::OutputLimit { limit }) if limit == frame_limit
         ));
 
+        assert_eq!(total, frame_limit + 2);
+
         let mut unterminated = vec![b'x'; frame_limit];
         unterminated.push(b'\r');
         let mut reader = BufReader::new(unterminated.as_slice());
@@ -1408,6 +1410,7 @@ mod tests {
             read_stdout_line(&mut reader, &mut line, &mut total, frame_limit, None).await,
             Err(AdapterError::OutputLimit { limit }) if limit == frame_limit
         ));
+        assert_eq!(total, frame_limit + 1);
     }
 
     #[tokio::test(start_paused = true)]
