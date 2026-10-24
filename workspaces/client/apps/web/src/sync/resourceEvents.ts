@@ -206,8 +206,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   const COORDINATOR_IDLE_STOP_MS = 1_000;
 
-  const RESOURCE_FLUSH_MS = 20;
-
   const SUBSCRIPTION_DEBOUNCE_MS = 30;
 
   const SUBSCRIPTION_ACK_TIMEOUT_MS = 10_000;
@@ -289,10 +287,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   let schemaHandshakeTimeout: ReturnType<typeof setTimeout> | undefined;
 
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-
-  let flushGeneration = 0;
-
-  let flushTimer: ReturnType<typeof setTimeout> | undefined;
 
   let coordinatorIdleStopTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -659,7 +653,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       pendingReset = true;
     setStatus("live");
     if (owner || independent) broadcast({ kind: "resource-event", event });
-    scheduleFlush();
+    flushResourceChanges();
   }
 
   function tokenRateReplay(): ResourceTokenRatesEvent | undefined {
@@ -702,48 +696,41 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (owner || independent) broadcast({ kind: "token-rates", event });
   }
 
-  function scheduleFlush() {
-    if (flushTimer !== undefined) return;
-    const generation = ++flushGeneration;
-    flushTimer = setTimeout(function flushResourceChanges() {
-      if (generation !== flushGeneration) return;
-      flushTimer = undefined;
-      try {
-        if (pendingReset) {
-          pendingReset = false;
-          const subscribed = new Set(aggregateResources().map(resourceKey));
-          for (const [key, listeners] of subscribers) {
-            if (subscribed.has(key)) {
-              const version = resourceValues.get(key);
-              for (const listener of listeners) listener(version);
-            }
-          }
-          pendingResources = new Set();
-          pendingBaselines = new Set();
-        } else {
-          const delivered = new Set<string>();
-          for (const key of pendingResources) {
+  function flushResourceChanges() {
+    try {
+      if (pendingReset) {
+        pendingReset = false;
+        const subscribed = new Set(aggregateResources().map(resourceKey));
+        for (const [key, listeners] of subscribers) {
+          if (subscribed.has(key)) {
             const version = resourceValues.get(key);
-            if (!version) continue;
-            for (const listener of subscribers.get(key) || [])
-              listener(version);
-            delivered.add(key);
+            for (const listener of listeners) listener(version);
           }
-          for (const key of pendingBaselines) {
-            if (delivered.has(key)) continue;
-            const version = resourceValues.get(key);
-            if (!version) continue;
-            for (const listener of baselineSubscribers.get(key) || [])
-              listener(version);
-          }
-          pendingResources = new Set();
-          pendingBaselines = new Set();
         }
-        retryCount = 0;
-      } catch (error) {
-        frameFailed(error);
+        pendingResources = new Set();
+        pendingBaselines = new Set();
+      } else {
+        const delivered = new Set<string>();
+        for (const key of pendingResources) {
+          const version = resourceValues.get(key);
+          if (!version) continue;
+          for (const listener of subscribers.get(key) || []) listener(version);
+          delivered.add(key);
+        }
+        for (const key of pendingBaselines) {
+          if (delivered.has(key)) continue;
+          const version = resourceValues.get(key);
+          if (!version) continue;
+          for (const listener of baselineSubscribers.get(key) || [])
+            listener(version);
+        }
+        pendingResources = new Set();
+        pendingBaselines = new Set();
       }
-    }, RESOURCE_FLUSH_MS);
+      retryCount = 0;
+    } catch (error) {
+      frameFailed(error);
+    }
   }
 
   const entityDelivery = new ResourceEntityDelivery((event, isCurrent) => {
@@ -1537,9 +1524,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     coordinatorIdleStopTimer = undefined;
     streamUpdateGeneration++;
     releaseStream();
-    flushGeneration += 1;
-    if (flushTimer !== undefined) clearTimeout(flushTimer);
-    flushTimer = undefined;
     clearTimeout(heartbeatTimeout);
     clearTimeout(reconnectTimer);
     stopChannel();
