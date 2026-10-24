@@ -469,6 +469,19 @@ impl Snapshot {
         Ok(decision)
     }
 
+    /// Publish a durable pre-move blocker without changing process or input ownership.
+    pub(crate) fn waiting_for_blocker(
+        &self,
+        agent: &str,
+        reason: &str,
+    ) -> Result<Decision, TransferError> {
+        let mut operation = self.operation.clone();
+        if self.pending() && matches!(self.phase(agent)?, Phase::Lazy | Phase::Waiting) {
+            operation["members"][agent]["waiting"] = json!(reason);
+        }
+        Ok(self.decision(operation, self.agents.clone(), vec![]))
+    }
+
     /// A member busy with a turn at the request waits. Once that turn has ended
     /// it is enrolled again as an idle member: the lazy hold moves its account,
     /// and its history moves at its next turn start. Saved provider journals

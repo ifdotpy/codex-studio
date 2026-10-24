@@ -840,7 +840,10 @@ fn monitor_call(
     let submitted: Submitted = serde_json::from_value(value).map_err(|_| WorkerError::Capacity)?;
     let call = submitted.call;
     if call.operation != identity
+        || call.scope.account != operation.account_key
+        || call.scope.connection != operation.connection_id
         || call.method != Method::CommandExec.as_str()
+        || call.params.get("processId").and_then(Value::as_str) != Some(id)
         || call
             .actor
             .as_ref()
@@ -851,6 +854,74 @@ fn monitor_call(
         ));
     }
     Ok(Some(call))
+}
+
+/// The original host command's durable scope. Account transfer never changes
+/// this owner or grants a new command start on the source account.
+pub(crate) fn monitor_command_scope(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    operation: &crate::monitor_policy::Operation,
+) -> Result<Option<ConnectionScope>, WorkerError> {
+    let Some(record) = studio_runtime_store::MonitorsRepository::get(tx, id)? else {
+        return Ok(None);
+    };
+    if record.value().get("operation") != Some(&json!(operation)) {
+        return Ok(None);
+    }
+    let Some(call) = monitor_call(tx, id, operation)? else {
+        return Ok(None);
+    };
+    // `submitted` precedes I/O and is not proof that a process exists. The
+    // provider task writes this record only for CommandReceipt::Written.
+    let Some(written) = store::receipt(tx, &call.key(), "written")? else {
+        return Ok(None);
+    };
+    let written = store::decode(&written)?;
+    if written.ticket.id != studio_runtime_providers::RequestId::String(call.key())
+        || written.ticket.generation != call.scope.generation
+        || written.ticket.method != Method::CommandExec
+        || written.operation_id.0 != call.key()
+    {
+        return Ok(None);
+    }
+    Ok(match storage::replay_recorded(tx, &call)? {
+        Ok(storage::Replay::Return(receipt)) => Some(receipt.scope),
+        _ => None,
+    })
+}
+
+/// Whether a host monitor can keep its original process through an account move.
+/// Missing command identity and VM process ownership remain explicit blockers.
+pub(crate) fn monitor_survives_account_transfer(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    agent: &str,
+) -> Result<bool, WorkerError> {
+    let Some(record) = studio_runtime_store::MonitorsRepository::get(tx, id)? else {
+        return Ok(false);
+    };
+    let record = record.value();
+    let Some(actor) = AgentRepository::get(tx, &AgentId::from(agent))? else {
+        return Ok(false);
+    };
+    let Some(operation) = record
+        .get("operation")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<crate::monitor_policy::Operation>(value).ok())
+    else {
+        return Ok(false);
+    };
+    if record["status"] != "running"
+        || record["agent"] != agent
+        || record["epoch"].as_i64() != Some(actor.epoch)
+        || operation.agent != agent
+        || operation.epoch != actor.epoch
+        || vm_actor(tx, agent)?
+    {
+        return Ok(false);
+    }
+    Ok(monitor_command_scope(tx, id, &operation)?.is_some())
 }
 /// Read a monitor's checkpoint-verified retained terminal receipt. This never
 /// creates a provider request; recovered pending requests publish into this ledger.
@@ -866,7 +937,12 @@ pub async fn monitor_result(
             let Some(call) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
-            let receipt = match storage::replay_in_transaction(tx, &call)? {
+            if studio_runtime_store::MonitorsRepository::get(tx, &id)?
+                .is_none_or(|record| record.value().get("operation") != Some(&json!(operation)))
+            {
+                return Ok(None);
+            }
+            let receipt = match storage::replay_recorded(tx, &call)? {
                 Ok(storage::Replay::Return(receipt)) => receipt,
                 Ok(storage::Replay::Miss | storage::Replay::Retry(_)) => return Ok(None),
                 Err(_) => {
@@ -943,16 +1019,7 @@ pub async fn monitor_request_generation(
     let operation = operation.clone();
     store
         .read_async("runtime-services/retained_monitor_generation", move |tx| {
-            let Some(call) = monitor_call(tx, &id, &operation)? else {
-                return Ok(None);
-            };
-            if matches!(
-                storage::replay_in_transaction(tx, &call)?,
-                Ok(storage::Replay::Retry(_))
-            ) {
-                return Ok(None);
-            }
-            Ok(Some(call.scope.generation))
+            Ok(monitor_command_scope(tx, &id, &operation)?.map(|scope| scope.generation))
         })
         .await
 }

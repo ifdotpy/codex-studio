@@ -255,15 +255,86 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     } else {
         false
     };
-    Ok(authorize_recovered_monitor_cancel(tx, call, actor)?
-        || (actor_identity || stopped_turn_cleanup || deleted_voice_stop)
-            && (thread_matches
-                || (actor_identity && repair_fork)
-                || thread_start
-                || ephemeral_turn
-                || config_read
-                || monitor_matches
-                || deleted_voice_stop))
+    Ok(
+        authorize_retained_monitor_control(tx, call, actor, &agent_record)?
+            || authorize_recovered_monitor_cancel(tx, call, actor, &agent_record)?
+            || (actor_identity || stopped_turn_cleanup || deleted_voice_stop)
+                && (thread_matches
+                    || (actor_identity && repair_fork)
+                    || thread_start
+                    || ephemeral_turn
+                    || config_read
+                    || monitor_matches
+                    || deleted_voice_stop),
+    )
+}
+
+/// Existing process controls stay on the submitted command's account and
+/// provider generation. This grants no command start or general source access.
+fn authorize_retained_monitor_control(
+    tx: &rusqlite::Transaction<'_>,
+    call: &Call,
+    actor: &RequestActor,
+    current: &studio_runtime_store::AgentRecord,
+) -> Result<bool, WorkerError> {
+    if !matches!(
+        call.method.as_str(),
+        "command/exec/terminate" | "command/exec/write" | "command/exec/resize"
+    ) {
+        return Ok(false);
+    }
+    let Some(id) = call.params.get("processId").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    let Some(record) = studio_runtime_store::MonitorsRepository::get(tx, id)? else {
+        return Ok(false);
+    };
+    let record = record.value();
+    let Some(operation) = record
+        .get("operation")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<crate::monitor_policy::Operation>(value).ok())
+    else {
+        return Ok(false);
+    };
+    if record["status"] != "running"
+        || record["agent"] != actor.agent
+        || record["epoch"].as_i64() != Some(actor.epoch)
+        || operation.agent != actor.agent
+        || operation.epoch != actor.epoch
+        || operation.account_key != call.scope.account
+        || vm_actor(tx, &actor.agent)?
+    {
+        return Ok(false);
+    }
+    let Some(original) = monitor_command_scope(tx, id, &operation)? else {
+        return Ok(false);
+    };
+    if original.account != call.scope.account || original.generation != call.scope.generation {
+        return Ok(false);
+    }
+    if call.method == "command/exec/terminate" {
+        return Ok(record["cancelRequested"] == true
+            && call.operation == format!("monitor-cancel:{id}")
+            && call.params == json!({"processId":id}));
+    }
+    let attempt = &record["inputAttempt"];
+    let ticket = attempt["id"].as_str().unwrap_or_default();
+    let exact_operation = ["agent", "epoch", "accountKey", "connectionId"]
+        .iter()
+        .all(|field| attempt.get(*field) == record["operation"].get(*field));
+    Ok(current.epoch == actor.epoch
+        && current.extra.get("autoWake") == Some(&json!(true))
+        && !studio_runtime_store::truthy(current.extra.get("deletedAt"))
+        && current.extra.get("deleted") != Some(&json!(true))
+        && record["interactive"] == true
+        && record["cancelRequested"] != true
+        && !ticket.is_empty()
+        && attempt["status"] == "submitted"
+        && exact_operation
+        && attempt["method"] == call.method
+        && attempt["params"] == call.params
+        && call.operation == format!("monitor-input:{id}:{ticket}"))
 }
 
 /// No orphan processes after owner deletion across restart: only a latched
@@ -272,8 +343,13 @@ fn authorize_recovered_monitor_cancel(
     tx: &rusqlite::Transaction<'_>,
     call: &Call,
     actor: &RequestActor,
+    current: &studio_runtime_store::AgentRecord,
 ) -> Result<bool, WorkerError> {
-    if call.method != "command/exec/terminate" {
+    let inactive = current.epoch != actor.epoch
+        || current.extra.get("autoWake") != Some(&json!(true))
+        || studio_runtime_store::truthy(current.extra.get("deletedAt"))
+        || current.extra.get("deleted") == Some(&json!(true));
+    if call.method != "command/exec/terminate" || !inactive {
         return Ok(false);
     }
     #[derive(serde::Deserialize)]
@@ -832,6 +908,52 @@ mod replay_identity_tests {
         let mut changed = prior;
         changed.params["threadId"] = json!("thread-2");
         assert!(!same_replay_identity(&call(), &changed));
+    }
+
+    #[tokio::test]
+    async fn transferred_monitor_controls_require_the_original_retained_generation() {
+        let root = tempfile::tempdir().expect("root");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.transaction_with(|tx| {
+            AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(json!({"id":"agent-1","rootId":"agent-1","epoch":7,"accountKey":"target","status":"queued","autoWake":true})).expect("actor"))?;
+            let original = Call {operation:"monitor:watch".into(),method:"command/exec".into(),params:json!({"processId":"watch","command":["true"],"cwd":"/tmp"}),..call()};
+            let key=original.key();
+            store::save(tx,&key,"submitted",json!({"call":original,"request":{"id":key,"generation":4,"method":"command/exec","operation":key,"thread":null,"lightweight":true,"deadline":60000,"remoteId":null}}))?;
+            studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","interactive":true,"cancelRequested":true,"reattachedConnectionId":"reconnected-source","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old-connection"}})).expect("monitor"))?;
+            Ok::<_,WorkerError>(())
+        }).await.expect("original command and transferred owner");
+        store.transaction_with(|tx| {
+            let mut exact = call();
+            exact.scope.connection="reconnected-source".into();
+            exact.operation="monitor-cancel:watch".into();
+            exact.method="command/exec/terminate".into();
+            exact.params=json!({"processId":"watch"});
+            assert!(!authorize(tx,&exact)?,"a submitted-only intent does not prove a running native process");
+            let original_key=Call::operation_key("default","monitor:watch");
+            let submitted=store::receipt(tx,&original_key,"submitted")?.expect("original submission");
+            store::save(tx,&original_key,"written",submitted["request"].clone())?;
+            assert!(authorize(tx,&exact)?,"only the original written process is cancelled after transfer");
+            for field in ["account","generation","epoch","process","operation","method","shape"] {
+                let mut invalid=exact.clone();
+                match field {
+                    "account"=>invalid.scope.account="target".into(),
+                    "generation"=>invalid.scope.generation+=1,
+                    "epoch"=>invalid.actor.as_mut().expect("request actor").epoch+=1,
+                    "process"=>invalid.params=json!({"processId":"other"}),
+                    "operation"=>invalid.operation="monitor-cancel:other".into(),
+                    "method"=>invalid.method="command/exec".into(),
+                    "shape"=>invalid.params=json!({"processId":"watch","command":["true"]}),
+                    _=>unreachable!(),
+                }
+                assert!(!authorize(tx,&invalid)?,"{field}");
+            }
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.executionMode','vm') WHERE id='agent-1'",[])?;
+            assert!(!authorize(tx,&exact)?,"a host generation does not prove a guest process identity");
+            tx.execute("UPDATE runtime_agents SET record=json_remove(record,'$.executionMode') WHERE id='agent-1'",[])?;
+            tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.epoch',8) WHERE id='watch'",[])?;
+            assert!(!crate::account_worker::retained::monitor_survives_account_transfer(tx,"watch","agent-1")?,"the monitor row epoch must match its actor and submitted operation");
+            Ok::<_,WorkerError>(())
+        }).await.expect("exact source authority");
     }
 
     #[tokio::test]

@@ -1436,8 +1436,25 @@ impl MonitorPort for RetainedMonitorPort {
                 return Ok(ReattachOutcome::Gone("no_operation".into()));
             };
             let operation_id = format!("monitor:{}", snapshot.id());
-            let Some(scope) = self.session.current_scope(&operation.account_key) else {
-                return Ok(ReattachOutcome::Pending);
+            let scope = match self.session.current_scope(&operation.account_key) {
+                Some(scope) => scope,
+                None => {
+                    // A moved actor has no queued model turn on this account.
+                    // Restore only the proven command's source session. A new
+                    // provider generation still cannot adopt the old command.
+                    if studio_runtime_services::account_worker::retained::monitor_request_generation(
+                        &self.store,snapshot.id(),operation,
+                    ).await.map_err(|error|match error {
+                        studio_runtime_services::account_worker::WorkerError::Store(error)=>MonitorError::Store(error),
+                        _=>MonitorError::Refused("Retained monitor ownership changed"),
+                    })?.is_none() {
+                        return Ok(ReattachOutcome::Pending);
+                    }
+                    match self.session.ensure_session(&operation.account_key).await {
+                        Ok(scope) => scope,
+                        Err(_) => return Ok(ReattachOutcome::Pending),
+                    }
+                }
             };
             if let Some(outcome) = self
                 .retained_reattach(snapshot, operation, &operation_id, &scope)
@@ -2547,6 +2564,8 @@ mod tests {
         struct RestartedHost {
             generation: u64,
             status_requests: AtomicUsize,
+            live: std::sync::atomic::AtomicBool,
+            source_restores: AtomicUsize,
         }
         impl AccountSessionPort for RestartedHost {
             fn current_scope(
@@ -2554,13 +2573,30 @@ mod tests {
                 account: &str,
             ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope>
             {
-                Some(
+                self.live.load(Ordering::SeqCst).then_some(
                     studio_runtime_services::account_session_runtime::ConnectionScope {
                         account: account.into(),
                         connection: "current".into(),
                         generation: self.generation,
                     },
                 )
+            }
+            fn ensure_session<'a>(
+                &'a self,
+                account: &'a str,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+                'a,
+                studio_runtime_services::account_session_runtime::ConnectionScope,
+            > {
+                Box::pin(async move {
+                    assert_eq!(
+                        account, "default",
+                        "only the original command account is restored"
+                    );
+                    self.source_restores.fetch_add(1, Ordering::SeqCst);
+                    self.live.store(true, Ordering::SeqCst);
+                    Ok(self.current_scope(account).expect("source scope restored"))
+                })
             }
             fn provider_request<'a>(
                 &'a self,
@@ -2591,8 +2627,15 @@ mod tests {
             }
         }
         // (current provider generation, answer recorded before the reattach)
-        for (generation, answered) in [(1, false), (1, true), (2, false)] {
-            let case = format!("generation {generation}, answered {answered}");
+        for (generation, answered, transferred) in [
+            (1, false, false),
+            (1, true, false),
+            (2, false, false),
+            (1, false, true),
+            (1, true, true),
+        ] {
+            let case =
+                format!("generation {generation}, answered {answered}, transferred {transferred}");
             let root = tempfile::tempdir().expect("state root");
             let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
             let now = studio_runtime_services::event_write::unix_time().expect("clock");
@@ -2607,7 +2650,10 @@ mod tests {
             watch["status"] = json!("running");
             watch["created"] = json!(now);
             watch["operation"] = json!(operation);
-            let owner = owner(root.path(), true);
+            let mut owner = owner(root.path(), true);
+            if transferred {
+                owner["accountKey"] = json!("target");
+            }
             let key = format!(
                 "retained:default:{}",
                 studio_runtime_store::sha256_hex(b"monitor:watch")
@@ -2625,6 +2671,7 @@ mod tests {
                 AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
                 studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
                 tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)", (submitted_id, submitted.to_string()))?;
+                tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)", (format!("account-worker:{}:written",submitted["request"]["id"].as_str().expect("native request id")),submitted["request"].to_string()))?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             }).await.expect("persist retained command before restart");
             async fn answer(store: &RuntimeStore, key: String) {
@@ -2647,6 +2694,8 @@ mod tests {
             let session = Arc::new(RestartedHost {
                 generation,
                 status_requests: AtomicUsize::new(0),
+                live: std::sync::atomic::AtomicBool::new(!transferred),
+                source_restores: AtomicUsize::new(0),
             });
             let port = RetainedMonitorPort::new(
                 Arc::clone(&store),
@@ -2703,6 +2752,10 @@ mod tests {
                 session.status_requests.load(Ordering::SeqCst),
                 0,
                 "{case}: the retained request is the proof"
+            );
+            assert_eq!(
+                session.source_restores.load(Ordering::SeqCst),
+                usize::from(transferred)
             );
         }
     }
@@ -2786,6 +2839,13 @@ mod tests {
             tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)", (submitted_id, submitted.to_string()))?;
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.expect("persist a command whose answer is still owed");
+        let written_key = key.clone();
+        store.transaction(move |tx| {
+            let submitted:String=tx.query_row("SELECT result FROM runtime_operation_receipts WHERE id=?1",[format!("account-worker:{written_key}:submitted")],|row|row.get(0))?;
+            let submitted:Value=serde_json::from_str(&submitted)?;
+            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)",(format!("account-worker:{written_key}:written"),submitted["request"].to_string()))?;
+            Ok::<_,studio_runtime_store::StoreError>(())
+        }).await.expect("native transport acknowledged this exact command");
         // The same entry as a request that timed out: the answer is unknown.
         studio_runtime_services::monitor_runtime::reconcile_unknown(&store, "watch", now)
             .await
