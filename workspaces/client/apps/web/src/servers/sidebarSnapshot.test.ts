@@ -318,7 +318,7 @@ describe("server sidebar projection", () => {
 
   it("forwards streamed Studio errors without changing their action ids", () => {
     const data = snapshot();
-    const item = {
+    const item: Snapshot["runtime"]["studioErrors"][number] = {
       id: "agent:worker:turn",
       kind: "turn_disconnected",
       action: "resume",

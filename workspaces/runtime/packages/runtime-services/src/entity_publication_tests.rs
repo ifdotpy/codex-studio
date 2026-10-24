@@ -300,7 +300,7 @@ async fn synced_agent_values_recompute_the_view_and_create_a_missing_entity() {
         })
         .await
         .expect("the worker row is stored");
-    super::install(&store);
+    super::install(&store).await.expect("publisher installed");
     assert!(client_entity(&store, "agent", "sync-worker").is_none());
     store
         .transaction_with(|tx| {

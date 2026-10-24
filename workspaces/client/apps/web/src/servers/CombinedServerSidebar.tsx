@@ -91,7 +91,6 @@ export default function CombinedServerSidebar({
     <Sidebar
       services={services}
       data={model.data}
-      studioErrorOpen={(id) => send("local", { action: "open", id })}
       opened={opened ? model.chatKey(current, opened) : null}
       selectionIdentity={JSON.stringify([
         current,

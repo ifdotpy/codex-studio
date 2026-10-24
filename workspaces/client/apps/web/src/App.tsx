@@ -2313,7 +2313,7 @@ export default function App({ active = true }: { active?: boolean }) {
     publicAccounts,
     creating,
   );
-  const studioErrors = useStudioErrorsState(!!data);
+  const studioErrors = useStudioErrorsState(data?.runtime.studioErrors);
   if (!active) return null;
   // A server contract gate must not cover navigation to other server owners.
   if (screen && schemaMismatch)

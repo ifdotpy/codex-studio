@@ -243,9 +243,14 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
     await expect(page.locator("body")).toContainText("63% left");
     await quota.click();
     await expect(
-      page.getByRole("button", { name: /Studio errors/ }),
+      page
+        .locator("#sidebar")
+        .getByRole("button", { name: "Warnings", exact: true }),
     ).toBeVisible();
-    await page.getByRole("button", { name: /Studio errors/ }).click();
+    await page
+      .locator("#sidebar")
+      .getByRole("button", { name: "Warnings", exact: true })
+      .click();
     await expect(page.getByText(item.reason, { exact: true })).toBeVisible();
     publish([{ op: "delete", collection: "studioError", id: item.id }]);
     await expect(

@@ -83,13 +83,16 @@ exhaustion is visible; it resets on a newer version, reconnect, or explicit user
 retry.
 
 `rateLimit` is the existing streamed per-account limits collection. `studioError`
-is the streamed Studio Errors collection: the entity publisher derives rows from
+is the streamed Studio Errors collection: `studio_errors::publish` is its named
+publication owner, invoked by the transaction entity publisher. It derives rows from
 the server-owned error sources in the source transaction, publishes upserts and
 tombstones. Startup seeds existing source rows before serving clients; the
 initial subscription snapshot supplies the current list. Server-owned time refreshes
 keep the stuck-input threshold and history window current; equal refreshes do
 not allocate a sequence. The native client and local combined sidebar project
-the same collection with the original action identities. The
+the same collection with the original action identities. App errors remain in
+the sidebar Warnings dialog, including atomic bulk dismissal and lost-response
+readback without repeating a dismissal. The
 Studio Errors GET remains available for explicit recovery only. User refresh of
 limits may make one explicit read; no idle limits hydration or watcher is used.
 
