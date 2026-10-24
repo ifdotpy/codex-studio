@@ -1767,6 +1767,22 @@ html body #root:has(.terminal-dock):not(:has(> .multi-server-shell)) {
   min-width: 0;
 }
 
+/* Touch screens can exceed the phone layout width, including with a mouse attached.
+   The input font floor must override normal component font sizes. */
+/* layout-query: navigation.inlineMin < */
+@media (any-pointer: coarse), (width < 761px) {
+  #chat-search,
+  #composer textarea,
+  :root input,
+  :root textarea,
+  :root select {
+    font-size: max(
+      var(--studio-touch-input-min-font-size),
+      var(--input-fz, var(--studio-text-body))
+    ) !important;
+  }
+}
+
 /* The phone keeps the selected orchestrator chat in the full viewport. */
 /* layout-query: navigation.inlineMin < */
 @media (width < 761px) {
@@ -1828,13 +1844,6 @@ html body #root:has(.terminal-dock):not(:has(> .multi-server-shell)) {
     width: calc(100% - 16px);
     margin-bottom: 0;
     padding: 8px 10px;
-  }
-  #chat-search,
-  #composer textarea,
-  html body input,
-  html body textarea,
-  html body select {
-    font-size: 16px;
   }
   #composer .composer-bar {
     flex-wrap: wrap;
