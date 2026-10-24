@@ -22723,9 +22723,14 @@ export interface components {
       agentName: string;
       /**
        * At
-       * @description Unix seconds of the failure.
+       * @description Unix seconds of the latest failure in this row.
        */
       at: number;
+      /**
+       * Count
+       * @description Failures in this row: the failed runs of one rule or command of one kind are one row.
+       */
+      count: number;
       /**
        * Detail
        * @description The stored error.
@@ -22737,8 +22742,13 @@ export interface components {
        */
       eventId?: string | null;
       /**
+       * Firstat
+       * @description Unix seconds of the first failure in this row.
+       */
+      firstAt: number;
+      /**
        * Id
-       * @description Row identity; dismissing it hides this row only.
+       * @description Row identity. Dismissing it hides this row; for a rule or a command it hides the failures so far, and a later failure returns.
        */
       id: string;
       /**
@@ -22764,6 +22774,12 @@ export interface components {
        * @description The reason in plain words.
        */
       reason: string;
+      /**
+       * Ruleid
+       * @description The rule whose runs failed, if a rule ran them.
+       * @default null
+       */
+      ruleId?: string | null;
       /**
        * Subject
        * @description The command or the start of the message.

@@ -1531,15 +1531,15 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^project_preparation::/) | test(/^agent_limits::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
+            "test(/^project_preparation::/) | test(/^agent_limits::/) | test(/^studio_errors::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
           ],
         ],
       ],
       options: {
         selector:
-          "project preparation conflicts, worker continuation authority, and budget projections",
+          "project preparation conflicts, worker continuation authority, budget projections, and the Studio error list",
         reason:
-          "Check project writes, user-only worker resets, and bounded budget and cleanup views.",
+          "Check project writes, user-only worker resets, bounded budget and cleanup views, and one Studio error row per repeated rule or command failure.",
       },
     },
     {
