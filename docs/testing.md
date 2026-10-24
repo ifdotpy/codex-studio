@@ -183,6 +183,52 @@ The smoke sends small real model requests and never changes the owner's chats.
 provider=id` narrow the scenarios. A pending card raises an approval alert in a
 build without the 10 s alert grace.
 
+## Upgrade canary
+
+`just upgrade-canary --to <N+1 app> [--from <N app>]` installs build N+1 over
+build N on an isolated clone with real processes. Run it before every live
+install; `--from` defaults to the installed app. The
+[script](../workspaces/tooling/apps/upgrade-canary/canary.mjs) owns the steps
+and their time limits:
+
+1. Copy build N into a new run folder below the platform temporary directory, with
+   its own state folder, port, launchd stand-in and sandboxes.
+2. Accounts: one Codex login of the live registry (`--codex-account`, default
+   `default`), whose `auth.json` and `config.toml` the clone only links; the
+   sandbox keeps them read-only. A Claude login of the canary itself, in
+   `~/.config/codex-studio/canary-claude` (`--claude-config`, or
+   `CANARY_CLAUDE_CONFIG_DIR`); without it the Claude row fails and the Codex part
+   still runs (`--no-claude` skips it).
+3. Start build N as a new Mac does: a first app start creates the state, build N's
+   recovery helper registers the jobs with the launchd stand-in, and the real
+   process supervisor and recovery job start in their sandboxes.
+4. On the cheapest model: an idle chat with one finished turn, a running turn with
+   a monitor that runs across the install and a message queued behind it, and a
+   running turn (Claude when the canary has its login) that gets a steer.
+5. Install build N+1 the way a paired-server install does: a staged copy and
+   `pending-update.json` in the clone state, the real installer of build N with
+   the clone's application folder and no window, and the recovery job started
+   again from the swapped app.
+6. Check that every provider handle kept its PID and generation, the monitor turn
+   and the idle chat continue, the steer and the queued message are delivered
+   exactly once, `/api/models` answers for every account, and no log line says
+   "did not start" or "could not be verified". With a Claude login, its rate-limit
+   windows show a subscription (five hours and a week).
+7. Always: report the hosts that the providers asked the proxy for, the tokens per
+   chat with their price at API rates, and that the live recovery configuration,
+   plists and app did not change; stop the clone jobs and its server, and delete
+   the run folder by its marker (`--keep` keeps it).
+
+Isolation: every clone process runs in a sandbox that writes only below the run
+folder and the user temporary folder, cannot reach the Keychain, the live state
+sockets, `/Applications` or the live app, and reaches the network only through
+the canary's proxy. The proxy refuses `auth.openai.com`, so the clone never
+refreshes, and never rotates, a live Codex login: when the live access token has
+expired, the turns fail. The installer never touches `/Applications` or the live
+window, which has the same bundle id. The canary Claude login is set up once in
+the owner's terminal under a Keychain-denied sandbox, so that the CLI keeps it as
+a file that only the canary uses and refreshes.
+
 ## Add or move a test
 
 Keep Rust tests in the owning crate. Register integration modules in its
