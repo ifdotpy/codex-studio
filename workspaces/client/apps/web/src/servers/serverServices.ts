@@ -23,6 +23,7 @@ import { createDraftStorage } from "../sync/draftStorage";
 import { useNativeDrafts } from "../native/useNativeDrafts";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
+import { createEntityDataObserver } from "../sync/subscriptions/entityData";
 import { createResourceEvents } from "../sync/resourceEvents";
 import {
   createSubscriptions,
@@ -103,7 +104,11 @@ export function createServerServices(server: StudioServer) {
     });
     const resources = createSubscriptions(
       transportEvents,
-      createDataObserver(() => sync, transportEvents),
+      createDataObserver(
+        () => sync,
+        transportEvents,
+        createEntityDataObserver(() => sync.syncDatabase()),
+      ),
     );
     sync = createSyncClient({
       api,

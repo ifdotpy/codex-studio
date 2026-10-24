@@ -1,3 +1,4 @@
+import { useSubscription } from "../../sync/subscriptions";
 import {
   useServerApi,
   useServerServices,
@@ -229,6 +230,14 @@ export default function BackgroundTasks({
 }) {
   const { get, post } = useServerApi();
   const services = useServerServices();
+  useSubscription(
+    opened ? { kind: "tasks", ...(leadId ? { agentId: leadId } : {}) } : null,
+  );
+  useSubscription(
+    opened
+      ? { kind: "monitors", ...(leadId ? { agentId: leadId } : {}) }
+      : null,
+  );
   const controlStorageKey = `process-control:${services?.owner.id || "local"}:${leadId}`;
   const controlScope = useRef(controlStorageKey);
   controlScope.current = controlStorageKey;
@@ -872,6 +881,7 @@ function TaskDetail({
       setLoadError(errorText(error));
     }
   };
+  useSubscription({ kind: "task", taskId: summary.id });
   const resolvedDetail = detail?.id === summary.id ? detail : null;
   const task = resolvedDetail ? { ...resolvedDetail, ...summary } : summary;
   const monitor = task.kind === "monitor" && "tail" in task ? task : null;

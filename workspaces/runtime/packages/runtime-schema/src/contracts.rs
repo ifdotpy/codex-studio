@@ -694,6 +694,51 @@ fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, St
     Ok(body)
 }
 
+fn subscription_scopes_ts(
+    scopes: &std::collections::BTreeMap<String, crate::sync_protocol::SubscriptionEntityScope>,
+) -> String {
+    let mut text = format!("// {HEADER}\nexport const SUBSCRIPTION_ENTITY_SCOPES = {{\n");
+    for (kind, scope) in scopes {
+        let key = if kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            kind.clone()
+        } else {
+            json_string(kind)
+        };
+        writeln!(text, "  {key}: {{").expect("String write");
+        if scope.collections.len() == 1 {
+            writeln!(
+                text,
+                "    collections: [{}],",
+                json_string(&scope.collections[0])
+            )
+            .expect("String write");
+        } else {
+            text.push_str("    collections: [\n");
+            for collection in &scope.collections {
+                writeln!(text, "      {},", json_string(collection)).expect("String write");
+            }
+            text.push_str("    ],\n");
+        }
+        for (field, value) in [
+            ("idField", &scope.id_field),
+            ("agentField", &scope.agent_field),
+        ] {
+            writeln!(
+                text,
+                "    {field}: {},",
+                value
+                    .as_deref()
+                    .map(json_string)
+                    .unwrap_or_else(|| "null".into())
+            )
+            .expect("String write");
+        }
+        text.push_str("  },\n");
+    }
+    text.push_str("} as const;\n");
+    text
+}
+
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     let mut openapi = read_json(root, OPENAPI_PATH)?;
@@ -733,10 +778,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let mut rendered = vec![
         Rendered {
             path: web("subscriptionEntities.ts"),
-            text: format!(
-                "// {HEADER}\nexport const SUBSCRIPTION_ENTITY_SCOPES = {} as const;\n",
-                serde_json::to_string_pretty(&scopes).map_err(|error| error.to_string())?
-            ),
+            text: subscription_scopes_ts(&scopes),
         },
         Rendered {
             path: web("taskReview.ts"),

@@ -49061,7 +49061,10 @@
             ]
           },
           "costs": {
-            "$ref": "#/components/schemas/AccountCostResponse"
+            "items": {
+              "$ref": "#/components/schemas/AccountCostResponse"
+            },
+            "type": "array"
           },
           "desktop": {
             "$ref": "#/components/schemas/DesktopResponse"
@@ -49134,13 +49137,13 @@
             "type": "array"
           },
           "terminal": {
-            "items": {
-              "$ref": "#/components/schemas/SyncEntityPayload"
-            },
-            "type": "array"
+            "$ref": "#/components/schemas/TerminalRecord"
           },
           "terminals": {
-            "$ref": "#/components/schemas/TerminalList"
+            "items": {
+              "$ref": "#/components/schemas/TerminalRecord"
+            },
+            "type": "array"
           },
           "transcript": {
             "$ref": "#/components/schemas/TranscriptPageResponse"

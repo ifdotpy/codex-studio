@@ -1,3 +1,4 @@
+import { useSubscription } from "./sync/subscriptions";
 import { submitRename, watchRenameResult } from "./renameRequest";
 import {
   StudioErrorsScope,
@@ -869,6 +870,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const catalog = appCatalogSelector(agents);
   const leads = catalog.leads;
   const agent = catalog.byId.get(opened || "");
+  useSubscription(agent ? { kind: "agentDetail", agentId: agent.id } : null);
   const room = data?.runtime?.rooms?.find((r) => r.id === opened);
   const legacy = data?.chats.find((c) => c.id === opened);
   const roomRoots = room ? roomLeadIds(room, agents) : [];

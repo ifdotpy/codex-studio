@@ -42,14 +42,14 @@ it("renders the list from summaries and adds detail without losing unread state"
   assert.equal(first.threads[0].name, "Current");
   assert.equal(first.threads[0].lastAnswer, undefined);
   assert.equal(first.threads[0].readState.read, false);
-  const open = applyEntityRows(
+  const open = applyEntityChanges(
     state,
     [change("agentDetail", { id: "a", lastAnswer: "Answer" }, 2)],
     true,
   );
   assert.equal(open.threads[0].lastAnswer, "Answer");
   assert.equal(open.threads[0].readState.read, false);
-  const updated = applyEntityRows(
+  const updated = applyEntityChanges(
     state,
     [change("agentSummary", { ...summary, name: "Renamed" }, 3)],
     true,

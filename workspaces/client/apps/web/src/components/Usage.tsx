@@ -1,3 +1,4 @@
+import { useSubscription } from "../sync/subscriptions";
 import Disclosure from "./ui/Disclosure";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
@@ -326,6 +327,10 @@ export default function Usage({
     (Partial<GetResult<"/api/costs">> & { error?: string | null }) | null
   >(null);
   const rootId = agent.rootId || agent.id;
+  useSubscription(
+    limitsOpened ? { kind: "session-cost", agentId: rootId } : null,
+  );
+  useSubscription(limitsOpened ? { kind: "costs" } : null);
   const costScope = JSON.stringify([stateDir, rootId]);
   const [sessionCostState, setSessionCostState] = useState<{
     scope: string;

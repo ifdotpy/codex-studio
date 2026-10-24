@@ -4,10 +4,15 @@ import * as transport from "../resourceEvents";
 import { subscribeTranscriptProjection } from "../client";
 import { createSubscriptions } from "./module";
 import { createDataObserver } from "./data";
+import { subscribeEntityData } from "./entityData";
 
 const subscriptions = createSubscriptions(
   transport,
-  createDataObserver(() => ({ subscribeTranscriptProjection }), transport),
+  createDataObserver(
+    () => ({ subscribeTranscriptProjection }),
+    transport,
+    subscribeEntityData,
+  ),
 );
 export const {
   watchResourceChanges,

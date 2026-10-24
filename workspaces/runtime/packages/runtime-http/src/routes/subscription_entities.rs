@@ -138,7 +138,7 @@ pub(super) async fn attach_scoped_entity_changes(
         }
         match initial_snapshot(state.clone(), resource.clone(), None).await {
             Ok(snapshot) => *entry = snapshot,
-            Err(error) => tracing::warn!(?error, "scoped entity snapshot unavailable"),
+            Err(error) => eprintln!("scoped entity snapshot unavailable: {error:?}"),
         }
     }
 }
