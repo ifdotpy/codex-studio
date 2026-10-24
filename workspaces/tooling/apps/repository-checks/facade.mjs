@@ -1402,6 +1402,8 @@ function fastTierCommands(root) {
               "test(account_worker::tests::callback_handoff::)",
               "test(account_worker::tests::account_transfer::)",
               "test(account_transfer_driver::request_tests::busy_member_)",
+              "test(account_transfer::provider_receipt_tests::cancel_returns_a_lazy_member_whose_move_sent_no_thread_request)",
+              "test(account_transfer_executor::retained_executor_tests::source_reads_start_a_dormant_source_session)",
               "test(account_worker::tests::auth_hold::held_start_wakes_nothing_until_an_account_change)",
               "test(account_worker::tests::unsent_start::a_submitted_turn_start_that_stays_unsent_keeps_its_input_pending)",
               "test(account_worker::tests::disconnected_unknown_start::)",
@@ -1461,7 +1463,7 @@ function fastTierCommands(root) {
         selector:
           "account_worker::tests::callback_handoff, account_transfer, callback_head_of_line, native_requests, stale batch stamp recovery, automatic turn recovery, the session callback lane, monitor publication work and work_write submission boundaries",
         reason:
-          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, that a native approval or question of a lead waits as a card and its user answer reaches the provider once, also after a worker reattach, that a stamp left by an undelivered steer batch is replaced instead of holding the agent, and that busy-turn input written after the provider's reported turn end starts the next turn once instead of failing unconfirmed. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound. Native-history recovery continues authorized workers once, preserves explicit Stop, and never replays uncertain input. An account transfer member moves at its next wake and keeps its queued input.",
+          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, that a native approval or question of a lead waits as a card and its user answer reaches the provider once, also after a worker reattach, that a stamp left by an undelivered steer batch is replaced instead of holding the agent, and that busy-turn input written after the provider's reported turn end starts the next turn once instead of failing unconfirmed. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound. Native-history recovery continues authorized workers once, preserves explicit Stop, and never replays uncertain input. An account transfer member moves at its next wake and keeps its queued input, a blocked member waits without a write per wake, and a move that sent no thread request can be cancelled.",
       },
     },
     // The reaping witnesses are Linux only (#[cfg(target_os = "linux")]), so
@@ -1512,7 +1514,7 @@ function fastTierCommands(root) {
       : []),
     {
       item: { name: "project preparation", ecosystem: "cargo" },
-      label: "project preparation and agent limit witnesses",
+      label: "project preparation and retained worktree witnesses",
       commands: [
         [
           "cargo",
@@ -1531,15 +1533,14 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^project_preparation::/) | test(/^agent_limits::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
+            "test(/^project_preparation::/) | test(/^retained_worktrees::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
           ],
         ],
       ],
       options: {
         selector:
-          "project preparation conflicts, worker continuation authority, and budget projections",
-        reason:
-          "Check project writes, user-only worker resets, and bounded budget and cleanup views.",
+          "project preparation conflicts and retained worktree projections",
+        reason: "Check project writes and bounded cleanup views.",
       },
     },
     {
@@ -1813,7 +1814,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "task authority, worker limits, and Claude input witnesses",
+      label: "task authority and Claude input witnesses",
       commands: [
         [
           "cargo",
@@ -1833,15 +1834,15 @@ function fastTierCommands(root) {
             "studio-runtime-schema",
             "--lib",
             "-E",
-            "test(authenticated_task_caller_) | test(acceptance_gate_) | test(task_result_schema) | test(capability_) | test(claude_child_) | test(workspace_fence) | test(input_origin) | test(stop_receipt_) | test(live_limits_) | test(archive_keeps_submodule) | test(turn_prepare::budget_tests::)",
+            "test(authenticated_task_caller_) | test(acceptance_gate_) | test(task_result_schema) | test(claude_child_) | test(workspace_fence) | test(input_origin) | test(stop_receipt_) | test(live_limits_) | test(archive_keeps_submodule) | test(turn_prepare::budget_tests::)",
           ],
         ],
       ],
       options: {
         selector:
-          "task authority, acceptance gates, worker capability limits, and Claude input provenance",
+          "task authority, acceptance gates, and Claude input provenance",
         reason:
-          "Check that workers cannot act as the lead, gates and limits hold, and Claude input keeps its origin and queue receipts.",
+          "Check that workers cannot act as the lead, gates hold, and Claude input keeps its origin and queue receipts.",
       },
     },
     {

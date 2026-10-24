@@ -1,0 +1,112 @@
+{
+  "codex": [
+    {
+      "release": "before the thread unload override",
+      "command": ["codex", "app-server", "--listen", "stdio://"],
+      "environment": {
+        "CODEX_HOME": "<dir>/codex",
+        "HOME": "<dir>/home",
+        "OPENAI_API_KEY": "fixture-key",
+        "PATH": "/usr/bin:/bin"
+      },
+      "cwd": null
+    },
+    {
+      "release": "04b1dc792: thread unload override",
+      "command": [
+        "codex",
+        "app-server",
+        "--listen",
+        "stdio://",
+        "-c",
+        "thread_unload_delay_secs=0"
+      ],
+      "environment": {
+        "CODEX_HOME": "<dir>/codex",
+        "HOME": "<dir>/home",
+        "OPENAI_API_KEY": "fixture-key",
+        "PATH": "/usr/bin:/bin"
+      },
+      "cwd": null
+    }
+  ],
+  "codex-isolated": [
+    {
+      "release": "before the thread unload override",
+      "command": [
+        "codex",
+        "app-server",
+        "--listen",
+        "stdio://",
+        "-c",
+        "cli_auth_credentials_store=\"file\""
+      ],
+      "environment": {
+        "CODEX_HOME": "<dir>/codex",
+        "HOME": "<dir>/home",
+        "PATH": "/usr/bin:/bin"
+      },
+      "cwd": null
+    },
+    {
+      "release": "04b1dc792: thread unload override",
+      "command": [
+        "codex",
+        "app-server",
+        "--listen",
+        "stdio://",
+        "-c",
+        "thread_unload_delay_secs=0",
+        "-c",
+        "cli_auth_credentials_store=\"file\""
+      ],
+      "environment": {
+        "CODEX_HOME": "<dir>/codex",
+        "HOME": "<dir>/home",
+        "PATH": "/usr/bin:/bin"
+      },
+      "cwd": null
+    }
+  ],
+  "claude": [
+    {
+      "release": "69637aa6e",
+      "command": [
+        "<dir>/claude",
+        "<dir>/bridge.mjs",
+        "<dir>/account-servers/account"
+      ],
+      "environment": {
+        "CLAUDE_CONFIG_DIR": "<dir>/config",
+        "HOME": "<dir>/home",
+        "OPENAI_API_KEY": "fixture-key",
+        "PATH": "<dir>:/usr/bin:/bin",
+        "STUDIO_CLAUDE_ACCOUNT": "a@example.test",
+        "STUDIO_CLAUDE_BIN": "<dir>/claude",
+        "STUDIO_CLAUDE_OPTIONS": "{\"binaryPath\":\"<dir>/claude\",\"configDir\":\"<dir>/config\",\"customModels\":[],\"extraArgs\":{}}",
+        "STUDIO_NODE_BIN": "<dir>/claude"
+      },
+      "cwd": "<dir>/account-servers/account"
+    },
+    {
+      "release": "310d88550: Claude credential identity",
+      "command": [
+        "<dir>/claude",
+        "<dir>/bridge.mjs",
+        "<dir>/account-servers/account"
+      ],
+      "environment": {
+        "CLAUDE_CONFIG_DIR": "<dir>/config",
+        "HOME": "<dir>/home",
+        "OPENAI_API_KEY": "fixture-key",
+        "PATH": "<dir>:/usr/bin:/bin",
+        "STUDIO_CLAUDE_ACCOUNT": "a@example.test",
+        "STUDIO_CLAUDE_BIN": "<dir>/claude",
+        "STUDIO_CLAUDE_CREDENTIAL_IDENTITY": "claude:a@example.test",
+        "STUDIO_CLAUDE_OPTIONS": "{\"binaryPath\":\"<dir>/claude\",\"configDir\":\"<dir>/config\",\"customModels\":[],\"extraArgs\":{}}",
+        "STUDIO_NODE_BIN": "<dir>/claude"
+      },
+      "cwd": "<dir>/account-servers/account"
+    }
+  ]
+}

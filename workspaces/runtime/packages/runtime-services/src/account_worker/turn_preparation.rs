@@ -441,35 +441,50 @@ async fn advance_transfer(wake: &Wake) -> Result<bool, WorkerError> {
         ..
     } = wake;
     let (g, a) = (agent_id.clone(), account.clone());
-    let hold = bridge
+    // The member's phase, when an account transfer holds this agent.
+    let held = bridge
         .worker_run("account_transfer_hold", move |store| async move {
             store
                 .read_async("runtime-services/account_transfer_hold", move |db| {
-                    Ok::<_, WorkerError>(AgentRepository::get(db, &AgentId::from(g.as_str()))?.map(
-                        |agent| {
-                            let lazy = studio_runtime_store::truthy(
-                                agent.extra.get("lazyAccountTransfer"),
-                            );
-                            let here = agent
+                    let Some(agent) = AgentRepository::get(db, &AgentId::from(g.as_str()))? else {
+                        return Ok::<_, WorkerError>(None);
+                    };
+                    let Some(operation) = agent
+                        .extra
+                        .get("accountTransferId")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                    else {
+                        return Ok(None);
+                    };
+                    let phase =
+                        studio_runtime_store::AccountTransferRepository::get(db, operation)?
+                            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                            .and_then(|record| {
+                                record["members"][g.as_str()]["phase"]
+                                    .as_str()
+                                    .map(str::to_owned)
+                            })
+                            .unwrap_or_default();
+                    let lazy_here =
+                        studio_runtime_store::truthy(agent.extra.get("lazyAccountTransfer"))
+                            && agent
                                 .extra
                                 .get("accountKey")
                                 .and_then(Value::as_str)
                                 .unwrap_or("default")
                                 == a;
-                            (
-                                studio_runtime_store::truthy(agent.extra.get("accountTransferId")),
-                                lazy && here,
-                            )
-                        },
-                    ))
+                    Ok(Some((phase, lazy_here)))
                 })
                 .await
         })
         .await?;
-    let Some((true, lazy)) = hold else {
+    let Some((phase, lazy_here)) = held else {
         return Ok(true);
     };
-    if !lazy {
+    // Any other phase waits for its receipt, Retry or Cancel; the transfer
+    // record names the reason, so a wake neither writes nor logs.
+    if phase == "waiting" && !lazy_here {
         let g = agent_id.clone();
         match bridge
             .worker_run("account_transfer_release", move |store| async move {
@@ -486,6 +501,9 @@ async fn advance_transfer(wake: &Wake) -> Result<bool, WorkerError> {
             }
             Err(error) => return Err(error),
         }
+        return Ok(false);
+    }
+    if phase != "lazy" || !lazy_here {
         return Ok(false);
     }
     let (g, r) = (agent_id.clone(), resources.clone());

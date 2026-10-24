@@ -312,6 +312,18 @@ pub const SIGN_IN_ALERT_GRACE_SECONDS: u64 = 10;
 /// seconds. The desktop alerts and the phone pushes use it.
 pub const SIGN_IN_REMINDER_SECONDS: u64 = 300;
 
+// Claude Code 2.1.302 idle compaction policy. Counts are context tokens.
+pub const IDLE_COMPACTION_DEFAULT_MIN_TOKENS: u64 = 200000;
+pub const IDLE_COMPACTION_MIN_TOKENS: u64 = 100000;
+/// Fraction of the observed cache lifetime before the idle timer fires.
+pub const IDLE_COMPACTION_FIRE_FRACTION: f64 = 0.9;
+pub const IDLE_COMPACTION_MIN_FIRE_FRACTION: f64 = 0.5;
+pub const IDLE_COMPACTION_MAX_FIRE_FRACTION: f64 = 0.95;
+/// Maximum permitted timer lateness, in seconds.
+pub const IDLE_COMPACTION_MAX_LATE_SECONDS: f64 = 60.0;
+/// One-hour prompt cache lifetime, in seconds.
+pub const IDLE_COMPACTION_CACHE_SECONDS: f64 = 3600.0;
+
 #[cfg(test)]
 mod tests {
     use super::*;

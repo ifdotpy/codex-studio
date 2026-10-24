@@ -1,4 +1,9 @@
 import {
+  cacheReport,
+  idleRefusal,
+  compactionEnabled,
+} from "./idle-compaction.mjs";
+import {
   prepareFileRestore,
   verifyFileRestore,
   fileBackups,
@@ -15,6 +20,7 @@ import { interruptInputQueue } from "./stop-inputs.mjs";
 import { browserEnvironment } from "./browser-environment.mjs";
 import {
   query,
+  resolveSettings,
   createSdkMcpServer,
   tool,
   forkSession,
@@ -53,12 +59,6 @@ import {
 } from "./session-store.mjs";
 import { claudeImage } from "./images.mjs";
 import { listSkills } from "./skills.mjs";
-import {
-  capabilityToolOptions,
-  capabilityToolDenial,
-  prepareCapabilities,
-  preflightCapabilityServers,
-} from "./worker-capabilities.mjs";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
 import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
 import {
@@ -396,9 +396,7 @@ const settings = (s) =>
       ? { strictMcpConfig: true, tools: s.moveProof.options.tools }
       : {}),
     // A managed worker runs without the user's MCP servers (Studio sends userMcp: false).
-    ...(s.userMcp === false || s.capabilityProfile?.mcpServers != null
-      ? { strictMcpConfig: true }
-      : {}),
+    ...(s.userMcp === false ? { strictMcpConfig: true } : {}),
     includePartialMessages: true,
     env: {
       ...process.env,
@@ -419,7 +417,7 @@ const settings = (s) =>
             CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
           }
         : {}),
-      ...(s.userMcp === false || s.capabilityProfile?.mcpServers != null
+      ...(s.userMcp === false
         ? {
             ENABLE_CLAUDEAI_MCP_SERVERS: "false",
             CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
@@ -640,8 +638,6 @@ function wireThread(s, metadata, includeTurns = true) {
   };
 }
 async function permissions(s, turn, name, input, options) {
-  const denial = capabilityToolDenial(s.capabilityProfile, name);
-  if (denial) return { behavior: "deny", message: denial };
   if (!turn)
     return {
       behavior: "deny",
@@ -998,6 +994,8 @@ const permissionMode = (s, p = {}) =>
 async function flags(s, p = {}, live = false) {
   const native = await catalog();
   return {
+    // Studio owns the durable idle timer. Disable the CLI's private timer.
+    idleCompaction: false,
     fastMode: p.serviceTier === "priority",
     ...(p.effort !== undefined ? { effortLevel: p.effort } : {}),
     ...thinkingFlag(
@@ -1032,8 +1030,7 @@ async function finishTurn(s, active, result, error) {
   armStallWatch();
   if (
     (error?.preparationTimedOut === true ||
-      error?.claudeAccountValidationFailed === true ||
-      error?.capabilityPreparationFailed === true) &&
+      error?.claudeAccountValidationFailed === true) &&
     error?.data?.turnStartOutcome === "not_applied" &&
     turn.items[0]?.type === "userMessage" &&
     typeof turn.clientUserMessageId === "string" &&
@@ -1070,8 +1067,7 @@ async function finishTurn(s, active, result, error) {
       ...(errorInfo && !turn.limitError ? { codexErrorInfo: errorInfo } : {}),
       ...(turn.startOutcome === "not_applied" &&
       (error?.preparationTimedOut === true ||
-        error?.claudeAccountValidationFailed === true ||
-        error?.capabilityPreparationFailed === true) &&
+        error?.claudeAccountValidationFailed === true) &&
       error?.data?.turnStartOutcome === "not_applied"
         ? {
             data: {
@@ -1371,7 +1367,6 @@ async function startSession(s, active, p) {
       s.claude,
       s.developerInstructions,
       s.dynamicTools,
-      s.capabilityProfile,
     ]);
   const initialSource = source();
   let admit;
@@ -1385,36 +1380,27 @@ async function startSession(s, active, p) {
     yield* active.input;
   }
   try {
-    const capabilities = await prepareCapabilities(s);
-    const externalMcpServers =
-      capabilities.mcpServers ?? (await movedExternalConfigs(s));
-    const systemPrompt = s.moveProof?.options.systemPrompt || {
-      type: "preset",
-      preset: "claude_code",
-      append: s.developerInstructions || "",
-      ...movePrompt,
-    };
+    const externalMcpServers = await movedExternalConfigs(s);
     const titleOptions = ephemeralSessionOptions(s);
     const mode = titleOptions.permissionMode || permissionMode(s, p);
     const q = query({
       prompt: prompt(),
       options: {
         ...settings(s),
-        ...capabilityToolOptions(s.capabilityProfile),
         // Match Python's --no-session-persistence and --tools "" title flags.
         ...titleOptions,
         model: s.moveProof?.options.model || p.model || s.model,
         ...(s.started
           ? { resume: s.nativeId || s.id }
           : { sessionId: s.nativeId || s.id }),
-        systemPrompt: capabilities.instructions
-          ? {
-              ...systemPrompt,
-              append: [systemPrompt.append, capabilities.instructions]
-                .filter(Boolean)
-                .join("\n\n"),
-            }
-          : systemPrompt,
+        systemPrompt: s.moveProof?.options.systemPrompt || {
+          type: "preset",
+          preset: "claude_code",
+          append: s.developerInstructions || "",
+          ...movePrompt,
+        },
+        // Studio managed agents replace native subagents, as in Codex threads.
+        disallowedTools: ["Agent"],
         permissionMode: mode,
         allowDangerouslySkipPermissions: true,
         ...((s.moveProof ? s.moveProof.options.effort : p.effort)
@@ -1515,19 +1501,6 @@ async function startSession(s, active, p) {
       () => q.close(),
       startedAt,
     );
-    try {
-      await boundedPreparation(
-        () => preflightCapabilityServers(q, s.capabilityProfile),
-        deadline,
-        () => q.close(),
-        "capability_mcp_servers",
-        startedAt,
-      );
-    } catch (error) {
-      if (error.preparationTimedOut)
-        error.message = `capabilityProfile.mcpServers ${JSON.stringify(s.capabilityProfile?.mcpServers)}: connection check timed out`;
-      throw error;
-    }
     if (
       initial?.interrupted ||
       active.input.closed ||
@@ -1649,6 +1622,13 @@ async function startSession(s, active, p) {
         continue;
       }
       if (m.type === "system") {
+        if (
+          m.subtype === "status" &&
+          m.status === "requesting" &&
+          !m.parent_tool_use_id
+        ) {
+          active.idleRequestStartedAt = Date.now();
+        }
         if (m.subtype === "compact_boundary" && turn) {
           const item = {
             id: m.uuid || randomUUID(),
@@ -1777,6 +1757,13 @@ async function startSession(s, active, p) {
         const e = m.event;
         if (e.type === "message_start") {
           active.messageId = e.message.id;
+          active.idleRequest = {
+            id: e.message.id,
+            at:
+              Number.isFinite(m.ttft_ms) && m.ttft_ms >= 0
+                ? Date.now() - m.ttft_ms
+                : active.idleRequestStartedAt || Date.now(),
+          };
           emit("provider/generationStarted", {
             threadId: s.id,
             turnId: turn.id,
@@ -1862,6 +1849,33 @@ async function startSession(s, active, p) {
         }
         active.lastModel = m.message.model || active.lastModel;
         active.lastMessageId = m.message.id || active.lastMessageId;
+        if (
+          turn &&
+          !turn.idleCompaction &&
+          !m.parent_tool_use_id &&
+          m.message.id &&
+          m.message.usage
+        ) {
+          const { effective } = await resolveSettings({
+            cwd: s.cwd,
+            settingSources: settings(s).settingSources,
+          });
+          s.idleCache = cacheReport(
+            s,
+            m.message.usage,
+            m.message.id,
+            active.idleRequest?.id === m.message.id
+              ? active.idleRequest.at
+              : active.idleRequestStartedAt || Date.now(),
+            effective,
+          );
+          emit("thread/idleCompaction/updated", {
+            threadId: s.id,
+            turnId: turn.id,
+            report: s.idleCache,
+          });
+          persistLater(s, active);
+        }
         const responseUsage = usageTokens(m.message.usage);
         active.lastUsage = responseUsage || active.lastUsage;
         const output = m.message.usage?.output_tokens;
@@ -2069,6 +2083,7 @@ function newActive(turn) {
     pendingSteers: new Set(),
     assistantBlocks: new Map(),
     responseUsages: new Map(),
+    idleRequestStartedAt: Date.now(),
     reportedUsage: 0,
     reportedOutput: 0,
     reportedTurnOutput: 0,
@@ -2500,17 +2515,7 @@ async function handle(method, p) {
             : {},
         );
         await persist(s);
-      } else {
-        if (
-          Object.hasOwn(p, "capabilityProfile") &&
-          canonicalJson(p.capabilityProfile) !==
-            canonicalJson(s.capabilityProfile)
-        )
-          throw new Error(
-            "Pause Claude before changing capabilityProfile on resume",
-          );
-        reattached = true;
-      }
+      } else reattached = true;
     }
     const includeTurns =
       method === "thread/read"
@@ -2570,6 +2575,25 @@ async function handle(method, p) {
   }
   if (method === "thread/compact/start") {
     const s = await session(p.threadId);
+    if (p.idleCompaction) {
+      const { effective: options } = await resolveSettings({
+        cwd: s.cwd,
+        settingSources: settings(s).settingSources,
+      });
+      const refusal = idleRefusal(
+        s,
+        queries.get(s.id),
+        p.idleCompaction,
+        options,
+      );
+      const disabled = !compactionEnabled(options);
+      const reason = disabled
+        ? "compaction_off"
+        : options.idleCompaction === false
+          ? "idle_compaction_off"
+          : refusal;
+      if (reason) throw new Error("Idle compaction skipped: " + reason);
+    }
     return handle("turn/start", {
       ...p,
       model: s.model,
@@ -2634,6 +2658,7 @@ async function handle(method, p) {
     const turn = {
       id: turnId,
       clientUserMessageId: p.clientUserMessageId,
+      ...(p.idleCompaction ? { idleCompaction: true } : {}),
       startOutcome: "preparing",
       status: "inProgress",
       items: [
@@ -2735,6 +2760,7 @@ async function handle(method, p) {
           "Claude background work started a turn; wait or steer that turn",
         );
       active.turn = turn;
+      active.idleRequestStartedAt = Date.now();
       active.reportedTurnOutput = 0;
       active.reservingInput = true;
     }

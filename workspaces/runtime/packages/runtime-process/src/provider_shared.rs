@@ -37,6 +37,18 @@ const RETAINED_LAUNCHER_ENVIRONMENT: &[&str] = &[
     "__CFBundleIdentifier",
 ];
 
+/// Launch variables added after a release. A retained child started before a
+/// variable existed lacks it; it is still the provider that this launch would
+/// start, and it reattaches with its own environment. A variable that the
+/// child has with another value is never accepted. Each entry names the change
+/// that added it. `provider-launch-history.json` in runtime-services records
+/// the launches that this list must keep reattachable.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const RETAINED_LAUNCH_ADDITIONS: &[&str] = &[
+    // 310d88550: Claude credentials bound to organization and account UUIDs.
+    "STUDIO_CLAUDE_CREDENTIAL_IDENTITY",
+];
+
 pub(crate) fn clean_environment(requested: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut clean = requested.clone();
     for key in BACKEND_ONLY_ENVIRONMENT {
@@ -60,10 +72,27 @@ pub(crate) fn verify_environment(
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect::<BTreeMap<_, _>>()
     };
-    if without_launcher(original) != without_launcher(clean) {
+    let mut expected = without_launcher(clean);
+    for key in RETAINED_LAUNCH_ADDITIONS {
+        if !original.contains_key(*key) {
+            expected.remove(*key);
+        }
+    }
+    if without_launcher(original) != expected {
         return Err(io::Error::other("retained provider environment differs"));
     }
     Ok(())
+}
+
+/// Whether a running child started with `original` passes the retained
+/// environment check of a launch with `launch`, so that it reattaches.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[must_use]
+pub fn retained_environment_accepted(
+    original: &BTreeMap<String, String>,
+    launch: &BTreeMap<String, String>,
+) -> bool {
+    verify_environment(original, &clean_environment(launch)).is_ok()
 }
 
 /// Upper bound in bytes for one retained child's launch environment record.
