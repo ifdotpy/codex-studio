@@ -121,6 +121,17 @@ fn stored_limits_observation_accepts_legacy_mutation_envelope_keys() {
     });
     usage_resume::LimitsObservation::from_record(legacy, None)
         .expect("existing stored observations with legacy envelope fields still load");
+    let response = json!({
+        "accountKey":"default",
+        "_syncEntities":[],
+        "_syncEntitiesAfter":12
+    });
+    assert!(
+        studio_runtime_schema::first_error("workspace-usage-limits/UsageLimitsResponse", &response)
+            .expect("limits response schema")
+            .is_none(),
+        "legacy limits rows remain valid under the projection schema"
+    );
 }
 #[tokio::test]
 async fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup() {

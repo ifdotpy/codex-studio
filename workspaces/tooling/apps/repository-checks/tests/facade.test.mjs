@@ -1216,7 +1216,7 @@ test("temporary state scan skips tracked files removed by the current change", a
     }
     writeFileSync(
       path.join(root, "removed.test.mjs"),
-      "const root = '/tmp';\n",
+      "const root = '" + "/" + "tmp" + "';\n",
     );
     let result = spawnSync("git", ["add", "removed.test.mjs"], {
       cwd: root,

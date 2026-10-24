@@ -590,26 +590,10 @@ test.describe("legacy schema mismatch", () => {
         body: JSON.stringify({ id: createdId, cwd: "/" }),
       });
       assert.equal(mutation.status, 200);
-      const mutationBody = await mutation.json();
-      const mutationEntity = mutationBody._syncEntities?.find(
-        (row) =>
-          row.op === "upsert" &&
-          row.collection === "agent" &&
-          row.id === createdId,
-      );
-      assert.ok(mutationEntity, "fixture mutation returns a sequenced entity");
-      assert.ok(
-        Number(mutationEntity.seq) > 0,
-        "fixture entity has a sequence",
-      );
-      assert.ok(
-        mutationEntity.seq > newPageStateCheckpoint.checkpoint,
-        `the fixture change is beyond the applied checkpoint: event=${mutationEntity.seq}, checkpoint=${newPageStateCheckpoint.checkpoint}`,
-      );
-      pendingEntitySequence = mutationEntity.seq;
       const entityChangeDocuments = [];
       let entityChangeCursor = newPageStateCheckpoint.checkpoint;
-      while (entityChangeCursor < mutationEntity.seq) {
+      let mutationEntity;
+      while (!mutationEntity) {
         const pageResponse = await fetch(
           `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${entityChangeCursor}&limit=500`,
           {
@@ -622,22 +606,26 @@ test.describe("legacy schema mismatch", () => {
         assert.equal(pageResponse.status, 200);
         const entityPage = await pageResponse.json();
         assert.notEqual(entityPage.reset, true);
-        entityChangeDocuments.push(
-          ...entityPage.documents.filter(
-            (document) => Number(document.seq) <= Number(mutationEntity.seq),
-          ),
-        );
+        entityChangeDocuments.push(...entityPage.documents);
         assert.ok(entityPage.checkpoint.seq > entityChangeCursor);
-        entityChangeCursor = Math.min(
-          entityPage.checkpoint.seq,
-          Number(mutationEntity.seq),
+        entityChangeCursor = entityPage.checkpoint.seq;
+        mutationEntity = entityChangeDocuments.find(
+          (document) =>
+            document.op === "upsert" &&
+            document.collection === "agent" &&
+            document.id === createdId,
         );
       }
-      assert.equal(entityChangeCursor, mutationEntity.seq);
+      assert.ok(Number.isSafeInteger(Number(mutationEntity.seq)));
+      assert.ok(Number(mutationEntity.seq) > newPageStateCheckpoint.checkpoint);
+      pendingEntitySequence = Number(mutationEntity.seq);
+      const orderedEntityChangeDocuments = entityChangeDocuments.filter(
+        (document) => Number(document.seq) <= pendingEntitySequence,
+      );
       pendingEntityChanges = {
         after: newPageStateCheckpoint.checkpoint,
-        through: entityChangeCursor,
-        documents: entityChangeDocuments,
+        through: pendingEntitySequence,
+        documents: orderedEntityChangeDocuments,
       };
       allowPendingChangeEvent = false;
       allowPendingChangeEventPromise = new Promise((resolve) => {
