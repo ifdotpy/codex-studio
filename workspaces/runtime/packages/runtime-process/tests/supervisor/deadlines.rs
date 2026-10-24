@@ -184,114 +184,91 @@ fn health_skips_a_child_while_open_is_installing_it() {
 }
 
 #[test]
-fn stalled_handshake_and_started_frame_release_connection_slot() {
-    // Real socket reads, no sleeps or minimum-duration timing assertion. The short
-    // budget is injected only here; a channel provides the outer hang guard.
-    for phase in ["no handshake", "partial handshake", "partial request"] {
-        let (_root, supervisor) = fixture();
-        let (mut peer, server) = UnixStream::pair().unwrap();
-        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let handshake = json!({"protocol":SUPERVISOR_PROTOCOL_V2,"stateDir":supervisor.root,"backendId":"stalled"});
-        if phase == "partial request" {
-            write_frame(&mut peer, &handshake).unwrap();
-        } else if phase == "partial handshake" {
-            peer.write_all(b"{").unwrap();
-        }
-        let (tx, rx) = mpsc::channel();
-        let copy = supervisor.clone();
-        let worker = thread::spawn(move || {
-            connection_with_budget(copy, server, Duration::from_millis(50));
-            tx.send(()).unwrap();
-        });
-        let mut reader = BufReader::new(peer.try_clone().unwrap());
-        if phase == "partial request" {
-            assert_eq!(
-                read_frame(
-                    &mut reader,
-                    Some(Instant::now() + Duration::from_secs(5)),
-                    FRAME_BUDGET
-                )
-                .unwrap()
-                .unwrap()["ok"],
-                true
-            );
-            peer.write_all(b"{\"action\":").unwrap();
-        }
-        rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        worker.join().unwrap();
-        assert_eq!(supervisor.connections.load(Ordering::Acquire), 0, "{phase}");
-        assert!(
-            lock(&supervisor.ownership)
-                .unwrap()
-                .attach(
-                    &supervisor.root,
-                    Some("replacement"),
-                    false,
-                    &supervisor.root
-                )
-                .is_ok()
-        );
-        // The worker has closed its socket. Darwin rejects changing SO_RCVTIMEO
-        // after peer shutdown; use the five-second timeout installed above.
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        let error: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(
-            error["error"],
-            if phase == "partial request" {
-                "Supervisor frame deadline exceeded"
-            } else {
-                "Supervisor handshake or frame deadline exceeded"
-            },
-            "{phase}"
-        );
-    }
-}
-
-#[test]
-fn established_idle_connection_has_no_frame_deadline() {
+fn stalled_handshake_releases_connection_slot() {
+    // One real partial-handshake expiry proves socket cleanup and replacement
+    // admission. Established-frame timing is covered with paused Tokio time.
     let (_root, supervisor) = fixture();
     let (mut peer, server) = UnixStream::pair().unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    peer.write_all(b"{").unwrap();
     let (tx, rx) = mpsc::channel();
     let copy = supervisor.clone();
-    write_frame(
-        &mut peer,
-        &json!({"protocol":SUPERVISOR_PROTOCOL_V2,"stateDir":supervisor.root,"backendId":"idle"}),
-    )
-    .unwrap();
     let worker = thread::spawn(move || {
         connection_with_budget(copy, server, Duration::from_millis(50));
         tx.send(()).unwrap();
     });
-    let mut reader = BufReader::new(peer.try_clone().unwrap());
-    assert_eq!(
-        read_frame(
-            &mut reader,
-            Some(Instant::now() + Duration::from_secs(5)),
-            FRAME_BUDGET
-        )
-        .unwrap()
-        .unwrap()["ok"],
-        true
-    );
-    assert_eq!(
-        rx.recv_timeout(Duration::from_millis(150)),
-        Err(mpsc::RecvTimeoutError::Timeout)
-    );
-    write_frame(&mut peer, &json!({"action":"health","requestId":1})).unwrap();
-    let result = read_frame(
-        &mut reader,
-        Some(Instant::now() + Duration::from_secs(5)),
-        FRAME_BUDGET,
-    )
-    .unwrap()
-    .unwrap();
-    assert!(result.get("result").is_some(), "{result}");
-    drop(reader);
-    drop(peer);
     rx.recv_timeout(Duration::from_secs(5)).unwrap();
     worker.join().unwrap();
     assert_eq!(supervisor.connections.load(Ordering::Acquire), 0);
+    assert!(
+        lock(&supervisor.ownership)
+            .unwrap()
+            .attach(
+                &supervisor.root,
+                Some("replacement"),
+                false,
+                &supervisor.root
+            )
+            .is_ok()
+    );
+    let mut reader = BufReader::new(peer);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let error: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        error["error"],
+        "Supervisor handshake or frame deadline exceeded"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn established_idle_connection_has_no_frame_deadline() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+    use tokio::io::AsyncWriteExt;
+
+    let (mut peer, server) = tokio::io::duplex(64);
+    let mut reader = tokio::io::BufReader::new(server);
+    let budget = Duration::from_secs(5);
+    {
+        let frame = read_v2_frame(&mut reader, budget);
+        tokio::pin!(frame);
+        // Poll the real reader to Pending before moving time: a spawned task alone
+        // would not prove that the idle read had started.
+        assert!(
+            poll_fn(|cx| Poll::Ready(frame.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        tokio::time::advance(budget * 3).await;
+        assert!(
+            poll_fn(|cx| Poll::Ready(frame.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        peer.write_all(b"{\"action\":\"health\"}\n").await.unwrap();
+        assert_eq!(frame.await.unwrap(), Some(json!({"action":"health"})));
+    }
+    let partial = read_v2_frame(&mut reader, budget);
+    tokio::pin!(partial);
+    peer.write_all(b"{").await.unwrap();
+    assert!(
+        poll_fn(|cx| Poll::Ready(partial.as_mut().poll(cx)))
+            .await
+            .is_pending()
+    );
+    tokio::time::advance(budget / 2).await;
+    peer.write_all(b"\"").await.unwrap();
+    assert!(
+        poll_fn(|cx| Poll::Ready(partial.as_mut().poll(cx)))
+            .await
+            .is_pending()
+    );
+    tokio::time::advance(budget / 2).await;
+    assert!(matches!(
+        partial.await,
+        Err(Error::Refused("Supervisor frame deadline exceeded"))
+    ));
 }
 
 #[test]
@@ -627,13 +604,14 @@ fn frame_trimming_cannot_hide_terminal_exit_or_succeed_with_oversized_first_even
         kind,
         payload: RawValue::from_string(payload).unwrap(),
     };
-    let mut result = crate::NextBatchResult {
+    let frame_limit = 512;
+    let result = crate::NextBatchResult {
         events: vec![
             event(1, crate::EventKind::Stdout, "{}".into()),
             event(
                 2,
                 crate::EventKind::Exit,
-                format!("\"{}\"", "x".repeat(crate::transport::MAX_FRAME_BYTES)),
+                format!("\"{}\"", "x".repeat(frame_limit)),
             ),
         ],
         return_code: Some(0),
@@ -641,19 +619,19 @@ fn frame_trimming_cannot_hide_terminal_exit_or_succeed_with_oversized_first_even
         stdout_reader_alive: false,
         stderr_reader_alive: false,
     };
-    let bytes = batch_response(Some(1), 0, Some(2), result.clone()).unwrap();
+    let oversized = result.events[1].clone();
+    let next = crate::NextBatchResult {
+        events: vec![oversized],
+        return_code: None,
+        ..result.clone()
+    };
+    let bytes = batch_response_with_limit(Some(1), 0, Some(2), result, frame_limit).unwrap();
     let response: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(response["result"]["events"].as_array().unwrap().len(), 1);
     assert_eq!(response["result"]["events"][0]["sequence"], 1);
     assert!(response["result"]["returnCode"].is_null());
 
-    result.events = vec![event(
-        1,
-        crate::EventKind::Stdout,
-        format!("\"{}\"", "x".repeat(crate::transport::MAX_FRAME_BYTES)),
-    )];
-    result.return_code = None;
-    assert!(batch_response(Some(2), 0, None, result).is_err());
+    assert!(batch_response_with_limit(Some(2), 0, None, next, frame_limit).is_err());
 }
 
 #[test]

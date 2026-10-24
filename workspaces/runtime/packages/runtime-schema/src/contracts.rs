@@ -837,8 +837,9 @@ mod tests {
     }
 
     #[test]
-    fn generated_contracts_do_not_recreate_the_removed_backend() {
-        let rendered = render(&repository_root(), false).expect("contracts render");
+    fn committed_contract_copies_match_the_rust_owners() {
+        let root = repository_root();
+        let rendered = render(&root, false).expect("contracts render");
         assert!(
             rendered
                 .iter()
@@ -850,12 +851,6 @@ mod tests {
                 .any(|file| file.path
                     == "workspaces/runtime/apps/vm-guest/shared_values_generated.py")
         );
-    }
-
-    #[test]
-    fn committed_contract_copies_match_the_rust_owners() {
-        let root = repository_root();
-        let rendered = render(&root, false).expect("contracts render");
         assert_eq!(
             stale(&root, &rendered),
             Vec::<String>::new(),

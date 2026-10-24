@@ -759,10 +759,11 @@ fn connection(supervisor: Arc<Supervisor>, socket: UnixStream) {
     connection_with_budget(supervisor, socket, FRAME_BUDGET);
 }
 async fn read_v2_frame(
-    reader: &mut tokio::io::BufReader<tokio::net::UnixStream>,
+    reader: &mut (impl tokio::io::AsyncBufRead + Unpin),
     budget: Duration,
 ) -> Result<Option<Value>> {
     use tokio::io::AsyncBufReadExt;
+    use tokio::time::Instant;
 
     let mut bytes = Vec::new();
     let mut deadline: Option<Instant> = None;
@@ -830,7 +831,23 @@ fn batch_response(
     request_id: Option<u64>,
     request_cursor: u64,
     exit_sequence: Option<u64>,
+    result: NextBatchResult,
+) -> Result<Vec<u8>> {
+    batch_response_with_limit(
+        request_id,
+        request_cursor,
+        exit_sequence,
+        result,
+        crate::transport::MAX_FRAME_BYTES,
+    )
+}
+
+fn batch_response_with_limit(
+    request_id: Option<u64>,
+    request_cursor: u64,
+    exit_sequence: Option<u64>,
     mut result: NextBatchResult,
+    max_frame_bytes: usize,
 ) -> Result<Vec<u8>> {
     let had_events = !result.events.is_empty();
     let child_return_code = result.return_code;
@@ -843,7 +860,7 @@ fn batch_response(
             request_id,
             result: &result,
         })?;
-        if bytes.len() < crate::transport::MAX_FRAME_BYTES {
+        if bytes.len() < max_frame_bytes {
             return Ok(bytes);
         }
         if result.events.pop().is_none() || (result.events.is_empty() && had_events) {
