@@ -1598,7 +1598,13 @@ mod validation_tests {
             let mut invalid = request.clone();
             match field {
                 "account" => invalid.scope.account = "other-account".into(),
-                "scope" => invalid.expected_scope.as_mut().unwrap().generation += 1,
+                "scope" => {
+                    invalid
+                        .expected_scope
+                        .as_mut()
+                        .expect("request has an expected scope")
+                        .generation += 1;
+                }
                 "missing-scope" => invalid.expected_scope = None,
                 _ => invalid.operation = "other:background-before".into(),
             }

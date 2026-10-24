@@ -239,12 +239,11 @@ fn project_bound(
     let mut source_thread = string(raw, "sourceThreadId");
     let epoch;
     let opaque;
-    let native;
     let pending =
         source == "monitor" && matches!(raw["status"].as_str(), Some("starting" | "approval"));
     let is_monitor = source == "monitor";
     let is_claude = source == "claude_task";
-    if is_monitor {
+    let native = if is_monitor {
         epoch = raw["epoch"].clone();
         let operation = &raw["operation"];
         source_account = operation
@@ -283,7 +282,7 @@ fn project_bound(
                 .expect("monitor identity")
                 .push(json!(generation));
         }
-        native = identity;
+        identity
     } else {
         epoch = raw["ownerEpoch"].clone();
         let item = text(raw, "itemId", "");
@@ -292,7 +291,7 @@ fn project_bound(
         } else {
             text(raw, "processId", item).to_owned()
         };
-        native = if is_claude {
+        if is_claude {
             json!([
                 opaque,
                 epoch,
@@ -311,8 +310,8 @@ fn project_bound(
                 source_thread,
                 raw["turnId"]
             ])
-        };
-    }
+        }
+    };
     let same = (retained_generation.is_some() || source_account == account)
         && epoch == owner["epoch"]
         && connection.is_some_and(|c| !c.is_empty())
