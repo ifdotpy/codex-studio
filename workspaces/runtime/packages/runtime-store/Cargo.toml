@@ -20,6 +20,7 @@ studio-runtime-providers = { path = "../runtime-providers" }
 thiserror = { workspace = true }
 tokio-rusqlite = { workspace = true }
 tokio = { workspace = true }
+zstd-safe = { workspace = true }
 
 [dev-dependencies]
 studio-runtime-store = { path = ".", features = ["test-support"] }

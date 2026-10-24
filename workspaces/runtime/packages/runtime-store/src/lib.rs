@@ -16,6 +16,7 @@ mod repositories;
 mod schema;
 mod sqlite_actor;
 pub mod state_owner;
+pub mod stored_text;
 pub mod supervisor_journal;
 pub use schema::{
     python_float_json, python_json, python_json_compact, python_json_utf8,

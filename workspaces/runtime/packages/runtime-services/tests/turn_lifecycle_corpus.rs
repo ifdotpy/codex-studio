@@ -300,7 +300,11 @@ fn snapshot(root: &Path, tokens: &std::collections::BTreeMap<String, String>) ->
                                 json!(text)
                             }
                         }
-                        ValueRef::Blob(_) => panic!("unexpected snapshot blob"),
+                        // Owned stored-text columns hold stored format 1.
+                        ValueRef::Blob(bytes) => json!(
+                            studio_runtime_store::stored_text::decode_blob(bytes)
+                                .expect("snapshot blob is stored text")
+                        ),
                     };
                     record.insert(name.clone(), value);
                 }
