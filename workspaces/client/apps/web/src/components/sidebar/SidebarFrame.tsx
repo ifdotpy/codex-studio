@@ -101,10 +101,19 @@ export function SidebarFrame(p: SidebarFrameProps) {
         const sideStyle = getComputedStyle(aside.current);
         const children = Array.from(header.children) as HTMLElement[];
         headerMinimum.current =
-          children.reduce(
-            (width, child) => width + child.getBoundingClientRect().width,
-            0,
-          ) +
+          children.reduce((width, child) => {
+            if (Number(getComputedStyle(child).flexGrow) === 0)
+              return width + child.getBoundingClientRect().width;
+            // A flexible label can wrap; its expanded width is not its minimum.
+            const previous = child.style.cssText;
+            try {
+              child.style.flex = "none";
+              child.style.inlineSize = "min-content";
+              return width + child.getBoundingClientRect().width;
+            } finally {
+              child.style.cssText = previous;
+            }
+          }, 0) +
           Math.max(0, children.length - 1) *
             (parseFloat(style.columnGap) || 0) +
           parseFloat(sideStyle.paddingLeft) +

@@ -40,6 +40,9 @@ for (const paired of [false, true]) {
           page.getByRole("button", { name: "Chat actions", exact: true }),
         ).toBeVisible();
         if (width === 951) {
+          await expect(
+            page.locator('#sidebar[data-presentation="inline"]'),
+          ).toBeVisible();
           const rail = page.getByRole("navigation", {
             name: "Conversation actions",
           });
