@@ -256,6 +256,15 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
             "path": intent.pointer("/effect/identity/cwd").or_else(|| intent.get("path")).or_else(|| record.get("cwd")).and_then(Value::as_str),
         });
     }
+    // Publish these fields only when set. The older view never published
+    // them, and the client reads a missing one as its default.
+    if let Some((_, field)) = UNSET_DEFAULT_FIELDS
+        .iter()
+        .find(|(owner, field)| *owner == collection && record.get(*field).is_some_and(unset))
+        && let Some(fields) = public_record.to_mut().as_object_mut()
+    {
+        fields.remove(*field);
+    }
     Some(project_schema_value(
         &public_record,
         schema,
@@ -265,6 +274,17 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
         collection == "agent",
         false,
     ))
+}
+
+/// `(collection, field)` pairs that a sync view publishes only when set: a
+/// team's token budget (null means none) and a monitor's output patterns
+/// (empty means none). The client reads a missing one as that default.
+const UNSET_DEFAULT_FIELDS: &[(&str, &str)] =
+    &[("agent", "tokenBudget"), ("monitor", "outputPatterns")];
+
+/// Whether a field value is its unset default: null or an empty list.
+fn unset(value: &Value) -> bool {
+    value.is_null() || value.as_array().is_some_and(Vec::is_empty)
 }
 
 #[derive(Clone, Debug, Default)]
