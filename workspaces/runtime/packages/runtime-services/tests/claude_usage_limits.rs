@@ -313,3 +313,133 @@ fn ui_decision_expires_at_the_first_applicable_window_reset() {
         false
     );
 }
+
+/// Set `key` of the wait in both the record and the agent's projection.
+fn set_wait(records: &mut Value, key: &str, value: Value) {
+    records["record"][key] = value.clone();
+    records["agent"]["usageResume"][key] = value;
+}
+
+/// A wait whose failure named the provider reset at 1300 (Unix seconds).
+fn waiting_for_reset() -> Value {
+    let mut records = snapshot_records("sonnet");
+    set_wait(&mut records, "resetAt", json!(1300.0));
+    set_wait(&mut records, "plannedAt", json!(1300.0));
+    set_wait(&mut records, "dueAt", json!(1305.0));
+    records
+}
+
+fn with_due(mut records: Value, due: f64) -> Snapshot {
+    set_wait(&mut records, "dueAt", json!(due));
+    Snapshot::from_records(records).expect("snapshot")
+}
+
+/// A read that fails or is not current keeps the provider reset that the wait
+/// holds, so the wait is still planned for that reset.
+#[test]
+fn a_limits_read_without_a_current_reset_keeps_the_provider_reset() {
+    let failed = LimitsObservation::from_record(
+        json!({"accountKey":"default","at":1000.0,"error":"limits unavailable"}),
+        None,
+    )
+    .expect("failed read");
+    let decision =
+        usage_resume::tick(&with_due(waiting_for_reset(), 1000.0), &failed, 1000.0).expect("tick");
+    let record = decision.record.expect("wait remains durable");
+    assert_eq!(record["status"], "scheduled");
+    assert_eq!(record["resetAt"], 1300.0, "{record}");
+    assert_eq!(record["dueAt"], 1305.0, "{record}");
+
+    // Current telemetry without a blocked window has no reset of its own.
+    let snapshot = Snapshot::from_records(waiting_for_reset()).expect("snapshot");
+    let decision =
+        usage_resume::limits_changed(&snapshot, &observation(data(20.0)), 1000.0).expect("limits");
+    let record = decision.record.expect("wait remains durable");
+    assert_eq!(record["resetAt"], 1300.0, "{record}");
+    assert_eq!(record["plannedAt"], 1300.0, "{record}");
+}
+
+/// After the provider reset, a failed, erroneous or stale limits read must not
+/// keep the chat waiting: the wait resumes once with its fixed follow-up id. A
+/// current read that still shows the limit keeps it waiting.
+#[test]
+fn a_wait_resumes_once_after_the_provider_reset_when_limits_reads_fail() {
+    let now = 1306.0;
+    let started = |decision: studio_runtime_services::continuation::Decision, case: &str| {
+        let record = decision.record.clone().expect("record");
+        assert_eq!(record["status"], "started", "{case}: {record}");
+        assert_eq!(
+            decision.effects,
+            vec![studio_runtime_services::continuation::Effect::Followup {
+                id: "usage-resume:resume".into(),
+                text: usage_resume::CONTINUATION.into(),
+            }],
+            "{case}"
+        );
+        let agent = decision.agent.clone().expect("agent");
+        assert_eq!(agent["status"], "queued", "{case}");
+        assert!(agent.get("nativeFailureHold").is_none(), "{case}");
+        // The started wait never sends its follow-up again.
+        let mut records = waiting_for_reset();
+        records["record"] = record.clone();
+        records["agent"] = agent;
+        let again = Snapshot::from_records(records).expect("snapshot");
+        let repeat = usage_resume::tick_without_observation(&again, now + 600.0).expect("tick");
+        assert!(repeat.effects.is_empty(), "{case}");
+        assert!(repeat.record.is_none(), "{case}");
+    };
+    let snapshot = Snapshot::from_records(waiting_for_reset()).expect("snapshot");
+    started(
+        usage_resume::tick_without_observation(&snapshot, now).expect("tick"),
+        "failed read",
+    );
+    let failed = LimitsObservation::from_record(
+        json!({"accountKey":"default","at":now,"error":"limits unavailable"}),
+        None,
+    )
+    .expect("failed read");
+    started(
+        usage_resume::tick(&snapshot, &failed, now).expect("tick"),
+        "erroneous read",
+    );
+    let stale = LimitsObservation::from_record(
+        json!({"accountKey":"default","at":1000.0,"data":data(100.0)}),
+        None,
+    )
+    .expect("stale read");
+    started(
+        usage_resume::tick(&snapshot, &stale, now).expect("tick"),
+        "stale read",
+    );
+
+    // A current read that still shows the limit until 5000 keeps the wait.
+    let mut blocked = data(100.0);
+    blocked["rateLimits"]["primary"]["resetsAt"] = json!(5000.0);
+    let current = LimitsObservation::from_record(
+        json!({"accountKey":"default","at":now,"data":blocked}),
+        None,
+    )
+    .expect("current read");
+    let decision = usage_resume::tick(&snapshot, &current, now).expect("tick");
+    let record = decision.record.expect("wait remains durable");
+    assert_eq!(record["status"], "scheduled", "{record}");
+    assert_eq!(record["resetAt"], 5000.0, "{record}");
+    assert!(decision.effects.is_empty());
+
+    // Before the reset a failed read only reschedules for it.
+    let early = with_due(waiting_for_reset(), 1200.0);
+    let decision = usage_resume::tick_without_observation(&early, 1201.0).expect("tick");
+    let record = decision.record.expect("wait remains durable");
+    assert_eq!(record["status"], "scheduled", "{record}");
+    assert_eq!(record["dueAt"], 1305.0, "{record}");
+    assert!(decision.effects.is_empty());
+
+    // A reset that had passed when the turn failed is no evidence of a new one,
+    // so a wait for it does not resume without a current read.
+    let mut records = waiting_for_reset();
+    set_wait(&mut records, "resetAt", json!(800.0));
+    let old = Snapshot::from_records(records).expect("snapshot");
+    let decision = usage_resume::tick_without_observation(&old, now).expect("tick");
+    assert_eq!(decision.record.expect("record")["status"], "scheduled");
+    assert!(decision.effects.is_empty());
+}
