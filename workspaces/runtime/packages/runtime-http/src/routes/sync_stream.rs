@@ -427,11 +427,19 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
             serde_json::to_vec(&super::catalog::accounts(State(state)).await.ok()?.0).ok()
         }
         ResourceRef::LimitsResource(resource) => {
-            let snapshot = if let Some(port) = &state.account_session {
+            let mut snapshot = if let Some(port) = &state.account_session {
                 port.limits_snapshot(&resource.account_key).ok()?
             } else {
                 state.account_policy.as_ref()?.limits(&resource.account_key)
             };
+            // Observation receipts advance privately without changing rateLimit entities.
+            // Fingerprint the same semantic content so unrelated commits cannot
+            // turn a timestamp refresh into another provider read by the client.
+            if let Some(fields) = snapshot.as_object_mut() {
+                for field in studio_runtime_store::account_state::LIMITS_OBSERVATION_TIME_FIELDS {
+                    fields.remove(*field);
+                }
+            }
             let snapshot: crate::generated::UsageLimitsResponse =
                 serde_json::from_value(snapshot).ok()?;
             serde_json::to_vec(&snapshot).ok()
@@ -3130,6 +3138,31 @@ mod tests {
             .expect("changed cached snapshot");
         assert_eq!(changed.resources, vec![resources[0].clone()]);
         assert_eq!(changed.versions, vec![changed.cursor.revision]);
+
+        *port.0.lock().expect("snapshot") = json!({
+            "accountKey":"first", "data":{"accountId":"native-first"},
+            "at":1.0, "readAt":1.0, "checkedAt":1.0, "processedAt":1.0
+        });
+        let before = resource_content(state.clone(), resources[0].clone())
+            .await
+            .expect("semantic limits");
+        for field in studio_runtime_store::account_state::LIMITS_OBSERVATION_TIME_FIELDS {
+            port.0.lock().expect("snapshot")[*field] = json!(120.0);
+        }
+        assert_eq!(
+            before,
+            resource_content(state.clone(), resources[0].clone())
+                .await
+                .expect("reobserved limits"),
+            "private observation times must not invalidate streamed limits"
+        );
+        port.0.lock().expect("snapshot")["data"]["accountId"] = json!("replacement");
+        assert_ne!(
+            before,
+            resource_content(state, resources[0].clone())
+                .await
+                .expect("changed account limits")
+        );
     }
 
     #[tokio::test]
