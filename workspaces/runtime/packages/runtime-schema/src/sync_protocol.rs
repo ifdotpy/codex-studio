@@ -19,6 +19,46 @@ mod tests {
         );
     }
     #[test]
+    fn subscription_resume_cursor_is_typed_and_bounded() {
+        use serde_json::json;
+        assert!(
+            crate::first_error(
+                "SubscriptionCursor",
+                &json!({"workspaceId":"durable-db","seq":0})
+            )
+            .expect("cursor schema")
+            .is_none()
+        );
+        for cursor in [
+            json!({"workspaceId":"durable-db","seq":-1}),
+            json!({"workspaceId":"durable-db","seq":9007199254740992_u64}),
+            json!({"workspaceId":"durable-db","seq":"1"}),
+            json!({"workspaceId":"","seq":1}),
+            json!({"seq":1}),
+            json!({"workspaceId":"durable-db","seq":1,"epoch":"volatile"}),
+        ] {
+            assert!(
+                crate::first_error("SubscriptionCursor", &cursor)
+                    .expect("cursor schema")
+                    .is_some(),
+                "{cursor}"
+            );
+        }
+        for kind in ["snapshot", "delta"] {
+            assert!(
+                crate::first_error("SubscriptionReplyKind", &json!(kind))
+                    .expect("reply kind schema")
+                    .is_none()
+            );
+        }
+        assert!(
+            crate::first_error("SubscriptionReplyKind", &json!("unknown"))
+                .expect("reply kind schema")
+                .is_some()
+        );
+    }
+
+    #[test]
     fn entity_v4_schema_requires_typed_values_and_omits_delete_values() {
         use serde_json::json;
         let valid = json!({"op":"upsert","collection":"workspace","id":"current","seq":1,"value":{"stateDir":"temporary"}});

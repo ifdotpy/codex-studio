@@ -40983,6 +40983,12 @@
               }
             ],
             "description": "Transient voice records and session state. Recover through HTTP if the cursor interval is missing or incomplete."
+          },
+          "cursor": {
+            "$ref": "#/components/schemas/SubscriptionCursor"
+          },
+          "replyKind": {
+            "$ref": "#/components/schemas/SubscriptionReplyKind"
           }
         },
         "required": [
@@ -47424,6 +47430,52 @@
         "title": "StudioErrorsResponse",
         "type": "object"
       },
+      "SubscriptionAdd": {
+        "additionalProperties": false,
+        "properties": {
+          "resource": {
+            "$ref": "#/components/schemas/ResourceRef"
+          },
+          "since": {
+            "$ref": "#/components/schemas/SubscriptionCursor"
+          }
+        },
+        "required": [
+          "resource"
+        ],
+        "title": "SubscriptionAdd",
+        "type": "object"
+      },
+      "SubscriptionCursor": {
+        "additionalProperties": false,
+        "description": "Last fully applied durable sequence for one resource ref. Workspace identity survives server restarts; a different identity requires a fresh snapshot.",
+        "properties": {
+          "seq": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "workspaceId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "seq"
+        ],
+        "title": "SubscriptionCursor",
+        "type": "object"
+      },
+      "SubscriptionReplyKind": {
+        "description": "Whether this initial subscription reply replaces the ref projection or applies only changes after its cursor.",
+        "enum": [
+          "delta",
+          "snapshot"
+        ],
+        "title": "SubscriptionReplyKind",
+        "type": "string"
+      },
       "SummaryAccount": {
         "additionalProperties": false,
         "properties": {
@@ -49822,7 +49874,7 @@
         "properties": {
           "add": {
             "items": {
-              "$ref": "#/components/schemas/ResourceRef"
+              "$ref": "#/components/schemas/SubscriptionAdd"
             },
             "type": "array"
           },
