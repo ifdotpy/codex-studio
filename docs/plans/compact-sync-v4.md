@@ -65,6 +65,13 @@ coalesced on the client.
 
 ## Ordering invariants (unchanged from v3)
 
+Startup moves legacy workspace rate-limit snapshots to per-account entities and
+removes the legacy workspace fields in
+[`migrate_workspace_limits`](../../workspaces/runtime/packages/runtime-store/src/repositories/account_state.rs).
+These committed changes use the shared entity/transcript sequence allocator.
+Frozen v3 transcript fixtures therefore account for the startup allocation when
+checking newly assigned cursors; existing transcript cursors remain unchanged.
+
 - A notification never advances the applied cursor; only a fully applied interval does.
 - A stale HTTP response cannot overwrite a newer change or revive a deleted entity.
 - Unsubscribing cancels reads and rejects late results by subscription generation.
