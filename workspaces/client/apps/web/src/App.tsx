@@ -1,3 +1,5 @@
+import { EdgeRail } from "./components/edge-rail/EdgeRail";
+import { useEdgeRail } from "./components/edge-rail/useEdgeRail";
 import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
 import { useWorkspaceLayout } from "./layout/useWorkspaceLayout";
 import {
@@ -883,6 +885,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const leads = catalog.leads;
   const agent = catalog.byId.get(opened || "");
   const room = data?.runtime?.rooms?.find((r) => r.id === opened);
+  const railGeometry = useEdgeRail(undefined, active && !!data && !room?.radio);
   const legacy = data?.chats.find((c) => c.id === opened);
   const roomRoots = room ? roomLeadIds(room, agents) : [];
   const lead = room?.radio
@@ -2671,6 +2674,156 @@ export default function App({ active = true }: { active?: boolean }) {
       save("codex-team-open", !wideTeamOpen);
     }
   };
+  const chatActionsMenu = (
+    <>
+      <Menu.Label>Views</Menu.Label>
+      {(
+        [
+          ["changes", "Changes", FileDiff],
+          ["plan", "Plan", BookOpen],
+          ["rules", "Wake rules", Clock3],
+          ["search", "Search", Search],
+        ] as const
+      ).map(([section, label, Icon]) => (
+        <Menu.Item
+          key={section}
+          aria-label={section === "rules" ? "Rules" : label}
+          data-workspace-section={section}
+          leftSection={<Icon size={14} />}
+          onClick={() => {
+            if (section === "search") {
+              if (isServerView)
+                postToShell(
+                  { kind: "studio-server-search" },
+                  serverParentOrigin,
+                );
+              else setSearchOpen(true);
+            } else {
+              setWorkspaceSection(section);
+              setWorkspaceOpen(true);
+            }
+          }}
+        >
+          {label}
+        </Menu.Item>
+      ))}
+      <Menu.Item
+        id="tasks-toggle"
+        aria-label={`Current activity${taskCount ? `, ${taskCount} active` : ""}`}
+        leftSection={<Activity size={14} />}
+        onClick={() => {
+          setTaskFocus(undefined);
+          setTasksOpen(true);
+        }}
+      >
+        Background activity {taskCount || ""}
+      </Menu.Item>
+      <Menu.Divider />
+      <Menu.Label>Chat</Menu.Label>
+      <Menu.Item
+        id="chat-actions-settings"
+        aria-label="Chat settings"
+        leftSection={<Settings size={14} />}
+        onClick={() => setSettingsOpen(true)}
+      >
+        Chat settings
+      </Menu.Item>
+      {!!workers.length && (
+        <Menu.Item
+          id="chat-actions-team"
+          aria-label="Team"
+          leftSection={<Users size={14} />}
+          onClick={toggleTeam}
+        >
+          Team{" "}
+          {workers.filter((worker) => busy.has(worker.status ?? "")).length}/
+          {workers.length}
+        </Menu.Item>
+      )}
+      {agent?.source === "managed" && (
+        <Menu.Item
+          id="mark-unread"
+          aria-label="Mark chat unread"
+          leftSection={<Mail size={14} />}
+          disabled={
+            !agent.readStateSupported ||
+            !hasCompletedResult(agent) ||
+            readState.marking.has(agent.id)
+          }
+          onClick={() => void readState.markUnread(agent)}
+        >
+          Mark as unread
+        </Menu.Item>
+      )}
+      {agent?.source === "managed" && (
+        <>
+          {(!!agent.inFlight ||
+            team.some(
+              (member) =>
+                (member.status != null && busy.has(member.status)) ||
+                member.status === "queued" ||
+                member.inFlight,
+            )) && (
+            <Menu.Item
+              data-action="stop-team"
+              color="red"
+              leftSection={<Square size={14} />}
+              onClick={() => {
+                void run(() =>
+                  post("/api/stop", {
+                    id: agent.rootId ?? agent.id,
+                    descendants: true,
+                  }),
+                );
+              }}
+            >
+              Stop team
+            </Menu.Item>
+          )}
+          <Menu.Divider />
+          <Menu.Label>Model actions</Menu.Label>
+          {(
+            [
+              ["compact", "Compact", Minimize2],
+              ["review", "Review", ShieldCheck],
+            ] as const
+          )
+            .filter(([action]) =>
+              menuActions(agent.provider ?? undefined).includes(action),
+            )
+            .map(([action, label, Icon]) => (
+              <Menu.Item
+                key={action}
+                aria-label={label}
+                data-action={action}
+                leftSection={<Icon size={14} />}
+                disabled={
+                  busy.has(agent.status ?? "") ||
+                  !!agent.inFlight ||
+                  !!nativeThreadError(agent) ||
+                  !agent.threadId
+                }
+                onClick={() => {
+                  void run(() => submitNativeAction(agent, action));
+                }}
+              >
+                {label}
+                {(!agent.threadId ||
+                  agent.inFlight ||
+                  busy.has(agent.status ?? "") ||
+                  !!nativeThreadError(agent)) && (
+                  <small className="menu-action-help">
+                    {!agent.threadId
+                      ? "Available after the chat starts."
+                      : "Wait until the chat is ready."}
+                  </small>
+                )}
+              </Menu.Item>
+            ))}
+        </>
+      )}
+    </>
+  );
   return (
     <>
       {(!isServerView || isClassicServerView) && (
@@ -2722,6 +2875,58 @@ export default function App({ active = true }: { active?: boolean }) {
           }}
         />
       )}
+      <EdgeRail
+        geometry={railGeometry}
+        team={
+          workers.length
+            ? {
+                busy: workers.filter((worker) => busy.has(worker.status ?? ""))
+                  .length,
+                total: workers.length,
+                expanded: narrowTeam ? teamOpen : wideTeamOpen,
+                onClick: toggleTeam,
+              }
+            : undefined
+        }
+        messages={{
+          count: attentionCount,
+          disabled: !lead,
+          onClick: () => {
+            setWorkspaceSection("messages");
+            setWorkspaceFocus(undefined);
+            setWorkspaceOpen(true);
+          },
+        }}
+        onChanges={() => {
+          setWorkspaceSection("changes");
+          setWorkspaceOpen(true);
+        }}
+        onTasks={() => {
+          setTaskFocus(undefined);
+          setTasksOpen(true);
+        }}
+        onSettings={() => setSettingsOpen(true)}
+        terminal={
+          !mobileClient
+            ? {
+                onClick: () => {
+                  if (screen)
+                    void screen
+                      .execute({ action: "terminal", operation: "toggle" })
+                      .catch((error) => notify(String(error)));
+                  else
+                    window.dispatchEvent(
+                      new CustomEvent("studio-terminal-command", {
+                        detail: "toggle",
+                      }),
+                    );
+                },
+              }
+            : undefined
+        }
+        menu={chatActionsMenu}
+        menuButtonRef={chatActionsButton}
+      />
       <div className="workspace-layout-row" ref={rowLayout.rowRef}>
         <main
           className="workspace"
@@ -2794,7 +2999,7 @@ export default function App({ active = true }: { active?: boolean }) {
               }
             />
             <div id="conversation-header-tools" />
-            {!room?.radio && (
+            {!railGeometry && !room?.radio && (
               <ActionIcon
                 id="chat-settings-toggle"
                 aria-label="Chat settings"
@@ -2804,7 +3009,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 <Settings2 size={18} />
               </ActionIcon>
             )}
-            {!!workers.length && (
+            {!railGeometry && !!workers.length && (
               <Button
                 leftSection={<Users size={16} />}
                 id="team-toggle"
@@ -2824,7 +3029,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 )}
               </Button>
             )}
-            {!room?.radio && (
+            {!railGeometry && !room?.radio && (
               <Button
                 id="messages-toggle"
                 aria-label="Messages"
@@ -2847,7 +3052,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 )}
               </Button>
             )}
-            {!room?.radio && (
+            {!railGeometry && !room?.radio && (
               <Menu position="bottom-end" withinPortal>
                 <Menu.Target>
                   <ActionIcon
@@ -2858,161 +3063,7 @@ export default function App({ active = true }: { active?: boolean }) {
                     <MoreHorizontal size={18} />
                   </ActionIcon>
                 </Menu.Target>
-                <Menu.Dropdown>
-                  <Menu.Label>Views</Menu.Label>
-                  {(
-                    [
-                      ["changes", "Changes", FileDiff],
-                      ["plan", "Plan", BookOpen],
-                      ["rules", "Wake rules", Clock3],
-                      ["search", "Search", Search],
-                    ] as const
-                  ).map(([section, label, Icon]) => (
-                    <Menu.Item
-                      key={section}
-                      aria-label={section === "rules" ? "Rules" : label}
-                      data-workspace-section={section}
-                      leftSection={<Icon size={14} />}
-                      onClick={() => {
-                        if (section === "search") {
-                          if (isServerView)
-                            postToShell(
-                              { kind: "studio-server-search" },
-                              serverParentOrigin,
-                            );
-                          else setSearchOpen(true);
-                        } else {
-                          setWorkspaceSection(section);
-                          setWorkspaceOpen(true);
-                        }
-                      }}
-                    >
-                      {label}
-                    </Menu.Item>
-                  ))}
-                  <Menu.Item
-                    id="tasks-toggle"
-                    aria-label={`Current activity${taskCount ? `, ${taskCount} active` : ""}`}
-                    leftSection={<Activity size={14} />}
-                    onClick={() => {
-                      setTaskFocus(undefined);
-                      setTasksOpen(true);
-                    }}
-                  >
-                    Background activity {taskCount || ""}
-                  </Menu.Item>
-                  <Menu.Divider />
-                  <Menu.Label>Chat</Menu.Label>
-                  <Menu.Item
-                    id="chat-actions-settings"
-                    aria-label="Chat settings"
-                    leftSection={<Settings size={14} />}
-                    onClick={() => setSettingsOpen(true)}
-                  >
-                    Chat settings
-                  </Menu.Item>
-                  {!!workers.length && (
-                    <Menu.Item
-                      id="chat-actions-team"
-                      aria-label="Team"
-                      leftSection={<Users size={14} />}
-                      onClick={toggleTeam}
-                    >
-                      Team{" "}
-                      {
-                        workers.filter((worker) =>
-                          busy.has(worker.status ?? ""),
-                        ).length
-                      }
-                      /{workers.length}
-                    </Menu.Item>
-                  )}
-                  {agent?.source === "managed" && (
-                    <Menu.Item
-                      id="mark-unread"
-                      aria-label="Mark chat unread"
-                      leftSection={<Mail size={14} />}
-                      disabled={
-                        !agent.readStateSupported ||
-                        !hasCompletedResult(agent) ||
-                        readState.marking.has(agent.id)
-                      }
-                      onClick={() => void readState.markUnread(agent)}
-                    >
-                      Mark as unread
-                    </Menu.Item>
-                  )}
-                  {agent?.source === "managed" && (
-                    <>
-                      {(!!agent.inFlight ||
-                        team.some(
-                          (member) =>
-                            (member.status != null &&
-                              busy.has(member.status)) ||
-                            member.status === "queued" ||
-                            member.inFlight,
-                        )) && (
-                        <Menu.Item
-                          data-action="stop-team"
-                          color="red"
-                          leftSection={<Square size={14} />}
-                          onClick={() => {
-                            void run(() =>
-                              post("/api/stop", {
-                                id: agent.rootId ?? agent.id,
-                                descendants: true,
-                              }),
-                            );
-                          }}
-                        >
-                          Stop team
-                        </Menu.Item>
-                      )}
-                      <Menu.Divider />
-                      <Menu.Label>Model actions</Menu.Label>
-                      {(
-                        [
-                          ["compact", "Compact", Minimize2],
-                          ["review", "Review", ShieldCheck],
-                        ] as const
-                      )
-                        .filter(([action]) =>
-                          menuActions(agent.provider ?? undefined).includes(
-                            action,
-                          ),
-                        )
-                        .map(([action, label, Icon]) => (
-                          <Menu.Item
-                            key={action}
-                            aria-label={label}
-                            data-action={action}
-                            leftSection={<Icon size={14} />}
-                            disabled={
-                              busy.has(agent.status ?? "") ||
-                              !!agent.inFlight ||
-                              !!nativeThreadError(agent) ||
-                              !agent.threadId
-                            }
-                            onClick={() => {
-                              void run(() => submitNativeAction(agent, action));
-                            }}
-                          >
-                            {label}
-                            {(!agent.threadId ||
-                              agent.inFlight ||
-                              busy.has(agent.status ?? "") ||
-                              !!nativeThreadError(agent)) && (
-                              <small className="menu-action-help">
-                                {!agent.threadId
-                                  ? "Available after the chat starts."
-                                  : "Wait until the chat is ready."}
-                              </small>
-                            )}
-                          </Menu.Item>
-                        ))}
-                    </>
-                  )}
-                </Menu.Dropdown>
+                <Menu.Dropdown>{chatActionsMenu}</Menu.Dropdown>
               </Menu>
             )}
           </header>
