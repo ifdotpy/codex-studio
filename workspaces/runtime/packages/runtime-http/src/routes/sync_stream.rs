@@ -1661,6 +1661,7 @@ mod tests {
         )
         .await
         .expect("login service");
+        state.validators = crate::validation::Registry::compile(&[]).expect("router validators");
         state.claude_login = Some(login.clone());
         let id = "e0166868-592a-4dca-8994-04d34a730af5";
         let url = "https://claude.com/cai/oauth/authorize?secret=transient-fixture";
@@ -1729,7 +1730,7 @@ mod tests {
     #[test]
     fn state_stream_vault_prefix_contract_matches_its_runtime_owner() {
         let root = tempfile::tempdir().expect("isolated state");
-        let state = HttpState::new(
+        let mut state = HttpState::new(
             "".into(),
             "".into(),
             root.path().display().to_string(),
@@ -1738,6 +1739,7 @@ mod tests {
             None,
             None,
         );
+        state.validators = crate::validation::Registry::compile(&[]).expect("router validators");
         for prefix in [
             "".to_owned(),
             "a".into(),
