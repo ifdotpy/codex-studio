@@ -2038,6 +2038,9 @@ describe("shared resource event transport", () => {
   });
 
   it("reconciles an unchanged owner baseline once after reconnect", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const fetch = vi.fn().mockRejectedValue(new TypeError("Unexpected fetch"));
+    vi.stubGlobal("fetch", fetch);
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("navigator", {
       onLine: true,
@@ -2067,13 +2070,18 @@ describe("shared resource event transport", () => {
       resources: [local],
       resourceVersions: [{ resource: local, revision: 7 }],
     };
+    // An established stream opens before delivering its baseline. Without this,
+    // onerror starts a real identity probe whose cleanup depends on network timing.
+    Source.instances[0]!.open();
     Source.instances[0]!.emit("resources", initial);
     await vi.advanceTimersByTimeAsync(20);
     expect(onChange).toHaveBeenCalledTimes(1);
 
     Source.instances[0]!.onerror?.();
-    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetch).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
     expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.open();
     Source.instances[1]!.emit("resources", {
       ...initial,
       reason: "reconnect",
@@ -2100,6 +2108,8 @@ describe("shared resource event transport", () => {
   });
 
   it("recovers from a replaced stream with a new server epoch", async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError("Unexpected fetch"));
+    vi.stubGlobal("fetch", fetch);
     vi.spyOn(Math, "random").mockReturnValue(0.5);
     syncDatabase.mockResolvedValue({ workspaceId });
 
@@ -2115,6 +2125,7 @@ describe("shared resource event transport", () => {
       await vi.advanceTimersByTimeAsync(20);
       expect(Source.instances).toHaveLength(1);
       const original = Source.instances[0]!;
+      original.open();
       original.emit("resources", {
         protocol: 4,
         workspaceId,
@@ -2127,8 +2138,10 @@ describe("shared resource event transport", () => {
       expect(states.at(-1)).toBe("live");
 
       original.onerror?.();
+      expect(fetch).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(500);
       expect(Source.instances).toHaveLength(2);
+      Source.instances[1]!.open();
       Source.instances[1]!.emit("resources", {
         protocol: 4,
         workspaceId,
@@ -2141,6 +2154,9 @@ describe("shared resource event transport", () => {
 
       expect(states.at(-1)).toBe("live");
       expect(onChange).toHaveBeenCalledTimes(2);
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ epoch: "server-after-restart", revision: 1 }),
+      );
     } finally {
       stopChanges();
       stopStatus();
