@@ -22,9 +22,17 @@ mod tests {
     fn entity_v4_schema_requires_typed_values_and_omits_delete_values() {
         use serde_json::json;
         let valid = json!({"op":"upsert","collection":"workspace","id":"current","seq":1,"value":{"stateDir":"temporary"}});
-        assert!(crate::first_error("SyncEntity", &valid).unwrap().is_none());
+        assert!(
+            crate::first_error("SyncEntity", &valid)
+                .expect("schema lookup")
+                .is_none()
+        );
         let delete = json!({"op":"delete","collection":"agent","id":"a","seq":2});
-        assert!(crate::first_error("SyncEntity", &delete).unwrap().is_none());
+        assert!(
+            crate::first_error("SyncEntity", &delete)
+                .expect("schema lookup")
+                .is_none()
+        );
         for invalid in [
             json!({"op":"upsert","collection":"workspace","id":"current","seq":1,"value":"{}"}),
             json!({"op":"upsert","collection":"workspace","id":"current","seq":1}),
@@ -35,7 +43,7 @@ mod tests {
         ] {
             assert!(
                 crate::first_error("SyncEntity", &invalid)
-                    .unwrap()
+                    .expect("schema lookup")
                     .is_some(),
                 "{invalid}"
             );
