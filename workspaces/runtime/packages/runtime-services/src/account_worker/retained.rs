@@ -35,16 +35,18 @@ pub struct SessionRequest {
 pub const DIAGNOSTICS_OPERATION_PREFIX: &str = "diagnostics:";
 
 impl SessionRequest {
-    /// A diagnostics probe (actorless loaded-state read) leaves no receipt: it is
-    /// idempotent and never retried, so there is no outcome to recover after a crash.
+    /// Configuration reads have no side effects and can be repeated after a lost
+    /// reply. Diagnostics probes are also read-only. Neither needs a durable
+    /// receipt or a wait for an unrelated journal checkpoint.
     pub(super) fn is_volatile_read(&self) -> bool {
-        self.operation.starts_with(DIAGNOSTICS_OPERATION_PREFIX)
-            && self.actor.is_none()
-            && self.transfer.is_none()
-            && matches!(
-                self.method,
-                Method::ClaudeDiagnostics | Method::ThreadLoadedList
-            )
+        self.method == Method::ConfigRead
+            || (self.operation.starts_with(DIAGNOSTICS_OPERATION_PREFIX)
+                && self.actor.is_none()
+                && self.transfer.is_none()
+                && matches!(
+                    self.method,
+                    Method::ClaudeDiagnostics | Method::ThreadLoadedList
+                ))
     }
 }
 
