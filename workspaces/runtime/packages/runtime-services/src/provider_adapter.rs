@@ -64,6 +64,11 @@ pub struct Capabilities {
     /// An unready image workspace gets a writable temporary sandbox root
     /// (otherwise it runs read-only).
     pub writable_sandbox_roots: bool,
+    /// The turn takes no `turn/steer` input after the time it reports as its
+    /// `completedAt`: every steer it took is recorded in that turn, and a later
+    /// steer is refused (`expectedTurnId`). A steer written after that time was
+    /// never applied.
+    pub turn_end_closes_steer: bool,
 }
 
 pub trait ProviderAdapter: Send + Sync + 'static {
@@ -221,6 +226,7 @@ impl ProviderAdapter for CodexAdapter {
             voice_and_review_tools: true,
             daybreak: true,
             writable_sandbox_roots: true,
+            turn_end_closes_steer: true,
         }
     }
 
@@ -344,6 +350,7 @@ impl ProviderAdapter for ClaudeAdapter {
             voice_and_review_tools: false,
             daybreak: false,
             writable_sandbox_roots: false,
+            turn_end_closes_steer: false,
         }
     }
 
