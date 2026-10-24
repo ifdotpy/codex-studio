@@ -493,15 +493,13 @@ pub(crate) fn check_archive_worktree(
     Ok(())
 }
 
-/// The owned worktree root of worker `id` that contains `cwd`, under the
-/// configured root or a repository default root (`crate::worktree_root`).
+/// The owned worktree root of worker `id` that contains `cwd`
+/// (`crate::worktree_root`). Layout only; the caller proves ownership.
 fn owned_worktree_root<'a>(
     cwd: &'a std::path::Path,
     id: &str,
-    configured: Option<&std::path::Path>,
 ) -> Result<crate::worktree_root::OwnedRoot<'a>, WorkspaceCleanupError> {
-    crate::worktree_root::owned_root(cwd, id, configured)
-        .ok_or(WorkspaceCleanupError::InvalidRecord)
+    crate::worktree_root::owned_root(cwd, id).ok_or(WorkspaceCleanupError::InvalidRecord)
 }
 
 /// The main worktree of the repository that owns linked worktree `root`.
@@ -528,7 +526,7 @@ fn owning_repository(root: &std::path::Path) -> Result<PathBuf, WorkspaceCleanup
 
 fn worktree_identity(
     agent: &Value,
-    state_dir: &std::path::Path,
+    _state_dir: &std::path::Path,
 ) -> Result<Option<Value>, WorkspaceCleanupError> {
     #[derive(Deserialize)]
     struct WorktreeOwner {
@@ -539,23 +537,32 @@ fn worktree_identity(
         serde_json::from_value(agent.clone()).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
     let lexical = studio_runtime_store::path_identity::LexicalPath::exact(&owner.cwd)
         .ok_or(WorkspaceCleanupError::InvalidRecord)?;
-    // The configured root is canonical, as are the worker paths built from it.
-    let configured = crate::worktree_root::configured(state_dir)
-        .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
-    let configured = configured.as_deref();
-    let root = owned_worktree_root(&lexical, &owner.id, configured)?.root();
+    let lexical_root = owned_worktree_root(&lexical, &owner.id)?.root();
     // Inspect the exact owned root, not a canonicalized parent or a missing cwd
-    // subdirectory. A dangling link is still present and must stay held.
-    match std::fs::symlink_metadata(root) {
+    // subdirectory. A dangling link is still present and must stay held. The
+    // worker directory itself must never be a link: cleanup would act on its
+    // target, which may belong to another repository. Ancestors may be links.
+    match std::fs::symlink_metadata(lexical_root) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(WorkspaceCleanupError::InvalidRecord),
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(WorkspaceCleanupError::InvalidRecord);
+        }
         Ok(_) => {}
     }
     let id = owner.id.as_str();
     let cwd =
         CanonicalPath::existing(&owner.cwd).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
-    let (root, repo) = match owned_worktree_root(&cwd, id, configured)? {
-        crate::worktree_root::OwnedRoot::Configured(root) => (root, owning_repository(root)?),
+    let owned = owned_worktree_root(&cwd, id)?;
+    // The recorded spelling and the resolved directory must name the same
+    // worker directory; otherwise a substituted path redirects cleanup.
+    let resolved_root =
+        CanonicalPath::existing(lexical_root).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+    if resolved_root.as_path() != owned.root() {
+        return Err(WorkspaceCleanupError::InvalidRecord);
+    }
+    let (root, repo) = match owned {
+        crate::worktree_root::OwnedRoot::Linked(root) => (root, owning_repository(root)?),
         crate::worktree_root::OwnedRoot::Repository { root, repository } => {
             (root, repository.to_path_buf())
         }
@@ -2088,16 +2095,54 @@ mod tests {
     }
 
     #[test]
-    fn worktree_outside_both_roots_is_not_owned() {
-        let configured = std::path::Path::new("/disk/worktrees");
+    fn worktree_outside_a_worker_directory_is_not_owned() {
+        for path in [
+            "/elsewhere/cleanup-agent",
+            "/elsewhere/codex-agents/other-agent",
+        ] {
+            assert!(matches!(
+                super::owned_worktree_root(std::path::Path::new(path), "cleanup-agent"),
+                Err(WorkspaceCleanupError::InvalidRecord)
+            ));
+        }
+    }
+
+    /// A worker directory replaced by a link to another repository's worktree
+    /// must never become the cleanup target.
+    #[test]
+    fn substituted_worker_link_is_refused_and_target_survives() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let base = studio_runtime_store::path_identity::resolve(directory.path())
+            .expect("resolved fixture folder");
+        let foreign = base.join("foreign");
+        fixture_git(
+            &base,
+            &["init", "-q", foreign.to_str().expect("foreign path")],
+        );
+        std::fs::write(foreign.join("README.md"), "foreign\n").expect("file writes");
+        fixture_git(&foreign, &["add", "README.md"]);
+        fixture_git(&foreign, &["commit", "-q", "-m", "foreign"]);
+        let target = foreign.join(".worktrees/codex-agents/cleanup-agent");
+        fixture_git(
+            &foreign,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                target.to_str().expect("target path"),
+            ],
+        );
+        let workers = base.join("configured/codex-agents");
+        std::fs::create_dir_all(&workers).expect("workers directory creates");
+        let link = workers.join("cleanup-agent");
+        std::os::unix::fs::symlink(&target, &link).expect("substitute link creates");
+        let agent = json!({"id": "cleanup-agent", "cwd": link, "worktreeReady": true});
         assert!(matches!(
-            super::owned_worktree_root(
-                std::path::Path::new("/elsewhere/codex-agents/cleanup-agent"),
-                "cleanup-agent",
-                Some(configured),
-            ),
+            super::worktree_identity(&agent, &base),
             Err(WorkspaceCleanupError::InvalidRecord)
         ));
+        assert!(target.join("README.md").exists());
     }
 
     #[tokio::test]

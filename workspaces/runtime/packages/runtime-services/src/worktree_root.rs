@@ -5,9 +5,10 @@
 //! file `worktree-root.json` in the server state directory,
 //! `{"root": "/absolute/path"}`, selects one shared root for every repository,
 //! for example a directory on another disk. Provisioning reads the file for
-//! each new worktree, so a change applies without a restart. Cleanup accepts
-//! both the configured root and the repository default, so worktrees created
-//! before a change remain manageable.
+//! each new worktree, so a change applies without a restart. Ownership never
+//! depends on the current setting: a worktree under any root stays manageable
+//! after the setting changes, because its repository is read from Git and Git
+//! must register that exact directory.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -70,8 +71,9 @@ pub fn workers_directory(configured: Option<&Path>, repository: &Path) -> PathBu
 /// Where an owned worker worktree root sits, as found from its own path.
 #[derive(Debug, PartialEq, Eq)]
 pub enum OwnedRoot<'a> {
-    /// Under the configured root; the repository must be read from Git.
-    Configured(&'a Path),
+    /// Under a root other than `<repository>/.worktrees`, such as a configured
+    /// one; the repository must be read from Git, which must register the root.
+    Linked(&'a Path),
     /// Under `<repository>/.worktrees`; the repository is the returned path.
     Repository {
         root: &'a Path,
@@ -83,19 +85,17 @@ impl<'a> OwnedRoot<'a> {
     /// The worker worktree directory.
     pub fn root(&self) -> &'a Path {
         match self {
-            Self::Configured(root) | Self::Repository { root, .. } => root,
+            Self::Linked(root) | Self::Repository { root, .. } => root,
         }
     }
 }
 
-/// The ancestor of `path` that is the worktree of worker `id`, under the
-/// configured root or a repository default root. `path` and `configured` must
-/// be in the same form, both lexical or both canonical.
-pub fn owned_root<'a>(
-    path: &'a Path,
-    id: &str,
-    configured: Option<&Path>,
-) -> Option<OwnedRoot<'a>> {
+/// The ancestor of `path` that is the worktree directory of worker `id`:
+/// `<root>/codex-agents/<id>` for any root. The current configuration is not
+/// consulted, so a root change never strands an existing worktree. Callers
+/// must still prove ownership through Git and compare lexical and canonical
+/// forms before acting on the result.
+pub fn owned_root<'a>(path: &'a Path, id: &str) -> Option<OwnedRoot<'a>> {
     let root = path.ancestors().find(|candidate| {
         candidate.file_name().and_then(|name| name.to_str()) == Some(id)
             && candidate
@@ -105,16 +105,13 @@ pub fn owned_root<'a>(
                 == Some(WORKER_DIRECTORY)
     })?;
     let worktree_root = root.parent().and_then(Path::parent)?;
-    if configured.is_some_and(|configured| configured == worktree_root) {
-        return Some(OwnedRoot::Configured(root));
-    }
     if worktree_root.file_name().and_then(|name| name.to_str()) == Some(REPOSITORY_WORKTREE_ROOT) {
         return Some(OwnedRoot::Repository {
             root,
             repository: worktree_root.parent()?,
         });
     }
-    None
+    Some(OwnedRoot::Linked(root))
 }
 
 #[cfg(test)]
@@ -186,41 +183,26 @@ mod tests {
     }
 
     #[test]
-    fn ownership_accepts_both_roots_and_nothing_else() {
-        let configured = Path::new("/disk/worktrees");
+    fn ownership_accepts_any_root_by_layout_only() {
         assert_eq!(
-            owned_root(
-                Path::new("/disk/worktrees/codex-agents/a1/sub"),
-                "a1",
-                Some(configured)
-            ),
-            Some(OwnedRoot::Configured(Path::new(
+            owned_root(Path::new("/disk/worktrees/codex-agents/a1/sub"), "a1"),
+            Some(OwnedRoot::Linked(Path::new(
                 "/disk/worktrees/codex-agents/a1"
             )))
         );
         assert_eq!(
-            owned_root(
-                Path::new("/project/.worktrees/codex-agents/a1"),
-                "a1",
-                Some(configured)
-            ),
+            owned_root(Path::new("/project/.worktrees/codex-agents/a1"), "a1"),
             Some(OwnedRoot::Repository {
                 root: Path::new("/project/.worktrees/codex-agents/a1"),
                 repository: Path::new("/project"),
             })
         );
         for foreign in [
-            "/disk/worktrees/codex-agents/a1",
-            "/other/codex-agents/a1",
             "/disk/worktrees/a1",
             "/disk/worktrees/codex-agents/b2",
+            "/a1",
         ] {
-            let accepted = if foreign == "/disk/worktrees/codex-agents/a1" {
-                owned_root(Path::new(foreign), "a1", None)
-            } else {
-                owned_root(Path::new(foreign), "a1", Some(configured))
-            };
-            assert_eq!(accepted, None, "{foreign}");
+            assert_eq!(owned_root(Path::new(foreign), "a1"), None, "{foreign}");
         }
     }
 }
