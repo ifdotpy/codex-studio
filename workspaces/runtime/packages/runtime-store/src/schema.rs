@@ -669,7 +669,6 @@ mod tests {
         verify_payload_migration,
     };
     use rusqlite::Connection;
-    use serde_json::Value;
 
     #[test]
     fn persisted_and_federation_json_keep_distinct_unicode_formats() {
