@@ -65,7 +65,7 @@ export function query({prompt,options}){
   setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async()=>{},
   setMcpServers:async()=>({added:[],removed:[],errors:{}}),
   close(){if(!deaf)abort.abort();},
-  interrupt(){fs.appendFileSync(cwd+'/.interrupts','x');if(wedged)return new Promise(()=>{});interrupted();return Promise.resolve({still_queued:queued.map(q=>q.uuid)});},
+  interrupt(){fs.appendFileSync(cwd+'/.interrupts','x');if(wedged){if(fs.existsSync(cwd+'/.stop-now'))return Promise.resolve({still_queued:queued.map(q=>q.uuid)});return new Promise(()=>{});}interrupted();return Promise.resolve({still_queued:queued.map(q=>q.uuid)});},
   async *[Symbol.asyncIterator](){
    fs.mkdirSync(path.dirname(history),{recursive:true});
    while(!abort.signal.aborted){
@@ -291,7 +291,7 @@ async function read(bridge, value) {
   }
 }
 
-test("a tool call that never returns ends the turn as a stall and keeps held steers", async () => {
+test("a tool stall closes a CLI with unconfirmed input without resending it", async () => {
   const bridge = await startBridge();
   const turn = await start(bridge, "stall", [
     ["late-question", "question during the stall"],
@@ -307,13 +307,10 @@ test("a tool call that never returns ends the turn as a stall and keeps held ste
   );
   assert.equal(tool.params.item.status, "failed");
   assert.equal(tool.params.item.stalled, true);
-  // Claude Code runs the held steer as its next turn: delivered once, never resent.
-  const delivered = await bridge.note(
-    (n) => acks(bridge, "late-question")[0] === n,
-  );
-  assert.equal(delivered.params.turnId, turn);
-  await sleep(100);
-  assert.equal(acks(bridge, "late-question").length, 1);
+  // The CLI cannot retain ambiguous queued input after this turn. Without
+  // authoritative native history it remains unknown and is never resent.
+  assert.equal(acks(bridge, "late-question").length, 0);
+  assert.deepEqual((await bridge.call("thread/loaded/list", {})).data, []);
   assert.deepEqual(await inputs(bridge), [
     "stall",
     "question during the stall",
@@ -510,4 +507,28 @@ test("the stall rule needs both an elapsed budget and silence", () => {
     ],
     ["u1", "u2"],
   );
+});
+
+test("Stop bounds a running Claude that ignores its interrupt", async () => {
+  const bridge = await startBridge({
+    env: { STUDIO_CLAUDE_TOOL_STALL_GRACE_MS: "600000" },
+  });
+  const turn = await start(bridge, "deaf", [
+    ["stop-recorded", "recorded steer"],
+    ["stop-lost", "lost steer"],
+  ]);
+  await fs.writeFile(path.join(bridge.root, ".stop-now"), "");
+  await bridge.call("turn/interrupt", {
+    threadId: bridge.thread,
+    turnId: turn,
+  });
+  const done = await completed(bridge, turn);
+  assert.equal(done.params.turn.status, "interrupted");
+  assert.match(
+    done.params.turn.error.message,
+    /did not end the turn after Stop/,
+  );
+  assert.deepEqual(done.params.turn.unappliedSteers, ["stop-lost"]);
+  assert.equal(acks(bridge, "stop-recorded").length, 1);
+  assert.equal(acks(bridge, "stop-lost").length, 0);
 });
