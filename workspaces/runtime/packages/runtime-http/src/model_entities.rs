@@ -3,42 +3,87 @@
 use serde_json::{Value, json};
 use studio_runtime_services::model_catalog::ChangeCallback;
 use studio_runtime_store::{RuntimeStore, StoreError, SyncDocumentsRepository, Transaction};
+use tokio::sync::mpsc;
+#[cfg(test)]
+use tokio::sync::oneshot;
 
 const MODEL_COLLECTION: &str = "model";
 const MODEL_ID_SEPARATOR: &str = ":";
 
+enum ModelPublication {
+    Catalog {
+        account: String,
+        provider: String,
+        catalog: Option<Value>,
+    },
+    #[cfg(test)]
+    Flush(oneshot::Sender<()>),
+}
+
 pub(crate) fn change_callback(store: Option<std::sync::Arc<RuntimeStore>>) -> ChangeCallback {
-    std::sync::Arc::new(move |account, _home, provider, catalog| {
-        let Some(store) = store.clone() else { return };
-        let account = account.to_owned();
-        let provider = provider.to_owned();
-        let publication_account = account.clone();
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            eprintln!("Could not publish model entities for {account}: no async runtime");
-            return;
-        };
-        runtime.spawn(async move {
-            let result = store
-                .transaction_with(move |transaction| {
-                    publish_catalog(
-                        transaction,
-                        &publication_account,
-                        &provider,
-                        catalog.as_ref(),
-                    )
-                })
-                .await;
-            match result {
-                // The committed entity rows publish through RuntimeStore's
-                // entity-only change observer; no resource invalidation is needed.
-                Ok(true) => {}
-                Ok(false) => {}
-                Err(error) => {
-                    eprintln!("Could not publish model entities for {account}: {error}");
+    let Some(store) = store else {
+        return std::sync::Arc::new(|_, _, _, _| {});
+    };
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        eprintln!("Could not start model entity publisher: no async runtime");
+        return std::sync::Arc::new(|_, _, _, _| {});
+    };
+    start_publisher(store, &runtime).0
+}
+
+fn start_publisher(
+    store: std::sync::Arc<RuntimeStore>,
+    runtime: &tokio::runtime::Handle,
+) -> (ChangeCallback, mpsc::UnboundedSender<ModelPublication>) {
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    runtime.spawn(async move {
+        while let Some(publication) = receiver.recv().await {
+            match publication {
+                ModelPublication::Catalog {
+                    account,
+                    provider,
+                    catalog,
+                } => {
+                    let publication_account = account.clone();
+                    let result = store
+                        .transaction_with(move |transaction| {
+                            publish_catalog(
+                                transaction,
+                                &publication_account,
+                                &provider,
+                                catalog.as_ref(),
+                            )
+                        })
+                        .await;
+                    match result {
+                        // The committed entity rows publish through RuntimeStore's
+                        // entity-only observer; no resource invalidation is needed.
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!("Could not publish model entities for {account}: {error}");
+                        }
+                    }
+                }
+                #[cfg(test)]
+                ModelPublication::Flush(done) => {
+                    let _ = done.send(());
                 }
             }
-        });
-    })
+        }
+    });
+
+    let callback_sender = sender.clone();
+    let callback: ChangeCallback = std::sync::Arc::new(move |account, _home, provider, catalog| {
+        let publication = ModelPublication::Catalog {
+            account: account.to_owned(),
+            provider: provider.to_owned(),
+            catalog,
+        };
+        if callback_sender.send(publication).is_err() {
+            eprintln!("Could not queue model entity publication for {account}");
+        }
+    });
+    (callback, sender)
 }
 
 fn publish_catalog(
@@ -82,15 +127,19 @@ fn publish_catalog(
     }
 
     let mut statement = transaction
-        .prepare_cached("SELECT id FROM sync_entities WHERE collection=?1 AND deleted=0")?;
+        .prepare_cached("SELECT id,payload FROM sync_entities WHERE collection=?1 AND deleted=0")?;
     let existing = statement
-        .query_map([MODEL_COLLECTION], |row| row.get::<_, String>(0))?
+        .query_map([MODEL_COLLECTION], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
-    for id in existing
-        .into_iter()
-        .filter(|id| id.starts_with(&prefix) && !next_ids.contains(id))
-    {
+    for id in existing.into_iter().filter_map(|(id, payload)| {
+        let belongs_to_account = serde_json::from_str::<Value>(&payload)
+            .ok()
+            .is_some_and(|payload| payload["value"]["accountKey"].as_str() == Some(account));
+        (belongs_to_account && id.starts_with(&prefix) && !next_ids.contains(&id)).then_some(id)
+    }) {
         changed |= SyncDocumentsRepository::put_entity(
             transaction,
             MODEL_COLLECTION,
@@ -172,5 +221,83 @@ mod tests {
             rows.iter()
                 .any(|(id, deleted, _)| id == "two:alpha" && !deleted)
         );
+    }
+
+    #[tokio::test]
+    async fn quick_catalog_changes_leave_the_latest_catalog_and_match_exact_accounts() {
+        let directory = tempfile::tempdir().expect("isolated runtime state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store opens");
+        let store = std::sync::Arc::new(store);
+        let (callback, publisher) =
+            start_publisher(store.clone(), &tokio::runtime::Handle::current());
+
+        // Both callbacks enqueue before the executor gets a chance to run. The
+        // second catalog must win even if publication scheduling is concurrent.
+        callback(
+            "one:child",
+            "",
+            "codex",
+            Some(json!({"data":[
+                {"model":"child-model","hidden":false}
+            ]})),
+        );
+        callback(
+            "one",
+            "",
+            "codex",
+            Some(json!({"data":[
+                {"model":"old-model","hidden":false}
+            ]})),
+        );
+        callback(
+            "one",
+            "",
+            "codex",
+            Some(json!({"data":[
+                {"model":"new-model","hidden":true}
+            ]})),
+        );
+
+        let (done, flushed) = oneshot::channel();
+        publisher
+            .send(ModelPublication::Flush(done))
+            .expect("publisher accepts flush marker");
+        flushed.await.expect("publisher reaches flush marker");
+
+        let rows = read_model_rows(&store);
+        assert!(
+            rows.iter()
+                .any(|(id, deleted, _)| id == "one:old-model" && *deleted)
+        );
+        assert!(
+            rows.iter()
+                .any(|(id, deleted, _)| id == "one:new-model" && !deleted)
+        );
+        assert!(
+            rows.iter()
+                .any(|(id, deleted, _)| id == "one:child:child-model" && !deleted)
+        );
+    }
+
+    fn read_model_rows(store: &RuntimeStore) -> Vec<(String, bool, String)> {
+        store
+            .test_read_transaction(|tx| {
+                let mut statement = tx.prepare(
+                    "SELECT id,deleted,payload FROM sync_entities WHERE collection='model' ORDER BY id",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, bool>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .expect("model entities read")
     }
 }
