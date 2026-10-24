@@ -55,7 +55,7 @@
   ],
   "workspaces/client/packages/client-core/src/file_links.rs": [
     "\"\\u{200b} file:///tmp/%D0%96%F0%9F%A6%80.rs#L12C2 \\u{200b}\",",
-    "json!({\"path\":\"/tmp/Ж🦀.rs\",\"line\":12}),",
+    "json!({\"path\":\"/tmp/\u0416\ud83e\udd80.rs\",\"line\":12}),",
     "\"sandbox:/tmp/report.md:9:2\",",
     "json!({\"path\":\"/tmp/report.md\",\"line\":9}),",
     "\"file://localhost/tmp/a.md#L4-L8\",",
@@ -73,7 +73,6 @@
     "cwd: \"/tmp/work\","
   ],
   "workspaces/providers/apps/claude-bridge/session-store.test.mjs": [
-    "cwd: \"/tmp/work\",",
     "cwd: \"/tmp/work\",",
     "cwd: \"/tmp/title\","
   ],
@@ -189,9 +188,6 @@
     "\"/tmp/workspace\",",
     "\"-C\\n/tmp/workspace\\nstatus\\n--porcelain=v1\\n-z\\n{}\\n\",",
     "\"/tmp/workspace\","
-  ],
-  "workspaces/runtime/packages/runtime-services/tests/monitor_output_ui.rs": [
-    ".unwrap_or_else(|| \"/tmp\".into());"
   ],
   "workspaces/runtime/packages/runtime-services/tests/provider_session_task.rs": [
     "launch: ProviderLaunchSpec::new(vec![\"fake\".into()], BTreeMap::new(), \"/tmp\".into()),"
