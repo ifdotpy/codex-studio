@@ -451,13 +451,30 @@ impl ProviderAdapter for ClaudeAdapter {
         ".credentials.json"
     }
 
+    /// A turn that Claude starts itself, for example for a background task
+    /// notification, can fail at a subscription limit with only the notice
+    /// that Claude Code shows as its error: "You've hit your session limit ·
+    /// resets 3:40am (UTC)". The names are Claude Code's limit names.
     fn classify_error(&self, error: &Value) -> Option<UsageCause> {
         static AUTH: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        static LIMIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
         let auth = AUTH.get_or_init(|| {
             regex::Regex::new(r"(?i)oauth session expired|failed to authenticate")
                 .expect("static Claude auth pattern")
         });
-        classify_usage_failure(error, Some(auth))
+        let limit = LIMIT.get_or_init(|| {
+            regex::Regex::new(
+                r"^You've hit your (?:session|weekly|Opus|Sonnet|Fable|usage credit) limit\b",
+            )
+            .expect("static Claude limit notice pattern")
+        });
+        classify_usage_failure(error, Some(auth)).or_else(|| {
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| limit.is_match(message))
+                .then_some(UsageCause::RateLimit)
+        })
     }
 
     fn is_busy_error(&self, error: &Value) -> bool {

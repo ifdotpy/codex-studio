@@ -215,3 +215,85 @@ async fn lazy_member_moves_its_history_before_its_input_is_claimed() {
     assert_eq!(state.event_status("input").await, "pending");
     worker.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn first_thread_preparation_cannot_skip_a_lazy_transfer() {
+    for method in [Method::ThreadStart, Method::ThreadResume] {
+        let state = State::new().await;
+        edit_agent(&state, |row| {
+            row.extra.insert("accountKey".into(), json!("source"));
+        })
+        .await;
+        request_transfer(&state, "default").await;
+        let reads = Arc::new(RefusingReads::default());
+        let mut resources = test_resources().unwrap();
+        resources
+            .model_catalog
+            .retain_accounts(&[json!({"id":"default","home":state.root,"provider":"codex"})]);
+        resources.account_session = Some(reads.clone());
+        let done = turn_preparation::run(turn_preparation::Run {
+            bridge: state.bridge.clone(),
+            resources: Arc::new(resources),
+            generation: 1,
+            connection_id: "destination-connection".into(),
+            intent: TurnIntent {
+                agent_id: state.agent.clone(),
+                epoch: state.epoch,
+                attempt_id: "first-preparation".into(),
+                account_key: "default".into(),
+                provider: studio_runtime_providers::ProviderKind::Codex,
+                thread_id: Some("fake-thread-0".into()),
+                cwd: Some(state.root.display().to_string()),
+                model: Some("fake-model".into()),
+                radio_authorized: false,
+                events: vec![],
+            },
+            method,
+            since: 0,
+            effect: None,
+            loaded: None,
+            carried: None,
+        })
+        .await;
+        assert!(
+            done.outcome.is_ok(),
+            "a refused history move must not end the account worker"
+        );
+        assert_eq!(
+            stored_transfer(&state).await["members"][state.agent.as_str()]["phase"],
+            "blocked",
+            "{method:?}"
+        );
+        assert_eq!(
+            *reads.0.lock().unwrap(),
+            [("default".into(), "model/list".into())]
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_frame_releases_a_waiting_member_without_another_input() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    assert_eq!(
+        request_transfer(&state, "target").await["members"][state.agent.as_str()]["phase"],
+        "waiting"
+    );
+    peer.completed().await;
+    worker_barrier(&worker).await;
+    let record = state.record().await;
+    assert_eq!(record["accountKey"], "target");
+    assert_eq!(record["inFlight"], false);
+    assert_eq!(
+        stored_transfer(&state).await["members"][state.agent.as_str()]["phase"],
+        "lazy"
+    );
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "the old account sends no new native request"
+    );
+    worker.shutdown().await.unwrap();
+}

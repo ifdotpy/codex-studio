@@ -1185,7 +1185,13 @@ pub async fn before_start(
     agent_id: &str,
     now: f64,
 ) -> Result<Value, TransferError> {
-    let agent = transfer_member(&store, agent_id).await?;
+    let mut agent = transfer_member(&store, agent_id).await?;
+    if studio_runtime_store::truthy(agent.get("accountTransferId"))
+        && !studio_runtime_store::truthy(agent.get("lazyAccountTransfer"))
+        && driver::release_waiting(&store, agent_id, now).await?
+    {
+        agent = transfer_member(&store, agent_id).await?;
+    }
     let lazy = agent
         .get("lazyAccountTransfer")
         .filter(|value| !value.is_null());
@@ -1193,6 +1199,16 @@ pub async fn before_start(
         let operation = lazy["id"]
             .as_str()
             .ok_or(TransferError::Refused("Invalid lazy transfer identity"))?;
+        let owner = operation.to_owned();
+        let member = agent_id.to_owned();
+        let reading = store
+            .transaction_with_error(move |tx| driver::owns_reading_member(tx, &owner, &member))
+            .await?;
+        if reading {
+            // The executor already owns this read. Ordinary preparation keeps
+            // its snapshot's AccountTransfer hold and cannot repeat the move.
+            return Ok(agent);
+        }
         let session = session.ok_or(TransferError::Requires("provider-session/account-worker"))?;
         let executor = AccountTransferExecutor {
             store: Arc::clone(&store),

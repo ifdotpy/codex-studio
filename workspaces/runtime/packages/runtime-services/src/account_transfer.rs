@@ -12,6 +12,8 @@ use studio_runtime_schema::agent_limits::MAX_TRANSFER_AGENT_RECORDS;
 pub use studio_runtime_store::MAX_TRANSFER_RECORD_BYTES as MAX_RECORD_BYTES;
 pub const EXECUTOR_REQUIRED: &str = "account-transfer/provider-history-executor";
 pub const SETTINGS_REQUIRED: &str = "account-transfer/destination-settings";
+/// Internal receipt-hold identity mapped to native admission by preparation.
+pub(crate) const RECEIPT_HOLD: &str = "account-transfer/receipt-hold";
 
 #[derive(Debug, Error)]
 pub enum TransferError {
@@ -391,13 +393,24 @@ impl Snapshot {
                             ));
                         }
                         a["accountKey"] = lazy["sourceAccountKey"].clone();
-                        for field in RESTORED_SETTINGS {
-                            if let Some(value) = lazy["sourceState"].get(*field) {
-                                if value.is_null() {
-                                    remove(a, &[*field])?;
-                                } else {
-                                    a[*field] = value.clone();
+                        let exact = match lazy.get("sourceStateExact") {
+                            None => false,
+                            Some(Value::Bool(exact)) => *exact,
+                            Some(_) => {
+                                return Err(invalid(
+                                    "transfer agent",
+                                    "/lazyAccountTransfer/sourceStateExact",
+                                ));
+                            }
+                        };
+                        for field in SOURCE_STATE_FIELDS {
+                            match lazy["sourceState"].get(*field) {
+                                Some(value) if exact || !value.is_null() => {
+                                    a[*field] = value.clone()
                                 }
+                                Some(_) => remove(a, &[*field])?,
+                                None if exact => remove(a, &[*field])?,
+                                None => {}
                             }
                         }
                         remove(a, &["lazyAccountTransfer"])?;
@@ -1168,33 +1181,17 @@ pub(crate) fn enroll(
     if !lazy {
         return Ok(member);
     }
-    let source_state = [
-        "provider",
-        "model",
-        "effort",
-        "nativeEffort",
-        "fastMode",
-        "daybreakEnabled",
-        "cyberAccessProgram",
-        "workerDefaults",
-        "pendingSettings",
-        "pendingSettingsAccountKey",
-        "claudeOptions",
-        "executionSettingsAccountKey",
-        "status",
-        "error",
-        "nativeFailureHold",
-    ]
-    .into_iter()
-    .map(|key| {
-        (
-            key.to_owned(),
-            value.get(key).cloned().unwrap_or(Value::Null),
-        )
-    })
-    .collect::<serde_json::Map<_, _>>();
+    let source_state = SOURCE_STATE_FIELDS
+        .iter()
+        .filter_map(|key| {
+            value
+                .get(*key)
+                .cloned()
+                .map(|value| ((*key).to_owned(), value))
+        })
+        .collect::<serde_json::Map<_, _>>();
     value["lazyAccountTransfer"] = json!({"id":operation_id,"sourceAccountKey":source_account,
-        "sourceThreadId":source_thread,"sourceState":source_state});
+        "sourceThreadId":source_thread,"sourceState":source_state,"sourceStateExact":true});
     value["accountKey"] = json!(target);
     if provider != target_provider {
         value["provider"] = json!(target_provider);
@@ -1251,7 +1248,7 @@ pub fn before_start(agent: &Value) -> Result<(), TransferError> {
             .get("emptyTransferRecovery")
             .is_some_and(|r| !r.is_null() && r["phase"] != "completed")
     {
-        return Err(TransferError::Requires("account-transfer/receipt-hold"));
+        return Err(TransferError::Requires(RECEIPT_HOLD));
     }
     Ok(())
 }
@@ -1267,7 +1264,10 @@ pub(crate) fn remove(value: &mut Value, keys: &[&str]) -> Result<(), TransferErr
     }
     Ok(())
 }
-const RESTORED_SETTINGS: &[&str] = &[
+/// Fields the lazy move owns, including source failure state. Sparse exact
+/// snapshots preserve null and absence; legacy snapshots used null for both.
+const SOURCE_STATE_FIELDS: &[&str] = &[
+    "accountKey",
     "provider",
     "model",
     "effort",
@@ -1280,6 +1280,9 @@ const RESTORED_SETTINGS: &[&str] = &[
     "pendingSettingsAccountKey",
     "claudeOptions",
     "executionSettingsAccountKey",
+    "status",
+    "error",
+    "nativeFailureHold",
 ];
 const CANCEL_FOLLOWUP: &str = "The account transfer was cancelled after this turn was interrupted. Continue the existing task on this account from saved context. Preserve completed work and check existing receipts before any command with an unknown outcome.";
 
