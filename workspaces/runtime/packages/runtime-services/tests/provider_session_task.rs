@@ -1497,6 +1497,61 @@ async fn review_shutdown_retains_adapter_buffered_journal() {
     );
 }
 
+/// A request reply that only reaches the shutdown tail still resolves its
+/// request, and the exit does not also report the request as unknown. Before
+/// this, the tail's `turn/started` was applied while its `turn/start` reply
+/// was not: the start was neither accepted nor unknown, and the restart that
+/// followed left the in-flight turn interrupted without auto-wake.
+#[tokio::test(start_paused = true)]
+async fn shutdown_tail_reply_resolves_its_request_instead_of_unknown() {
+    let (mut session, mut peer) = open().await;
+    ready(&mut session, &mut peer).await;
+    let ticket = session
+        .control
+        .submit(session.control.prepare(spec(2, 60_000)).await.unwrap())
+        .await
+        .unwrap();
+    written(write(&mut peer).await);
+    session.events.recv().await.unwrap();
+    // The consumer stopped reading: the session lane and its pending slot
+    // fill, so the reply stays in the attachment journal until shutdown.
+    for cursor in 1..=(LANE_CAPACITY as u64 + 1) {
+        peer.events
+            .send(entry(cursor, 0, JournalPayload::Stderr(json!({}))))
+            .await
+            .unwrap();
+    }
+    let reply_cursor = LANE_CAPACITY as u64 + 2;
+    peer.events
+        .send(entry(
+            reply_cursor,
+            0,
+            JournalPayload::Frame(reply(ticket.id.clone())),
+        ))
+        .await
+        .unwrap();
+    let exit = session.checked_shutdown().await;
+    let tail = exit
+        .undelivered
+        .iter()
+        .find(|event| {
+            event
+                .journal
+                .as_ref()
+                .is_some_and(|journal| journal.cursor == EventCursor(reply_cursor))
+        })
+        .expect("the reply is part of the shutdown tail");
+    assert!(tail.outcomes.iter().any(|outcome| matches!(
+        outcome,
+        SessionOutcome::Resolved { ticket: seen, outcome: RequestOutcome::Reply { late: false, .. } }
+            if *seen == ticket
+    )));
+    assert!(!exit.outcomes.iter().any(|outcome| matches!(
+        outcome,
+        SessionOutcome::Resolved { ticket: seen, .. } if *seen == ticket
+    )));
+}
+
 #[tokio::test(start_paused = true)]
 async fn review_dropped_buffered_submission_fences_session() {
     let (mut session, mut peer) = open().await;
