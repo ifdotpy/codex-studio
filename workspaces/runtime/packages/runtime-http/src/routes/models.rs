@@ -477,7 +477,8 @@ mod tests {
         )
         .await
         .expect_err("an unconfigured account has no catalog yet");
-        assert_eq!(error, catalog_pending());
+        assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error.1, super::catalog_pending().1);
     }
 
     #[tokio::test]

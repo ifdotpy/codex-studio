@@ -201,8 +201,8 @@ async fn studio_error_rows_are_published_as_entities_with_their_source_write() {
     seed_chat(&store, chat(json!({}))).await;
     write(
         &store,
-        "UPDATE runtime_agents SET record=json_set(record,'$.status','failed','$.error','Codex disconnected. Review the transcript before resuming.') WHERE id=?1",
-        vec![CHAT.to_owned()],
+        "UPDATE runtime_agents SET record=json_set(record,'$.status','failed','$.error',?2) WHERE id=?1",
+        vec![CHAT.to_owned(), studio_runtime_schema::shared_values::PROVIDER_DISCONNECTED_TURN_ERROR.to_owned()],
     )
     .await;
 

@@ -358,6 +358,31 @@ pub fn dispatch(connection: &Connection, request: &Request) -> Response {
 mod tests {
     use super::*;
     #[test]
+    fn studio_error_entities_reach_native_state_and_dismissal_removes_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let workspace = "a".repeat(32);
+        let apply = |changes| Request {
+            id: "studio-errors".into(),
+            method: "projection.applyEntities".into(),
+            params: json!({"workspace":workspace,"changes":changes,"replace":false}),
+        };
+        let item = json!({"id":"event:one","agentId":"one","at":100});
+        let first = store.dispatch(apply(json!([
+            {"op":"upsert","collection":"studioError","id":"event:one","seq":1,"value":item}
+        ])));
+        assert!(first.error.is_none(), "{:?}", first.error);
+        let snapshot: Value = serde_json::from_str(first.result.unwrap()["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(snapshot["runtime"]["studioErrors"], json!([item]));
+        let removed = store.dispatch(apply(json!([
+            {"op":"delete","collection":"studioError","id":"event:one","seq":2}
+        ])));
+        assert!(removed.error.is_none(), "{:?}", removed.error);
+        let snapshot: Value = serde_json::from_str(removed.result.unwrap()["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(snapshot["runtime"]["studioErrors"], json!([]));
+    }
+
+    #[test]
     fn entity_batch_rolls_back_rows_cursors_and_state_on_failure() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("client.sqlite3");
