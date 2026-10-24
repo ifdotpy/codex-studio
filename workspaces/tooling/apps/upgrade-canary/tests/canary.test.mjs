@@ -5,6 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { createHash } from "node:crypto";
 import {
   fileConfig,
   claudeAccount,
@@ -110,6 +113,117 @@ function temporary(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
+
+test("replacement N+1 receives its build hash without changing N or retained supervisor environment", async (t) => {
+  const root = temporary(t);
+  const candidate = path.join(root, "candidate", "Codex Studio.app");
+  const server = path.join(
+    candidate,
+    "Contents/Resources/workspace/bin/studio-runtime-server",
+  );
+  fs.mkdirSync(path.dirname(server), { recursive: true });
+  fs.writeFileSync(server, "candidate backend fixture");
+  const hash = createHash("sha256")
+    .update(fs.readFileSync(server))
+    .digest("hex");
+  const canary = new Canary({
+    from: path.join(root, "old-app"),
+    to: candidate,
+    "live-state": path.join(root, "live"),
+  });
+  canary.root = root;
+  canary.python = "/fixture/python3";
+  canary.profiles = { installer: path.join(root, "installer.sb") };
+  canary.env = {
+    HOME: path.join(root, "home"),
+    PATH: "/usr/bin:/bin",
+    HTTPS_PROXY: "http://127.0.0.1:1234",
+  };
+  canary.builds = {
+    from: { commit: "a".repeat(40), builtAt: 1 },
+    to: { commit: "b".repeat(40), builtAt: 2 },
+  };
+  canary.artifacts = { to: { backendHash: hash } };
+  const originalNEnvironment = {
+    ...canary.env,
+    XPC_SERVICE_NAME: "canary.recovery",
+  };
+  const supervisorEnvironment = {
+    ...canary.env,
+    XPC_SERVICE_NAME: "canary.supervisor",
+  };
+  const originalN = structuredClone(originalNEnvironment);
+  const supervisor = structuredClone(supervisorEnvironment);
+  const shared = structuredClone(canary.env);
+  assert.equal(
+    Object.hasOwn(originalNEnvironment, "CODEX_BACKEND_BUILD"),
+    false,
+  );
+  const events = [];
+  let replacement;
+  canary.jobs = {
+    supervisor: { env: supervisorEnvironment },
+    recovery: {
+      env: originalNEnvironment,
+      stop: async () => {
+        events.push("stop N");
+      },
+      start() {
+        events.push("start N+1");
+        replacement = structuredClone(this.env);
+      },
+    },
+  };
+  fs.mkdirSync(canary.state, { recursive: true });
+  fs.mkdirSync(path.join(root, "logs"));
+  fs.writeFileSync(
+    path.join(canary.state, "update-receipt.json"),
+    JSON.stringify({ backend: "stopped" }),
+  );
+  t.mock.method(childProcess, "execFileSync", (command, args, options) => {
+    if (command === "/usr/bin/ditto") {
+      events.push("copy candidate");
+      assert.equal(args[0], candidate);
+      return Buffer.alloc(0);
+    }
+    assert.equal(
+      command,
+      "/usr/bin/sandbox-exec",
+      "No real process may start in this fixture",
+    );
+    events.push("install candidate");
+    assert.equal(Object.hasOwn(options.env, "CODEX_BACKEND_BUILD"), false);
+    return JSON.stringify({ detail: "fixture installed" });
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  t.mock.method(canary, "waitBackend", async (build, app) => {
+    events.push("verify N+1");
+    assert.equal(build, canary.builds.to);
+    assert.equal(app, candidate);
+    return { pid: 123 };
+  });
+  await canary.install();
+  assert.equal(
+    replacement.CODEX_BACKEND_BUILD,
+    canary.artifacts.to.backendHash,
+  );
+  assert.equal(replacement.CODEX_BACKEND_BUILD, hash);
+  assert.deepEqual(originalNEnvironment, originalN);
+  assert.deepEqual(canary.jobs.supervisor.env, supervisor);
+  assert.deepEqual(canary.env, shared);
+  assert.deepEqual(replacement, { ...originalN, CODEX_BACKEND_BUILD: hash });
+  assert.deepEqual(events, [
+    "stop N",
+    "copy candidate",
+    "install candidate",
+    "start N+1",
+    "verify N+1",
+  ]);
+});
 
 function subscriptionCanary(t, snapshot) {
   const root = temporary(t);

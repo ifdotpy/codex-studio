@@ -781,7 +781,7 @@ export class Canary {
       fs.writeFileSync(this.profiles[name], body);
     }
     const proxyURL = `http://127.0.0.1:${proxy.port}`;
-    // The same environment for build N and N+1: a changed launch environment is what the canary detects.
+    // Provider launch inputs stay stable. N+1 adds only its backend build metadata.
     this.env = {
       HOME: os.homedir(),
       USER: os.userInfo().username,
@@ -1134,6 +1134,10 @@ export class Canary {
     }
     // launchd starts the recovery job again from the swapped app; it starts the new server.
     this.jobs.recovery.keepAlive = true;
+    this.jobs.recovery.env = {
+      ...this.jobs.recovery.env,
+      CODEX_BACKEND_BUILD: this.artifacts.to.backendHash,
+    };
     this.jobs.recovery.start();
     const identity = await this.waitBackend(this.builds.to, this.to);
     return `installer ${result.detail}; backend ${identity.pid} on N+1 after ${((Date.now() - this.installStarted) / 1000).toFixed(0)} s`;
