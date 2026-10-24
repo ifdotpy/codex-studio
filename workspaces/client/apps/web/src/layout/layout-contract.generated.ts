@@ -505,12 +505,6 @@ export const layoutTokens = {
     purpose:
       "Retained terminal_dock width threshold 650px, owned by slice4-terminal",
   },
-  "legacy_terminal_dock.width761": {
-    value: 761,
-    unit: "px",
-    purpose:
-      "Retained terminal_dock width threshold 761px, owned by slice4-terminal",
-  },
   "legacy_primitives.width760": {
     value: 760,
     unit: "px",
@@ -762,7 +756,6 @@ export const layoutValues = {
   },
   legacy_terminal_dock: {
     width650: 650,
-    width761: 761,
   },
   legacy_primitives: {
     width760: 760,

@@ -460,11 +460,6 @@
       "unit": "px",
       "purpose": "Retained terminal_dock width threshold 650px, owned by slice4-terminal"
     },
-    "legacy_terminal_dock.width761": {
-      "value": 761,
-      "unit": "px",
-      "purpose": "Retained terminal_dock width threshold 761px, owned by slice4-terminal"
-    },
     "legacy_primitives.width760": {
       "value": 760,
       "unit": "px",
@@ -1421,25 +1416,6 @@
       "count": 1,
       "purpose": "Retained query consumer in terminal_dock",
       "plannedOwner": "slice4-terminal"
-    },
-    {
-      "path": "src/components/terminal-dock.css",
-      "kind": "query",
-      "signature": "@media (min-width: 761px) {",
-      "key": "legacy_terminal_dock.width761",
-      "count": 3,
-      "purpose": "Retained query consumer in terminal_dock",
-      "plannedOwner": "slice4-terminal"
-    },
-    {
-      "path": "src/components/terminal-dock.css",
-      "kind": "layer",
-      "signature": "z-index: 90",
-      "key": "legacy_terminal_dock.layer101",
-      "count": 1,
-      "purpose": "Retained layer consumer in terminal_dock",
-      "plannedOwner": "slice4-terminal",
-      "scope": "global"
     },
     {
       "path": "src/components/terminal-dock.css",
