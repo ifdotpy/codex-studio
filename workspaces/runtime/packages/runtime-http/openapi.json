@@ -24819,6 +24819,9 @@
             "title": "Runtimelocksamples",
             "type": "array"
           },
+          "runtimeStageMetrics": {
+            "$ref": "#/components/schemas/RuntimeStageMetrics"
+          },
           "searchMigrationError": {
             "anyOf": [
               {
@@ -24841,6 +24844,9 @@
           },
           "supervisor": {
             "$ref": "#/components/schemas/SupervisorDiagnostics"
+          },
+          "syncRecoveryCounters": {
+            "$ref": "#/components/schemas/SyncRecoveryCounters"
           }
         },
         "required": [
@@ -24859,7 +24865,9 @@
           "migrations",
           "searchMigrationError",
           "runtimeLockOperations",
-          "supervisor"
+          "supervisor",
+          "runtimeStageMetrics",
+          "syncRecoveryCounters"
         ],
         "title": "DiagnosticsResponse",
         "type": "object"
@@ -28468,6 +28476,14 @@
           "route": {
             "title": "Route",
             "type": "string"
+          },
+          "statusCounts": {
+            "additionalProperties": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "object"
           }
         },
         "required": [
@@ -28475,7 +28491,8 @@
           "route",
           "count",
           "latencyMs",
-          "responseBytes"
+          "responseBytes",
+          "statusCounts"
         ],
         "title": "HttpRouteMetric",
         "type": "object"
@@ -47330,6 +47347,65 @@
         "title": "RuntimeLockSample",
         "type": "object"
       },
+      "RuntimeStageHistogram": {
+        "additionalProperties": false,
+        "properties": {
+          "boundsMs": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "buckets": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "count": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxMs": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "totalMs": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stage",
+          "count",
+          "totalMs",
+          "maxMs",
+          "boundsMs",
+          "buckets"
+        ],
+        "type": "object"
+      },
+      "RuntimeStageMetrics": {
+        "additionalProperties": false,
+        "properties": {
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/RuntimeStageHistogram"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "stages"
+        ],
+        "type": "object"
+      },
       "SafetyAction": {
         "enum": [
           "wait",
@@ -53188,6 +53264,50 @@
           "value"
         ],
         "title": "SyncRateLimitEntityPayload",
+        "type": "object"
+      },
+      "SyncRecoveryCounters": {
+        "additionalProperties": false,
+        "properties": {
+          "gap": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "overflow": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "oversize": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reconnect": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reset": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "subscriptionRejected": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reconnect",
+          "gap",
+          "overflow",
+          "oversize",
+          "reset",
+          "subscriptionRejected"
+        ],
         "type": "object"
       },
       "SyncRequestEntityPayload": {

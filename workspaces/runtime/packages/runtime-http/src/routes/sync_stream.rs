@@ -269,6 +269,9 @@ async fn sync_stream(
             Err(error) => return error.into_response(),
         };
     let reason = if headers.contains_key("last-event-id") {
+        studio_runtime_services::diagnostics::record_sync_recovery(
+            studio_runtime_services::diagnostics::SyncRecoveryKind::Reconnect,
+        );
         ResourceChangeEventReason::Reconnect
     } else {
         ResourceChangeEventReason::Initial
@@ -1057,6 +1060,9 @@ async fn next_frame(
             .ok()?;
             state.draft_sequence = draft_sequence;
             let reason = if view.overflow {
+                studio_runtime_services::diagnostics::record_sync_recovery(
+                    studio_runtime_services::diagnostics::SyncRecoveryKind::Overflow,
+                );
                 ResourceChangeEventReason::Overflow
             } else {
                 ResourceChangeEventReason::Change
@@ -1304,6 +1310,9 @@ fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event 
         result.expect("resource stream DTO serializes");
         return writer.into_event();
     }
+    studio_runtime_services::diagnostics::record_sync_recovery(
+        studio_runtime_services::diagnostics::SyncRecoveryKind::Oversize,
+    );
     for entry in &mut payload.resource_versions {
         entry.entity_changes = None;
         entry.transcript_changes = None;

@@ -12224,12 +12224,14 @@ export interface components {
       runtimeLockOperations: components["schemas"]["RuntimeLockOperation"][];
       /** Runtimelocksamples */
       runtimeLockSamples: components["schemas"]["RuntimeLockSample"][];
+      runtimeStageMetrics: components["schemas"]["RuntimeStageMetrics"];
       /** Searchmigrationerror */
       searchMigrationError: null | string;
       sqliteContention: components["schemas"]["SqliteContention"];
       /** Studioloadedthreads */
       studioLoadedThreads: number;
       supervisor: components["schemas"]["SupervisorDiagnostics"];
+      syncRecoveryCounters: components["schemas"]["SyncRecoveryCounters"];
     };
     /** DirectoriesResponse */
     DirectoriesResponse: {
@@ -13627,6 +13629,9 @@ export interface components {
       responseBytes: components["schemas"]["HttpMetricSummary"];
       /** Route */
       route: string;
+      statusCounts: {
+        [key: string]: number;
+      };
     };
     /**
      * IdentityAlert
@@ -21072,6 +21077,17 @@ export interface components {
       /** Waitms */
       waitMs: number;
     };
+    RuntimeStageHistogram: {
+      boundsMs: number[];
+      buckets: number[];
+      count: number;
+      maxMs: number;
+      stage: string;
+      totalMs: number;
+    };
+    RuntimeStageMetrics: {
+      stages: components["schemas"]["RuntimeStageHistogram"][];
+    };
     /**
      * SafetyAction
      * @enum {string}
@@ -23470,6 +23486,14 @@ export interface components {
       /** Id */
       id: string;
       value: components["schemas"]["AccountRateLimitsDto"];
+    };
+    SyncRecoveryCounters: {
+      gap: number;
+      overflow: number;
+      oversize: number;
+      reconnect: number;
+      reset: number;
+      subscriptionRejected: number;
     };
     /** SyncRequestEntityPayload */
     SyncRequestEntityPayload: {
