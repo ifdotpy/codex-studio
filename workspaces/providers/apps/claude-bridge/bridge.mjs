@@ -1210,6 +1210,7 @@ async function finishTurn(s, active, result, error) {
   }
   catalogCache.activityChanged();
   active.pendingSteers.clear();
+  active.inputResultIds.clear();
   active.assistantBlocks.clear();
   active.responseUsages.clear();
   emit("turn/completed", {
@@ -2019,11 +2020,10 @@ async function startSession(s, active, p) {
       } else if (m.type === "result") {
         // A shouldQuery:false prefix produces its own zero-turn receipt.
         // Its UUID is distinct from the final part that owns this turn.
-        if (
+        const prefix =
           m.num_turns === 0 &&
-          active.input.nonQueryIds.delete(m.user_message_uuid)
-        ) {
-          if (!m.is_error) continue;
+          active.input.nonQueryIds.delete(m.user_message_uuid);
+        if (prefix && m.is_error) {
           // A failed prefix must not leave its remaining parts on this query.
           // Any part already handed to the SDK keeps an uncertain outcome.
           await finishTurn(s, active, m);
@@ -2035,18 +2035,21 @@ async function startSession(s, active, p) {
         // without a replay echo; this result is then its only delivery proof.
         // Without it, every later result waited for that echo and the turn
         // never ended (live, 24 October 2026).
-        const answered = new Set(
-          [...(m.user_message_uuids || []), m.user_message_uuid].filter(
-            Boolean,
-          ),
-        );
+        // A mixed-origin submission has a separate UUID per part. Its prefix
+        // receipts and final result can each name only their own UUID.
+        for (const uuid of [
+          ...(m.user_message_uuids || []),
+          m.user_message_uuid,
+        ]) {
+          if (typeof uuid === "string" && uuid) active.inputResultIds.add(uuid);
+        }
         for (const item of turn?.items || []) {
           if (
             item.type !== "userMessage" ||
             item.delivery !== "steer" ||
             item.deliveryStatus !== "submitted" ||
             !(item.nativeIds || [item.nativeId]).every((uuid) =>
-              answered.has(uuid),
+              active.inputResultIds.has(uuid),
             )
           )
             continue;
@@ -2055,6 +2058,7 @@ async function startSession(s, active, p) {
           turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
           persistLater(s, active);
         }
+        if (prefix) continue;
         if (
           (active.pendingSteers.size || active.reservingInput) &&
           !m.is_error &&
@@ -2106,6 +2110,8 @@ function newActive(turn) {
     tasks: new Map(),
     tools: new Map(),
     pendingSteers: new Set(),
+    // Exact result receipts of this turn's input parts; cleared with the turn.
+    inputResultIds: new Set(),
     assistantBlocks: new Map(),
     responseUsages: new Map(),
     idleRequestStartedAt: Date.now(),
