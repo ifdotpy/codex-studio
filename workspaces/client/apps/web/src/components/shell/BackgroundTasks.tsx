@@ -1,3 +1,4 @@
+import { randomUUID } from "../../uuid";
 import {
   useServerApi,
   useServerServices,
@@ -481,7 +482,7 @@ export default function BackgroundTasks({
     });
     const body: PostBody<"/api/processes/action"> = {
       action,
-      requestId: crypto.randomUUID(),
+      requestId: randomUUID(),
       agent: leadId,
       accountKey: scopeOwner.accountKey || "default",
       epoch: scopeOwner.epoch,

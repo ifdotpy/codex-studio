@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { serverStoragePrefix } from "../servers/storage";
 import {
   defaultStudioPreferences,
@@ -81,7 +82,7 @@ function persist(
 function writer() {
   let value = userStorage().getItem("studio-ui-preference-writer-v1");
   if (!value) {
-    value = crypto.randomUUID();
+    value = randomUUID();
     userStorage().setItem("studio-ui-preference-writer-v1", value);
   }
   return value;

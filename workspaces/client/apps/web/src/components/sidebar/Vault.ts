@@ -1,3 +1,4 @@
+import { randomUUID } from "../../uuid";
 import type { components } from "../../generated/api";
 import type { ProjectChip } from "./MacSync";
 import type { SidebarBackend } from "./services";
@@ -80,7 +81,7 @@ export async function pullVault(
   projectId: string,
   to: string | null,
   {
-    requestId = crypto.randomUUID() as string,
+    requestId = randomUUID() as string,
     ...options
   }: { requestId?: string } & JobOptions<VaultPull> = {},
 ): Promise<VaultPull> {

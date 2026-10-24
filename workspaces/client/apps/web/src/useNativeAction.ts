@@ -1,3 +1,4 @@
+import { randomUUID } from "./uuid";
 import {
   useServerApi,
   useServerStorage,
@@ -76,7 +77,7 @@ export function useNativeAction(
     const request: Request = existing || {
       id: agent.id,
       action,
-      request_id: crypto.randomUUID(),
+      request_id: randomUUID(),
       context: {
         accountKey: agent.accountKey || "default",
         threadId: agent.threadId,

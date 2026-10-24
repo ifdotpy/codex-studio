@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { frameMessageOrigin } from "./frameOrigin";
 import {
   hasNativeClient,
@@ -196,7 +197,7 @@ export function shellCredentialBridge(): DesktopBridge {
   return {
     serverCredentialAction: (value) =>
       new Promise((resolve, reject) => {
-        const correlation = crypto.randomUUID();
+        const correlation = randomUUID();
         pending.set(correlation, { resolve, reject });
         window.parent.postMessage(
           { kind: "studio-server-transport", correlation, value },

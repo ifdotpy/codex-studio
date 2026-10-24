@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import type { DraftJournal } from "./draftJournal";
 import type { DraftVersion } from "../sync/drafts";
 
@@ -83,7 +84,7 @@ export class NativeDraftState {
     // coalesce the unsent tail to bound typing backlog while IPC is delayed.
     if (!this.journal && this.queue.length > 1)
       Object.assign(this.queue[1].changes, changes);
-    else this.queue.push({ id: crypto.randomUUID(), changes });
+    else this.queue.push({ id: randomUUID(), changes });
     try {
       this.journal?.save(this.queue[this.queue.length - 1]);
     } catch (error) {

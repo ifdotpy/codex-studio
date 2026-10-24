@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import {
   useServerApi,
   useServerStorage,
@@ -190,7 +191,7 @@ function ScopedMessageQueue(p: Props) {
   const { writeLocalDraft } = useServerLocalDrafts();
 
   const storageKey = `codex-queue-edit:${encodeURIComponent(p.scope)}:`;
-  const [writer] = useState(() => crypto.randomUUID());
+  const [writer] = useState(() => randomUUID());
   const [recovery] = useState(() =>
     readDrafts(storageKey, localStorage, saved),
   );
@@ -285,8 +286,8 @@ function ScopedMessageQueue(p: Props) {
     persist({
       item,
       text: item.text,
-      revision: crypto.randomUUID(),
-      key: `${storageKey}${writer}:${crypto.randomUUID()}`,
+      revision: randomUUID(),
+      key: `${storageKey}${writer}:${randomUUID()}`,
       updated: Date.now(),
     });
     setCollapsed(false);
@@ -299,8 +300,8 @@ function ScopedMessageQueue(p: Props) {
       {
         ...draft,
         text,
-        revision: crypto.randomUUID(),
-        key: `${storageKey}${writer}:${crypto.randomUUID()}`,
+        revision: randomUUID(),
+        key: `${storageKey}${writer}:${randomUUID()}`,
         updated: Date.now(),
         ancestors: own
           ? draft.ancestors

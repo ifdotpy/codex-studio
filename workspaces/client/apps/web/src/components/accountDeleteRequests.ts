@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { serverLocalStorage } from "../servers/storage";
 
 export type AccountDeleteTarget = {
@@ -79,7 +80,7 @@ export function getOrCreateAccountDeleteRequest(
   scope: string | undefined,
   accountKey: string,
   storage: Storage = serverLocalStorage,
-  createRequestId: () => string = () => crypto.randomUUID(),
+  createRequestId: () => string = () => randomUUID(),
 ) {
   const requestId =
     storedDeleteRequest(scope, accountKey, storage) || createRequestId();

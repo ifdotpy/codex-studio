@@ -40,6 +40,35 @@ beforeEach(() => {
   vi.stubGlobal("StorageEvent", FakeStorageEvent);
 });
 describe("UI preference cache", () => {
+  it("keeps one secure writer identity on HTTP without crypto.randomUUID", () => {
+    const getRandomValues = vi.fn((bytes: Uint8Array) => bytes.fill(0x12));
+    vi.stubGlobal("crypto", { getRandomValues });
+    try {
+      const before = { theme: "auto", mainFontSize: 14 };
+      writePreferenceEdit("codex-studio-preferences-v1", before, {
+        ...before,
+        theme: "dark",
+      });
+      const first = readPreferenceFields("user");
+      const writer = Object.values(first)[0].writer;
+      expect(writer).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+      writePreferenceEdit("codex-studio-preferences-v1", before, {
+        ...before,
+        mainFontSize: 18,
+      });
+      expect(
+        Object.values(readPreferenceFields("user")).every(
+          (field) => field.writer === writer,
+        ),
+      ).toBe(true);
+      expect(getRandomValues).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("records only the chosen Appearance field on a first edit", () => {
     const before = { theme: "auto", mainFontSize: 14 };
     writePreferenceEdit("codex-studio-preferences-v1", before, {

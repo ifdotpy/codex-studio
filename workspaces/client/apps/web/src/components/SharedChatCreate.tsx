@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { isModelWhitelisted, useModelWhitelist } from "./models/modelWhitelist";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { accountCanStart } from "../accountName";
@@ -283,7 +284,7 @@ export default function SharedChatCreate({
     const body: SharedCreateRequest = {
       action: "radio",
       radio_action: "create",
-      request_id: crypto.randomUUID(),
+      request_id: randomUUID(),
       path,
       name: name.trim() || "Shared chat",
       participants,

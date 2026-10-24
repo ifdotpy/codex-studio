@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 // The shell owns every native audio identity. A server view cannot observe,
 // stop, or transcribe another view's recording, even with a copied token.
 type Invoke = (
@@ -131,11 +132,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         },
       };
       return {
-        request(
-          method: string,
-          params: unknown,
-          id: string = crypto.randomUUID(),
-        ) {
+        request(method: string, params: unknown, id: string = randomUUID()) {
           return router.request(
             method === "view.unsubscribe" ? "audio.unsubscribe" : method,
             params,
@@ -217,7 +214,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
           )
             throw new Error("Invalid capture.");
         }
-        const nativeId = crypto.randomUUID();
+        const nativeId = randomUUID();
         subscriptions.set(nativeId, {
           caller,
           logical: params.subscription,

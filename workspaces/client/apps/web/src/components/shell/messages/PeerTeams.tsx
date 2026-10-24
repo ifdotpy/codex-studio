@@ -1,3 +1,4 @@
+import { randomUUID } from "../../../uuid";
 import {
   ActionIcon,
   Button,
@@ -100,7 +101,7 @@ export function PeerTeamGroup({
         radio_action: "open",
         path: team.projectPath,
         team_id: team.id,
-        request_id: crypto.randomUUID(),
+        request_id: randomUUID(),
       },
     };
     const remember = () => {
@@ -234,7 +235,7 @@ export function PeerTeamForm({
   const request = useRef<PeerTeamRequest | null>(null);
   const committed = useRef(false);
   const locked = useRef(false);
-  const id = useRef(team?.id || crypto.randomUUID());
+  const id = useRef(team?.id || randomUUID());
   const revision = useRef(project.peerTeamsRevision || 0);
   const available = agents.filter(
     (a) =>
@@ -261,7 +262,7 @@ export function PeerTeamForm({
             path: project.path,
             team_id: id.current,
             expected_revision: revision.current,
-            request_id: crypto.randomUUID(),
+            request_id: randomUUID(),
             name: name.trim(),
             members,
           }
@@ -270,7 +271,7 @@ export function PeerTeamForm({
             path: project.path,
             team_id: id.current,
             expected_revision: revision.current,
-            request_id: crypto.randomUUID(),
+            request_id: randomUUID(),
           };
     try {
       if (!committed.current) {
@@ -467,7 +468,7 @@ export function usePeerTeamMove(
       member,
       team_id: teamId,
       expected_revision: project.peerTeamsRevision || 0,
-      request_id: crypto.randomUUID(),
+      request_id: randomUUID(),
     };
     void submit();
   };

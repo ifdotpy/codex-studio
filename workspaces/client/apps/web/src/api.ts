@@ -1,3 +1,4 @@
+import { randomUUID } from "./uuid";
 import { hasNativeClient } from "./native/client";
 
 import { beginServerActivity } from "./servers/activity";
@@ -983,7 +984,7 @@ export function createApiScope(options: ApiScopeOptions) {
   function stableRequestId(key: string): string {
     const savedId = saved<string>(`request-id:${key}`, "");
     if (savedId) return savedId;
-    const requestId = crypto.randomUUID();
+    const requestId = randomUUID();
     save(`request-id:${key}`, requestId);
     return requestId;
   }

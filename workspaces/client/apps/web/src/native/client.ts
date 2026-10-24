@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { frameRequest, isNativeFrame } from "./frame";
 import { queueMarkdown } from "./markdownQueue";
 type Invoke = (
@@ -30,7 +31,7 @@ export function hasNativeClient() {
 export async function nativeRequest<T>(
   method: string,
   params: unknown,
-  id: string = crypto.randomUUID(),
+  id: string = randomUUID(),
   signal?: AbortSignal,
 ): Promise<T> {
   if (!id || id.length > 128)

@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { ScreenContext } from "./ScreenContext";
 import {
   createScreenChannel,
@@ -1094,7 +1095,7 @@ function MultiServerShell({
           onSubmit={(event) => {
             event.preventDefault();
             if (!searchQuery.trim()) return;
-            const requestId = crypto.randomUUID();
+            const requestId = randomUUID();
             searchRequest.current = requestId;
             setSearchResults({});
             for (const [id, service] of services) {

@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { listenNativeEvents, nativeRequest } from "./client";
 
 // The core owns HTTP and SSE framing. This adapter carries its decoded events
@@ -7,7 +8,7 @@ export async function nativeEventResponse(
   path: string,
 ): Promise<Response> {
   request.signal.throwIfAborted();
-  const subscription = crypto.randomUUID();
+  const subscription = randomUUID();
   const encoder = new TextEncoder();
   let controller: ReadableStreamDefaultController<Uint8Array>;
   let stopped = false;

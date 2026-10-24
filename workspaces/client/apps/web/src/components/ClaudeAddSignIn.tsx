@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, Group, Modal, Stack, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
@@ -148,8 +149,8 @@ export default function ClaudeAddSignIn({
     const next: SavedFlow = canResume
       ? { ...flow, unknownSince: undefined }
       : {
-          requestId: crypto.randomUUID(),
-          startRequestId: crypto.randomUUID(),
+          requestId: randomUUID(),
+          startRequestId: randomUUID(),
           label: label.trim() || "Claude Code",
           email: emailHint.trim(),
           createdAt: Date.now(),
@@ -185,7 +186,7 @@ export default function ClaudeAddSignIn({
     const submitted = code.trim();
     const requestField =
       action === "code" ? "codeRequestId" : "cancelRequestId";
-    const mutationId = flow[requestField] || crypto.randomUUID();
+    const mutationId = flow[requestField] || randomUUID();
     const nextFlow: SavedFlow = {
       ...flow,
       [requestField]: mutationId,

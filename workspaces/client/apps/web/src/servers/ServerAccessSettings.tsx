@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { useServerStorage } from "./ServerServicesContext";
 import { useServerApi } from "./ServerServicesContext";
 import { ActionButton } from "../components/ui/primitives";
@@ -90,7 +91,7 @@ export default function ServerAccessSettings({ active }: { active: boolean }) {
           run({
             action: "create_invite",
             label,
-            requestId: crypto.randomUUID(),
+            requestId: randomUUID(),
           })
         }
       >
@@ -126,7 +127,7 @@ export default function ServerAccessSettings({ active }: { active: boolean }) {
               run({
                 action: "revoke",
                 clientId: client.clientId,
-                requestId: crypto.randomUUID(),
+                requestId: randomUUID(),
               })
             }
           >
