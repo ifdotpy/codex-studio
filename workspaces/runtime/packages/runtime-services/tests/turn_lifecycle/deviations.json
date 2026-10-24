@@ -58,6 +58,15 @@
       "/sync_entities/*/payload/value/status"
     ]
   },
+  "unsent_input_kept": {
+    "approvedClass": "b",
+    "reason": "A turn/start that the session proves it never wrote keeps its input pending, also after the durable submitted mark. Python failed that input although the provider never received it.",
+    "entrypoints": [],
+    "fields": [
+      "/runtime_events/*/status",
+      "/sync_entities/*/payload/value/status"
+    ]
+  },
   "radio-policy": {
     "reason": "radio_turn is unreachable through scheduler claim (also refuses radioAnswerTurnId); room binding and peer readiness belong to radio service. Plain radio follows Python.",
     "fields": ["/entryResult"]
