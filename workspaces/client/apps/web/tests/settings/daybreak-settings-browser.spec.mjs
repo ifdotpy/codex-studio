@@ -98,7 +98,7 @@ test("Daybreak settings", async ({ context }) => {
     window.models=models;window.agent=agent;window.setAgent=value=>flushSync(()=>setAgent(value));
     window.setModels=value=>flushSync(()=>setModels(value));
     window.reset=options=>flushSync(()=>{setAgent({...initial,...options?.agent});setModels(options?.models||initialModels);setDefaults(!!options?.defaults);setMount(value=>value+1);window.calls=[];window.fail=null;window.reply=null;window.hold=false;window.refreshCount=0;window.retries=0;});
-    return <MantineProvider><ExecutionSettings key={mount} agent={agent} teamDefaults={defaults} catalog={{models,loading:false,error:'',retry:()=>window.retries++}} refresh={async()=>{window.refreshCount++}}/></MantineProvider>;
+    return <MantineProvider><ExecutionSettings key={mount} agent={agent} initialRole={defaults?"worker":"orchestrator"} catalog={{models,loading:false,error:'',retry:()=>window.retries++}} refresh={async()=>{window.refreshCount++}}/></MantineProvider>;
   }
   createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
@@ -230,7 +230,9 @@ test("Daybreak settings", async ({ context }) => {
         daybreakEnabled: true,
       }),
     );
-    await page.waitForTimeout(50);
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(resolve)),
+    );
     await page.evaluate(() =>
       window.setAgent({ ...window.agent, daybreakEnabled: false }),
     );
