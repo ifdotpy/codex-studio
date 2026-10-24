@@ -26,6 +26,8 @@ pub(crate) async fn state() -> (tempfile::TempDir, RuntimeStore, Value) {
         })
         .await
         .expect("seed callback rows");
+    // The frozen legacy rows target main.analytics_items, not its read-only
+    // decoding view. Keep their original record text and expected values.
     let analytics = seed.analytics.join("\n");
     store
         .analytics_transaction::<_, studio_runtime_store::StoreError>(move |tx, _| {
