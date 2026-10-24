@@ -114,6 +114,24 @@ impl Host for HostPort {
 fn limits(now: f64) -> Value {
     json!({"accountKey":"default","at":now,"data":{"rateLimits":{"limitId":"claude","primary":{"usedPercent":10.0,"resetsAt":now+1000.0}},"claudeRateLimit":{"status":"allowed"}}})
 }
+/// Bounds only a hang of a wait in this file; each wait ends at its own condition.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+/// Open the state again as a restarted server does. Stopping the timer can cancel a fire
+/// job after it submitted its last writer job. That job keeps the state lease until the
+/// writer thread has run it (`SqliteActor::call_admitted_with_completion`), so the new
+/// owner waits for the lease, as a new server process waits for the old one to exit.
+async fn reopen(path: &std::path::Path) -> Arc<RuntimeStore> {
+    let deadline = tokio::time::Instant::now() + HANG_BOUND;
+    loop {
+        match RuntimeStore::open(Some(path)).await {
+            Ok(store) => return Arc::new(store),
+            Err(StoreError::AlreadyOwned) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(error) => panic!("the state did not open again: {error}"),
+        }
+    }
+}
 async fn fixture(path: &std::path::Path, mode: Mode) -> (Arc<RuntimeStore>, Episode) {
     let store = Arc::new(RuntimeStore::open(Some(path)).await.unwrap());
     let episode=store.transaction(move|tx| {
@@ -146,12 +164,9 @@ async fn idle_claude_dispatches_once_and_restart_does_not_repeat() {
         }),
         stopped,
     ));
-    tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        session.finished.notified(),
-    )
-    .await
-    .unwrap();
+    tokio::time::timeout(HANG_BOUND, session.finished.notified())
+        .await
+        .unwrap();
     stop.send(true).unwrap();
     timer.await.unwrap();
 
@@ -163,7 +178,7 @@ async fn idle_claude_dispatches_once_and_restart_does_not_repeat() {
     assert!(idle::next(&store).await.unwrap().is_none());
     drop(host);
     drop(store);
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    let store = reopen(root.path()).await;
     let host = HostPort {
         store: store.clone(),
         session: session.clone(),

@@ -44,7 +44,7 @@ pub(crate) async fn boundary(
         })
         .flatten();
     if crate::routes::incoming_multi_server::needed(request.headers(), &path) {
-        return crate::routes::incoming_multi_server::serve(state, request).await;
+        return crate::routes::incoming_multi_server::serve(state, request, next).await;
     }
     let headers = request.headers();
     let mut parsed_body = None;

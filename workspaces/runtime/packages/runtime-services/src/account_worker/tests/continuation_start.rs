@@ -508,3 +508,179 @@ async fn a_claude_session_limit_resumes_once_after_the_provider_reset() {
         assert_ne!(write.value["method"], "turn/start", "{}", write.value);
     }
 }
+
+fn unix_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs_f64()
+        .floor()
+}
+
+/// The fresh allowed limits of the fixture account at `at`.
+fn allowed_limits(at: f64) -> LimitsObservation {
+    LimitsObservation::from_record(
+        json!({"accountKey":"default","at":at,"error":null,
+            "data":{"rateLimits":{"primary":{"usedPercent":0.0,"resetsAt":at + 18_000.0}}}}),
+        None,
+    )
+    .expect("limits")
+}
+
+/// Accept the continuation `start` as the retried turn, complete it, and check
+/// that the lead got its result once and no other turn started.
+async fn finish_continuation(
+    state: &State,
+    peer: &mut Peer,
+    worker: &mut AccountHandle,
+    start: &Value,
+) {
+    assert!(
+        start["params"]["input"]
+            .to_string()
+            .contains("usage or rate limit"),
+        "{start}"
+    );
+    finish(peer, start, RETRIED_TURN, "completed", Value::Null).await;
+    let record = record_of(state, &state.agent).await;
+    assert_eq!(record["status"], "completed", "{}", record["error"]);
+    assert_eq!(record["usageResume"]["status"], "started");
+    let results = child_results(state).await;
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(
+        results[0].0,
+        format!("child:{}:{RETRIED_TURN}", state.agent)
+    );
+    worker.shutdown().await.unwrap();
+    while let Ok(write) = peer.writes.try_recv() {
+        assert_ne!(write.value["method"], "turn/start", "{}", write.value);
+    }
+}
+
+/// The account limits cannot be read after the provider reset, for example
+/// while the account's session is down. The wait must not poll for hours: it
+/// resumes once at the reset that the limit error named, and the continuation
+/// turn starts once.
+#[tokio::test]
+async fn a_claude_session_limit_resumes_once_after_its_reset_when_limits_reads_fail() {
+    let (state, account) = fixture(ProviderKind::Claude).await;
+    let (mut peer, mut worker) = open(&state, &account).await;
+    let reset = unix_now() + 3600.0;
+    let limit = json!({"message":"You've hit your session limit · resets 3:40am (UTC)",
+        "codexErrorInfo":"rateLimitExceeded","resetsAt":reset});
+    fail_first_turn(&state, &mut peer, &worker, limit).await;
+    assert_eq!(
+        record_of(&state, &state.agent).await["usageResume"]["dueAt"],
+        reset + 5.0
+    );
+
+    tick_when_due(&state, "usageResume", None).await;
+    let record = record_of(&state, &state.agent).await;
+    assert_eq!(
+        record["usageResume"]["status"], "started",
+        "{}",
+        record["usageResume"]
+    );
+    wake_agent(&state, &worker, &state.agent).await;
+    let start = next_turn_start(&mut peer).await;
+    finish_continuation(&state, &mut peer, &mut worker, &start).await;
+}
+
+/// A turn that Claude started itself failed at the session limit with only
+/// the limit notice as its error, while the chat's last usage resume was an
+/// old `started` one. The new failure must get its own wait, and the events
+/// that arrive while the chat waits must reach it with the continuation once
+/// the limit has reset.
+#[tokio::test]
+async fn a_claude_limit_named_only_by_its_notice_waits_and_delivers_held_events() {
+    let (state, account) = fixture(ProviderKind::Claude).await;
+    let (mut peer, mut worker) = open(&state, &account).await;
+    let agent = state.agent.clone();
+    let epoch = state.epoch;
+    let now = unix_now();
+    state
+        .bridge
+        .run(move |store| async move {
+            scheduler::lifecycle_transaction_with(store.as_ref(), move |tx| {
+                let stale = json!({"id":"earlier-resume","accountKey":"default",
+                    "threadId":"fake-thread-0","epoch":epoch,"turnId":"turn-0",
+                    "cause":"rate_limit","status":"started","failedAt":now - 7200.0,
+                    "startedAt":now - 3600.0,"dueAt":null,"taskClaims":[]});
+                tx.execute(
+                    "INSERT INTO runtime_usage_resumes(id,agent,record) VALUES('earlier-resume',?1,?2)",
+                    rusqlite::params![agent, stale.to_string()],
+                )?;
+                let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                row.extra.insert("usageResume".into(), stale);
+                AgentRepository::put(tx, &row)?;
+                Ok(())
+            })
+            .await
+        })
+        .await
+        .unwrap();
+    let notice =
+        json!({"message":"You've hit your session limit · resets 12:20am (Europe/Warsaw)"});
+    fail_first_turn(&state, &mut peer, &worker, notice).await;
+    let record = record_of(&state, &state.agent).await;
+    assert_eq!(
+        record["usageResume"]["status"], "scheduled",
+        "{}",
+        record["usageResume"]
+    );
+    assert_eq!(
+        record["usageResume"]["turnId"], FAILED_TURN,
+        "{}",
+        record["usageResume"]
+    );
+    assert_eq!(
+        record["usageResume"]["cause"], "rate_limit",
+        "{}",
+        record["usageResume"]
+    );
+
+    // A child reports while the chat waits for the limit.
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            scheduler::lifecycle_transaction_with(store.as_ref(), move |tx| {
+                let mut child = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                child.id = AgentId::from("held-child");
+                child.status = studio_runtime_store::AgentStatus::Completed;
+                child.extra.insert("parentId".into(), json!(agent));
+                child.extra.insert("isLead".into(), json!(false));
+                child.extra.insert("threadId".into(), json!("held-child-thread"));
+                child.extra.remove("usageResume");
+                AgentRepository::put(tx, &child)?;
+                let text = json!({"agent":"held-child","name":"Child","status":"completed",
+                    "result":"the release notes are ready"});
+                tx.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('held-result',?1,'child_result',?2,'pending',?3,?4)",
+                    rusqlite::params![agent, text.to_string(), now, epoch],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_event_meta(id,record) VALUES('held-result',?1)",
+                    [json!({"delivery":"current_turn","source":"limit-test"}).to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+        })
+        .await
+        .unwrap();
+
+    let due = record_of(&state, &state.agent).await["usageResume"]["dueAt"]
+        .as_f64()
+        .expect("due");
+    tick_when_due(&state, "usageResume", Some(allowed_limits(due + 1.0))).await;
+    wake_agent(&state, &worker, &state.agent).await;
+    let start = next_turn_start(&mut peer).await;
+    assert!(
+        start["params"]["input"]
+            .to_string()
+            .contains("the release notes are ready"),
+        "{start}"
+    );
+    finish_continuation(&state, &mut peer, &mut worker, &start).await;
+}

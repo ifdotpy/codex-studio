@@ -17,6 +17,9 @@ const HANG_GUARD_MS = 10_000;
 // ack: read the steer and echo it inside the turn.
 // pulled: read the steer without an echo (outcome unknown).
 // late: read the steer, end the turn with an error, then echo the steer.
+// dequeue: read the steer without an echo, finish the reply, then answer the
+// steer as its own prompt; each result names the input it answered, as the
+// Claude CLI does when it dequeues a steer instead of folding it in.
 // anything else: never read further input until `.end` exists.
 const FAKE_SDK = String.raw`
 export const resolveSettings=async()=>({effective:{}});
@@ -68,6 +71,13 @@ export function query({prompt,options}){
       yield {type:'user',isReplay:true,uuid:held.uuid};
      }
      queueMode=false;continue;
+    }
+    if(text==='dequeue'){
+     const next=await read();
+     yield {type:'result',subtype:'success',usage,result:'first',user_message_uuid:input.value.uuid,user_message_uuids:[input.value.uuid]};
+     yield {type:'stream_event',event:{type:'message_start',message:{id:'message-steer'}}};
+     yield {type:'result',subtype:'success',usage,result:'second',user_message_uuid:next.value.uuid,user_message_uuids:[next.value.uuid]};
+     continue;
     }
     let late=null;
     if(text==='ack'){for(;;){const next=await read();yield {type:'user',isReplay:true,uuid:next.value.uuid};if(next.value.shouldQuery!==false)break;yield {type:'result',subtype:'success',num_turns:0,user_message_uuid:next.value.uuid,usage};}}
@@ -247,6 +257,29 @@ test("an echoed steer is acknowledged once inside its running turn", async () =>
     bridge.notes.filter((n) => ack(bridge, "event-1") === n).length,
     1,
   );
+});
+
+// Live 24 October 2026: Claude finished its reply, then answered a steer as
+// its own prompt without a replay echo. The bridge deferred both results while
+// the steer stayed pending, so the turn never ended, Studio kept it running,
+// and every later message waited.
+test("a steer that Claude answers as its own prompt is delivered and ends the turn", async () => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "dequeue");
+  assert.deepEqual(await steer(bridge, turn, "event-dequeued"), {
+    turnId: turn,
+  });
+  const done = await completed(bridge, turn);
+  assert.equal(done.params.turn.status, "completed");
+  assert.equal(done.params.turn.unappliedSteers, undefined);
+  const delivered = ack(bridge, "event-dequeued");
+  assert.ok(delivered, "the steer is acknowledged");
+  assert.equal(delivered.params.turnId, turn);
+  assert.equal(
+    bridge.notes.filter((n) => ack(bridge, "event-dequeued") === n).length,
+    1,
+  );
+  assert.deepEqual(await inputs(bridge), ["dequeue", "steer text"]);
 });
 
 test("a steer for another turn is rejected before any input is written", async () => {

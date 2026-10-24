@@ -389,6 +389,23 @@ fn thread_started_for_actor(
     )?;
     Ok(exists != 0)
 }
+/// Apply the same authorization as durable requests without a receipt write.
+/// Recheck after provider preparation, as `submitted` does for durable calls.
+pub(super) async fn authorize_volatile_read(
+    s: &RuntimeStore,
+    call: &Call,
+) -> Result<Result<(), PortError>, WorkerError> {
+    let call = call.clone();
+    s.read_async("runtime-services/retained_read_authorize", move |tx| {
+        Ok(if authorize(tx, &call)? {
+            Ok(())
+        } else {
+            Err(PortError::Identity)
+        })
+    })
+    .await
+}
+
 pub(super) async fn replay(
     s: &RuntimeStore,
     call: &Call,

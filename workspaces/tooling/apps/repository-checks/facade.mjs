@@ -1183,13 +1183,14 @@ function fastTierCommands(root) {
             "vitest.config.mjs",
             "restart-reconcile.test.mjs",
             "journal-repair.test.mjs",
+            "steer.test.mjs",
           ],
         ],
       ],
       options: {
-        selector: "restart-reconcile and journal-repair",
+        selector: "restart-reconcile, journal-repair and steer",
         reason:
-          "Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.",
+          "Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query, and end a turn whose steer Claude answered without a replay echo.",
       },
     },
     {
@@ -1642,15 +1643,15 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(validation::tests::named_schema_) | test(/^claude_repair_report::/)",
+            "test(validation::tests::named_schema_) | test(/^claude_repair_report::/) | test(/^studio_errors::/) | test(/^rules_owner_hold::/)",
           ],
         ],
       ],
       options: {
         selector:
-          "shared named validator startup and invalid-value error parity",
+          "shared named validator startup and invalid-value error parity, the Studio error list, and manual rule pause",
         reason:
-          "Preserve named-schema validation and error locations while HTTP reuses the compiled schema owner.",
+          "Preserve named-schema validation and error locations while HTTP reuses the compiled schema owner. List one Studio error row per repeated rule or command failure, and let a manual rule pause or resume replace a pause for its owner.",
       },
     },
     {
@@ -1744,6 +1745,7 @@ function fastTierCommands(root) {
               "test(monitor_port::tests::startup_resources_refuse_replacement)",
               "test(model_catalog::tests::)",
               "test(/^monitor_wake_guarantees::/)",
+              "test(/^rules_tick_atomic::a_rule_pauses_while_its_owner_cannot_run_and_resumes_when_it_can$/)",
               "test(/^monitor_runtime_wiring::tests::monitor_scan_checks_each_unchanged_monitor_once_per_cycle$/)",
               "test(/^monitor_runtime_wiring::tests::monitor_scan_restarts_after_persistent_probe_failure$/)",
               "(not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
@@ -1755,7 +1757,7 @@ function fastTierCommands(root) {
         selector:
           "monitor start ownership, exactly-once terminal continuation, and history lock boundaries",
         reason:
-          "Check monitor starts across actor progress and turn boundaries, and bounded fair continuation retries, while preserving permission and ownership checks, and keep history metadata and completed repairs outside writer admission.",
+          "Check monitor starts across actor progress and turn boundaries, and bounded fair continuation retries, while preserving permission and ownership checks, and keep history metadata and completed repairs outside writer admission. A rule starts no monitor while its owner cannot act on a wake.",
       },
     },
     {

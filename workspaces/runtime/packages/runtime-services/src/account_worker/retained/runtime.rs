@@ -50,10 +50,22 @@ impl Worker {
             method: request.method.as_str().into(),
             params: request.params,
         };
-        let key = call.key();
+        // A safe read may overlap a retry after its caller loses the response.
+        // Its transport identity must not capture the other attempt's reply or
+        // collide with a legacy durable configuration receipt.
+        let key = if volatile {
+            format!("{}:{}", call.key(), uuid::Uuid::new_v4())
+        } else {
+            call.key()
+        };
         let check = call.clone();
         let prior = if volatile {
-            Ok(Replay::Miss)
+            self.db("retained_read_authorize", move |store| async move {
+                storage::authorize_volatile_read(&store, &check)
+                    .await
+                    .map(|authorized| authorized.map(|()| Replay::Miss))
+            })
+            .await?
         } else {
             self.db("retained_replay", move |store| async move {
                 replay(&store, &check).await
@@ -177,7 +189,10 @@ impl Worker {
         let ticket = recovery.ticket.clone();
         let save_call = call.clone();
         let authorized = if volatile {
-            Ok(())
+            self.db("retained_read_authorize", move |s| async move {
+                storage::authorize_volatile_read(&s, &save_call).await
+            })
+            .await?
         } else {
             self.db("retained_submitted", move |s| async move {
                 submitted(&s, &save_call, &recovery, retry_ticket.as_ref()).await
