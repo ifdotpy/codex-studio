@@ -120,6 +120,211 @@ fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> Sessio
     }
 }
 
+async fn manual_start_authorization(
+    state: &State,
+    scope: &ConnectionScope,
+    restart: bool,
+) -> crate::agent_management_recovery::AuthorizedRecoveryRequest {
+    use crate::agent_management_recovery::AuthorizedRecoveryRequest;
+    let scope = scope.clone();
+    let target_id = state.agent.clone();
+    let epoch = state.epoch;
+    state.bridge.store.transaction(move |tx| {
+        let lead = json!({"id":"lead-00000000","rootId":"lead-00000000","parentId":null,"epoch":1,"status":"running","isLead":true,"autoWake":true,"accountKey":"default","threadId":"lead-thread","turnId":"lead-turn"});
+        AgentRepository::put(tx, &AgentRecord::from_value(lead.clone())?)?;
+        let mut target = AgentRepository::get(tx, &AgentId::from(target_id.as_str()))?.expect("worker").value();
+        target["rootId"] = lead["rootId"].clone();
+        target["parentId"] = lead["id"].clone();
+        target["isLead"] = json!(false);
+        target["status"] = json!("running");
+        target["inFlight"] = json!(true);
+        target["autoWake"] = json!(true);
+        target["threadId"] = json!("fake-thread-0");
+        target["turnId"] = Value::Null;
+        target["turnEpoch"] = json!(epoch);
+        target["startAttempt"] = json!({"id":"manual-unknown-attempt","epoch":epoch,"accountKey":"default","threadId":"fake-thread-0","events":["annotation:input"],"submitted":true,"executionOutcome":"unknown","requestTicket":"manual-start-ticket","connectionId":scope.connection,"connectionGeneration":scope.generation,"created":1.0});
+        for field in ["restartRecovery","disconnectRecovery","contextRepairWait","nativeFailureHold"] { target.as_object_mut().expect("worker object").remove(field); }
+        if restart {
+            let attempt = target.as_object_mut().expect("worker object").remove("startAttempt").expect("attempt");
+            target["status"] = json!("queued");
+            target["inFlight"] = json!(false);
+            target["restartRecovery"] = json!({"stage":"held","startAttempt":attempt});
+            target["contextRepairWait"] = json!({"scope":"native","events":["annotation:input"],"error":"Context repair waits for a confirmed input receipt: annotation:input","source":{"id":target_id,"epoch":epoch,"accountKey":"default","threadId":"fake-thread-0","attemptId":null},"nextCheckAt":0});
+            target["error"] = json!("Context repair waits for a confirmed input receipt: annotation:input");
+        }
+        AgentRepository::put(tx, &AgentRecord::from_value(target.clone())?)?;
+        tx.execute("UPDATE runtime_events SET status='uncertain',error='Unknown native input outcome' WHERE id='annotation:input'", [])?;
+        EventWriteRepository::replace_receipt(tx, "manual-no-replay", "signature", "{\"status\":\"unconfirmed\"}")?;
+        Ok(AuthorizedRecoveryRequest { lead, target, request_id:"manual-no-replay".into(), signature:"signature".into() })
+    }).await.expect("manual recovery intent")
+}
+
+#[tokio::test]
+async fn manual_recovery_absence_never_makes_the_original_input_schedulable() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    let port = worker.retained_session();
+    let auth = manual_start_authorization(&state, port.scope(), false).await;
+    let epoch = state.epoch;
+    let task = tokio::spawn(async move { port.recover_managed_agent(auth).await });
+    let turns = peer.write("thread/turns/list").await;
+    peer.reply(&turns, json!({"data":[{"id":"absent-attempt","threadId":"fake-thread-0","clientUserMessageId":"annotation:input","startOutcome":"not_applied","items":[]}],"nextCursor":null})).await;
+    let read = peer.write("thread/read").await;
+    peer.reply(
+        &read,
+        json!({"thread":{"id":"fake-thread-0","status":{"type":"idle"}}}),
+    )
+    .await;
+    let checked = task
+        .await
+        .expect("manual owner task")
+        .expect("manual result");
+    let target_id = state.agent.clone();
+    let schedulable = state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            SchedulerRepository::claim(tx, &target_id, epoch, "must-not-replay", 20.0, 10)
+                .map(|claim| claim.is_some())
+        })
+        .await
+        .expect("real scheduler admission");
+    let original_status = state.event_status("input").await;
+    worker.shutdown().await.expect("fixture worker shutdown");
+    assert!(
+        !schedulable,
+        "manual recovery requeued the original input: {checked}"
+    );
+    assert_eq!(original_status, "uncertain");
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "manual recovery must not start a native turn"
+    );
+}
+
+async fn manual_active_start_case(restart: bool) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    let port = worker.retained_session();
+    let auth = manual_start_authorization(&state, port.scope(), restart).await;
+    state.enqueue("new-input").await;
+    let task = tokio::spawn(async move { port.recover_managed_agent(auth).await });
+    let turns = peer.write("thread/turns/list").await;
+    peer.reply(&turns, json!({"data":[{"id":"manual-running-turn","threadId":"fake-thread-0","clientUserMessageId":"annotation:input","status":"inProgress","items":[{"id":"input","type":"userMessage","clientId":"annotation:input","text":"input"}]}],"nextCursor":null})).await;
+    let checked = task.await.expect("manual task").expect("manual result");
+    let accepted = state.record().await;
+    let started = peer.frame(json!({"method":"turn/started","params":{"threadId":"fake-thread-0","turn":{"id":"manual-running-turn"}}})).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        peer.acknowledged_or_worker_exits(started, &mut worker),
+    )
+    .await
+    .expect("the observed turn remains tracked without an interrupt");
+    let cursor = peer.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"manual-running-turn","status":"completed"}}})).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        peer.acknowledged_or_worker_exits(cursor, &mut worker),
+    )
+    .await
+    .expect("the exact completion remains tracked");
+    worker_barrier(&worker).await;
+    let after = state.record().await;
+    let original_status = state.event_status("input").await;
+    let next_status = state.event_status("new-input").await;
+    let agent = state.agent.clone();
+    let epoch = state.epoch;
+    let schedulable = state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            SchedulerRepository::claim(tx, &agent, epoch, "must-not-start-next", 20.0, 10)
+                .map(|claim| claim.is_some())
+        })
+        .await
+        .expect("scheduler delivery check");
+    worker.shutdown().await.expect("fixture shutdown");
+    assert_eq!(accepted["turnId"], "manual-running-turn", "{checked}");
+    assert_eq!(original_status, "delivered");
+    assert!(
+        after["turnId"].is_null(),
+        "the exact completion was dropped: {after}"
+    );
+    assert_eq!(after["inFlight"], false);
+    assert_eq!(after["lastCompletedTurn"], "manual-running-turn");
+    assert_eq!(next_status, "pending");
+    assert!(!schedulable, "manual recovery enabled the next model input");
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "manual recovery sent new native input"
+    );
+}
+
+#[tokio::test]
+async fn manual_recovery_reads_new_native_history_for_a_new_request_identity() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    let port = worker.retained_session();
+    let mut auth = manual_start_authorization(&state, port.scope(), false).await;
+    let sender = port.clone();
+    let first_auth = auth.clone();
+    let first = tokio::spawn(async move { sender.recover_managed_agent(first_auth).await });
+    let turns = peer.write("thread/turns/list").await;
+    let preparing = json!({"data":[{"id":"preparing","threadId":"fake-thread-0","clientUserMessageId":"annotation:input","startOutcome":"preparing","items":[]}],"nextCursor":null});
+    peer.reply(&turns, preparing.clone()).await;
+    first
+        .await
+        .expect("first read task")
+        .expect("unconfirmed first read");
+    auth.request_id = "new-manual-history-request".into();
+    auth.signature = "new-signature".into();
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            EventWriteRepository::replace_receipt(
+                tx,
+                "new-manual-history-request",
+                "new-signature",
+                "{\"status\":\"unconfirmed\"}",
+            )
+        })
+        .await
+        .expect("new explicit manual request");
+    let mut second = tokio::spawn(async move { port.recover_managed_agent(auth).await });
+    let next = tokio::select! {
+        wire = peer.write("thread/turns/list") => Some(wire),
+        _ = &mut second => None,
+    };
+    if let Some(wire) = next.as_ref() {
+        peer.reply(wire, preparing).await;
+        second
+            .await
+            .expect("second read task")
+            .expect("second read result");
+    }
+    worker.shutdown().await.expect("fixture shutdown");
+    assert!(
+        next.is_some(),
+        "a new manual request replayed an old native history response"
+    );
+}
+
+#[tokio::test]
+async fn manual_recovery_accepts_a_live_exact_start_and_tracks_its_terminal_notice() {
+    manual_active_start_case(false).await;
+}
+
+#[tokio::test]
+async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_notice() {
+    manual_active_start_case(true).await;
+}
+
 #[tokio::test]
 async fn retained_mcp_reconnect_binds_actor_thread_scope_and_replays_once() {
     let state = State::new().await;
@@ -2621,6 +2826,7 @@ async fn connection_recovery_repeated_request_returns_saved_status_without_histo
     };
     let result = crate::account_worker::connection_recovery::run(
         crate::account_worker::connection_recovery::Command {
+            authorization: None,
             bridge: state.bridge.clone(),
             account: "default".into(),
             scope: session.scope().clone(),

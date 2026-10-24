@@ -184,6 +184,17 @@ pub trait AccountSessionPort: Send + Sync {
             ))
         })
     }
+    fn recover_managed_agent<'a>(
+        &'a self,
+        _account: &'a str,
+        _request: crate::agent_management_recovery::AuthorizedRecoveryRequest,
+    ) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "account-worker/manual-agent-recovery",
+            ))
+        })
+    }
     fn login<'a>(&'a self, _request: LoginRequest) -> AccountSessionFuture<'a, Value> {
         Box::pin(async {
             Err(AccountSessionError::Requires(
@@ -592,6 +603,17 @@ pub type RecoveryFuture = Pin<Box<dyn Future<Output = Result<Value, AccountSessi
 /// The integrator adapts its retained session's request(scope, operation, method,
 /// params, absolute deadline) here. Scope lookup must not dispatch a mutation.
 pub trait RetainedAccountSession: Send + Sync {
+    fn recover_managed_agent(
+        &self,
+        _account: String,
+        _request: crate::agent_management_recovery::AuthorizedRecoveryRequest,
+    ) -> RecoveryFuture {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "account-worker/manual-agent-recovery",
+            ))
+        })
+    }
     fn current_scope(&self, _account: &str) -> Option<ConnectionScope> {
         None
     }
@@ -1091,6 +1113,21 @@ impl AccountSessionPort for AccountSessionRuntime {
             } else {
                 Err(AccountSessionError::Unknown)
             }
+        })
+    }
+
+    fn recover_managed_agent<'a>(
+        &'a self,
+        account: &'a str,
+        request: crate::agent_management_recovery::AuthorizedRecoveryRequest,
+    ) -> AccountSessionFuture<'a, Value> {
+        Box::pin(async move {
+            let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
+                "account-worker/manual-agent-recovery",
+            ))?;
+            session
+                .recover_managed_agent(account.to_owned(), request)
+                .await
         })
     }
 

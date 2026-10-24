@@ -59,6 +59,16 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     let Some(agent_record) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
         return Ok(false);
     };
+    if call.method == "thread/unsubscribe" {
+        return crate::agent_management_recovery::authorize_release(
+            tx,
+            actor,
+            &call.scope,
+            &call.operation,
+            &call.params,
+        )
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()));
+    }
     let agent_account = agent_record
         .extra
         .get("accountKey")

@@ -464,6 +464,7 @@ pub enum AccountCommand {
     JournalBarrier(retained::BarrierCommand),
     ConnectionRecovery {
         agent_id: String,
+        authorization: Option<crate::agent_management_recovery::AuthorizedRecoveryRequest>,
         reply: tokio::sync::oneshot::Sender<Result<Value, retained::PortError>>,
     },
     ConnectionRecoveryComplete {
@@ -1564,7 +1565,11 @@ impl Worker {
             AccountCommand::CommittedFrame(command) => self.committed_frame(*command).await?,
             AccountCommand::RetainedRequest(command) => self.retained_request(*command).await?,
             AccountCommand::JournalBarrier(command) => self.retained_barrier(command).await?,
-            AccountCommand::ConnectionRecovery { agent_id, reply } => {
+            AccountCommand::ConnectionRecovery {
+                agent_id,
+                authorization,
+                reply,
+            } => {
                 if self.connection_recovery_active {
                     let _sent = reply.send(Err(retained::PortError::Capacity));
                 } else {
@@ -1575,6 +1580,7 @@ impl Worker {
                         scope: self.retained_session.scope().clone(),
                         session: self.retained_session.clone(),
                         agent_id,
+                        authorization,
                     };
                     let commands = self.commands.clone();
                     self.connection_recovery.spawn(async move {

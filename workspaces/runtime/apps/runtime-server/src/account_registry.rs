@@ -774,6 +774,28 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
             })
         })
     }
+
+    fn recover_managed_agent(
+        &self,
+        account: String,
+        request: studio_runtime_services::agent_management_recovery::AuthorizedRecoveryRequest,
+    ) -> studio_runtime_services::account_session_runtime::RecoveryFuture {
+        let session = self
+            .sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(&account).cloned());
+        Box::pin(async move {
+            let Some(session) = session.filter(|session| session.is_live()) else {
+                return Err(
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Unknown,
+                );
+            };
+            session.recover_managed_agent(request).await.map_err(|_| {
+                studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
+            })
+        })
+    }
 }
 
 fn not_sent_receipt(

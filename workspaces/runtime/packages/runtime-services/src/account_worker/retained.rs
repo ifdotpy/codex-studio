@@ -121,6 +121,23 @@ impl RetainedSessionPort {
         !*self.stop.subscribe().borrow() && !self.commands.is_closed()
     }
     pub async fn recover_connection(&self, agent_id: String) -> Result<Value, PortError> {
+        self.recover_authorized(agent_id, None).await
+    }
+    pub async fn recover_managed_agent(
+        &self,
+        authorization: crate::agent_management_recovery::AuthorizedRecoveryRequest,
+    ) -> Result<Value, PortError> {
+        let agent = authorization.target["id"]
+            .as_str()
+            .ok_or(PortError::Invalid)?
+            .to_owned();
+        self.recover_authorized(agent, Some(authorization)).await
+    }
+    async fn recover_authorized(
+        &self,
+        agent_id: String,
+        authorization: Option<crate::agent_management_recovery::AuthorizedRecoveryRequest>,
+    ) -> Result<Value, PortError> {
         if agent_id.is_empty() || !self.is_live() {
             return Err(PortError::Identity);
         }
@@ -128,8 +145,11 @@ impl RetainedSessionPort {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
         tokio::time::timeout_at(
             deadline,
-            self.commands
-                .send(AccountCommand::ConnectionRecovery { agent_id, reply }),
+            self.commands.send(AccountCommand::ConnectionRecovery {
+                agent_id,
+                authorization,
+                reply,
+            }),
         )
         .await
         .map_err(|_| PortError::NotSent)?
@@ -327,7 +347,23 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::CommandExecTerminate
         )
         || voice_request
-        || deleted_voice_stop;
+        || deleted_voice_stop
+        || (request.transfer.is_none()
+            && request.deleted_actor_session.is_none()
+            && request.actor.is_some()
+            && request.expected_scope.as_ref() == Some(&request.scope)
+            && request.method == Method::ThreadUnsubscribe
+            && request
+                .operation
+                .starts_with(crate::agent_management_recovery::MANUAL_RELEASE_PREFIX)
+            && request.operation.ends_with(":unsubscribe")
+            && request.params.as_object().is_some_and(|params| {
+                params.len() == 1
+                    && params
+                        .get("threadId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| !id.is_empty())
+            }));
     let transfer_method = request.transfer.as_ref().is_some_and(|transfer| {
         matches!(
             request.method,
@@ -991,6 +1027,26 @@ mod validation_tests {
                 "itemsView":items_view
             }),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn manual_unsubscribe_requires_the_exact_actor_scope_and_narrow_shape() {
+        let mut request = turns_request("full", 1, true);
+        request.method = Method::ThreadUnsubscribe;
+        request.params = json!({"threadId":"fixture-thread"});
+        request.operation = "manual-release:receipt-hash:unsubscribe".into();
+        request.expected_scope = Some(request.scope.clone());
+        assert!(validate(&request).is_ok());
+        for field in ["actor", "scope", "operation", "params"] {
+            let mut invalid = request.clone();
+            match field {
+                "actor" => invalid.actor = None,
+                "scope" => invalid.expected_scope = None,
+                "operation" => invalid.operation = "generic-unsubscribe".into(),
+                _ => invalid.params["extra"] = json!(true),
+            }
+            assert_eq!(validate(&invalid), Err(PortError::Invalid), "{field}");
         }
     }
 

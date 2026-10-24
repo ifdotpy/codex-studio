@@ -399,6 +399,9 @@ pub(crate) struct ManagedToolRuntimePorts {
 /// the HTTP state, after the account worker registry owns these ports.
 #[derive(Clone, Default)]
 pub(crate) struct LatePorts {
+    pub(crate) management_session: std::sync::Arc<
+        std::sync::OnceLock<std::sync::Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
+    >,
     pub(crate) multi_server: std::sync::Arc<
         std::sync::OnceLock<std::sync::Arc<dyn crate::multi_server_tools::MultiServerToolPort>>,
     >,
@@ -759,6 +762,26 @@ pub(super) async fn dispatch(
                     super::services::manage::management_error(error),
                 )),
             }
+        }
+        "orchestration_agent_manage"
+            if matches!(args["action"].as_str(), Some("recover" | "reset_tools")) =>
+        {
+            super::services::manage::checked_action(args).map_err(callback_refusal)?;
+            let Some(session) = ports.late.management_session.get() else {
+                return Ok(Some(not_sent(Error::Unavailable(
+                    "account-worker/manual-agent-management",
+                ))));
+            };
+            return crate::agent_management_recovery::execute(
+                store,
+                std::sync::Arc::clone(session),
+                actor,
+                args,
+                request_id,
+                now,
+            )
+            .await
+            .map(Some);
         }
         "orchestration_agent_manage" if super::services::manage::lifecycle_action(args) => {
             return lifecycle_management(store, actor, args, now)
