@@ -1077,9 +1077,7 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
     assert_eq!(held["status"], "paused");
     assert_eq!(held["error"], "workspace-state/image-execution");
     assert_eq!(held["nativeFailureHold"], true);
-    assert_eq!(held["autoWake"], true);
-    assert_eq!(held["inFlight"], false);
-    assert_eq!(held["contextRepairWait"]["events"], json!([body["id"]]));
+    assert_eq!(held["autoWake"], false);
     registry.shutdown().await.unwrap();
 
     let mut restarted = AccountRegistry::new(
@@ -3813,7 +3811,9 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
             direct_agent_debug(&fixture.store, agent_id)
         )
     });
-    assert_eq!(held["autoWake"], false);
+    assert_eq!(held["autoWake"], true);
+    assert_eq!(held["inFlight"], false);
+    assert_eq!(held["contextRepairWait"]["events"], json!([body["id"]]));
     assert_eq!(
         fixture
             .store
