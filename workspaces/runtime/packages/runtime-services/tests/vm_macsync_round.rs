@@ -1791,6 +1791,111 @@ fn configuration_waits_for_a_running_round() {
     release.join().unwrap();
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test fixture creates a local linked Git worktree without hooks or ambient Git settings"
+)]
+fn linked_worktree_late_save_stops_round(events: BTreeSet<String>) {
+    use std::io::{Seek, SeekFrom, Write};
+    let fixture = Fixture::new();
+    let repository = fixture.root.parent().unwrap().join("repository");
+    std::fs::create_dir(&repository).unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec![
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "base",
+        ],
+        vec![
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            fixture.root.to_str().unwrap(),
+            "HEAD",
+        ],
+    ] {
+        let result = std::process::Command::new("git")
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .arg("-C")
+            .arg(&repository)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    assert!(fixture.root.join(".git").is_file());
+    fixture.save(
+        "manifest.json",
+        json!({
+            "a.txt": fixture.agreed("a.txt", b"base", "s1", 0o644),
+            "b.txt": fixture.agreed("b.txt", b"other base", "s1", 0o644)
+        }),
+    );
+    let mut editor = std::fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.root.join("a.txt"))
+        .unwrap();
+    let guest = Guest::new(vec![
+        Ok(reply(
+            "m2",
+            json!({"outbound":{"s1":[change("a.txt", Some(b"vm"), 0o644)]}}),
+        )),
+        Ok(reply(
+            "m3",
+            json!({"outbound":{"s1":[change("b.txt", Some(b"second VM write"), 0o644)]}}),
+        )),
+    ]);
+    guest.file("m2", "a.txt", Some(b"vm"));
+    guest.file("m3", "b.txt", Some(b"second VM write"));
+    let project = fixture.project(&guest);
+    let first = project.round(None).unwrap();
+    let recovery = PathBuf::from(first["preserved"][0]["recovery"].as_str().unwrap());
+    assert!(!recovery.starts_with(&fixture.root));
+    editor.set_len(0).unwrap();
+    editor.seek(SeekFrom::Start(0)).unwrap();
+    editor.write_all(b"late worktree editor save").unwrap();
+    editor.sync_all().unwrap();
+    drop(editor);
+    assert!(matches!(
+        project.round(Some(&events)),
+        Err(mac_sync::MacSyncError::PreservedConflict { .. })
+    ));
+    assert_eq!(guest.applies().len(), 1);
+    assert_eq!(fixture.read("b.txt"), b"other base");
+    assert_eq!(
+        std::fs::read(recovery.join("original")).unwrap(),
+        b"late worktree editor save"
+    );
+}
+
+#[test]
+fn a_linked_worktree_late_save_stops_an_empty_event_round() {
+    linked_worktree_late_save_stops_round(BTreeSet::new());
+}
+
+#[test]
+fn a_linked_worktree_late_save_stops_an_unrelated_event_round() {
+    linked_worktree_late_save_stops_round(paths(&["b.txt"]));
+}
+
 #[test]
 fn the_plan_reads_both_sides_and_writes_nothing() {
     let fixture = Fixture::new();

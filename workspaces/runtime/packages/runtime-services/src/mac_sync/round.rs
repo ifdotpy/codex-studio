@@ -242,6 +242,46 @@ fn inspect_preserved(directory: &Path, rel: &str) -> Result<(), MacSyncError> {
     Ok(())
 }
 
+/// Every round checks retained inodes, even when no source event names them. Git
+/// worktree metadata can be outside the watched root. Non-Git originals can be
+/// beside any formerly synced path, including a path now removed from the manifest.
+/// Only recovery content is read; ordinary files need no content scan here.
+fn check_retained(root: &Path) -> Result<(), MacSyncError> {
+    if let Some(git) = git_directory(root)? {
+        for item in fs::read_dir(git).map_err(io)? {
+            let item = item.map_err(io)?;
+            if is_preserved(&item.file_name().to_string_lossy()) {
+                inspect_preserved(&item.path(), "Git metadata")?;
+            }
+        }
+    }
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for item in fs::read_dir(&folder).map_err(io)? {
+            let item = item.map_err(io)?;
+            let name = item.file_name();
+            let name = name.to_string_lossy();
+            let path = item.path();
+            if is_preserved(&name) {
+                inspect_preserved(
+                    &path,
+                    &path.strip_prefix(root).unwrap_or(&path).to_string_lossy(),
+                )?;
+            } else if is_temporary(&name) {
+                return Err(preserved_conflict(
+                    &path.strip_prefix(root).unwrap_or(&path).to_string_lossy(),
+                    &path,
+                ));
+            } else if !ALWAYS_SKIPPED.contains(&name.as_ref())
+                && item.file_type().map_err(io)?.is_dir()
+            {
+                folders.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn io(error: std::io::Error) -> MacSyncError {
     MacSyncError::Io(error)
 }
@@ -1583,6 +1623,7 @@ impl<'a> ProjectSync<'a> {
                 recovery: PathBuf::from(conflict["recovery"].as_str().unwrap_or("unknown")),
             });
         }
+        check_retained(&self.root)?;
         let rules = self.rules()?;
         let mut manifest = match self.load_manifest()? {
             Some(manifest) => manifest,

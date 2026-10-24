@@ -126,7 +126,9 @@ has a file where the other has a folder.
 - A concurrent save can change the displaced inode through an existing open descriptor.
   The save stays in `original`, not necessarily at the current project path.
   A detected change stops later rounds and reports the recovery directory in `reason`.
-  Full scans also inspect recovery directories inside Git metadata.
+  Every round checks retained originals before bootstrap, uploads, or outbound changes.
+  This check does not depend on file events, including an empty event set.
+  It inspects external Git worktree metadata and walks project directories without reading ordinary file content.
   The guard cannot promise that the visible project path always contains the latest uncoordinated save.
   It protects the displaced bytes instead. Storage grows until the user reviews retained data.
 - An old `.name.studio-sync-<8 hex>` temporary file stops sync for review.

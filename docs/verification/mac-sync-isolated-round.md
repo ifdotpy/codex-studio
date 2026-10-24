@@ -81,7 +81,7 @@ Use only a synthetic scratch file. The deterministic source tests also cover the
 5. Confirm that `status.json` names a recovery directory with the original Mac content.
 6. Write different scratch content through the original descriptor and synchronize that descriptor.
 7. Close the descriptor.
-8. Resume the scratch project until its next full scan, then pause it.
+8. Resume the scratch project for one round, then pause it.
 9. Confirm a retained-data error and no later guest apply.
 10. Confirm that the recovery directory's `original` contains the late editor content.
 11. Confirm that the current project file still contains the VM content.
@@ -90,6 +90,8 @@ Use only a synthetic scratch file. The deterministic source tests also cover the
 Do not delete recovery directories to make this check pass.
 No automatic expiry removes an inode that an editor can still use.
 Test native atomic exchange and no-replace support on the scratch filesystem before any user project.
+Repeat this check with a Git linked worktree whose metadata directory is outside the scratch project.
+An empty event set and an unrelated file event must both stop before another guest apply.
 
 Do not reset receipts to make a retry succeed. A permanent uncertain result must remain visible.
 Do not apply this procedure to the live VM or an existing user project.
