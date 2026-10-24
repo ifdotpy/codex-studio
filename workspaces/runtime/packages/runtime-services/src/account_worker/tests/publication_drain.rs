@@ -621,7 +621,7 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
                         "last":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}}}))
                 .await;
             peer.acknowledged_or_worker_exits(cursor, &mut worker).await;
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            worker_barrier(&worker).await;
         }
     })
     .await
