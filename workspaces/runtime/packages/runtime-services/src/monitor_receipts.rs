@@ -215,10 +215,10 @@ fn receipt_paths(directory: &Path) -> Option<fs::ReadDir> {
 
 /// Return the next valid receipt and keep the directory cursor for the next
 /// offloaded step. Invalid entries and receipts are reported and skipped.
-fn next_receipt(
-    mut entries: fs::ReadDir,
+fn next_receipt<I: Iterator<Item = std::io::Result<fs::DirEntry>>>(
+    mut entries: I,
     root: &Path,
-) -> (fs::ReadDir, Option<(PathBuf, ResultReceipt)>) {
+) -> (I, Option<(PathBuf, ResultReceipt)>) {
     loop {
         let entry = match entries.next() {
             Some(Ok(entry)) => entry,
@@ -300,24 +300,43 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary state directory");
         let directory = prepare_watch_directory(root.path()).expect("receipt directory");
         fs::write(directory.join("invalid.json"), b"not a receipt").expect("write corrupt receipt");
-        let saved = persist(
-            root.path(),
-            &ResultReceipt {
-                version: 1,
-                key: "valid-receipt".into(),
-                code: Some(0),
-                error: None,
-                operation: None,
-                finished: 1.0,
-            },
-        )
-        .expect("persist valid receipt");
-
-        let entries = receipt_paths(&directory).expect("receipt directory is readable");
-        let (entries, found) = next_receipt(entries, root.path());
-        let (entries, exhausted) = next_receipt(entries, root.path());
-        drop(entries);
-        assert_eq!(found.map(|(_, receipt)| receipt.key), Some(saved.key));
+        for key in ["valid-receipt", "second-receipt"] {
+            persist(
+                root.path(),
+                &ResultReceipt {
+                    version: 1,
+                    key: key.into(),
+                    code: Some(0),
+                    error: None,
+                    operation: None,
+                    finished: 1.0,
+                },
+            )
+            .expect("persist valid receipt");
+        }
+        fs::write(directory.join("another-invalid.json"), b"invalid")
+            .expect("second corrupt receipt");
+        let order = [
+            directory.join("invalid.json"),
+            path(root.path(), "valid-receipt"),
+            directory.join("another-invalid.json"),
+            path(root.path(), "second-receipt"),
+        ];
+        // Keep real directory entries and impose the interleaving read_dir cannot guarantee.
+        let mut entries: Vec<_> = receipt_paths(&directory)
+            .expect("receipt directory is readable")
+            .map(|entry| entry.expect("directory entry"))
+            .collect();
+        entries.sort_by_key(|entry| order.iter().position(|p| p == &entry.path()).unwrap());
+        let mut entries = entries.into_iter().map(Ok);
+        for key in ["valid-receipt", "second-receipt"] {
+            let (remaining, found) = next_receipt(entries, root.path());
+            entries = remaining;
+            let (found_path, receipt) = found.expect("valid receipt after corruption");
+            assert_eq!(found_path, path(root.path(), key));
+            assert_eq!(receipt.key, key);
+        }
+        let (_, exhausted) = next_receipt(entries, root.path());
         assert!(exhausted.is_none());
     }
 }
