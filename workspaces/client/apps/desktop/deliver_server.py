@@ -191,13 +191,17 @@ def check_backend(identity, installed):
         config = recovery.load_config(state / 'background-recovery.json', state)
     except (KeyError, RuntimeError) as error:
         raise DeliveryError('The recovery configuration cannot be verified') from error
+    # The native client passes resource_dir()/workspace to recovery; the
+    # desktop recovery owner also supports the bundle's Resources root.
+    resources = installed / 'Contents/Resources'
+    recovery_resources = (resources, resources / 'workspace')
     if (not config or not isinstance(config.get('stateDir'), str)
             or Path(config['stateDir']).resolve() != state or config.get('backend') != 'rust'
             or config.get('supervisorEnabled') is not True
             or not isinstance(config.get('runtimeServer'), str)
             or Path(config['runtimeServer']).resolve() != server_path(installed)
             or not isinstance(config.get('resources'), str)
-            or Path(config['resources']).resolve() != installed / 'Contents/Resources'):
+            or Path(config['resources']).resolve() not in recovery_resources):
         raise DeliveryError('The recovery configuration does not match the running state and installed app')
     if identity.get('backendBuild') != file_hash(server_path(installed)):
         raise DeliveryError('The running backend does not match the installed binary')

@@ -84,6 +84,55 @@ class DeliveryTests(unittest.TestCase):
                                   for p in self.state.rglob('*') if p.is_file()})
         self.assertEqual(self.server(self.installed).read_bytes(), b'old')
 
+    def test_workspace_recovery_layout_passes_preflight_without_changes(self):
+        self.config['resources'] = str(self.installed / 'Contents/Resources/workspace')
+        updates.write_json(self.state / 'background-recovery.json', self.config)
+        before = {str(p.relative_to(self.state)): p.read_bytes()
+                  for p in self.state.rglob('*') if p.is_file()}
+        result = self.stage(dry_run=True)
+        self.assertEqual(result['phase'], 'dry_run')
+        self.proof.assert_called_once_with(self.identity, self.config)
+        self.assertEqual(self.copy_count(), 0)
+        self.assertEqual(before, {str(p.relative_to(self.state)): p.read_bytes()
+                                  for p in self.state.rglob('*') if p.is_file()})
+        self.assertEqual(self.server(self.installed).read_bytes(), b'old')
+
+    def test_recovery_resources_accept_no_other_bundle_location(self):
+        resources = self.installed / 'Contents/Resources'
+        for folder in (self.installed, resources.parent, resources / 'workspace-other',
+                       resources / 'workspace/bin', resources / 'workspace/nested',
+                       self.source / 'Contents/Resources/workspace'):
+            with self.subTest(folder=folder):
+                self.config['resources'] = str(folder)
+                updates.write_json(self.state / 'background-recovery.json', self.config)
+                with self.assertRaisesRegex(delivery.DeliveryError, 'recovery configuration'):
+                    self.stage(dry_run=True)
+                self.proof.assert_not_called()
+                self.assertEqual(self.copy_count(), 0)
+                self.assertFalse((self.state / updates.PENDING_FILE).exists())
+
+    def test_workspace_layout_keeps_binary_hash_state_and_process_proofs(self):
+        self.config['resources'] = str(self.installed / 'Contents/Resources/workspace')
+        updates.write_json(self.state / 'background-recovery.json', self.config)
+        valid_identity = dict(self.identity)
+        valid_config = dict(self.config)
+        cases = (
+            ({'backendBuild': '0' * 64}, {}, None, 'installed binary'),
+            ({'stateDir': str(self.state / 'another')}, {}, None, 'state|recovery'),
+            ({}, {'runtimeServer': str(self.server(self.source))}, None, 'recovery configuration'),
+            ({}, {}, RuntimeError('The reported PID does not own the listener'), 'listener'),
+        )
+        for changed, config_changed, failure, message in cases:
+            with self.subTest(changed=changed, failure=failure):
+                self.identity = {**valid_identity, **changed}
+                self.config = {**valid_config, **config_changed}
+                updates.write_json(self.state / 'background-recovery.json', self.config)
+                self.proof.side_effect = failure
+                with self.assertRaisesRegex(delivery.DeliveryError, message):
+                    self.stage(dry_run=True)
+                self.assertEqual(self.copy_count(), 0)
+                self.assertFalse((self.state / updates.PENDING_FILE).exists())
+
     def test_lost_submission_response_reuses_exact_request_and_copy(self):
         first = self.stage()
         second = self.stage()
