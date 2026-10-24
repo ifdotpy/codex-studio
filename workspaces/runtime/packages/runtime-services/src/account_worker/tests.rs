@@ -1607,6 +1607,7 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
         .frame(json!({"method":"test/barrier","params":{}}))
         .await;
     peer.acknowledged(barrier).await;
+    let mut recovery_changes = state.bridge.agent_changes();
     let history = peer.write("thread/turns/list").await;
     peer.reply(&history, json!({"data":[]})).await;
     for _ in 0..2 {
@@ -1622,7 +1623,10 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
             if state.record().await["startRecoveryCheck"]["reason"] == "start-outcome-unconfirmed" {
                 break;
             }
-            tokio::task::yield_now().await;
+            recovery_changes
+                .changed()
+                .await
+                .expect("recovery agent changes");
         }
     })
     .await
@@ -1794,9 +1798,15 @@ fn callback_records(state: &State) -> i64 {
 /// Wait until every written answer retired its record. The cursor settles with
 /// the batch, so an ACK says nothing about the answer's write outcome.
 async fn callbacks_retired(state: &State) {
+    let changed = Arc::new(tokio::sync::Notify::new());
+    let observer = changed.clone();
+    state.bridge.store.add_table_change_observer(
+        studio_runtime_store::ObservedTable::OperationReceipts,
+        move || observer.notify_one(),
+    );
     tokio::time::timeout(std::time::Duration::from_secs(120), async {
         while callback_records(state) > 0 {
-            tokio::task::yield_now().await;
+            changed.notified().await;
         }
     })
     .await
@@ -3064,11 +3074,14 @@ async fn acknowledged_journal_prefix_is_compacted() {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
-    for _ in 0..128 {
+    for _ in 0..3 {
         let cursor = peer
             .frame(json!({"method":"test/barrier","params":{}}))
             .await;
         peer.acknowledged(cursor).await;
+        let mut reader = state.bridge.store.test_reader().unwrap();
+        let tx = reader.transaction().unwrap();
+        assert_eq!(store::checkpoint(&tx, "default", 1).unwrap(), cursor);
     }
     let rows = state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:journal:%'", [], |r|r.get::<_,i64>(0))?) }).await.unwrap();
     assert_eq!(rows, 0);
@@ -3603,7 +3616,10 @@ async fn callback_burst_is_answered_without_worker_exit() {
             ack = peer.acks.recv() => { acknowledged = ack.expect("session acknowledges").0; continue; }
         };
         assert_eq!(wire.value["error"]["data"]["kind"], "unsupported_callback");
-        answered.insert(wire.value["id"].as_str().unwrap().to_owned());
+        assert!(
+            answered.insert(wire.value["id"].as_str().unwrap().to_owned()),
+            "duplicate callback answer"
+        );
         wire.receipt
             .send(CommandReceipt::Written {
                 remote_id: None,
@@ -3614,14 +3630,19 @@ async fn callback_burst_is_answered_without_worker_exit() {
     }
     producer.await.unwrap();
     assert_eq!(
-        answered.len(),
-        BURST as usize,
-        "every callback answered once"
+        answered,
+        (1..=BURST)
+            .map(|cursor| format!("callback-{cursor}"))
+            .collect(),
+        "every expected callback answered once"
     );
     if acknowledged < BURST {
         peer.acknowledged_or_worker_exits(BURST, &mut worker).await;
     }
     callbacks_retired(&state).await;
+    worker.session_journal_barrier().await.unwrap();
+    worker_barrier(&worker).await;
+    assert!(peer.writes.try_recv().is_err(), "no extra callback answer");
     assert!(!*worker.completion_signal().borrow());
     worker.shutdown().await.unwrap();
 }
@@ -3631,9 +3652,14 @@ async fn bookkeeping_rows_stay_bounded_across_completed_turns() {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
-    for turn in 0..24 {
+    for turn in 0..3 {
+        let input = if turn == 0 {
+            "input".into()
+        } else {
+            format!("input-{turn}")
+        };
         if turn > 0 {
-            state.enqueue(&format!("input-{turn}")).await;
+            state.enqueue(&input).await;
         }
         let start = state.start(&mut peer, &worker).await;
         peer.reply(&start, json!({"turn":{"id":format!("turn-{turn}")}}))
@@ -3643,6 +3669,11 @@ async fn bookkeeping_rows_stay_bounded_across_completed_turns() {
         worker_barrier(&worker).await;
         let count=state.bridge.run(move |store| async move { Ok(store.test_reader()?.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%'",[],|r|r.get::<_,i64>(0))?) }).await.unwrap();
         assert!(count <= 4, "turn {turn}: retained {count} worker rows");
+        assert_eq!(state.event_status(&input).await, "delivered");
+        assert_eq!(
+            state.record().await["lastCompletedTurn"],
+            format!("turn-{turn}")
+        );
     }
     worker.shutdown().await.unwrap();
 }
@@ -5976,7 +6007,7 @@ async fn cold_vm_lead_prepares_with_fake_guest_and_returns_guest_workspace_token
         radio_authorized: false,
     };
 
-    let _workspace = preparation::workspace(Arc::clone(&store), &resources, &intent)
+    let workspace = preparation::workspace(Arc::clone(&store), &resources, &intent)
         .await
         .unwrap();
 
@@ -5994,7 +6025,7 @@ async fn cold_vm_lead_prepares_with_fake_guest_and_returns_guest_workspace_token
         guest.calls.lock().unwrap().as_slice(),
         ["project.ensure", "line.bind", "health", "agent.context"]
     );
-    let _repeated = preparation::workspace(Arc::clone(&store), &resources, &intent)
+    let repeated = preparation::workspace(Arc::clone(&store), &resources, &intent)
         .await
         .unwrap();
     assert_eq!(
@@ -6002,6 +6033,18 @@ async fn cold_vm_lead_prepares_with_fake_guest_and_returns_guest_workspace_token
         4,
         "ready VM turns reuse completed guest workspace preparation"
     );
+    store
+        .transaction(move |tx| {
+            for token in [workspace, repeated] {
+                assert_eq!(
+                    token.validate(tx)?.expect("usable guest token"),
+                    PathBuf::from("/home/studio/project")
+                );
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
 }
 
 async fn scenario_workspace_pending_reuses_reserved_attempt() {

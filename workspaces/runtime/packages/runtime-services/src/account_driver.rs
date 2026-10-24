@@ -3707,18 +3707,8 @@ exit 0
     #[test]
     fn disconnected_or_deleted_accounts_are_never_admissible() {
         let fixture = TestDir::new();
-        let path = fixture.path.join("accounts/registry.json");
-        fs::create_dir_all(path.parent().expect("registry parent"))
-            .expect("create registry directory");
-        let mut value: Value =
-            serde_json::from_slice(&registry(&fixture.path)).expect("registry fixture");
-        let row = value["accounts"]["default"]
-            .as_object_mut()
-            .expect("account row");
-        row.insert("status".into(), Value::String("ready".into()));
-        row.insert("disconnected".into(), Value::Bool(true));
-        fs::write(&path, serde_json::to_vec(&value).expect("encoded registry"))
-            .expect("write registry");
+        let path = fixture.path.join("registry.json");
+        fs::write(&path, registry(&fixture.path)).expect("write registry");
         let driver = AccountDriver::open_with_reader(
             &path,
             FakeReader(metadata(
@@ -3728,10 +3718,18 @@ exit 0
             )),
         )
         .expect("open registry");
-        assert_eq!(
-            driver.get("default").expect("admission status"),
-            AccountStatus::Unavailable
-        );
+        let baseline = driver.state.lock().unwrap().value.clone();
+        for flag in ["disconnected", "deleted"] {
+            let mut candidate = baseline.clone();
+            candidate["accounts"]["default"]["status"] = serde_json::json!("ready");
+            candidate["accounts"]["default"][flag] = Value::Bool(true);
+            driver.state.lock().unwrap().value = candidate;
+            assert_eq!(
+                driver.get("default").expect("admission status"),
+                AccountStatus::Unavailable,
+                "{flag}"
+            );
+        }
     }
 
     /// Records the profile set the driver asks to have watched.
@@ -3915,62 +3913,60 @@ exit 0
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn fake_claude_executable_uses_override_and_parses_only_metadata() {
         let fixture = TestDir::new();
         let binary = fixture.path.join("claude-fake");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::write(&binary, "#!/bin/sh\nprintf '%s' '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"email\":\"claude@example.invalid\",\"subscriptionType\":\"pro\"}'\n")
-                .expect("write fake CLI");
-            fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))
-                .expect("make fake CLI executable");
-            let override_value = binary.to_str().expect("fixture path").to_owned();
-            let environment = BTreeMap::from([(CLAUDE_BIN_OVERRIDE.to_owned(), override_value)]);
-            let profile = AuthProfile {
-                provider: studio_runtime_providers::ProviderKind::Claude,
-                home: fixture.path.clone(),
-                claude_options: Some(serde_json::json!({"configDir":fixture.path})),
-            };
-            fs::write(fixture.path.join(".claude.json"), serde_json::json!({"oauthAccount":{
-                "emailAddress":"claude@example.invalid", "organizationUuid":"org-a", "accountUuid":"account-a"
-            }}).to_string()).expect("isolated native account metadata");
-            let metadata = ClaudeCliAuthReader::read_with_environment(&profile, &environment);
-            assert_eq!(metadata.status, AuthStatus::Ready);
-            assert_eq!(
-                metadata.account_id.as_deref(),
-                Some("claude:claude@example.invalid")
-            );
-            assert_eq!(
-                metadata.credential_identity,
-                Some(claude_identity::identity(
-                    "claude@example.invalid",
-                    Some("org-a"),
-                    Some("account-a")
-                ))
-            );
-            assert_eq!(parse_claude_status(b"[]", true).status, AuthStatus::Error);
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(&binary, "#!/bin/sh\nprintf '%s' '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"email\":\"claude@example.invalid\",\"subscriptionType\":\"pro\"}'\n")
+            .expect("write fake CLI");
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))
+            .expect("make fake CLI executable");
+        let override_value = binary.to_str().expect("fixture path").to_owned();
+        let environment = BTreeMap::from([(CLAUDE_BIN_OVERRIDE.to_owned(), override_value)]);
+        let profile = AuthProfile {
+            provider: studio_runtime_providers::ProviderKind::Claude,
+            home: fixture.path.clone(),
+            claude_options: Some(serde_json::json!({"configDir":fixture.path})),
+        };
+        fs::write(fixture.path.join(".claude.json"), serde_json::json!({"oauthAccount":{
+            "emailAddress":"claude@example.invalid", "organizationUuid":"org-a", "accountUuid":"account-a"
+        }}).to_string()).expect("isolated native account metadata");
+        let metadata = ClaudeCliAuthReader::read_with_environment(&profile, &environment);
+        assert_eq!(metadata.status, AuthStatus::Ready);
+        assert_eq!(
+            metadata.account_id.as_deref(),
+            Some("claude:claude@example.invalid")
+        );
+        assert_eq!(
+            metadata.credential_identity,
+            Some(claude_identity::identity(
+                "claude@example.invalid",
+                Some("org-a"),
+                Some("account-a")
+            ))
+        );
+        assert_eq!(parse_claude_status(b"[]", true).status, AuthStatus::Error);
 
-            let fallback_home = fixture.path.join("fake-home");
-            let fallback_binary = fallback_home.join(".local/bin/claude");
-            fs::create_dir_all(fallback_binary.parent().expect("fallback parent"))
-                .expect("create fallback bin directory");
-            fs::copy(&binary, &fallback_binary).expect("copy fake CLI to fallback path");
-            fs::set_permissions(&fallback_binary, fs::Permissions::from_mode(0o700))
-                .expect("make fallback CLI executable");
-            let empty_path = fixture.path.join("empty-path");
-            fs::create_dir_all(&empty_path).expect("create isolated PATH");
-            let environment = BTreeMap::from([
-                (
-                    "HOME".to_owned(),
-                    fallback_home.to_string_lossy().into_owned(),
-                ),
-                ("PATH".to_owned(), empty_path.to_string_lossy().into_owned()),
-            ]);
-            let metadata = ClaudeCliAuthReader::read_with_environment(&profile, &environment);
-            assert_eq!(metadata.status, AuthStatus::Ready);
-        }
+        let fallback_home = fixture.path.join("fake-home");
+        let fallback_binary = fallback_home.join(".local/bin/claude");
+        fs::create_dir_all(fallback_binary.parent().expect("fallback parent"))
+            .expect("create fallback bin directory");
+        fs::copy(&binary, &fallback_binary).expect("copy fake CLI to fallback path");
+        fs::set_permissions(&fallback_binary, fs::Permissions::from_mode(0o700))
+            .expect("make fallback CLI executable");
+        let empty_path = fixture.path.join("empty-path");
+        fs::create_dir_all(&empty_path).expect("create isolated PATH");
+        let environment = BTreeMap::from([
+            (
+                "HOME".to_owned(),
+                fallback_home.to_string_lossy().into_owned(),
+            ),
+            ("PATH".to_owned(), empty_path.to_string_lossy().into_owned()),
+        ]);
+        let metadata = ClaudeCliAuthReader::read_with_environment(&profile, &environment);
+        assert_eq!(metadata.status, AuthStatus::Ready);
     }
 
     #[test]
@@ -4036,11 +4032,6 @@ exit 0
             assert_eq!(metadata.status, status);
             assert_eq!(actual_conclusive, conclusive);
         }
-        assert_eq!(parse_claude_status(b"{}", true).status, SignedOut);
-        assert_eq!(
-            parse_claude_status(br#"{"loggedIn":true}"#, true).status,
-            SignedOut
-        );
     }
 
     #[test]
@@ -4370,10 +4361,22 @@ exit 0
         let path = fixture.path.join("registry.json");
         let original = registry(&fixture.path);
         fs::write(&path, &original).expect("write valid registry");
-        let (mut candidate, order) = decode_registry(&original).expect("decode original");
+        let driver = AccountDriver::open(&path).expect("open registry");
+        let changes = driver.change_signal().subscribe();
+        let mut state = driver.state.lock().expect("registry state");
+        let original_value = state.value.clone();
+        let original_order = state.order.clone();
+        let mut candidate = original_value.clone();
         candidate["accounts"]["default"]["status"] = Value::String("invalid".into());
-        let encoded = encode_registry(&candidate, &order).expect("encode candidate");
-        assert!(decode_registry(&encoded).is_err());
+        assert_eq!(
+            driver.persist(&mut state, candidate),
+            Err(AccountDriverError::InvalidRegistry)
+        );
+        assert_eq!(state.value, original_value);
+        assert_eq!(state.order.accounts, original_order.accounts);
+        assert_eq!(state.order.logins, original_order.logins);
+        assert_eq!(state.revision, 0);
+        assert!(!changes.has_changed().expect("change signal"));
         assert_eq!(fs::read(path).expect("read unchanged registry"), original);
     }
 

@@ -1806,11 +1806,37 @@ mod provider_receipt_tests {
                 )
                 .expect("test fixture operation succeeds"),
         );
-        let ready = after(submitted.provider_receipt(
+        let mut ready = after(submitted.provider_receipt(
             "agent", "transfer:agent:thread-start",
             json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"written", "ticket":{"id":11}}),
             Some(json!({"thread":{"id":"target-thread"}})), RequestCertainty::Written,
         ).expect("test fixture operation succeeds"));
+        for (path, invalid) in [
+            ("/targetSettings", Value::Null),
+            ("/result", Value::Null),
+            ("/providerReceipts", json!([])),
+            ("/providerReceipts/0/certainty", json!("unknown")),
+            ("/providerReceipts/0/operation", json!("other-operation")),
+            (
+                "/providerReceipts/0/scope/connection",
+                json!("other-connection"),
+            ),
+            ("/providerReceipts/0/ticket", Value::Null),
+            ("/source/epoch", json!(99)),
+            ("/source/threadId", json!("other-thread")),
+            ("/source/cwd", json!("/other-workspace")),
+        ] {
+            let member = &mut ready.operation["members"]["agent"];
+            let original =
+                std::mem::replace(member.pointer_mut(path).expect("fixture field"), invalid);
+            assert!(
+                ready.adopt_receipt("agent").is_err(),
+                "adopted invalid {path}"
+            );
+            *ready.operation["members"]["agent"]
+                .pointer_mut(path)
+                .unwrap() = original;
+        }
         let adopted = after(
             ready
                 .adopt_receipt("agent")
