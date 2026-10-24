@@ -1506,6 +1506,7 @@ function fastTierCommands(root) {
               "test(monitor_recovery::transferred_monitor_keeps_its_source_for_interactive_input_and_reattach)",
               "test(wave7_p15_runtime::http_input_retry_after_ack_replays_one_logical_input)",
               "test(wave7_p15_runtime::http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_content)",
+              "test(wave7_p15_runtime::http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts)",
             ]),
           ],
         ],
