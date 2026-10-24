@@ -18755,6 +18755,7 @@ export interface components {
      * @description Per-resource revision; StateResource uses the entity sequence.
      */
     ResourceRevisionEntry: {
+      cursor?: components["schemas"]["SubscriptionCursor"];
       /** @description Transient owner access snapshot. Never persist in the client entity cache. Omission requires HTTP recovery. */
       discoverySnapshot?: components["schemas"]["AccessSnapshot"] | null;
       draftChanges?: components["schemas"]["DraftChangeBatch"] | null;
@@ -18763,6 +18764,7 @@ export interface components {
       entitySequenceReset?: boolean | null;
       /** Entitysequences */
       entitySequences?: number[] | null;
+      replyKind?: components["schemas"]["SubscriptionReplyKind"];
       resource?: components["schemas"]["ResourceRef"] | null;
       /** Revision */
       revision: number;
@@ -21378,6 +21380,56 @@ export interface components {
       /** Items */
       items: components["schemas"]["StudioError"][];
     };
+    /** SubscriptionAdd */
+    SubscriptionAdd: {
+      resource: components["schemas"]["ResourceRef"];
+      since?: components["schemas"]["SubscriptionCursor"];
+    };
+    /**
+     * SubscriptionCursor
+     * @description Last fully applied durable sequence for one resource ref. Workspace identity survives server restarts; a different identity requires a fresh snapshot.
+     */
+    SubscriptionCursor: {
+      seq: number;
+      workspaceId: string;
+    };
+    /** @description Authoritative resource kind to domain data mapping for the screen subscription API. Keys must equal ResourceRef kinds. Transport metadata never belongs in this map. */
+    SubscriptionDataMap: {
+      accounts: components["schemas"]["AccountsResponse"];
+      "auth-progress": components["schemas"]["ClaudeLoginResponse"] | null;
+      costs: components["schemas"]["AccountCostResponse"];
+      desktop: components["schemas"]["DesktopResponse"];
+      drafts: components["schemas"]["DraftChangeBatch"];
+      limits: components["schemas"]["UsageLimitsResponse"];
+      models: components["schemas"]["SyncEntityPayload"][];
+      "multi-server": components["schemas"]["AccessSnapshot"];
+      queue: components["schemas"]["SyncEntityPayload"][];
+      receipts: components["schemas"]["SyncEntityPayload"][];
+      "rename-progress": components["schemas"]["RenameResponse"] | null;
+      room: components["schemas"]["SyncEntityPayload"][];
+      "session-cost": components["schemas"]["SessionCostResponse"];
+      state: components["schemas"]["SyncEntityPayload"][];
+      task: components["schemas"]["TaskDetailResponse"];
+      tasks: components["schemas"]["SyncEntityPayload"][];
+      terminal: components["schemas"]["SyncEntityPayload"][];
+      terminals: components["schemas"]["TerminalList"];
+      transcript: components["schemas"]["TranscriptPageResponse"];
+      transcripts: components["schemas"]["SyncEntityPayload"][];
+      "vault-job-progress":
+        | components["schemas"]["VaultSetupResponse"]
+        | components["schemas"]["VaultLoginResponse"]
+        | components["schemas"]["VaultPullResponse"]
+        | null;
+      "vault-readiness": boolean;
+      voice: components["schemas"]["VoiceRecordBatch"];
+      workspace: components["schemas"]["SyncEntityPayload"][];
+    };
+    /**
+     * SubscriptionReplyKind
+     * @description Whether this initial subscription reply replaces the ref projection or applies only changes after its cursor.
+     * @enum {string}
+     */
+    SubscriptionReplyKind: "delta" | "snapshot";
     /** SummaryAccount */
     SummaryAccount: {
       /**
@@ -22305,7 +22357,7 @@ export interface components {
     };
     /** SyncSubscriptionRequest */
     SyncSubscriptionRequest: {
-      add: components["schemas"]["ResourceRef"][];
+      add: components["schemas"]["SubscriptionAdd"][];
       gen: number;
       remove: components["schemas"]["ResourceRef"][];
       sessionId: string;

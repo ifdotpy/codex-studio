@@ -27,7 +27,7 @@ import {
 import { serverSidebarBackend } from "./serverSidebarBackend";
 import * as defaultApi from "../api";
 import * as defaultSync from "../sync/client";
-import * as defaultResources from "../sync/resourceEvents";
+import { defaultSubscriptions as defaultResources } from "../sync/subscriptions/events";
 import * as defaultTranscripts from "../sync/transcriptCache";
 import * as defaultTokenRates from "../usage/tokenRate";
 import type { ServerServices } from "./serverServices";

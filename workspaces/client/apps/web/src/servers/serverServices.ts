@@ -24,6 +24,10 @@ import { useNativeDrafts } from "../native/useNativeDrafts";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
 import { createResourceEvents } from "../sync/resourceEvents";
+import {
+  createSubscriptions,
+  createDataObserver,
+} from "../sync/subscriptions/events";
 import { SignedEventSource } from "./eventSource";
 import { createTranscriptCache } from "../sync/transcriptCache";
 import { createTokenRateCache } from "../usage/tokenRate";
@@ -70,14 +74,16 @@ export function createServerServices(server: StudioServer) {
   let runtime:
     | {
         sync: ReturnType<typeof createSyncClient>;
-        resources: ReturnType<typeof createResourceEvents>;
+        resources: ReturnType<
+          typeof createSubscriptions<ReturnType<typeof createResourceEvents>>
+        >;
       }
     | undefined;
   let stopName = () => {};
   const synchronization = () => {
     if (runtime) return runtime;
     let sync!: ReturnType<typeof createSyncClient>;
-    const resources = createResourceEvents({
+    const transportEvents = createResourceEvents({
       api,
       tokenRates,
       sync: {
@@ -95,6 +101,10 @@ export function createServerServices(server: StudioServer) {
           ? name
           : `${name}:server:${transport.owner.id}`,
     });
+    const resources = createSubscriptions(
+      transportEvents,
+      createDataObserver(() => sync, transportEvents),
+    );
     sync = createSyncClient({
       api,
       resources,
