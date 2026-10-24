@@ -11,7 +11,14 @@ import {
   Square,
   Terminal as TerminalIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useLayoutEffect,
+} from "react";
+import type { CSSProperties } from "react";
 import type { Terminal } from "@xterm/xterm";
 import { errorText, type GetResult, type PostBody } from "../api";
 import type { Agent, Snapshot } from "../types";
@@ -19,6 +26,18 @@ import "./terminal-dock.css";
 import { copyText } from "../clipboard/clipboard";
 import { useServerResourceReads } from "../servers/ServerServicesContext";
 import { serverParentOrigin } from "../servers/environment";
+
+import { layoutValues } from "../layout/layout-contract.generated";
+import { resolveLayoutLength } from "../layout/deriveWorkspaceLayout";
+import { useTerminalHeight } from "./useTerminalHeight";
+import { TerminalResizeGesture } from "./terminalResize";
+
+const terminalBounds = (rootFont: number) => ({
+  preferred: resolveLayoutLength("terminal.preferred", rootFont),
+  min: resolveLayoutLength("terminal.min", rootFont),
+  closedBar: resolveLayoutLength("terminal.closedBar", rootFont),
+  viewportMaxRatio: layoutValues.terminal.viewportMaxRatio,
+});
 
 type Shell = GetResult<"/api/terminals">["items"][number];
 type Entry = Shell & { key: string };
@@ -54,8 +73,35 @@ export default function TerminalDock({
     saved("codex.terminal.open", false),
   );
   const [height, setHeight] = useState(() =>
-    saved("codex.terminal.height", 360),
+    saved(
+      "codex.terminal.height",
+      terminalBounds(
+        Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+      ).preferred,
+    ),
   );
+  const dock = useRef<HTMLElement>(null);
+  const resize = useRef(new TerminalResizeGesture());
+  const [dragHeight, setDragHeight] = useState<number | null>(null);
+  const geometry = useTerminalHeight(
+    dock,
+    dragHeight ?? height,
+    opened,
+    terminalBounds,
+  );
+  const scope = serverViewId ?? "local";
+  const cancelResize = () => {
+    resize.current.cancel();
+    setDragHeight(null);
+  };
+  useEffect(() => {
+    cancelResize();
+    return () => resize.current.cancel();
+  }, [scope, opened]);
+  const commitHeight = (next: number) => {
+    setHeight(next);
+    save("codex.terminal.height", next);
+  };
   const [shells, setShells] = useState<Shell[]>([]);
   const [selected, setSelected] = useState(() =>
     saved("codex.terminal.selected", ""),
@@ -106,17 +152,17 @@ export default function TerminalDock({
   }, [load, watchResourceReads]);
   useEffect(() => {
     if (!opened) setEndTarget(null);
-    const update = () =>
-      document.documentElement.style.setProperty(
-        "--terminal-dock-height",
-        `${opened ? Math.min(height, window.innerHeight - 100) : 38}px`,
-      );
-    update();
-    window.addEventListener("resize", update);
     save("codex.terminal.open", opened);
-    save("codex.terminal.height", height);
-    return () => window.removeEventListener("resize", update);
-  }, [opened, height]);
+  }, [opened]);
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty(
+      "--terminal-dock-height",
+      `${geometry.height}px`,
+    );
+    return () => {
+      document.documentElement.style.removeProperty("--terminal-dock-height");
+    };
+  }, [geometry.height]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.code === "Backquote") {
@@ -153,7 +199,7 @@ export default function TerminalDock({
   );
   const visible = filtered.slice(
     start,
-    start + Math.ceil(height / rowHeight) + 6,
+    start + Math.ceil(geometry.height / rowHeight) + 6,
   );
   const create = async () => {
     if (!agent || creating) return;
@@ -184,9 +230,11 @@ export default function TerminalDock({
   const createRef = useRef(create);
   createRef.current = create;
   const activeCount = entries.filter((entry) => running(entry.status)).length;
-  const shownHeight = opened
-    ? Math.min(height, Math.max(0, window.innerHeight - 100))
-    : 38;
+  const shownHeight = geometry.height;
+  const heightStep = resolveLayoutLength(
+    "resize.step",
+    Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+  );
   useEffect(() => {
     if (!shellTerminal) return;
     postToShell(
@@ -201,14 +249,22 @@ export default function TerminalDock({
       },
       serverParentOrigin,
     );
-  }, [opened, shownHeight, entries.length, activeCount, !!agent]);
+  }, [
+    opened,
+    shownHeight,
+    entries.length,
+    activeCount,
+    !!agent,
+    shellTerminal,
+    postToShell,
+    serverViewId,
+  ]);
   useEffect(() => {
     if (screen)
       return screen.bindTerminal((operation) => {
         if (operation === "toggle") setOpened((value) => !value);
         else void createRef.current();
       });
-    if (!shellTerminal) return;
     const command = (event: Event) => {
       const operation = (event as CustomEvent<string>).detail;
       if (operation === "toggle") setOpened((value: boolean) => !value);
@@ -237,9 +293,16 @@ export default function TerminalDock({
   };
   return (
     <section
+      ref={dock}
       className={`terminal-dock ${opened ? "is-open" : ""}`}
+      data-shell-terminal={shellTerminal || undefined}
       aria-label="Terminals"
-      style={{ height: opened ? `min(${height}px, calc(100dvh - 100px))` : 38 }}
+      style={
+        {
+          height: geometry.height,
+          "--terminal-dock-height": `${geometry.height}px`,
+        } as CSSProperties
+      }
     >
       {opened && (
         <div
@@ -248,35 +311,59 @@ export default function TerminalDock({
           aria-label="Terminal panel height"
           aria-orientation="horizontal"
           tabIndex={0}
+          aria-valuemin={geometry.min}
+          aria-valuemax={geometry.max}
+          aria-valuenow={geometry.height}
           onKeyDown={(event) => {
+            if (event.key === "Escape") cancelResize();
             if (event.key === "ArrowUp" || event.key === "ArrowDown") {
               event.preventDefault();
-              setHeight(
-                Math.max(
-                  220,
-                  Math.min(
-                    window.innerHeight - 100,
-                    height + (event.key === "ArrowUp" ? 40 : -40),
+              cancelResize();
+              commitHeight(
+                Math.min(
+                  geometry.max,
+                  Math.max(
+                    geometry.min,
+                    geometry.height +
+                      (event.key === "ArrowUp" ? heightStep : -heightStep),
                   ),
                 ),
               );
             }
           }}
           onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            resize.current.start(
+              scope,
+              event.pointerId,
+              event.clientY,
+              geometry.height,
+            );
             event.currentTarget.setPointerCapture(event.pointerId);
           }}
           onPointerMove={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId))
-              setHeight(
-                Math.max(
-                  220,
-                  Math.min(
-                    window.innerHeight - 100,
-                    window.innerHeight - event.clientY,
-                  ),
-                ),
-              );
+            const next = resize.current.move(
+              scope,
+              event.pointerId,
+              event.clientY,
+              geometry.min,
+              geometry.max,
+            );
+            if (next !== null) setDragHeight(next);
           }}
+          onPointerUp={(event) => {
+            const next = resize.current.finish(scope, event.pointerId);
+            if (next !== null)
+              commitHeight(
+                Math.min(geometry.max, Math.max(geometry.min, next)),
+              );
+            setDragHeight(null);
+            if (event.currentTarget.hasPointerCapture(event.pointerId))
+              event.currentTarget.releasePointerCapture(event.pointerId);
+          }}
+          onPointerCancel={cancelResize}
+          onLostPointerCapture={cancelResize}
         />
       )}
       <header className="terminal-dock-bar">
@@ -730,7 +817,12 @@ function ShellView({
             sendRef.current(text);
         });
         const resize = () => {
-          if (disposed || !host.current?.clientWidth) return;
+          if (
+            disposed ||
+            !host.current?.clientWidth ||
+            !host.current.clientHeight
+          )
+            return;
           fit.fit();
           clearTimeout(resizeTimer);
           resizeTimer = setTimeout(() => {

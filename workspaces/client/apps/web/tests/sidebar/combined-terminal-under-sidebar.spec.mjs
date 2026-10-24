@@ -16,7 +16,8 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
     const bar = page.locator(".shell-terminal-bar");
     await expect(bar).toBeVisible();
     await expect(shell).toHaveAttribute("data-shell-terminal", "closed");
-    const frame = page.frameLocator('iframe[title="Studio on Local"]');
+    const frame = page;
+    await sidebar.getByRole("button", { name: /^Local Saved pin\b/ }).click();
     // The view's own closed bar gives way to the shell's.
     await expect(frame.locator(".terminal-dock")).toBeHidden();
     const closed = await page.evaluate(() => ({
@@ -61,14 +62,17 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
       .toMatchObject({ left: 0, width: 1440 });
     const open = await dock.evaluate((node) => ({
       dock: node.getBoundingClientRect().toJSON(),
-      padding: getComputedStyle(document.querySelector("#root")).paddingLeft,
+      workspace: document
+        .querySelector(".workspace")
+        .getBoundingClientRect()
+        .toJSON(),
       width: innerWidth,
       height: innerHeight,
     }));
     // The panel spans the window; the chat keeps clear of the sidebar above it.
     expect(open.dock.left).toBe(0);
     expect(open.dock.width).toBe(open.width);
-    expect(Math.round(parseFloat(open.padding))).toBe(
+    expect(Math.round(open.workspace.left)).toBe(
       Math.round(closed.sidebar.width),
     );
     const sideBottom = await page.evaluate(() =>
@@ -80,6 +84,65 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
     );
     expect(sideBottom).toBe(Math.round(open.dock.top));
     await expect(sidebar.locator(".project-tree-toggle").first()).toBeVisible();
+
+    await page.setViewportSize({ width: 1440, height: 420 });
+    await expect
+      .poll(async () => {
+        return page.evaluate(() => {
+          const dock = document
+            .querySelector(".terminal-dock")
+            .getBoundingClientRect();
+          const sidebar = document
+            .querySelector(".multi-server-shell > #sidebar")
+            .getBoundingClientRect();
+          const composer = document
+            .querySelector("#composer")
+            .getBoundingClientRect();
+          const header = document
+            .querySelector(".workspace-header")
+            .getBoundingClientRect();
+          const shell = document.querySelector(".multi-server-shell");
+          return (
+            Math.abs(sidebar.bottom - dock.top) <= 1 &&
+            Math.abs(
+              parseFloat(
+                getComputedStyle(shell).getPropertyValue(
+                  "--shell-terminal-height",
+                ),
+              ) - dock.height,
+            ) <= 1 &&
+            composer.top >= header.bottom &&
+            composer.bottom <= dock.top + 1
+          );
+        });
+      })
+      .toBe(true);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    // Switching servers cancels the local drag before it can save to either owner.
+    const preference = await page.evaluate(() =>
+      localStorage.getItem("codex.terminal.height"),
+    );
+    const handle = await dock.getByRole("separator").boundingBox();
+    await page.mouse.move(
+      handle.x + handle.width / 2,
+      handle.y + handle.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      handle.x + handle.width / 2,
+      handle.y + handle.height / 2 - 40,
+    );
+    await sidebar
+      .getByRole("button", { name: /^Remote Saved pin\b/ })
+      .dispatchEvent("click");
+    await page.mouse.up();
+    await expect(shell).toHaveAttribute("data-shell-terminal", "closed");
+    expect(
+      await page.evaluate(() => localStorage.getItem("codex.terminal.height")),
+    ).toBe(preference);
+    await sidebar.getByRole("button", { name: /^Local Saved pin\b/ }).click();
+    await expect(shell).toHaveAttribute("data-shell-terminal", "open");
+    await expect(dock).toBeVisible();
 
     await dock
       .getByRole("button", { name: "Hide terminals", exact: true })
