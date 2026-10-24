@@ -904,12 +904,7 @@ test("Terminal dock live shell", async () => {
     new URL("../../package.json", import.meta.url),
   )("playwright-core");
   // The same dock also exercises real shell input and saved output through the HTTP server.
-  const liveRoot = await mkdtemp(
-    join(
-      process.platform === "darwin" ? "/tmp" : tmpdir(),
-      "codex-terminal-live-",
-    ),
-  );
+  const liveRoot = await mkdtemp(join(tmpdir(), "codex-terminal-live-"));
   const fixture = spawn(process.execPath, [rustUiFixture, liveRoot], {
     stdio: ["pipe", "pipe", "pipe"],
   });

@@ -6,7 +6,7 @@ for (const combined of [false, true]) {
   test(`the sidebar drawer preserves filter, selection, focus, and desktop preference: ${combined ? "combined" : "direct"}`, async ({
     page,
     context,
-  }) => {
+  }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const f = await sidebarParityFixture(context, { paired: combined });
     try {
@@ -38,7 +38,7 @@ for (const combined of [false, true]) {
         await expect(sidebar).toHaveAttribute("data-presentation", "drawer");
         if (width === 320)
           await page.screenshot({
-            path: `/tmp/slice2-sidebar-${combined ? "combined" : "direct"}-320.png`,
+            path: testInfo.outputPath("sidebar-320.png"),
           });
         await sidebar.getByPlaceholder("Filter sidebar").fill("Root A");
         await sidebar
@@ -128,7 +128,7 @@ for (const combined of [false, true]) {
 test("the direct sidebar bounds pointer resize, cancels lost capture, and measures large text", async ({
   page,
   context,
-}) => {
+}, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const f = await sidebarParityFixture(context, { paired: false });
   try {
@@ -200,7 +200,9 @@ test("the direct sidebar bounds pointer resize, cancels lost capture, and measur
         );
       }),
     ).toBe(true);
-    await page.screenshot({ path: "/tmp/slice2-sidebar-large-text.png" });
+    await page.screenshot({
+      path: testInfo.outputPath("sidebar-large-text.png"),
+    });
     await expect
       .poll(async () => {
         const side = await sidebar.boundingBox();
