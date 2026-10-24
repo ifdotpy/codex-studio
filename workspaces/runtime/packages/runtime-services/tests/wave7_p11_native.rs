@@ -626,6 +626,127 @@ fn review_reservation_rolls_back_and_replays_without_second_child() {
         case["child"]
     );
 }
+
+#[test]
+fn review_reservation_accepts_provider_progress_after_preparation() {
+    let case = &corpus()["reviews"][0];
+    for field in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS {
+        let plan = ReviewPlan::from_records(
+            case["actor"].clone(),
+            case["root"].clone(),
+            case["args"].clone(),
+            "review-request".into(),
+            case["directory"].as_str().expect("directory").into(),
+        )
+        .expect("plan");
+        let mut db = db(&json!({"agent":case["actor"]}));
+        let mut current = case["actor"].clone();
+        current[field] = match field {
+            "events" | "lastEvent" | "tokensUsed" => json!(23),
+            "tail" | "lastAnswer" => json!("new provider output"),
+            "activity" => json!({"phase":"thinking","at":23}),
+            "activeTools" => json!([]),
+            _ => json!({"totalTokens":23}),
+        };
+        db.execute(
+            "UPDATE runtime_agents SET record=?1 WHERE id='lead'",
+            [current.to_string()],
+        )
+        .expect("provider progress");
+        let tx = db.transaction().expect("begin");
+        native_review::reserve(&tx, &plan, &Creator(case["child"].clone()))
+            .unwrap_or_else(|error| panic!("progress field {field} refused the review: {error}"));
+    }
+}
+
+#[test]
+fn a_worker_review_checks_lead_settings_but_accepts_lead_progress() {
+    let case = &corpus()["reviews"][0];
+    for (field, value, allowed) in [
+        ("tokensUsed", json!(23), true),
+        ("concurrency", json!(0), false),
+        ("reviewDefaults", json!({"model":"other-model"}), false),
+        ("yoloMode", json!(true), false),
+        ("epoch", json!(4), false),
+        ("accountKey", json!("other-account"), false),
+    ] {
+        let mut root = case["root"].clone();
+        root["id"] = json!("root");
+        root["rootId"] = json!("root");
+        let mut parent = case["actor"].clone();
+        parent["rootId"] = json!("root");
+        parent["parentId"] = json!("root");
+        parent["isLead"] = json!(false);
+        let plan = ReviewPlan::from_records(
+            parent.clone(),
+            root.clone(),
+            case["args"].clone(),
+            "review-request".into(),
+            case["directory"].as_str().expect("directory").into(),
+        )
+        .expect("plan");
+        let mut db = db(&json!({"agent":parent}));
+        root[field] = value;
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('root',?1)",
+            [root.to_string()],
+        )
+        .expect("lead change");
+        let mut child = case["child"].clone();
+        child["rootId"] = json!("root");
+        let tx = db.transaction().expect("begin");
+        assert_eq!(
+            native_review::reserve(&tx, &plan, &Creator(child)).is_ok(),
+            allowed,
+            "lead field {field}"
+        );
+    }
+}
+
+#[test]
+fn review_reservation_refuses_identity_authority_and_settings_changes() {
+    let case = &corpus()["reviews"][0];
+    for (field, value) in [
+        ("epoch", json!(4)),
+        ("accountKey", json!("other-account")),
+        ("threadId", json!("other-thread")),
+        ("turnId", json!("other-turn")),
+        ("status", json!("paused")),
+        ("autoWake", json!(false)),
+        ("deletedAt", json!(20)),
+        ("concurrency", json!(0)),
+        ("model", json!("other-model")),
+        ("reviewDefaults", json!({"model":"other-model"})),
+        ("cwd", json!("/other/project")),
+        ("workspaceMode", json!("other-workspace")),
+        ("projectId", json!("other-project")),
+        ("yoloMode", json!(true)),
+        ("approvalPolicy", json!("never")),
+        ("sandbox", json!("danger-full-access")),
+    ] {
+        let plan = ReviewPlan::from_records(
+            case["actor"].clone(),
+            case["root"].clone(),
+            case["args"].clone(),
+            "review-request".into(),
+            case["directory"].as_str().expect("directory").into(),
+        )
+        .expect("plan");
+        let mut db = db(&json!({"agent":case["actor"]}));
+        let mut current = case["actor"].clone();
+        current[field] = value;
+        db.execute(
+            "UPDATE runtime_agents SET record=?1 WHERE id='lead'",
+            [current.to_string()],
+        )
+        .expect("changed record");
+        let tx = db.transaction().expect("begin");
+        assert!(
+            native_review::reserve(&tx, &plan, &Creator(case["child"].clone())).is_err(),
+            "a change to {field} must refuse the prepared review"
+        );
+    }
+}
 #[test]
 fn fork_persisted_ticket_holds_and_accepts_only_exact_receipt() {
     use studio_runtime_services::thread_fork_runtime as fork;
