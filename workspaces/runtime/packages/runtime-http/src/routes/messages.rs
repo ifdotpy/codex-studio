@@ -116,7 +116,6 @@ pub(super) async fn post_message(
         .map(|asset| serde_json::to_value(asset).map_err(|_| ApiError::internal()))
         .collect::<Result<Vec<_>, _>>()?;
     let delivery = body.delivery.unwrap_or_default();
-    let admission_store = Arc::clone(&store);
     let admission_room = body.room.clone();
     let admission_override = message_admission.clone();
     let (federated_room, remote_worker, prepared) = store
@@ -152,7 +151,6 @@ pub(super) async fn post_message(
                     } else {
                         studio_runtime_services::message_admission::AdmissionSnapshot::Ingress(
                             studio_runtime_services::message_admission::MessageIngressAdmission::read(
-                                admission_store,
                                 connection,
                                 &admission_room,
                             )
@@ -329,7 +327,6 @@ fn coordination_error(error: CoordinationError) -> ApiError {
         CoordinationError::AdmissionDenied(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
-        CoordinationError::BudgetRuntime(_) => ApiError::internal(),
         CoordinationError::Store(error) => ApiError::stored(error),
     }
 }

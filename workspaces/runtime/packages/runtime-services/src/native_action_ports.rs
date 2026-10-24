@@ -125,7 +125,7 @@ impl Admission for MessageNativeAdmission {
         if !blockers.is_empty() {
             return Err(NativeError::Invalid("workspace"));
         }
-        self.0.budget(tx, &actor, &root).map_err(admission_error)
+        Ok(())
     }
 }
 

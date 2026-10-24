@@ -20,8 +20,7 @@ const SUBAGENT_CONCURRENCY: std::ops::RangeInclusive<i64> =
 const TEAM_AGENTS: std::ops::RangeInclusive<i64> = MIN_TEAM_AGENTS..=MAX_TEAM_AGENTS as i64;
 /// Refusals that name the bounds above; `limit_refusals_name_the_owned_bounds` checks them.
 const CREATE_LIMITS_REFUSAL: &str = "Concurrency must be 0 to 2048 and team size must be 1 to 2050";
-const TEAM_SIZE_REFUSAL: &str =
-    "Team size must be 1 to 2050 and token budget must be positive or null";
+const TEAM_SIZE_REFUSAL: &str = "Team size must be 1 to 2050";
 const CONCURRENCY_REFUSAL: &str = "Subagent concurrency must be an integer from 0 to 2048";
 
 pub type PersistedRecordValidator = std::sync::Arc<dyn Fn(&str, &Value) -> bool + Send + Sync>;
@@ -82,7 +81,6 @@ pub struct Creation {
     pub yolo: Option<bool>,
     pub concurrency: Option<i64>,
     pub max_agents: Option<i64>,
-    pub token_budget: Option<i64>,
     pub profile: Option<String>,
     pub parent: Option<String>,
     pub previous: Option<String>,
@@ -99,7 +97,6 @@ pub struct Configuration {
     pub id: String,
     pub concurrency: Option<i64>,
     pub max_agents: Option<i64>,
-    pub token_budget: Option<Option<i64>>,
     pub expected_mode_revision: Option<i64>,
     pub request_id: Option<String>,
 }
@@ -822,11 +819,6 @@ async fn create(
     {
         return Err(OperationError::Invalid(CREATE_LIMITS_REFUSAL));
     }
-    if request.token_budget.is_some_and(|budget| budget <= 0) {
-        return Err(OperationError::Invalid(
-            "Token budget must be a positive integer",
-        ));
-    }
     let role = request.role.as_deref().unwrap_or("orchestrator");
     let max_agents = if request.max_agents.is_some() || role != "orchestrator" {
         requested_max_agents
@@ -884,7 +876,6 @@ async fn create(
         &workspace,
         Some(concurrency),
         max_agents,
-        json!(request.token_budget),
         draft,
         created,
         draft.then_some(signature.clone()),
@@ -1228,7 +1219,6 @@ async fn create_child(
         .get("maxAgents")
         .cloned()
         .unwrap_or(json!(DEFAULT_MAX_TEAM_AGENTS));
-    let root_token_budget = root.get("tokenBudget").cloned().unwrap_or(Value::Null);
     let prepare_cwd = cwd.to_owned();
     let prepare_host_cwd = host_cwd.to_owned();
     let prepare_parent_cwd = parent_cwd.to_owned();
@@ -1289,7 +1279,6 @@ async fn create_child(
     record["provider"] = json!(provider);
     record["yoloMode"] = root_yolo;
     record["maxAgents"] = root_max_agents;
-    record["tokenBudget"] = root_token_budget;
     let created = record
         .get("created")
         .and_then(Value::as_f64)
@@ -1646,16 +1635,13 @@ pub async fn configure(
     if request
         .max_agents
         .is_some_and(|max_agents| !TEAM_AGENTS.contains(&max_agents))
-        || request
-            .token_budget
-            .is_some_and(|budget| budget.is_some_and(|budget| budget <= 0))
     {
         return Err(OperationError::Invalid(TEAM_SIZE_REFUSAL));
     }
     if request.concurrency.is_some() {
-        if request.max_agents.is_some() || request.token_budget.is_some() {
+        if request.max_agents.is_some() {
             return Err(OperationError::Invalid(
-                "Configure only team storage and token limits",
+                "Configure either the subagent concurrency or the team size",
             ));
         }
         let limit = request.concurrency.ok_or(OperationError::Internal)?;
@@ -1727,11 +1713,11 @@ pub async fn configure(
             mode_fields(&mut root);
             let changed = current != limit || root["maxAgents"].as_i64() != Some(prior_max);
             if changed {
-            save_agent(tx, &root, &validate)?;
+                save_agent(tx, &root, &validate)?;
             }
             let result = json!({"id":request.id,"concurrency":root["concurrency"],
                 "agentMode":root["agentMode"],"agentModeRevision":root["agentModeRevision"],
-                "maxAgents":root["maxAgents"],"tokenBudget":root.get("tokenBudget").cloned().unwrap_or(Value::Null)});
+                "maxAgents":root["maxAgents"]});
             EventWriteRepository::put_receipt(
                 tx,
                 &request_id,
@@ -1739,24 +1725,21 @@ pub async fn configure(
                 &serde_json::to_string(&result).map_err(StoreError::from)?,
             )?;
             Ok(result)
-        }).await;
+        })
+        .await;
     }
     if request.expected_mode_revision.is_some() || request.request_id.is_some() {
         return Err(OperationError::Invalid(
-            "Configure only team storage and token limits",
+            "Configure either the subagent concurrency or the team size",
         ));
     }
     let max_agents = request.max_agents;
     let validate = std::sync::Arc::clone(&validate);
     mutate(context, move |tx| {
         let validate = |schema: &str, value: &Value| validate(schema, value);
-        let result = configure_limits(
-            tx,
-            &request.id,
-            max_agents,
-            request.token_budget,
-            |schema, value| validate(schema, value),
-        )?;
+        let result = configure_limits(tx, &request.id, max_agents, |schema, value| {
+            validate(schema, value)
+        })?;
         if !validate("ConfigureResponse", &result) {
             return Err(MutationError::InvalidStoredObject {
                 table: "runtime_agents",
@@ -1918,7 +1901,6 @@ pub async fn conversation(
                     "A subagent concurrency setting is required",
                 ))?),
                 max_agents: None,
-                token_budget: None,
                 expected_mode_revision: Some(expected),
                 request_id: request.mode_request_id.clone(),
             },
@@ -3101,7 +3083,6 @@ pub(crate) fn build_agent_record(
     workspace_mode: &str,
     concurrency: Option<i64>,
     max_agents: i64,
-    token_budget: Value,
     draft: bool,
     created: f64,
     quick_create_signature: Option<String>,
@@ -3113,9 +3094,9 @@ pub(crate) fn build_agent_record(
           "role":role,"isLead":is_lead,"needsTitle":draft,"parentId":null,"rootId":id,
           "model":crate::provider_adapter::default_model(provider),"effort":"medium",
           "fastMode":false,"daybreakEnabled":false,"cyberAccessProgram":"standard",
-          "maxAgents":max_agents,"tokenBudget":token_budget,"status":status,"autoWake":true,
+          "maxAgents":max_agents,"status":status,"autoWake":true,
           "epoch":0,"turnId":null,"inFlight":false,"turnEpoch":0,"usageResumeEnabled":true,
-          "tokensUsed":0,"compactions":0,"compactionsObservedOnly":false,"contextUsage":null,
+          "compactions":0,"compactionsObservedOnly":false,"contextUsage":null,
           "events":0,"created":created,"error":null,"profileId":null,"profileInstructions":""
         }),
         json!({
@@ -3195,7 +3176,7 @@ mod tests {
             CREATE_LIMITS_REFUSAL,
             format!("Concurrency must be {concurrency} and team size must be {team}")
         );
-        assert!(TEAM_SIZE_REFUSAL.starts_with(&format!("Team size must be {team} ")));
+        assert_eq!(TEAM_SIZE_REFUSAL, format!("Team size must be {team}"));
         assert!(CONCURRENCY_REFUSAL.ends_with(&format!("from {concurrency}")));
     }
 
@@ -3604,7 +3585,6 @@ mod tests {
             "image",
             None,
             DEFAULT_MAX_TEAM_AGENTS,
-            Value::Null,
             false,
             1.0,
             None,

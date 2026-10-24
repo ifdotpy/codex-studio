@@ -839,13 +839,6 @@ Changes to the title or description alone do not start another turn.
 The event includes the task ID and scope. Retries retain the same event identity.
 Explicit stops and native failure holds remain in effect.
 
-An optional team token budget sums Codex's reported thread usage. This includes
-input tokens, including cached input. It is not a billing estimate or a strict
-pre-request cap. When a usage notification reaches the limit, the runtime stops
-the team and cancels its queued work and command watches. In-flight requests can
-exceed the limit before their usage notification arrives.
-Increase the budget with `codex-control configure`, then send a new instruction to resume.
-
 ### Full disk
 
 The Rust backend's existing `DiskGate` owns storage admission and the typed
@@ -1145,8 +1138,8 @@ or a restart when no active work will be interrupted.
 Existing Single agent chats migrate to zero. Existing Multi agent chats retain
 their numeric concurrency value, now counting only subagents. This can permit
 one more active participant because the lead no longer uses that allowance.
-The setting is independent of token budgets, provider availability, and an
-explicit operator resource ceiling. Those constraints can reduce actual
+The setting is independent of provider availability and an explicit
+operator resource ceiling. Those constraints can reduce actual
 parallelism; the queue reports their blockers.
 
 ### Account turn start limits

@@ -24,6 +24,8 @@ mod wave7_p15_http;
 mod wave7_p18_account_session;
 // Register every integration test module here; the tooling witness checks coverage.
 
+#[path = "../../runtime-services/tests/removed_budget_fields.rs"]
+pub(crate) mod removed_budget_fields;
 // The shared callback fixture prepares files before any HTTP handler runs; the
 // HTTP-only blocking filesystem ban does not apply to that test setup.
 #[allow(clippy::disallowed_methods)]

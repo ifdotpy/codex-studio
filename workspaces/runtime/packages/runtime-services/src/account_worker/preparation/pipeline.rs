@@ -218,7 +218,6 @@ fn steer_preconditions(
     {
         return Err(refusal("steer-preparation/ownership-changed".into()));
     }
-    gates::budget_admission(record.get("tokenBudget")).map_err(|e| refusal(e.to_string()))?;
     authorize(tx, intent, filesystem, None)?;
     selected_inputs_current(tx, intent)?;
     Ok(record)
@@ -268,7 +267,6 @@ fn rejected_notifications(
             .and_then(Value::as_str)
             .unwrap_or("default")
             != intent.account_key
-        || gates::budget_admission(record.get("tokenBudget")).is_err()
         || intent.radio_authorized
         || record
             .get("rootId")
@@ -539,7 +537,6 @@ fn preconditions_for_purpose(
             "preparation/claude-frozen-input-recovery-required".into(),
         ));
     }
-    gates::budget_admission(record.get("tokenBudget")).map_err(|e| refusal(e.to_string()))?;
     authorize(tx, intent, filesystem, prepared_host)?;
     selected_inputs_current(tx, intent)?;
     Ok(record)

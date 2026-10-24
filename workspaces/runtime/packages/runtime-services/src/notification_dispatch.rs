@@ -118,8 +118,6 @@ pub enum NotificationDispatchError {
     #[error(transparent)]
     Store(StoreError),
     #[error(transparent)]
-    Budget(#[from] crate::budget::BudgetError),
-    #[error(transparent)]
     Move(#[from] crate::agent_move::MoveError),
     #[error("JSON serialization failed")]
     Json(#[from] serde_json::Error),
@@ -368,7 +366,7 @@ pub fn dispatch_notification(
     )
 }
 
-/// Dispatch with transactional budget and move-cache owners supplied by the worker.
+/// Dispatch with the transactional move-cache owner supplied by the worker.
 // Preserve the existing dispatcher signature, adding only the injected effect owner.
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch_notification_with_effects(
@@ -740,7 +738,6 @@ pub fn dispatch_notification_with_effects(
                     }
                 }
                 "thread/tokenUsage/updated" => {
-                    effects.capture_usage(transaction, &mut agent, params, observed_at)?;
                     if crate::event_write::truthy(agent.get("movedFrom")) {
                         effects.capture_move_cache(transaction, &agent, params, observed_at)?;
                     }
@@ -2945,11 +2942,7 @@ mod tests {
 
     #[test]
     fn absent_service_rolls_back_all_notification_rows_and_receipt() {
-        for method in [
-            "thread/realtime/started",
-            "account/updated",
-            "thread/tokenUsage/updated",
-        ] {
+        for method in ["thread/realtime/started", "account/updated"] {
             let mut connection = database();
             let tx = connection.transaction().expect("transaction");
             let rows = |tx: &rusqlite::Transaction<'_>| {
@@ -2999,6 +2992,22 @@ mod tests {
             );
             tx.commit().expect("caller may commit after caught error");
         }
+        // Token usage needs no injected service: the team token budget that
+        // captured it is removed.
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction");
+        let result = super::dispatch_notification(
+            &tx,
+            "agent",
+            &PublicationContext::default(),
+            &NotificationStreamBuffer::default(),
+            &identity(1),
+            &frame(
+                &json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread","tokenUsage":{"total":{"totalTokens":5},"last":{"totalTokens":5},"modelContextWindow":1000}}}),
+            ),
+            1234.5,
+        );
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]

@@ -4272,8 +4272,6 @@ export interface components {
       tail?: null | string;
       /** Threadid */
       threadId?: null | string;
-      /** Tokensused */
-      tokensUsed?: number | null;
       /** Turnid */
       turnId?: null | string;
       turnStatus?: components["schemas"]["AgentStatus"] | null;
@@ -4622,11 +4620,6 @@ export interface components {
       browserRecovery?: components["schemas"]["BrowserRecoveryRecordResponse"];
       /** @default null */
       budgetActionWait?: components["schemas"]["BudgetWaitRecordResponse"];
-      /**
-       * Budgetblocked
-       * @default null
-       */
-      budgetBlocked?: string;
       /** @default null */
       budgetStartWait?: components["schemas"]["BudgetWaitRecordResponse"];
       /** @default null */
@@ -5451,21 +5444,6 @@ export interface components {
        */
       threadId?: null | string;
       /**
-       * Tokenbudget
-       * @default null
-       */
-      tokenBudget?: number | null;
-      /**
-       * Tokensused
-       * @default null
-       */
-      tokensUsed?: number;
-      /**
-       * Tokenusageaccounting
-       * @default null
-       */
-      tokenUsageAccounting?: string;
-      /**
        * Turnepoch
        * @default null
        */
@@ -6175,11 +6153,6 @@ export interface components {
        * @default null
        */
       threadId?: null | string;
-      /**
-       * Tokensused
-       * @default null
-       */
-      tokensUsed?: number | null;
       /**
        * Turnid
        * @default null
@@ -8787,11 +8760,6 @@ export interface components {
        */
       threadId?: null | string;
       /**
-       * Tokensused
-       * @default null
-       */
-      tokensUsed?: number | null;
-      /**
        * Turnid
        * @default null
        */
@@ -10903,11 +10871,6 @@ export interface components {
        * @default null
        */
       request_id?: string | null;
-      /**
-       * Tokenbudget
-       * @default null
-       */
-      tokenBudget?: number | null;
     };
     /** ConfigureResponse */
     ConfigureResponse: {
@@ -10930,11 +10893,6 @@ export interface components {
       id: string;
       /** Maxagents */
       maxAgents: number;
-      /**
-       * Tokenbudget
-       * @default null
-       */
-      tokenBudget?: number | null;
     };
     /** ConnectionBody */
     ConnectionBody: {
@@ -11767,11 +11725,6 @@ export interface components {
       prompt: string;
       /** @default orchestrator */
       role?: components["schemas"]["AgentRole-Input"];
-      /**
-       * Tokenbudget
-       * @default null
-       */
-      tokenBudget?: number | null;
       /** @default null */
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
       /**

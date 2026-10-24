@@ -214,18 +214,8 @@ const CLAUDE_CONTROL_URI: &str =
 const CLAUDE_LOGIN_URI: &str = "https://codex-studio.invalid/persisted-claude-login.schema.json";
 
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
-    (
-        "https://codex-studio.invalid/budget-capture.schema.json",
-        include_bytes!("schemas/budget-capture.schema.json"),
-    ),
-    (
-        "https://codex-studio.invalid/budget-history.schema.json",
-        include_bytes!("schemas/budget-history.schema.json"),
-    ),
-    (
-        "https://codex-studio.invalid/persisted-budget-agent.schema.json",
-        include_bytes!("schemas/persisted-budget-agent.schema.json"),
-    ),
+    // The stored rows of the removed team token budget. Current builds neither
+    // read nor write these tables; the schemas describe what older builds wrote.
     (
         "https://codex-studio.invalid/persisted-budget-state.schema.json",
         include_bytes!("schemas/persisted-budget-state.schema.json"),
@@ -730,14 +720,6 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
     }
     for (name, uri) in [
         (
-            "BudgetCapture",
-            "https://codex-studio.invalid/budget-capture.schema.json",
-        ),
-        (
-            "BudgetHistory",
-            "https://codex-studio.invalid/budget-history.schema.json",
-        ),
-        (
             "AnalyticsAgent",
             "https://codex-studio.invalid/analytics-agent.schema.json",
         ),
@@ -778,10 +760,6 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedAccountTransferRecord", ACCOUNT_TRANSFER_URI),
         ("PersistedAgentRecord", AGENT_RECORD_URI),
         ("PersistedAnnotationRecord", ANNOTATION_RECORD_URI),
-        (
-            "PersistedBudgetAgent",
-            "https://codex-studio.invalid/persisted-budget-agent.schema.json",
-        ),
         (
             "PersistedBudgetState",
             "https://codex-studio.invalid/persisted-budget-state.schema.json",
