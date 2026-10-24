@@ -44,9 +44,6 @@ pub struct WorkerCapabilities {
     pub max_turns: Option<u32>,
 }
 
-/// Terminal reason for a worker whose completed turn allowance is exhausted.
-pub const TURN_LIMIT_REASON: &str = "worker_max_turns";
-
 /// Fewest completed turns allowed by a worker profile.
 pub const MIN_WORKER_TURNS: u32 = 1;
 /// The storage type bounds the counter and the shared JSON contract.
@@ -154,7 +151,6 @@ mod tests {
                 "ProfileBody",
                 "ProfileMutation",
                 "CreateAgentRequest",
-                "WorkerCapabilitiesDto",
             ] {
                 assert_eq!(
                     openapi["components"]["schemas"][name]["properties"][&field], schema,

@@ -1,4 +1,3 @@
-mod agent_limits;
 mod checkpoint_rewind;
 mod child_permissions;
 mod claude_file_backups;
@@ -12,6 +11,7 @@ mod process_controls;
 mod project_preparation;
 mod recovery_http;
 mod remote_access_origin;
+mod retained_worktrees;
 mod studio_errors;
 mod task_output;
 mod task_review;

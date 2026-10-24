@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use studio_runtime_schema::worker_capabilities::WorkerCapabilities;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, StoreResult, Transaction};
 
-pub(crate) use studio_runtime_schema::worker_capabilities::TURN_LIMIT_REASON;
+pub(crate) const TURN_LIMIT_REASON: &str = "worker_max_turns";
 pub(crate) const TURN_LIMIT_MESSAGE: &str =
     "The worker reached maxTurns. Send an explicit lead instruction to reset the count.";
 
