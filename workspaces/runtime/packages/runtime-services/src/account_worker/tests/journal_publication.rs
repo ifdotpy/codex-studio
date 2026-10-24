@@ -334,7 +334,7 @@ async fn recovery_preserves_interleaved_journal(drain: bool) {
     use crate::recovery::{CompletionMode, RecoveryAction, RecoveryEffects, RecoveryOutcome};
     use crate::recovery_history::ConnectionScope;
     use crate::recovery_policy::RecoverySnapshot;
-    let store = fixture().await;
+    let (_directory, store) = fixture().await;
     store.transaction(|tx| {
         let mut a = AgentRepository::get(tx, &AgentId::from("agent"))?.expect("agent A").value();
         a["startAttempt"]["events"] = json!(["recovery-input-a"]);
