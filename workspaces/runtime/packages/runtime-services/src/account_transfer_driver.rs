@@ -102,32 +102,39 @@ pub async fn release_waiting(
 ) -> Result<bool, TransferError> {
     let agent_id = agent_id.to_owned();
     store
-        .transaction_with_error(move |tx| {
-            if !Repository::available(tx)? {
-                return Ok(false);
-            }
-            let Some(raw) = Repository::agent(tx, &agent_id)? else {
-                return Ok(false);
-            };
-            let agent: Value =
-                serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-            let Some(operation) = agent
-                .get("accountTransferId")
-                .and_then(Value::as_str)
-                .filter(|_| !studio_runtime_store::truthy(agent.get("lazyAccountTransfer")))
-            else {
-                return Ok(false);
-            };
-            if Repository::get(tx, operation)?.is_none() {
-                return Ok(false);
-            }
-            let Some(decision) = load(tx, operation)?.release_waiting(&agent_id)? else {
-                return Ok(false);
-            };
-            persist(tx, decision, now)?;
-            Ok(true)
-        })
+        .transaction_with_error(move |tx| release_waiting_in(tx, &agent_id, now))
         .await
+}
+
+/// Release in the terminal transaction, after source-account continuation policy.
+pub(crate) fn release_waiting_in(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    now: f64,
+) -> Result<bool, TransferError> {
+    if !Repository::available(tx)? {
+        return Ok(false);
+    }
+    let Some(raw) = Repository::agent(tx, agent_id)? else {
+        return Ok(false);
+    };
+    let agent: Value =
+        serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
+    let Some(operation) = agent
+        .get("accountTransferId")
+        .and_then(Value::as_str)
+        .filter(|_| !studio_runtime_store::truthy(agent.get("lazyAccountTransfer")))
+    else {
+        return Ok(false);
+    };
+    if Repository::get(tx, operation)?.is_none() {
+        return Ok(false);
+    }
+    let Some(decision) = load(tx, operation)?.release_waiting(agent_id)? else {
+        return Ok(false);
+    };
+    persist(tx, decision, now)?;
+    Ok(true)
 }
 
 /// A transfer may bypass only its own native-start admission marker, and only
