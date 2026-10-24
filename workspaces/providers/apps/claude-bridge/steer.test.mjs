@@ -20,6 +20,8 @@ const HANG_GUARD_MS = 10_000;
 // dequeue: read the steer without an echo, finish the reply, then answer the
 // steer as its own prompt; each result names the input it answered, as the
 // Claude CLI does when it dequeues a steer instead of folding it in.
+// stuck: the same as dequeue, but the results name no input (an older CLI),
+// so the bridge keeps the turn open; the transcript records both answers.
 // anything else: never read further input until `.end` exists.
 const FAKE_SDK = String.raw`
 export const resolveSettings=async()=>({effective:{}});
@@ -79,6 +81,23 @@ export function query({prompt,options}){
      yield {type:'result',subtype:'success',usage,result:'second',user_message_uuid:next.value.uuid,user_message_uuids:[next.value.uuid]};
      continue;
     }
+    if(text==='stuck'){
+     const next=await read();
+     const session=input.value.session_id;
+     const dir=process.env.CLAUDE_CONFIG_DIR+'/projects/'+cwd.replace(/[^a-zA-Z0-9]/g,'-');
+     fs.mkdirSync(dir,{recursive:true});
+     const row=fields=>JSON.stringify({sessionId:session,cwd,isSidechain:false,...fields})+'\n';
+     const first=crypto.randomUUID(),second=crypto.randomUUID();
+     fs.writeFileSync(dir+'/'+session+'.jsonl',
+      row({type:'user',uuid:input.value.uuid,parentUuid:null,message:{role:'user',content:[{type:'text',text}]}})+
+      row({type:'assistant',uuid:first,parentUuid:input.value.uuid,message:{id:'message-stuck',role:'assistant',content:[{type:'text',text:'first'}],stop_reason:'end_turn'}})+
+      row({type:'user',uuid:next.value.uuid,parentUuid:first,message:{role:'user',content:[{type:'text',text:'steer text'}]}})+
+      row({type:'assistant',uuid:second,parentUuid:next.value.uuid,message:{id:'message-answer',role:'assistant',content:[{type:'text',text:'second'}],stop_reason:'end_turn'}}));
+     yield {type:'result',subtype:'success',usage,result:'first'};
+     yield {type:'result',subtype:'success',usage,result:'second'};
+     fs.writeFileSync(cwd+'/.stuck','');
+     continue;
+    }
     let late=null;
     if(text==='ack'){for(;;){const next=await read();yield {type:'user',isReplay:true,uuid:next.value.uuid};if(next.value.shouldQuery!==false)break;yield {type:'result',subtype:'success',num_turns:0,user_message_uuid:next.value.uuid,usage};}}
     if(text==='pulled')await read();
@@ -100,8 +119,11 @@ afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
 
-async function startBridge() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-steer-"));
+async function startBridge(env = {}) {
+  // The native history reader refuses a path behind a symlink (macOS /var).
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "claude-steer-")),
+  );
   for (const name of await fs.readdir(HERE)) {
     if (!name.endsWith(".mjs") || name.endsWith(".test.mjs")) continue;
     const source = await fs.readFile(path.join(HERE, name), "utf8");
@@ -125,6 +147,7 @@ async function startBridge() {
         ...process.env,
         STUDIO_CLAUDE_ACCOUNT: "test@example.test",
         CLAUDE_CONFIG_DIR: path.join(root, "native-config"),
+        ...env,
       },
     },
   );
@@ -672,3 +695,56 @@ for (const scenario of [
     );
   });
 }
+
+// Studio's liveness check (turn_stalled): Claude ended the turn, but the
+// bridge kept it open because the results named no steer. Native history
+// shows the final answer and records the steer, so the turn completes once,
+// the steer is delivered once, and nothing is sent to Claude again.
+test("a turn that Claude ended while a steer kept it open completes once from native history", async () => {
+  const bridge = await startBridge({ STUDIO_CLAUDE_RECONCILE_QUIET_MS: "1" });
+  const turn = await running(bridge, "stuck");
+  assert.deepEqual(await steer(bridge, turn, "event-stuck"), { turnId: turn });
+  const deadline = Date.now() + HANG_GUARD_MS;
+  while (!existsSync(path.join(bridge.root, ".stuck"))) {
+    assert.ok(Date.now() < deadline, "the scripted results arrive");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(
+    bridge.notes.some(
+      (n) => n.method === "turn/completed" && n.params.turn.id === turn,
+    ),
+    false,
+    "the bridge holds the turn open",
+  );
+  const reconcile = () =>
+    bridge.call("turn/reconcile", { threadId: bridge.thread, turnId: turn });
+  assert.deepEqual(await reconcile(), { status: "completed" });
+  const done = await completed(bridge, turn);
+  assert.equal(done.params.turn.status, "completed");
+  assert.equal(done.params.turn.unappliedSteers, undefined);
+  assert.equal(
+    bridge.notes.filter((n) => ack(bridge, "event-stuck") === n).length,
+    1,
+    "the steer is delivered once",
+  );
+  assert.deepEqual(await reconcile(), { status: "notActive" });
+  assert.deepEqual(await inputs(bridge), ["stuck", "steer text"]);
+});
+
+test("a turn that native history does not show ended stays open", async () => {
+  const bridge = await startBridge({ STUDIO_CLAUDE_RECONCILE_QUIET_MS: "1" });
+  const turn = await running(bridge, "hold");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(
+    await bridge.call("turn/reconcile", {
+      threadId: bridge.thread,
+      turnId: turn,
+    }),
+    { status: "unconfirmed" },
+  );
+  await end(bridge);
+  const done = await completed(bridge, turn);
+  assert.equal(done.params.turn.status, "completed");
+  assert.deepEqual(await inputs(bridge), ["hold"]);
+});
