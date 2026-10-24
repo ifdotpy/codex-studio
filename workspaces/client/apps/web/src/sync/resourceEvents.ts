@@ -26,7 +26,12 @@ import {
   post,
 } from "../api";
 
-import { persistResourceEntityChanges, syncDatabase } from "./client";
+import {
+  persistResourceEntityChanges,
+  readSubscriptionCursor,
+  syncDatabase,
+} from "./client";
+import { subscriptionKey } from "./subscriptions/cursors";
 
 import { ResourceEntityDelivery } from "./resourceEntityDelivery";
 
@@ -51,6 +56,8 @@ export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
 
 export type ResourceVersion = {
+  cursor?: components["schemas"]["SubscriptionCursor"];
+  replyKind?: components["schemas"]["SubscriptionReplyKind"];
   /** Transient subscribed value; never sent through the entity persister. */
   progress?: ResourceProgress;
   epoch: string;
@@ -183,7 +190,13 @@ export type ResourceEventsOptions = {
   sync: Pick<
     ReturnType<typeof import("./client").createSyncClient>,
     "persistResourceEntityChanges" | "syncDatabase"
-  >;
+  > &
+    Partial<
+      Pick<
+        ReturnType<typeof import("./client").createSyncClient>,
+        "readSubscriptionCursor"
+      >
+    >;
   tokenRates: Pick<
     ReturnType<typeof import("../usage/tokenRate").createTokenRateCache>,
     | "configureTokenRateStream"
@@ -351,20 +364,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   let visibilityHandler: (() => void) | undefined;
 
-  function resourceKey(resource: ResourceRef): string {
-    const canonical = (value: unknown): unknown => {
-      if (Array.isArray(value)) return value.map(canonical);
-      if (value && typeof value === "object") {
-        return Object.fromEntries(
-          Object.entries(value)
-            .sort(([left], [right]) => left.localeCompare(right))
-            .map(([key, entry]) => [key, canonical(entry)]),
-        );
-      }
-      return value;
-    };
-    return JSON.stringify(canonical(resource)) || "";
-  }
+  const resourceKey = subscriptionKey;
 
   function setStatus(status: ResourceConnectionState) {
     if (currentStatus === status) return;
@@ -609,13 +609,21 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         event.resourceVersions?.find(
           (entry) => entry.resource && resourceKey(entry.resource) === key,
         ) ?? event.resourceVersions?.[resourceIndex];
+      if (revisionEntry?.cursor) version.cursor = revisionEntry.cursor;
+      if (revisionEntry?.replyKind) version.replyKind = revisionEntry.replyKind;
       if (
         resource.kind === "transcript" &&
-        event.reason === "change" &&
-        !epochChanged &&
+        (event.reason === "change" || revisionEntry?.replyKind === "delta") &&
+        (!epochChanged || !!revisionEntry?.cursor) &&
         revisionEntry?.transcriptChanges
       )
         version.transcriptSequence = revisionEntry.transcriptChanges.through;
+      if (
+        resource.kind === "transcript" &&
+        revisionEntry?.replyKind === "delta" &&
+        revisionEntry.cursor
+      )
+        version.transcriptSequence = revisionEntry.cursor.seq;
       if (resource.kind === "transcript" && revisionEntry?.transcriptSnapshot)
         version.transcriptSequence = revisionEntry.revision;
       if (
@@ -681,6 +689,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     pruneResourceVersions(active);
     const local = localResources().map(resourceKey);
     if (
+      !event.resourceVersions?.every(
+        (entry) => entry.cursor && entry.replyKind,
+      ) &&
       event.reason !== "change" &&
       !staleRevision &&
       !isDuplicate &&
@@ -1190,7 +1201,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     scheduleReconnect();
   }
 
-  function openSource() {
+  async function openSource() {
     if (
       isApiSchemaMismatch() ||
       !coordinatorActive ||
@@ -1213,6 +1224,15 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       return;
     }
     closeSource();
+    const openingGeneration = subscriptionGeneration;
+    const since = await Promise.all(
+      resources.map(async (resource) => ({
+        resource,
+        since: await options.sync.readSubscriptionCursor?.(resource),
+      })),
+    );
+    if (openingGeneration !== subscriptionGeneration || !coordinatorActive)
+      return;
     wireResources = resources;
     wireTokenRates = tokenRates;
     acceptedResources = new Set(resources.map(resourceKey));
@@ -1223,6 +1243,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       > = {
         protocol: String(SYNC_PROTOCOL_VERSION),
         resources: JSON.stringify(resources),
+        since: JSON.stringify(since.filter((entry) => entry.since)),
         tokenRates,
         reconnect: reconnecting,
         [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
@@ -1426,11 +1447,14 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
   }
 
-  function updateSubscriptions(resources: ResourceRef[], tokenRates: boolean) {
+  async function updateSubscriptions(
+    resources: ResourceRef[],
+    tokenRates: boolean,
+  ) {
     if (!source || pendingSubscription || subscriptionRequest) return;
     const desired = new Set(resources.map(resourceKey));
     const previous = new Set(wireResources.map(resourceKey));
-    const add = resources.filter(
+    const addedResources = resources.filter(
       (resource) =>
         !previous.has(resourceKey(resource)) ||
         !acceptedResources.has(resourceKey(resource)),
@@ -1440,7 +1464,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         !desired.has(resourceKey(resource)) ||
         !acceptedResources.has(resourceKey(resource)),
     );
-    if (!add.length && !remove.length && tokenRates === wireTokenRates) return;
+    if (
+      !addedResources.length &&
+      !remove.length &&
+      tokenRates === wireTokenRates
+    )
+      return;
     if (!sessionId) {
       // A stream without its session cannot acknowledge a diff. Recover with
       // the complete desired set rather than stranding newly added resources.
@@ -1452,6 +1481,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     pendingSubscription = { gen, resources, tokenRates };
     const controller = new AbortController();
     subscriptionRequest = controller;
+    const add = await Promise.all(
+      addedResources.map(async (resource) => ({
+        resource,
+        since: await options.sync.readSubscriptionCursor?.(resource),
+      })),
+    );
+    if (source !== connected || subscriptionRequest !== controller) return;
     subscriptionAckTimer = setTimeout(() => {
       if (source === connected) reconnectNow();
     }, SUBSCRIPTION_ACK_TIMEOUT_MS);
@@ -1854,6 +1890,7 @@ const defaultResourceEvents = createResourceEvents({
     post,
   },
   sync: {
+    readSubscriptionCursor: (resource) => readSubscriptionCursor(resource),
     persistResourceEntityChanges: (
       ...args: Parameters<typeof persistResourceEntityChanges>
     ) => persistResourceEntityChanges(...args),

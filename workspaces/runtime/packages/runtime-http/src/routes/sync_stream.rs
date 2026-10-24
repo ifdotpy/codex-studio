@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use crate::generated::{
     DraftChangeBatch, EntityChangeBatch, ResourceChangeEvent, ResourceChangeEventReason,
-    ResourceRef, ResourceRevisionEntry, TranscriptChangeBatch, TranscriptPageResponse,
-    TranscriptStreamDelta, TranscriptSyncPage,
+    ResourceRef, ResourceRevisionEntry, SubscriptionCursor, TranscriptChangeBatch,
+    TranscriptPageResponse, TranscriptStreamDelta, TranscriptSyncPage,
 };
 use axum::Json;
 use axum::body::{Body, Bytes};
@@ -88,6 +88,7 @@ struct SubscriptionChange {
     resources: Vec<Value>,
     added: Vec<Value>,
     token_rates: Option<bool>,
+    since: BTreeMap<String, SubscriptionCursor>,
 }
 
 struct LiveSubscription {
@@ -125,7 +126,12 @@ async fn sync_subscriptions(
     State(state): State<HttpState>,
     ApiJson(request): ApiJson<crate::generated::SyncSubscriptionRequest>,
 ) -> Result<Json<crate::generated::SyncSubscriptionAck>, ApiError> {
-    for resources in [&request.add, &request.remove] {
+    for resources in [
+        serde_json::to_value(&request.add),
+        serde_json::to_value(&request.remove),
+    ] {
+        let resources = resources.map_err(|_| ApiError::internal())?;
+        let resources = resources.as_array().ok_or_else(ApiError::internal)?;
         if resources.len() > MAX_SYNC_RESOURCE_COUNT
             || serde_json::to_vec(resources)
                 .map_err(|_| ApiError::internal())?
@@ -168,9 +174,13 @@ async fn sync_subscriptions(
         .cloned()
         .collect::<Vec<_>>();
     let mut added = Vec::new();
-    for resource in request.add {
-        let value = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
+    let mut since = BTreeMap::new();
+    for addition in request.add {
+        let value = serde_json::to_value(addition.resource).map_err(|_| ApiError::internal())?;
         if !resources.contains(&value) {
+            if let Some(cursor) = addition.since {
+                since.insert(value.to_string(), cursor);
+            }
             added.push(value.clone());
             resources.push(value);
         }
@@ -190,6 +200,7 @@ async fn sync_subscriptions(
             resources: resources.clone(),
             added,
             token_rates: request.token_rates,
+            since,
         })
         .map_err(|_| {
             ApiError::new(
@@ -249,6 +260,10 @@ async fn sync_stream(
 
     let resources = match parse_resources(&query, &state) {
         Ok(resources) => resources,
+        Err(error) => return error.into_response(),
+    };
+    let since = match parse_since(&query, &state, &resources) {
+        Ok(since) => since,
         Err(error) => return error.into_response(),
     };
     let vault_readiness = match readiness_source(&state, &resources).await {
@@ -318,6 +333,9 @@ async fn sync_stream(
         Err(error) => return error.into_response(),
     };
     attach_transcript_changes(&mut initial_event, transcript_updates);
+    if let Err(error) = attach_initial_entries(&state, &mut initial_event, &since).await {
+        return error.into_response();
+    }
     attach_transient_snapshots(Some(&state), &mut initial_event, &mut voice_sequences).await;
     let mut initial = VecDeque::new();
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -475,6 +493,118 @@ pub(super) async fn append_progress_frames(
             frames.push_back(sse_event("resource-progress", None, payload));
         }
     }
+}
+
+/// Reuse the durable transcript projection; the returned payload and checkpoint
+/// are produced by one serialized projection transaction, independent of SSE epochs.
+pub(super) async fn transcript_initial_snapshot(
+    state: HttpState,
+    resource: ResourceRef,
+    since: Option<SubscriptionCursor>,
+) -> Result<ResourceRevisionEntry, ApiError> {
+    let ResourceRef::TranscriptResource(transcript) = &resource else {
+        return Err(ApiError::internal());
+    };
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let scope = format!("transcript:{}", transcript.agent_id);
+    let after = since
+        .as_ref()
+        .filter(|cursor| cursor.workspace_id == state.workspace_id)
+        .map(|cursor| cursor.seq);
+    let read = |after| {
+        studio_runtime_services::transcript::pull_scope(
+            store.clone(),
+            &scope,
+            &transcript.agent_id,
+            after,
+        )
+    };
+    let mut response: TranscriptSyncPage = serde_json::from_value(
+        read(after.unwrap_or(0))
+            .await
+            .map_err(|_| ApiError::internal())?,
+    )
+    .map_err(|_| ApiError::internal())?;
+    if after.is_some_and(|after| after > response.checkpoint.seq) {
+        response = serde_json::from_value(read(0).await.map_err(|_| ApiError::internal())?)
+            .map_err(|_| ApiError::internal())?;
+    }
+    let through = response.checkpoint.seq;
+    let mut entry: ResourceRevisionEntry =
+        super::generated_json(json!({"resource": resource,"revision":through}))?;
+    let is_delta = after == Some(through) && response.documents.is_empty();
+    let batch = after.and_then(|after| transcript_change_batch(response.clone(), &scope, after));
+    if is_delta || batch.is_some() {
+        entry.reply_kind = Some(crate::generated::SubscriptionReplyKind::Delta);
+        entry.transcript_changes = batch.map(Some);
+    } else {
+        let document = response.documents.first().ok_or_else(ApiError::internal)?;
+        if document.deleted {
+            return Ok(entry);
+        }
+        let page = serde_json::from_str::<TranscriptPageResponse>(&document.payload)
+            .map_err(|_| ApiError::internal())?;
+        entry.transcript_snapshot = Some(Some(page));
+        entry.reply_kind = Some(crate::generated::SubscriptionReplyKind::Snapshot);
+    }
+    entry.cursor = Some(SubscriptionCursor {
+        workspace_id: state.workspace_id,
+        seq: through,
+    });
+    Ok(entry)
+}
+
+fn parse_since(
+    query: &QueryParams,
+    state: &HttpState,
+    resources: &[Value],
+) -> Result<BTreeMap<String, SubscriptionCursor>, ApiError> {
+    let mut since = BTreeMap::new();
+    let invalid = || ApiError::validation(vec![json!("query"), json!("since")]);
+    let Some(raw) = query.typed_value("since").and_then(Value::as_str) else {
+        return Ok(since);
+    };
+    if raw.len() > MAX_SYNC_RESOURCE_QUERY_BYTES {
+        return Err(invalid());
+    }
+    let values: Vec<Value> = serde_json::from_str(raw).map_err(|_| invalid())?;
+    if values.len() > MAX_SYNC_RESOURCE_COUNT {
+        return Err(invalid());
+    }
+    for value in values {
+        if !state
+            .validators
+            .validate_component("SubscriptionAdd", &value)
+        {
+            return Err(invalid());
+        }
+        let addition: crate::generated::SubscriptionAdd =
+            serde_json::from_value(value).map_err(|_| invalid())?;
+        let resource = serde_json::to_value(addition.resource).map_err(|_| invalid())?;
+        if !resources.contains(&resource) {
+            return Err(invalid());
+        }
+        if let Some(cursor) = addition.since {
+            if since.insert(resource.to_string(), cursor).is_some() {
+                return Err(invalid());
+            }
+        }
+    }
+    Ok(since)
+}
+
+async fn attach_initial_entries(
+    state: &HttpState,
+    event: &mut ResourceChangeEvent,
+    since: &BTreeMap<String, SubscriptionCursor>,
+) -> Result<(), ApiError> {
+    for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
+        let value = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
+        let cursor = since.get(&value.to_string()).cloned();
+        *entry =
+            super::subscriptions::initial_snapshot(state.clone(), resource.clone(), cursor).await?;
+    }
+    Ok(())
 }
 
 fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>, ApiError> {
@@ -1010,6 +1140,16 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
             &mut state.voice_sequences,
         )
         .await;
+        attach_initial_entries(http_state, &mut event, &update.since)
+            .await
+            .ok()?;
+        for (resource, entry) in event.resources.iter().zip(&event.resource_versions) {
+            if let ResourceRef::TranscriptResource(transcript) = resource {
+                state
+                    .transcript_sequences
+                    .insert(transcript.agent_id.clone(), entry.revision);
+            }
+        }
         state
             .initial
             .push_back(resource_sse_event(view.cursor.revision, event));
@@ -1264,6 +1404,8 @@ fn resource_changes_event(
             let state = matches!(resource, ResourceRef::StateResource(_));
             let drafts = matches!(resource, ResourceRef::DraftsResource(_));
             ResourceRevisionEntry {
+                cursor: None,
+                reply_kind: None,
                 discovery_snapshot: None,
                 voice_records: None,
                 revision: if state {
@@ -2231,7 +2373,7 @@ mod tests {
         assert_eq!(session["sessionId"].as_str().expect("id").len(), 36);
         let initial = stream.next().await.expect("initial").expect("bytes");
         assert!(String::from_utf8_lossy(&initial).contains("event: resources"));
-        let update = json!({"sessionId":session["sessionId"],"gen":1,"add":[{"kind":"queue","agentId":"chat"}],"remove":[{"kind":"drafts"}]});
+        let update = json!({"sessionId":session["sessionId"],"gen":1,"add":[{"resource":{"kind":"queue","agentId":"chat"}}],"remove":[{"kind":"drafts"}]});
         let response = app
             .clone()
             .oneshot(request(
@@ -2269,7 +2411,7 @@ mod tests {
         oversized["gen"] = json!(2);
         oversized["add"] = json!(
             (0..=MAX_SYNC_RESOURCE_COUNT)
-                .map(|index| json!({"kind":"queue","agentId":index.to_string()}))
+                .map(|index| json!({"resource":{"kind":"queue","agentId":index.to_string()}}))
                 .collect::<Vec<_>>()
         );
         let response = app
@@ -2595,6 +2737,7 @@ mod tests {
                     resources: vec![resource.clone()],
                     added: vec![resource.clone()],
                     token_rates: None,
+                    since: BTreeMap::new(),
                 },
             )
             .await
@@ -3805,6 +3948,7 @@ mod tests {
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: Some(tokens.subscribe()),
             last_token_rates: None,
+            since: BTreeMap::new(),
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -3854,6 +3998,7 @@ mod tests {
             notifications: notifications.clone(),
             token_rates: Some(token_hub.subscribe()),
             last_token_rates: None,
+            since: BTreeMap::new(),
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -3983,6 +4128,7 @@ mod tests {
                 resources: vec![resource.clone()],
                 added: vec![resource.clone()],
                 token_rates: None,
+                since: BTreeMap::new(),
             },
         )
         .await
@@ -4140,6 +4286,7 @@ mod tests {
             notifications,
             token_rates: Some(tokens.subscribe()),
             last_token_rates: None,
+            since: BTreeMap::new(),
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -4358,6 +4505,7 @@ mod tests {
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: Some(TokenRateHub::new().subscribe()),
             last_token_rates: None,
+            since: BTreeMap::new(),
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,

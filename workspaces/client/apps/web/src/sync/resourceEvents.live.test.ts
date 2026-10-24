@@ -89,10 +89,12 @@ async function fixture(follower = false, session = true) {
   const sources: Source[] = [];
   const urls: string[] = [];
   const post = vi.fn().mockResolvedValue({ gen: 1 });
+  const get = vi.fn().mockResolvedValue({});
+  const readCursor = vi.fn().mockResolvedValue(undefined);
   const persist = vi.fn().mockResolvedValue(undefined);
   const transport = createResourceEvents({
     api: {
-      get: vi.fn(),
+      get,
       post,
       clearSchemaUpdateAttemptAfterMatch: vi.fn(),
       isApiSchemaMismatch: () => false,
@@ -103,6 +105,7 @@ async function fixture(follower = false, session = true) {
     sync: {
       syncDatabase: vi.fn().mockResolvedValue({ workspaceId: "workspace" }),
       persistResourceEntityChanges: persist,
+      readSubscriptionCursor: readCursor,
     },
     tokenRates: {
       configureTokenRateStream: vi.fn(),
@@ -135,7 +138,17 @@ async function fixture(follower = false, session = true) {
     resourceVersions: [{ revision: 1 }],
   });
   await vi.advanceTimersByTimeAsync(25);
-  return { transport, source, sources, urls, post, persist, stopState };
+  return {
+    transport,
+    source,
+    sources,
+    urls,
+    post,
+    persist,
+    stopState,
+    get,
+    readCursor,
+  };
 }
 
 it("publishes each resource event without a listener flush timer", async () => {
@@ -246,7 +259,7 @@ it("coalesces chat switches into one POST without reopening the SSE stream", asy
   expect(f.post.mock.calls[0]?.[1]).toMatchObject({
     sessionId: "session-one",
     gen: 1,
-    add: [{ kind: "transcript", agentId: "chat-final" }],
+    add: [{ resource: { kind: "transcript", agentId: "chat-final" } }],
     remove: [],
   });
 });
@@ -557,3 +570,40 @@ it.each(["resources", "token-rates"])(
     }
   },
 );
+
+it("sends applied ref cursors on re-add and reconnect with zero pulls", async () => {
+  const f = await fixture();
+  const resource = { kind: "transcript", agentId: "recent" } as const;
+  const cursor = { workspaceId: "workspace", seq: 41 };
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "transcript" ? cursor : undefined,
+  );
+  const stop = f.transport.watchResourceChanges(resource, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  expect(f.post).toHaveBeenLastCalledWith(
+    "/api/sync/subscriptions",
+    expect.objectContaining({ add: [{ resource, since: cursor }] }),
+    expect.anything(),
+  );
+  f.source.emit("subscriptions", { gen: 1 });
+  stop();
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 2 });
+  f.transport.watchResourceChanges(resource, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  expect(f.post).toHaveBeenLastCalledWith(
+    "/api/sync/subscriptions",
+    expect.objectContaining({ add: [{ resource, since: cursor }] }),
+    expect.anything(),
+  );
+  f.source.onerror?.();
+  await vi.advanceTimersByTimeAsync(10000);
+  const url = new URL(f.urls.at(-1)!, "http://studio.test");
+  expect(JSON.parse(url.searchParams.get("since")!)).toContainEqual({
+    resource,
+    since: cursor,
+  });
+  expect(
+    f.get.mock.calls.some(([path]) => String(path).includes("/api/sync/pull")),
+  ).toBe(false);
+});

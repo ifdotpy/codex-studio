@@ -75628,6 +75628,15 @@
               "minimum": 0,
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "JSON array of SubscriptionAdd entries carrying the last applied cursor for refs in resources."
           }
         ],
         "responses": {

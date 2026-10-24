@@ -1,3 +1,4 @@
+import { cursorDocumentId, parseAppliedCursor } from "./subscriptions/cursors";
 import { serverDatabaseSuffix } from "../servers/environment";
 
 import {
@@ -522,6 +523,29 @@ export function createSyncClient(options: SyncClientOptions) {
     }
   }
 
+  async function readSubscriptionCursor(resource: ResourceRef) {
+    const { db, workspaceId } = await syncDatabase();
+    const [row] = await db.projections.storageInstance.findDocumentsById(
+      [await cursorDocumentId(resource)],
+      false,
+    );
+    return parseAppliedCursor(row?.payload, workspaceId);
+  }
+
+  async function persistSubscriptionCursor(
+    resource: ResourceRef,
+    cursor: components["schemas"]["SubscriptionCursor"],
+    isCurrent: () => boolean,
+  ) {
+    const { db, workspaceId } = await syncDatabase();
+    if (!isCurrent() || workspaceId !== cursor.workspaceId) return;
+    await persistProjection(db.projections, {
+      id: await cursorDocumentId(resource),
+      payload: JSON.stringify(cursor),
+      seq: cursor.seq,
+    });
+  }
+
   async function persistResourceEntityChanges(
     event: import("./subscriptions/events").ResourceChangeEvent,
     isCurrent: () => boolean,
@@ -536,7 +560,7 @@ export function createSyncClient(options: SyncClientOptions) {
       const resource = entry.resource ?? event.resources[index];
       if (resource?.kind === "transcript" && entry.transcriptSnapshot) {
         if (
-          event.reason !== "initial" ||
+          (event.reason !== "initial" && event.reason !== "reconnect") ||
           entry.transcriptSnapshot.items.length >
             SYNC_TRANSCRIPT_STREAM_MAX_ITEMS
         )
@@ -555,7 +579,17 @@ export function createSyncClient(options: SyncClientOptions) {
           undefined,
           isCurrent,
           event.epoch,
+          entry.cursor?.workspaceId === workspaceId,
         );
+        if (entry.cursor && isCurrent()) {
+          const [stored] =
+            await db.projections.storageInstance.findDocumentsById(
+              [`transcript:${resource.agentId}`],
+              false,
+            );
+          if (stored?.seq === entry.cursor.seq)
+            await persistSubscriptionCursor(resource, entry.cursor, isCurrent);
+        }
         continue;
       }
       if (resource?.kind === "transcript" && entry.transcriptChanges) {
@@ -582,7 +616,17 @@ export function createSyncClient(options: SyncClientOptions) {
           batch.after,
           isCurrent,
           event.epoch,
+          entry.cursor?.workspaceId === workspaceId,
         );
+        if (entry.cursor && isCurrent()) {
+          const [stored] =
+            await db.projections.storageInstance.findDocumentsById(
+              [`transcript:${resource.agentId}`],
+              false,
+            );
+          if (stored?.seq === entry.cursor.seq)
+            await persistSubscriptionCursor(resource, entry.cursor, isCurrent);
+        }
         continue;
       }
       const changes = entry.entityChanges;
@@ -948,6 +992,7 @@ export function createSyncClient(options: SyncClientOptions) {
     after?: number,
     isCurrent: () => boolean = () => true,
     epoch?: string,
+    durableResume = false,
   ) {
     return withEntityProjectionWrite(collection.database.name, async () => {
       if (!isCurrent()) return;
@@ -959,6 +1004,7 @@ export function createSyncClient(options: SyncClientOptions) {
         ? readTranscriptMeta(previous.payload)
         : null;
       const epochChanged =
+        !durableResume &&
         base?.epoch !== undefined &&
         epoch !== undefined &&
         base.epoch !== epoch;
@@ -2507,6 +2553,7 @@ export function createSyncClient(options: SyncClientOptions) {
   return {
     syncDatabase,
     persistResourceEntityChanges,
+    readSubscriptionCursor,
     watchSyncInvalidations,
     persistProjection,
     refreshProjection,
@@ -2547,6 +2594,7 @@ const defaultSyncClient = createSyncClient({
 export const {
   syncDatabase,
   persistResourceEntityChanges,
+  readSubscriptionCursor,
   watchSyncInvalidations,
   persistProjection,
   refreshProjection,
