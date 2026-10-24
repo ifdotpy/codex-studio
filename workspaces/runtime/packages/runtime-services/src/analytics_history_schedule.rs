@@ -38,12 +38,6 @@ struct ActorInput {
     #[serde(default)]
     last_completed_turn: Value,
     #[serde(default)]
-    tokens_used: Value,
-    #[serde(default)]
-    token_usage_accounting: Value,
-    #[serde(default)]
-    token_budget: Value,
-    #[serde(default)]
     created: Value,
 }
 impl ActorInput {
@@ -118,12 +112,6 @@ impl PartialEq for ReadyKey {
 }
 impl Eq for ReadyKey {}
 
-#[derive(Clone, Copy)]
-enum BlockReason {
-    ProfileInput,
-    BudgetInput,
-}
-
 #[derive(Default)]
 pub struct HistorySchedule {
     actors: BTreeMap<String, CheckedActor>,
@@ -132,7 +120,6 @@ pub struct HistorySchedule {
     inactive_ready: BTreeSet<ReadyKey>,
     polls: BTreeMap<String, Poll>,
     dirty: BTreeSet<String>,
-    budget_blocked: BTreeSet<String>,
     profile_blocked: BTreeMap<String, String>,
     active_streak: usize,
 }
@@ -176,7 +163,6 @@ impl HistorySchedule {
         if let Some(poll) = self.polls.get_mut(agent) {
             poll.blocked_input = None;
         }
-        self.budget_blocked.remove(agent);
         self.profile_blocked.remove(agent);
         self.dirty.insert(agent.into());
         self.sync_ready(agent);
@@ -317,7 +303,6 @@ impl HistorySchedule {
         }
         self.polls.remove(id);
         self.dirty.remove(id);
-        self.budget_blocked.remove(id);
         self.profile_blocked.remove(id);
     }
 
@@ -376,17 +361,6 @@ impl HistorySchedule {
         Ok(())
     }
     pub fn block_for_input_change(&mut self, agent: &Value, now: f64) -> Result<(), CaptureError> {
-        self.block_for_change(agent, now, BlockReason::ProfileInput)
-    }
-    pub fn block_for_budget_change(&mut self, agent: &Value, now: f64) -> Result<(), CaptureError> {
-        self.block_for_change(agent, now, BlockReason::BudgetInput)
-    }
-    fn block_for_change(
-        &mut self,
-        agent: &Value,
-        now: f64,
-        reason: BlockReason,
-    ) -> Result<(), CaptureError> {
         validate_actor(agent)?;
         let id = actor_id(agent)?;
         let actor = self
@@ -409,24 +383,9 @@ impl HistorySchedule {
             },
         );
         self.dirty.remove(id);
-        if matches!(reason, BlockReason::BudgetInput) {
-            self.budget_blocked.insert(id.into());
-            self.profile_blocked.remove(id);
-        } else {
-            self.budget_blocked.remove(id);
-            self.profile_blocked.insert(id.into(), account);
-        }
+        self.profile_blocked.insert(id.into(), account);
         self.sync_ready(id);
         Ok(())
-    }
-    pub fn budget_changed(&mut self) {
-        for id in std::mem::take(&mut self.budget_blocked) {
-            if let Some(poll) = self.polls.get_mut(&id) {
-                poll.blocked_input = None;
-                self.dirty.insert(id.clone());
-                self.sync_ready(&id);
-            }
-        }
     }
     pub fn discovery_changed(&mut self, account: Option<&str>) {
         let resumed = self
@@ -506,9 +465,6 @@ struct BlockedInput {
     epoch: Option<i64>,
     turn_id: Option<String>,
     last_completed_turn: Value,
-    tokens_used: Value,
-    token_usage_accounting: Value,
-    token_budget: Value,
     created: Value,
     provider: Value,
     deleted_at: Value,
@@ -523,9 +479,6 @@ impl BlockedInput {
             epoch: input.epoch,
             turn_id: input.turn_id.clone(),
             last_completed_turn: input.last_completed_turn.clone(),
-            tokens_used: input.tokens_used.clone(),
-            token_usage_accounting: input.token_usage_accounting.clone(),
-            token_budget: input.token_budget.clone(),
             created: input.created.clone(),
             provider: input.scope.provider.clone(),
             deleted_at: input.scope.deleted_at.clone(),
@@ -539,9 +492,6 @@ impl BlockedInput {
             || self.epoch != input.epoch
             || self.turn_id != input.turn_id
             || self.last_completed_turn != input.last_completed_turn
-            || self.tokens_used != input.tokens_used
-            || self.token_usage_accounting != input.token_usage_accounting
-            || self.token_budget != input.token_budget
             || self.created != input.created
             || self.provider != input.scope.provider
             || self.deleted_at != input.scope.deleted_at
@@ -631,7 +581,6 @@ mod tests {
 
     #[tokio::test]
     async fn collector_drain_reuses_checked_roster() {
-        use crate::analytics_history::StoreHistoryBudgetSink;
         use crate::analytics_history::{HistoryClock, HistoryCollector};
         use std::sync::{Arc, atomic::AtomicBool};
         use studio_runtime_store::RuntimeStore;
@@ -666,7 +615,6 @@ mod tests {
             .refresh(&roster)
             .expect("ingest checked roster");
         SCHEDULE_WORK.with(|work| *work.borrow_mut() = ScheduleWork::default());
-        let budget = StoreHistoryBudgetSink::new(&store);
         for expected in &roster {
             assert_eq!(
                 select(&collector.schedule, &roster, 0.).expect("selection"),
@@ -683,7 +631,6 @@ mod tests {
                             monotonic: 0.
                         },
                         Arc::new(AtomicBool::new(false)),
-                        &budget
                     )
                     .await
                     .expect("settle final checkpoint")
@@ -832,9 +779,20 @@ mod tests {
         schedule.refresh(&status_only).expect("status-only update");
         assert!(!schedule.has_pending(), "status changes do not unblock");
 
-        let mut repaired = status_only;
-        repaired[0]["tokenBudget"] = json!(1000);
-        schedule.refresh(&repaired).expect("relevant budget repair");
+        let mut budget_only = status_only;
+        budget_only[0]["tokenBudget"] = json!(1000);
+        schedule
+            .refresh(&budget_only)
+            .expect("stored budget update");
+        assert!(
+            !schedule.has_pending(),
+            "a team token budget from an older build is not history input"
+        );
+        let mut repaired = budget_only;
+        repaired[0]["lastCompletedTurn"] = json!("turn-0");
+        schedule
+            .refresh(&repaired)
+            .expect("relevant history repair");
         assert!(schedule.has_pending());
         assert_eq!(
             select(&schedule, &repaired, 3.0).expect("repaired actor selection"),
@@ -877,42 +835,6 @@ mod tests {
         assert_eq!(
             select(&schedule, std::slice::from_ref(&actor), 2.0).expect("file event resumes actor"),
             Some(&actor)
-        );
-    }
-
-    #[test]
-    fn budget_commit_unblocks_only_budget_invalid_actors() {
-        let budget_actor = agent("paused");
-        let mut discovery_actor = agent("paused");
-        discovery_actor["id"] = json!("discovery-agent");
-        discovery_actor["threadId"] = json!("discovery-thread");
-        let roster = vec![budget_actor.clone(), discovery_actor.clone()];
-        let mut schedule = HistorySchedule::default();
-        schedule.refresh(&roster).expect("initial roster");
-        schedule
-            .block_for_budget_change(&budget_actor, 1.0)
-            .expect("block budget-invalid actor");
-        schedule
-            .block_for_input_change(&discovery_actor, 1.0)
-            .expect("block discovery-limited actor");
-        assert!(!schedule.has_pending());
-
-        schedule.budget_changed();
-        assert!(schedule.has_pending());
-        assert_eq!(
-            select(&schedule, &roster, 2.0).expect("budget actor resumes"),
-            Some(&budget_actor)
-        );
-        schedule
-            .completed(
-                &budget_actor,
-                &checkpoint_for(&budget_actor, "current"),
-                3.0,
-            )
-            .expect("budget actor completes");
-        assert!(
-            !schedule.has_pending(),
-            "a budget commit does not retry discovery-blocked actors"
         );
     }
 
@@ -982,7 +904,6 @@ mod tests {
         pub struct HistorySchedule {
             polls: BTreeMap<String, Poll>,
             dirty: BTreeSet<String>,
-            budget_blocked: BTreeSet<String>,
             profile_blocked: BTreeMap<String, String>,
             active_streak: usize,
         }
@@ -994,14 +915,13 @@ mod tests {
                 if let Some(poll) = self.polls.get_mut(agent) {
                     poll.blocked_input = None;
                 }
-                self.budget_blocked.remove(agent);
                 self.profile_blocked.remove(agent);
                 self.dirty.insert(agent.into());
                 Ok(())
             }
 
-            /// Rollout data changes can repair budget input, while only directory
-            /// structure changes can alter a cached discovery entry bound.
+            /// Only directory structure changes can alter a cached discovery entry
+            /// bound.
             pub fn notify_rollout(
                 &mut self,
                 agent: &str,
@@ -1028,7 +948,6 @@ mod tests {
                 }
                 self.polls.retain(|id, _| ids.contains(id));
                 self.dirty.retain(|id| ids.contains(id));
-                self.budget_blocked.retain(|id| ids.contains(id));
                 self.profile_blocked.retain(|id, _| ids.contains(id));
                 for actor in actors {
                     let id = actor["id"]
@@ -1150,25 +1069,6 @@ mod tests {
                 agent: &Value,
                 now: f64,
             ) -> Result<(), CaptureError> {
-                self.block_for_change(agent, now, false)
-            }
-
-            /// Suppress budget-invalid actors until an actual runtime_budget commit or
-            /// a change to that actor's durable input signature arrives.
-            pub fn block_for_budget_change(
-                &mut self,
-                agent: &Value,
-                now: f64,
-            ) -> Result<(), CaptureError> {
-                self.block_for_change(agent, now, true)
-            }
-
-            fn block_for_change(
-                &mut self,
-                agent: &Value,
-                now: f64,
-                budget: bool,
-            ) -> Result<(), CaptureError> {
                 CaptureTable::Agents.validate(agent)?;
                 let id = agent["id"]
                     .as_str()
@@ -1186,29 +1086,11 @@ mod tests {
                     },
                 );
                 self.dirty.remove(id);
-                if budget {
-                    self.budget_blocked.insert(id.to_owned());
-                    self.profile_blocked.remove(id);
-                } else {
-                    self.budget_blocked.remove(id);
-                    self.profile_blocked.insert(
-                        id.to_owned(),
-                        agent["accountKey"].as_str().unwrap_or("default").to_owned(),
-                    );
-                }
+                self.profile_blocked.insert(
+                    id.to_owned(),
+                    agent["accountKey"].as_str().unwrap_or("default").to_owned(),
+                );
                 Ok(())
-            }
-
-            /// Resume only budget-invalid actors after the store reports a committed
-            /// runtime_budget row change. This touches the bounded blocked set and does
-            /// not need a roster read.
-            pub fn budget_changed(&mut self) {
-                for id in std::mem::take(&mut self.budget_blocked) {
-                    if let Some(poll) = self.polls.get_mut(&id) {
-                        poll.blocked_input = None;
-                        self.dirty.insert(id);
-                    }
-                }
             }
 
             /// Resume profile-bound failures after a real profile tree event. The
@@ -1268,9 +1150,6 @@ mod tests {
             epoch: Option<i64>,
             turn_id: Option<String>,
             last_completed_turn: Option<Value>,
-            tokens_used: Option<Value>,
-            token_usage_accounting: Option<Value>,
-            token_budget: Option<Value>,
             created: Option<Value>,
             provider: Option<Value>,
             deleted_at: Option<Value>,
@@ -1286,9 +1165,6 @@ mod tests {
                     epoch: agent["epoch"].as_i64(),
                     turn_id: agent["turnId"].as_str().map(str::to_owned),
                     last_completed_turn: present_value(agent, "lastCompletedTurn"),
-                    tokens_used: present_value(agent, "tokensUsed"),
-                    token_usage_accounting: present_value(agent, "tokenUsageAccounting"),
-                    token_budget: present_value(agent, "tokenBudget"),
                     created: present_value(agent, "created"),
                     provider: present_value(agent, "provider"),
                     deleted_at: present_value(agent, "deletedAt"),
@@ -1306,12 +1182,6 @@ mod tests {
                         &self.last_completed_turn,
                         agent.get("lastCompletedTurn"),
                     )
-                    || !same_optional_value(&self.tokens_used, agent.get("tokensUsed"))
-                    || !same_optional_value(
-                        &self.token_usage_accounting,
-                        agent.get("tokenUsageAccounting"),
-                    )
-                    || !same_optional_value(&self.token_budget, agent.get("tokenBudget"))
                     || !same_optional_value(&self.created, agent.get("created"))
                     || !same_optional_value(&self.provider, agent.get("provider"))
                     || !same_optional_value(&self.deleted_at, agent.get("deletedAt"))
@@ -1397,14 +1267,14 @@ mod tests {
         reference
             .block_for_input_change(&blocked, 4.)
             .expect("reference block profile");
-        let budget =
-            parity_selection(&schedule, &mut reference, &roster, 4.).expect("budget actor");
+        let second =
+            parity_selection(&schedule, &mut reference, &roster, 4.).expect("second actor");
         schedule
-            .block_for_budget_change(&budget, 4.)
-            .expect("block budget");
+            .block_for_input_change(&second, 4.)
+            .expect("block second profile");
         reference
-            .block_for_budget_change(&budget, 4.)
-            .expect("reference block budget");
+            .block_for_input_change(&second, 4.)
+            .expect("reference block second profile");
         // Status and activity changes must reorder ready actors but not resume a blocked actor.
         for actor in &mut roster {
             actor["status"] = json!("paused");
@@ -1427,9 +1297,6 @@ mod tests {
         reference
             .notify_rollout(actor_id(&blocked).expect("id"), false)
             .expect("reference rollout");
-        parity_selection(&schedule, &mut reference, &roster, 5.);
-        schedule.budget_changed();
-        reference.budget_changed();
         parity_selection(&schedule, &mut reference, &roster, 5.);
         schedule.discovery_changed(Some("default"));
         reference.discovery_changed(Some("default"));

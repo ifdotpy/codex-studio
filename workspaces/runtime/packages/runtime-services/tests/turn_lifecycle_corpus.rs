@@ -219,6 +219,7 @@ fn rebind_expected_hashes(value: Value) -> Value {
     }
     let mut snapshot: Snapshot = serde_json::from_value(value).expect("expected snapshot");
     for row in &mut snapshot.sync_entities {
+        crate::removed_budget_fields::strip(&mut row.payload);
         row.hash = studio_runtime_store::sha256_hex(
             studio_runtime_store::python_json(&row.payload).as_bytes(),
         );
@@ -1123,7 +1124,12 @@ async fn python_written_turn_lifecycle_corpus() {
         } else {
             &expected["after"]
         };
-        differences(Some(comparison), Some(&actual), "", &mut diff);
+        // The removed team token budget published `tokensUsed`, and rows seeded from
+        // Python still carry it; compare both sides without it. `snapshot` already
+        // checked each raw payload hash, so the hashes are derived again here.
+        let comparison = rebind_expected_hashes(comparison.clone());
+        let actual = rebind_expected_hashes(actual.clone());
+        differences(Some(&comparison), Some(&actual), "", &mut diff);
         for rule in case["expectedDifferences"].as_array().into_iter().flatten() {
             if !diff.iter().any(|d| d["path"] == rule["path"]) {
                 error = Some(format!(

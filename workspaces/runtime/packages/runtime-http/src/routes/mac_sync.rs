@@ -187,7 +187,6 @@ async fn send_handoff(
     let wake = state.event_wake;
     let custom_admission = state.message_admission;
     let admission_override = custom_admission.clone();
-    let preparation_store = Arc::clone(&store);
     let lead_for_read = lead.clone();
     let (prepared, ingress_admission) = store
         .read_async("runtime-http/routes/mac_sync", move |connection| {
@@ -197,7 +196,6 @@ async fn send_handoff(
             let ingress_admission = if admission_override.is_none() {
                 Some(
                     studio_runtime_services::message_admission::MessageIngressAdmission::read(
-                        preparation_store,
                         connection,
                         &lead_for_read,
                     )

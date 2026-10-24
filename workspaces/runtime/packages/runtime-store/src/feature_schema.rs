@@ -4,6 +4,8 @@ use crate::StoreResult;
 
 // These tables are installed by Runtime and feature constructors, or on first
 // feature use, in canvas.sqlite3. The Rust feature schema owns their current DDL.
+// `runtime_budget` and `runtime_budget_usage` keep the rows of the removed team
+// token budget that older builds wrote; current builds neither read nor write them.
 const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_work (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_work_root_status

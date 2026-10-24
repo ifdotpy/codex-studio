@@ -642,8 +642,7 @@ impl From<crate::coordination::CoordinationError> for CallbackError {
             E::InvalidRequest(message) | E::Conflict(message) => Self::Invalid(message),
             E::RequiresDependency(name) => Self::Dependency(name),
             E::InvalidStored { object, id } => Self::Stored(format!("{object}/{id}")),
-            E::AdmissionDenied(_) => Self::Invalid("Team token budget admission denied"),
-            E::BudgetRuntime(_) => Self::Invalid("Unable to verify team token budget"),
+            E::AdmissionDenied(_) => Self::Invalid("Message admission denied"),
         }
     }
 }

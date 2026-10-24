@@ -116,7 +116,10 @@ describe("worker-only snapshot changes", () => {
     });
     const first = run(data);
     for (let count = 1; count <= WORKERS; count++) {
-      data = changeWorker(data, 1, { tokensUsed: count, status: "completed" });
+      data = changeWorker(data, 1, {
+        lastEvent: `2026-10-24T00:00:0${count}Z`,
+        status: "completed",
+      });
       const next = run(data);
       expect(next.conversationData).toBe(first.conversationData);
       expect(next.wait).toBe(first.wait);

@@ -258,7 +258,10 @@ async fn python_send_and_receipt_corpus(fixture: &Fixture) {
                     "{name}: complete auxiliary receipts"
                 );
             } else {
-                assert_json(rows, &expected.state[table], &format!("{name}/{table}"));
+                let (mut rows, mut python) = (rows.clone(), expected.state[table].clone());
+                crate::removed_budget_fields::strip(&mut rows);
+                crate::removed_budget_fields::strip(&mut python);
+                assert_json(&rows, &python, &format!("{name}/{table}"));
             }
         }
     }
@@ -705,7 +708,6 @@ async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(fi
     use studio_runtime_store::{AgentRecord, Transaction};
     struct Policy {
         workspace_denied: bool,
-        budget_denied: bool,
     }
     impl MessageAdmission for Policy {
         fn workspace(
@@ -718,32 +720,12 @@ async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(fi
             }
             Ok(Vec::new())
         }
-        fn budget(
-            &self,
-            _tx: &Transaction<'_>,
-            _agent: &AgentRecord,
-            _root: &AgentRecord,
-        ) -> Result<(), CoordinationError> {
-            if self.budget_denied {
-                return Err(CoordinationError::InvalidRequest(
-                    "Team token budget reached. Increase the budget before resuming",
-                ));
-            }
-            Ok(())
-        }
     }
     let root = fixture.seed("gates");
     let store = RuntimeStore::open(Some(&root)).await.expect("store");
-    for policy in [
-        Policy {
-            workspace_denied: true,
-            budget_denied: false,
-        },
-        Policy {
-            workspace_denied: false,
-            budget_denied: true,
-        },
-    ] {
+    for policy in [Policy {
+        workspace_denied: true,
+    }] {
         let before = snapshot(&store);
         let result = store
             .transaction_with_error(move |tx| {
