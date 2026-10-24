@@ -31,6 +31,7 @@ fn agent_in_use(connection: &Connection) -> StoreResult<String> {
         "workspace_operation IS NOT NULL".to_owned(),
         "COALESCE(json_extract(record,'$.accountTransferId'),'')!=''".to_owned(),
         "COALESCE(native_tool_refresh_id,'')!=''".to_owned(),
+        "COALESCE(json_extract(record,'$.nativeRelease.resetPending'),0)!=0".to_owned(),
         format!("context_repair_phase IN ({ACTIVE_CONTEXT_REPAIR_PHASES})"),
         format!("({})", unresolved_sql()),
         format!(
@@ -314,6 +315,24 @@ mod tests {
             json!({"status":"running","deletedAt":1.0}),
         );
         assert!(!thread_in_use(&connection), "a deleted owner holds nothing");
+    }
+
+    #[test]
+    fn a_manual_reset_waits_for_its_own_closure_without_an_idle_unsubscribe() {
+        let connection = database();
+        agent(
+            &connection,
+            "a",
+            json!({"nativeRelease":{"phase":"released","resetPending":true}}),
+        );
+        assert!(thread_in_use(&connection));
+        assert!(account_in_use(&connection));
+        agent(
+            &connection,
+            "a",
+            json!({"nativeRelease":{"phase":"released","resetPending":false,"closedAt":1.0}}),
+        );
+        assert!(!thread_in_use(&connection));
     }
 
     #[test]

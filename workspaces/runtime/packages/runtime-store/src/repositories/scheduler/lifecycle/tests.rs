@@ -98,6 +98,42 @@ fn restart_and_reconnect(connection: &mut Connection, generation: u64) {
     });
 }
 
+#[test]
+fn manual_delivery_hold_tracks_started_without_interrupting_the_observed_turn() {
+    let mut connection = database();
+    let mut agent = agent_from(
+        json!({"status":"running","autoWake":true,"inFlight":true,"turnEpoch":0,"turnId":"turn","startAttempt":{"id":"manual-attempt","epoch":0,"accountKey":ACCOUNT,"threadId":"thread","turnId":"turn","requestTicket":"ticket","connectionGeneration":1,"submitted":true,"events":["original-input"]}}),
+    );
+    SchedulerRepository::hold_recovered_delivery(&mut agent).expect("manual hold");
+    AgentRepository::put(&connection, &agent).expect("held worker");
+    connection.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created,turn_id) VALUES('original-input',?1,0,'user','input','delivered',1,'turn')", [AGENT]).expect("delivered exact input");
+    let identity = TurnAttemptIdentity {
+        agent_id: AGENT.into(),
+        epoch: 0,
+        attempt_id: "manual-attempt".into(),
+    };
+    let interrupt = with(&mut connection, |tx| {
+        SchedulerRepository::observe_started(tx, &identity, "turn").expect("exact started notice")
+    });
+    assert_eq!(
+        interrupt,
+        Some(false),
+        "a delivery hold must not stop the existing native turn"
+    );
+    assert_eq!(stored(&connection)["autoWake"], false);
+    with(&mut connection, |tx| {
+        let mut stopped = AgentRepository::get(tx, &AgentId::from(AGENT))
+            .expect("read")
+            .expect("worker");
+        stopped.epoch += 1;
+        AgentRepository::put(tx, &stopped).expect("real Stop changes epoch");
+        assert_eq!(
+            SchedulerRepository::observe_started(tx, &identity, "turn").expect("stopped notice"),
+            Some(true)
+        );
+    });
+}
+
 /// A waiting agent that finished a later turn. Its restart marker and
 /// disconnect receipt describe a turn from an earlier restart (agents 50f9a796
 /// and fbcb2568; agent 841ebc0e after startup cleanup removed its completed
