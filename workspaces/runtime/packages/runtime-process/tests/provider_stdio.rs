@@ -72,7 +72,10 @@ fn assert_final_stdout_is_journaled(write_after_exit: bool) {
                     acknowledged.receive().await,
                     CommandReceipt::Acknowledged(EventCursor(0))
                 ));
-                assert!(matches!(written.receive().await, CommandReceipt::NotSent));
+                assert!(matches!(
+                    written.receive().await,
+                    CommandReceipt::NotSent | CommandReceipt::WriteInterrupted { bytes_written: 0 }
+                ));
             }
             for id in 1..=replies as u64 {
                 let entry = attachment
@@ -407,7 +410,9 @@ async fn stalled_stdin_is_interrupted_by_the_exchange_deadline() {
         attachment.completion().await.result,
         Err(AdapterError::Timeout)
     ));
-    assert!(matches!(receipt.receive().await, CommandReceipt::Unknown));
+    assert!(matches!(receipt.receive().await,
+        CommandReceipt::WriteInterrupted { bytes_written } if bytes_written > 0
+    ));
     assert_reaped(pid);
 }
 

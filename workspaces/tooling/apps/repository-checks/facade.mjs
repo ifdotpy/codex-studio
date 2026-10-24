@@ -856,6 +856,8 @@ function fastTierCommands(root) {
               "binary(integration) & test(/^provider_task::(a_cancelled_attachment_leaves_its_supervised_child_retained|terminal_eof_serves_already_queued_final_ack_before_completion)$/)",
               "binary(studio_runtime_process) & test(/^provider_stdio::tests::stdout_exit_drain_bounds_a_full_journal_and_preserves_the_exchange_deadline$/)",
               "binary(studio_runtime_process) & test(/^provider_stdio::tests::stdout_exit_drain_bounds_an_inherited_pipe_and_honors_shutdown$/)",
+              "binary(studio_runtime_process) & test(/^provider_stdio::tests::stdout_eof_rejects_queued_writes_and_closes_admission_before_cleanup$/)",
+              "binary(studio_runtime_process) & test(/^provider_stdio::tests::interrupted_stdin_write_counts_accepted_bytes_and_never_reports_them_not_sent$/)",
             ]),
           ],
         ],
@@ -1459,6 +1461,9 @@ function fastTierCommands(root) {
             nextestAnyOf([
               "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
               "test(/^provider_session_task::exited_stdio_provider_drains_beyond_journal_capacity_through_session_settlement$/)",
+              "test(/^provider_session_task::partial_stdio_write_at_exit_preserves_unknown_outcome_and_final_session_frames$/)",
+              "test(/^provider_session_task::interrupted_write_receipts_keep_session_settlement_alive_without_replay$/)",
+              "test(/^provider_session_task::interrupted_initialization_keeps_journal_and_ack_service_alive$/)",
               "test(provider_callbacks_unjournaled_card_is_refused_without_writes)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
               "test(/^recovery_store::restart_continues_only_a_confirmed_interruption$/)",

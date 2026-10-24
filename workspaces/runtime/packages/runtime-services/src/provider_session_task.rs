@@ -1309,7 +1309,16 @@ impl SessionTask {
         let outcome = match receipt {
             CommandReceipt::Written { .. } => WriteOutcome::Written,
             CommandReceipt::NotSent => WriteOutcome::NotSent,
-            _ => WriteOutcome::Unknown,
+            CommandReceipt::WriteInterrupted { bytes_written } => {
+                if *bytes_written == 0 {
+                    WriteOutcome::NotSent
+                } else {
+                    WriteOutcome::Unknown
+                }
+            }
+            CommandReceipt::Unknown
+            | CommandReceipt::Acknowledged(_)
+            | CommandReceipt::CachedInitialize(_) => WriteOutcome::Unknown,
         };
         let recovery = if let CommandReceipt::Written { remote_id, .. } = receipt {
             recovery.clone().map(|mut r| {
@@ -1359,7 +1368,12 @@ impl SessionTask {
         match flight {
             Flight::Ack(cursor) => match receipt {
                 CommandReceipt::Acknowledged(ack) if ack == cursor => Ok(()),
-                _ => Err(SessionTaskError::Closed),
+                CommandReceipt::Written { .. }
+                | CommandReceipt::WriteInterrupted { .. }
+                | CommandReceipt::Acknowledged(_)
+                | CommandReceipt::CachedInitialize(_)
+                | CommandReceipt::NotSent
+                | CommandReceipt::Unknown => Err(SessionTaskError::Closed),
             },
             Flight::Write {
                 ticket,
@@ -1393,6 +1407,18 @@ impl SessionTask {
                         .is_some_and(|e| e.outcomes.is_empty())
                     {
                         self.retained.control = None;
+                    }
+                    return Ok(());
+                }
+                // This is positive interruption evidence from a still-draining
+                // adapter, not a lost receipt. Keep reading and ACKing its tail,
+                // including when initialization was interrupted; never replay.
+                if let CommandReceipt::WriteInterrupted { bytes_written } = receipt {
+                    if bytes_written == 0
+                        && let Some(ticket) = &ticket
+                    {
+                        self.retained.actions = self.state.reject_unsent(ticket)?.into();
+                        self.apply_actions(true)?;
                     }
                     return Ok(());
                 }

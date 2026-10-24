@@ -184,7 +184,7 @@ Write/ACK receipts and shutdown never depend on journal capacity.
 `Stderr`, `Exit`, and future supervisor event kinds. `PreparedWrite::new` validates
 a frame before command admission. `AdapterCommand::write` and `::ack` return a
 command and `Receipt`; `Receipt::receive` distinguishes `Written`,
-`Acknowledged`, `CachedInitialize`, `NotSent`, and `Unknown`. Write operation IDs
+`Acknowledged`, `CachedInitialize`, `NotSent`, `WriteInterrupted`, and `Unknown`. Write operation IDs
 belong to the caller. Use `initialized_operation(&handle, generation)` for the shared
 generation-scoped initialized identity. A lost receipt terminates the attachment;
 there is no reconnect, flush, or automatic resend surface. A closed receipt is
@@ -236,9 +236,19 @@ After observing the leader's exit, the task drains stdout into the journal to
 EOF, bounded by the earlier of the caller's deadline and the cleanup grace owned
 by [`provider_stdio.rs`](src/provider_stdio.rs). Shutdown still interrupts this
 drain. ACKs remain served so session settlement can release the bounded journal;
-new writes return `NotSent` without touching stdin or waiting for observation.
+new writes settle as `NotSent` without touching stdin or waiting for observation.
 A full journal or an inherited pipe cannot delay process-group cleanup beyond
 that bound.
+
+The stdio owner retains an active write's receipt and accepted-byte count outside
+the cancellable writer future. Interruption returns
+`WriteInterrupted { bytes_written }`: this counts bytes the OS accepted on the
+stdin pipe, not bytes read by the child. The session reports zero as `NotSent`
+and a positive count as `Unknown`; neither outcome is replayed. This explicit
+receipt keeps journal reads and ACKs running, including during initialization.
+Writes refused while draining use the same receipt with zero accepted bytes.
+When draining finishes, the owner closes command admission and rejects every
+admitted command that never started as `NotSent` before cleanup begins.
 
 The model catalog consumes it through the accepted session task. Its cache is
 process-local, so consumed entries are settled without a durable journal.

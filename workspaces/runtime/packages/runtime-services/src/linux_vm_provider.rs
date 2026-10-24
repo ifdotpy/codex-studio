@@ -377,7 +377,7 @@ async fn run_guest_attachment(
                         Err(GuestProviderError::Unknown) => CommandReceipt::Unknown,
                         Err(_) => CommandReceipt::NotSent,
                     };
-                    let observe = matches!(receipt, CommandReceipt::Written { .. } | CommandReceipt::CachedInitialize(_));
+                    let observe = receipt.requires_observation();
                     let _sent = reply.send(receipt);
                     if observe && let Err(error) = observed_or_stopped(observed, &mut stop).await {
                         result = Err(error);

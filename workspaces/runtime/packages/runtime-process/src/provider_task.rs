@@ -741,10 +741,7 @@ impl AdapterTask {
                 observed,
             } => match self.write(rpc, write).await {
                 Ok(receipt) => {
-                    let needs_observation = matches!(
-                        receipt,
-                        CommandReceipt::Written { .. } | CommandReceipt::CachedInitialize(_)
-                    );
+                    let needs_observation = receipt.requires_observation();
                     if reply.send(receipt).is_err() {
                         return Err(SupervisorError::ConnectionLost.into());
                     }
