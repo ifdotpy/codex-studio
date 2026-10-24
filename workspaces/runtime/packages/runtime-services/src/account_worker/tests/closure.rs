@@ -297,23 +297,11 @@ pub(super) async fn scenario_old_generation_pending_text_is_materialized_and_rec
         if generation > 2 {
             // The restart marker records its claimed automatic check, so a later
             // worker finishes its startup pass without reading again.
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-            while !state
-                .bridge
-                .faults
-                .startup_recovery_done
-                .load(std::sync::atomic::Ordering::SeqCst)
-            {
-                assert!(
-                    peer.writes.try_recv().is_err(),
-                    "generation {generation} repeated the restart history check"
-                );
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "generation {generation} startup pass did not finish"
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
+            worker_barrier(&replacement).await;
+            assert!(
+                peer.writes.try_recv().is_err(),
+                "generation {generation} repeated the restart history check"
+            );
         }
         if generation == 2 {
             // Each replacement is a new backend process, so the interrupted turn
