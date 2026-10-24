@@ -333,9 +333,19 @@ impl Snapshot {
                 for id in &self.order {
                     let m = &op["members"][id];
                     let phase = self.phase(id)?;
+                    // Only a native thread request moves history. Source and
+                    // catalog reads do not, so a member without one may return.
+                    let native_request =
+                        matches!(
+                            phase,
+                            Phase::Reading | Phase::Submitted | Phase::LazySubmitted | Phase::Ready
+                        ) || ["providerIntent", "transportTicket", "submittedAt", "result"]
+                            .iter()
+                            .any(|key| studio_runtime_store::truthy(m.get(*key)));
                     if flag(m, "lazy")
                         && !phase.terminal()
                         && phase != Phase::Lazy
+                        && native_request
                         && !(phase == Phase::Blocked
                             && flag(m, "archiveInvalidated")
                             && (!studio_runtime_store::truthy(m.get("submittedAt"))
@@ -1651,6 +1661,83 @@ mod provider_receipt_tests {
             json!({"model":"model-a"}),
         )
         .expect("test fixture operation succeeds")
+    }
+
+    /// The live record shape of a lazy move refused during its source reads:
+    /// written destination catalog and source reads, one source read with an
+    /// intent and no receipt, and no native thread request.
+    fn refused_during_source_reads(native_intent: bool) -> Snapshot {
+        let read = |operation: &str, account: &str, method: &str| {
+            json!({"operation":operation,"account":account,"method":method,
+                "params":{"threadId":"source-thread"},
+                "scope":{"account":account,"connection":format!("{account}-connection"),"generation":1}})
+        };
+        let written = |operation: &str, account: &str| {
+            json!({"certainty":"written","result":{"kind":"reply","value":{"data":[]}},
+                "receipt":{"certainty":"written","notSentReason":null,"operation":operation,
+                    "scope":{"account":account,"connection":format!("{account}-connection"),"generation":1},
+                    "ticket":{"generation":1,"id":"request","method":"thread/read"}}})
+        };
+        let mut member = json!({
+            "phase":"blocked", "lazy":true, "sourceAccountKey":"source",
+            "sourceThreadId":"source-thread", "provider":"claude", "nextCheck":0,
+            "error":"Transfer preparation failed before native submission",
+            "source":{"accountKey":"target","threadId":"source-thread","epoch":7,"cwd":"/work"},
+            "providerReadIntents":{
+                "model-list":read("model-list","target","model/list"),
+                "thread-read":read("thread-read","source","thread/read"),
+                "transfer:transfer:agent:queue-before":read("transfer:transfer:agent:queue-before","source","thread/queue/list"),
+                "transfer:transfer:agent:background-before":read("transfer:transfer:agent:background-before","source","thread/backgroundTerminals/list")
+            },
+            "providerReadReceipts":{
+                "model-list":written("model-list","target"),
+                "thread-read":written("thread-read","source"),
+                "transfer:transfer:agent:queue-before":written("transfer:transfer:agent:queue-before","source")
+            }
+        });
+        if native_intent {
+            member["providerIntent"] = json!({"operation":"transfer:agent:thread-start",
+                "scope":{"account":"target"},"method":"thread/start","params":{}});
+        }
+        let operation = json!({
+            "id":"transfer", "leadId":"agent", "targetAccountKey":"target",
+            "targetProvider":"claude", "status":"pending", "created":1.0, "scope":"team",
+            "members":{"agent":member}
+        });
+        let agent = json!({
+            "id":"agent", "rootId":"agent", "epoch":7, "status":"queued", "provider":"claude",
+            "accountKey":"target", "accountTransferId":"transfer", "threadId":"source-thread",
+            "executionSettingsAccountKey":"source", "model":"model-a",
+            "lazyAccountTransfer":{"id":"transfer","sourceAccountKey":"source",
+                "sourceThreadId":"source-thread",
+                "sourceState":{"executionSettingsAccountKey":"source","model":"model-a",
+                    "provider":"claude","status":"queued","error":null}}
+        });
+        Snapshot::read(
+            &operation.to_string(),
+            [("agent".into(), agent.to_string())],
+        )
+        .expect("test fixture operation succeeds")
+    }
+
+    #[test]
+    fn cancel_returns_a_lazy_member_whose_move_sent_no_thread_request() {
+        let cancelled = refused_during_source_reads(false)
+            .decide(Command::Action(Action::Cancel))
+            .expect("nothing native was sent, so cancel is safe");
+        assert_eq!(cancelled.operation["status"], "cancelled");
+        let agent = &cancelled.agents["agent"];
+        assert_eq!(agent["accountKey"], "source");
+        assert_eq!(agent["executionSettingsAccountKey"], "source");
+        assert!(agent.get("lazyAccountTransfer").is_none());
+        assert!(agent.get("accountTransferId").is_none());
+
+        assert!(matches!(
+            refused_during_source_reads(true).decide(Command::Action(Action::Cancel)),
+            Err(TransferError::Refused(
+                "A native history move has started. Resolve its receipt before cancelling."
+            ))
+        ));
     }
 
     #[test]
