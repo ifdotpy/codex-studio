@@ -684,6 +684,7 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         "ProjectMutationRecord",
         "RequestEntityDto",
         "ResourceRef",
+        "ResourceProgressEvent",
         "RoomEntityDto",
         "RuleEntityDto",
         "RuntimeLockOperation",

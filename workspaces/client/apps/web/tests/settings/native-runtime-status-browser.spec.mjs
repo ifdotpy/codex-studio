@@ -48,11 +48,11 @@ export function watchResourceConnection(listener){listener('live','open');return
           if (id !== entry) return;
           return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider,Modal,Button} from '@mantine/core';import '@mantine/core/styles.css';
   import NativeRuntimeStatus from '/src/components/NativeRuntimeStatus.tsx';import Accounts from '/src/components/Accounts.tsx';import '/src/studio-theme.css';import '/src/appearance.css';
-  import ConversationWarnings from '/src/components/ConversationWarnings.tsx';
+  import ConversationWarnings from '/src/components/ConversationWarnings.tsx'; import {StudioErrorsProvider} from '/src/components/StudioErrors.tsx';
   const accounts=[{id:'default',label:'Personal',status:'ready'},{id:'work',label:'Work with a very long account label for narrow screens',status:'ready'},{id:'claude',label:'Claude profile',provider:'claude',status:'ready'}];
   const notices=[{id:'codex-warning',accountKey:'default',message:'Codex account version warning'},{id:'claude-warning',accountKey:'claude',message:'Claude account version warning'}];
   function Fixture(){const [opened,setOpened]=useState(false);const [integrated,setIntegrated]=useState(false);const [warningAccount,setWarningAccount]=useState('default');window.setRuntimeOpen=setOpened;window.setWarningAccount=setWarningAccount;
-  return <MantineProvider><main style={{maxWidth:600,padding:12}}><NativeRuntimeStatus opened={opened&&!integrated} accounts={accounts}/><Button onClick={()=>setIntegrated(true)}>Manage accounts</Button><Modal opened={integrated} onClose={()=>setIntegrated(false)} title='Accounts'><Accounts managerOnly state={{data:{accounts,defaultAccountKey:'default'},setData:()=>{},refresh:async()=>{},error:'',scope:'fixture'}} onError={()=>{}}/></Modal><ConversationWarnings scope='version-warning' notices={notices} accountKey={warningAccount} messages={[]}/></main></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
+  return <MantineProvider><main style={{maxWidth:600,padding:12}}><NativeRuntimeStatus opened={opened&&!integrated} accounts={accounts}/><Button onClick={()=>setIntegrated(true)}>Manage accounts</Button><Modal opened={integrated} onClose={()=>setIntegrated(false)} title='Accounts'><Accounts managerOnly state={{data:{accounts,defaultAccountKey:'default'},setData:()=>{},refresh:async()=>{},error:'',scope:'fixture'}} onError={()=>{}}/></Modal><StudioErrorsProvider><ConversationWarnings scope='version-warning' notices={notices} accountKey={warningAccount} messages={[]}/></StudioErrorsProvider></main></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -132,6 +132,8 @@ export function watchResourceConnection(listener){listener('live','open');return
         "GET",
         "Status must stay read-only",
       );
+      if (new URL(route.request().url()).pathname === "/api/studio-errors")
+        return route.fulfill({ json: { items: [] } });
       if (new URL(route.request().url()).pathname === "/api/desktop") {
         reads++;
         return route.fulfill({ json: body });

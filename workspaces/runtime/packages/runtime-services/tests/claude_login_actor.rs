@@ -29,6 +29,23 @@ async fn add_replay_completion_and_restart_keep_identity_and_no_secrets() {
             .is_err()
     );
     link(&f, &s, &child).await;
+    let receipt_writes = f.receipts.writes.load(Ordering::SeqCst);
+    assert_eq!(
+        s.progress(ID).await.expect("transient progress")["verificationUrl"],
+        URL
+    );
+    assert_eq!(
+        f.receipts.writes.load(Ordering::SeqCst),
+        receipt_writes,
+        "a progress subscription never persists its URL"
+    );
+    let pending_bytes = std::fs::read(f.receipts.file.directory().join(format!("{ID}.json")))
+        .expect("durable receipt");
+    assert!(
+        !String::from_utf8(pending_bytes)
+            .expect("receipt text")
+            .contains(URL)
+    );
     assert_eq!(
         s.code(ID, "fixture-code#fixture-state".into())
             .await

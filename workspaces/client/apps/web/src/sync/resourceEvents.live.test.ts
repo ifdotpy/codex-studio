@@ -138,6 +138,61 @@ async function fixture(follower = false, session = true) {
   return { transport, source, sources, urls, post, persist, stopState };
 }
 
+it("publishes each resource event without a listener flush timer", async () => {
+  const f = await fixture();
+  const listener = vi.fn();
+  f.transport.watchResourceChanges({ kind: "state" }, listener);
+  listener.mockClear();
+  for (const revision of [2, 3]) {
+    f.source.emit("resources", {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision,
+      reason: "change",
+      resources: [{ kind: "state" }],
+      resourceVersions: [{ revision }],
+    });
+    // Drain event persistence microtasks without advancing any timer.
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    expect(listener).toHaveBeenCalledTimes(revision - 1);
+    expect(listener).toHaveBeenLastCalledWith(
+      expect.objectContaining({ revision }),
+    );
+  }
+});
+
+it("delivers subscribed auth progress without sending its URL to the entity persister", async () => {
+  const f = await fixture();
+  const resource = { kind: "auth-progress", requestId: "login-one" } as const;
+  const listener = vi.fn();
+  f.transport.watchResourceChanges(resource, listener);
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 1 });
+  listener.mockClear();
+  f.persist.mockClear();
+  const value = {
+    requestId: "login-one",
+    accountKey: "claude-one",
+    status: "pending",
+    verificationUrl: "https://claude.com/cai/oauth/authorize?secret=fixture",
+  };
+  f.source.emit("resource-progress", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    resource,
+    value,
+  });
+  expect(listener).toHaveBeenCalledWith(
+    expect.objectContaining({ progress: { resource, value } }),
+  );
+  expect(f.persist).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(f.post).toHaveBeenCalledTimes(1);
+});
+
 it("coalesces chat switches into one POST without reopening the SSE stream", async () => {
   const f = await fixture();
   for (let i = 0; i < 10; i++) {

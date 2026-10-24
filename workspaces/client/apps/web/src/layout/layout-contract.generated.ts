@@ -792,6 +792,12 @@ export const layoutTokens = {
     unit: "layer",
     purpose: "Main src/workspace-layout.css layer: z-index: 300",
   },
+  "legacy_main_components_conversation_warnings.query0bafbd4a": {
+    value: 47.5,
+    unit: "rem",
+    purpose:
+      "Main src/components/conversation-warnings.css query: @media (max-width: 47.5rem) {",
+  },
 } as const;
 export const layoutValues = {
   navigation: {
@@ -1063,6 +1069,9 @@ export const layoutValues = {
     query3686b719: 660,
     query4348d9ef: 60,
     layer653d125a: 300,
+  },
+  legacy_main_components_conversation_warnings: {
+    query0bafbd4a: 47.5,
   },
 } as const;
 export const layoutQueries = {

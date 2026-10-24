@@ -23,6 +23,7 @@ export default {
       // Preserve newly landed safety witnesses, including the real Rust draft-route fixture.
       "src/sync/entityProjection.test.mjs",
       "src/sync/resourceEvents.live.test.ts",
+      "src/sync/progressSubscription.test.ts",
       "src/hooks/chatPrefetch.test.ts",
       "src/sync/drafts.publication.test.ts",
       "src/sync/transcriptCache.test.ts",
@@ -32,6 +33,9 @@ export default {
       // Token snapshots carry each agent once and derive team membership without entity projections.
       "src/usage/tokenRate.records.test.ts",
       "src/usage/tokenRate.test.mjs",
+      "src/components/StudioErrors.test.ts",
+      "src/components/SidebarWarnings.test.ts",
+      "src/components/ConversationWarnings.test.ts",
       // web unit safety witnesses
       "src/api.test.ts",
       "src/startWait.test.ts",
@@ -63,6 +67,7 @@ export default {
       "src/components/SupervisorRecoveryNotice.test.ts",
       "src/components/desktopNotices.test.ts",
       "src/components/watchResourceReads.test.ts",
+      "src/components/RealtimeVoice.test.ts",
       // Normal draft changes use RxDB's master stream; recovery reads its durable checkpoint.
       "src/sync/client.draftStream.test.ts",
       // A complete state batch advances the durable projection with no new pull; storage failures, gaps, reconnects and epochs still reconcile.
@@ -73,6 +78,7 @@ export default {
       "src/servers/eventSource.test.ts",
       // Prevent duplicate entity pulls and preserve server storage and API ownership.
       "src/servers/useUiPreferenceSync.test.ts",
+      "src/servers/useServerDiscovery.test.ts",
       "src/sync/uiPreferenceBridge.test.ts",
       // Prevent idle polling and lost draft notifications during a refresh.
       "src/native/useNativeDrafts.test.ts",

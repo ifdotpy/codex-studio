@@ -1,6 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import VaultSetup from "./VaultSetup";
+import type { ResourceRef, ResourceVersion } from "../../sync/resourceEvents";
+import { ServerServicesProvider } from "../../servers/ServerServicesContext";
 
 type Reply = Record<string, unknown>;
 
@@ -88,6 +90,34 @@ const desktop = (keysAfter: () => void) => {
 const fake = server();
 export const PaperKeyThenVault: Story = {
   args: { backend: fake.backend },
+  decorators: [
+    (Story) => (
+      <ServerServicesProvider
+        services={
+          {
+            owner: { id: "local", origin: location.origin },
+            resources: {
+              watchResourceChanges: (
+                resource: ResourceRef,
+                accept: (version?: ResourceVersion) => void,
+              ) => {
+                if (resource.kind === "vault-readiness")
+                  accept({
+                    epoch: "story",
+                    revision: 1,
+                    progress: { resource, value: fake.state.keys },
+                  });
+                return () => {};
+              },
+              watchResourceConnection: () => () => {},
+            },
+          } as never
+        }
+      >
+        <Story />
+      </ServerServicesProvider>
+    ),
+  ],
   beforeEach: () => {
     fake.state.keys = false;
     fake.state.posts = [];

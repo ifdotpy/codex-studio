@@ -26,3 +26,33 @@ export function retryableTranscriptPullConflict(
 export function readRetryDelay(attempt: number): number {
   return Math.min(1_000 * 2 ** Math.min(attempt, 5), 30_000);
 }
+
+/** Maximum failed read attempts per recovery signal, including the initial attempt. */
+export const READ_RECOVERY_MAX_ATTEMPTS = 6;
+
+export class ReadRecoveryExhaustedError extends Error {
+  constructor(cause: unknown) {
+    super(
+      "Read recovery exhausted. Retry or wait for a new change or reconnection.",
+      {
+        cause,
+      },
+    );
+    this.name = "ReadRecoveryExhaustedError";
+  }
+}
+
+/** Shared by HTTP projection pulls and notified resource reads. */
+export class ReadRecoveryBudget {
+  private failures = 0;
+  exhaustedError: ReadRecoveryExhaustedError | undefined;
+
+  nextDelay(error: unknown, backoffAttempt = this.failures): number {
+    if (this.exhaustedError) throw this.exhaustedError;
+    if (++this.failures >= READ_RECOVERY_MAX_ATTEMPTS) {
+      this.exhaustedError = new ReadRecoveryExhaustedError(error);
+      throw this.exhaustedError;
+    }
+    return readRetryDelay(backoffAttempt);
+  }
+}

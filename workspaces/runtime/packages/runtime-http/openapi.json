@@ -15299,6 +15299,78 @@
         "title": "AttributionOperation",
         "type": "string"
       },
+      "AuthProgressEvent": {
+        "additionalProperties": false,
+        "description": "Transient subscribed progress; never persisted to the server or client entity store.",
+        "properties": {
+          "epoch": {
+            "minLength": 1,
+            "title": "Epoch",
+            "type": "string"
+          },
+          "protocol": {
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
+            "title": "Protocol",
+            "type": "integer"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/AuthProgressResource"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaudeLoginResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workspaceId": {
+            "minLength": 1,
+            "title": "Workspaceid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol",
+          "workspaceId",
+          "epoch",
+          "revision",
+          "resource",
+          "value"
+        ],
+        "title": "AuthProgressEvent",
+        "type": "object"
+      },
+      "AuthProgressResource": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "auth-progress",
+            "type": "string"
+          },
+          "requestId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "requestId"
+        ],
+        "title": "AuthProgressResource",
+        "type": "object"
+      },
       "AutoPairRequest": {
         "additionalProperties": false,
         "properties": {
@@ -24819,6 +24891,9 @@
             "title": "Runtimelocksamples",
             "type": "array"
           },
+          "runtimeStageMetrics": {
+            "$ref": "#/components/schemas/RuntimeStageMetrics"
+          },
           "searchMigrationError": {
             "anyOf": [
               {
@@ -24841,6 +24916,9 @@
           },
           "supervisor": {
             "$ref": "#/components/schemas/SupervisorDiagnostics"
+          },
+          "syncRecoveryCounters": {
+            "$ref": "#/components/schemas/SyncRecoveryCounters"
           }
         },
         "required": [
@@ -24859,7 +24937,9 @@
           "migrations",
           "searchMigrationError",
           "runtimeLockOperations",
-          "supervisor"
+          "supervisor",
+          "runtimeStageMetrics",
+          "syncRecoveryCounters"
         ],
         "title": "DiagnosticsResponse",
         "type": "object"
@@ -28468,6 +28548,14 @@
           "route": {
             "title": "Route",
             "type": "string"
+          },
+          "statusCounts": {
+            "additionalProperties": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "object"
           }
         },
         "required": [
@@ -28475,7 +28563,8 @@
           "route",
           "count",
           "latencyMs",
-          "responseBytes"
+          "responseBytes",
+          "statusCounts"
         ],
         "title": "HttpRouteMetric",
         "type": "object"
@@ -31257,6 +31346,36 @@
         },
         "title": "ModelCatalogResponse",
         "type": "object"
+      },
+      "ModelEntityDto": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ProviderModel"
+          },
+          {
+            "properties": {
+              "accountKey": {
+                "type": "string"
+              },
+              "catalogPosition": {
+                "description": "Zero-based order within this account's provider model catalog.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "provider": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "accountKey",
+              "catalogPosition",
+              "provider"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "A complete provider model row scoped to its account; catalogPosition preserves provider order.",
+        "title": "ModelEntityDto"
       },
       "ModelsResource": {
         "additionalProperties": false,
@@ -44264,11 +44383,23 @@
         "title": "ResourceNotifyRequest",
         "type": "object"
       },
+      "ResourceProgressEvent": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/AuthProgressEvent"
+          },
+          {
+            "$ref": "#/components/schemas/VaultReadinessEvent"
+          }
+        ],
+        "title": "ResourceProgressEvent"
+      },
       "ResourceRef": {
         "description": "Closed discriminated union of all typed UI resource identities.",
         "discriminator": {
           "mapping": {
             "accounts": "#/components/schemas/AccountsResource",
+            "auth-progress": "#/components/schemas/AuthProgressResource",
             "costs": "#/components/schemas/CostsResource",
             "desktop": "#/components/schemas/DesktopResource",
             "drafts": "#/components/schemas/DraftsResource",
@@ -44286,6 +44417,7 @@
             "terminals": "#/components/schemas/TerminalsResource",
             "transcript": "#/components/schemas/TranscriptResource",
             "transcripts": "#/components/schemas/TranscriptsResource",
+            "vault-readiness": "#/components/schemas/VaultReadinessResource",
             "voice": "#/components/schemas/VoiceResource",
             "workspace": "#/components/schemas/WorkspaceResource"
           },
@@ -44351,6 +44483,12 @@
           },
           {
             "$ref": "#/components/schemas/WorkspaceResource"
+          },
+          {
+            "$ref": "#/components/schemas/AuthProgressResource"
+          },
+          {
+            "$ref": "#/components/schemas/VaultReadinessResource"
           }
         ],
         "title": "ResourceRef"
@@ -44359,6 +44497,17 @@
         "additionalProperties": false,
         "description": "Per-resource revision; StateResource uses the entity sequence.",
         "properties": {
+          "discoverySnapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccessSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Transient owner access snapshot. Never persist in the client entity cache. Omission requires HTTP recovery."
+          },
           "draftChanges": {
             "anyOf": [
               {
@@ -44431,6 +44580,17 @@
                 "type": "null"
               }
             ]
+          },
+          "voiceRecords": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoiceRecordBatch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Transient voice records and session state. Recover through HTTP if the cursor interval is missing or incomplete."
           }
         },
         "required": [
@@ -47328,6 +47488,65 @@
           "holder"
         ],
         "title": "RuntimeLockSample",
+        "type": "object"
+      },
+      "RuntimeStageHistogram": {
+        "additionalProperties": false,
+        "properties": {
+          "boundsMs": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "buckets": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "count": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxMs": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "totalMs": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stage",
+          "count",
+          "totalMs",
+          "maxMs",
+          "boundsMs",
+          "buckets"
+        ],
+        "type": "object"
+      },
+      "RuntimeStageMetrics": {
+        "additionalProperties": false,
+        "properties": {
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/RuntimeStageHistogram"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "stages"
+        ],
         "type": "object"
       },
       "SafetyAction": {
@@ -51312,6 +51531,62 @@
         "title": "StudioError",
         "type": "object"
       },
+      "StudioErrorsDismissRequest": {
+        "additionalProperties": false,
+        "maxProperties": 1,
+        "minProperties": 1,
+        "properties": {
+          "id": {
+            "description": "Legacy single error id. Supply either id or ids.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "ids": {
+            "description": "Error ids to dismiss atomically. Duplicate ids are reported once.",
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "title": "StudioErrorsDismissRequest",
+        "type": "object"
+      },
+      "StudioErrorsDismissResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "dismissedIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StudioError"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "unknownIds": {
+            "description": "Ids absent from the current error list, including already dismissed ids.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "dismissedIds",
+          "unknownIds"
+        ],
+        "title": "StudioErrorsDismissResponse",
+        "type": "object"
+      },
       "StudioErrorsResponse": {
         "additionalProperties": false,
         "properties": {
@@ -52284,6 +52559,27 @@
           {
             "properties": {
               "collection": {
+                "const": "model",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/ModelEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
                 "const": "monitor",
                 "type": "string"
               },
@@ -52527,6 +52823,7 @@
                   "edge",
                   "event",
                   "monitor",
+                  "model",
                   "peerTeam",
                   "project",
                   "request",
@@ -52591,6 +52888,7 @@
             "complaint": "#/components/schemas/SyncComplaintEntityPayload",
             "edge": "#/components/schemas/SyncEdgeEntityPayload",
             "event": "#/components/schemas/SyncEventEntityPayload",
+            "model": "#/components/schemas/SyncModelEntityPayload",
             "monitor": "#/components/schemas/SyncMonitorEntityPayload",
             "peerTeam": "#/components/schemas/SyncPeerTeamEntityPayload",
             "project": "#/components/schemas/SyncProjectEntityPayload",
@@ -52623,6 +52921,9 @@
           },
           {
             "$ref": "#/components/schemas/SyncMonitorEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncModelEntityPayload"
           },
           {
             "$ref": "#/components/schemas/SyncPeerTeamEntityPayload"
@@ -52729,6 +53030,30 @@
           "syncProtocol"
         ],
         "title": "SyncIdentityResponse",
+        "type": "object"
+      },
+      "SyncModelEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "model",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/ModelEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncModelEntityPayload",
         "type": "object"
       },
       "SyncMonitorEntityPayload": {
@@ -53132,6 +53457,50 @@
           "value"
         ],
         "title": "SyncRateLimitEntityPayload",
+        "type": "object"
+      },
+      "SyncRecoveryCounters": {
+        "additionalProperties": false,
+        "properties": {
+          "gap": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "overflow": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "oversize": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reconnect": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reset": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "subscriptionRejected": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reconnect",
+          "gap",
+          "overflow",
+          "oversize",
+          "reset",
+          "subscriptionRejected"
+        ],
         "type": "object"
       },
       "SyncRequestEntityPayload": {
@@ -59482,6 +59851,72 @@
         "title": "VaultPullResponse",
         "type": "object"
       },
+      "VaultReadinessEvent": {
+        "additionalProperties": false,
+        "description": "Transient subscribed progress; never persisted to the server or client entity store.",
+        "properties": {
+          "epoch": {
+            "minLength": 1,
+            "title": "Epoch",
+            "type": "string"
+          },
+          "protocol": {
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
+            "title": "Protocol",
+            "type": "integer"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/VaultReadinessResource"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "value": {
+            "type": "boolean"
+          },
+          "workspaceId": {
+            "minLength": 1,
+            "title": "Workspaceid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol",
+          "workspaceId",
+          "epoch",
+          "revision",
+          "resource",
+          "value"
+        ],
+        "title": "VaultReadinessEvent",
+        "type": "object"
+      },
+      "VaultReadinessResource": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "vault-readiness",
+            "type": "string"
+          },
+          "prefix": {
+            "maxLength": 44,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "prefix"
+        ],
+        "title": "VaultReadinessResource",
+        "type": "object"
+      },
       "VaultSetupFactsRequest": {
         "additionalProperties": false,
         "description": "The facts for the vault setup dialog; prefix replaces the name from the folder.",
@@ -60197,6 +60632,49 @@
         ],
         "title": "VoicePlaybackConfirmation",
         "type": "string"
+      },
+      "VoiceRecordBatch": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "cursor": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceRecordResponse"
+            },
+            "maxItems": 128,
+            "title": "Records",
+            "type": "array"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoiceSessionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "after",
+          "cursor",
+          "records",
+          "session"
+        ],
+        "title": "VoiceRecordBatch",
+        "type": "object"
       },
       "VoiceRecordKind": {
         "enum": [
@@ -79196,7 +79674,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/IdRequest"
+                "$ref": "#/components/schemas/StudioErrorsDismissRequest"
               }
             }
           },
@@ -79207,7 +79685,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StudioErrorsResponse"
+                  "$ref": "#/components/schemas/StudioErrorsDismissResponse"
                 }
               }
             },
@@ -79988,6 +80466,15 @@
             }
           },
           {
+            "description": "Marks a client initiated stream reopen for value-free recovery diagnostics.",
+            "in": "query",
+            "name": "reconnect",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "in": "query",
             "name": "apiSchema",
             "required": false,
@@ -80037,11 +80524,15 @@
                     },
                     {
                       "$ref": "#/components/schemas/SyncSubscriptionAck"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ResourceProgressEvent"
                     }
                   ],
                   "x-sse-events": {
                     "api-schema": "ApiSchemaEvent",
                     "heartbeat": "ResourceHeartbeatEvent",
+                    "resource-progress": "ResourceProgressEvent",
                     "resources": "ResourceChangeEvent",
                     "session": "SyncSessionEvent",
                     "subscriptions": "SyncSubscriptionAck",

@@ -8221,6 +8221,34 @@ export interface components {
      * @enum {string}
      */
     AttributionOperation: "ps" | "resident" | "nativeStatus" | "lockSample";
+    /**
+     * AuthProgressEvent
+     * @description Transient subscribed progress; never persisted to the server or client entity store.
+     */
+    AuthProgressEvent: {
+      /** Epoch */
+      epoch: string;
+      /**
+       * Protocol
+       * @constant
+       */
+      protocol: 4;
+      resource: components["schemas"]["AuthProgressResource"];
+      /** Revision */
+      revision: number;
+      value: components["schemas"]["ClaudeLoginResponse"] | null;
+      /** Workspaceid */
+      workspaceId: string;
+    };
+    /** AuthProgressResource */
+    AuthProgressResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "auth-progress";
+      requestId: string;
+    };
     /** AutoPairRequest */
     AutoPairRequest: {
       /** Label */
@@ -12224,12 +12252,14 @@ export interface components {
       runtimeLockOperations: components["schemas"]["RuntimeLockOperation"][];
       /** Runtimelocksamples */
       runtimeLockSamples: components["schemas"]["RuntimeLockSample"][];
+      runtimeStageMetrics: components["schemas"]["RuntimeStageMetrics"];
       /** Searchmigrationerror */
       searchMigrationError: null | string;
       sqliteContention: components["schemas"]["SqliteContention"];
       /** Studioloadedthreads */
       studioLoadedThreads: number;
       supervisor: components["schemas"]["SupervisorDiagnostics"];
+      syncRecoveryCounters: components["schemas"]["SyncRecoveryCounters"];
     };
     /** DirectoriesResponse */
     DirectoriesResponse: {
@@ -13627,6 +13657,9 @@ export interface components {
       responseBytes: components["schemas"]["HttpMetricSummary"];
       /** Route */
       route: string;
+      statusCounts: {
+        [key: string]: number;
+      };
     };
     /**
      * IdentityAlert
@@ -14750,6 +14783,16 @@ export interface components {
        * @default []
        */
       unavailableAccounts?: components["schemas"]["UnavailableAccount"][];
+    };
+    /**
+     * ModelEntityDto
+     * @description A complete provider model row scoped to its account; catalogPosition preserves provider order.
+     */
+    ModelEntityDto: components["schemas"]["ProviderModel"] & {
+      accountKey: string;
+      /** @description Zero-based order within this account's provider model catalog. */
+      catalogPosition: number;
+      provider: string;
     };
     /** ModelsResource */
     ModelsResource: {
@@ -19941,6 +19984,10 @@ export interface components {
       /** Resources */
       resources: components["schemas"]["ResourceRef"][];
     };
+    /** ResourceProgressEvent */
+    ResourceProgressEvent:
+      | components["schemas"]["AuthProgressEvent"]
+      | components["schemas"]["VaultReadinessEvent"];
     /**
      * ResourceRef
      * @description Closed discriminated union of all typed UI resource identities.
@@ -19965,12 +20012,16 @@ export interface components {
       | components["schemas"]["TranscriptResource"]
       | components["schemas"]["TranscriptsResource"]
       | components["schemas"]["VoiceResource"]
-      | components["schemas"]["WorkspaceResource"];
+      | components["schemas"]["WorkspaceResource"]
+      | components["schemas"]["AuthProgressResource"]
+      | components["schemas"]["VaultReadinessResource"];
     /**
      * ResourceRevisionEntry
      * @description Per-resource revision; StateResource uses the entity sequence.
      */
     ResourceRevisionEntry: {
+      /** @description Transient owner access snapshot. Never persist in the client entity cache. Omission requires HTTP recovery. */
+      discoverySnapshot?: components["schemas"]["AccessSnapshot"] | null;
       draftChanges?: components["schemas"]["DraftChangeBatch"] | null;
       entityChanges?: components["schemas"]["EntityChangeBatch"] | null;
       /** Entitysequencereset */
@@ -19981,6 +20032,8 @@ export interface components {
       /** Revision */
       revision: number;
       transcriptChanges?: components["schemas"]["TranscriptChangeBatch"] | null;
+      /** @description Transient voice records and session state. Recover through HTTP if the cursor interval is missing or incomplete. */
+      voiceRecords?: components["schemas"]["VoiceRecordBatch"] | null;
     };
     /**
      * ResourceTokenRatesEvent
@@ -21071,6 +21124,17 @@ export interface components {
       holder: null | string;
       /** Waitms */
       waitMs: number;
+    };
+    RuntimeStageHistogram: {
+      boundsMs: number[];
+      buckets: number[];
+      count: number;
+      maxMs: number;
+      stage: string;
+      totalMs: number;
+    };
+    RuntimeStageMetrics: {
+      stages: components["schemas"]["RuntimeStageHistogram"][];
     };
     /**
      * SafetyAction
@@ -22759,6 +22823,21 @@ export interface components {
        */
       subject: string;
     };
+    /** StudioErrorsDismissRequest */
+    StudioErrorsDismissRequest: {
+      /** @description Legacy single error id. Supply either id or ids. */
+      id?: string;
+      /** @description Error ids to dismiss atomically. Duplicate ids are reported once. */
+      ids?: string[];
+    };
+    /** StudioErrorsDismissResponse */
+    StudioErrorsDismissResponse: {
+      dismissedIds: string[];
+      /** Items */
+      items: components["schemas"]["StudioError"][];
+      /** @description Ids absent from the current error list, including already dismissed ids. */
+      unknownIds: string[];
+    };
     /** StudioErrorsResponse */
     StudioErrorsResponse: {
       /**
@@ -23155,6 +23234,13 @@ export interface components {
         }
       | {
           /** @constant */
+          collection: "model";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["ModelEntityDto"];
+        }
+      | {
+          /** @constant */
           collection: "monitor";
           /** @constant */
           op: "upsert";
@@ -23239,6 +23325,7 @@ export interface components {
             | "edge"
             | "event"
             | "monitor"
+            | "model"
             | "peerTeam"
             | "project"
             | "request"
@@ -23260,6 +23347,7 @@ export interface components {
       | components["schemas"]["SyncEdgeEntityPayload"]
       | components["schemas"]["SyncEventEntityPayload"]
       | components["schemas"]["SyncMonitorEntityPayload"]
+      | components["schemas"]["SyncModelEntityPayload"]
       | components["schemas"]["SyncPeerTeamEntityPayload"]
       | components["schemas"]["SyncProjectEntityPayload"]
       | components["schemas"]["SyncRequestEntityPayload"]
@@ -23300,6 +23388,17 @@ export interface components {
       syncProtocol: 2;
       /** Workspaceid */
       workspaceId: string;
+    };
+    /** SyncModelEntityPayload */
+    SyncModelEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "model";
+      /** Id */
+      id: string;
+      value: components["schemas"]["ModelEntityDto"];
     };
     /** SyncMonitorEntityPayload */
     SyncMonitorEntityPayload: {
@@ -23455,6 +23554,14 @@ export interface components {
       /** Id */
       id: string;
       value: components["schemas"]["AccountRateLimitsDto"];
+    };
+    SyncRecoveryCounters: {
+      gap: number;
+      overflow: number;
+      oversize: number;
+      reconnect: number;
+      reset: number;
+      subscriptionRejected: number;
     };
     /** SyncRequestEntityPayload */
     SyncRequestEntityPayload: {
@@ -26051,6 +26158,34 @@ export interface components {
       state: "running" | "done" | "failed";
     };
     /**
+     * VaultReadinessEvent
+     * @description Transient subscribed progress; never persisted to the server or client entity store.
+     */
+    VaultReadinessEvent: {
+      /** Epoch */
+      epoch: string;
+      /**
+       * Protocol
+       * @constant
+       */
+      protocol: 4;
+      resource: components["schemas"]["VaultReadinessResource"];
+      /** Revision */
+      revision: number;
+      value: boolean;
+      /** Workspaceid */
+      workspaceId: string;
+    };
+    /** VaultReadinessResource */
+    VaultReadinessResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "vault-readiness";
+      prefix: string;
+    };
+    /**
      * VaultSetupFactsRequest
      * @description The facts for the vault setup dialog; prefix replaces the name from the folder.
      */
@@ -26335,6 +26470,16 @@ export interface components {
      * @enum {string}
      */
     VoicePlaybackConfirmation: "not confirmed";
+    /** VoiceRecordBatch */
+    VoiceRecordBatch: {
+      /** Cursor */
+      after: number;
+      /** Cursor */
+      cursor: number;
+      /** Records */
+      records: components["schemas"]["VoiceRecordResponse"][];
+      session: components["schemas"]["VoiceSessionResponse"] | null;
+    };
     /**
      * VoiceRecordKind
      * @enum {string}
@@ -36203,7 +36348,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["IdRequest"];
+        "application/json": components["schemas"]["StudioErrorsDismissRequest"];
       };
     };
     responses: {
@@ -36226,7 +36371,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["StudioErrorsResponse"];
+          "application/json": components["schemas"]["StudioErrorsDismissResponse"];
         };
       };
       /** @description Bad Request */
@@ -36562,6 +36707,8 @@ export interface operations {
         after?: number;
         apiSchema?: string;
         protocol?: string;
+        /** @description Marks a client initiated stream reopen for value-free recovery diagnostics. */
+        reconnect?: boolean;
         resources?: string;
         scope?: string;
         /** @description Whether this stream includes token-rate snapshots. Omitted selectors preserve native and signed-client behavior. Browser owners send the aggregate interest of their tabs. */
@@ -36595,7 +36742,8 @@ export interface operations {
             | components["schemas"]["ResourceHeartbeatEvent"]
             | components["schemas"]["ResourceTokenRatesEvent"]
             | components["schemas"]["SyncSessionEvent"]
-            | components["schemas"]["SyncSubscriptionAck"];
+            | components["schemas"]["SyncSubscriptionAck"]
+            | components["schemas"]["ResourceProgressEvent"];
         };
       };
       /** @description Bad Request */
@@ -39029,6 +39177,7 @@ export type ChatEntityDto = components["schemas"]["ChatEntityDto"];
 export type ComplaintEntityDto = components["schemas"]["ComplaintEntityDto"];
 export type EdgeEntityDto = components["schemas"]["EdgeEntityDto"];
 export type EventEntityDto = components["schemas"]["EventEntityDto"];
+export type ModelEntityDto = components["schemas"]["ModelEntityDto"];
 export type MonitorEntityDto = components["schemas"]["MonitorEntityDto"];
 export type PeerTeamEntityDto = components["schemas"]["PeerTeamEntityDto"];
 export type ProjectEntityDto = components["schemas"]["ProjectEntityDto"];

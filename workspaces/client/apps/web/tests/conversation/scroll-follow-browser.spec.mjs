@@ -197,33 +197,8 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
     await new Promise((resolve) => streamServer.close(resolve));
   };
   installApiSchemaFixtureHeaders(page);
-  // WebKit, the macOS client engine, applies a wheel step to scrollTop
-  // before it dispatches the scroll event, and it dispatches that event
-  // before the next animation frame callbacks. This hook lets a step
-  // release its held scroll event at that point.
-  await page.addInitScript(() => {
-    const native = window.requestAnimationFrame.bind(window);
-    let beforeFrame = null;
-    let armedAt = 0;
-    let frameTime = 0;
-    const run = (time) => {
-      frameTime = time;
-      if (!beforeFrame || time <= armedAt) return;
-      const task = beforeFrame;
-      beforeFrame = null;
-      task();
-    };
-    window.beforeNextFrame = (task) => {
-      beforeFrame = task;
-      armedAt = Math.max(frameTime, 0);
-      native(run);
-    };
-    window.requestAnimationFrame = (callback) =>
-      native((time) => {
-        run(time);
-        callback(time);
-      });
-  });
+  // The race witness below holds the scroll event until the next observed
+  // stream commit, so its ordering does not depend on an animation-frame gap.
   await stubEntityState(
     page,
     {
@@ -515,14 +490,9 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       );
       return now;
     };
-    // One wheel step whose scroll event waits until the next frame, as in
-    // WebKit. An attempt counts when a stream commit lands in that gap;
-    // otherwise the step is undone and tried again. Rows that the window
-    // mounts above the reader may correct scrollTop by their measured
-    // height, so the check is the visible paragraph and the distance from
-    // the latest message.
-    // With growAbove, a message above the reader also grows in the gap, as
-    // rows that the window mounts above do in the same commit.
+    // Hold one wheel step's scroll event until a stream commit is observed.
+    // This deterministically exercises scrollTop changing before its event,
+    // including content growth above the reader, without retrying frame races.
     const wheelStepInGap = async (deltaY, label, growAbove = 0) => {
       const step = await root.evaluate(
         (element, { deltaY, growAbove }) =>
@@ -533,10 +503,7 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
             const scrolled = () => element.dispatchEvent(new Event("scroll"));
             let attempts = 0;
             const attempt = () => {
-              if (++attempts > 300) {
-                reject(new Error("No stream commit landed in a frame gap."));
-                return;
-              }
+              attempts++;
               const reply = element.querySelector(
                 '[data-message="reply-live"]',
               );
@@ -546,8 +513,6 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
               }
               const text = reply.textContent;
               const before = element.scrollTop;
-              const atBottom =
-                element.scrollHeight - before - element.clientHeight < 2;
               const hold = (event) => {
                 if (event.target === element) event.stopImmediatePropagation();
               };
@@ -581,7 +546,6 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
                 top: element.scrollTop,
                 paragraph: paragraph ? offset(paragraph) : null,
               };
-              const padding = grown?.style.paddingBottom ?? "";
               if (grown) grown.style.paddingBottom = `${growAbove}px`;
               let during = null;
               const committed = new MutationObserver(() => {
@@ -595,38 +559,29 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
                     element.clientHeight,
                   paragraph: paragraph?.isConnected ? offset(paragraph) : null,
                 };
+                clearTimeout(deadline);
+                committed.disconnect();
+                window.removeEventListener("scroll", hold, true);
+                scrolled();
+                resolve({ attempts, before, moved, during, grown: !!grown });
               });
+              const deadline = setTimeout(() => {
+                committed.disconnect();
+                window.removeEventListener("scroll", hold, true);
+                scrolled();
+                reject(
+                  new Error(
+                    "The stream did not commit while the scroll event was held.",
+                  ),
+                );
+              }, 15000);
               committed.observe(element, {
                 childList: true,
                 subtree: true,
                 characterData: true,
               });
-              window.beforeNextFrame(() => {
-                committed.disconnect();
-                window.removeEventListener("scroll", hold, true);
-                scrolled();
-                if (during) {
-                  resolve({
-                    attempts,
-                    before,
-                    moved,
-                    during,
-                    grown: !!grown,
-                  });
-                  return;
-                }
-                // No commit in this gap: return to the start and retry.
-                if (grown) grown.style.paddingBottom = padding;
-                element.scrollTop = atBottom ? element.scrollHeight : before;
-                scrolled();
-                next();
-              });
             };
-            // A WebKit scroll update arrives as a task between frames, not
-            // inside the animation frame callbacks.
-            const next = () =>
-              requestAnimationFrame(() => setTimeout(attempt, 0));
-            next();
+            attempt();
           }),
         { deltaY, growAbove },
       );
@@ -701,16 +656,13 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       // Content above the reader grows, as a late image or an expanded row.
       // It grows at the start of the window row that crosses the viewport
       // top, which is also the window's own anchor, and a stream commit
-      // lands before the next frame.
+      // is observed before this witness releases the growth operation.
       await root.evaluate(
         (element) =>
           new Promise((resolve, reject) => {
             let attempts = 0;
             const attempt = () => {
-              if (++attempts > 300) {
-                reject(new Error("No stream commit landed in a frame gap."));
-                return;
-              }
+              attempts++;
               const reply = element.querySelector(
                 '[data-message="reply-live"]',
               );
@@ -730,31 +682,28 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
                 [...element.querySelectorAll("[data-message]")].findLast(
                   (node) => node.getBoundingClientRect().bottom < top,
                 );
-              const padding = above.style.paddingTop;
               above.style.paddingTop = "240px";
-              let committed = false;
               const observer = new MutationObserver(() => {
-                if (!reply.isConnected || reply.textContent !== text)
-                  committed = true;
+                if (reply.isConnected && reply.textContent === text) return;
+                clearTimeout(deadline);
+                observer.disconnect();
+                resolve(attempts);
               });
+              const deadline = setTimeout(() => {
+                observer.disconnect();
+                reject(
+                  new Error(
+                    "The stream did not commit after growth above the reader.",
+                  ),
+                );
+              }, 15000);
               observer.observe(element, {
                 childList: true,
                 subtree: true,
                 characterData: true,
               });
-              window.beforeNextFrame(() => {
-                observer.disconnect();
-                if (committed) {
-                  resolve(attempts);
-                  return;
-                }
-                above.style.paddingTop = padding;
-                next();
-              });
             };
-            const next = () =>
-              requestAnimationFrame(() => setTimeout(attempt, 0));
-            next();
+            attempt();
           }),
       );
       await nextRender();

@@ -719,6 +719,11 @@
       "value": 300,
       "unit": "layer",
       "purpose": "Main src/workspace-layout.css layer: z-index: 300"
+    },
+    "legacy_main_components_conversation_warnings.query0bafbd4a": {
+      "value": 47.5,
+      "unit": "rem",
+      "purpose": "Main src/components/conversation-warnings.css query: @media (max-width: 47.5rem) {"
     }
   },
   "queries": {
@@ -2026,6 +2031,15 @@
       "key": "legacy_main_workspace_layout.layer653d125a",
       "plannedOwner": "main visual component",
       "purpose": "Retain the main component's exact layer contract during responsive integration"
+    },
+    {
+      "path": "src/components/conversation-warnings.css",
+      "kind": "query",
+      "signature": "@media (max-width: 47.5rem) {",
+      "count": 1,
+      "key": "legacy_main_components_conversation_warnings.query0bafbd4a",
+      "plannedOwner": "main visual component",
+      "purpose": "Retain the main component's exact query contract during responsive integration"
     }
   ],
   "witnessViewports": [

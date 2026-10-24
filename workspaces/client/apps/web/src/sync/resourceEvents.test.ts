@@ -190,6 +190,57 @@ beforeEach(() => {
 });
 
 describe("shared resource event transport", () => {
+  it("delivers transient discovery and cursor voice payloads without entity persistence", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "transient-tab" });
+    vi.stubGlobal("EventSource", Source);
+    const transport = await loadTransport();
+    const discovery = vi.fn();
+    const voice = vi.fn();
+    transport.watchResourceChanges({ kind: "multi-server" }, discovery);
+    transport.watchResourceChanges({ kind: "voice", agentId: "chat" }, voice);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const snapshot = {
+      protocol: 1,
+      identity: { serverId: "owner" },
+      clients: [],
+      servers: [],
+      invites: [],
+    };
+    const batch = {
+      after: 0,
+      cursor: 1,
+      records: [{ id: "record" }],
+      session: null,
+    };
+    Source.instances[0]!.emit("resources", {
+      protocol: 4,
+      workspaceId,
+      epoch: "transient",
+      revision: 1,
+      reason: "initial",
+      resources: [{ kind: "multi-server" }, { kind: "voice", agentId: "chat" }],
+      resourceVersions: [
+        { revision: 1, discoverySnapshot: snapshot },
+        { revision: 1, voiceRecords: batch },
+      ],
+    });
+    await vi.waitFor(() => expect(voice).toHaveBeenCalledOnce());
+    expect(discovery.mock.calls[0][0].discoverySnapshot).toEqual(snapshot);
+    expect(voice.mock.calls[0][0].voiceRecords).toEqual(batch);
+  });
+
   it("delivers consecutive draft batches without hint coalescing and retains reconnect recovery", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("crypto", { randomUUID: () => "draft-tab" });
@@ -785,6 +836,11 @@ describe("shared resource event transport", () => {
     expect(states).not.toContain("schema-mismatch");
     await vi.advanceTimersByTimeAsync(10_000);
     expect(Source.instances.length).toBeGreaterThan(1);
+    expect(
+      new URL(Source.instances[1]!.url, "http://studio.test").searchParams.get(
+        "reconnect",
+      ),
+    ).toBe("true");
     stop();
     stopStatus();
   });
@@ -1982,6 +2038,9 @@ describe("shared resource event transport", () => {
   });
 
   it("reconciles an unchanged owner baseline once after reconnect", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const fetch = vi.fn().mockRejectedValue(new TypeError("Unexpected fetch"));
+    vi.stubGlobal("fetch", fetch);
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("navigator", {
       onLine: true,
@@ -2011,13 +2070,18 @@ describe("shared resource event transport", () => {
       resources: [local],
       resourceVersions: [{ resource: local, revision: 7 }],
     };
+    // An established stream opens before delivering its baseline. Without this,
+    // onerror starts a real identity probe whose cleanup depends on network timing.
+    Source.instances[0]!.open();
     Source.instances[0]!.emit("resources", initial);
     await vi.advanceTimersByTimeAsync(20);
     expect(onChange).toHaveBeenCalledTimes(1);
 
     Source.instances[0]!.onerror?.();
-    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetch).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
     expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.open();
     Source.instances[1]!.emit("resources", {
       ...initial,
       reason: "reconnect",
@@ -2044,6 +2108,8 @@ describe("shared resource event transport", () => {
   });
 
   it("recovers from a replaced stream with a new server epoch", async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError("Unexpected fetch"));
+    vi.stubGlobal("fetch", fetch);
     vi.spyOn(Math, "random").mockReturnValue(0.5);
     syncDatabase.mockResolvedValue({ workspaceId });
 
@@ -2059,6 +2125,7 @@ describe("shared resource event transport", () => {
       await vi.advanceTimersByTimeAsync(20);
       expect(Source.instances).toHaveLength(1);
       const original = Source.instances[0]!;
+      original.open();
       original.emit("resources", {
         protocol: 4,
         workspaceId,
@@ -2071,8 +2138,10 @@ describe("shared resource event transport", () => {
       expect(states.at(-1)).toBe("live");
 
       original.onerror?.();
+      expect(fetch).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(500);
       expect(Source.instances).toHaveLength(2);
+      Source.instances[1]!.open();
       Source.instances[1]!.emit("resources", {
         protocol: 4,
         workspaceId,
@@ -2085,6 +2154,9 @@ describe("shared resource event transport", () => {
 
       expect(states.at(-1)).toBe("live");
       expect(onChange).toHaveBeenCalledTimes(2);
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ epoch: "server-after-restart", revision: 1 }),
+      );
     } finally {
       stopChanges();
       stopStatus();

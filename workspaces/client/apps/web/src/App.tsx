@@ -4,6 +4,11 @@ import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
 import { useWorkspaceLayout } from "./layout/useWorkspaceLayout";
 import { layoutQueries } from "./layout/layout-contract.generated";
 import { restoreSidebarFocus } from "./components/sidebar/SidebarFrame";
+import {
+  StudioErrorsScope,
+  useStudioErrorsState,
+} from "./components/StudioErrors";
+import SidebarWarnings from "./components/SidebarWarnings";
 import { ModelWhitelistSettings } from "./components/models/ModelWhitelistSettings";
 import Disclosure from "./components/ui/Disclosure";
 import { ChatSettingsDialog } from "./components/agents/ChatSettingsDialog";
@@ -2483,6 +2488,7 @@ export default function App({ active = true }: { active?: boolean }) {
     publicAccounts,
     creating,
   );
+  const studioErrors = useStudioErrorsState(!!data);
   if (!active) return null;
   // A server contract gate must not cover navigation to other server owners.
   if (screen && schemaMismatch)
@@ -2699,7 +2705,17 @@ export default function App({ active = true }: { active?: boolean }) {
     </>
   );
   return (
-    <>
+    <StudioErrorsScope value={studioErrors}>
+      {active && (
+        <SidebarWarnings
+          data={data}
+          agent={agent}
+          opened={opened}
+          accountKey={accountKey}
+          syncWorkspaceId={workspaceId}
+          open={open}
+        />
+      )}
       {(!isServerView || isClassicServerView) && (
         <Sidebar
           services={sidebarServices}
@@ -3869,6 +3885,6 @@ export default function App({ active = true }: { active?: boolean }) {
         </div>
       )}
       <FilePreview target={filePreview} onClose={() => setFilePreview(null)} />
-    </>
+    </StudioErrorsScope>
   );
 }

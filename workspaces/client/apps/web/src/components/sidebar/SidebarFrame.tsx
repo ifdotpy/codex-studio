@@ -100,22 +100,27 @@ export function SidebarFrame(p: SidebarFrameProps) {
         const style = getComputedStyle(header);
         const sideStyle = getComputedStyle(aside.current);
         const children = Array.from(header.children) as HTMLElement[];
+        const minimumWidths = children.map((child) => {
+          if (Number(getComputedStyle(child).flexGrow) === 0)
+            return child.getBoundingClientRect().width;
+          // A flexible label can wrap; its expanded width is not its minimum.
+          const previous = child.style.cssText;
+          try {
+            child.style.flex = "none";
+            child.style.inlineSize = "min-content";
+            return child.getBoundingClientRect().width;
+          } finally {
+            child.style.cssText = previous;
+          }
+        });
+        const contentMinimum =
+          style.flexWrap === "nowrap"
+            ? minimumWidths.reduce((sum, width) => sum + width, 0) +
+              Math.max(0, children.length - 1) *
+                (parseFloat(style.columnGap) || 0)
+            : Math.max(0, ...minimumWidths);
         headerMinimum.current =
-          children.reduce((width, child) => {
-            if (Number(getComputedStyle(child).flexGrow) === 0)
-              return width + child.getBoundingClientRect().width;
-            // A flexible label can wrap; its expanded width is not its minimum.
-            const previous = child.style.cssText;
-            try {
-              child.style.flex = "none";
-              child.style.inlineSize = "min-content";
-              return width + child.getBoundingClientRect().width;
-            } finally {
-              child.style.cssText = previous;
-            }
-          }, 0) +
-          Math.max(0, children.length - 1) *
-            (parseFloat(style.columnGap) || 0) +
+          contentMinimum +
           parseFloat(sideStyle.paddingLeft) +
           parseFloat(sideStyle.paddingRight) +
           parseFloat(sideStyle.borderLeftWidth) +

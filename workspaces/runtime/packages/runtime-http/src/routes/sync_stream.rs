@@ -251,6 +251,10 @@ async fn sync_stream(
         Ok(resources) => resources,
         Err(error) => return error.into_response(),
     };
+    let vault_readiness = match readiness_source(&state, &resources).await {
+        Ok(source) => source,
+        Err(error) => return error.into_response(),
+    };
     let store = match state.store.clone() {
         Some(store) => store,
         None => return ApiError::internal().into_response(),
@@ -268,7 +272,15 @@ async fn sync_stream(
             Ok((sequence, _)) => sequence,
             Err(error) => return error.into_response(),
         };
-    let reason = if headers.contains_key("last-event-id") {
+    let reconnect = headers.contains_key("last-event-id")
+        || query
+            .typed_value("reconnect")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    let reason = if reconnect {
+        studio_runtime_services::diagnostics::record_sync_recovery(
+            studio_runtime_services::diagnostics::SyncRecoveryKind::Reconnect,
+        );
         ResourceChangeEventReason::Reconnect
     } else {
         ResourceChangeEventReason::Initial
@@ -283,6 +295,7 @@ async fn sync_stream(
         Ok(view) if !view.cursor.closed => view,
         _ => return ApiError::internal().into_response(),
     };
+    let mut voice_sequences = BTreeMap::new();
     let mut transcript_sequences = BTreeMap::new();
     let transcript_updates = read_transcript_changes(
         Some(store.clone()),
@@ -305,6 +318,7 @@ async fn sync_stream(
         Err(error) => return error.into_response(),
     };
     attach_transcript_changes(&mut initial_event, transcript_updates);
+    attach_transient_snapshots(Some(&state), &mut initial_event, &mut voice_sequences).await;
     let mut initial = VecDeque::new();
     let session_id = uuid::Uuid::new_v4().to_string();
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
@@ -338,6 +352,7 @@ async fn sync_stream(
         subscription_snapshot.revision,
         initial_event,
     ));
+    append_progress_frames(&state, &view, &mut initial).await;
     // OpenAPI owns the omitted-selector compatibility default; the HTTP witness
     // keeps this native/signed-client behavior in parity with that contract.
     let token_interest = match query
@@ -358,6 +373,7 @@ async fn sync_stream(
 
     let stream_state = ResourceStream {
         http_state: Some(state.clone()),
+        vault_readiness,
         subscription: Some(subscription),
         initial,
         workspace_id: state.workspace_id,
@@ -366,6 +382,7 @@ async fn sync_stream(
         resources,
         entity_sequence: initial_entity_sequence,
         transcript_sequences,
+        voice_sequences,
         draft_sequence: initial_draft_sequence,
         store: Some(store),
         changes,
@@ -423,6 +440,44 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
                 .await
                 .ok()
         }
+        ResourceRef::AuthProgressResource(resource) => serde_json::to_vec(
+            &state
+                .claude_login?
+                .progress(&resource.request_id)
+                .await
+                .ok()?,
+        )
+        .ok(),
+        ResourceRef::VaultReadinessResource(resource) => {
+            let settings = super::host_secrets::settings_dir(&state.state_dir);
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/vault-readiness",
+                move || studio_runtime_services::vault::keys_ready(&settings, &resource.prefix),
+            )
+            .await
+            .ok()?
+            .ok()
+            .and_then(|ready| serde_json::to_vec(&ready).ok())
+        }
+        ResourceRef::MultiServerResource(_) if cfg!(unix) => {
+            serde_json::to_vec(&super::multi_server::read_snapshot(&state).await.ok()?).ok()
+        }
+        ResourceRef::VoiceResource(resource) => state
+            .store?
+            .read_async("runtime-http/voice-resource-revision", move |connection| {
+                let cursor = studio_runtime_store::VoiceRepository::record_sequence(
+                    connection,
+                    &resource.agent_id,
+                )?;
+                let session = studio_runtime_store::VoiceRepository::latest_session(
+                    connection,
+                    &resource.agent_id,
+                )?;
+                serde_json::to_vec(&(cursor, session))
+                    .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await
+            .ok(),
         ResourceRef::AccountsResource(_) => {
             serde_json::to_vec(&super::catalog::accounts(State(state)).await.ok()?.0).ok()
         }
@@ -463,30 +518,6 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
                 .0,
         )
         .ok(),
-        ResourceRef::ModelsResource(_) => {
-            let catalog = state.model_catalog.cached_resource_content()?;
-            let accounts = super::catalog::accounts(State(state)).await.ok()?.0;
-            // Only account fields consumed by account_catalog/worker_catalog
-            // affect model reads; labels and login receipts do not.
-            let contexts = accounts
-                .accounts
-                .iter()
-                .map(|account| {
-                    (
-                        &account.id,
-                        &account.home,
-                        &account.provider,
-                        &account.status,
-                        &account.error,
-                        &account.deleted,
-                        &account.disconnected,
-                        &account.duplicate_of,
-                        &account.can_attempt_native_proof,
-                    )
-                })
-                .collect::<Vec<_>>();
-            serde_json::to_vec(&(accounts.default_account_key, contexts, catalog)).ok()
-        }
         ResourceRef::CostsResource(_) => {
             let policy = state.account_policy.clone()?;
             studio_runtime_process::blocking_pool::spawn_blocking(
@@ -524,6 +555,76 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
             .flatten()
         }
         _ => None,
+    }
+}
+
+/// Only sessions with a live readiness selector own a filesystem source. Dropping
+/// the stream or removing that selector drops its OS watcher as well.
+async fn readiness_source(
+    state: &HttpState,
+    resources: &[Value],
+) -> Result<Option<studio_runtime_services::vault::VaultReadinessWatcher>, ApiError> {
+    if !resources
+        .iter()
+        .any(|resource| resource["kind"] == "vault-readiness")
+    {
+        return Ok(None);
+    }
+    let settings = super::host_secrets::settings_dir(&state.state_dir);
+    let changes = Arc::clone(&state.sync_changes);
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/vault-readiness-source",
+        move || {
+            studio_runtime_services::vault::watch_readiness(
+                &settings,
+                Arc::new(move || changes.notify_one()),
+            )
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map(Some)
+    .map_err(|_| ApiError::internal())
+}
+
+/// Progress is deliberately separate from resources/entityChanges: OAuth links
+/// must never enter SQLite, RxDB, entity replay, or durable checkpoints.
+async fn append_progress_frames(
+    state: &HttpState,
+    view: &ResourceChanges,
+    frames: &mut VecDeque<Event>,
+) {
+    for (resource, revision) in view.resources.iter().zip(&view.versions) {
+        let value = match resource["kind"].as_str() {
+            Some("auth-progress") => match (&state.claude_login, resource["requestId"].as_str()) {
+                (Some(login), Some(id)) => login.progress(id).await.unwrap_or(Value::Null),
+                _ => Value::Null,
+            },
+            Some("vault-readiness") => {
+                let Some(bytes) = resource_content(state.clone(), resource.clone()).await else {
+                    continue;
+                };
+                let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+                    continue;
+                };
+                value
+            }
+            _ => continue,
+        };
+        let payload = json!({
+            "protocol": SYNC_PROTOCOL_VERSION,
+            "workspaceId": state.workspace_id,
+            "epoch": view.cursor.epoch,
+            "revision": revision,
+            "resource": resource,
+            "value": value,
+        });
+        if state
+            .validators
+            .validate_component("ResourceProgressEvent", &payload)
+        {
+            frames.push_back(sse_event("resource-progress", None, payload));
+        }
     }
 }
 
@@ -849,9 +950,48 @@ fn attach_transcript_changes(
     }
 }
 
+/// Access metadata and live voice signaling remain in memory, outside persisted entities.
+/// Missing or oversized intervals deliberately retain the resource's HTTP recovery hint.
+async fn attach_transient_snapshots(
+    state: Option<&HttpState>,
+    event: &mut ResourceChangeEvent,
+    voice_sequences: &mut BTreeMap<String, i64>,
+) {
+    let Some(state) = state else { return };
+    for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
+        match resource {
+            ResourceRef::MultiServerResource(_) if cfg!(unix) => {
+                entry.discovery_snapshot = super::multi_server::read_snapshot(state)
+                    .await
+                    .ok()
+                    .and_then(|snapshot| serde_json::from_value(snapshot).ok())
+                    .map(Some);
+            }
+            ResourceRef::VoiceResource(resource) => {
+                let Some(store) = &state.store else { continue };
+                let after = voice_sequences
+                    .get(&resource.agent_id)
+                    .copied()
+                    .unwrap_or_default();
+                if let Ok((cursor, payload)) =
+                    studio_runtime_services::voice::stream_records(store, &resource.agent_id, after)
+                        .await
+                {
+                    voice_sequences.insert(resource.agent_id.clone(), cursor);
+                    entry.voice_records = payload
+                        .and_then(|payload| serde_json::from_value(payload).ok())
+                        .map(Some);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 struct ResourceStream {
     subscription: Option<LiveSubscription>,
     http_state: Option<HttpState>,
+    vault_readiness: Option<studio_runtime_services::vault::VaultReadinessWatcher>,
     initial: VecDeque<Event>,
     workspace_id: String,
     epoch: String,
@@ -859,6 +999,7 @@ struct ResourceStream {
     resources: Vec<Value>,
     entity_sequence: i64,
     transcript_sequences: BTreeMap<String, i64>,
+    voice_sequences: BTreeMap<String, i64>,
     draft_sequence: i64,
     store: Option<Arc<RuntimeStore>>,
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
@@ -885,6 +1026,21 @@ async fn next_subscription_change(
 
 async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChange) -> Option<()> {
     state.resources = update.resources;
+    let readiness_interest = state
+        .resources
+        .iter()
+        .any(|resource| resource["kind"] == "vault-readiness");
+    if readiness_interest != state.vault_readiness.is_some()
+        && let Some(http) = &state.http_state
+    {
+        state.vault_readiness = readiness_source(http, &state.resources).await.ok()?;
+    }
+    state.voice_sequences.retain(|id, _| {
+        state
+            .resources
+            .iter()
+            .any(|resource| resource["kind"] == "voice" && resource["agentId"] == *id)
+    });
     state.transcript_sequences.retain(|id, _| {
         state
             .resources
@@ -947,9 +1103,16 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         )
         .ok()?;
         attach_transcript_changes(&mut event, updates);
+        attach_transient_snapshots(
+            state.http_state.as_ref(),
+            &mut event,
+            &mut state.voice_sequences,
+        )
+        .await;
         state
             .initial
             .push_back(resource_sse_event(view.cursor.revision, event));
+        append_progress_frames(http_state, &view, &mut state.initial).await;
     }
     if let Some(interest) = update.token_rates {
         if interest && state.token_rates.is_none() {
@@ -1057,6 +1220,9 @@ async fn next_frame(
             .ok()?;
             state.draft_sequence = draft_sequence;
             let reason = if view.overflow {
+                studio_runtime_services::diagnostics::record_sync_recovery(
+                    studio_runtime_services::diagnostics::SyncRecoveryKind::Overflow,
+                );
                 ResourceChangeEventReason::Overflow
             } else {
                 ResourceChangeEventReason::Change
@@ -1079,10 +1245,19 @@ async fn next_frame(
             )
             .ok()?;
             attach_transcript_changes(&mut event, transcript_updates);
+            attach_transient_snapshots(
+                state.http_state.as_ref(),
+                &mut event,
+                &mut state.voice_sequences,
+            )
+            .await;
             if event.resources.is_empty() {
                 continue;
             }
             state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
+            if let Some(http) = &state.http_state {
+                append_progress_frames(http, &view, &mut state.initial).await;
+            }
             return Some((Ok(resource_sse_event(view.cursor.revision, event)), state));
         }
         if heartbeat {
@@ -1188,6 +1363,8 @@ fn resource_changes_event(
             let state = matches!(resource, ResourceRef::StateResource(_));
             let drafts = matches!(resource, ResourceRef::DraftsResource(_));
             ResourceRevisionEntry {
+                discovery_snapshot: None,
+                voice_records: None,
                 revision: if state {
                     sequence
                 } else if drafts {
@@ -1304,10 +1481,15 @@ fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event 
         result.expect("resource stream DTO serializes");
         return writer.into_event();
     }
+    studio_runtime_services::diagnostics::record_sync_recovery(
+        studio_runtime_services::diagnostics::SyncRecoveryKind::Oversize,
+    );
     for entry in &mut payload.resource_versions {
         entry.entity_changes = None;
         entry.transcript_changes = None;
         entry.draft_changes = None;
+        entry.discovery_snapshot = None;
+        entry.voice_records = None;
     }
     sse_event("resources", Some(revision), payload)
 }
@@ -1435,6 +1617,213 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[tokio::test]
+    async fn state_stream_progress_frames_are_transient_and_scoped() {
+        use studio_runtime_services::claude_login::{
+            LoginError,
+            ports::*,
+            receipts::FileReceipts,
+            service::{LoginConfig, LoginService},
+        };
+        struct Accounts;
+        impl LoginAccounts for Accounts {
+            fn profile(&self, _: &str) -> Result<Value, LoginError> {
+                Err(LoginError::Unavailable)
+            }
+            fn revalidate(&self, _: &str) -> Result<Value, LoginError> {
+                Err(LoginError::Unavailable)
+            }
+            fn find_config(&self, _: &str) -> Result<Option<Value>, LoginError> {
+                Ok(None)
+            }
+            fn register(
+                &self,
+                _: serde_json::Map<String, Value>,
+                _: &str,
+                _: &std::path::Path,
+                _: &studio_runtime_services::account_driver::AuthMetadata,
+            ) -> Result<Value, LoginError> {
+                Err(LoginError::Unavailable)
+            }
+            fn refresh(
+                &self,
+                _: &str,
+                _: &Value,
+                _: &studio_runtime_services::account_driver::AuthMetadata,
+            ) -> Result<Value, LoginError> {
+                Err(LoginError::Unavailable)
+            }
+        }
+        struct Chats;
+        impl LoginChats for Chats {
+            fn refresh<'a>(&'a self, _: &'a str) -> FutureResult<'a, ()> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        struct Child(tokio::sync::mpsc::Receiver<LoginEvent>);
+        impl LoginChild for Child {
+            fn next_event(&mut self) -> FutureResult<'_, Option<LoginEvent>> {
+                Box::pin(async { Ok(self.0.recv().await) })
+            }
+            fn write(&self, _: Vec<u8>) -> FutureResult<'_, ()> {
+                Box::pin(async { Ok(()) })
+            }
+            fn close(self: Box<Self>) -> FutureResult<'static, ()> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        struct Launcher(tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<LoginEvent>>>);
+        impl LoginLauncher for Launcher {
+            fn spawn(&self, _: LoginCommand) -> FutureResult<'_, Box<dyn LoginChild>> {
+                Box::pin(async {
+                    Ok(Box::new(Child(
+                        self.0.lock().await.take().ok_or(LoginError::Unavailable)?,
+                    )) as Box<dyn LoginChild>)
+                })
+            }
+        }
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let directory = root.path().join("logins");
+        let receipt_directory = directory.clone();
+        let receipts = studio_runtime_process::blocking_pool::spawn_blocking(
+            "test/login-receipts",
+            move || FileReceipts::new(receipt_directory),
+        )
+        .await
+        .expect("blocking task")
+        .expect("receipts");
+        let (output, input) = tokio::sync::mpsc::channel(2);
+        let changes = state.sync_changes.clone();
+        let login = LoginService::open(
+            LoginConfig {
+                directory: directory.clone(),
+                program: "/fixture/claude".into(),
+                cwd: root.path().into(),
+                environment: BTreeMap::from([("HOME".into(), root.path().as_os_str().to_owned())]),
+            },
+            Arc::new(Accounts),
+            Arc::new(Launcher(tokio::sync::Mutex::new(Some(input)))),
+            Arc::new(receipts),
+            Arc::new(Chats),
+            Arc::new(move || changes.notify_one()),
+        )
+        .await
+        .expect("login service");
+        state.validators = crate::validation::Registry::compile(&[]).expect("router validators");
+        state.claude_login = Some(login.clone());
+        let id = "e0166868-592a-4dca-8994-04d34a730af5";
+        let url = "https://claude.com/cai/oauth/authorize?secret=transient-fixture";
+        let mut changed = state.sync_changes.subscribe();
+        let entity_sequence_before = store
+            .read_async("test/before-progress", |connection| {
+                SyncDocumentsRepository::entity_sequence(connection)
+            })
+            .await
+            .expect("initial entity sequence");
+        login
+            .start(id.into(), None, None, None)
+            .await
+            .expect("start once");
+        output
+            .send(LoginEvent::Output(format!("{url}\n").into_bytes()))
+            .await
+            .expect("scripted URL");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if login.progress(id).await.expect("progress")["verificationUrl"] == url {
+                    break;
+                }
+                changed.changed().await.expect("progress producer");
+            }
+        })
+        .await
+        .expect("URL notification");
+        let resource = json!({"kind":"auth-progress","requestId":id});
+        let view = ResourceChanges {
+            cursor: state.sync_changes.snapshot(),
+            resources: vec![resource.clone()],
+            versions: vec![1],
+            entity_reset: false,
+            overflow: false,
+        };
+        let mut frames = VecDeque::new();
+        append_progress_frames(&state, &view, &mut frames).await;
+        let frame = frame_bytes(frames.pop_front().expect("current progress on subscribe")).await;
+        let text = std::str::from_utf8(&frame).expect("UTF-8 frame");
+        assert!(text.starts_with("event: resource-progress\n"));
+        assert!(
+            text.contains(url),
+            "the subscribed client receives its transient URL"
+        );
+        assert_eq!(
+            store
+                .read_async("test/progress-is-transient", |connection| {
+                    SyncDocumentsRepository::entity_sequence(connection)
+                })
+                .await
+                .expect("sequence"),
+            entity_sequence_before,
+            "progress never writes a SQLite entity"
+        );
+        let receipt = tokio::fs::read_to_string(directory.join(format!("{id}.json")))
+            .await
+            .expect("durable receipt");
+        assert!(!receipt.contains(url), "the OAuth URL never reaches disk");
+        let unselected = ResourceChanges {
+            resources: vec![json!({"kind":"state"})],
+            ..view
+        };
+        append_progress_frames(&state, &unselected, &mut frames).await;
+        assert!(
+            frames.is_empty(),
+            "only subscribed progress selectors receive data"
+        );
+        login.shutdown().await.expect("owned child closed");
+    }
+
+    #[test]
+    fn state_stream_vault_prefix_contract_matches_its_runtime_owner() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let mut state = HttpState::new(
+            "".into(),
+            "".into(),
+            root.path().display().to_string(),
+            0,
+            None,
+            None,
+            None,
+        );
+        state.validators = crate::validation::Registry::compile(&[]).expect("router validators");
+        for prefix in [
+            "".to_owned(),
+            "a".into(),
+            "Project_1".into(),
+            "../other".into(),
+            "-bad".into(),
+            "a".repeat(44),
+            "a".repeat(45),
+        ] {
+            assert_eq!(
+                state.validators.validate_component(
+                    "ResourceRef",
+                    &json!({"kind":"vault-readiness","prefix":prefix})
+                ),
+                studio_runtime_services::vault::valid_prefix(&prefix),
+                "vault::valid_prefix owns the prefix contract: {prefix}"
+            );
+        }
+    }
 
     #[test]
     fn state_stream_moves_owned_batch_allocations() {
@@ -3303,7 +3692,7 @@ mod tests {
         );
         let resources = json!([
             {"kind":"accounts"}, {"kind":"desktop"}, {"kind":"terminals"},
-            {"kind":"queue","agentId":"agent-1"}, {"kind":"models"}
+            {"kind":"queue","agentId":"agent-1"}
         ]);
         let query = form_urlencoded::Serializer::new(String::new())
             .append_pair("protocol", SYNC_PROTOCOL_VERSION_TEXT)
@@ -3432,6 +3821,7 @@ mod tests {
         let baseline = changes.borrow_and_update().clone();
         let state = ResourceStream {
             http_state: None,
+            vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".to_owned(),
@@ -3440,6 +3830,7 @@ mod tests {
             resources: vec![json!({"kind": "queue", "agentId": "agent-a"})],
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
             changes,
@@ -3479,6 +3870,7 @@ mod tests {
         let baseline = changes.borrow().clone();
         let state = ResourceStream {
             http_state: None,
+            vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".to_owned(),
@@ -3487,6 +3879,7 @@ mod tests {
             resources: vec![json!({"kind":"accounts"})],
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
             changes,
@@ -3593,6 +3986,166 @@ mod tests {
         json!({"records":[{"agentId":"agent","rootId":"agent","turnId":"turn","active":true,"estimated":false,"rate":rate as f64,"outputTokens":rate as f64}]})
     }
 
+    #[tokio::test]
+    async fn state_stream_discovery_delivers_current_access_snapshot_and_later_changes() {
+        let root = tempfile::tempdir().expect("isolated discovery state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            Some("https://owner.example".into()),
+            Some(store.clone()),
+            None,
+        );
+        let resource = json!({"kind":"multi-server"});
+        let mut state = test_stream(
+            &http.sync_changes,
+            &http.token_rates,
+            http.resource_notifications.clone(),
+            vec![],
+        );
+        state.http_state = Some(http.clone());
+        state.store = Some(store.clone());
+        subscription_frame(
+            &mut state,
+            SubscriptionChange {
+                generation: 1,
+                resources: vec![resource.clone()],
+                added: vec![resource.clone()],
+                token_rates: None,
+            },
+        )
+        .await
+        .expect("subscription");
+        let ack = event_document(Ok(state
+            .initial
+            .pop_front()
+            .expect("subscription acknowledgement")))
+        .await;
+        assert_eq!(ack["gen"], 1);
+        let event = event_document(Ok(state.initial.pop_front().expect("baseline"))).await;
+        let snapshot = &event["resourceVersions"][0]["discoverySnapshot"];
+        assert_eq!(snapshot["protocol"], 1);
+        assert!(snapshot["identity"]["serverId"].as_str().is_some());
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_access_settings(id,auto_pair) VALUES(1,0) ON CONFLICT(id) DO UPDATE SET auto_pair=0", [])?;
+            Ok(())
+        }).await.expect("settings change");
+        http.resource_notifications.publish_once(&json!({"requestId":"discovery-settings-change","resources":[{"kind":"multi-server"}]})).expect("committed discovery hint");
+        let (frame, _) = next_frame(state).await.expect("discovery update");
+        let event = event_document(frame).await;
+        assert_eq!(
+            event["resourceVersions"][0]["discoverySnapshot"]["settings"]["autoPair"],
+            false
+        );
+    }
+
+    #[tokio::test]
+    async fn state_stream_oversized_transient_voice_payload_retains_only_a_recovery_hint() {
+        let mut value = resource_event(
+            "workspace",
+            "epoch",
+            1,
+            "change",
+            &[json!({"kind":"voice","agentId":"chat"})],
+            0,
+            false,
+        );
+        value["resourceVersions"][0]["voiceRecords"] = json!({"after":0,"cursor":1,"session":null,"records":[{
+            "id":"large","agent":"chat","session":"session","kind":"user","seq":1,"text":"x".repeat(SYNC_STREAM_EVENT_MAX_BYTES),"item_id":"","previous_item_id":"","payload":"{}","created":1.0
+        }]});
+        let event = serde_json::from_value(value).expect("typed transient payload");
+        let bytes = frame_bytes(resource_sse_event(1, event)).await;
+        assert!(bytes.len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+        let event: Value = serde_json::from_str(
+            std::str::from_utf8(&bytes)
+                .expect("UTF8")
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data"),
+        )
+        .expect("JSON");
+        assert_eq!(
+            event["resources"],
+            json!([{"kind":"voice","agentId":"chat"}])
+        );
+        assert!(event["resourceVersions"][0].get("voiceRecords").is_none());
+    }
+
+    #[tokio::test]
+    async fn state_stream_voice_delivers_records_and_session_without_a_followup_read() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('voice-chat',?1)",
+                [json!({"id":"voice-chat","rootId":"voice-chat","epoch":0,"status":"idle","isLead":true}).to_string()])?;
+            tx.execute("INSERT INTO voice_sessions(id,agent,created,state) VALUES('session','voice-chat',1,'ready')", [])?;
+            tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('first','voice-chat','session','user','hello','','','{}',1)", [])?;
+            Ok(())
+        }).await.expect("voice fixture");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let mut state = test_stream(
+            &http.sync_changes,
+            &http.token_rates,
+            http.resource_notifications.clone(),
+            vec![json!({"kind":"voice","agentId":"voice-chat"})],
+        );
+        state.http_state = Some(http.clone());
+        state.store = Some(store.clone());
+        http.sync_changes.notify_one();
+        let (frame, state) = next_frame(state).await.expect("voice event");
+        let event = event_document(frame).await;
+        let batch = &event["resourceVersions"][0]["voiceRecords"];
+        assert_eq!(batch["records"][0]["id"], "first");
+        assert_eq!(batch["session"]["session_id"], "session");
+        let cursor = batch["cursor"].as_i64().expect("cursor");
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('second','voice-chat','session','assistant','answer','','','{}',2)", [])?;
+            Ok(())
+        }).await.expect("voice update");
+        http.sync_changes.notify_one();
+        let (frame, state) = next_frame(state).await.expect("voice delta");
+        let event = event_document(frame).await;
+        let batch = &event["resourceVersions"][0]["voiceRecords"];
+        assert_eq!(batch["after"], cursor);
+        assert_eq!(batch["records"].as_array().expect("records").len(), 1);
+        assert_eq!(batch["records"][0]["id"], "second");
+        store.transaction(|tx| {
+            for index in 0..=studio_runtime_schema::shared_values::SYNC_VOICE_STREAM_MAX_RECORDS {
+                tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES(?1,'voice-chat','session','user','burst','','','{}',3)", [format!("burst-{index}")])?;
+            }
+            Ok(())
+        }).await.expect("bounded history fixture");
+        http.sync_changes.notify_one();
+        let (frame, state) = next_frame(state).await.expect("large interval hint");
+        let event = event_document(frame).await;
+        assert!(
+            event["resourceVersions"][0].get("voiceRecords").is_none(),
+            "large intervals require HTTP recovery"
+        );
+        let after_recovery = state.voice_sequences["voice-chat"];
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('after-recovery','voice-chat','session','user','next','','','{}',4)", [])?;
+            Ok(())
+        }).await.expect("later record");
+        http.sync_changes.notify_one();
+        let (frame, _) = next_frame(state).await.expect("resume inline delivery");
+        let event = event_document(frame).await;
+        let batch = &event["resourceVersions"][0]["voiceRecords"];
+        assert_eq!(batch["after"], after_recovery);
+        assert_eq!(batch["records"][0]["id"], "after-recovery");
+    }
+
     fn test_stream(
         hub: &Arc<ChangeNotificationHub>,
         tokens: &TokenRateHub,
@@ -3603,6 +4156,7 @@ mod tests {
         let baseline = changes.borrow().clone();
         ResourceStream {
             http_state: None,
+            vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".into(),
@@ -3611,6 +4165,7 @@ mod tests {
             resources,
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
             changes,
@@ -3819,6 +4374,7 @@ mod tests {
         let baseline = changes.borrow().clone();
         let state = ResourceStream {
             http_state: None,
+            vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".to_owned(),
@@ -3827,6 +4383,7 @@ mod tests {
             resources: Vec::new(),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
             changes,
@@ -3982,14 +4539,14 @@ mod tests {
             .publish(floating_test_rates(1))
             .expect("initial rates");
         let app = crate::router(state.clone()).expect("router");
-        let request = || {
+        let request = |reconnect: bool| {
             Request::builder()
-            .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D&tokenRates=true"))
+            .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D&tokenRates=true&reconnect={reconnect}"))
             .header("host", "127.0.0.1:4321").header("x-canvas-token", "token")
             .extension(ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],12345))))
             .body(Body::empty()).expect("request")
         };
-        let response = app.clone().oneshot(request()).await.expect("response");
+        let response = app.clone().oneshot(request(false)).await.expect("response");
         assert_eq!(response.status(), StatusCode::OK);
         let mut body = response.into_body().into_data_stream();
         let session = document(&body.next().await.expect("session").expect("bytes"));
@@ -4007,12 +4564,22 @@ mod tests {
         assert_eq!(delta["snapshot"], false);
         assert_eq!(delta["records"], floating_test_rates(2)["records"]);
         drop(body);
-        let response = app.oneshot(request()).await.expect("reconnect");
+        let before_reconnects =
+            studio_runtime_services::diagnostics::sync_recovery_counters()["reconnect"]
+                .as_u64()
+                .expect("counter is numeric");
+        let response = app.oneshot(request(true)).await.expect("reconnect");
         let mut body = response.into_body().into_data_stream();
         let session = document(&body.next().await.expect("session").expect("bytes"));
         assert!(session["sessionId"].is_string());
         let resources = document(&body.next().await.expect("resources").expect("bytes"));
-        assert_eq!(resources["reason"], "initial");
+        assert_eq!(resources["reason"], "reconnect");
+        assert!(
+            studio_runtime_services::diagnostics::sync_recovery_counters()["reconnect"]
+                .as_u64()
+                .expect("counter is numeric")
+                > before_reconnects
+        );
         let reconnect = document(&body.next().await.expect("reconnect rates").expect("bytes"));
         assert_eq!(reconnect["snapshot"], true);
         assert_eq!(reconnect["records"], floating_test_rates(2)["records"]);

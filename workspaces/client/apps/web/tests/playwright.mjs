@@ -1538,7 +1538,7 @@ export function accountTileButton(page, label, accountName) {
  * Serve the same sync routes from a small Node HTTP fixture backend.
  * @param {import("node:http").IncomingMessage} request
  * @param {import("node:http").ServerResponse} response
- * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, versionedResources?: boolean, epoch?: string, onPull?: () => void, subscriptionUpdate?: import("../src/generated/api").components["schemas"]["SyncSubscriptionRequest"], onStreamReady?: (notify: (resources: ResourceRef[], reason?: "change" | "reconnect") => void, resources: ResourceRef[]) => (() => void) | void }} fixture
+ * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, versionedResources?: boolean, epoch?: string, onPull?: () => void, subscriptionUpdate?: import("../src/generated/api").components["schemas"]["SyncSubscriptionRequest"], progress?: (resource: ResourceRef) => (Pick<import("../src/generated/api").components["schemas"]["AuthProgressEvent"], "resource" | "value"> | Pick<import("../src/generated/api").components["schemas"]["VaultReadinessEvent"], "resource" | "value">) | undefined, onStreamReady?: (notify: (resources: ResourceRef[], reason?: "change" | "reconnect") => void, resources: ResourceRef[]) => (() => void) | void }} fixture
  * @returns {boolean} whether this was an /api/sync route
  */
 export function handleEntitySyncFixtureRequest(request, response, fixture) {
@@ -1636,12 +1636,32 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     const sessionId = randomUUID();
     response.write(protocol3SseEvent("session", { sessionId }));
     response.write(apiSchemaHandshakeSse());
-    /** @param {string} name @param {ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent | import("../src/generated/api").components["schemas"]["SyncSubscriptionAck"]} value */
+    /** @param {string} name @param {ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent | import("../src/generated/api").components["schemas"]["SyncSubscriptionAck"] | import("../src/generated/api").components["schemas"]["ResourceProgressEvent"]} value */
     const writeFrame = (name, value) => {
       eventId += 1;
       response.write(
         `event: ${name}\ndata: ${JSON.stringify(value)}\nid: ${eventId}\n\n`,
       );
+    };
+    const writeProgress = (resources) => {
+      for (const resource of resources) {
+        if (
+          !requestedResources.some(
+            (requested) =>
+              JSON.stringify(requested) === JSON.stringify(resource),
+          )
+        )
+          continue;
+        const progress = fixture.progress?.(resource);
+        if (!progress) continue;
+        writeFrame("resource-progress", {
+          protocol: RESOURCE_STREAM_PROTOCOL,
+          workspaceId: identity.workspaceId,
+          epoch,
+          revision,
+          ...progress,
+        });
+      }
     };
     /** @type {ResourceChangeEvent} */
     const initial = {
@@ -1668,6 +1688,7 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       workspaceId: identity.workspaceId,
     };
     writeFrame("token-rates", rates);
+    writeProgress(requestedResources);
     const heartbeat = () => {
       if (response.destroyed) return;
       /** @type {ResourceHeartbeatEvent} */
@@ -1709,6 +1730,7 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
             : [],
           revision: ++revision,
         });
+      writeProgress(update.add);
     });
     response.once("close", () => sessions.delete(sessionId));
     const cleanup = fixture.onStreamReady?.((resources, reason = "change") => {
@@ -1726,6 +1748,7 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
         workspaceId: identity.workspaceId,
       };
       writeFrame("resources", changed);
+      writeProgress(resources);
     }, requestedResources);
     if (cleanup !== undefined) {
       if (typeof cleanup !== "function") {

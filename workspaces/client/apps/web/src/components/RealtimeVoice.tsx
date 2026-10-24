@@ -1,4 +1,7 @@
-import { useServerApi } from "../servers/ServerServicesContext";
+import {
+  useServerApi,
+  useServerResources,
+} from "../servers/ServerServicesContext";
 import { hasNativeClient } from "../native/client";
 import { useServerAudio } from "../servers/ServerServicesContext";
 import type { nativeVoice } from "../native/voice";
@@ -7,6 +10,7 @@ import { ActionIcon, Popover } from "@mantine/core";
 import { AudioLines, X } from "lucide-react";
 import { errorText, type PostResult } from "../api";
 import type { ResourceConnectionState } from "../sync/client";
+import type { ResourceVersion } from "../sync/resourceEvents";
 import "./realtime-voice.css";
 import { useServerResourceReads } from "../servers/ServerServicesContext";
 import { watchVoiceTransport } from "./voiceTransport";
@@ -47,6 +51,7 @@ function NativeVoice({
   const { dictationBridge, nativeVoice } = useServerAudio();
   const watchResourceReads = useServerResourceReads();
   const { post } = useServerApi();
+  const { watchResourceConnection } = useServerResources();
 
   const [opened, setOpened] = useState(false);
   const [active, setActive] = useState(false);
@@ -64,6 +69,7 @@ function NativeVoice({
   const transportState = useRef<ResourceConnectionState>("connecting");
   const pendingSession = useRef<Session | null>(null);
   const cursor = useRef(0);
+  const cursorEpoch = useRef<string | undefined>(undefined);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -155,21 +161,36 @@ function NativeVoice({
           setOpened(true);
         }
       },
+      watchResourceConnection,
     );
-    const update = async () => {
+    const update = async (version?: ResourceVersion) => {
       if (fetching) return;
       fetching = true;
       try {
-        const data = await post(
-          "/api/voice/records",
-          { agent: agentId, after: cursor.current },
-          { timeoutMs: 15000 },
-        );
+        const epochChanged = !!version && cursorEpoch.current !== version.epoch;
+        const after = epochChanged ? 0 : cursor.current;
+        const batch = version?.voiceRecords;
+        // Coalescing, a late listener, or an oversized frame can leave a gap.
+        // Only those recovery paths need the read-like POST.
+        const data =
+          batch && batch.after <= after
+            ? batch
+            : await post(
+                "/api/voice/records",
+                { agent: agentId, after },
+                { timeoutMs: 15000 },
+              );
         if (disposed) return;
-        cursor.current = data.cursor;
+        cursor.current = epochChanged
+          ? data.cursor
+          : Math.max(cursor.current, data.cursor);
+        if (version) cursorEpoch.current = version.epoch;
         setRows((previous) => [
           ...new Map(
-            [...previous, ...data.records].map((r) => [r.id, r]),
+            [...(epochChanged ? [] : previous), ...data.records].map((r) => [
+              r.id,
+              r,
+            ]),
           ).values(),
         ]);
         const p = peer.current;
@@ -207,13 +228,14 @@ function NativeVoice({
           setOpened(true);
         } else setError((previous) => previous || errorText(error));
       },
+      { waitForBaseline: true },
     );
     return () => {
       disposed = true;
       stopConnection();
       stop();
     };
-  }, [agentId, watchVoice, watchResourceReads]);
+  }, [agentId, watchVoice, watchResourceReads, watchResourceConnection]);
   const connectionChanged = (current: Peer, state: string) => {
     current.connectionState = state;
     if (current.closed) return;

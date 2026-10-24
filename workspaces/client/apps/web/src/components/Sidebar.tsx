@@ -64,7 +64,7 @@ import {
 import SidebarRow from "./SidebarRow";
 import { needsYou, projectStateCounts } from "./sidebar/fleet";
 import ProjectStateCounts from "./sidebar/ProjectStateCounts";
-import { StudioErrorsButton } from "./StudioErrors";
+import { SidebarWarningsTarget } from "./SidebarWarnings";
 import {
   activeLayrReadiness,
   describeWithLayrReadiness,
@@ -1318,6 +1318,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             <strong>LAYR</strong> <span>Studio</span>
           </span>
         </a>
+        <SidebarWarningsTarget />
         {p.settings && (
           <ActionIcon
             variant="subtle"
@@ -1374,7 +1375,6 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             </ActionIcon>
           )}
         </div>
-        <StudioErrorsButton open={p.open} />
       </div>
       <TextInput
         id="chat-search"

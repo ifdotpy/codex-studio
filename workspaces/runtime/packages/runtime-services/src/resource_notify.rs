@@ -353,7 +353,6 @@ mod tests {
         let notifications = ResourceNotifications::new(hub.clone());
         let resources = vec![
             json!({"kind":"accounts"}),
-            json!({"kind":"models"}),
             json!({"kind":"costs"}),
             json!({"kind":"desktop"}),
             json!({"kind":"terminals"}),

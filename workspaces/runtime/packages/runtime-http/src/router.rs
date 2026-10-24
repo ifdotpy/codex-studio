@@ -161,10 +161,9 @@ impl HttpState {
     /// after the HTTP state itself has been assembled.
     pub fn open_app_server_log(mut self) -> Self {
         let log = OperationalLog::app_server(std::path::Path::new(&self.state_dir)).ok();
-        let changes = Arc::clone(&self.sync_changes);
         self.model_catalog =
             studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback(
-                Arc::new(move || changes.notify_one()),
+                crate::model_entities::change_callback(self.store.clone()),
             );
         self.app_server_log = log;
         self
@@ -222,10 +221,9 @@ impl HttpState {
         let browser_host_local_forwarder = Some(crate::routes::browser::new_local_forwarder(
             Arc::clone(&browser_answer_host_guest),
         ));
-        let model_changes = Arc::clone(&sync_changes);
         let model_catalog =
             studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback(
-                Arc::new(move || model_changes.notify_one()),
+                crate::model_entities::change_callback(store.clone()),
             );
         let resource_notifications = Arc::new(
             studio_runtime_services::resource_notify::ResourceNotifications::new(Arc::clone(
@@ -1299,7 +1297,6 @@ mod tests {
         let (state, store, _directory) = state_with_store().await;
         let volatile = [
             serde_json::json!({"kind":"accounts"}),
-            serde_json::json!({"kind":"models"}),
             serde_json::json!({"kind":"costs"}),
             serde_json::json!({"kind":"desktop"}),
             serde_json::json!({"kind":"queue","agentId":"agent"}),

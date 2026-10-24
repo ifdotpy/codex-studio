@@ -56,6 +56,10 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
+                "STUDIO_ERRORS_DISMISS_MAX_IDS",
+                values::STUDIO_ERRORS_DISMISS_MAX_IDS.to_string(),
+            ),
+            (
                 "SYNC_TRANSCRIPT_STREAM_MAX_ITEMS",
                 values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS.to_string(),
             ),
@@ -391,6 +395,11 @@ fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
     expect_number(
         openapi,
+        "/components/schemas/StudioErrorsDismissRequest/properties/ids/maxItems",
+        values::STUDIO_ERRORS_DISMISS_MAX_IDS as i64,
+    )?;
+    expect_number(
+        openapi,
         "/components/schemas/DraftChangeBatch/properties/documents/maxItems",
         values::SYNC_DRAFT_STREAM_MAX_DOCUMENTS,
     )?;
@@ -398,6 +407,11 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         openapi,
         "/components/schemas/EntityChangeBatch/properties/documents/maxItems",
         values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/VoiceRecordBatch/properties/records/maxItems",
+        values::SYNC_VOICE_STREAM_MAX_RECORDS,
     )?;
     for field in ["items", "removed", "order"] {
         expect_number(
@@ -521,6 +535,8 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         "ResourceChangeEvent",
         "ResourceHeartbeatEvent",
         "ResourceTokenRatesEvent",
+        "AuthProgressEvent",
+        "VaultReadinessEvent",
     ] {
         for bound in ["const", "minimum", "maximum"] {
             expect_number(

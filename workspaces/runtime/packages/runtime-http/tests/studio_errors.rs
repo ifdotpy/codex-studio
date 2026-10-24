@@ -125,3 +125,121 @@ async fn studio_errors_list_studio_caused_endings_and_hide_a_dismissed_row() {
     let (_, body) = call(&app, "GET", "/api/studio-errors", None).await;
     assert_eq!(body["items"], json!([]));
 }
+
+async fn batch_fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, axum::Router) {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    let path = root.path().to_path_buf();
+    let now = studio_runtime_services::event_write::unix_time().unwrap();
+    store
+        .transaction(move |tx| {
+            AgentRepository::put(
+                tx,
+                &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,
+            "status":"waiting","autoWake":true,"cwd":path.to_string_lossy(),
+            "accountKey":"default","provider":"codex","name":"Fixture worker"}))?,
+            )?;
+            for id in ["one", "two", "three"] {
+                Table::new(tx).put(&MonitorRecord::from_value(monitor(
+                    &path,
+                    id,
+                    "lost",
+                    Value::Null,
+                    "Command outcome unknown after losing the provider result; not rerun.",
+                    now,
+                ))?)?;
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .unwrap();
+    let app = router(HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    ))
+    .unwrap();
+    (root, store, app)
+}
+
+#[tokio::test]
+async fn studio_errors_batch_exact_ids_unknown_and_idempotent_repeat() {
+    let (_root, _store, app) = batch_fixture().await;
+    let request = json!({"ids":["monitor:one", "missing", "monitor:three", "monitor:one"]});
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/studio-errors/dismiss",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body["dismissedIds"],
+        json!(["monitor:one", "monitor:three"])
+    );
+    assert_eq!(body["unknownIds"], json!(["missing"]));
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["items"][0]["id"], "monitor:two");
+    let (status, repeat) = call(&app, "POST", "/api/studio-errors/dismiss", Some(request)).await;
+    assert_eq!(status, 200, "{repeat}");
+    assert_eq!(repeat["dismissedIds"], json!([]));
+    assert_eq!(
+        repeat["unknownIds"],
+        json!(["monitor:one", "missing", "monitor:three"])
+    );
+    assert_eq!(repeat["items"], body["items"]);
+}
+
+#[tokio::test]
+async fn studio_errors_batch_rejects_oversize_without_dismissing_anything() {
+    let (_root, _store, app) = batch_fixture().await;
+    let ids = vec![
+        "monitor:one";
+        studio_runtime_schema::shared_values::STUDIO_ERRORS_DISMISS_MAX_IDS + 1
+    ];
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/studio-errors/dismiss",
+        Some(json!({"ids":ids})),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    let (_, body) = call(&app, "GET", "/api/studio-errors", None).await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn studio_errors_batch_rolls_back_all_receipts_if_one_write_fails() {
+    let (_root, store, app) = batch_fixture().await;
+    store
+        .transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER fail_second_dismissal BEFORE INSERT ON runtime_operation_receipts
+            WHEN NEW.id='studio-errors:dismissed:monitor:two'
+            BEGIN SELECT RAISE(ABORT, 'fixture dismissal failure'); END;",
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .unwrap();
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/studio-errors/dismiss",
+        Some(json!({"ids":["monitor:one", "monitor:two"]})),
+    )
+    .await;
+    assert_eq!(status, 500, "{body}");
+    let (_, body) = call(&app, "GET", "/api/studio-errors", None).await;
+    assert_eq!(
+        body["items"].as_array().unwrap().len(),
+        3,
+        "the first dismissal must roll back"
+    );
+}

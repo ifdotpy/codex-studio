@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptPageData } from "../types";
 import type { ResourceChangeEvent } from "./resourceEvents";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
-import { readRetryDelay } from "./readRetry";
+import { READ_RECOVERY_MAX_ATTEMPTS, readRetryDelay } from "./readRetry";
 
 const mocks = vi.hoisted(() => ({
   ApiError: class extends Error {
@@ -24,10 +24,12 @@ const mocks = vi.hoisted(() => ({
   schemaHash: "a".repeat(64),
   matchingSchemaListener: undefined as (() => void) | undefined,
   transcriptInvalidation: undefined as (() => void) | undefined,
+  connectionStatus: undefined as string | undefined,
   connectionListener: undefined as ((status: string) => void) | undefined,
   invalidation: undefined as
     | ((version?: {
         epoch: string;
+        revision?: number;
         entitySequence?: number;
         entitySequenceReset?: boolean;
       }) => void)
@@ -78,6 +80,7 @@ vi.mock("./resourceEvents", () => ({
   watchResourceChanges: mocks.watchResourceChanges,
   watchResourceConnection: vi.fn((listener: (status: string) => void) => {
     mocks.connectionListener = listener;
+    if (mocks.connectionStatus) listener(mocks.connectionStatus);
     return () => {
       if (mocks.connectionListener === listener)
         mocks.connectionListener = undefined;
@@ -115,6 +118,7 @@ describe("entity pull reset wiring", () => {
     mocks.matchingSchemaListener = undefined;
     mocks.transcriptInvalidation = undefined;
     mocks.connectionListener = undefined;
+    mocks.connectionStatus = undefined;
     mocks.invalidation = undefined;
   });
 
@@ -932,6 +936,102 @@ describe("entity pull reset wiring", () => {
         // Remove the wrapper while the fake clock is installed, then the clock.
         restoreSetTimeout?.();
         vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    "new version",
+    "new epoch",
+    "notification",
+    "reconnect",
+    "user retry",
+  ])(
+    "exhausts persistent 503 sync pulls and resets only on %s",
+    async (reset) => {
+      const workspaceId = "8".repeat(32);
+      const subscription = { unsubscribe: vi.fn() };
+      const projections = {
+        database: { name: `studio-entity-projection-${workspaceId}` },
+        storageInstance: { findDocumentsById: vi.fn(async () => []) },
+        $: { subscribe: vi.fn(() => subscription) },
+        find: vi.fn(() => ({
+          exec: vi.fn(async () => []),
+          $: { subscribe: vi.fn(() => subscription) },
+        })),
+        findOne: vi.fn(() => ({
+          exec: vi.fn(async () => null),
+          $: { subscribe: vi.fn(() => subscription) },
+        })),
+      };
+      mocks.createRxDatabase
+        .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+        .mockResolvedValueOnce({
+          addCollections: vi.fn(async () => ({ projections })),
+        });
+      const pullRead = vi.fn(async () => {
+        throw new mocks.ApiError("Unavailable", 503);
+      });
+      mocks.syncGet.mockImplementation(async (path: string) => {
+        if (path === "/api/sync/identity") return { workspaceId };
+        return pullRead();
+      });
+      const baseline = { epoch: "workspace", revision: 1, entitySequence: 1 };
+      mocks.watchResourceChanges.mockImplementation(
+        (resource: { kind: string }, listener: typeof mocks.invalidation) => {
+          if (resource.kind === "state") {
+            mocks.invalidation = listener;
+            listener?.(baseline);
+          }
+          return () => {};
+        },
+      );
+      mocks.connectionStatus = "live";
+      vi.stubGlobal("window", {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        matchMedia: vi.fn(() => ({ matches: false })),
+      });
+      vi.stubGlobal("document", { hidden: false });
+      vi.stubGlobal("navigator", { onLine: true });
+      vi.stubGlobal("location", { origin: "http://studio.test" });
+      const client = await import("./client");
+      await client.syncDatabase();
+      vi.useFakeTimers();
+      const failed = vi.fn();
+      const stop = client.subscribeStateProjection(vi.fn(), failed);
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(mocks.invalidation).toBeTypeOf("function");
+        expect(pullRead).toHaveBeenCalledTimes(READ_RECOVERY_MAX_ATTEMPTS);
+        expect(failed).toHaveBeenLastCalledWith(
+          expect.objectContaining({ name: "ReadRecoveryExhaustedError" }),
+        );
+        expect(vi.getTimerCount()).toBe(0);
+        mocks.invalidation?.(baseline);
+        mocks.connectionListener?.("live"); // A repeated live status is not a reconnect.
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(pullRead).toHaveBeenCalledTimes(READ_RECOVERY_MAX_ATTEMPTS);
+
+        let explicitRetry: Promise<unknown> | undefined;
+        if (reset === "new version")
+          mocks.invalidation?.({ ...baseline, revision: 2, entitySequence: 2 });
+        else if (reset === "new epoch")
+          mocks.invalidation?.({ ...baseline, epoch: "next-workspace" });
+        else if (reset === "notification") mocks.invalidation?.();
+        else if (reset === "reconnect") {
+          mocks.connectionListener?.("degraded");
+          mocks.connectionListener?.("live");
+        } else
+          explicitRetry = client.refreshProjection().catch((error) => error);
+        await vi.advanceTimersByTimeAsync(120_000);
+        await explicitRetry;
+        expect(pullRead).toHaveBeenCalledTimes(2 * READ_RECOVERY_MAX_ATTEMPTS);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        stop();
+        await vi.advanceTimersByTimeAsync(0);
       }
     },
   );

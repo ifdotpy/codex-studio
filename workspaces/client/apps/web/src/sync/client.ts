@@ -63,7 +63,8 @@ import {
 import { onResume } from "./resume";
 
 import {
-  readRetryDelay,
+  ReadRecoveryBudget,
+  ReadRecoveryExhaustedError,
   retryableReadError,
   retryableTranscriptPullConflict,
 } from "./readRetry";
@@ -152,6 +153,7 @@ type ProjectionState = {
   stop: () => Promise<unknown>;
   refresh: (signal?: AbortSignal) => Promise<void>;
   refreshAfterCurrent: () => Promise<void>;
+  resetReadRecovery: () => void;
   activateInvalidation: () => void;
   listeners: Set<(error: unknown | null) => void>;
 };
@@ -1180,6 +1182,11 @@ export function createSyncClient(options: SyncClientOptions) {
       let resetReadySeq: number | undefined;
       let invalidationBlocked = false;
       let readFailed = false;
+      let recovery = new ReadRecoveryBudget();
+      let notifiedVersion: ResourceVersion | undefined;
+      const resetReadRecovery = () => {
+        recovery = new ReadRecoveryBudget();
+      };
       let connectionStatus: ResourceConnectionState = "connecting";
       const retryAbort = new AbortController();
       let stopConnection: (() => void) | undefined;
@@ -1198,21 +1205,25 @@ export function createSyncClient(options: SyncClientOptions) {
         request: () => Promise<T>,
         signal?: AbortSignal,
       ): Promise<T> => {
-        for (let attempt = 0; ; attempt++) {
+        for (;;) {
+          if (recovery.exhaustedError) throw recovery.exhaustedError;
           try {
             return await request();
           } catch (error) {
+            if (
+              !isTransientSyncReadFailure(error) &&
+              !retryableTranscriptPullConflict(error, scope)
+            )
+              throw error;
+            const delay = recovery.nextDelay(error);
             const canRetry =
-              (isTransientSyncReadFailure(error) ||
-                retryableTranscriptPullConflict(error, scope)) &&
               connectionStatus === "live" &&
               !document.hidden &&
               navigator.onLine !== false &&
               !stopped &&
               !signal?.aborted;
             if (!canRetry) throw error;
-            // Keep the pull on the shared bounded backoff while the stream stays live.
-            const delay = readRetryDelay(attempt);
+            // The shared budget bounds HTTP failures even while SSE stays live.
             await new Promise<void>((resolve, reject) => {
               const cleanup = () => {
                 signal?.removeEventListener("abort", abort);
@@ -1261,6 +1272,8 @@ export function createSyncClient(options: SyncClientOptions) {
       };
       const refresh = (signal?: AbortSignal): Promise<void> => {
         if (stopped) return Promise.resolve();
+        if (recovery.exhaustedError)
+          return Promise.reject(recovery.exhaustedError);
         if (pending) return pending;
         pending = (async () => {
           do {
@@ -1698,12 +1711,24 @@ export function createSyncClient(options: SyncClientOptions) {
         invalidated = true;
         void refresh().catch(() => {});
       };
+      const notifyInvalidation = (version?: ResourceVersion) => {
+        if (
+          !version ||
+          !notifiedVersion ||
+          version.epoch !== notifiedVersion.epoch ||
+          version.revision > notifiedVersion.revision
+        ) {
+          resetReadRecovery();
+          if (version) notifiedVersion = version;
+        }
+        invalidate(version);
+      };
       const activateInvalidation = () => {
         if (stopInvalidation) return;
         stopInvalidation = transcriptId
-          ? watchTranscriptInvalidations(transcriptId, invalidate)
+          ? watchTranscriptInvalidations(transcriptId, notifyInvalidation)
           : watchSyncInvalidations(
-              invalidate,
+              notifyInvalidation,
               remoteScope === SYNC_ENTITY_SCOPE ? "entities" : "legacy",
             );
         if (remoteScope === SYNC_ENTITY_SCOPE)
@@ -1712,9 +1737,16 @@ export function createSyncClient(options: SyncClientOptions) {
             () => {},
           );
         stopConnection = watchResourceConnection((status) => {
+          const reconnected = status === "live" && connectionStatus !== "live";
           connectionStatus = status;
-          if (status === "live" && readFailed && !invalidationBlocked)
+          if (
+            reconnected &&
+            (readFailed || recovery.exhaustedError) &&
+            !invalidationBlocked
+          ) {
+            resetReadRecovery();
             void refreshAfterCurrent().catch(() => {});
+          }
         });
         stopResume = onResume(() => {
           if (readFailed && !invalidationBlocked)
@@ -1729,6 +1761,7 @@ export function createSyncClient(options: SyncClientOptions) {
         listeners,
         refresh,
         refreshAfterCurrent,
+        resetReadRecovery,
         activateInvalidation,
         stop: async () => {
           stopped = true;
@@ -1847,8 +1880,19 @@ export function createSyncClient(options: SyncClientOptions) {
       onWorkspaceId?: (workspaceId: string) => void;
     } = {},
   ): Promise<Snapshot> {
+    return readProjection(options, true);
+  }
+
+  async function readProjection(
+    options: {
+      afterCurrentPull?: boolean;
+      onWorkspaceId?: (workspaceId: string) => void;
+    } = {},
+    explicitRetry = false,
+  ): Promise<Snapshot> {
     const handle = await acquireProjection("state");
     try {
+      if (explicitRetry) handle.state.resetReadRecovery();
       if (options.afterCurrentPull) await handle.state.refreshAfterCurrent();
       else await handle.state.refresh();
       const [ready, documents] = await Promise.all([
@@ -2396,7 +2440,8 @@ export function createSyncClient(options: SyncClientOptions) {
       attached = false;
     let dispose = () => {};
     let hasData = false;
-    let retryCount = 0;
+    let recovery = new ReadRecoveryBudget();
+    let connectionStatus: ResourceConnectionState = "connecting";
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const clearRetry = () => {
       clearTimeout(retryTimer);
@@ -2405,8 +2450,7 @@ export function createSyncClient(options: SyncClientOptions) {
     const onFailure = (error: unknown | null) => {
       if (stopped) return;
       report(error);
-      if (error === null) {
-        retryCount = 0;
+      if (error === null || error instanceof ReadRecoveryExhaustedError) {
         clearRetry();
         return;
       }
@@ -2419,15 +2463,23 @@ export function createSyncClient(options: SyncClientOptions) {
         navigator.onLine === false
       )
         return;
+      let delay: number;
+      try {
+        delay = recovery.nextDelay(error);
+      } catch (exhausted) {
+        report(exhausted);
+        clearRetry();
+        return;
+      }
       retryTimer = setTimeout(() => {
         retryTimer = undefined;
         if (stopped || hasData) return;
         if (attached) void retryBeforeData().catch(onFailure);
         else void connect();
-      }, readRetryDelay(retryCount++));
+      }, delay);
     };
     const connect = async () => {
-      if (stopped || connecting || attached) return;
+      if (stopped || connecting || attached || recovery.exhaustedError) return;
       clearRetry();
       connecting = true;
       try {
@@ -2436,7 +2488,6 @@ export function createSyncClient(options: SyncClientOptions) {
             if (value !== null) {
               hasData = true;
               clearRetry();
-              retryCount = 0;
               onFailure(null);
             }
             accept(value);
@@ -2457,7 +2508,12 @@ export function createSyncClient(options: SyncClientOptions) {
     };
     const stopResume = onResume(() => void connect());
     const stopConnection = watchResourceConnection((status) => {
-      if (status === "live" && !attached) void connect();
+      const reconnected = status === "live" && connectionStatus !== "live";
+      connectionStatus = status;
+      if (reconnected && !attached) {
+        recovery = new ReadRecoveryBudget();
+        void connect();
+      }
     });
     void connect();
     return () => {
@@ -2478,7 +2534,7 @@ export function createSyncClient(options: SyncClientOptions) {
       (next, fail) => watchStateProjection(next, fail, acceptUiPreferences),
       accept,
       report,
-      () => refreshProjection(),
+      () => readProjection(),
     );
   }
 
