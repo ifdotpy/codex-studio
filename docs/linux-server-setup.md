@@ -32,7 +32,10 @@ checks health, and rolls back an unhealthy release. Keep the state directory
 identity and never start a second backend against it. Do not interrupt active
 agents, commands, monitors, or terminals for a source update.
 
-Delivery requires `systemd-run` and a working systemd user manager. The entire
+Delivery requires systemd 254 or newer and a working systemd user manager.
+The minimum version in [deliver.sh](../workspaces/runtime/apps/runtime-server/deliver.sh)
+ensures literal command arguments are supported; older versions fail before
+a delivery starts. The entire
 build, restart, health check, rollback, and pruning run in a separate transient
 user service, outside the backend's cgroup. The caller prints its unit name and
 a `journalctl --user --unit=... --no-pager` command before handing off. Output
@@ -40,6 +43,12 @@ goes directly to the unit journal; a surviving caller receives the output replay
 at completion and the delivery's exit status. If the calling agent or monitor
 is killed by the restart, use the printed journal command to read progress and
 the final exit code. Collection of the transient unit leaves its journal intact.
+Each unit name includes a random UUID, and the worker records the manager's
+`INVOCATION_ID` under the release root's `delivery-invocations/` directory before
+building. A surviving caller filters its journal replay by
+`_SYSTEMD_INVOCATION_ID`, so a previous invocation's output cannot stand in for
+the current result. These small identity records also remain available after a
+caller disconnect.
 Check that outcome before retrying; a lost caller result does not mean delivery
 failed. Concurrent deliveries using the same release root are refused by
 `deliver.lock` inside the unit.
@@ -47,9 +56,14 @@ failed. Concurrent deliveries using the same release root are refused by
 The launcher passes the invoking shell's toolchain, path, proxy, XDG, and release
 root settings listed in [deliver.sh](../workspaces/runtime/apps/runtime-server/deliver.sh).
 It fails if `systemd-run` is missing instead of delivering in the caller's process.
-`CODEX_STUDIO_DELIVER_IN_UNIT` is the internal recursion guard. The explicit
-`CODEX_STUDIO_DELIVER_TEST_IN_PROCESS=1` bypass is only for disposable fixtures
-with mocked service commands; never set it for a real delivery.
+`CODEX_STUDIO_DELIVER_IN_UNIT` is the internal recursion guard. The worker
+accepts it only with a valid manager `INVOCATION_ID` and membership in the
+expected delivery unit in `/proc/self/cgroup`; an inherited guard outside that
+unit fails clearly. The explicit `CODEX_STUDIO_DELIVER_TEST_IN_PROCESS=1`
+bypass also requires the fixture-only `.codex-studio-delivery-test` marker beside
+a disposable copy of the script. Production checkouts never contain that marker.
+Tests use mocked service commands; never set the bypass or create the marker for
+a real delivery.
 
 At an authorized maintenance boundary, deliver the selected commit:
 

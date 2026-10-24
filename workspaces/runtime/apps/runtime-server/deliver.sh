@@ -19,14 +19,50 @@ readonly START_TIMEOUT_SECONDS=120
 readonly STABLE_SECONDS=30
 # Release directories kept on disk, the current and previous ones included.
 readonly KEPT_RELEASES=3
+# First systemd version supporting --expand-environment=no.
+readonly MIN_SYSTEMD_VERSION=254
+# Namespace for independently managed delivery services.
+readonly DELIVERY_UNIT_PREFIX=codex-studio-deliver
+# systemd InvocationID is a 128-bit identity encoded as 32 hexadecimal digits.
+readonly SYSTEMD_INVOCATION_ID_PATTERN='^[[:xdigit:]]{32}$'
+# Kernel UUIDs, with separators removed, identify individual delivery attempts.
+readonly DELIVERY_UUID_PATTERN='^[[:xdigit:]]{32}$'
 
 repository=$(git rev-parse --show-toplevel)
 commit=$(git -C "$repository" rev-parse --verify "${1:-HEAD}^{commit}")
+root=${CODEX_STUDIO_SERVER_ROOT:-$HOME/${layout[3]}}
+script_directory=$(cd -- "$(dirname -- "$0")" && pwd)
+
+# Trust the recursion guard only inside the named transient service. Ambient
+# environment from a server or a previous delivery does not prove membership.
+in_delivery_unit=false
+if [ "${CODEX_STUDIO_DELIVER_IN_UNIT:-}" = 1 ] &&
+   [[ ${INVOCATION_ID:-} =~ $SYSTEMD_INVOCATION_ID_PATTERN ]] &&
+   [[ ${CODEX_STUDIO_DELIVER_UNIT:-} == "$DELIVERY_UNIT_PREFIX"-*.service ]]; then
+  while IFS=: read -r _ _ cgroup; do
+    if [[ "$cgroup/" == *"/$CODEX_STUDIO_DELIVER_UNIT/"* ]]; then
+      in_delivery_unit=true
+      break
+    fi
+  done < /proc/self/cgroup
+fi
+# Tests copy this script and layout beside an untracked fixture-only marker.
+# An inherited test flag has no effect in the production source checkout.
+test_fixture=false
+if [ "${CODEX_STUDIO_DELIVER_TEST_IN_PROCESS:-}" = 1 ] &&
+   [ -f "$script_directory/.codex-studio-delivery-test" ]; then
+  test_fixture=true
+fi
+if [ "${CODEX_STUDIO_DELIVER_IN_UNIT:-}" = 1 ] &&
+   [ "$in_delivery_unit" != true ] && [ "$test_fixture" != true ]; then
+  echo "delivery guard requires verified unit membership; refusing in-process delivery" >&2
+  exit 1
+fi
+
 # A service restart kills descendants of the old server, including its command
 # monitors. Hand off before taking the lock or building so the entire delivery
 # belongs to an independent service. Only disposable fixtures may bypass this.
-if [ "${CODEX_STUDIO_DELIVER_IN_UNIT:-}" != 1 ] &&
-   [ "${CODEX_STUDIO_DELIVER_TEST_IN_PROCESS:-}" != 1 ]; then
+if [ "$in_delivery_unit" != true ] && [ "$test_fixture" != true ]; then
   command -v systemd-run >/dev/null || {
     echo "systemd-run is required to deliver outside the server's cgroup" >&2
     exit 1
@@ -35,15 +71,34 @@ if [ "${CODEX_STUDIO_DELIVER_IN_UNIT:-}" != 1 ] &&
     echo "journalctl is required to read delivery output" >&2
     exit 1
   }
-  # One owner for both the transient service identity and its journal lookup.
-  # The caller PID distinguishes repeated deliveries of the same commit.
-  readonly DELIVERY_UNIT=codex-studio-deliver-${commit:0:12}-$$.service
-  script=$(cd -- "$(dirname -- "$0")" && pwd)/${0##*/}
+  version_output=$(systemd-run --version) || {
+    echo "could not determine systemd-run version" >&2
+    exit 1
+  }
+  read -r _ systemd_version _ <<<"$version_output"
+  if ! [[ $systemd_version =~ ^[0-9]+$ ]] ||
+     [ "$systemd_version" -lt "$MIN_SYSTEMD_VERSION" ]; then
+    echo "systemd $MIN_SYSTEMD_VERSION or newer is required for literal delivery arguments" >&2
+    exit 1
+  fi
+  IFS= read -r unique_id < /proc/sys/kernel/random/uuid
+  unique_id=${unique_id//-/}
+  [[ $unique_id =~ $DELIVERY_UUID_PATTERN ]] || {
+    echo "could not create a unique delivery identity" >&2
+    exit 1
+  }
+  # One owner for the unique transient service identity and its journal lookup.
+  readonly DELIVERY_UNIT=$DELIVERY_UNIT_PREFIX-${commit:0:12}-$unique_id.service
+  export CODEX_STUDIO_DELIVER_UNIT=$DELIVERY_UNIT
+  export CODEX_STUDIO_DELIVER_INVOCATION_FILE=$root/delivery-invocations/$unique_id
+  export CODEX_STUDIO_SERVER_ROOT=$root
+  script=$script_directory/${0##*/}
   environment=(--setenv=CODEX_STUDIO_DELIVER_IN_UNIT=1)
   # A user manager does not inherit the invoking shell's toolchain and paths.
   # Pass variable names rather than exposing their values in the argument list.
   for name in HOME PATH XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME \
     XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS CODEX_STUDIO_SERVER_ROOT \
+    CODEX_STUDIO_DELIVER_UNIT CODEX_STUDIO_DELIVER_INVOCATION_FILE \
     CARGO_HOME RUSTUP_HOME CARGO_BUILD_JOBS RUSTFLAGS CARGO_ENCODED_RUSTFLAGS \
     CODEX_NODE PNPM_HOME TMPDIR HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
     http_proxy https_proxy all_proxy no_proxy; do
@@ -58,16 +113,36 @@ if [ "${CODEX_STUDIO_DELIVER_IN_UNIT:-}" != 1 ] &&
     --service-type=exec --expand-environment=no --property=StandardOutput=journal \
     --property=StandardError=journal "${environment[@]}" \
     -- "$BASH" "$script" "$commit" || status=$?
-  journalctl --user --unit="$DELIVERY_UNIT" --no-pager --output=cat || {
-    echo "could not replay delivery logs; use the journal command above" >&2
-  }
+  unit_invocation=
+  if [ -f "$CODEX_STUDIO_DELIVER_INVOCATION_FILE" ] &&
+     IFS= read -r unit_invocation < "$CODEX_STUDIO_DELIVER_INVOCATION_FILE" &&
+     [[ $unit_invocation =~ $SYSTEMD_INVOCATION_ID_PATTERN ]]; then
+    journalctl --user --unit="$DELIVERY_UNIT" \
+      "_SYSTEMD_INVOCATION_ID=$unit_invocation" --no-pager --output=cat || {
+      echo "could not replay delivery logs; use the journal command above" >&2
+    }
+  else
+    echo "delivery unit did not record a verified invocation; inspect its journal" >&2
+    [ "$status" -ne 0 ] || status=1
+  fi
   exit "$status"
 fi
 
 # The unit journal records an outcome even for a failed build, lock, or rollback.
 trap 'status=$?; echo "delivery $commit finished with exit code $status"' EXIT
 
-root=${CODEX_STUDIO_SERVER_ROOT:-$HOME/${layout[3]}}
+# Record the manager's invocation identity before any build or service changes.
+# The caller can read it after --collect has removed the completed unit.
+if [ -n "${CODEX_STUDIO_DELIVER_INVOCATION_FILE:-}" ]; then
+  [[ ${INVOCATION_ID:-} =~ $SYSTEMD_INVOCATION_ID_PATTERN ]] || {
+    echo "delivery unit has no valid manager invocation identity" >&2
+    exit 1
+  }
+  mkdir -p "$(dirname -- "$CODEX_STUDIO_DELIVER_INVOCATION_FILE")"
+  (umask 077; printf '%s\n' "$INVOCATION_ID" > "$CODEX_STUDIO_DELIVER_INVOCATION_FILE")
+  echo "Delivery invocation: $INVOCATION_ID"
+fi
+
 release=$root/releases/$commit
 binary=${layout[2]}
 current=$root/${layout[4]}

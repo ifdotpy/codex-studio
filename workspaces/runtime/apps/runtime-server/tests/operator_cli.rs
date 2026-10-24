@@ -261,6 +261,23 @@ impl DeliveryFixture {
         let binary = release.join("bin/studio-runtime-server");
         fs::write(&binary, "fixture executable; not invoked").unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        // The bypass marker exists only beside a disposable copy, never beside
+        // the production checkout's delivery script.
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("deliver.sh"),
+            root.path().join("deliver.sh"),
+        )
+        .unwrap();
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("service-layout.json"),
+            root.path().join("service-layout.json"),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join(".codex-studio-delivery-test"),
+            "fixture-only\n",
+        )
+        .unwrap();
         let fixture = Self {
             root,
             release_root,
@@ -300,12 +317,20 @@ esac
                 "journalctl",
                 r#"#!/bin/sh
 printf '%s\n' "$@" > "$HOME/journal-args"
-[ ! -f "$HOME/journal" ] || /bin/cat "$HOME/journal"
+IFS= read -r invocation < "$HOME/journal-invocation"
+case " $* " in
+  *" _SYSTEMD_INVOCATION_ID=$invocation "*) /bin/cat "$HOME/journal";;
+  *) echo 'stale success from an old invocation';;
+esac
 "#,
             ),
             (
                 "systemd-run",
                 r#"#!/bin/bash
+if [ "${1:-}" = --version ]; then
+  echo "systemd ${SYSTEMD_VERSION:-259}"
+  exit 0
+fi
 printf '%s\n' "$@" > "$HOME/run-args"
 if [ -n "${RUN_FAILURE:-}" ]; then
   echo 'fixture unit failed' >&2
@@ -324,7 +349,10 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
-/usr/bin/env -i "${environment[@]}" PROJECT="$PROJECT" RELEASE="$RELEASE" "$@" > "$HOME/journal" 2>&1
+IFS= read -r invocation < /proc/sys/kernel/random/uuid
+invocation=${invocation//-/}
+printf '%s\n' "$invocation" > "$HOME/journal-invocation"
+/usr/bin/env -i "${environment[@]}" INVOCATION_ID="$invocation" CODEX_STUDIO_DELIVER_TEST_IN_PROCESS=1 PROJECT="$PROJECT" RELEASE="$RELEASE" "$@" > "$HOME/journal" 2>&1
 exit $?
 "#,
             ),
@@ -351,7 +379,7 @@ exit $?
     fn command(&self) -> Command {
         let mut command = Command::new("/bin/bash");
         command
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("deliver.sh"))
+            .arg(self.root.path().join("deliver.sh"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .env_clear()
             .env("HOME", self.root.path())
@@ -410,6 +438,93 @@ fn delivery_runs_in_a_journalled_unit_before_building_and_returns_failure() {
     assert!(fixture.read("journal").contains("exit code"));
     assert_eq!(fixture.read("build-calls"), "archive\n");
     assert!(!fixture.root.path().join("calls").exists());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn delivery_rejects_inherited_guards_without_unit_membership_or_fixture_marker() {
+    let fixture = DeliveryFixture::new();
+    let output = fixture
+        .command()
+        .env("CODEX_STUDIO_DELIVER_IN_UNIT", "1")
+        .env("INVOCATION_ID", "0123456789abcdef0123456789abcdef")
+        .env(
+            "CODEX_STUDIO_DELIVER_UNIT",
+            "codex-studio-deliver-inherited.service",
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("delivery guard requires verified unit membership")
+    );
+    assert!(!fixture.root.path().join("run-args").exists());
+    // A test flag alone must not bypass handoff from a production script.
+    fs::remove_file(fixture.root.path().join(".codex-studio-delivery-test")).unwrap();
+    let output = fixture
+        .command()
+        .env("CODEX_STUDIO_DELIVER_TEST_IN_PROCESS", "1")
+        .env("RUN_FAILURE", "37")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(37));
+    assert!(fixture.root.path().join("run-args").exists());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn delivery_refuses_systemd_without_literal_argument_support() {
+    let fixture = DeliveryFixture::new();
+    let output = fixture
+        .command()
+        .env("SYSTEMD_VERSION", "253")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("systemd 254 or newer is required"));
+    assert!(!fixture.root.path().join("run-args").exists());
+    assert!(
+        fixture
+            .command()
+            .env("SYSTEMD_VERSION", "254")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn delivery_uses_unique_units_and_replays_only_the_current_invocation() {
+    let fixture = DeliveryFixture::new();
+    let mut identities = Vec::new();
+    for _ in 0..2 {
+        let output = fixture.command().output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let args = fixture.read("run-args");
+        let unit = args
+            .lines()
+            .find(|line| line.starts_with("--unit="))
+            .unwrap()
+            .to_owned();
+        let invocation = fixture.read("journal-invocation").trim().to_owned();
+        assert!(
+            fixture
+                .read("journal-args")
+                .lines()
+                .any(|line| line == format!("_SYSTEMD_INVOCATION_ID={invocation}"))
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("stale success"));
+        identities.push((unit, invocation));
+    }
+    assert_ne!(identities[0].0, identities[1].0);
+    assert_ne!(identities[0].1, identities[1].1);
 }
 
 #[test]
