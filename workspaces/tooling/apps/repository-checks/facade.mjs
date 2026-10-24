@@ -1750,6 +1750,7 @@ function fastTierCommands(root) {
               "test(/^rules_tick_atomic::a_rule_pauses_while_its_owner_cannot_run_and_resumes_when_it_can$/)",
               "test(/^monitor_runtime_wiring::tests::monitor_scan_checks_each_unchanged_monitor_once_per_cycle$/)",
               "test(/^monitor_runtime_wiring::tests::monitor_scan_restarts_after_persistent_probe_failure$/)",
+              "test(/^monitor_runtime_wiring::tests::late_answer_scan_passes_existing_waiters_and_reaches_the_next_page$/)",
               "(not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
             ]),
           ],

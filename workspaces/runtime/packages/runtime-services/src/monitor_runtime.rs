@@ -21,7 +21,7 @@ pub const SESSION_DEPENDENCY: &str = "provider-session/monitor-commands";
 pub const RULE_DEPENDENCY: &str = "rule-driver/monitor-finish";
 pub const REMOTE_EVENTS_DEPENDENCY: &str = "cross-server/remote-events";
 const STARTUP_RECEIPT_BATCH: usize = 64;
-/// Maximum running monitor rows evaluated per keyset page.
+/// Maximum monitor rows evaluated per keyset page.
 pub(crate) const MONITOR_TICK_BATCH: usize = 64;
 const RESTART_EVENT_ERROR: &str = "Server restarted before delivery acknowledgement";
 
@@ -1038,17 +1038,23 @@ pub async fn settle_unanswered(
 
 /// Deadline losses that may still be in their late-answer window at `now`.
 /// The policy (`awaits_late_answer`) decides; this query only narrows the rows.
-pub async fn late_answer_ids(store: &RuntimeStore, now: f64) -> Result<Vec<String>, MonitorError> {
+pub async fn late_answer_ids(
+    store: &RuntimeStore,
+    after: Option<&str>,
+    now: f64,
+) -> Result<Vec<String>, MonitorError> {
+    let after = after.unwrap_or_default().to_owned();
     store
         .read_async("runtime-services/monitor_late_answers", move |connection| {
             let mut statement = connection.prepare_cached(
-                "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.proof')=?1 AND json_extract(record,'$.finished')>?2 ORDER BY id LIMIT ?3",
+                "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.proof')=?1 AND json_extract(record,'$.finished')>?2 AND id>?3 ORDER BY id LIMIT ?4",
             )?;
             let ids = statement
                 .query_map(
                     (
                         policy::DEADLINE_PASSED,
                         now - policy::MONITOR_LATE_ANSWER_SECONDS,
+                        after,
                         MONITOR_TICK_BATCH as i64,
                     ),
                     |row| row.get::<_, String>(0),
