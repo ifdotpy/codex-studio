@@ -1296,6 +1296,27 @@ impl TransferExecutor for AccountTransferExecutor {
                     })?);
                 }
             }
+            // The retained settings read above does not populate the separate
+            // admission cache. Refresh its exact destination identity before
+            // native preparation reads and rechecks that cache generation.
+            match self
+                .preparation
+                .model_catalog
+                .wait_for_admission_catalog(target_account, &home, target_provider)
+                .await
+            {
+                crate::model_catalog::AdmissionCatalogRead::Fresh { .. } => {}
+                crate::model_catalog::AdmissionCatalogRead::Pending => {
+                    return Err(TransferError::Requires(
+                        crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+                    ));
+                }
+                crate::model_catalog::AdmissionCatalogRead::Unavailable => {
+                    return Err(TransferError::Refused(
+                        crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+                    ));
+                }
+            }
             let scope = self
                 .session
                 .current_scope(target_account)
@@ -1833,6 +1854,16 @@ mod retained_executor_tests {
             request: ProviderRequest,
         ) -> crate::account_session_runtime::AccountSessionFuture<'a, SessionReceipt> {
             Box::pin(async move {
+                if request.operation.starts_with("model-list:") {
+                    assert_eq!(request.account, "target");
+                    assert_eq!(request.expected_scope, Some(Self::scope("target")));
+                    assert_eq!(request.method, Method::ModelList);
+                    assert_eq!(
+                        request.params,
+                        json!({"limit":studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE,
+                            "includeHidden":true})
+                    );
+                }
                 self.requests
                     .lock()
                     .expect("test fixture operation succeeds")
@@ -2289,6 +2320,15 @@ mod retained_executor_tests {
 
     #[tokio::test]
     async fn before_start_copies_history_once_and_replays_unknown_fork_after_restart() {
+        assert_history_transfer_without_duplicate_fork(false).await;
+    }
+
+    #[tokio::test]
+    async fn cold_catalog_transfer_prepares_history_without_http_model_read() {
+        assert_history_transfer_without_duplicate_fork(true).await;
+    }
+
+    async fn assert_history_transfer_without_duplicate_fork(cold_catalog: bool) {
         let root = tempfile::tempdir().expect("test fixture operation succeeds");
         let fixture = root.path().join("fixture");
         let state_dir = root.path().join("state");
@@ -2343,13 +2383,15 @@ mod retained_executor_tests {
             json!({"id":"source","home":source_home,"provider":"codex"}),
             json!({"id":"target","home":target_home,"provider":"codex"}),
         ]);
-        catalog.seed_test_admission_catalog(
-            "target",
-            target_home.to_str().expect("target home"),
-            "codex",
-            json!({"data":[{"model":"gpt-6-astra","isDefault":true,
+        if !cold_catalog {
+            catalog.seed_test_admission_catalog(
+                "target",
+                target_home.to_str().expect("target home"),
+                "codex",
+                json!({"data":[{"model":"gpt-6-astra","isDefault":true,
                 "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
-        );
+            );
+        }
         let session = Arc::new(GuardSession {
             store: store.clone(),
             transfer_id: transfer_id.into(),
@@ -2358,6 +2400,7 @@ mod retained_executor_tests {
             native_path: Some(native_path.to_string_lossy().into_owned()),
             dormant: Mutex::new(None),
         });
+        catalog.set_account_session(Some(session.clone()));
         let resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
             thread_config: Default::default(),
@@ -2379,56 +2422,35 @@ mod retained_executor_tests {
             guest_rpc: None,
             vm_provider_launch: None,
         };
-        crate::account_transfer_driver::begin_read(&store, transfer_id, "lead", 1.5)
-            .await
-            .expect("the durable member enters Reading before preparation");
-        let attempt_id = format!("account-transfer:{transfer_id}:lead");
-        let generic = crate::account_worker::preparation::prepare_native_thread(
-            Arc::clone(&store),
-            &resources,
-            "lead",
-            &attempt_id,
-            7,
-        )
-        .await
-        .expect_err("ordinary preparation keeps the transfer admission hold");
-        assert_eq!(generic.to_string(), "thread-preparation/AccountTransfer");
-        assert!(
-            crate::account_worker::preparation::prepare_account_transfer_native_thread(
+        if !cold_catalog {
+            crate::account_transfer_driver::begin_read(&store, transfer_id, "lead", 1.5)
+                .await
+                .expect("the durable member enters Reading before preparation");
+            let attempt_id = format!("account-transfer:{transfer_id}:lead");
+            let generic = crate::account_worker::preparation::prepare_native_thread(
                 Arc::clone(&store),
                 &resources,
                 "lead",
-                "a different transfer id",
                 &attempt_id,
                 7,
             )
             .await
-            .is_err(),
-            "a different owner cannot bypass the transfer hold"
-        );
-        let owned = crate::account_worker::preparation::prepare_account_transfer_native_thread(
-            Arc::clone(&store),
-            &resources,
-            "lead",
-            transfer_id,
-            &attempt_id,
-            7,
-        )
-        .await
-        .expect("the exact Reading transfer owner may prepare its destination");
-        assert!(owned.params.is_object());
-
-        store
-            .transaction_with_error(|tx| {
-                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                row.extra
-                    .insert("contextRepair".into(), json!({"phase":"preparing"}));
-                AgentRepository::put(tx, &row)
-            })
-            .await
-            .expect("context repair blocker is installed");
-        let context_repair =
-            crate::account_worker::preparation::prepare_account_transfer_native_thread(
+            .expect_err("ordinary preparation keeps the transfer admission hold");
+            assert_eq!(generic.to_string(), "thread-preparation/AccountTransfer");
+            assert!(
+                crate::account_worker::preparation::prepare_account_transfer_native_thread(
+                    Arc::clone(&store),
+                    &resources,
+                    "lead",
+                    "a different transfer id",
+                    &attempt_id,
+                    7,
+                )
+                .await
+                .is_err(),
+                "a different owner cannot bypass the transfer hold"
+            );
+            let owned = crate::account_worker::preparation::prepare_account_transfer_native_thread(
                 Arc::clone(&store),
                 &resources,
                 "lead",
@@ -2437,54 +2459,83 @@ mod retained_executor_tests {
                 7,
             )
             .await
-            .expect_err("the transfer owner cannot bypass context repair");
-        assert_eq!(context_repair.to_string(), "preparation/ownership-changed");
-        store
-            .transaction_with_error(|tx| {
-                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                row.extra.remove("contextRepair");
-                AgentRepository::put(tx, &row)
-            })
-            .await
-            .expect("context repair blocker is removed");
+            .expect("the exact Reading transfer owner may prepare its destination");
+            assert!(owned.params.is_object());
 
-        store
-            .transaction_with_error(|tx| {
-                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                row.extra.insert(
-                    "nativeRelease".into(),
-                    json!({"phase":"unknown","resetPending":true}),
-                );
-                AgentRepository::put(tx, &row)
-            })
-            .await
-            .expect("native release blocker is installed");
-        let native_release =
-            crate::account_worker::preparation::prepare_account_transfer_native_thread(
-                Arc::clone(&store),
-                &resources,
-                "lead",
-                transfer_id,
-                &attempt_id,
-                7,
-            )
-            .await
-            .expect_err("the transfer owner cannot bypass native release");
-        assert_eq!(
-            native_release.to_string(),
-            "thread-preparation/NativeRelease"
-        );
-        store
-            .transaction_with_error(|tx| {
-                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                row.extra.remove("nativeRelease");
-                AgentRepository::put(tx, &row)
-            })
-            .await
-            .expect("native release blocker is removed");
-        crate::account_transfer_driver::recover(&store, 1.75)
-            .await
-            .expect("startup recovery returns the member to its retryable phase");
+            store
+                .transaction_with_error(|tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                    row.extra
+                        .insert("contextRepair".into(), json!({"phase":"preparing"}));
+                    AgentRepository::put(tx, &row)
+                })
+                .await
+                .expect("context repair blocker is installed");
+            let context_repair =
+                crate::account_worker::preparation::prepare_account_transfer_native_thread(
+                    Arc::clone(&store),
+                    &resources,
+                    "lead",
+                    transfer_id,
+                    &attempt_id,
+                    7,
+                )
+                .await
+                .expect_err("the transfer owner cannot bypass context repair");
+            assert_eq!(context_repair.to_string(), "preparation/ownership-changed");
+            store
+                .transaction_with_error(|tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                    row.extra.remove("contextRepair");
+                    AgentRepository::put(tx, &row)
+                })
+                .await
+                .expect("context repair blocker is removed");
+
+            store
+                .transaction_with_error(|tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                    row.extra.insert(
+                        "nativeRelease".into(),
+                        json!({"phase":"unknown","resetPending":true}),
+                    );
+                    AgentRepository::put(tx, &row)
+                })
+                .await
+                .expect("native release blocker is installed");
+            let native_release =
+                crate::account_worker::preparation::prepare_account_transfer_native_thread(
+                    Arc::clone(&store),
+                    &resources,
+                    "lead",
+                    transfer_id,
+                    &attempt_id,
+                    7,
+                )
+                .await
+                .expect_err("the transfer owner cannot bypass native release");
+            assert_eq!(
+                native_release.to_string(),
+                "thread-preparation/NativeRelease"
+            );
+            store
+                .transaction_with_error(|tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                    row.extra.remove("nativeRelease");
+                    AgentRepository::put(tx, &row)
+                })
+                .await
+                .expect("native release blocker is removed");
+            crate::account_transfer_driver::recover(&store, 1.75)
+                .await
+                .expect("startup recovery returns the member to its retryable phase");
+        }
+        if cold_catalog {
+            assert!(matches!(
+                catalog.read_for_admission("target", &resources.account_home, "codex"),
+                crate::model_catalog::AdmissionCatalogRead::Pending
+            ));
+        }
         let first = before_start(
             Arc::clone(&store),
             Some(session.clone()),
@@ -2495,6 +2546,34 @@ mod retained_executor_tests {
         )
         .await
         .expect("worker before-start prepares the transfer");
+        if cold_catalog {
+            assert_eq!(
+                session
+                    .requests
+                    .lock()
+                    .expect("the provider request log is available")
+                    .iter()
+                    .filter(|method| method.as_str() == "model/list")
+                    .count(),
+                2,
+                "the transfer read and the admission owner's refresh are distinct"
+            );
+            match catalog.read_for_admission("target", &resources.account_home, "codex") {
+                crate::model_catalog::AdmissionCatalogRead::Fresh {
+                    account_key,
+                    home,
+                    provider,
+                    generation,
+                    ..
+                } => {
+                    assert_eq!(account_key, "target");
+                    assert_eq!(home, target_home.to_string_lossy());
+                    assert_eq!(provider, "codex");
+                    assert!(generation > 0);
+                }
+                other => panic!("the exact destination admission cache must be fresh: {other:?}"),
+            }
+        }
         let imported = target_home.join("sessions/.studio-imports/source-thread.jsonl");
         assert!(imported.is_file());
         #[cfg(unix)]
@@ -2545,13 +2624,15 @@ mod retained_executor_tests {
             json!({"id":"source","home":source_home,"provider":"codex"}),
             json!({"id":"target","home":target_home,"provider":"codex"}),
         ]);
-        recovered_catalog.seed_test_admission_catalog(
-            "target",
-            target_home.to_str().expect("target home"),
-            "codex",
-            json!({"data":[{"model":"gpt-6-astra","isDefault":true,
+        if !cold_catalog {
+            recovered_catalog.seed_test_admission_catalog(
+                "target",
+                target_home.to_str().expect("target home"),
+                "codex",
+                json!({"data":[{"model":"gpt-6-astra","isDefault":true,
                 "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
-        );
+            );
+        }
         let recovered_session = Arc::new(GuardSession {
             store: recovered_store.clone(),
             transfer_id: transfer_id.into(),
@@ -2594,6 +2675,16 @@ mod retained_executor_tests {
             .is_err(),
             "unknown provider outcome must refuse retry after restart"
         );
+        if cold_catalog {
+            assert!(
+                recovered_session
+                    .requests
+                    .lock()
+                    .expect("the provider request log is available")
+                    .is_empty(),
+                "a cold-cache restart must not refresh or resend an unknown transfer"
+            );
+        }
         assert_eq!(
             recovered_session
                 .requests
