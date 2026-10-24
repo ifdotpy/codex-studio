@@ -68,6 +68,44 @@ export const PROXY_ALLOWED_HOSTS = [
 export const PROXY_REFUSED_HOSTS = ["auth.openai.com"];
 /** Log lines that mean a provider start or reattach went wrong. */
 export const FAILURE_LINES = /did not start|could not be verified/i;
+// Complete Claude canary evidence required by the narrow delivery admission.
+export const RETAINED_CLAUDE_CANARY_CHECKS = [
+  "prepare clone",
+  "accounts",
+  "sandbox and proxy",
+  "first start creates the state",
+  "configure build N (recovery helper)",
+  "start build N",
+  "models on N",
+  "scenario on N",
+  "install N+1",
+  "provider handles kept",
+  "models on N+1",
+  "monitor chat continues",
+  "queued message delivered once",
+  "steer delivered once",
+  "Claude counts against the subscription",
+  "idle chat continues",
+  "no start or verify failure in logs",
+  "network through the proxy",
+  "usage",
+  "live side unchanged",
+  "cleanup",
+];
+
+export function canaryReport(canary, requestId) {
+  return {
+    version: 1,
+    requestId,
+    runId: canary.runId,
+    from: canary.artifacts?.from,
+    to: canary.artifacts?.to,
+    steer: canary.steerScenario,
+    handles: { before: canary.handlesBefore, after: canary.handlesAfter },
+    rows: canary.report.rows.map((row) => ({ ...row })),
+    seconds: canary.seconds,
+  };
+}
 /** Milliseconds for one HTTP request to the clone backend. */
 const REQUEST_MS = 30_000;
 /** Milliseconds for a backend to answer after its job starts. */
@@ -471,6 +509,24 @@ export class Canary {
       throw new CheckFailed(
         `build N+1 ${to.commit.slice(0, 9)} is not newer than build N ${from.commit.slice(0, 9)}`,
       );
+    this.artifacts = Object.fromEntries(
+      [
+        ["from", this.from, from],
+        ["to", this.to, to],
+      ].map(([name, app, build]) => [
+        name,
+        {
+          app,
+          build,
+          backendHash: sha256File(
+            path.join(
+              app,
+              "Contents/Resources/workspace/bin/studio-runtime-server",
+            ),
+          ),
+        },
+      ]),
+    );
     this.root = fs.mkdtempSync(path.join(this.temporaryRoot, RUN_PREFIX));
     fs.writeFileSync(
       path.join(this.root, RUN_MARKER),
@@ -995,6 +1051,13 @@ export class Canary {
       `Also add the word ${this.token("STEERED")} to your final reply.`,
       "current_turn",
     );
+    this.steerScenario = {
+      provider: steerAccount.provider,
+      accountKey: steerAccount.key,
+      chatId: steered.id,
+      messageId: this.steerId,
+      sourceCommit: this.builds.from.commit,
+    };
     return `idle, monitor (queued message), steer on ${steerAccount.key}`;
   }
 
@@ -1080,6 +1143,7 @@ export class Canary {
 
   async handles() {
     const after = openHandles(this.state);
+    this.handlesAfter = after;
     const changes = handleChanges(this.handlesBefore, after);
     if (changes.length)
       throw new CheckFailed(`provider handles changed: ${changes.join("; ")}`);
@@ -1399,9 +1463,13 @@ export function options(argv, environment = process.env) {
         default: path.join(os.homedir(), ".local/state/codex-agents"),
       },
       keep: { type: "boolean", default: false },
+      "report-json": { type: "string" },
+      "request-id": { type: "string" },
       help: { type: "boolean", default: false },
     },
   });
+  if (Boolean(values["report-json"]) !== Boolean(values["request-id"]))
+    throw new CheckFailed("Use --report-json and --request-id together.");
   values["claude-config"] ??=
     environment.CANARY_CLAUDE_CONFIG_DIR ||
     (values["claude-keychain"]
@@ -1410,7 +1478,7 @@ export function options(argv, environment = process.env) {
   return values;
 }
 
-const usage = `Usage: just upgrade-canary --to <N+1 app> [--from <N app>] [--codex-account key] [--claude-config dir] [--claude-keychain --claude-reservation record] [--keep]
+const usage = `Usage: just upgrade-canary --to <N+1 app> [--from <N app>] [--codex-account key] [--claude-config dir] [--claude-keychain --claude-reservation record] [--keep] [--report-json file --request-id id]
 Installs build N+1 over build N on an isolated clone with real processes; see docs/testing.md, "Upgrade canary".
 `;
 
@@ -1425,6 +1493,13 @@ async function cli() {
     `Studio upgrade canary ${canary.runId}: ${parsed.from} -> ${parsed.to}\n`,
   );
   const report = await canary.main();
+  if (parsed["report-json"])
+    fs.writeFileSync(
+      path.resolve(parsed["report-json"]),
+      JSON.stringify(canaryReport(canary, parsed["request-id"]), null, 2) +
+        "\n",
+      { mode: 0o600, flag: "wx" },
+    );
   report.print();
   process.stdout.write(`time ${canary.seconds?.toFixed(0)} s\n`);
   return report.failed().length === 0 ? 0 : 1;

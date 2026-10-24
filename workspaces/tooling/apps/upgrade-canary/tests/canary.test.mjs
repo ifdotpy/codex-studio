@@ -18,7 +18,90 @@ import {
   proxyDecision,
   Canary,
   options,
+  canaryReport,
+  RETAINED_CLAUDE_CANARY_CHECKS,
 } from "../canary.mjs";
+
+test("structured canary output preserves failed verdict and exact request evidence", () => {
+  assert.throws(
+    () => options(["--report-json", "/report.json"], {}),
+    /together/,
+  );
+  const parsed = options(
+    ["--report-json", "/report.json", "--request-id", "request-one"],
+    {},
+  );
+  assert.equal(parsed["request-id"], "request-one");
+  const evidence = {
+    runId: "run-one",
+    artifacts: {
+      from: { build: { commit: "old" } },
+      to: { build: { commit: "new" } },
+    },
+    steerScenario: { provider: "claude", accountKey: "claude-canary" },
+    handlesBefore: ["account:claude-canary|42|1"],
+    handlesAfter: ["account:claude-canary|42|1"],
+    report: {
+      rows: [
+        {
+          name: "steer delivered once",
+          status: "FAIL",
+          detail: "old retained process",
+          ms: 1,
+        },
+      ],
+    },
+    seconds: 2,
+  };
+  const report = canaryReport(evidence, "request-one");
+  assert.equal(report.requestId, "request-one");
+  assert.deepEqual(report.from, evidence.artifacts.from);
+  assert.deepEqual(report.to, evidence.artifacts.to);
+  assert.equal(report.steer.provider, "claude");
+  assert.equal(report.rows[0].status, "FAIL");
+  assert.notEqual(report.rows[0], evidence.report.rows[0]);
+});
+
+test("the narrow admission check list matches every actual complete Claude canary step", async (t) => {
+  const canary = new Canary({
+    from: os.tmpdir(),
+    to: os.tmpdir(),
+    "live-state": os.tmpdir(),
+  });
+  canary.root = os.tmpdir();
+  canary.proxy = {};
+  canary.accounts = [{ provider: "claude" }];
+  canary.chats.monitor = {};
+  for (const method of [
+    "prepare",
+    "accountsFile",
+    "sandbox",
+    "initializeState",
+    "configure",
+    "startJobs",
+    "models",
+    "startScenario",
+    "install",
+    "handles",
+    "monitorContinues",
+    "deliveredOnce",
+    "steerOnce",
+    "claudeBuckets",
+    "idleContinues",
+    "logLines",
+    "proxyReport",
+    "usage",
+    "liveUnchanged",
+    "cleanup",
+  ])
+    t.mock.method(canary, method, async () => "fixture pass");
+  const report = await canary.main();
+  assert.deepEqual(
+    report.rows.map((row) => row.name),
+    RETAINED_CLAUDE_CANARY_CHECKS,
+  );
+  assert.ok(report.rows.every((row) => row.status === "pass"));
+});
 
 function temporary(t) {
   const root = fs.realpathSync(

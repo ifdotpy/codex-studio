@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
@@ -9,12 +10,214 @@ import {
   deliveryPython,
   parseDeliveryArguments,
 } from "../../../../runtime/apps/runtime-server/deliver.mjs";
+import * as delivery from "../../../../runtime/apps/runtime-server/deliver.mjs";
 
 const repository = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../../../..",
 );
 const fixtureApp = path.join(os.tmpdir(), "checked", "Codex Studio.app");
+
+test("retained Claude steer admission is explicit and keeps the real canary", () => {
+  const options = parseDeliveryArguments([
+    "HEAD",
+    "--app",
+    fixtureApp,
+    "--allow-retained-claude-steer-failure",
+  ]);
+  assert.equal(options.allowRetainedClaudeSteerFailure, true);
+  const plan = deliveryPlan({
+    ...options,
+    platform: "darwin",
+    commit: "b".repeat(40),
+    repository,
+  });
+  assert.deepEqual(
+    plan.map((step) => step.label),
+    ["verify target", "upgrade canary", "stage and verify"],
+  );
+  assert.ok(plan[1].args.includes("--report-json"));
+  assert.ok(plan[1].args.includes("--request-id"));
+  assert.equal(plan[1].command, process.execPath);
+  assert.equal(plan[1].canaryAdmission.allowRetainedClaudeSteerFailure, true);
+});
+
+test("only one retained Claude steer failure can be admitted without changing its verdict", (t) => {
+  const expected = {
+    requestId: "request-one",
+    commit: "b".repeat(40),
+    app: fixtureApp,
+    build: { commit: "b".repeat(40) },
+    backendHash: "c".repeat(64),
+  };
+  const report = {
+    version: 1,
+    requestId: expected.requestId,
+    runId: "run-one",
+    from: {
+      app: "/Applications/Codex Studio.app",
+      build: { commit: "89a7283a449fbbf9b86ae2d705b10fb8416cbb89" },
+      backendHash:
+        "e2987b057b2ebb4e2921c67e5a43112553b4ffb5a19fb31125cb8e87c970dcdd",
+    },
+    to: {
+      app: fixtureApp,
+      build: { commit: expected.commit },
+      backendHash: expected.backendHash,
+    },
+    steer: {
+      provider: "claude",
+      accountKey: "claude-canary",
+      chatId: "chat-one",
+      messageId: "message-one",
+      sourceCommit: "89a7283a449fbbf9b86ae2d705b10fb8416cbb89",
+    },
+    handles: {
+      before: ["account:claude-canary|42|1"],
+      after: ["account:claude-canary|42|1"],
+    },
+    rows: delivery.RETAINED_CLAUDE_CANARY_CHECKS?.map((name) => ({
+      name,
+      status: name === "steer delivered once" ? "FAIL" : "pass",
+      detail:
+        name === "steer delivered once"
+          ? "answer CANARY_run-one_STEERED: not reached in 300 s (status running)"
+          : "actual result",
+      ms: 1,
+    })),
+  };
+  assert.equal(
+    delivery.canaryAdmission(report, expected, {
+      exitCode: 1,
+      allowRetainedClaudeSteerFailure: true,
+    }),
+    "retained-claude-steer-failure",
+  );
+  assert.equal(
+    report.rows.find((row) => row.name === "steer delivered once").status,
+    "FAIL",
+  );
+  for (const mutate of [
+    (value) => value.rows.push({ name: "cleanup", status: "FAIL" }),
+    (value) => value.rows.pop(),
+    (value) => {
+      value.rows[0].status = "skip";
+    },
+    (value) => {
+      value.rows[0].status = "FAIL";
+    },
+    (value) => {
+      value.steer.provider = "codex";
+    },
+    (value) => {
+      value.from.build.commit = "d".repeat(40);
+    },
+    (value) => {
+      value.from.backendHash = "d".repeat(64);
+    },
+    (value) => {
+      value.to.backendHash = "d".repeat(64);
+    },
+    (value) => {
+      value.to.build.commit = "d".repeat(40);
+    },
+    (value) => {
+      value.requestId = "another-request";
+    },
+    (value) => {
+      value.handles.after = [];
+    },
+    (value) => {
+      value.rows.find((row) => row.name === "steer delivered once").detail =
+        "message abc has 2 transcript copies";
+    },
+    (value) => {
+      value.rows.find((row) => row.name === "steer delivered once").detail =
+        "message abc receipt undefined";
+    },
+    (value) => {
+      value.rows.find((row) => row.name === "steer delivered once").detail =
+        "message abc receipt {materialized:false}";
+    },
+    (value) => {
+      value.rows.find((row) => row.name === "steer delivered once").detail =
+        "answer CANARY_other-run_STEERED: not reached in 300 s (status running)";
+    },
+    (value) => {
+      value.rows.find((row) => row.name === "steer delivered once").detail =
+        "answer CANARY_run-one_STEERED: not reached in 300 s (status paused)";
+    },
+    (value) => {
+      value.rows.find((row) => row.name === "steer delivered once").detail =
+        "answer CANARY_run-one_STEERED: not reached in 301 s (status running)";
+    },
+    (value) => {
+      value.rows.find((row) => row.name === "steer delivered once").detail =
+        "chat abc is failed";
+    },
+  ]) {
+    const value = structuredClone(report);
+    mutate(value);
+    assert.throws(() =>
+      delivery.canaryAdmission(value, expected, {
+        exitCode: 1,
+        allowRetainedClaudeSteerFailure: true,
+      }),
+    );
+  }
+  assert.throws(() =>
+    delivery.canaryAdmission(report, expected, { exitCode: 1 }),
+  );
+  assert.throws(() =>
+    delivery.canaryAdmission(report, expected, {
+      exitCode: 2,
+      allowRetainedClaudeSteerFailure: true,
+    }),
+  );
+  const folder = fs.mkdtempSync(
+    path.join(os.tmpdir(), "delivery-canary-admission-"),
+  );
+  t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+  const artifact = {
+    build: expected.build,
+    backendHash: expected.backendHash,
+    bundleHash: "f".repeat(64),
+  };
+  const gate = {
+    ...expected,
+    folder,
+    url: "http://127.0.0.1:4620",
+    allowRetainedClaudeSteerFailure: true,
+  };
+  const saved = delivery.writeCanaryAdmission(gate, artifact, report, 1);
+  const receipt = JSON.parse(fs.readFileSync(saved.receiptFile, "utf8"));
+  assert.equal(
+    receipt.report.rows.find((row) => row.name === "steer delivered once")
+      .status,
+    "FAIL",
+  );
+  assert.deepEqual(receipt.request.artifact, artifact);
+  assert.equal(receipt.request.requestId, expected.requestId);
+  assert.equal(receipt.canaryExitCode, 1);
+  assert.throws(
+    () => delivery.writeCanaryAdmission(gate, artifact, report, 1),
+    /EEXIST/,
+  );
+  const passing = structuredClone(report);
+  passing.rows.forEach((row) => {
+    row.status = "pass";
+  });
+  assert.equal(
+    delivery.canaryAdmission(passing, expected, { exitCode: 0 }),
+    "pass",
+  );
+  assert.throws(() =>
+    delivery.canaryAdmission(passing, expected, {
+      exitCode: 1,
+      allowRetainedClaudeSteerFailure: true,
+    }),
+  );
+});
 
 test("Linux keeps its existing delivery owner and exact commit argument", () => {
   const plan = deliveryPlan({
