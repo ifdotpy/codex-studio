@@ -506,7 +506,11 @@ impl SchedulerRepository {
             {
                 continue;
             }
-            if previous != "unknown"
+            // An unsent ticket was proven not written. A worker that reattaches
+            // to the same provider generation may send it once under the same
+            // ticket, and that send settles it once more.
+            let sent_later = previous == "unsent" && outcome != "unsent";
+            if (previous != "unknown" && !sent_later)
                 || (previous == outcome && receipt.get("responseError").is_some())
             {
                 return Err(invalid_agent(&agent.id.0));

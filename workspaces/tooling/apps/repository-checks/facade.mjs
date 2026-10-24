@@ -819,7 +819,7 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(/^account_worker::tests::(a_replaced_worker_keeps_the_live_turn_of_its_retained_provider|a_supervised_provider_exit_is_still_a_disconnect|provider_exit_while_the_server_runs_is_a_disconnect_reported_once)$/)",
+            "test(/^account_worker::tests::(a_replaced_worker_keeps_the_live_turn_of_its_retained_provider|a_supervised_provider_exit_is_still_a_disconnect|provider_exit_while_the_server_runs_is_a_disconnect_reported_once|stop_after_reattach::(stop_while_a_retained_provider_has_no_live_worker_interrupts_its_turn_once|stop_without_an_account_session_interrupts_a_retained_turn_once|stop_interrupt_with_a_lost_reply_is_not_sent_again_after_reattach))$/)",
           ],
         ],
         [
@@ -860,7 +860,7 @@ function fastTierCommands(root) {
         selector:
           "account worker end with a supervised provider that outlives it",
         reason:
-          "Check that a replaced worker leaves the live turn of a retained provider running and tells no parent, while a provider exit stays a disconnect.",
+          "Check that a replaced worker leaves the live turn of a retained provider running and tells no parent, while a provider exit stays a disconnect, and that a turn stopped while no worker was attached is interrupted once by the worker that reattaches, never again after a lost reply.",
       },
     },
     {
