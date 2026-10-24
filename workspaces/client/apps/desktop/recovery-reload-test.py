@@ -6,7 +6,7 @@ import socket
 import subprocess
 import sys
 import tempfile
-import time
+import selectors
 import unittest
 
 HERE = Path(__file__).resolve().parent
@@ -35,16 +35,25 @@ class RecoveryReload(unittest.TestCase):
                 "python": sys.executable, "codex": "/usr/bin/true", "resources": str(root / "missing"),
                 "runtimeServer": str(root / "missing/studio-runtime-server"),
                 "supervisorEnabled": False}))
-            agent = subprocess.Popen([sys.executable, "-B", str(app / "recover_backend.py"), "--config", str(config)],
+            # run already owns an interval seam; exercise the installed code in a real child.
+            command = ("import pathlib,runpy,sys; sys.path.insert(0,sys.argv[1]); "
+                       "module=runpy.run_path(sys.argv[1]+'/recover_backend.py'); "
+                       "module['run'](pathlib.Path(sys.argv[2]), interval=0.01)")
+            agent = subprocess.Popen([sys.executable, "-B", "-c", command, str(app), str(config)],
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             try:
-                time.sleep(1.5)
+                with selectors.DefaultSelector() as ready:
+                    ready.register(agent.stdout, selectors.EVENT_READ)
+                    self.assertTrue(ready.select(5), "the recovery agent did not initialize")
+                    self.assertIn('"backend-recovery"', agent.stdout.readline())
                 self.assertIsNone(agent.poll(), "the agent must keep running while its files stay")
                 (app / "install_update.py").write_text("# a newer installer\n")
                 output, _ = agent.communicate(timeout=20)
             finally:
                 if agent.poll() is None:
                     agent.kill()
+                    agent.communicate(timeout=5)
+                agent.stdout.close()
             self.assertEqual(agent.returncode, 0)
             self.assertIn('"agent code changed"', output)
 

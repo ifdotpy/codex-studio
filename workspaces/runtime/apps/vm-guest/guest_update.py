@@ -100,13 +100,15 @@ def file_sha(path: Path):
 
 class UpdateHandlers:
     def __init__(self, state: Path, root: Path, *, opt=OPT, key_path=Path(GUEST_UPDATE_KEY_PATH),
-                 record_path=Path(GUEST_PAYLOAD_RECORD_PATH), busy=lambda: 0, runner=None):
+                 record_path=Path(GUEST_PAYLOAD_RECORD_PATH), busy=lambda: 0, runner=None,
+                 monotonic=time.monotonic, wall_clock=time.time, sleep=asyncio.sleep):
         self.state, self.root = state, root
         self.opt, self.key_path, self.record_path = opt, key_path, record_path
         self.updates = state / "updates"
         # The number of other broker requests in flight: a restart waits until it is 0.
         self.busy = busy
         self.runner = runner or self.run
+        self.monotonic, self.wall_clock, self.sleep = monotonic, wall_clock, sleep
         self.tasks = set()
 
     async def dispatch(self, request_id, method, params, emit):
@@ -248,12 +250,12 @@ class UpdateHandlers:
     async def restart_when_idle(self, directory, status):
         """Restart the changed units once no other broker request runs (or after DRAIN_SECONDS).
         A broker restart needs a separate systemd unit: it would stop this process first."""
-        deadline = time.monotonic() + DRAIN_SECONDS
-        while self.busy() > 0 and time.monotonic() < deadline:
-            await asyncio.sleep(1)
+        deadline = self.monotonic() + DRAIN_SECONDS
+        while self.busy() > 0 and self.monotonic() < deadline:
+            await self.sleep(1)
         units = status["restarts"]
         if ADMIN_UNIT in units or LAYR_UNIT in units:
-            status.update(stage="restart_scheduled", scheduledAt=time.time())
+            status.update(stage="restart_scheduled", scheduledAt=self.wall_clock())
             atomic_json(directory / "status.json", status)
             command = ["/usr/bin/systemd-run", "--collect", "--quiet", "--on-active=1",
                        "--unit", "codex-studio-update-" + status["operationId"][:40],
@@ -264,7 +266,7 @@ class UpdateHandlers:
         if code != 0:
             status.update(stage="restart_failed", error=output[-2000:])
         elif status["stage"] != "restart_scheduled":
-            status.update(stage="complete", restartedAt=time.time())
+            status.update(stage="complete", restartedAt=self.wall_clock())
         atomic_json(directory / "status.json", status)
 
     def finish_restarts(self, started_at):
