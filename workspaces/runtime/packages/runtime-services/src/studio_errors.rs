@@ -54,6 +54,14 @@ pub enum Kind {
     TurnDisconnected,
     /// Studio could not prepare the agent's workspace.
     WorkspaceFailed,
+    /// A running turn whose provider is silent while no tool runs.
+    TurnStalled,
+    /// An owner message that waits while its chat does not start.
+    InputNotStarted,
+    /// Chats that wait for an account session that does not start.
+    SessionNotStarted,
+    /// A usage resume, capacity retry or account transfer that did not move.
+    ScheduleStalled,
 }
 
 impl Kind {
@@ -67,6 +75,10 @@ impl Kind {
             Self::InputStuck => "input_stuck",
             Self::TurnDisconnected => "turn_disconnected",
             Self::WorkspaceFailed => "workspace_failed",
+            Self::TurnStalled => "turn_stalled",
+            Self::InputNotStarted => "input_not_started",
+            Self::SessionNotStarted => "session_not_started",
+            Self::ScheduleStalled => "schedule_stalled",
         }
     }
 
@@ -86,6 +98,12 @@ impl Kind {
             Self::InputStuck => "This message waits because of a Studio error.",
             Self::TurnDisconnected => "The provider connection ended during the turn.",
             Self::WorkspaceFailed => "Studio could not prepare the workspace of this agent.",
+            Self::TurnStalled => {
+                "The chat shows a running turn, but its provider sent nothing for 10 minutes."
+            }
+            Self::InputNotStarted => "A message waits, but its chat did not start.",
+            Self::SessionNotStarted => "Chats wait for an account session that did not start.",
+            Self::ScheduleStalled => "A scheduled step did not move after its due time.",
         }
     }
 
@@ -98,7 +116,21 @@ impl Kind {
             | Self::MonitorNotRecorded
             | Self::InputNotSent
             | Self::InputUnconfirmed
-            | Self::WorkspaceFailed => "check",
+            | Self::WorkspaceFailed
+            | Self::TurnStalled
+            | Self::InputNotStarted
+            | Self::SessionNotStarted
+            | Self::ScheduleStalled => "check",
+        }
+    }
+
+    /// The row kind of a liveness finding.
+    fn of_liveness(code: crate::liveness::Code) -> Self {
+        match code {
+            crate::liveness::Code::TurnStalled => Self::TurnStalled,
+            crate::liveness::Code::InputNotStarted => Self::InputNotStarted,
+            crate::liveness::Code::SessionNotStarted => Self::SessionNotStarted,
+            crate::liveness::Code::ScheduleStalled => Self::ScheduleStalled,
         }
     }
 }
@@ -370,6 +402,27 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
         );
     }
 
+    for finding in crate::liveness::findings(tx, now)? {
+        let kind = Kind::of_liveness(finding.code);
+        push(
+            &mut rows,
+            json!({
+                "id":finding.id,
+                "kind":kind.code(),
+                "reason":kind.reason(),
+                "action":kind.action(),
+                "agentId":finding.agent,
+                "agentName":finding.agent_name,
+                "eventId":finding.event,
+                "detail":finding.detail,
+                "subject":finding.subject,
+                "count":1,
+                "firstAt":finding.first_at,
+                "at":finding.at,
+            }),
+        );
+    }
+
     rows.sort_by(|a, b| {
         b["at"]
             .as_f64()
@@ -522,6 +575,10 @@ mod tests {
             Kind::InputNotSent,
             Kind::InputUnconfirmed,
             Kind::WorkspaceFailed,
+            Kind::TurnStalled,
+            Kind::InputNotStarted,
+            Kind::SessionNotStarted,
+            Kind::ScheduleStalled,
         ] {
             assert_eq!(kind.action(), "check", "{kind:?}");
         }

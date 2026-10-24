@@ -22728,7 +22728,11 @@ export interface components {
         | "input_uncertain"
         | "input_stuck"
         | "turn_disconnected"
-        | "workspace_failed";
+        | "workspace_failed"
+        | "turn_stalled"
+        | "input_not_started"
+        | "session_not_started"
+        | "schedule_stalled";
       /**
        * Monitorid
        * @default null

@@ -43,6 +43,7 @@ pub mod preparation;
 pub(crate) mod restart_recovery;
 pub mod retained;
 pub mod retained_frame;
+mod silent_turns;
 mod steer;
 mod stopped_turns;
 pub(crate) mod store;
@@ -806,6 +807,8 @@ pub async fn start_account_worker_with_publication_sink(
         connection_recovery: tokio::task::JoinSet::new(),
         connection_recovery_active: false,
         managed_callbacks: JoinSet::new(),
+        silent_turn_at: tokio::time::Instant::now() + crate::liveness::CHECK_INTERVAL,
+        silent_turn_check: None,
     };
     let mut cancelled_owner = stop.subscribe();
     let (finished_tx, finished) = watch::channel(false);
@@ -1005,6 +1008,10 @@ struct Worker {
     connection_recovery: tokio::task::JoinSet<()>,
     connection_recovery_active: bool,
     managed_callbacks: JoinSet<ManagedCallbackResult>,
+    /// When the next check of silent running turns starts (liveness).
+    silent_turn_at: tokio::time::Instant,
+    /// The running check of silent turns; one at a time.
+    silent_turn_check: Option<JoinHandle<()>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1051,6 +1058,7 @@ enum ServeSignal {
     IdleSnapshot(Result<idle_unload::IdleSnapshotResult, tokio::task::JoinError>),
     IdleSettingChanged(Result<(), watch::error::RecvError>),
     CapacityRetry,
+    SilentTurnCheck,
 }
 
 struct ActorProviderSession {
@@ -1195,6 +1203,12 @@ impl Worker {
             let _joined = drain.await;
         }
         self.connection_recovery.abort_all();
+        // A cut-off silent turn check wrote nothing it cannot repeat: its
+        // settlement is one compare-and-apply transaction.
+        if let Some(check) = self.silent_turn_check.take() {
+            check.abort();
+            let _joined = check.await;
+        }
         for wait in std::mem::take(&mut self.preparation_waits).into_values() {
             wait.abort();
         }
@@ -1460,6 +1474,7 @@ impl Worker {
             changed = self.idle_state_changes.changed(), if self.idle_snapshot.is_none() && self.idle_clocks.has_recheck_candidates() => ServeSignal::IdleStateChanged(changed),
             snapshot = async { match self.idle_snapshot.as_mut() { Some(task) => task.await, None => std::future::pending().await } }, if self.idle_snapshot.is_some() => ServeSignal::IdleSnapshot(snapshot),
             changed = self.idle_setting_changes.changed() => ServeSignal::IdleSettingChanged(changed),
+            _ = tokio::time::sleep_until(self.silent_turn_at), if self.session.status.borrow().initialization == InitializationStatus::Ready && self.silent_turn_check.as_ref().is_none_or(JoinHandle::is_finished) => ServeSignal::SilentTurnCheck,
         }
     }
     async fn dispatch_serve_signal(&mut self, signal: ServeSignal) -> Result<bool, WorkerError> {
@@ -1537,6 +1552,20 @@ impl Worker {
             ServeSignal::CapacityRetry => {
                 self.capacity_retry_at = None;
                 self.journal_capacity_blocked().await?;
+            }
+            ServeSignal::SilentTurnCheck => {
+                self.silent_turn_at = tokio::time::Instant::now() + crate::liveness::CHECK_INTERVAL;
+                if !self.closing {
+                    self.silent_turn_check = Some(tokio::spawn(silent_turns::check_account(
+                        silent_turns::Pass {
+                            bridge: self.bridge.clone(),
+                            account: self.account.clone(),
+                            scope: self.retained_session.scope().clone(),
+                            session: self.retained_session.clone(),
+                            commands: self.commands.clone(),
+                        },
+                    )));
+                }
             }
         }
         Ok(true)
