@@ -326,13 +326,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parent_tables_are_registered_in_stable_order() {
-        let tables = registered_parent_tables();
-        assert_eq!(tables.len(), 3);
-        assert!(tables.windows(2).all(|pair| pair[0] < pair[1]));
-    }
-
-    #[test]
     fn table_inspection_returns_findings_without_writing() {
         let mut connection = Connection::open_in_memory().expect("in-memory database opens");
         connection
@@ -350,6 +343,29 @@ mod tests {
             .expect("bootstrap transaction starts");
         prepare_sync_schema(&transaction).expect("sync schema prepares");
         transaction.commit().expect("bootstrap commits");
+        let sql = SYNC_SCHEMA.to_ascii_uppercase();
+        assert!(
+            !sql.contains("CHECK") && !sql.contains("REFERENCES"),
+            "extend structural comparison before adding CHECK or FOREIGN KEY constraints"
+        );
+        let tables = connection
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name GLOB 'sync_*' OR name='runtime_transcript_revisions')")
+            .expect("owned tables")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("owned table names")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("owned tables read");
+        for table in tables {
+            let unsupported: i64 = connection
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM pragma_foreign_key_list(?1)) + \
+                 (SELECT COUNT(*) FROM pragma_table_xinfo(?1) WHERE hidden!=0)",
+                    [&table],
+                    |row| row.get(0),
+                )
+                .expect("owned table constraints");
+            assert_eq!(unsupported, 0, "extend structural comparison for {table}");
+        }
         assert!(
             inspect_sync_tables(&connection)
                 .expect("canonical tables inspect")

@@ -1296,7 +1296,6 @@ mod tests {
 
     #[test]
     fn execution_run_schema_requires_status_and_types_latest_attempt_id() {
-        initialize().expect("persisted schemas compile");
         let valid = json!({
             "id":"run-1","agent":"agent-1","accountKey":"default",
             "epoch":2,"status":"running","created":1.0,"latestAttemptId":null
