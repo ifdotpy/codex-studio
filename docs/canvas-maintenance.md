@@ -101,9 +101,12 @@ column is complete:
   still holds the scanned text. It reads each replaced value back and commits
   only if it decodes to the original text. The SHA-256 of the batch texts goes
   to `runtime_stored_text_batches`.
+- A separate reader checks for plain rows after the last batch.
+  If any remain after concurrent writes, the next pass starts at the first plain row.
+  A short writer transaction saves that result.
 - Progress is the `stored-text-v1:runtime_item_fulltext.body` row of
   `runtime_payload_migrations`: `running`, `complete`, `waitingForSpace` or
-  `error`. The pass writes nothing while the state volume has less than
+  `error`. The pass converts no data while the state volume has less than
   `COMPACTION_MIN_FREE_BYTES` free (the 5 GiB critical warning), or when free
   space is unknown.
 
@@ -112,9 +115,9 @@ freelist and new rows reuse them. To return the space to the disk, run the
 offline `VACUUM INTO` procedure above after the progress row shows
 `complete=1`, at a restart that the owner approves.
 
-To install a release older than the first release that reads compressed bodies
-(`Read compressed full-text bodies`), stop the backend first and run
+Before installing a release without analytics dictionary support, stop the backend and run
 `studio-runtime-server stored-text inflate --state ~/.local/state/codex-agents`.
+This also applies to a release that reads compressed full-text bodies only.
 It rewrites every compressed full-text body and analytics item record as plain
 TEXT with the same checks, records `:inflate` batches, and forgets the
 compaction progress. The stored dictionaries stay. The command refuses a

@@ -103,7 +103,7 @@ impl Direction {
 /// Saved progress of the compaction pass of one column.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompactionProgress {
-    /// Highest rowid already inspected.
+    /// The next scan starts after this rowid.
     pub cursor: i64,
     /// True when one complete pass reached the end of the table.
     pub complete: bool,
@@ -134,7 +134,7 @@ pub struct CompactionWindow {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CompactionBatch {
     pub converted: usize,
-    /// Rows that changed after the scan; the next pass inspects them again.
+    /// Rows that changed after the scan and were not replaced.
     pub skipped: usize,
     /// Bytes of the converted texts.
     pub plain_bytes: u64,
@@ -215,6 +215,12 @@ pub fn scan_window(
         let candidate = match direction {
             Direction::Compress => {
                 let text: String = row.get(2)?;
+                if !window.candidates.is_empty()
+                    && bytes.saturating_add(text.len()) > COMPACTION_BATCH_BYTES
+                {
+                    window.next_cursor = rowid - 1;
+                    return Ok(window);
+                }
                 let stored = match dictionary {
                     Some(dictionary) => {
                         crate::stored_text_dictionary::encode_with(&text, dictionary)
@@ -236,6 +242,12 @@ pub fn scan_window(
                 let stored: Vec<u8> = row.get(2)?;
                 let text = stored_text::decode_blob(&stored)
                     .map_err(|_| round_trip_failure(column, &key))?;
+                if !window.candidates.is_empty()
+                    && bytes.saturating_add(text.len()) > COMPACTION_BATCH_BYTES
+                {
+                    window.next_cursor = rowid - 1;
+                    return Ok(window);
+                }
                 CompactionCandidate {
                     rowid,
                     key,
@@ -337,7 +349,7 @@ pub fn apply_window(
             transaction,
             column,
             window.next_cursor,
-            window.done,
+            false,
             "running",
             now,
         )?;
@@ -345,8 +357,38 @@ pub fn apply_window(
     Ok(batch)
 }
 
-/// Save compaction progress, for example at the end of a pass whose last
-/// windows held no plain values. A finished pass is saved as `complete`.
+/// Check for plain rows outside the writer transaction. The caller saves this
+/// result in a short transaction. Supported writers store compressed values,
+/// so they cannot introduce a plain value after this check.
+pub fn completion_progress(
+    connection: &Connection,
+    column: CompactedColumn,
+    cursor: i64,
+) -> StoreResult<CompactionProgress> {
+    let remaining: Option<i64> = connection
+        .query_row_cached(
+            &format!(
+                "SELECT rowid FROM {} WHERE typeof({})='text' ORDER BY rowid LIMIT 1",
+                column.table, column.column
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(match remaining {
+        Some(rowid) => CompactionProgress {
+            cursor: rowid.saturating_sub(1),
+            complete: false,
+        },
+        None => CompactionProgress {
+            cursor,
+            complete: true,
+        },
+    })
+}
+
+/// Save progress. Only a result from [`completion_progress`] can mark a pass
+/// complete. The final scan must not hold the serialized writer.
 pub fn save_progress(
     transaction: &Transaction<'_>,
     column: CompactedColumn,
@@ -463,6 +505,22 @@ mod tests {
         data_encoding::HEXLOWER.encode(&hash.finalize())
     }
 
+    fn finish(connection: &mut Connection, cursor: i64) {
+        let saved =
+            completion_progress(connection, FULLTEXT_BODY, cursor).expect("verify completion");
+        let transaction = connection.transaction().expect("final transaction");
+        save_progress(
+            &transaction,
+            FULLTEXT_BODY,
+            saved.cursor,
+            saved.complete,
+            "running",
+            NOW,
+        )
+        .expect("final progress");
+        transaction.commit().expect("final commit");
+    }
+
     #[test]
     fn compaction_converts_plain_values_and_records_their_hash() {
         let mut connection = database();
@@ -485,6 +543,8 @@ mod tests {
         let transaction = connection.transaction().expect("transaction");
         let batch = apply_window(&transaction, FULLTEXT_BODY, &window, NOW).expect("apply");
         transaction.commit().expect("commit");
+
+        finish(&mut connection, window.next_cursor);
 
         assert_eq!((batch.converted, batch.skipped), (2, 0));
         assert_eq!(batch.plain_bytes, (body(1).len() + body(3).len()) as u64);
@@ -588,6 +648,24 @@ mod tests {
             )
             .expect("batch count");
         assert_eq!(batches, 0);
+        finish(&mut connection, window.next_cursor);
+        assert_eq!(
+            progress(&connection, FULLTEXT_BODY).expect("progress"),
+            CompactionProgress::default(),
+            "a skipped plain row must restart the pass instead of marking it complete"
+        );
+        let retry =
+            scan_window(&connection, FULLTEXT_BODY, Direction::Compress, 0).expect("retry scan");
+        let transaction = connection.transaction().expect("retry transaction");
+        apply_window(&transaction, FULLTEXT_BODY, &retry, NOW).expect("retry");
+        transaction.commit().expect("retry commit");
+        finish(&mut connection, retry.next_cursor);
+        assert!(
+            progress(&connection, FULLTEXT_BODY)
+                .expect("complete progress")
+                .complete
+        );
+        assert_eq!(stored(&connection, "a"), ("blob".to_owned(), body(2)));
     }
 
     #[test]
@@ -660,6 +738,43 @@ mod tests {
         let window =
             scan_window(&connection, FULLTEXT_BODY, Direction::Compress, 0).expect("large window");
         assert_eq!(window.candidates.len(), 1);
+        assert_eq!(window.next_cursor, 1);
+    }
+
+    #[test]
+    fn an_empty_final_window_cannot_hide_a_plain_row_before_the_cursor() {
+        let mut connection = database();
+        insert(&connection, "a", SqlValue::Text(body(1)));
+        finish(&mut connection, COMPACTION_WINDOW_ROWS);
+        assert_eq!(
+            progress(&connection, FULLTEXT_BODY).expect("progress"),
+            CompactionProgress::default()
+        );
+        let status: String = connection
+            .query_row(
+                "SELECT status FROM runtime_payload_migrations WHERE name=?1",
+                [FULLTEXT_BODY.progress],
+                |row| row.get(0),
+            )
+            .expect("status");
+        assert_eq!(status, "running");
+    }
+
+    #[test]
+    fn compaction_does_not_add_an_oversize_value_to_an_existing_batch() {
+        let connection = database();
+        insert(&connection, "small", SqlValue::Text(body(1)));
+        insert(
+            &connection,
+            "large",
+            SqlValue::Text("x".repeat(COMPACTION_BATCH_BYTES + 1)),
+        );
+        let window = scan_window(&connection, FULLTEXT_BODY, Direction::Compress, 0).expect("scan");
+        assert_eq!(
+            window.candidates.len(),
+            1,
+            "an oversize value needs its own batch"
+        );
         assert_eq!(window.next_cursor, 1);
     }
 

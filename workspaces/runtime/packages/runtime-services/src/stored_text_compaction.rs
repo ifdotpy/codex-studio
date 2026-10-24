@@ -44,6 +44,8 @@ pub enum PassOutcome {
     WaitingForSpace,
     /// The table has too few rows to train its dictionary yet.
     WaitingForRows,
+    /// A concurrent plain write needs another pass from the start.
+    WaitingForChanges,
 }
 
 /// Free bytes of the state volume, or `None` when unknown.
@@ -131,16 +133,9 @@ pub async fn run_pass(
                     compaction::apply_window(transaction, column, &window, now)
                 })
                 .await?;
-        } else if done {
-            let now = now_seconds();
-            store
-                .transaction(move |transaction| {
-                    compaction::save_progress(transaction, column, next, true, "complete", now)
-                })
-                .await?;
         }
         if done {
-            return Ok(PassOutcome::Complete);
+            return finish_pass(store, column, next).await;
         }
         cursor = next;
         tokio::time::sleep(COMPACTION_BATCH_PAUSE).await;
@@ -163,8 +158,22 @@ pub async fn run_analytics_pass(
     if progress.complete {
         return Ok(PassOutcome::Complete);
     }
-    if !ensure_dictionary(store).await? {
-        return Ok(PassOutcome::WaitingForRows);
+    if let Some(wait) = ensure_dictionary(store, free).await? {
+        if wait == PassOutcome::WaitingForSpace {
+            store
+                .analytics_projection_transaction(move |transaction| {
+                    compaction::save_progress(
+                        transaction,
+                        column,
+                        progress.cursor,
+                        false,
+                        "waitingForSpace",
+                        now_seconds(),
+                    )
+                })
+                .await?;
+        }
+        return Ok(wait);
     }
     let mut cursor = progress.cursor;
     loop {
@@ -190,31 +199,76 @@ pub async fn run_analytics_pass(
                     compaction::scan_window(transaction, column, Direction::Compress, cursor)?;
                 if !window.candidates.is_empty() {
                     compaction::apply_window(transaction, column, &window, now)?;
-                } else if window.done {
-                    compaction::save_progress(
-                        transaction,
-                        column,
-                        window.next_cursor,
-                        true,
-                        "complete",
-                        now,
-                    )?;
                 }
                 Ok::<_, StoreError>((window.next_cursor, window.done))
             })
             .await?;
         if done {
-            return Ok(PassOutcome::Complete);
+            return finish_pass(store, column, next).await;
         }
         cursor = next;
         tokio::time::sleep(COMPACTION_BATCH_PAUSE).await;
     }
 }
 
+/// Verify the whole column without holding its writer, then save the result.
+/// The current writers cannot add plain values after this verification.
+async fn finish_pass(
+    store: &Arc<RuntimeStore>,
+    column: CompactedColumn,
+    cursor: i64,
+) -> StoreResult<PassOutcome> {
+    let analytics = column == ANALYTICS_ITEMS_RECORD;
+    let saved = if analytics {
+        let root = store.root().to_path_buf();
+        studio_runtime_store::blocking_pool::spawn_blocking(LABEL, move || {
+            let connection = AnalyticsRepository::new(&root)
+                .open_read_only()
+                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+            compaction::completion_progress(&connection, column, cursor)
+        })
+        .await
+        .map_err(|_| StoreError::ReadTaskFailed)??
+    } else {
+        store
+            .read_async(LABEL, move |connection| {
+                compaction::completion_progress(connection, column, cursor)
+            })
+            .await?
+    };
+    let complete = saved.complete;
+    let save = move |transaction: &rusqlite::Transaction<'_>| {
+        compaction::save_progress(
+            transaction,
+            column,
+            saved.cursor,
+            complete,
+            "running",
+            now_seconds(),
+        )
+    };
+    if analytics {
+        store.analytics_projection_transaction(save).await?;
+    } else {
+        store.transaction(save).await?;
+    }
+    Ok(if complete {
+        PassOutcome::Complete
+    } else {
+        PassOutcome::WaitingForChanges
+    })
+}
+
 /// Make sure `analytics_items.record` has a dictionary. Samples are read and
 /// the dictionary is trained on a read-only connection; only the insert takes
-/// the analytics writer. Returns false while the table has too few rows.
-async fn ensure_dictionary(store: &Arc<RuntimeStore>) -> StoreResult<bool> {
+/// the analytics writer. Returns a wait reason, or `None` when ready.
+async fn ensure_dictionary(
+    store: &Arc<RuntimeStore>,
+    free: &FreeSpace,
+) -> StoreResult<Option<PassOutcome>> {
+    if free().is_none_or(|bytes| bytes < COMPACTION_MIN_FREE_BYTES) {
+        return Ok(Some(PassOutcome::WaitingForSpace));
+    }
     let root = store.root().to_path_buf();
     let trained = studio_runtime_store::blocking_pool::spawn_blocking(
         "stored-text/train",
@@ -236,10 +290,13 @@ async fn ensure_dictionary(store: &Arc<RuntimeStore>) -> StoreResult<bool> {
     .await
     .map_err(|_| StoreError::ReadTaskFailed)??;
     let bytes = match trained {
-        None => return Ok(true),
-        Some(None) => return Ok(false),
+        None => return Ok(None),
+        Some(None) => return Ok(Some(PassOutcome::WaitingForRows)),
         Some(Some(bytes)) => bytes,
     };
+    if free().is_none_or(|bytes| bytes < COMPACTION_MIN_FREE_BYTES) {
+        return Ok(Some(PassOutcome::WaitingForSpace));
+    }
     let now = now_seconds();
     store
         .analytics_projection_transaction(move |transaction| {
@@ -254,7 +311,7 @@ async fn ensure_dictionary(store: &Arc<RuntimeStore>) -> StoreResult<bool> {
             Ok::<_, StoreError>(())
         })
         .await?;
-    Ok(true)
+    Ok(None)
 }
 
 /// Plain `analytics_items.record` values spread over the table, or `None`
@@ -506,6 +563,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pass_retries_a_plain_replacement_before_it_reports_complete() {
+        let (_directory, store) = store().await;
+        insert_plain(&store, 3).await;
+        store.transaction(|transaction| {
+            transaction.execute_batch(
+                "CREATE TABLE fixture_original_body AS SELECT body FROM runtime_item_fulltext WHERE id='agent:item-000';
+                 CREATE TRIGGER concurrent_plain_write AFTER UPDATE ON runtime_item_fulltext
+                 WHEN NEW.id='agent:item-002' BEGIN
+                 UPDATE runtime_item_fulltext SET body=(SELECT body FROM fixture_original_body)
+                 WHERE id='agent:item-000'; END;"
+            )?;
+            Ok::<_, StoreError>(())
+        }).await.expect("concurrent write fixture");
+        assert_eq!(
+            run_pass(&store, FULLTEXT_BODY, &plenty())
+                .await
+                .expect("pass"),
+            PassOutcome::WaitingForChanges
+        );
+        assert_eq!(status(&store).await, Some((0, "running".to_owned())));
+        assert_eq!(rows(&store).await[0].2, body(0));
+        store
+            .transaction(|transaction| {
+                transaction.execute_batch("DROP TRIGGER concurrent_plain_write")?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("stop the fixture writer");
+        assert_eq!(
+            run_pass(&store, FULLTEXT_BODY, &plenty())
+                .await
+                .expect("retry"),
+            PassOutcome::Complete
+        );
+        assert!(rows(&store).await.iter().all(|(_, kind, _)| kind == "blob"));
+    }
+
+    #[tokio::test]
     async fn pass_writes_nothing_while_free_space_is_low_or_unknown() {
         let (_directory, store) = store().await;
         insert_plain(&store, 3).await;
@@ -588,6 +683,27 @@ mod tests {
             .expect("rows")
             .collect::<Result<_, _>>()
             .expect("rows read")
+    }
+
+    #[tokio::test]
+    async fn analytics_pass_does_not_train_a_dictionary_while_space_is_low() {
+        let (_directory, store) = store().await;
+        insert_analytics(&store, 0..3_000).await;
+        let free: FreeSpace = Arc::new(|| Some(COMPACTION_MIN_FREE_BYTES - 1));
+        assert_eq!(
+            run_analytics_pass(&store, &free).await.expect("pass"),
+            PassOutcome::WaitingForSpace
+        );
+        let count: i64 = AnalyticsRepository::new(store.root())
+            .open_read_only()
+            .expect("reader")
+            .query_row(
+                "SELECT count(*) FROM analytics_stored_text_dictionaries",
+                [],
+                |row| row.get(0),
+            )
+            .expect("dictionary count");
+        assert_eq!(count, 0, "a low-space pass cannot write a dictionary");
     }
 
     #[tokio::test]

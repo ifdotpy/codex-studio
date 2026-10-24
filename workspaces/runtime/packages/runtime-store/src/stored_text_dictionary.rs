@@ -45,6 +45,16 @@ const DICTIONARY_SCHEMA: &str = "
         sha256 TEXT NOT NULL, dictionary BLOB NOT NULL);
     CREATE INDEX IF NOT EXISTS analytics_stored_text_dictionaries_name
         ON analytics_stored_text_dictionaries(name, created, id);
+    CREATE TRIGGER IF NOT EXISTS analytics_stored_text_dictionaries_no_update
+        BEFORE UPDATE ON analytics_stored_text_dictionaries BEGIN
+        SELECT RAISE(ABORT, 'stored text dictionaries are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS analytics_stored_text_dictionaries_no_delete
+        BEFORE DELETE ON analytics_stored_text_dictionaries BEGIN
+        SELECT RAISE(ABORT, 'stored text dictionaries are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS analytics_stored_text_dictionaries_no_replace
+        BEFORE INSERT ON analytics_stored_text_dictionaries
+        WHEN EXISTS(SELECT 1 FROM analytics_stored_text_dictionaries WHERE id=NEW.id) BEGIN
+        SELECT RAISE(ABORT, 'stored text dictionaries are immutable'); END;
 ";
 
 /// Columns of `analytics_items`, in table order. The temporary view repeats
@@ -196,14 +206,21 @@ pub fn load(connection: &Connection) -> StoreResult<usize> {
         return Ok(0);
     }
     let mut statement = connection.prepare_cached(
-        "SELECT id,dictionary FROM main.analytics_stored_text_dictionaries ORDER BY created,id",
+        "SELECT id,dictionary,sha256 FROM main.analytics_stored_text_dictionaries ORDER BY created,id",
     )?;
     let rows = statement
         .query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    for (id, bytes) in &rows {
+    for (id, bytes, hash) in &rows {
+        if crate::sha256_hex(bytes) != *hash {
+            return Err(bad_dictionary_row(*id));
+        }
         let id = u32::try_from(*id).map_err(|_| bad_dictionary_row(*id))?;
         register(id, bytes.clone()).map_err(|_| bad_dictionary_row(i64::from(id)))?;
     }
@@ -378,16 +395,114 @@ mod tests {
 
     fn analytics() -> Connection {
         let connection = Connection::open_in_memory().expect("database");
+        initialize_analytics(connection)
+    }
+
+    fn initialize_analytics(connection: Connection) -> Connection {
+        let snapshot: serde_json::Value =
+            serde_json::from_str(include_str!("runtime-state-schema.json")).expect("schema source");
+        let table = snapshot["analytics.sqlite3"]["sqlite_master"]
+            .as_array()
+            .expect("schema objects")
+            .iter()
+            .find(|object| object["name"] == "analytics_items")
+            .expect("analytics_items schema owner");
         connection
-            .execute_batch(
-                "CREATE TABLE analytics_items (
-                    id TEXT PRIMARY KEY, agent TEXT NOT NULL, root TEXT, thread TEXT, turn TEXT,
-                    at REAL NOT NULL, type TEXT, name TEXT, is_tool INTEGER NOT NULL, record TEXT NOT NULL);",
-            )
+            .execute_batch(table["sql"].as_str().expect("table schema"))
             .expect("table");
         ensure_analytics_schema(&connection).expect("schema");
         install_analytics_sql(&connection).expect("sql");
         connection
+    }
+
+    #[test]
+    fn dictionary_records_survive_a_process_restart() {
+        const FIXTURE_ENV: &str = "STUDIO_STORED_TEXT_RESTART_FIXTURE";
+        let text = record(12_345);
+        if let Some(path) = std::env::var_os(FIXTURE_ENV) {
+            let path = std::path::PathBuf::from(path);
+            let connection =
+                Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .expect("persisted database");
+            let id: u32 = connection
+                .query_row(
+                    "SELECT id FROM analytics_stored_text_dictionaries",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("persisted dictionary id");
+            assert!(
+                dictionary(id).is_none(),
+                "the new process starts without a dictionary"
+            );
+            install_analytics_sql(&connection).expect("load persisted dictionaries and view");
+            connection
+                .pragma_update(None, "query_only", true)
+                .expect("read only");
+            let records = connection
+                .prepare("SELECT record FROM analytics_items ORDER BY id")
+                .expect("view")
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("decoded rows");
+            assert_eq!(records, vec![text; 3]);
+            std::fs::write(path.with_extension("verified"), b"3")
+                .expect("record the verified row count");
+            return;
+        }
+        let directory = tempfile::tempdir().expect("temporary state");
+        let path = directory.path().join("analytics.sqlite3");
+        let connection = initialize_analytics(Connection::open(&path).expect("database"));
+        let transaction = connection.unchecked_transaction().expect("transaction");
+        let dictionary = insert(&transaction, ANALYTICS_ITEMS_RECORD, trained(), 1.0)
+            .expect("persist dictionary");
+        transaction.commit().expect("commit");
+        insert_item(&connection, "plain", StoredTextValue::Plain(&text));
+        insert_item(&connection, "old-blob", StoredTextValue::compressed(&text));
+        insert_item(
+            &connection,
+            "dictionary",
+            StoredTextValue::Compressed(encode_with(&text, dictionary)),
+        );
+        drop(connection);
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "stored_text_dictionary::tests::dictionary_records_survive_a_process_restart",
+            ])
+            .env(FIXTURE_ENV, &path)
+            .output()
+            .expect("restart reader");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read(path.with_extension("verified")).expect("the child verified rows"),
+            b"3"
+        );
+    }
+
+    #[test]
+    fn decoding_view_columns_match_the_owned_schema() {
+        let connection = analytics();
+        for table in ["main.analytics_items", "temp.analytics_items"] {
+            let (schema, table) = table.split_once('.').expect("qualified name");
+            let columns = connection
+                .prepare(&format!("PRAGMA {schema}.table_info({table})"))
+                .expect("columns")
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("column names");
+            assert_eq!(
+                columns, ANALYTICS_ITEMS_COLUMNS,
+                "the view must preserve every column from runtime-state-schema.json"
+            );
+        }
     }
 
     fn insert_item(connection: &Connection, id: &str, value: StoredTextValue<'_>) {
@@ -482,6 +597,30 @@ mod tests {
             )
             .expect_err("the decoding view refuses writes");
         assert!(error.to_string().contains("view"), "{error}");
+    }
+
+    #[test]
+    fn dictionary_rows_refuse_changes_and_load_verifies_the_hash() {
+        let connection = analytics();
+        let transaction = connection.unchecked_transaction().expect("transaction");
+        let dictionary =
+            insert(&transaction, ANALYTICS_ITEMS_RECORD, trained(), 1.0).expect("dictionary");
+        transaction.commit().expect("commit");
+        for sql in [
+            "UPDATE analytics_stored_text_dictionaries SET dictionary=x'00'",
+            "DELETE FROM analytics_stored_text_dictionaries",
+            "INSERT OR REPLACE INTO analytics_stored_text_dictionaries SELECT * FROM analytics_stored_text_dictionaries",
+        ] {
+            assert!(connection.execute(sql, []).is_err(), "{sql} must fail");
+        }
+        let other = analytics();
+        other
+            .execute(
+                "INSERT INTO analytics_stored_text_dictionaries VALUES (?1,?2,1.0,'wrong',?3)",
+                params![dictionary.id, ANALYTICS_ITEMS_RECORD, dictionary.bytes],
+            )
+            .expect("damaged hash fixture");
+        assert!(load(&other).is_err(), "an invalid persisted hash must fail");
     }
 
     #[test]

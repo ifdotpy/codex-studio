@@ -1349,6 +1349,7 @@ function fastTierCommands(root) {
               "test(/^stored_text_owner::/)",
               "test(stored_text_compaction::tests::)",
               "test(stored_text_dictionary::tests::)",
+              "test(analytics_state_check::compressed_item_records_receive_the_same_readonly_validation)",
             ]),
           ],
         ],

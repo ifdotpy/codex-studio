@@ -365,6 +365,7 @@ pub fn check_state_readonly(root: &std::path::Path) -> StoreResult<Vec<crate::St
         root.join("analytics.sqlite3"),
         OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
+    crate::stored_text_dictionary::load(&db)?;
     db.pragma_update(None, "query_only", true)?;
     let mut result = Vec::new();
     for table in [
@@ -408,7 +409,13 @@ fn check_analytics_table(
     let mut failures = std::collections::BTreeMap::<(String, String), u64>::new();
     while let Some(row) = rows.next()? {
         report.row_count += 1;
-        let (id, raw): (String, String) = (row.get(0)?, row.get(1)?);
+        let id: String = row.get(0)?;
+        let raw: String = if table == CaptureTable::Items {
+            row.get::<_, crate::stored_text::StoredText>(1)?
+                .into_string()
+        } else {
+            row.get(1)?
+        };
         let error = match serde_json::from_str::<Value>(&raw) {
             Ok(v) => {
                 let schema = studio_runtime_schema::first_error(table.schema(), &v)

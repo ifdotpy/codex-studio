@@ -82,7 +82,7 @@ above `STORED_TEXT_MAX_DECODED_BYTES`. A release that only reads plain TEXT
 refuses a compressed body as an invalid stored object; it does not misread it.
 `length(body)` and `typeof(body)` therefore describe the stored form, not the
 text. Current writers store stored format 1. The compaction pass
-([canvas maintenance](canvas-maintenance.md#compressed-full-text)) records its
+([canvas maintenance](canvas-maintenance.md#compressed-full-text-and-analytics-records)) records its
 progress in the `stored-text-v1:runtime_item_fulltext.body` row of
 `runtime_payload_migrations`. Each converted batch is a row of
 `runtime_stored_text_batches(name, batch, first_rowid, last_rowid, rows,
@@ -96,7 +96,9 @@ but its frames name a dictionary trained from the table's own rows
 Dictionaries are rows of `analytics_stored_text_dictionaries(id, name, created,
 sha256, dictionary)`; `id` is the zstd dictionary id that frames carry. The
 rows hold fragments of user data, stay only in the state, and are never
-changed or deleted. Writers store a record compressed once the newest
+changed or deleted. SQLite triggers refuse updates, deletes, and replacements.
+Readers verify each dictionary's stored SHA-256 before use.
+Writers store a record compressed once the newest
 dictionary of `analytics_items.record` exists, and plain TEXT before. Every
 analytics connection that Studio opens registers the SQL function
 `stored_text(value)` and a temporary view `temp.analytics_items` with the
