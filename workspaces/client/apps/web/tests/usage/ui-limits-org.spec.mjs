@@ -126,7 +126,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
           await route.fulfill({ json: { items: [], accounts: [], cost: 0 } });
       });
       await page.goto(server.resolvedUrls.local[0]);
-      // The chat notice is one plain line; the details stay on the limits page.
+      // The chat notice stays one line. Model eligibility details are not shown.
       await page
         .locator("[data-notice]")
         .getByText(/^Limit reached\. Resets at /)
@@ -171,21 +171,30 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
       await page
         .getByRole("button", { name: "Account limits", exact: true })
         .click();
-      await page
-        .locator(".account-limits-panel")
-        .getByText("Model eligibility details", { exact: true })
-        .click();
-      const eligibility = page.locator(
-        ".account-limits-panel .model-limit-eligibility",
-      );
-      await expect(eligibility).toContainText(
-        "Applicable buckets: claude, claude-sonnet",
-      );
-      assert.doesNotMatch(await eligibility.innerText(), /claude-opus/);
-      await expect(eligibility).toContainText("Cannot run now");
+      await expect(page.locator(".account-limits-panel")).toBeVisible();
+      const assertNoModelDetails = async () => {
+        await expect(page.locator(".model-limit-eligibility")).toHaveCount(0);
+        await expect(
+          page.getByText("Model eligibility details", { exact: true }),
+        ).toHaveCount(0);
+        assert.doesNotMatch(
+          await page.locator(".account-limits-panel").innerText(),
+          /Applicable buckets|Overage|Current eligibility is unknown|Cannot run now/,
+        );
+      };
+      await assertNoModelDetails();
       await expect(
-        page.locator(".account-limits-panel .model-limit-eligibility"),
-      ).toContainText("Overage rejected");
+        page
+          .locator(".account-limits-panel")
+          .getByRole("button", {
+            name: "Refresh",
+            exact: true,
+          })
+          .first(),
+      ).toBeVisible();
+      await expect(
+        page.locator(".account-limit-windows").first(),
+      ).toBeVisible();
       assert.ok(requests.length >= 2);
       assert.ok(
         requests.every(
@@ -209,21 +218,14 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
         fullPage: true,
         animations: "disabled",
       });
-      for (const [value, label] of [
-        ["allowed", "Overage allowed"],
-        ["in_use", "Overage in use"],
-      ]) {
+      for (const value of ["allowed", "in_use"]) {
         mode = value;
         await page.clock.fastForward(1000);
         await page.evaluate(() => window.refreshFixture());
-        await page
-          .getByText(label, { exact: true })
-          .first()
-          .waitFor({ timeout: 10_000 });
-        assert.equal(
-          await page.locator("[data-notice] .native-error").count(),
+        await expect(page.locator("[data-notice] .native-error")).toHaveCount(
           0,
         );
+        await assertNoModelDetails();
         await page.screenshot({
           path: resolve(output, `limits-${value}-${width}.png`),
           fullPage: true,
@@ -231,9 +233,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
         });
       }
       await page.clock.fastForward(61_000);
-      await expect(
-        page.locator(".account-limits-panel .model-limit-eligibility"),
-      ).toContainText("Current eligibility is unknown");
+      await assertNoModelDetails();
       await page
         .getByRole("button", { name: "Show accounts", exact: true })
         .click();
