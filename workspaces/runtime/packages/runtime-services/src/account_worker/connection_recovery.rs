@@ -301,7 +301,7 @@ fn saved_receipt_matches_current(agent: &Value) -> bool {
         || (current[4].is_null() && agent["connectionRecovery"]["turnId"] == saved[4])
 }
 
-pub(super) fn observe_live_session(
+fn observe_live_session(
     session: &RetainedSessionPort,
     expected_scope: &ConnectionScope,
     observation: &RecoveryObservation,
@@ -310,7 +310,7 @@ pub(super) fn observe_live_session(
     (scope == expected_scope && session.is_live()).then(|| observation.clone())
 }
 
-pub(super) struct NoTaskCompletion;
+struct NoTaskCompletion;
 impl TaskCompletionWriter for NoTaskCompletion {
     fn resolve_receipt<'a>(
         &'a self,

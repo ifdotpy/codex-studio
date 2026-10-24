@@ -1,16 +1,11 @@
 //! The liveness checker: invariants that find a stuck chat before its owner
 //! does. Each finding is a row of the Studio errors list with a code and a
-//! plain reason. Where it is safe, the checker runs one automatic recovery
-//! through an existing idempotent path, and never sends an input:
+//! plain reason. Detection only reads stored state. It never settles a turn,
+//! wakes a chat, restarts a session, or sends a provider request:
 //! - `turn_stalled`: a running chat whose provider sent nothing for
-//!   [`SILENT_TURN_SECONDS`] while no tool runs. The account worker checks a
-//!   Codex turn with native history and settles it once
-//!   (`account_worker::silent_turns`). A Claude bridge holds its turn in
-//!   memory and reports it active, so its row only names the stall.
+//!   [`SILENT_TURN_SECONDS`] while no tool runs.
 //! - `input_not_started`: an owner message that waits longer than
-//!   [`PENDING_INPUT_SECONDS`] while its chat is idle. The checker queues the
-//!   chat once per message, as a new message would; the scheduler then claims
-//!   only pending input. A held chat is not woken; its row says why.
+//!   [`PENDING_INPUT_SECONDS`] while its chat is idle. A held chat's row says why.
 //! - `session_not_started`: chats that wait for their account session
 //!   (`startWait.reason` `provider_session`) longer than
 //!   [`SESSION_START_SECONDS`]. The row names the account and the last start
@@ -21,14 +16,9 @@
 //!   the owner.
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use studio_runtime_store::{
-    AgentId, AgentRepository, EventWriteRepository, RuntimeStore, StoreError, Transaction,
+    AgentId, AgentRepository, EventWriteRepository, StoreError, Transaction,
 };
-use tokio::sync::{Notify, watch};
-
-/// Unit: wall time between two liveness passes.
-pub const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 /// Unit: seconds without a provider event before a running turn is stalled.
 pub const SILENT_TURN_SECONDS: f64 = 600.0;
 /// Unit: seconds an owner message waits in an idle chat before it is stuck.
@@ -39,10 +29,6 @@ pub const SESSION_START_SECONDS: f64 = 120.0;
 pub const SCHEDULE_OVERDUE_SECONDS: f64 = 900.0;
 /// Receipt-id prefix of the last start error of an account session.
 const SESSION_START_FAILURE_PREFIX: &str = "liveness:session-start-failure:";
-/// Receipt-id prefix of the one wake for a waiting message.
-const WAKE_PREFIX: &str = "liveness:wake:";
-/// Receipt-id prefix of the latest native-history check of a silent turn.
-const TURN_CHECK_PREFIX: &str = "liveness:turn-check:";
 const RECEIPT_SIGNATURE: &str = "liveness";
 
 /// The invariant a finding breaks.
@@ -71,9 +57,6 @@ pub struct Finding {
     pub first_at: f64,
     /// Unix seconds of the latest evidence.
     pub at: f64,
-    /// The waiting message that one wake may start, when the chat is idle
-    /// and not held.
-    pub wake: Option<String>,
 }
 
 /// Record why the session of `account` did not start. The account registry
@@ -110,42 +93,6 @@ pub fn clear_session_start_failure(tx: &Transaction<'_>, account: &str) -> Resul
             format!("{SESSION_START_FAILURE_PREFIX}{account}"),
             RECEIPT_SIGNATURE
         ])?;
-    Ok(())
-}
-
-/// The outcome of the latest native-history check of a silent turn.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TurnCheck {
-    /// Native history shows the turn still running.
-    Active,
-    /// Native history could not be read or compared.
-    Unreadable,
-}
-
-/// The receipt id of the latest native-history check of `agent`'s turn.
-pub(crate) fn turn_check_key(agent: &str) -> String {
-    format!("{TURN_CHECK_PREFIX}{agent}")
-}
-
-/// Record the latest native-history check `check` of the silent turn `turn`.
-pub fn record_turn_check(
-    tx: &Transaction<'_>,
-    agent: &str,
-    turn: &str,
-    check: &str,
-    outcome: TurnCheck,
-    now: f64,
-) -> Result<(), StoreError> {
-    EventWriteRepository::replace_receipt(
-        tx,
-        &turn_check_key(agent),
-        RECEIPT_SIGNATURE,
-        &json!({"turn":turn,"check":check,"outcome":match outcome {
-            TurnCheck::Active => "active",
-            TurnCheck::Unreadable => "unreadable",
-        },"at":now})
-        .to_string(),
-    )?;
     Ok(())
 }
 
@@ -189,7 +136,24 @@ pub fn findings(tx: &Transaction<'_>, now: f64) -> Result<Vec<Finding>, StoreErr
     waiting_inputs(tx, now, &mut found)?;
     waiting_sessions(tx, now, &mut found)?;
     stalled_schedules(tx, now, &mut found)?;
+    for finding in &mut found {
+        if let Some(record) = merged_agent(tx, &finding.agent)? {
+            finding.detail.push_str(&format!(
+                " Account: {}. Start: {} (start of the wait). Last provider event: {}.",
+                record["accountKey"].as_str().unwrap_or("default"),
+                timestamp(Some(finding.first_at)),
+                timestamp(last_provider_activity(&record)),
+            ));
+        }
+    }
     Ok(found)
+}
+
+fn timestamp(at: Option<f64>) -> String {
+    at.filter(|at| at.is_finite())
+        .and_then(|at| chrono::DateTime::from_timestamp(at as i64, 0))
+        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 fn agent_name(record: &Value) -> String {
@@ -229,34 +193,10 @@ fn stalled_turns(
             continue;
         };
         let turn = record["turnId"].as_str().unwrap_or_default();
-        let claude = record["provider"] == "claude";
-        let check = EventWriteRepository::receipt(tx, &turn_check_key(&id))?
-            .and_then(|receipt| serde_json::from_str::<Value>(&receipt.result).ok())
-            .filter(|check| check["turn"].as_str() == Some(turn));
-        let detail = if claude {
-            format!(
-                "The provider sent nothing for {} minutes, and no tool runs. The Claude bridge still holds the turn open, so Studio cannot settle it from native history.",
-                minutes(now - since)
-            )
-        } else {
-            match check.as_ref().and_then(|check| check["outcome"].as_str()) {
-                // Native history shows the turn still running: not stuck.
-                Some("active") => continue,
-                Some("unreadable") => format!(
-                    "The provider sent nothing for {} minutes, and no tool runs. Studio could not read the native history of the turn.",
-                    minutes(now - since)
-                ),
-                // The account worker checks the turn within a minute; only an
-                // unchecked turn past that grace is shown.
-                _ if now - since < SILENT_TURN_SECONDS + CHECK_INTERVAL.as_secs_f64() * 2.0 => {
-                    continue;
-                }
-                _ => format!(
-                    "The provider sent nothing for {} minutes, and no tool runs. Studio has not checked the native history yet; the account session may not run.",
-                    minutes(now - since)
-                ),
-            }
-        };
+        let detail = format!(
+            "The provider sent nothing for {} minutes, and no tool runs. The turn outcome is unknown.",
+            minutes(now - since)
+        );
         found.push(Finding {
             code: Code::TurnStalled,
             id: format!("liveness:turn_stalled:{id}:{turn}"),
@@ -267,14 +207,12 @@ fn stalled_turns(
             event: None,
             first_at: since,
             at: now,
-            wake: None,
         });
     }
     Ok(())
 }
 
-/// Why a chat with a waiting message does not start by itself, or `None`
-/// when one wake can start it.
+/// Why a chat with a waiting message does not start by itself.
 fn input_hold(record: &Value) -> Option<String> {
     let status = record["status"].as_str().unwrap_or_default();
     if record["autoWake"] != true {
@@ -350,21 +288,14 @@ fn waiting_inputs(
             continue;
         }
         let hold = input_hold(&record);
-        let woken = EventWriteRepository::receipt(tx, &format!("{WAKE_PREFIX}{event}"))?
-            .and_then(|receipt| serde_json::from_str::<Value>(&receipt.result).ok())
-            .and_then(|value| value["at"].as_f64());
         let waiting = if count > 1 {
             format!("{count} messages wait. ")
         } else {
             String::new()
         };
-        let detail = match (&hold, woken) {
-            (Some(hold), _) => format!("{waiting}{hold}"),
-            (None, Some(at)) => format!(
-                "{waiting}Studio woke the chat {} minutes ago, but it did not start.",
-                minutes(now - at)
-            ),
-            (None, None) => format!("{waiting}The chat is idle. Studio wakes it once."),
+        let detail = match hold {
+            Some(hold) => format!("{waiting}{hold}"),
+            None => format!("{waiting}The chat is idle. Its message has not started."),
         };
         found.push(Finding {
             code: Code::InputNotStarted,
@@ -376,7 +307,6 @@ fn waiting_inputs(
             event: Some(event.clone()),
             first_at: created,
             at: now,
-            wake: (hold.is_none() && woken.is_none()).then_some(event),
         });
     }
     Ok(())
@@ -441,7 +371,6 @@ fn waiting_sessions(
             event: None,
             first_at: since,
             at: now,
-            wake: None,
         });
     }
     Ok(())
@@ -518,7 +447,6 @@ fn stalled_schedules(
             event: None,
             first_at: due,
             at: now,
-            wake: None,
         });
     }
 
@@ -600,97 +528,7 @@ fn stalled_schedules(
             event: None,
             first_at: updated,
             at: now,
-            wake: None,
         });
     }
     Ok(())
-}
-
-/// What one pass changed.
-#[derive(Debug, Default)]
-pub struct PassReport {
-    /// Chats queued once for a waiting message.
-    pub woken: Vec<String>,
-}
-
-/// One liveness pass: wake each idle chat whose message waits, once per
-/// message. The caller notifies the account registry when a chat was woken.
-pub async fn pass(store: &RuntimeStore, now: f64) -> Result<PassReport, StoreError> {
-    let targets = store
-        .read_async("runtime-services/liveness", move |tx| {
-            Ok::<_, StoreError>(
-                findings_for_wake(tx, now)?
-                    .into_iter()
-                    .filter_map(|finding| Some((finding.agent, finding.wake?)))
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .await?;
-    let mut report = PassReport::default();
-    for (agent, event) in targets {
-        let woken = crate::scheduler::lifecycle_transaction_with(store, move |tx| {
-            wake_once(tx, &agent, &event, now)
-        })
-        .await;
-        if let Ok(Some(agent)) = woken {
-            report.woken.push(agent);
-        }
-    }
-    Ok(report)
-}
-
-fn findings_for_wake(tx: &Transaction<'_>, now: f64) -> Result<Vec<Finding>, StoreError> {
-    let mut found = Vec::new();
-    waiting_inputs(tx, now, &mut found)?;
-    Ok(found)
-}
-
-/// Queue `agent` for its waiting message `event` once, after rechecking it in
-/// this transaction. The receipt is written first, so a lost commit response
-/// never wakes the same message twice.
-fn wake_once(
-    tx: &Transaction<'_>,
-    agent: &str,
-    event: &str,
-    now: f64,
-) -> Result<Option<String>, StoreError> {
-    let still = findings_for_wake(tx, now)?
-        .into_iter()
-        .any(|finding| finding.agent == agent && finding.wake.as_deref() == Some(event));
-    if !still {
-        return Ok(None);
-    }
-    EventWriteRepository::put_receipt(
-        tx,
-        &format!("{WAKE_PREFIX}{event}"),
-        RECEIPT_SIGNATURE,
-        &json!({"agent":agent,"at":now}).to_string(),
-    )?;
-    let Some(record) = AgentRepository::get(tx, &AgentId::from(agent))? else {
-        return Ok(None);
-    };
-    Ok(crate::event_write::queue_for_pending_input(tx, &record)
-        .map_err(|_| StoreError::SchemaMismatch("liveness wake refused".into()))?
-        .then(|| agent.to_owned()))
-}
-
-/// Run a pass every [`CHECK_INTERVAL`] until shutdown, and wake the account
-/// registry after a pass that queued a chat.
-pub async fn run(store: Arc<RuntimeStore>, wake: Arc<Notify>, mut shutdown: watch::Receiver<bool>) {
-    while !*shutdown.borrow() {
-        tokio::select! {
-            () = tokio::time::sleep(CHECK_INTERVAL) => {}
-            _ = shutdown.changed() => return,
-        }
-        let Ok(now) = crate::event_write::unix_time() else {
-            continue;
-        };
-        match pass(&store, now).await {
-            Ok(report) if !report.woken.is_empty() => wake.notify_one(),
-            Ok(_) => {}
-            Err(error) => {
-                crate::diagnostics::log_stderr(format_args!("liveness pass failed: {error}"))
-            }
-        }
-    }
 }

@@ -410,6 +410,10 @@ async fn liveness_rows_name_each_stuck_state() {
                 agent("silent", "Silent chat", json!({"status":"running","provider":"claude",
                     "accountKey":"claude-local","inFlight":true,"turnId":"turn-s","threadId":"t-silent",
                     "activity":{"phase":"thinking","at":now - 700.0},"activeTools":[]}))?,
+                agent("silent-codex", "Silent Codex chat", json!({"status":"running",
+                    "inFlight":true,"turnId":"turn-c","threadId":"t-codex",
+                    "created":now - 900.0,
+                    "activity":{"phase":"thinking","at":now - 700.0},"activeTools":[]}))?,
                 agent("busy", "Busy chat", json!({"status":"running","provider":"claude",
                     "accountKey":"claude-local","inFlight":true,"turnId":"turn-b","threadId":"t-busy",
                     "activity":{"phase":"tool","at":now - 700.0},
@@ -459,6 +463,13 @@ async fn liveness_rows_name_each_stuck_state() {
     };
     let silent = row("turn_stalled", "silent");
     assert_eq!(silent["action"], "check", "{silent}");
+    let codex = row("turn_stalled", "silent-codex");
+    for item in [&silent, &codex] {
+        let detail = item["detail"].as_str().unwrap();
+        for label in ["Account:", "Start:", "Last provider event:"] {
+            assert!(detail.contains(label), "missing {label}: {item}");
+        }
+    }
     assert!(
         items
             .iter()

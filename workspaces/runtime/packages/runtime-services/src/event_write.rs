@@ -522,28 +522,7 @@ pub fn checked_agent(
     Ok(agent)
 }
 
-/// Queue `agent` for input that is already pending at its epoch, as a new
-/// message would. Returns whether it was queued; a stopped, held or busy agent
-/// is not. The input itself is not changed, and the scheduler claims only
-/// pending input, so nothing is sent twice.
-pub fn queue_for_pending_input(
-    connection: &Transaction<'_>,
-    agent: &AgentRecord,
-) -> Result<bool, EventWriteError> {
-    let pending: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending')",
-            rusqlite::params![agent.id.0, agent.epoch],
-            |row| row.get(0),
-        )
-        .map_err(studio_runtime_store::StoreError::from)?;
-    if !pending {
-        return Ok(false);
-    }
-    queue_agent(connection, agent)
-}
-
-fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<bool, EventWriteError> {
+fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), EventWriteError> {
     let auto_wake = agent_auto_wake(agent)?;
     let status = match agent.status {
         AgentStatus::Running | AgentStatus::Starting => {
@@ -555,7 +534,7 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<bool
         _ => true,
     };
     if !auto_wake || truthy(agent.extra.get("nativeFailureHold")) || !status {
-        return Ok(false);
+        return Ok(());
     }
     let mut updated = agent.clone();
     updated.status = AgentStatus::Queued;
@@ -563,7 +542,7 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<bool
     let projection =
         serde_json::to_value(&updated).map_err(studio_runtime_store::StoreError::from)?;
     crate::agents_create::publish_agent(connection, &projection)?;
-    Ok(true)
+    Ok(())
 }
 
 fn agent_auto_wake(agent: &AgentRecord) -> Result<bool, EventWriteError> {

@@ -1427,7 +1427,6 @@ function fastTierCommands(root) {
               "test(/^studio_errors::/)",
               "test(account_worker::tests::retained::retained_actor_request_answer_after_same_generation_restart_is_recorded_once)",
               "test(account_worker::tests::restart_held_first_input_is_reconciled_by_the_first_worker)",
-              "test(account_worker::tests::silent_turns::)",
             ]),
           ],
         ],
