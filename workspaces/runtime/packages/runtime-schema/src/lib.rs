@@ -347,14 +347,47 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
 type SchemaResult<T> = Result<T, String>;
 
 struct CompiledSchemas {
-    validators: BTreeMap<String, Validator>,
+    registry: JsonSchemaRegistry<'static>,
+    validators: BTreeMap<String, NamedValidator>,
     sync_entity_branches: BTreeMap<String, String>,
+}
+
+impl CompiledSchemas {
+    fn initialize(&self) -> SchemaResult<()> {
+        for validator in self.validators.values() {
+            validator.get(&self.registry)?;
+        }
+        Ok(())
+    }
+}
+
+struct NamedValidator {
+    reference: String,
+    name: String,
+    compiled: OnceLock<SchemaResult<Validator>>,
+}
+
+impl NamedValidator {
+    fn new(reference: String, name: &str) -> Self {
+        Self {
+            reference,
+            name: name.to_owned(),
+            compiled: OnceLock::new(),
+        }
+    }
+
+    fn get(&self, registry: &JsonSchemaRegistry<'_>) -> SchemaResult<&Validator> {
+        self.compiled
+            .get_or_init(|| compile(registry, json!({"$ref": self.reference}), &self.name))
+            .as_ref()
+            .map_err(Clone::clone)
+    }
 }
 
 static COMPILED_SCHEMAS: OnceLock<SchemaResult<CompiledSchemas>> = OnceLock::new();
 
 /// Build the reference registry from the committed OpenAPI and persisted-state schemas.
-pub fn registry_for_document(document: &Value) -> SchemaResult<JsonSchemaRegistry<'_>> {
+pub fn registry_for_document(document: &Value) -> SchemaResult<JsonSchemaRegistry<'static>> {
     let mut registry = JsonSchemaRegistry::new()
         .draft(Draft::Draft202012)
         .add(
@@ -374,16 +407,18 @@ pub fn registry_for_document(document: &Value) -> SchemaResult<JsonSchemaRegistr
 
 /// Ensure every named runtime schema has compiled successfully.
 pub fn initialize() -> SchemaResult<()> {
-    compiled_schemas().map(|_| ())
+    compiled_schemas()?.initialize()
 }
 
-/// Borrow the process-wide compiled named validator. Clones share jsonschema's root graph.
+/// Compile only the requested named validator on first use; clones share its root graph.
 /// HTTP keeps its own schema allowlist while reusing this owner for compilation.
 pub fn compiled_validator(schema: &str) -> SchemaResult<&'static Validator> {
-    compiled_schemas()?
+    let schemas = compiled_schemas()?;
+    schemas
         .validators
         .get(schema)
-        .ok_or_else(|| format!("unknown persisted schema {schema}"))
+        .ok_or_else(|| format!("unknown persisted schema {schema}"))?
+        .get(&schemas.registry)
 }
 
 /// Validate one persisted value against its named schema.
@@ -617,13 +652,13 @@ fn non_extra_error_count(error: &ValidationError<'_>) -> usize {
 }
 
 fn compiled_schemas() -> SchemaResult<&'static CompiledSchemas> {
-    match COMPILED_SCHEMAS.get_or_init(compile_schemas) {
+    match COMPILED_SCHEMAS.get_or_init(prepare_schemas) {
         Ok(schemas) => Ok(schemas),
         Err(message) => Err(message.clone()),
     }
 }
 
-fn compile_schemas() -> SchemaResult<CompiledSchemas> {
+fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
     let openapi: Value = serde_json::from_slice(OPENAPI)
         .map_err(|error| format!("cannot parse OpenAPI schema document: {error}"))?;
     let account_registry: Value = serde_json::from_slice(ACCOUNT_REGISTRY)
@@ -704,7 +739,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "studio_api__federation__models__MessageReceipt",
     ] {
         let reference = format!("{OPENAPI_URI}#/components/schemas/{name}");
-        let validator = compile(&registry, json!({"$ref": reference}), name)?;
+        let validator = NamedValidator::new(reference, name);
         validators.insert(name.to_owned(), validator);
     }
     let sync_mapping = openapi
@@ -721,11 +756,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
             .ok_or_else(|| "SyncEntityPayload discriminator reference is not local".to_owned())?;
         sync_entity_branches.insert(collection.clone(), name.to_owned());
         if !validators.contains_key(name) {
-            let validator = compile(
-                &registry,
-                json!({"$ref": format!("{OPENAPI_URI}{reference}")}),
-                name,
-            )?;
+            let validator = NamedValidator::new(format!("{OPENAPI_URI}{reference}"), name);
             validators.insert(name.to_owned(), validator);
         }
     }
@@ -854,53 +885,44 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
             USAGE_LIMITS_URI,
         ),
     ] {
-        let validator = compile(&registry, json!({"$ref": uri}), name)?;
+        let validator = NamedValidator::new(uri.to_owned(), name);
         validators.insert(name.to_owned(), validator);
     }
 
-    compile_definitions(
-        &registry,
+    register_definitions(
         ACCOUNT_REGISTRY_URI,
         "account-registry",
         &account_registry,
         &mut validators,
     )?;
-    compile_definitions(
-        &registry,
+    register_definitions(
         USAGE_LIMITS_URI,
         "workspace-usage-limits",
         &usage_limits,
         &mut validators,
     )?;
     let relocation: Value = serde_json::from_slice(RELOCATION).map_err(|e| e.to_string())?;
-    compile_definitions(
-        &registry,
-        RELOCATION_URI,
-        "relocation",
-        &relocation,
-        &mut validators,
-    )?;
+    register_definitions(RELOCATION_URI, "relocation", &relocation, &mut validators)?;
     let continuation: Value =
         serde_json::from_slice(CONTINUATION).map_err(|error| error.to_string())?;
-    compile_definitions(
-        &registry,
+    register_definitions(
         CONTINUATION_URI,
         "continuation",
         &continuation,
         &mut validators,
     )?;
     Ok(CompiledSchemas {
+        registry,
         validators,
         sync_entity_branches,
     })
 }
 
-fn compile_definitions(
-    registry: &JsonSchemaRegistry<'_>,
+fn register_definitions(
     document_uri: &str,
     namespace: &str,
     document: &Value,
-    validators: &mut BTreeMap<String, Validator>,
+    validators: &mut BTreeMap<String, NamedValidator>,
 ) -> SchemaResult<()> {
     let definitions = document
         .get("$defs")
@@ -908,7 +930,7 @@ fn compile_definitions(
         .ok_or_else(|| format!("{namespace} schema has no $defs object"))?;
     for name in definitions.keys() {
         let reference = format!("{document_uri}#/$defs/{}", escape_pointer(name));
-        let validator = compile(registry, json!({"$ref": reference}), name)?;
+        let validator = NamedValidator::new(reference, name);
         validators.insert(format!("{namespace}/{name}"), validator);
     }
     Ok(())
@@ -941,6 +963,42 @@ mod tests {
         first_error, initialize, normalize_sync_entity_payload, registry_for_document,
         table_schema, validate,
     };
+
+    #[test]
+    fn preparing_named_schemas_does_not_compile_validators() {
+        let mut schemas = super::prepare_schemas().expect("registry prepares");
+        assert!(
+            schemas
+                .validators
+                .values()
+                .all(|entry| entry.compiled.get().is_none())
+        );
+        let requested = &schemas.validators["account-registry/AccountRecord"];
+        requested
+            .get(&schemas.registry)
+            .expect("requested schema compiles");
+        assert_eq!(
+            schemas
+                .validators
+                .values()
+                .filter(|entry| entry.compiled.get().is_some())
+                .count(),
+            1
+        );
+
+        schemas.validators.insert(
+            "!unused-invalid".to_owned(),
+            super::NamedValidator::new(
+                format!("{}#/components/schemas/MissingSchema", super::OPENAPI_URI),
+                "unused-invalid",
+            ),
+        );
+        let error = schemas
+            .initialize()
+            .expect_err("unused invalid schema fails startup");
+        assert!(error.starts_with("cannot compile persisted schema unused-invalid:"));
+        assert_eq!(schemas.initialize(), Err(error));
+    }
 
     #[test]
     fn generated_agent_contracts_supply_runtime_capacity_values() {
@@ -990,6 +1048,13 @@ mod tests {
     #[test]
     fn compiled_record_schemas_accept_known_records_and_reject_invalid_values() {
         initialize().expect("persisted schemas compile");
+        assert!(
+            super::compiled_schemas()
+                .expect("registry prepares")
+                .validators
+                .values()
+                .all(|entry| matches!(entry.compiled.get(), Some(Ok(_))))
+        );
         assert!(
             validate(
                 "AgentRecordResponse",
