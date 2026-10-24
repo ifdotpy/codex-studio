@@ -308,6 +308,7 @@ async fn a_pending_question_survives_a_worker_reattach_and_is_answered_once() {
 
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
+    answer_adopted_turn_check(&mut peer).await;
     worker_barrier(&worker).await;
     assert_ne!(
         card["connectionId"],

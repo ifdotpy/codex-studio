@@ -1403,6 +1403,7 @@ function fastTierCommands(root) {
               "test(account_worker::tests::account_transfer::)",
               "test(account_transfer_driver::request_tests::busy_member_)",
               "test(account_worker::tests::auth_hold::held_start_wakes_nothing_until_an_account_change)",
+              "test(account_worker::tests::transport_reattach::)",
               "test(account_worker::tests::unsent_start::a_submitted_turn_start_that_stays_unsent_keeps_its_input_pending)",
               "test(account_worker::tests::disconnected_unknown_start::)",
               "test(account_worker::tests::callback_head_of_line)",
