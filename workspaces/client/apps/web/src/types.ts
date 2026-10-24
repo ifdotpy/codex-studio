@@ -38,6 +38,18 @@ export type Edge = EdgeEntityDto;
 
 type SnapshotRuntime = WorkspaceEntityDto & {
   modelsByAccount?: Record<string, components["schemas"]["ModelEntityDto"][]>;
+  terminals?: components["schemas"]["TerminalRecord"][];
+  desktop?: components["schemas"]["DesktopResponse"];
+  sessionCostsByAgent?: Record<
+    string,
+    components["schemas"]["SessionCostResponse"]
+  >;
+  accountCostsByAccount?: Record<
+    string,
+    components["schemas"]["AccountCostResponse"]
+  >;
+  accountsSummary?: components["schemas"]["AccountsSummaryDto"];
+  queuesByAgent?: Record<string, components["schemas"]["QueueView"]>;
   rateLimitsByAccount?: Record<
     string,
     components["schemas"]["AccountRateLimitsDto"]

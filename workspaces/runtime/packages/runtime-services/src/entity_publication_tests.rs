@@ -404,3 +404,52 @@ async fn a_claude_sign_in_repair_reaches_the_client() {
     );
     assert_eq!(view["error"], Value::Null);
 }
+
+#[tokio::test]
+async fn queue_source_writes_publish_and_remove_items_without_http_reads() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    write(&store, "INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created) VALUES(?1,?2,1,'user','Queued text','pending',1)", vec!["queued-source".into(), CHAT.into()]).await;
+    let (deleted, view) = client_entity(&store, "queue", CHAT).expect("queue published at source");
+    assert!(!deleted);
+    assert_eq!(view["items"][0]["text"], "Queued text");
+    assert_eq!(view["capabilities"]["reorder"], true);
+    let revision = view["revision"].clone();
+    write(
+        &store,
+        "UPDATE runtime_events SET status='delivered' WHERE id=?1",
+        vec!["queued-source".into()],
+    )
+    .await;
+    let (_, view) = client_entity(&store, "queue", CHAT).expect("empty queue published");
+    assert_eq!(view["items"], json!([]));
+    assert_ne!(view["revision"], revision);
+}
+
+#[tokio::test]
+async fn terminal_source_writes_publish_summary_without_process_identity() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    let terminal = json!({"id":"terminal-source","agent":CHAT,"cwd":"/fixture","title":"Source shell","status":"running","created":1,"updated":1,"_processIdentity":{"pid":999}});
+    write(
+        &store,
+        "INSERT INTO user_terminals(id,record,output,offset) VALUES(?1,?2,'',0)",
+        vec!["terminal-source".into(), terminal.to_string()],
+    )
+    .await;
+    let (_, value) =
+        client_entity(&store, "terminal", "terminal-source").expect("terminal summary published");
+    assert_eq!(value["title"], "Source shell");
+    assert!(value.get("_processIdentity").is_none());
+    write(
+        &store,
+        "UPDATE user_terminals SET record=json_set(record,'$.status','closed') WHERE id=?1",
+        vec!["terminal-source".into()],
+    )
+    .await;
+    assert!(
+        client_entity(&store, "terminal", "terminal-source")
+            .expect("terminal removal published")
+            .0
+    );
+}

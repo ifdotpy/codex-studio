@@ -154,6 +154,33 @@ fn entity_snapshot(rows: &[Value]) -> Value {
     }
     runtime["studioErrors"] = errors;
     let edges = list("edge");
+    for (collection, field) in [("accounts", "accountsSummary"), ("desktop", "desktop")] {
+        runtime[field] = collections
+            .get(collection)
+            .and_then(|rows| rows.get("current"))
+            .cloned()
+            .unwrap_or(Value::Null);
+    }
+    runtime["terminals"] = list("terminal");
+    for (collection, field) in [
+        ("accountCost", "accountCostsByAccount"),
+        ("sessionCost", "sessionCostsByAgent"),
+    ] {
+        runtime[field] = Value::Object(
+            collections
+                .remove(collection)
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+        );
+    }
+    runtime["queuesByAgent"] = Value::Object(
+        collections
+            .remove("queue")
+            .unwrap_or_default()
+            .into_iter()
+            .collect(),
+    );
     let limits = collections.remove("rateLimit").unwrap_or_default();
     runtime["rateLimits"] = limits.get("default").cloned().unwrap_or(Value::Null);
     runtime["rateLimitsByAccount"] = Value::Object(limits.into_iter().collect());

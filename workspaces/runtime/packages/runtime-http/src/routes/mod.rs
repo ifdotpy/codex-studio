@@ -14,7 +14,7 @@ mod claude_controls;
 mod claude_login;
 pub(crate) mod compose;
 mod context_repair;
-mod desktop;
+pub(crate) mod desktop;
 pub use desktop::{backend_build_identity, initialize_backend_identity};
 pub(crate) mod extractors;
 mod federation;

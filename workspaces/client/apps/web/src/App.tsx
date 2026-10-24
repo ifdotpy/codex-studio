@@ -257,8 +257,7 @@ export default function App({ active = true }: { active?: boolean }) {
     dismissChatCreation,
   } = useServerChatCreations();
   const { canRevealPath, revealPath } = useServerFileDialogs();
-  const { watchResourceChanges, watchResourceConnection } =
-    useServerResources();
+  const { watchResourceConnection } = useServerResources();
   const sidebarServices = useServerSidebarServices();
   const serverAliases = useServerAliases(readServerAliases);
   const {
@@ -665,12 +664,6 @@ export default function App({ active = true }: { active?: boolean }) {
     },
     [cachedLimitsByAccount, cacheAccountLimits],
   );
-  useEffect(() => {
-    if (mobileClient || !data?.stateDir) return;
-    // Include terminals in the first typed subscription set; TerminalDock can
-    // mount later, and its watcher then shares this resource without a reopen.
-    return watchResourceChanges({ kind: "terminals" }, () => {});
-  }, [mobileClient, data?.stateDir]);
   useEffect(() => {
     if (data?.stateDir && saved(sharedCreationKey(data.stateDir), null))
       setSharedCreate({});

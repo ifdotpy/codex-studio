@@ -20,6 +20,10 @@ pub(crate) fn routes() -> RouteGroup {
 pub(crate) async fn get(
     State(state): State<HttpState>,
 ) -> Result<Json<Value>, crate::error::ApiError> {
+    Ok(Json(snapshot(state).await?))
+}
+
+pub(crate) async fn snapshot(state: HttpState) -> Result<Value, crate::error::ApiError> {
     let status = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/desktop-status",
         move || {
@@ -30,7 +34,7 @@ pub(crate) async fn get(
     )
     .await
     .map_err(|_| crate::error::ApiError::internal())?;
-    Ok(Json(status))
+    Ok(status)
 }
 
 fn backend_build_from(

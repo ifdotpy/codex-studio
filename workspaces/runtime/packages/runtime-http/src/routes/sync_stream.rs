@@ -478,9 +478,7 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
             })
             .await
             .ok(),
-        ResourceRef::AccountsResource(_) => {
-            serde_json::to_vec(&super::catalog::accounts(State(state)).await.ok()?.0).ok()
-        }
+        ResourceRef::AccountsResource(_) => None,
         ResourceRef::LimitsResource(resource) => {
             let mut snapshot = if let Some(port) = &state.account_session {
                 port.limits_snapshot(&resource.account_key).ok()?
@@ -499,61 +497,9 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
                 serde_json::from_value(snapshot).ok()?;
             serde_json::to_vec(&snapshot).ok()
         }
-        ResourceRef::DesktopResource(_) => {
-            serde_json::to_vec(&super::desktop::get(State(state)).await.ok()?.0).ok()
-        }
-        ResourceRef::TerminalsResource(_) => {
-            serde_json::to_vec(&super::terminals::listing(State(state)).await.ok()?.0).ok()
-        }
-        ResourceRef::QueueResource(resource) => serde_json::to_vec(
-            &super::work_items::queue_for_agent(state, resource.agent_id)
-                .await
-                .ok()?,
-        )
-        .ok(),
-        ResourceRef::SessionCostResource(resource) => serde_json::to_vec(
-            &super::insights::session_cost_for_agent(state, resource.agent_id)
-                .await
-                .ok()?
-                .0,
-        )
-        .ok(),
-        ResourceRef::CostsResource(_) => {
-            let policy = state.account_policy.clone()?;
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/resource-cost-content",
-                move || {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .ok()?
-                        .as_secs_f64();
-                    let mut costs = policy
-                        .accounts()
-                        .accounts
-                        .into_iter()
-                        .map(|account| {
-                            let account: crate::generated::Account =
-                                serde_json::from_value(account).ok()?;
-                            let value = studio_runtime_services::usage::account_cost_snapshot(
-                                std::path::Path::new(&state.state_dir),
-                                &account.id,
-                                &serde_json::to_value(&account).ok()?,
-                                now,
-                            )
-                            .ok()?;
-                            // The generated response drops the scanner-only refresh hint.
-                            serde_json::from_value::<crate::generated::AccountCostResponse>(value)
-                                .ok()
-                        })
-                        .collect::<Option<Vec<_>>>()?;
-                    costs.sort_by(|left, right| left.account_key.cmp(&right.account_key));
-                    serde_json::to_vec(&costs).ok()
-                },
-            )
-            .await
-            .ok()
-            .flatten()
-        }
+        ResourceRef::DesktopResource(_) | ResourceRef::TerminalsResource(_) => None,
+        ResourceRef::QueueResource(_) => None,
+        ResourceRef::SessionCostResource(_) | ResourceRef::CostsResource(_) => None,
         _ => None,
     }
 }
@@ -3607,151 +3553,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cost_content_ignores_account_listing_order() {
-        use studio_runtime_services::account_policy::AccountPolicyState;
-        fn policy(order: [&str; 2], root: &std::path::Path) -> AccountPolicyState {
-            let entries = order
-                .map(|id| {
-                    format!(
-                        "\"{id}\":{}",
-                        json!({
-                            "id":id, "home":root, "provider":"codex", "label":id,
-                            "source":"Fixture", "status":"ready"
-                        })
-                    )
-                })
-                .join(",");
-            let registry = format!(
-                r#"{{"version":1,"defaultAccountKey":"first","accounts":{{{entries}}},"logins":{{}}}}"#
-            );
-            AccountPolicyState::from_startup(Some(registry.as_bytes()), []).expect("policy")
-        }
+    async fn bounded_entities_never_reconstruct_resource_content() {
         let root = tempfile::tempdir().expect("isolated state");
-        let mut state = HttpState::new(
+        let state = HttpState::new(
             "token".into(),
             "workspace".into(),
             root.path().display().to_string(),
             4321,
             None,
             None,
-            Some(Arc::new(policy(["first", "second"], root.path()))),
-        );
-        let before = resource_content(state.clone(), json!({"kind":"costs"}))
-            .await
-            .expect("cost content");
-        state.account_policy = Some(Arc::new(policy(["second", "first"], root.path())));
-        let after = resource_content(state, json!({"kind":"costs"}))
-            .await
-            .expect("cost content");
-        assert_eq!(
-            before, after,
-            "account order does not change either account's served costs"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn unrelated_commits_do_not_emit_frames_for_five_unchanged_resources() {
-        use axum::body::Body;
-        use axum::extract::ConnectInfo;
-        use axum::http::Request;
-        use futures_util::StreamExt;
-        use studio_runtime_services::account_policy::AccountPolicyState;
-        use tower::ServiceExt;
-
-        let root = tempfile::tempdir().expect("isolated state");
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-        store
-            .transaction(|tx| {
-                tx.execute(
-                    "INSERT INTO runtime_agents(id,record) VALUES('agent-1',?1)",
-                    [
-                        json!({"id":"agent-1","rootId":"agent-1","epoch":1,"status":"idle"})
-                            .to_string(),
-                    ],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("agent");
-        let policy = AccountPolicyState::from_startup(
-            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{},"logins":{}}"#),
-            [],
-        )
-        .expect("account policy");
-        let state = HttpState::new(
-            "token".into(),
-            "workspace".into(),
-            root.path()
-                .join("unavailable-desktop-volume")
-                .display()
-                .to_string(),
-            4321,
             None,
-            Some(store.clone()),
-            Some(Arc::new(policy)),
         );
-        let resources = json!([
-            {"kind":"accounts"}, {"kind":"desktop"}, {"kind":"terminals"},
-            {"kind":"queue","agentId":"agent-1"}
-        ]);
-        let query = form_urlencoded::Serializer::new(String::new())
-            .append_pair("protocol", SYNC_PROTOCOL_VERSION_TEXT)
-            .append_pair("resources", &resources.to_string())
-            .finish();
-        let request = Request::builder()
-            .uri(format!("/api/sync/stream?{query}"))
-            .header("host", "127.0.0.1:4321")
-            .header("x-canvas-token", "token")
-            .extension(ConnectInfo(std::net::SocketAddr::from((
-                [127, 0, 0, 1],
-                12345,
-            ))))
-            .body(Body::empty())
-            .expect("request");
-        let response = crate::router(state.clone())
-            .expect("router")
-            .oneshot(request)
-            .await
-            .expect("response");
-        assert_eq!(response.status(), StatusCode::OK);
-        let mut body = response.into_body().into_data_stream();
-        body.next().await.expect("session").expect("bytes");
-        assert!(
-            String::from_utf8_lossy(&body.next().await.expect("initial").expect("bytes"))
-                .contains("event: resources")
-        );
-        assert!(
-            String::from_utf8_lossy(&body.next().await.expect("rates").expect("bytes"))
-                .contains("event: token-rates")
-        );
-        for index in 0..2 {
-            store.transaction(move |tx| {
-                tx.execute("INSERT INTO runtime_items(id,agent,created,record) VALUES(?1,'other',1,'{}')", [format!("item-{index}")])?;
-                Ok(())
-            }).await.expect("unrelated commit");
+        for resource in [
+            json!({"kind":"accounts"}),
+            json!({"kind":"costs"}),
+            json!({"kind":"desktop"}),
+            json!({"kind":"terminals"}),
+            json!({"kind":"queue","agentId":"agent"}),
+            json!({"kind":"session-cost","agentId":"agent"}),
+        ] {
+            assert!(resource_content(state.clone(), resource).await.is_none());
         }
-        let frame = body.next().await.expect("heartbeat").expect("bytes");
-        assert!(
-            String::from_utf8_lossy(&frame).contains("event: heartbeat"),
-            "unrelated commits must emit no resource frames: {}",
-            String::from_utf8_lossy(&frame)
-        );
-        store.transaction(|tx| {
-            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.queueMutationRevision',1) WHERE id='agent-1'", [])?;
-            Ok(())
-        }).await.expect("queue content changes");
-        let frame = body.next().await.expect("queue refresh").expect("bytes");
-        let text = String::from_utf8_lossy(&frame);
-        let document: Value = serde_json::from_str(
-            text.lines()
-                .find_map(|line| line.strip_prefix("data: "))
-                .expect("data"),
-        )
-        .expect("JSON");
-        assert_eq!(
-            document["resources"],
-            json!([{"kind":"queue","agentId":"agent-1"}])
-        );
     }
 
     #[tokio::test]

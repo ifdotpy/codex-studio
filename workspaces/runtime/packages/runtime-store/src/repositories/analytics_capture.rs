@@ -216,11 +216,13 @@ impl RuntimeStore {
     {
         let analytics = std::sync::Arc::clone(&self.analytics);
         let checkpoint_requested = std::sync::Arc::clone(&self.wal_checkpoint_requested);
+        let notifiers = std::sync::Arc::clone(&self.analytics_commit_notifiers);
         crate::blocking_pool::spawn_blocking("analytics/projection", move || {
             let mut db = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
             // SQLite refuses a synchronous change inside a transaction.
             db.pragma_update(None, "synchronous", crate::ANALYTICS_PROJECTION_SYNCHRONOUS)
                 .map_err(StoreError::from)?;
+            let changed_before = db.total_changes();
             let outcome: Result<T, E> = (|| {
                 let tx = db
                     .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -233,6 +235,9 @@ impl RuntimeStore {
                 .map_err(StoreError::from)?;
             if outcome.is_ok() {
                 checkpoint_requested.store(true, std::sync::atomic::Ordering::Release);
+                if db.total_changes() != changed_before {
+                    crate::fire_commit_observers(&notifiers);
+                }
             }
             outcome
         })
@@ -290,8 +295,10 @@ impl RuntimeStore {
         let origin = std::panic::Location::caller();
         let analytics = std::sync::Arc::clone(&self.analytics);
         let checkpoint_requested = std::sync::Arc::clone(&self.wal_checkpoint_requested);
+        let notifiers = std::sync::Arc::clone(&self.analytics_commit_notifiers);
         let transaction_job = move |canvas: &mut Connection| -> Result<Result<T, E>, StoreError> {
             let mut db = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+            let changed_before = db.total_changes();
             let tx = db
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(StoreError::from)?;
@@ -304,6 +311,9 @@ impl RuntimeStore {
                             database: crate::StoreDatabaseKind::Analytics,
                             elapsed: started.elapsed(),
                         });
+                    }
+                    if db.total_changes() != changed_before {
+                        crate::fire_commit_observers(&notifiers);
                     }
                     Ok(Ok(result))
                 }

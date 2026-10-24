@@ -39,6 +39,8 @@ pub struct PendingEntities {
     pub tasks: BTreeSet<String>,
     /// Whether a source row changed the derived Studio error list.
     pub studio_errors: bool,
+    pub queues: BTreeSet<String>,
+    pub terminals: BTreeSet<String>,
 }
 
 impl PendingEntities {
@@ -51,6 +53,8 @@ impl PendingEntities {
             && self.annotations.is_empty()
             && self.tasks.is_empty()
             && !self.studio_errors
+            && self.queues.is_empty()
+            && self.terminals.is_empty()
     }
 }
 
@@ -64,6 +68,8 @@ enum Source {
     Plan,
     Annotation,
     Task,
+    QueueAsset,
+    Terminal,
 }
 
 impl Source {
@@ -77,6 +83,8 @@ impl Source {
             "runtime_plans" => Some(Self::Plan),
             "runtime_annotations" => Some(Self::Annotation),
             "runtime_tasks" => Some(Self::Task),
+            "runtime_assets" => Some(Self::QueueAsset),
+            "user_terminals" => Some(Self::Terminal),
             _ => None,
         }
     }
@@ -102,6 +110,8 @@ impl Source {
             Self::Plan => "runtime_plans",
             Self::Annotation => "runtime_annotations",
             Self::Task => "runtime_tasks",
+            Self::QueueAsset => "runtime_assets",
+            Self::Terminal => "user_terminals",
         }
     }
 }
@@ -190,12 +200,59 @@ pub(crate) fn pending(
             // A deleted row has no id left; its writer owns the entity removal.
             let id = transaction
                 .query_row(
-                    &format!("SELECT id FROM {} WHERE rowid=?1", source.table()),
+                    &match source {
+                        Source::QueueAsset => "SELECT json_extract(record,'$.agent') FROM runtime_assets WHERE rowid=?1".to_owned(),
+                        _ => format!("SELECT id FROM {} WHERE rowid=?1", source.table()),
+                    },
                     [row_id],
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?;
             ids.insert((*source, *row_id), id);
+        }
+    }
+    let mut pending = PendingEntities::default();
+    for ((source, _), id) in &ids {
+        if matches!(
+            source,
+            Source::Agent | Source::Event | Source::EventMeta | Source::QueueAsset
+        ) {
+            let owner = match (source, id) {
+                (Source::Event | Source::EventMeta, Some(id)) => transaction
+                    .query_row(
+                        "SELECT agent FROM runtime_events WHERE id=?1",
+                        [id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?,
+                (_, id) => id.clone(),
+            };
+            if let Some(id) = owner {
+                pending.queues.insert(id);
+            } else {
+                // Deleted source rows no longer carry their owner. Recheck only
+                // existing queue views; this path never scans event history.
+                let mut statement = transaction.prepare(
+                    "SELECT id FROM sync_entities WHERE collection='queue' AND deleted=0",
+                )?;
+                for id in statement.query_map([], |row| row.get::<_, String>(0))? {
+                    pending.queues.insert(id?);
+                }
+            }
+        }
+    }
+    for ((source, _), id) in &ids {
+        if *source == Source::Terminal {
+            if let Some(id) = id {
+                pending.terminals.insert(id.clone());
+            } else {
+                let mut statement = transaction.prepare(
+                    "SELECT id FROM sync_entities WHERE collection='terminal' AND deleted=0",
+                )?;
+                for id in statement.query_map([], |row| row.get::<_, String>(0))? {
+                    pending.terminals.insert(id?);
+                }
+            }
         }
     }
     let mut changed: BTreeMap<(Source, String), usize> = BTreeMap::new();
@@ -217,7 +274,6 @@ pub(crate) fn pending(
             Event::StudioErrors => studio_errors = true,
         }
     }
-    let mut pending = PendingEntities::default();
     for ((source, id), index) in changed {
         if published
             .get(&(source, id.clone()))
@@ -233,6 +289,7 @@ pub(crate) fn pending(
             Source::Plan => pending.plans.insert(id),
             Source::Annotation => pending.annotations.insert(id),
             Source::Task => pending.tasks.insert(id),
+            Source::QueueAsset | Source::Terminal => false,
         };
     }
     pending.studio_errors = studio_errors;

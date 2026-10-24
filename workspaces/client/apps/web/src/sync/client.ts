@@ -1599,7 +1599,6 @@ export function createSyncClient(options: SyncClientOptions) {
         ? scope.slice(11)
         : null;
       let stopInvalidation: (() => void) | undefined;
-      let stopAccountsBaseline: (() => void) | undefined;
       const invalidate = (version?: ResourceVersion) => {
         // A stream hint cannot authorize another read after a permanent rejection.
         // Explicit refresh still uses the normal workspace and HTTP checks.
@@ -1669,11 +1668,6 @@ export function createSyncClient(options: SyncClientOptions) {
               notifyInvalidation,
               remoteScope === SYNC_ENTITY_SCOPE ? "entities" : "legacy",
             );
-        if (remoteScope === SYNC_ENTITY_SCOPE)
-          stopAccountsBaseline = watchResourceChanges(
-            { kind: "accounts" },
-            () => {},
-          );
         stopConnection = watchResourceConnection((status) => {
           const reconnected = status === "live" && connectionStatus !== "live";
           connectionStatus = status;
@@ -1705,7 +1699,6 @@ export function createSyncClient(options: SyncClientOptions) {
           stopped = true;
           retryAbort.abort();
           stopInvalidation?.();
-          stopAccountsBaseline?.();
           stopCoverageFallback?.();
           stopConnection?.();
           stopResume?.();

@@ -875,6 +875,7 @@ pub struct RuntimeStore {
     root: PathBuf,
     writer: SqliteActor,
     analytics: Arc<Mutex<Connection>>,
+    analytics_commit_notifiers: Arc<Mutex<CommitNotifiers>>,
     version_reader: Mutex<Connection>,
     read_pool: Arc<ReadConnectionPool>,
     writer_waiters: AtomicUsize,
@@ -1317,6 +1318,7 @@ impl RuntimeStore {
             root,
             writer,
             analytics: Arc::new(Mutex::new(analytics)),
+            analytics_commit_notifiers: Arc::new(Mutex::new(CommitNotifiers::default())),
             version_reader: Mutex::new(version_reader),
             read_pool: Arc::new(ReadConnectionPool::new(canvas_path.clone())),
             writer_waiters: AtomicUsize::new(0),
@@ -1495,6 +1497,15 @@ impl RuntimeStore {
     /// already installed; the first one stays.
     pub fn install_entity_publisher(&self, publisher: Arc<dyn EntityPublisher>) -> bool {
         self.entity_publisher.set(publisher).is_ok()
+    }
+
+    /// Observe committed analytics source writes. Callbacks must only enqueue work.
+    pub fn add_analytics_commit_observer(&self, observer: impl Fn() + Send + Sync + 'static) {
+        self.analytics_commit_notifiers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .observers
+            .push(Arc::new(observer));
     }
 
     /// Install the process-local notification fired after each successful write commit.

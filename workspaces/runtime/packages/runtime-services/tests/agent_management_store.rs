@@ -710,6 +710,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
         template(root);
     }
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root)).await.expect("open"));
+    studio_runtime_services::entity_publication::install(&store);
     let cwd = root.to_string_lossy().into_owned();
     store
         .transaction(move |tx| {

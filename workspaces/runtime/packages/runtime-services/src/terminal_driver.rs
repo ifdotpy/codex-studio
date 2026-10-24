@@ -1019,6 +1019,33 @@ fn new_id() -> Result<String, TerminalError> {
         .to_string())
 }
 
+/// Terminal collection owner. Output buffers and native process identity are
+/// excluded; close/delete publishes a tombstone in the source transaction.
+pub fn publish_terminal(
+    transaction: &studio_runtime_store::Transaction<'_>,
+    id: &str,
+) -> studio_runtime_store::StoreResult<()> {
+    let row = TerminalsRepository::get(transaction, id)?;
+    let (value, deleted) = match row
+        .filter(|row| row.record.get("status").and_then(Value::as_str) != Some("closed"))
+    {
+        Some(row) => {
+            let mut value = row.record.value().clone();
+            hide_process_identity(&mut value);
+            (value, false)
+        }
+        None => (Value::Null, true),
+    };
+    studio_runtime_store::SyncDocumentsRepository::put_entity(
+        transaction,
+        "terminal",
+        id,
+        value,
+        deleted,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {

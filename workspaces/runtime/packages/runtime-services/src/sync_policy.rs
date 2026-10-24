@@ -91,6 +91,11 @@ pub fn has_complete_entity_seed(connection: &Connection) -> StoreResult<bool> {
         complete &= task_window.as_deref() == Some("1");
     }
     if table_exists("runtime_events")? {
+        if table_exists("runtime_agents")? {
+            complete &= !connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_agents a WHERE a.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM sync_entities q WHERE q.collection='queue' AND q.id=a.id AND q.deleted=0))", [], |row| row.get::<_, bool>(0),
+            )?;
+        }
         let event_window = connection
             .query_row(
                 "SELECT value FROM sync_entity_meta WHERE key='event_window_seq'",
@@ -341,6 +346,16 @@ pub fn maintain_entity_projections_with_server_id(
             &validate_projection,
         )
     })?;
+    if table_exists(transaction, "user_terminals")? {
+        for terminal in studio_runtime_store::TerminalsRepository::list(transaction)? {
+            if let Some(id) = terminal.get("id").and_then(Value::as_str) {
+                crate::terminal_driver::publish_terminal(transaction, id)?;
+            }
+        }
+    }
+    for (id, _) in peer_agents {
+        crate::queue_write::publish_queue(transaction, id)?;
+    }
     let mut current_rooms = BTreeSet::new();
     crate::diagnostics::measure_runtime_stage("projection.direct_entities", || {
         for (table, collection) in [

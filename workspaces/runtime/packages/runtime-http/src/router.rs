@@ -169,6 +169,13 @@ impl HttpState {
         self
     }
 
+    /// Start the source-owned summaries once, after ports are wired and before serving.
+    pub async fn initialize_bounded_entities(
+        &self,
+    ) -> Result<(), studio_runtime_store::StoreError> {
+        crate::bounded_entities::start(self).await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         token: String,

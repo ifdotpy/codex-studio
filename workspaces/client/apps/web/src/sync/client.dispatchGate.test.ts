@@ -494,13 +494,13 @@ describe("entity pull dispatch gate", () => {
     stop();
   });
 
-  it("dispatches a state-frame pull when the frame has no accounts revision", async () => {
+  it("dispatches a state-frame pull without an accounts watcher", async () => {
     const { stop, workspaceId } = await setup();
     const pulls: number[] = [];
     configurePulls(workspaceId, pulls);
 
-    // The state resource frame has no accounts entry or accounts revision.
-    expect(mocks.accountsBaseline).toBeTypeOf("function");
+    // Bounded accounts arrive through the entity stream, so no watcher is needed.
+    expect(mocks.accountsBaseline).toBeUndefined();
     mocks.invalidate?.({ epoch: "state-only-frame", entitySequence: 101 });
 
     await vi.waitFor(() => expect(pulls).toEqual([100]));
