@@ -3,11 +3,14 @@
 use axum::Json;
 use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
-use axum::http::{HeaderMap, Request, StatusCode};
+use axum::extract::State;
+use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{net::SocketAddr, sync::Arc};
 use studio_runtime_services::multi_server_auth::{self, AccessError, SignedRequest};
+use studio_runtime_services::multi_server_pairing::MultiServerBoundary;
 
 use crate::error::error_response;
 use crate::router::HttpState;
@@ -37,8 +40,8 @@ pub(crate) fn needed(headers: &HeaderMap, path: &str) -> bool {
             .iter()
             .any(|key| headers.contains_key(*key)))
 }
-pub(crate) async fn serve(state: HttpState, request: Request<Body>) -> Response {
-    let mut response = serve_inner(state, request).await;
+pub(crate) async fn serve(state: HttpState, request: Request<Body>, next: Next) -> Response {
+    let mut response = serve_inner(state, request, next).await;
     response.headers_mut().insert(
         "access-control-allow-origin",
         axum::http::HeaderValue::from_static("*"),
@@ -46,7 +49,7 @@ pub(crate) async fn serve(state: HttpState, request: Request<Body>) -> Response 
     response.headers_mut().insert("access-control-expose-headers",axum::http::HeaderValue::from_static("X-Studio-Server, X-Studio-Api-Schema, X-Studio-Api-Mismatch, ETag, Content-Disposition, X-Log-Truncated"));
     response
 }
-async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
+async fn serve_inner(state: HttpState, request: Request<Body>, next: Next) -> Response {
     let peer_link_advert = state
         .peer_link_advert
         .read()
@@ -161,10 +164,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             | ("POST", "/api/servers/orchestration")
     );
     if !supported {
-        return error_response(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires multi-server-runtime/signed-dispatch",
-        );
+        return dispatch(state, request, boundary, peer_link_advert, next).await;
     }
     let Some(store) = state.store.clone() else {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
@@ -535,6 +535,136 @@ fn map_invite_error(error: studio_runtime_services::multi_server::MultiServerErr
             multi_server_auth::refused(503, "invite_unavailable", "The invitation is unavailable")
         }
     }
+}
+
+/// The signature headers of a paired client; the request ID header stays for the route.
+const SIGNATURE_HEADERS: [&str; 5] = [
+    "x-studio-client",
+    "x-studio-server",
+    "x-studio-timestamp",
+    "x-studio-nonce",
+    "x-studio-signature",
+];
+
+/// Answer a signed request of a paired Studio window or server through the ordinary API.
+/// The signature replaces the owner's session token: after the boundary authenticated the
+/// client, consumed the nonce and recorded the access, the request continues through the
+/// same middleware as a request of the owner's own session.
+async fn dispatch(
+    state: HttpState,
+    request: Request<Body>,
+    boundary: Arc<MultiServerBoundary>,
+    peer_link_advert: Option<String>,
+    next: Next,
+) -> Response {
+    let Some(store) = state.store.clone() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+    };
+    let (mut parts, body) = request.into_parts();
+    let method = parts.method.as_str().to_owned();
+    let read = matches!(method.as_str(), "GET" | "HEAD");
+    let path = parts.uri.path().to_owned();
+    let lengths = parts.headers.get_all("content-length");
+    let declared = lengths
+        .iter()
+        .next()
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok());
+    if lengths.iter().count() > 1 || parts.headers.contains_key("transfer-encoding") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Use a single Content-Length for a signed request",
+        );
+    }
+    let limit = crate::http_body_limits::request_limit(&path)
+        .min(studio_runtime_services::remote_transport::MAX_REQUEST_BYTES);
+    if read && declared.is_some_and(|v| v != 0) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "A read request must have an empty body",
+        );
+    }
+    if !read && declared.is_none_or(|v| v > limit) {
+        return error_response(StatusCode::PAYLOAD_TOO_LARGE, "Invalid request size");
+    }
+    let bytes = match tokio::time::timeout(Duration::from_secs(10), to_bytes(body, limit)).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(_)) => return error_response(StatusCode::PAYLOAD_TOO_LARGE, "Invalid request size"),
+        Err(_) => return error_response(StatusCode::REQUEST_TIMEOUT, "Request body timed out"),
+    };
+    if declared.is_some_and(|v| v != bytes.len()) {
+        return error_response(StatusCode::BAD_REQUEST, "Incomplete request");
+    }
+    let target = parts
+        .uri
+        .path_and_query()
+        .map(|v| v.as_str())
+        .unwrap_or_default()
+        .to_owned();
+    let headers = parts
+        .headers
+        .iter()
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (k.as_str().to_owned(), v.to_owned()))
+        })
+        .collect::<Vec<_>>();
+    let address = parts
+        .headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let logins = parts
+        .headers
+        .get_all("tailscale-user-login")
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(str::to_owned))
+        .collect::<Vec<_>>();
+    let signed = match SignedRequest::from_headers(&method, &target, &headers, &bytes) {
+        Ok(v) => v,
+        Err(e) => return failure(e),
+    };
+    let Some(now) = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs_f64())
+    else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+    };
+    let principal = match boundary
+        .authorize_dispatch_incoming(store, &signed, &address, &logins, now)
+        .await
+    {
+        Ok(principal) => principal,
+        Err(e) => return failure(e),
+    };
+    for name in SIGNATURE_HEADERS.into_iter().chain([
+        "origin",
+        "sec-fetch-site",
+        "cookie",
+        "authorization",
+        "x-canvas-token",
+    ]) {
+        parts.headers.remove(name);
+    }
+    if !read {
+        let Ok(token) = HeaderValue::from_str(&state.token) else {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+        };
+        parts.headers.insert("x-canvas-token", token);
+    }
+    // The rewritten request carries no signature, so it takes the ordinary route.
+    let request = Request::from_parts(parts, Body::from(bytes));
+    let mut response = Box::pin(crate::middleware::boundary(State(state), request, next)).await;
+    if let Ok(value) = HeaderValue::from_str(&principal.local_server) {
+        response.headers_mut().insert("x-studio-server", value);
+    }
+    if principal.kind == "server" {
+        add_link_advert(&mut response, peer_link_advert.as_deref());
+    }
+    response
 }
 
 fn add_link_advert(response: &mut Response, advert: Option<&str>) {
