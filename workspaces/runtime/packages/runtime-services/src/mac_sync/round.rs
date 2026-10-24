@@ -7,16 +7,19 @@
 //! writes main's changes into the Mac folder where the Mac file still has its agreed
 //! content. Nothing is written over a Mac edit, and no conflict markers reach the Mac.
 //!
-//! Registered difference from Python: when the guest answers `outcome_unknown` for a
-//! round, Python kept the operation and repeated it forever, and every repeat got the
-//! same answer. Here the round records the error, drops the operation, and the next round
-//! hashes the paths of that operation again on both sides before it starts a new one
-//! ([`ProjectSync::round`]).
+//! Differences from Python (registered in docs/vm-mac-sync.md):
+//! - An uncertain guest result keeps the exact pending operation until a proven reply.
+//!   Legacy recovery records stop sync until the old operation can be reconciled.
+//! - A Mac volume finds a file under another case or Unicode form. The outbound step
+//!   resolves names to the spelling on disk, moves the file for a rename in main, and
+//!   never deletes or overwrites a file under another spelling.
+//! - Any scan error fails the round; a file that cannot be read is never a deletion.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Cursor, Read, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirEntryExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -57,6 +60,12 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 const GIT_OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
 /// Where the guest finds a completed upload of a round.
 const UPLOAD_ROOT: &str = "/var/lib/codex-studio/projects/mac-sync-";
+/// The marker of a temporary file of [`write_mac`]: `.<name>.studio-sync-<8 hex>`.
+const TEMPORARY_MARK: &str = ".studio-sync-";
+/// Maximum preview attempts to read a stable main state and its hashes.
+const PREVIEW_READS: usize = 5;
+/// The number of paths per list in a plan.
+const PLAN_SAMPLE: usize = 20;
 
 /// One manifest entry (`manifest.json`, the same shape as the Python rounds): kind
 /// (`file` or `link`), size, modification time in nanoseconds, permission bits, SHA-256
@@ -76,6 +85,15 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// Content identity and executable permission bits, the values that sync compares.
+    fn sync_key(&self) -> (&str, &str, u32) {
+        (
+            &self.k,
+            &self.h,
+            if self.k == "file" { self.x & 0o111 } else { 0 },
+        )
+    }
+
     fn without_base(&self) -> Self {
         Self {
             b: None,
@@ -100,7 +118,9 @@ pub struct Rules {
 }
 
 impl Rules {
-    pub fn new(root: &Path) -> Self {
+    /// The rules of a Mac folder. Any Git error, deadline, or output overflow stops
+    /// the round before ignored folders can reach the guest.
+    pub fn new(root: &Path) -> Result<Self, MacSyncError> {
         let mut ignored = BTreeSet::new();
         if root.join(".git").exists() {
             match bounded_child::run_without_git_environment(bounded_child::Request {
@@ -120,32 +140,31 @@ impl Rules {
                 stderr_limit: 4800,
                 timeout: GIT_TIMEOUT,
             }) {
+                Ok(output) if output.stdout.truncated => {
+                    return Err(MacSyncError::Io(std::io::Error::other(
+                        "git ls-files listed more ignored paths than the limit",
+                    )));
+                }
                 Ok(output) => {
-                    let mut items = output
+                    ignored = output
                         .stdout
                         .bytes
                         .split(|byte| *byte == 0)
-                        .collect::<Vec<_>>();
-                    if output.stdout.truncated {
-                        // The last item may be cut; the complete ones still apply.
-                        items.pop();
-                    }
-                    ignored = items
-                        .into_iter()
                         .filter(|item| item.ends_with(b"/"))
                         .map(|item| String::from_utf8_lossy(&item[..item.len() - 1]).into_owned())
                         .collect();
                 }
-                Err(error) => eprintln!(
-                    "mac sync: Git ignore rules of {}: {error:?}",
-                    root.display()
-                ),
+                Err(error) => {
+                    return Err(MacSyncError::Io(std::io::Error::other(format!(
+                        "git ls-files in the Mac folder: {error:?}"
+                    ))));
+                }
             }
         }
-        Self {
+        Ok(Self {
             ignored,
             limit: MAX_SYNC_FILE_BYTES,
-        }
+        })
     }
 
     /// Files larger than `bytes` do not sync.
@@ -163,10 +182,59 @@ impl Rules {
     }
 }
 
+/// Whether a name is a temporary file of [`write_mac`].
+fn is_temporary(name: &str) -> bool {
+    name.starts_with('.')
+        && name.rsplit_once(TEMPORARY_MARK).is_some_and(|(_, tail)| {
+            tail.len() == 8 && tail.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+fn io(error: std::io::Error) -> MacSyncError {
+    MacSyncError::Io(error)
+}
+
+fn not_found(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound
+}
+
 fn mtime_ns(meta: &fs::Metadata) -> i64 {
     meta.mtime()
         .saturating_mul(1_000_000_000)
         .saturating_add(meta.mtime_nsec())
+}
+
+/// Identity and change times of a Mac path before the guest request.
+#[derive(PartialEq, Eq)]
+struct FileStamp(u64, u64, i64, i64, i64, i64, u64, u32);
+
+impl FileStamp {
+    fn read(path: &Path) -> std::io::Result<Option<Self>> {
+        match fs::symlink_metadata(path) {
+            Ok(meta) => Ok(Some(Self(
+                meta.dev(),
+                meta.ino(),
+                meta.mtime(),
+                meta.mtime_nsec(),
+                meta.ctime(),
+                meta.ctime_nsec(),
+                meta.len(),
+                meta.mode(),
+            ))),
+            Err(error) if not_found(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn open_no_follow(path: &Path) -> std::io::Result<File> {
+    use rustix::fs::{Mode, OFlags};
+    let descriptor = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    Ok(File::from(descriptor))
 }
 
 fn file_hash(path: &Path) -> std::io::Result<String> {
@@ -181,16 +249,6 @@ fn file_hash(path: &Path) -> std::io::Result<String> {
         digest.update(&buffer[..read]);
     }
     Ok(data_encoding::HEXLOWER.encode(&digest.finalize()))
-}
-
-fn open_no_follow(path: &Path) -> std::io::Result<File> {
-    use rustix::fs::{Mode, OFlags};
-    let descriptor = rustix::fs::open(
-        path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    Ok(File::from(descriptor))
 }
 
 fn link_target(path: &Path) -> std::io::Result<Vec<u8>> {
@@ -225,53 +283,163 @@ fn describe(path: &Path, meta: &fs::Metadata, digest: bool) -> std::io::Result<E
     })
 }
 
-/// One path of a scan: its new entry, or a notice, or nothing when it vanished.
-fn scan_one(
-    path: &Path,
-    rel: &str,
-    rules: &Rules,
-    manifest: &Manifest,
-    entries: &mut Manifest,
-    notices: &mut Vec<String>,
-) {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(_) => return,
-    };
-    let kind = meta.file_type();
-    if !(kind.is_file() || kind.is_symlink()) {
-        notices.push(format!("{rel}: a special file does not sync"));
-        return;
-    }
-    let known = manifest.get(rel);
-    if kind.is_file() && meta.len() > rules.limit {
-        notices.push(format!("{rel}: files over 256 MiB do not sync"));
-        if let Some(known) = known {
-            // Too large to send now, but not deleted.
-            entries.insert(rel.to_owned(), known.without_base());
-        }
-        return;
-    }
-    let same = known.is_some_and(|known| {
-        known.k == if kind.is_symlink() { "link" } else { "file" }
-            && known.s == meta.len() as i64
-            && known.m == mtime_ns(&meta)
-    });
-    match describe(path, &meta, !same) {
-        Ok(mut entry) => {
-            if same && let Some(known) = known {
-                entry.h = known.h.clone();
+/// The names in the Mac folders, with their file IDs, read once per round. A default
+/// Mac volume finds a file under another case or Unicode form of its name; these
+/// listings tell the spelling on disk.
+#[derive(Default)]
+struct Listings(HashMap<PathBuf, Vec<(OsString, u64)>>);
+
+impl Listings {
+    fn names(&mut self, folder: &Path) -> std::io::Result<&[(OsString, u64)]> {
+        if !self.0.contains_key(folder) {
+            let mut names = Vec::new();
+            for item in fs::read_dir(folder)? {
+                let item = item?;
+                names.push((item.file_name(), item.ino()));
             }
-            entries.insert(rel.to_owned(), entry);
+            self.0.insert(folder.to_path_buf(), names);
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            // An unreadable file is no deletion: its agreed entry stays.
-            notices.push(format!("{rel}: the file could not be read: {error}"));
+        Ok(self.0.get(folder).map(Vec::as_slice).unwrap_or_default())
+    }
+
+    fn forget(&mut self, path: &Path) {
+        if let Some(parent) = path.parent() {
+            self.0.remove(parent);
+        }
+    }
+
+    /// The spelling on disk of the file that `rel` reaches, `None` when nothing does.
+    fn actual(&mut self, root: &Path, rel: &str) -> std::io::Result<Option<String>> {
+        let mut folder = root.to_path_buf();
+        let mut parts = Vec::new();
+        for component in rel.split('/') {
+            let meta = match fs::symlink_metadata(folder.join(component)) {
+                Ok(meta) => meta,
+                Err(error) if not_found(&error) || error.raw_os_error() == Some(libc::ENOTDIR) => {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
+            let names = self.names(&folder)?;
+            let name = names
+                .iter()
+                .find(|(name, _)| name.as_os_str() == component)
+                .or_else(|| names.iter().find(|(_, id)| *id == meta.ino()))
+                .map(|(name, _)| name.clone());
+            let Some(name) = name else {
+                return Ok(None);
+            };
+            parts.push(name.to_string_lossy().into_owned());
+            folder.push(name);
+        }
+        Ok(Some(parts.join("/")))
+    }
+}
+
+/// How a scan treats the Mac folder.
+struct Scan<'a> {
+    root: &'a Path,
+    rules: &'a Rules,
+    manifest: &'a Manifest,
+    /// Remove leftover temporary files of [`write_mac`]; a plan leaves them.
+    clean: bool,
+    entries: Manifest,
+    notices: Vec<String>,
+}
+
+impl Scan<'_> {
+    /// One path: its new entry, a notice, or nothing when it vanished. Any other error
+    /// fails the round: a path that cannot be read is never a deletion.
+    fn one(&mut self, path: &Path, rel: &str) -> Result<(), MacSyncError> {
+        let meta = match fs::symlink_metadata(path) {
+            Ok(meta) => meta,
+            Err(error) if not_found(&error) => return Ok(()),
+            Err(error) => return Err(io(error)),
+        };
+        let kind = meta.file_type();
+        if !(kind.is_file() || kind.is_symlink()) {
+            self.notices
+                .push(format!("{rel}: a special file does not sync"));
+            return Ok(());
+        }
+        let known = self.manifest.get(rel);
+        if kind.is_file() && meta.len() > self.rules.limit {
+            self.notices
+                .push(format!("{rel}: files over 256 MiB do not sync"));
             if let Some(known) = known {
-                entries.insert(rel.to_owned(), known.without_base());
+                // Too large to send now, but not deleted.
+                self.entries.insert(rel.to_owned(), known.without_base());
             }
+            return Ok(());
         }
+        let same = known.is_some_and(|known| {
+            known.k == if kind.is_symlink() { "link" } else { "file" }
+                && known.s == meta.len() as i64
+                && known.m == mtime_ns(&meta)
+        });
+        match describe(path, &meta, !same) {
+            Ok(mut entry) => {
+                if same && let Some(known) = known {
+                    entry.h = known.h.clone();
+                }
+                self.entries.insert(rel.to_owned(), entry);
+                Ok(())
+            }
+            Err(error) if not_found(&error) => Ok(()),
+            Err(error) => Err(io(error)),
+        }
+    }
+
+    fn folder(&mut self, start: &Path) -> Result<(), MacSyncError> {
+        let mut folders = vec![start.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            let prefix = match folder.strip_prefix(self.root) {
+                Ok(relative) if relative.as_os_str().is_empty() => String::new(),
+                Ok(relative) => format!("{}/", relative.to_string_lossy()),
+                Err(_) => continue,
+            };
+            let listing = match fs::read_dir(&folder) {
+                Ok(listing) => listing,
+                Err(error) if not_found(&error) && folder != self.root => continue,
+                Err(error) => return Err(io(error)),
+            };
+            let mut names = Vec::new();
+            for item in listing {
+                names.push(item.map_err(io)?.file_name().to_string_lossy().into_owned());
+            }
+            names.sort();
+            let mut below = Vec::new();
+            for name in names {
+                let rel = format!("{prefix}{name}");
+                let path = folder.join(&name);
+                if is_temporary(&name) {
+                    if self.clean {
+                        // An interrupted write left it; the round lock keeps writes out.
+                        match fs::remove_file(&path) {
+                            Ok(()) => {}
+                            Err(error) if not_found(&error) => {}
+                            Err(error) => return Err(io(error)),
+                        }
+                    }
+                    continue;
+                }
+                if self.rules.skipped(&rel) {
+                    continue;
+                }
+                match fs::symlink_metadata(&path) {
+                    Ok(meta) if meta.is_dir() => {
+                        below.push(path);
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(error) if not_found(&error) => continue,
+                    Err(error) => return Err(io(error)),
+                }
+                self.one(&path, &rel)?;
+            }
+            folders.extend(below.into_iter().rev());
+        }
+        Ok(())
     }
 }
 
@@ -282,55 +450,52 @@ pub fn scan(
     rules: &Rules,
     manifest: &Manifest,
     start: Option<&Path>,
-) -> (Manifest, Vec<String>) {
-    let mut entries = Manifest::new();
-    let mut notices = Vec::new();
-    let mut folders = vec![start.unwrap_or(root).to_path_buf()];
-    while let Some(folder) = folders.pop() {
-        let prefix = match folder.strip_prefix(root) {
-            Ok(relative) if relative.as_os_str().is_empty() => String::new(),
-            Ok(relative) => format!("{}/", relative.to_string_lossy()),
-            Err(_) => continue,
-        };
-        let Ok(listing) = fs::read_dir(&folder) else {
-            continue;
-        };
-        let mut names = listing
-            .filter_map(Result::ok)
-            .map(|item| item.file_name().to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        names.sort();
-        let mut below = Vec::new();
-        for name in names {
-            let rel = format!("{prefix}{name}");
-            if rules.skipped(&rel) {
-                continue;
-            }
-            let path = folder.join(&name);
-            if fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir()) {
-                below.push(path);
-                continue;
-            }
-            scan_one(&path, &rel, rules, manifest, &mut entries, &mut notices);
-        }
-        folders.extend(below.into_iter().rev());
-    }
-    (entries, notices)
+) -> Result<(Manifest, Vec<String>), MacSyncError> {
+    scan_folder(root, rules, manifest, start, true)
+}
+
+fn scan_folder(
+    root: &Path,
+    rules: &Rules,
+    manifest: &Manifest,
+    start: Option<&Path>,
+    clean: bool,
+) -> Result<(Manifest, Vec<String>), MacSyncError> {
+    let mut scan = Scan {
+        root,
+        rules,
+        manifest,
+        clean,
+        entries: Manifest::new(),
+        notices: Vec::new(),
+    };
+    scan.folder(start.unwrap_or(root))?;
+    Ok((scan.entries, scan.notices))
 }
 
 /// The Mac's state with only `paths` (and the folders among them) read again: every
-/// other path keeps its manifest entry. File events name what changed.
+/// other path keeps its manifest entry. File events name what changed. A named path
+/// counts under its own spelling only; the spelling on disk is read as well, so a
+/// rename in case or Unicode form is a deletion and a new file.
 pub fn scan_paths(
     root: &Path,
     rules: &Rules,
     manifest: &Manifest,
     paths: &BTreeSet<String>,
-) -> (Manifest, Vec<String>) {
-    let mut covered: Vec<&String> = Vec::new();
+) -> Result<(Manifest, Vec<String>), MacSyncError> {
+    let mut listings = Listings::default();
+    let mut named = BTreeSet::new();
     for rel in paths {
-        if rel.is_empty() || rel.starts_with("../") {
+        if rel.is_empty() || rel.starts_with("../") || rel.split('/').any(|part| part == "..") {
             continue;
         }
+        named.insert(rel.clone());
+        if let Some(actual) = listings.actual(root, rel).map_err(io)? {
+            named.insert(actual);
+        }
+    }
+    let mut covered: Vec<&String> = Vec::new();
+    for rel in &named {
         if !covered
             .iter()
             .any(|other| rel.starts_with(&format!("{other}/")))
@@ -343,20 +508,25 @@ pub fn scan_paths(
             .iter()
             .any(|item| rel == item.as_str() || rel.starts_with(&format!("{item}/")))
     };
-    let mut entries = manifest
+    let entries = manifest
         .iter()
         .filter(|(rel, _)| !under(rel))
         .map(|(rel, known)| (rel.clone(), known.without_base()))
         .collect::<Manifest>();
-    let mut notices = Vec::new();
+    let mut scan = Scan {
+        root,
+        rules,
+        manifest,
+        clean: true,
+        entries,
+        notices: Vec::new(),
+    };
     for rel in covered {
-        if rules.skipped(rel) {
+        if rules.skipped(rel) || listings.actual(root, rel).map_err(io)?.as_deref() != Some(rel) {
+            // Not on disk under this spelling.
             continue;
         }
         let path = root.join(rel);
-        let Ok(meta) = fs::symlink_metadata(&path) else {
-            continue;
-        };
         let mut parent = path.parent();
         let mut linked = false;
         while let Some(folder) = parent.filter(|folder| *folder != root) {
@@ -366,15 +536,35 @@ pub fn scan_paths(
         if linked {
             continue;
         }
-        if meta.is_dir() {
-            let (found, more) = scan(root, rules, manifest, Some(&path));
-            entries.extend(found);
-            notices.extend(more);
-        } else {
-            scan_one(&path, rel, rules, manifest, &mut entries, &mut notices);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() => scan.folder(&path)?,
+            Ok(_) => scan.one(&path, rel)?,
+            Err(error) if not_found(&error) => {}
+            Err(error) => return Err(io(error)),
         }
     }
-    (entries, notices)
+    Ok((scan.entries, scan.notices))
+}
+
+/// The result of a guarded write.
+enum Written {
+    /// The new manifest entry, `None` after a delete.
+    Done(Option<Entry>),
+    /// The Mac file no longer had the expected content: nothing changed.
+    Changed,
+}
+
+/// The hash of the Mac file under exactly this spelling, `ABSENT` when it has none.
+fn current_hash(listings: &mut Listings, root: &Path, rel: &str) -> std::io::Result<String> {
+    if listings.actual(root, rel)?.as_deref() != Some(rel) {
+        return Ok(ABSENT.to_owned());
+    }
+    let path = root.join(rel);
+    match fs::symlink_metadata(&path) {
+        Ok(meta) => describe(&path, &meta, true).map(|entry| entry.h),
+        Err(error) if not_found(&error) => Ok(ABSENT.to_owned()),
+        Err(error) => Err(error),
+    }
 }
 
 /// Replace one Mac path atomically; returns its new manifest entry (`None` after a
@@ -386,29 +576,62 @@ pub fn write_mac(
     data: &[u8],
     mode: u32,
 ) -> Result<Option<Entry>, MacSyncError> {
+    match write_guarded(root, rel, kind, data, mode, None, &mut Listings::default())? {
+        Written::Done(entry) => Ok(entry),
+        Written::Changed => Err(MacSyncError::Invalid),
+    }
+}
+
+/// [`write_mac`] that first checks, right before the rename or the delete, that the Mac
+/// file under exactly this spelling still has the `expected` hash (`ABSENT` for none).
+fn write_guarded(
+    root: &Path,
+    rel: &str,
+    kind: &str,
+    data: &[u8],
+    mode: u32,
+    expected: Option<(&str, &Option<FileStamp>)>,
+    listings: &mut Listings,
+) -> Result<Written, MacSyncError> {
     let path = contained_path(root, rel)?;
-    if kind == ABSENT {
-        match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() || meta.is_file() => {
-                fs::remove_file(&path).map_err(MacSyncError::Io)?;
+    let unchanged = |listings: &mut Listings| -> Result<bool, MacSyncError> {
+        listings.forget(&path);
+        Ok(match expected {
+            None => true,
+            Some((expected, stamp)) => {
+                current_hash(listings, root, rel).map_err(io)? == expected
+                    && FileStamp::read(&path).map_err(io)? == *stamp
             }
-            _ => {}
+        })
+    };
+    if kind == ABSENT {
+        if !unchanged(listings)? {
+            return Ok(Written::Changed);
         }
-        return Ok(None);
+        if listings.actual(root, rel).map_err(io)?.as_deref() == Some(rel) {
+            match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_symlink() || meta.is_file() => {
+                    fs::remove_file(&path).map_err(io)?;
+                }
+                _ => {}
+            }
+        }
+        listings.forget(&path);
+        return Ok(Written::Done(None));
     }
     let parent = path.parent().ok_or(MacSyncError::Invalid)?;
-    fs::create_dir_all(parent).map_err(MacSyncError::Io)?;
+    fs::create_dir_all(parent).map_err(io)?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or(MacSyncError::Invalid)?;
     let temporary = parent.join(format!(
-        ".{name}.studio-sync-{}",
+        ".{name}{TEMPORARY_MARK}{}",
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     ));
     if kind == "link" {
         let target = std::str::from_utf8(data).map_err(|_| MacSyncError::Invalid)?;
-        std::os::unix::fs::symlink(target, &temporary).map_err(MacSyncError::Io)?;
+        std::os::unix::fs::symlink(target, &temporary).map_err(io)?;
     } else {
         use rustix::fs::{Mode, OFlags};
         let written = (|| -> std::io::Result<()> {
@@ -425,17 +648,31 @@ pub fn write_mac(
         })();
         if let Err(error) = written {
             drop(fs::remove_file(&temporary));
-            return Err(MacSyncError::Io(error));
+            return Err(io(error));
         }
+    }
+    // A save while main's version was fetched, or a file that appeared under another
+    // spelling of the name, keeps the Mac file.
+    let free = match unchanged(listings) {
+        Ok(true) => listings
+            .actual(root, rel)
+            .map(|actual| actual.is_none() || actual.as_deref() == Some(rel))
+            .map_err(io),
+        other => other,
+    };
+    if !matches!(free, Ok(true)) {
+        drop(fs::remove_file(&temporary));
+        return free.map(|_| Written::Changed);
     }
     if let Err(error) = fs::rename(&temporary, &path) {
         drop(fs::remove_file(&temporary));
-        return Err(MacSyncError::Io(error));
+        return Err(io(error));
     }
-    let meta = fs::symlink_metadata(&path).map_err(MacSyncError::Io)?;
+    listings.forget(&path);
+    let meta = fs::symlink_metadata(&path).map_err(io)?;
     describe(&path, &meta, true)
-        .map(Some)
-        .map_err(MacSyncError::Io)
+        .map(|entry| Written::Done(Some(entry)))
+        .map_err(io)
 }
 
 fn string_set(value: &Value) -> BTreeSet<String> {
@@ -452,13 +689,14 @@ fn string_set(value: &Value) -> BTreeSet<String> {
 /// of its agreed content.
 type Change = (String, Option<Entry>, Option<String>);
 
-/// What the outbound step did: agreed without a write, written, skipped, and the main
-/// deletions that wait for a confirmation.
+/// What the outbound step did: agreed without a write, written, skipped, the main
+/// deletions that wait for a confirmation, and notices.
 struct Outbound {
     agreed: BTreeSet<String>,
     written: BTreeSet<String>,
     skipped: BTreeSet<String>,
     removals: usize,
+    notices: Vec<String>,
 }
 
 /// The sync of one VM project with its Mac folder.
@@ -482,7 +720,7 @@ impl<'a> ProjectSync<'a> {
         let record = project_record(&project)?;
         let source = record["source"].as_str().ok_or(MacSyncError::NoProject)?;
         let root = CanonicalPath::existing(Path::new(source))
-            .map_err(MacSyncError::Io)?
+            .map_err(io)?
             .to_path_buf();
         Ok(Self {
             guest,
@@ -518,13 +756,13 @@ impl<'a> ProjectSync<'a> {
         self.directory.join(name)
     }
 
-    fn rules(&self) -> Rules {
-        Rules::new(&self.root).with_file_limit(self.file_limit)
+    fn rules(&self) -> Result<Rules, MacSyncError> {
+        Ok(Rules::new(&self.root)?.with_file_limit(self.file_limit))
     }
 
     /// Merge `values` into `status.json` with the current time; returns the new status.
     pub fn record_status(&self, values: Value) -> Result<Value, MacSyncError> {
-        fs::create_dir_all(&self.directory).map_err(MacSyncError::Io)?;
+        fs::create_dir_all(&self.directory).map_err(io)?;
         let mut current = read_json(&self.path("status.json"), json!({}))?;
         if !current.is_object() {
             current = json!({});
@@ -542,13 +780,8 @@ impl<'a> ProjectSync<'a> {
     /// One round. `paths` limits the Mac scan to what file events named, and an empty set
     /// reads nothing on the Mac (main changed); `None` scans the whole folder.
     ///
-    /// A lost reply keeps the operation, and the next round repeats it with the same ID;
-    /// the guest answers from its receipt. A guest refusal ends the operation. A guest
-    /// answer `outcome_unknown` also ends it ([`MacSyncError::Unproven`], kept in
-    /// `status.json`): the guest can never prove its result. The next round then hashes
-    /// the paths of that operation again on the Mac and in main before it scans: a path
-    /// equal on both sides agrees, a path that changed on both sides becomes a conflict,
-    /// and the hash guards of the round decide the rest.
+    /// An uncertain reply keeps the exact operation and payload. A later round repeats
+    /// the same request. A definite guest refusal ends the operation.
     pub fn round(&self, paths: Option<&BTreeSet<String>>) -> Result<Value, MacSyncError> {
         let _lock = lock_round(&self.directory)?;
         self.round_locked(paths)
@@ -581,8 +814,8 @@ impl<'a> ProjectSync<'a> {
     fn remove(&self, name: &str) -> Result<(), MacSyncError> {
         match fs::remove_file(self.path(name)) {
             Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(MacSyncError::Io(error)),
+            Err(error) if not_found(&error) => Ok(()),
+            Err(error) => Err(io(error)),
         }
     }
 
@@ -603,10 +836,12 @@ impl<'a> ProjectSync<'a> {
     }
 
     /// Every synced path of a layr state that `keep` accepts, with its guest description.
+    /// The guest reads it under its project lock, after any apply that runs.
     fn state_hashes(
         &self,
         state: &str,
         keep: impl Fn(&str) -> bool,
+        read_only: bool,
     ) -> Result<BTreeMap<String, Value>, MacSyncError> {
         let mut known = BTreeMap::new();
         let mut after = String::new();
@@ -614,12 +849,19 @@ impl<'a> ProjectSync<'a> {
             let page = self
                 .guest
                 .call(
-                    "sync.mac.hashes",
+                    if read_only {
+                        "sync.mac.preview"
+                    } else {
+                        "sync.mac.hashes"
+                    },
                     &json!({"projectId": self.project_id, "stateId": state, "after": after}),
                     None,
                     HASHES_TIMEOUT,
                 )
                 .map_err(MacSyncError::Guest)?;
+            if read_only && page["readOnly"] != true {
+                return Err(MacSyncError::Invalid);
+            }
             for (rel, item) in page["items"].as_object().into_iter().flatten() {
                 if keep(rel) {
                     known.insert(rel.clone(), item.clone());
@@ -631,6 +873,26 @@ impl<'a> ProjectSync<'a> {
             }
         }
         Ok(known)
+    }
+
+    /// Main's head and the hashes of the paths `keep` accepts. The hashes wait for any
+    /// running apply; when main moved meanwhile, both are read again.
+    fn settled_main(
+        &self,
+        keep: impl Fn(&str) -> bool,
+    ) -> Result<(String, BTreeMap<String, Value>), MacSyncError> {
+        let mut head = self.head()?;
+        for _ in 0..PREVIEW_READS {
+            let main = self.state_hashes(&head, &keep, true)?;
+            let after = self.head()?;
+            if after == head {
+                return Ok((head, main));
+            }
+            head = after;
+        }
+        Err(MacSyncError::Io(std::io::Error::other(
+            "main kept moving while the sync read it",
+        )))
     }
 
     /// The first manifest. With the import state, its content is what the Mac and the VM
@@ -652,7 +914,7 @@ impl<'a> ProjectSync<'a> {
             .to_owned();
         let base = self.import_state.clone().unwrap_or(main_state);
         let recorded = self
-            .state_hashes(&base, |rel| !rules.skipped(rel))?
+            .state_hashes(&base, |rel| !rules.skipped(rel), false)?
             .into_iter()
             .filter_map(|(rel, item)| {
                 let kind = item["kind"].as_str()?;
@@ -672,7 +934,7 @@ impl<'a> ProjectSync<'a> {
         if self.import_state.is_some() {
             return Ok(recorded);
         }
-        let (current, _) = scan(&self.root, rules, &Manifest::new(), None);
+        let (current, _) = scan(&self.root, rules, &Manifest::new(), None)?;
         let manifest = recorded
             .iter()
             .filter(|(rel, entry)| {
@@ -694,76 +956,186 @@ impl<'a> ProjectSync<'a> {
         Ok(manifest)
     }
 
-    /// After a dropped operation: hash its paths again on the Mac and in main, so that
-    /// the round trusts no agreed content of those paths without a check.
-    fn recover(
-        &self,
-        rules: &Rules,
-        manifest: &mut Manifest,
-        held: &mut Map<String, Value>,
-    ) -> Result<BTreeSet<String>, MacSyncError> {
+    /// A legacy recovery record lacks the original payload. Hashes cannot establish
+    /// that the old operation has stopped, so it cannot authorize a new operation.
+    fn check_legacy_recovery(&self) -> Result<(), MacSyncError> {
         let record = read_json(&self.path("recover.json"), Value::Null)?;
-        if record.is_null() {
-            return Ok(BTreeSet::new());
+        if !record.is_null() {
+            return Err(MacSyncError::Unproven {
+                operation: record["operation"].as_str().unwrap_or("unknown").to_owned(),
+                paths: string_set(&record["paths"]).len(),
+            });
         }
-        let listed = string_set(&record["paths"])
-            .into_iter()
-            .filter(|rel| !rules.skipped(rel))
-            .collect::<BTreeSet<_>>();
-        if !listed.is_empty() {
-            let head = self.head()?;
-            let main = self.state_hashes(&head, |rel| listed.contains(rel))?;
-            for rel in &listed {
-                let Ok(path) = contained_path(&self.root, rel) else {
-                    continue;
+        Ok(())
+    }
+
+    /// What the next round would move, without a write on either side: the Mac folder
+    /// and the sync records stay as they are, and the guest gets only reads
+    /// (`sync.mac.head`, `sync.mac.preview`). Each list has a count and its first
+    /// [`PLAN_SAMPLE`] paths. The round's guards then decide what waits.
+    pub fn plan(&self) -> Result<Value, MacSyncError> {
+        // Open an existing lock for reads. A preview never creates a sync record.
+        let lock = match File::open(self.path("round.lock")) {
+            Ok(file) => Some(
+                nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockSharedNonblock).map_err(
+                    |(_, error)| {
+                        if error == nix::errno::Errno::EWOULDBLOCK
+                            || error == nix::errno::Errno::EAGAIN
+                        {
+                            MacSyncError::Busy
+                        } else {
+                            io(std::io::Error::from_raw_os_error(error as i32))
+                        }
+                    },
+                )?,
+            ),
+            Err(error) if not_found(&error) => None,
+            Err(error) => return Err(io(error)),
+        };
+        let rules = self.rules()?;
+        let manifest = self.load_manifest()?;
+        let pending = read_json(&self.path("pending.json"), Value::Null)?;
+        let status = read_json(&self.path("status.json"), json!({}))?;
+        let held = self.load_object("held.json")?;
+        let waiting = string_set(&status["choices"]);
+        let pending_view = (!pending.is_null()).then(|| {
+            json!({
+                "operation": pending["operation"],
+                "entries": pending["params"]["entries"].as_array().map_or(0, Vec::len),
+            })
+        });
+        let first_round = manifest.is_none();
+        let (head, main) = self.settled_main(|rel| !rules.skipped(rel))?;
+        let manifest = match manifest {
+            Some(manifest) => manifest,
+            None => {
+                let (base, recorded) = match &self.import_state {
+                    Some(base) if *base != head => (
+                        base.clone(),
+                        self.state_hashes(base, |rel| !rules.skipped(rel), true)?,
+                    ),
+                    _ => (head.clone(), main.clone()),
                 };
-                let mac = match fs::symlink_metadata(&path) {
-                    Ok(meta) if meta.is_file() || meta.file_type().is_symlink() => {
-                        if meta.is_file() && meta.len() > self.file_limit {
-                            continue;
-                        }
-                        match describe(&path, &meta, true) {
-                            Ok(entry) => Some(entry),
-                            Err(_) => continue,
-                        }
-                    }
-                    Ok(_) => continue,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(_) => continue,
-                };
-                let mac_hash = mac.as_ref().map_or(ABSENT, |entry| entry.h.as_str());
-                let main_hash = main
-                    .get(rel)
-                    .filter(|item| matches!(item["kind"].as_str(), Some("file" | "link")))
-                    .and_then(|item| item["sha256"].as_str())
-                    .unwrap_or(ABSENT);
-                let agreed = manifest.get(rel).map_or(ABSENT, |entry| entry.h.as_str());
-                if mac_hash == main_hash {
-                    match mac {
-                        None => {
-                            manifest.remove(rel);
-                        }
-                        Some(entry) => {
-                            manifest.insert(rel.clone(), entry.with_base(&head));
-                        }
-                    }
-                    held.remove(rel);
-                } else if main_hash == agreed || mac_hash == agreed {
-                    // One side kept the agreed content: the round's hash guards decide.
-                } else if held.get(rel).and_then(|value| value["h"].as_str()) != Some(mac_hash) {
-                    // Both sides changed: the user chooses, nothing is overwritten.
-                    held.insert(rel.clone(), json!({"h": mac_hash, "why": "conflict"}));
-                }
+                recorded
+                    .iter()
+                    .filter_map(|(rel, item)| {
+                        let kind = item["kind"].as_str()?;
+                        matches!(kind, "file" | "link").then(|| {
+                            (
+                                rel.clone(),
+                                Entry {
+                                    k: kind.to_owned(),
+                                    s: item["size"].as_i64().unwrap_or(0),
+                                    m: 0,
+                                    x: item["mode"].as_u64().unwrap_or(0) as u32,
+                                    h: item["sha256"].as_str().unwrap_or_default().to_owned(),
+                                    b: Some(base.clone()),
+                                },
+                            )
+                        })
+                    })
+                    .collect()
             }
-            self.save_manifest(manifest)?;
-            save_json(&self.path("held.json"), &Value::Object(held.clone()))?;
+        };
+        let (current, notices) = scan_folder(&self.root, &rules, &manifest, None, false)?;
+        let main_key = |rel: &str| {
+            main.get(rel)
+                .filter(|item| matches!(item["kind"].as_str(), Some("file" | "link")))
+                .and_then(|item| {
+                    Some((
+                        item["kind"].as_str()?,
+                        item["sha256"].as_str()?,
+                        if item["kind"] == "file" {
+                            item["mode"].as_u64().unwrap_or(0) as u32 & 0o111
+                        } else {
+                            0
+                        },
+                    ))
+                })
+        };
+        let mut lists: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        let paths = manifest
+            .keys()
+            .chain(current.keys())
+            .chain(main.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        for rel in paths {
+            if rules.skipped(&rel) || waiting.contains(&rel) {
+                continue;
+            }
+            let agreed = manifest.get(&rel).map(Entry::sync_key);
+            let mac = current.get(&rel).map(Entry::sync_key);
+            let vm = main_key(&rel);
+            let mac_hash = current.get(&rel).map_or(ABSENT, |entry| entry.h.as_str());
+            let held_hash = held.get(&rel).and_then(|value| value["h"].as_str());
+            let list = if mac == vm {
+                "agreeWithoutTransfer"
+            } else if first_round && self.import_state.is_none() {
+                "choices"
+            } else if held_hash == Some(mac_hash) {
+                "held"
+            } else if mac != agreed && vm == agreed {
+                if mac.is_none() {
+                    "deletionsToMain"
+                } else {
+                    "uploads"
+                }
+            } else if mac == agreed && vm != agreed {
+                if vm.is_none() {
+                    "macDeletions"
+                } else {
+                    "macWrites"
+                }
+            } else {
+                "conflicts"
+            };
+            if list == "agreeWithoutTransfer" && mac == agreed {
+                continue;
+            }
+            lists.entry(list).or_default().push(rel);
         }
-        self.remove("recover.json")?;
-        Ok(listed)
+        let mut plan = json!({
+            "projectId": self.project_id,
+            "pending": pending_view,
+            "recovery": read_json(&self.path("recover.json"), Value::Null)?,
+            "firstRound": first_round,
+            "importStateId": self.import_state,
+            "mainStateId": head,
+            "agreedPaths": manifest.len(),
+            "notices": notices,
+        });
+        for name in [
+            "uploads",
+            "deletionsToMain",
+            "macWrites",
+            "macDeletions",
+            "conflicts",
+            "held",
+            "choices",
+            "agreeWithoutTransfer",
+        ] {
+            let items = lists.remove(name).unwrap_or_default();
+            plan[name] = json!({
+                "count": items.len(),
+                "paths": items.iter().take(PLAN_SAMPLE).collect::<Vec<_>>(),
+            });
+        }
+        let mac_deletions = plan["deletionsToMain"]["count"].as_u64().unwrap_or(0) as usize;
+        let main_deletions = plan["macDeletions"]["count"].as_u64().unwrap_or(0) as usize;
+        plan["guards"] = json!({
+            "macDeletionsWait": too_many(mac_deletions, 0, manifest.len()),
+            "mainDeletionsWait": too_many(main_deletions, 0, manifest.len()),
+        });
+        if lock.is_none() && self.path("round.lock").exists() {
+            return Err(MacSyncError::Busy);
+        }
+        Ok(plan)
     }
 
     fn round_locked(&self, paths: Option<&BTreeSet<String>>) -> Result<Value, MacSyncError> {
-        let rules = self.rules();
+        self.check_legacy_recovery()?;
+        let rules = self.rules()?;
         let mut manifest = match self.load_manifest()? {
             Some(manifest) => manifest,
             None => {
@@ -778,14 +1150,11 @@ impl<'a> ProjectSync<'a> {
         // Mac content in a conflict, or handed to the lead: it is not sent again until the
         // Mac file changes or the conflict is resolved.
         let mut held = self.load_object("held.json")?;
-        let recovered = self.recover(&rules, &mut manifest, &mut held)?;
-        // Paths a refused merge or a choice left unsent, and the paths of a dropped
-        // operation, are read again.
+        // Read paths again when a refused merge or a choice left them unsent.
         let paths = paths.map(|paths| {
             paths
                 .iter()
                 .chain(&previous_rescan)
-                .chain(&recovered)
                 .cloned()
                 .collect::<BTreeSet<_>>()
         });
@@ -794,11 +1163,11 @@ impl<'a> ProjectSync<'a> {
                 .and_then(|value| value["h"].as_str())
                 .map(str::to_owned)
         };
-        let (current, notices) = match &paths {
+        let (current, mut notices) = match &paths {
             Some(paths) if self.path("manifest.json").exists() => {
-                scan_paths(&self.root, &rules, &manifest, paths)
+                scan_paths(&self.root, &rules, &manifest, paths)?
             }
-            _ => scan(&self.root, &rules, &manifest, None),
+            _ => scan(&self.root, &rules, &manifest, None)?,
         };
         let mut changes: Vec<Change> = Vec::new();
         for (rel, entry) in &current {
@@ -847,6 +1216,13 @@ impl<'a> ProjectSync<'a> {
             }));
         }
         changes.extend(deleted);
+        let observed = current
+            .keys()
+            .map(|rel| {
+                let path = contained_path(&self.root, rel)?;
+                Ok((rel.clone(), FileStamp::read(&path).map_err(io)?))
+            })
+            .collect::<Result<BTreeMap<_, _>, MacSyncError>>()?;
         let pending = read_json(&self.path("pending.json"), Value::Null)?;
         let replayed = !pending.is_null();
         let (operation, params, sent) = if replayed {
@@ -885,30 +1261,8 @@ impl<'a> ProjectSync<'a> {
                 .call("sync.mac.apply", &params, Some(&operation), APPLY_TIMEOUT)
             {
                 Ok(result) => result,
-                Err(error) if error.code() == Some("outcome_unknown") => {
-                    let listed = params["entries"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|item| item["path"].as_str())
-                        .collect::<BTreeSet<_>>();
-                    save_json(
-                        &self.path("recover.json"),
-                        &json!({"operation": operation, "paths": listed, "at": now_seconds()}),
-                    )?;
-                    self.remove("pending.json")?;
-                    let error = MacSyncError::Unproven {
-                        operation,
-                        paths: listed.len(),
-                    };
-                    self.record_status(json!({
-                        "state": "error",
-                        "reason": super::error_reason(&error),
-                    }))?;
-                    return Err(error);
-                }
                 Err(error) => {
-                    if !error.uncertain() {
+                    if !error.uncertain() && error.code() != Some("outcome_unknown") {
                         // The guest refused the operation: repeating it cannot help.
                         self.remove("pending.json")?;
                     }
@@ -941,7 +1295,9 @@ impl<'a> ProjectSync<'a> {
             &conflicts,
             &held,
             allowed_removals,
+            &observed,
         )?;
+        notices.extend(outbound.notices.iter().cloned());
         let bases = params["entries"]
             .as_array()
             .into_iter()
@@ -968,13 +1324,35 @@ impl<'a> ProjectSync<'a> {
                 continue;
             }
             // main took the Mac content unchanged for this path.
-            match current.get(&rel) {
-                None => {
+            match sent.get(&rel).map(String::as_str) {
+                Some(ABSENT) => {
                     manifest.remove(&rel);
                 }
-                Some(found) => {
-                    manifest.insert(rel.clone(), found.with_base(&main_state));
+                Some(hash) => {
+                    let item = params["entries"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|item| item["path"].as_str() == Some(rel.as_str()));
+                    let mut agreed = current
+                        .get(&rel)
+                        .filter(|found| found.h == hash)
+                        .cloned()
+                        .unwrap_or_else(|| Entry {
+                            k: item
+                                .and_then(|item| item["kind"].as_str())
+                                .unwrap_or("file")
+                                .to_owned(),
+                            s: -1,
+                            m: 0,
+                            x: manifest.get(&rel).map_or(0, |entry| entry.x),
+                            h: hash.to_owned(),
+                            b: None,
+                        });
+                    agreed.b = Some(main_state.clone());
+                    manifest.insert(rel.clone(), agreed);
                 }
+                None => {}
             }
         }
         for rel in &result_conflicts {
@@ -1120,15 +1498,13 @@ impl<'a> ProjectSync<'a> {
         let scratch = tempfile::Builder::new()
             .prefix("studio-mac-sync-")
             .tempdir()
-            .map_err(MacSyncError::Io)?;
+            .map_err(io)?;
         let archive = scratch.path().join("changes.tar.gz");
         let mut entries = Vec::new();
         {
-            let raw = File::create(&archive).map_err(MacSyncError::Io)?;
+            let raw = File::create(&archive).map_err(io)?;
             let mut output = TarGzipWriter::new(raw);
-            output
-                .append_directory(".", 0o755)
-                .map_err(MacSyncError::Io)?;
+            output.append_directory(".", 0o755).map_err(io)?;
             for (rel, entry, base) in changes {
                 let mut item = json!({
                     "path": rel,
@@ -1147,32 +1523,30 @@ impl<'a> ProjectSync<'a> {
                 };
                 let path = contained_path(&self.root, rel)?;
                 if entry.k == "link" {
-                    let target = link_target(&path).map_err(MacSyncError::Io)?;
+                    let target = link_target(&path).map_err(io)?;
                     let text = std::str::from_utf8(&target).map_err(|_| MacSyncError::Invalid)?;
-                    output
-                        .append_symlink(rel, 0o777, text)
-                        .map_err(MacSyncError::Io)?;
+                    output.append_symlink(rel, 0o777, text).map_err(io)?;
                     hashes.insert(rel.clone(), hex_sha(&target));
                     continue;
                 }
                 let mut data = Vec::new();
                 open_no_follow(&path)
                     .and_then(|file| file.take(self.file_limit + 1).read_to_end(&mut data))
-                    .map_err(MacSyncError::Io)?;
+                    .map_err(io)?;
                 if data.len() as u64 > self.file_limit {
                     return Err(MacSyncError::Invalid);
                 }
                 let mode = if entry.x == 0 { 0o644 } else { entry.x };
                 output
                     .append_file(rel, mode, data.len() as u64, &mut Cursor::new(&data))
-                    .map_err(MacSyncError::Io)?;
+                    .map_err(io)?;
                 // The hash of what was sent: a later Mac edit is never mistaken for it.
                 hashes.insert(rel.clone(), hex_sha(&data));
             }
             output
                 .finish()
                 .and_then(|mut raw| raw.flush())
-                .map_err(MacSyncError::Io)?;
+                .map_err(io)?;
         }
         upload_archive(self.guest, &archive, operation)?;
         params["entries"] = Value::Array(entries);
@@ -1181,7 +1555,9 @@ impl<'a> ProjectSync<'a> {
     }
 
     /// Bring main's changes to the Mac where the Mac file still has its agreed content, or
-    /// the content main took from this round.
+    /// the content main took from this round. Deletions come after the other changes, so
+    /// a rename in case or Unicode form moves the file instead of losing it; a file
+    /// written or agreed in this round is never deleted under another spelling.
     #[allow(clippy::too_many_arguments)]
     fn outbound(
         &self,
@@ -1192,10 +1568,15 @@ impl<'a> ProjectSync<'a> {
         conflicts: &BTreeSet<String>,
         held: &Map<String, Value>,
         allowed_removals: usize,
+        observed: &BTreeMap<String, Option<FileStamp>>,
     ) -> Result<Outbound, MacSyncError> {
-        let mut agreed = BTreeSet::new();
-        let mut written = BTreeSet::new();
-        let mut skipped = BTreeSet::new();
+        let mut done = Outbound {
+            agreed: BTreeSet::new(),
+            written: BTreeSet::new(),
+            skipped: BTreeSet::new(),
+            removals: 0,
+            notices: Vec::new(),
+        };
         let state = result["mainStateId"]
             .as_str()
             .ok_or(MacSyncError::Invalid)?
@@ -1227,160 +1608,288 @@ impl<'a> ProjectSync<'a> {
             })
             .collect::<BTreeSet<_>>();
         let hold = too_many(removals.len(), allowed_removals, manifest.len());
-        for (base, changes) in &outbound {
-            for change in changes.as_array().into_iter().flatten() {
-                let Some(rel) = change["path"].as_str() else {
-                    continue;
-                };
-                if agreed.contains(rel) || written.contains(rel) {
-                    continue;
-                }
-                let known = manifest.get(rel).cloned();
-                let handed = held.get(rel);
-                // A handoff ends with main's next change of the path, unless the Mac sent a
-                // newer version in this round.
-                let from_agent = handed.is_some_and(|handed| {
-                    handed["why"] == "agent" && handed["base"].as_str() == Some(base.as_str())
-                }) && !sent.contains_key(rel);
-                if rules.skipped(rel)
-                    || (conflicts.contains(rel) && !from_agent)
-                    || (known
-                        .as_ref()
-                        .is_some_and(|known| known.b.as_deref() != Some(base.as_str()))
-                        && !from_agent)
-                {
-                    continue;
-                }
-                if hold && removals.contains(rel) {
-                    skipped.insert(rel.to_owned());
-                    continue;
-                }
-                let path = contained_path(&self.root, rel)?;
-                let meta = match fs::symlink_metadata(&path) {
-                    Ok(meta) => Some(meta),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(error) if error.raw_os_error() == Some(libc::ENOTDIR) => {
-                        // A Mac file stands where main has a folder: that file is the conflict.
-                        skipped.insert(rel.to_owned());
-                        continue;
-                    }
-                    Err(error) => return Err(MacSyncError::Io(error)),
-                };
-                if meta.as_ref().is_some_and(fs::Metadata::is_dir) {
-                    // A Mac folder stands where main has a file; nothing replaces it.
-                    skipped.insert(rel.to_owned());
-                    continue;
-                }
-                let now = match &meta {
-                    None => None,
-                    Some(meta) => Some(describe(&path, meta, true).map_err(MacSyncError::Io)?),
-                };
-                let now_hash = now
+        let deleted_in_main = outbound
+            .values()
+            .flat_map(|changes| changes.as_array().into_iter().flatten())
+            .filter(|change| change["kind"] == ABSENT)
+            .filter_map(|change| change["path"].as_str().map(str::to_owned))
+            .collect::<BTreeSet<_>>();
+        let ordered = outbound
+            .iter()
+            .flat_map(|(base, changes)| {
+                changes
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(move |change| (base, change))
+            })
+            .filter(|(_, change)| change["kind"] != ABSENT)
+            .chain(
+                outbound
+                    .iter()
+                    .flat_map(|(base, changes)| {
+                        changes
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(move |change| (base, change))
+                    })
+                    .filter(|(_, change)| change["kind"] == ABSENT),
+            )
+            .collect::<Vec<_>>();
+        let mut listings = Listings::default();
+        // File IDs of the Mac files that this round wrote or agreed on.
+        let mut touched = BTreeSet::new();
+        for (base, change) in ordered {
+            let Some(rel) = change["path"].as_str() else {
+                continue;
+            };
+            if done.agreed.contains(rel) || done.written.contains(rel) {
+                continue;
+            }
+            let mut known = manifest.get(rel).cloned();
+            let handed = held.get(rel);
+            // A handoff ends with main's next change of the path, unless the Mac sent a
+            // newer version in this round.
+            let from_agent = handed.is_some_and(|handed| {
+                handed["why"] == "agent" && handed["base"].as_str() == Some(base.as_str())
+            }) && !sent.contains_key(rel);
+            if rules.skipped(rel)
+                || (conflicts.contains(rel) && !from_agent)
+                || (known
                     .as_ref()
-                    .map_or(ABSENT, |entry| entry.h.as_str())
-                    .to_owned();
-                let kind = change["kind"].as_str().unwrap_or(ABSENT);
+                    .is_some_and(|known| known.b.as_deref() != Some(base.as_str()))
+                    && !from_agent)
+            {
+                continue;
+            }
+            if hold && removals.contains(rel) {
+                done.skipped.insert(rel.to_owned());
+                continue;
+            }
+            let kind = change["kind"].as_str().unwrap_or(ABSENT);
+            let path = contained_path(&self.root, rel)?;
+            if let Some(before) = observed.get(rel)
+                && *before != FileStamp::read(&path).map_err(io)?
+            {
                 let target = if kind == ABSENT {
                     ABSENT
                 } else {
                     change["sha256"].as_str().unwrap_or_default()
                 };
-                let change_mode = change["mode"].as_u64().map(|mode| mode as u32);
-                if now_hash == target {
-                    match now {
-                        None => {
-                            manifest.remove(rel);
-                        }
-                        Some(mut now) => {
-                            if let Some(mode) = change_mode
-                                && now.k == "file"
-                                && (now.x ^ mode) & 0o111 != 0
-                                && known
-                                    .as_ref()
-                                    .is_none_or(|known| (now.x ^ known.x) & 0o111 == 0)
-                            {
-                                // Main changed the mode and the Mac did not: the Mac takes it.
-                                fs::set_permissions(
-                                    &path,
-                                    fs::Permissions::from_mode((now.x & !0o111) | (mode & 0o111)),
-                                )
-                                .map_err(MacSyncError::Io)?;
-                                let meta = fs::symlink_metadata(&path).map_err(MacSyncError::Io)?;
-                                now = describe(&path, &meta, true).map_err(MacSyncError::Io)?;
-                            }
-                            manifest.insert(rel.to_owned(), now.with_base(&state));
-                        }
-                    }
-                    // The Mac already has main's content: agree without touching the file.
-                    agreed.insert(rel.to_owned());
-                    continue;
-                }
-                let mut allowed = BTreeSet::new();
-                if from_agent {
-                    allowed.insert(
-                        handed
-                            .and_then(|handed| handed["h"].as_str())
-                            .unwrap_or_default()
-                            .to_owned(),
-                    );
-                } else {
-                    allowed.insert(
-                        known
-                            .as_ref()
-                            .map_or(ABSENT.to_owned(), |known| known.h.clone()),
-                    );
-                    if taken.contains(rel)
-                        && let Some(hash) = sent.get(rel)
-                    {
-                        // main took the content this round sent.
-                        allowed.insert(hash.clone());
-                    }
-                }
-                if !allowed.contains(&now_hash) {
-                    skipped.insert(rel.to_owned());
-                    if taken.contains(rel) && sent.get(rel).map(String::as_str) == Some(target) {
-                        // The Mac changed again after the send, and main holds what was sent:
-                        // that content is the agreed base of the next round.
+                if taken.contains(rel) && sent.get(rel).map(String::as_str) == Some(target) {
+                    if target == ABSENT {
+                        manifest.remove(rel);
+                    } else {
                         manifest.insert(
                             rel.to_owned(),
                             Entry {
                                 k: kind.to_owned(),
                                 s: -1,
                                 m: 0,
-                                x: change_mode.unwrap_or(0),
+                                x: change["mode"].as_u64().unwrap_or(0) as u32,
                                 h: target.to_owned(),
                                 b: Some(state.clone()),
                             },
                         );
                     }
+                }
+                done.skipped.insert(rel.to_owned());
+                continue;
+            }
+            let actual = match listings.actual(&self.root, rel) {
+                Ok(actual) => actual,
+                Err(error) if error.raw_os_error() == Some(libc::ENOTDIR) => None,
+                Err(error) => return Err(io(error)),
+            };
+            if let Some(other) = actual.as_deref().filter(|actual| *actual != rel) {
+                // The Mac volume finds this name as another spelling on disk.
+                if kind == ABSENT {
+                    // The name under this spelling is gone; the other file stays.
+                    manifest.remove(rel);
+                    done.agreed.insert(rel.to_owned());
                     continue;
                 }
-                let mut data = Vec::new();
-                if matches!(kind, "file" | "link") {
-                    let (_, fetched, _) = fetch_entry(self.guest, &self.project_id, &state, rel)?;
-                    if hex_sha(&fetched) != target {
-                        skipped.insert(rel.to_owned());
-                        continue;
+                let other_known = manifest.get(other).cloned();
+                let unchanged = match &other_known {
+                    Some(known) => {
+                        current_hash(&mut listings, &self.root, other).map_err(io)? == known.h
                     }
-                    data = fetched;
+                    None => false,
+                };
+                if !(deleted_in_main.contains(other) && unchanged) {
+                    done.notices.push(format!(
+                        "{rel}: the Mac has this name as {other}; the file waits"
+                    ));
+                    done.skipped.insert(rel.to_owned());
+                    continue;
                 }
-                match write_mac(&self.root, rel, kind, &data, change_mode.unwrap_or(0o644))? {
+                // Main renamed the file in case or Unicode form: move the Mac file.
+                let other_path = contained_path(&self.root, other)?;
+                // APFS renames case and Unicode spellings atomically. An intermediate
+                // file could be the sole copy after a crash and must not be discarded.
+                fs::rename(&other_path, &path).map_err(io)?;
+                listings.forget(&other_path);
+                listings.forget(&path);
+                if let Some(entry) = manifest.remove(other) {
+                    manifest.insert(rel.to_owned(), entry);
+                }
+                done.agreed.insert(other.to_owned());
+                known = other_known;
+            }
+            let meta = match fs::symlink_metadata(&path) {
+                Ok(meta) => Some(meta),
+                Err(error) if not_found(&error) => None,
+                Err(error) if error.raw_os_error() == Some(libc::ENOTDIR) => {
+                    // A Mac file stands where main has a folder: that file is the conflict.
+                    done.skipped.insert(rel.to_owned());
+                    continue;
+                }
+                Err(error) => return Err(io(error)),
+            };
+            if meta.as_ref().is_some_and(fs::Metadata::is_dir) {
+                // A Mac folder stands where main has a file; nothing replaces it.
+                done.skipped.insert(rel.to_owned());
+                continue;
+            }
+            if kind == ABSENT
+                && let Some(meta) = &meta
+                && touched.contains(&(meta.dev(), meta.ino()))
+            {
+                // Another spelling of a file that this round wrote or agreed on.
+                manifest.remove(rel);
+                done.agreed.insert(rel.to_owned());
+                continue;
+            }
+            let now = match &meta {
+                None => None,
+                Some(meta) => Some(describe(&path, meta, true).map_err(io)?),
+            };
+            let now_hash = now
+                .as_ref()
+                .map_or(ABSENT, |entry| entry.h.as_str())
+                .to_owned();
+            let target = if kind == ABSENT {
+                ABSENT
+            } else {
+                change["sha256"].as_str().unwrap_or_default()
+            };
+            let change_mode = change["mode"].as_u64().map(|mode| mode as u32);
+            if now_hash == target {
+                match now {
                     None => {
                         manifest.remove(rel);
                     }
-                    Some(entry) => {
-                        manifest.insert(rel.to_owned(), entry.with_base(&state));
+                    Some(mut now) => {
+                        if let Some(mode) = change_mode
+                            && now.k == "file"
+                            && (now.x ^ mode) & 0o111 != 0
+                            && known
+                                .as_ref()
+                                .is_none_or(|known| (now.x ^ known.x) & 0o111 == 0)
+                        {
+                            // Main changed the mode and the Mac did not: the Mac takes it.
+                            // The open never follows a link that replaced the file.
+                            open_no_follow(&path)
+                                .and_then(|file| {
+                                    file.set_permissions(fs::Permissions::from_mode(
+                                        (now.x & !0o111) | (mode & 0o111),
+                                    ))
+                                })
+                                .map_err(io)?;
+                            let meta = fs::symlink_metadata(&path).map_err(io)?;
+                            now = describe(&path, &meta, true).map_err(io)?;
+                        }
+                        manifest.insert(rel.to_owned(), now.with_base(&state));
+                        if let Ok(meta) = fs::symlink_metadata(&path) {
+                            touched.insert((meta.dev(), meta.ino()));
+                        }
                     }
                 }
-                written.insert(rel.to_owned());
+                // The Mac already has main's content: agree without touching the file.
+                done.agreed.insert(rel.to_owned());
+                continue;
+            }
+            let mut allowed = BTreeSet::new();
+            if from_agent {
+                allowed.insert(
+                    handed
+                        .and_then(|handed| handed["h"].as_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
+            } else {
+                allowed.insert(
+                    known
+                        .as_ref()
+                        .map_or(ABSENT.to_owned(), |known| known.h.clone()),
+                );
+                if taken.contains(rel)
+                    && let Some(hash) = sent.get(rel)
+                {
+                    // main took the content this round sent.
+                    allowed.insert(hash.clone());
+                }
+            }
+            if !allowed.contains(&now_hash) || sent.get(rel).is_some_and(|hash| *hash != now_hash) {
+                done.skipped.insert(rel.to_owned());
+                if taken.contains(rel) && sent.get(rel).map(String::as_str) == Some(target) {
+                    // The Mac changed again after the send, and main holds what was sent:
+                    // that content is the agreed base of the next round.
+                    manifest.insert(
+                        rel.to_owned(),
+                        Entry {
+                            k: kind.to_owned(),
+                            s: -1,
+                            m: 0,
+                            x: change_mode.unwrap_or(0),
+                            h: target.to_owned(),
+                            b: Some(state.clone()),
+                        },
+                    );
+                }
+                continue;
+            }
+            let stamp = FileStamp::read(&path).map_err(io)?;
+            let mut data = Vec::new();
+            if matches!(kind, "file" | "link") {
+                let (_, fetched, _) = fetch_entry(self.guest, &self.project_id, &state, rel)?;
+                if hex_sha(&fetched) != target {
+                    done.skipped.insert(rel.to_owned());
+                    continue;
+                }
+                data = fetched;
+            }
+            match write_guarded(
+                &self.root,
+                rel,
+                kind,
+                &data,
+                change_mode.unwrap_or(0o644),
+                Some((&now_hash, &stamp)),
+                &mut listings,
+            )? {
+                Written::Done(None) => {
+                    manifest.remove(rel);
+                    done.written.insert(rel.to_owned());
+                }
+                Written::Done(Some(entry)) => {
+                    manifest.insert(rel.to_owned(), entry.with_base(&state));
+                    if let Ok(meta) = fs::symlink_metadata(&path) {
+                        touched.insert((meta.dev(), meta.ino()));
+                    }
+                    done.written.insert(rel.to_owned());
+                }
+                Written::Changed => {
+                    // The user saved the file meanwhile; the next round sends it.
+                    done.skipped.insert(rel.to_owned());
+                }
             }
         }
-        Ok(Outbound {
-            agreed,
-            written,
-            skipped,
-            removals: if hold { removals.len() } else { 0 },
-        })
+        if hold {
+            done.removals = removals.len();
+        }
+        Ok(done)
     }
 }
 

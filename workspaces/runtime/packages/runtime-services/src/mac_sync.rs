@@ -51,10 +51,9 @@ pub enum MacSyncError {
     Io(#[source] std::io::Error),
     #[error("Mac sync state is invalid")]
     Json(#[source] serde_json::Error),
-    /// The guest answered `outcome_unknown` for a round: it cannot prove what the
-    /// operation did, and a repeat of the same operation never gets a result.
+    /// A legacy recovery record lacks the original request and its proven result.
     #[error(
-        "Linux guest sync.mac.apply: outcome_unknown for operation {operation}; the next round checks its {paths} paths again on both sides"
+        "Linux guest sync.mac.apply: outcome_unknown for legacy operation {operation} ({paths} paths); sync waits for receipt reconciliation"
     )]
     Unproven { operation: String, paths: usize },
 }
@@ -166,6 +165,15 @@ pub fn configure(
     let enabled_changed = enabled.is_some();
     let directory = project.join("sync");
     fs::create_dir_all(&directory).map_err(MacSyncError::Io)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory.join("round.lock"))
+        .map_err(MacSyncError::Io)?;
+    let _lock = Flock::lock(lock, FlockArg::LockExclusive)
+        .map_err(|(_, error)| MacSyncError::Io(std::io::Error::from_raw_os_error(error as i32)))?;
     let config_path = directory.join("config.json");
     if let Some(enabled) = enabled {
         let mut config = read_json(&config_path, json!({}))?;

@@ -102,8 +102,16 @@ has a file where the other has a folder.
 - A round that would delete more than 25 % of the files or more than 500 files on
   either side pauses for the user's confirmation (an accidental `rm -rf`, a wrong path,
   an agent's mass delete in main).
-- A guest error that is not a lost reply ends the round's operation; the next round
-  starts a new one. A failed fold leaves nothing in the `mac` line.
+- An uncertain guest response keeps the exact operation ID and payload in `pending.json`.
+  This includes every `outcome_unknown` response, regardless of its error text.
+  A later round repeats that request until the guest gives a proven result.
+  A definite refusal ends the operation. A failed fold leaves nothing in the `mac` line.
+- A legacy `recover.json` record stops sync. The original request or a final receipt
+  must establish the result before another operation can start. Equal hashes alone
+  cannot prove that an old operation has stopped.
+- A scan error stops the round before any upload. An unreadable folder is not a deletion.
+- A case or Unicode form rename keeps the file on the Mac. A name collision waits.
+- A Mac save during a round keeps the file, including a save that restores the agreed bytes.
 - Mac writes never go through symbolic links and never leave the project folder.
 - Sync writes in the VM run as the project user, never as root, so layr rules apply.
 
@@ -151,11 +159,8 @@ changed, and `{"ready"}` once. It exits when the backend closes its input.
   - `held.json`: Mac content in a conflict, or handed to the lead (`why`: `conflict` or
     `agent`, with the handoff's main state as `base`);
   - `pending.json`: the round to repeat after a lost reply;
-  - `recover.json`: the paths of a round whose result the guest could not prove
-    (`outcome_unknown`). Python repeated such a round forever. Now the round records the
-    error in `status.json` and ends; the next round hashes these paths again on the Mac and
-    in main: a path equal on both sides agrees, a path that changed on both sides becomes a
-    conflict, and the hash guards decide the rest;
+  - `recover.json`: a legacy record of an operation whose request was discarded.
+    Sync stops until its receipt can be reconciled. New rounds never create this record;
   - `allow-deletes.json`: the user's confirmation of the Mac deletions that paused the
     project, used by the next round;
   - `config.json`: `{"enabled": false}` pauses the project;
@@ -171,6 +176,15 @@ changed, and `{"ready"}` once. It exits when the backend closes its input.
   its own receipt); other methods answer `outcome_unknown`. The project user owns the `mac`, `mac-view` and `mac-conflict` lines; layr adds
   Mac files that Git ignores by name, so they reach main. The first round of a synced
   project denies `push` to the agents group.
+- Preview: `studio-runtime-server mac-sync plan PROJECT --state DIRECTORY` reads an
+  existing runtime state without opening its server database or starting a backend.
+  It reads `sync.mac.head` and `sync.mac.preview`. The guest reads immutable Linux
+  layr snapshots without creating users or lines or changing `mac-view`.
+  An older guest rejects the new preview method. No fallback runs the old mutable hash method.
+  The lists include content, file kind, and executable bit changes.
+  The preview reports a pending operation separately. Its lists do not authorize a
+  replacement operation or bypass the guards of a real round.
+  Use the [isolated round procedure](verification/mac-sync-isolated-round.md) before a real guest trial.
 - HTTP API: `POST /api/mac-sync/resolve` (`projectId`, `path`, `choice`: `mac`, `vm` or
   `agent`) and `POST /api/mac-sync/config` (`projectId`, `enabled`, `allowDeletes`). The
   lead message has one ID per handoff state, so a repeated request does not repeat it.

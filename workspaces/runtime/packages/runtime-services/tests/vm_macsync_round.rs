@@ -144,13 +144,15 @@ impl GuestRpc for Guest {
                 )
             }
             "sync.mac.head" => Ok(json!({"mainStateId": state.head})),
-            "sync.mac.hashes" => {
+            "sync.mac.hashes" | "sync.mac.preview" => {
                 let items = state
                     .hashes
                     .get(params["stateId"].as_str().unwrap())
                     .cloned()
                     .unwrap_or_else(|| json!({}));
-                Ok(json!({"stateId": params["stateId"], "items": items, "next": null}))
+                Ok(
+                    json!({"stateId": params["stateId"], "items": items, "next": null, "readOnly":method == "sync.mac.preview"}),
+                )
             }
             "sync.mac.handoff" => Ok(json!({
                 "line":"mac-conflict","path":params["path"],"mainStateId":state.head,"stateId":"h1",
@@ -176,14 +178,6 @@ fn reply(main: &str, values: Value) -> Value {
 fn lost() -> GuestError {
     GuestError::Transport {
         message: "lost reply".into(),
-        uncertain: true,
-    }
-}
-
-fn unknown() -> GuestError {
-    GuestError::Rejected {
-        code: Some("outcome_unknown".into()),
-        detail: Some("The request has no proven result; inspect the saved state".into()),
         uncertain: true,
     }
 }
@@ -856,124 +850,40 @@ fn a_refused_operation_is_not_repeated() {
     assert_ne!(operations[0], operations[1]);
 }
 
-// A guest answer without a proven result (registered difference from Python, which
-// replayed the same operation forever).
-
-/// The igor-mbp case of 2026-10-13, with files: a replayed operation that sent
-/// changes, of which the guest applied only a part before its receipt lost the result.
+// An uncertain guest response preserves the exact operation and payload.
 #[test]
-fn an_unknown_guest_outcome_ends_the_replay_and_loses_no_file() {
-    let fixture = Fixture::new();
-    let manifest = json!({
-        "a.txt": fixture.agreed("a.txt", b"a0\n", "s1", 0o644),
-        "b.txt": fixture.agreed("b.txt", b"b0\n", "s1", 0o644),
-        "c.txt": fixture.agreed("c.txt", b"c0\n", "s1", 0o644),
-        "d.txt": fixture.agreed("d.txt", b"d0\n", "s1", 0o644),
-        "e.txt": fixture.agreed("e.txt", b"e0\n", "s1", 0o644),
-    });
-    fixture.save("manifest.json", manifest);
-    fixture.write("a.txt", b"a1\n");
-    fixture.write("b.txt", b"b1\n");
-    std::fs::remove_file(fixture.root.join("c.txt")).unwrap();
-    fixture.write("d.txt", b"d1\n");
-    let guest = Guest::new(vec![Err(lost()), Err(unknown())]);
-    let project = fixture.project(&guest);
-    // The first send loses its reply; the replay of the same operation has no proven result.
-    assert!(project.round(None).is_err());
-    let dropped = guest.operations()[0].clone();
-    let failed = project.round(None);
-    assert!(failed.is_err());
-    assert_eq!(guest.operations(), vec![dropped.clone(), dropped.clone()]);
-    let status = fixture.saved("status.json");
-    assert_eq!(status["state"], "error");
-    assert!(
-        status["reason"]
-            .as_str()
-            .unwrap()
-            .contains("outcome_unknown")
-    );
-    assert!(!fixture.exists("pending.json"));
-    // Before the next round: main took a1 from the dropped operation, and an agent
-    // changed d.txt in main. The Mac changed d.txt as well.
-    {
-        let mut state = guest.0.lock().unwrap();
-        state.head = "m5".into();
-        state.hashes.insert(
-            "m5".into(),
-            json!({
-                "a.txt": {"kind":"file","mode":0o644,"size":3,"sha256":sha(b"a1\n")},
-                "b.txt": {"kind":"file","mode":0o644,"size":3,"sha256":sha(b"b0\n")},
-                "c.txt": {"kind":"file","mode":0o644,"size":3,"sha256":sha(b"c0\n")},
-                "d.txt": {"kind":"file","mode":0o644,"size":3,"sha256":sha(b"d2\n")},
-                "e.txt": {"kind":"file","mode":0o644,"size":3,"sha256":sha(b"e0\n")},
-            }),
+fn every_unknown_outcome_keeps_the_exact_operation_until_a_proven_reply() {
+    for detail in [
+        "The request has no proven result; inspect the saved state",
+        "The layr operation exceeded its deadline",
+        "The admin connection closed before its reply",
+    ] {
+        let fixture = Fixture::new();
+        fixture.save(
+            "manifest.json",
+            json!({"a.txt": fixture.agreed("a.txt", b"base", "s1", 0o644)}),
         );
+        fixture.write("a.txt", b"first");
+        let guest = Guest::new(vec![
+            Err(GuestError::Rejected {
+                code: Some("outcome_unknown".into()),
+                detail: Some(detail.into()),
+                uncertain: true,
+            }),
+            Ok(reply("m2", json!({"applied":["a.txt"],"merge":"merged"}))),
+        ]);
+        let project = fixture.project(&guest);
+        assert!(project.round(None).is_err());
+        let pending = fixture.saved("pending.json");
+        assert!(!fixture.exists("recover.json"));
+        fixture.write("a.txt", b"second");
+        project.round(None).unwrap();
+        assert_eq!(guest.operations()[0], guest.operations()[1], "{detail}");
+        assert_eq!(guest.applies()[0], guest.applies()[1], "{detail}");
+        assert_eq!(pending["params"], guest.applies()[1]);
+        assert_eq!(fixture.read("a.txt"), b"second");
+        assert_eq!(fixture.saved("manifest.json")["a.txt"]["h"], sha(b"first"));
     }
-    guest.push(reply(
-        "m6",
-        json!({
-            "applied":["b.txt","c.txt"],"merge":"merged",
-            "outbound":{"s1":[change("a.txt", Some(b"a1\n"), 0o644), change("d.txt", Some(b"d2\n"), 0o644)]},
-        }),
-    ));
-    guest.file("m6", "d.txt", Some(b"d2\n"));
-    let recovered = project.round(None).unwrap();
-    let operations = guest.operations();
-    assert_eq!(operations.len(), 3, "the replay loop ends");
-    assert_ne!(
-        operations[2], dropped,
-        "the next round starts a new operation"
-    );
-    // Both sides were hashed again for the paths of the dropped operation.
-    assert_eq!(guest.calls("sync.mac.hashes").len(), 1);
-    // a.txt agrees, d.txt changed on both sides and waits; b.txt and the c.txt deletion go in.
-    let mut sent = entry_paths(&guest.applies()[2]["entries"]);
-    sent.sort();
-    assert_eq!(sent, vec!["b.txt".to_owned(), "c.txt".to_owned()]);
-    assert_eq!(recovered["state"], "conflict");
-    assert_eq!(recovered["conflicts"], json!(["d.txt"]));
-    // No file is lost or overwritten on the Mac.
-    assert_eq!(fixture.read("a.txt"), b"a1\n");
-    assert_eq!(fixture.read("b.txt"), b"b1\n");
-    assert!(!fixture.root.join("c.txt").exists());
-    assert_eq!(fixture.read("d.txt"), b"d1\n");
-    assert_eq!(fixture.read("e.txt"), b"e0\n");
-    let saved = fixture.saved("manifest.json");
-    assert_eq!(saved["a.txt"]["h"], sha(b"a1\n"));
-    assert_eq!(saved["d.txt"]["h"], sha(b"d0\n"));
-    assert_eq!(
-        fixture.saved("held.json")["d.txt"],
-        json!({"h":sha(b"d1\n"),"why":"conflict"})
-    );
-    assert!(!fixture.exists("recover.json"));
-    // The next quiet round sends nothing and keeps the conflict.
-    guest.push(reply("m6", json!({})));
-    let quiet = project.round(None).unwrap();
-    assert_eq!(guest.applies()[3]["entries"], json!([]));
-    assert_eq!(quiet["conflicts"], json!(["d.txt"]));
-    assert_eq!(fixture.read("d.txt"), b"d1\n");
-}
-
-#[test]
-fn an_unknown_outcome_of_a_head_only_round_needs_no_rehash() {
-    let fixture = Fixture::new();
-    fixture.save(
-        "manifest.json",
-        json!({"a.txt": fixture.agreed("a.txt", b"a0\n", "s1", 0o644)}),
-    );
-    fixture.save(
-        "pending.json",
-        json!({"operation":"mac-b0b9d7d728304f14a37fb152d47cea7b","params":{"projectId":"p1","operationId":"mac-b0b9d7d728304f14a37fb152d47cea7b","since":["s1"],"entries":[]},"hashes":{}}),
-    );
-    let guest = Guest::new(vec![Err(unknown()), Ok(reply("m2", json!({})))]);
-    let project = fixture.project(&guest);
-    assert!(project.round(None).is_err());
-    let status = project.round(None).unwrap();
-    assert_eq!(status["state"], "synced");
-    assert!(guest.calls("sync.mac.hashes").is_empty());
-    let operations = guest.operations();
-    assert_eq!(operations[0], "mac-b0b9d7d728304f14a37fb152d47cea7b");
-    assert_ne!(operations[1], operations[0]);
 }
 
 // The first round of a project.
@@ -1362,13 +1272,13 @@ fn main_rename_keeps_the_file(from: &str, to: &str) {
         "manifest.json",
         json!({from: fixture.agreed(from, b"read me\n", "s1", 0o644)}),
     );
-    let mut changes = vec![
-        change(to, Some(b"read me\n"), 0o644),
-        change(from, None, 0),
-    ];
+    let mut changes = vec![change(to, Some(b"read me\n"), 0o644), change(from, None, 0)];
     changes.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
     let guest = Guest::new(vec![
-        Ok(reply("m2", json!({"merge":"none","outbound":{"s1":changes}}))),
+        Ok(reply(
+            "m2",
+            json!({"merge":"none","outbound":{"s1":changes}}),
+        )),
         Ok(reply("m2", json!({}))),
     ]);
     guest.file("m2", to, Some(b"read me\n"));
@@ -1379,7 +1289,11 @@ fn main_rename_keeps_the_file(from: &str, to: &str) {
     let manifest = fixture.saved("manifest.json");
     assert!(manifest.get(from).is_none() && manifest.get(to).is_some());
     project.round(None).unwrap();
-    assert_eq!(guest.applies()[1]["entries"], json!([]), "no deletion goes to main");
+    assert_eq!(
+        guest.applies()[1]["entries"],
+        json!([]),
+        "no deletion goes to main"
+    );
 }
 
 #[test]
@@ -1403,7 +1317,11 @@ fn a_case_only_rename_on_the_mac_keeps_the_file() {
         "manifest.json",
         json!({"readme.md": fixture.agreed("readme.md", b"read me\n", "s1", 0o644)}),
     );
-    std::fs::rename(fixture.root.join("readme.md"), fixture.root.join("README.md")).unwrap();
+    std::fs::rename(
+        fixture.root.join("readme.md"),
+        fixture.root.join("README.md"),
+    )
+    .unwrap();
     let outbound = json!({"s1":[change("README.md", Some(b"read me\n"), 0o644), change("readme.md", None, 0)]});
     let guest = Guest::new(vec![
         Ok(reply(
@@ -1478,41 +1396,204 @@ fn a_lost_broker_channel_keeps_the_operation_and_repeats_it() {
 }
 
 #[test]
-fn a_late_apply_of_the_dropped_operation_is_read_before_the_next_operation() {
+fn a_legacy_dropped_operation_blocks_new_operations_without_proof() {
     let fixture = Fixture::new();
     fixture.save(
         "manifest.json",
         json!({"a.txt": fixture.agreed("a.txt", b"base\n", "s1", 0o644)}),
     );
-    fixture.write("a.txt", b"first\n");
-    let guest = Guest::new(vec![Err(unknown())]);
+    fixture.save(
+        "recover.json",
+        json!({"operation":"mac-old", "paths":["a.txt"]}),
+    );
+    let guest = Guest::new(vec![]);
     let project = fixture.project(&guest);
     assert!(project.round(None).is_err());
-    // The user edits again; the guest still runs the apply of the dropped operation, and
-    // main takes "first" only after recovery has read the head.
     fixture.write("a.txt", b"second\n");
-    {
-        let mut state = guest.0.lock().unwrap();
-        state.head = "m5".into();
-        state.hashes.insert(
-            "m5".into(),
-            json!({"a.txt": {"kind":"file","mode":0o644,"size":5,"sha256":sha(b"base\n")}}),
+    assert!(project.round(None).is_err());
+    assert!(guest.applies().is_empty());
+    assert!(fixture.exists("recover.json"));
+    assert_eq!(fixture.read("a.txt"), b"second\n");
+}
+
+#[test]
+fn a_mac_save_then_restore_during_the_round_is_not_overwritten() {
+    for target in [Some(b"agent\n".as_slice()), None] {
+        let fixture = Fixture::new();
+        fixture.save(
+            "manifest.json",
+            json!({
+                "a.txt": fixture.agreed("a.txt", b"agreed\n", "s1", 0o644)
+            }),
+        );
+        let guest = Guest::new(vec![Ok(reply(
+            "m2",
+            json!({
+                "outbound":{"s1":[change("a.txt", target, 0o644)]}
+            }),
+        ))]);
+        guest.file("m2", "a.txt", target);
+        let root = fixture.root.clone();
+        guest.hook("sync.mac.apply", move |_| {
+            // Replace the inode, as an editor does, then restore the agreed bytes.
+            std::fs::write(root.join("save"), b"agreed\n").unwrap();
+            std::fs::rename(root.join("save"), root.join("a.txt")).unwrap();
+        });
+        fixture.project(&guest).round(None).unwrap();
+        assert_eq!(fixture.read("a.txt"), b"agreed\n");
+        assert_eq!(
+            fixture.saved("manifest.json")["a.txt"]["h"],
+            sha(b"agreed\n")
         );
     }
-    guest.hook("sync.mac.hashes", |state| {
-        state.head = "m6".into();
+}
+
+#[test]
+fn invalid_git_ignore_rules_stop_the_round_before_an_upload() {
+    let fixture = Fixture::new();
+    fixture.save("manifest.json", json!({}));
+    fixture.write(".git", b"gitdir: /missing-studio-sync-test-repository\n");
+    fixture.write("build/output", b"must stay local");
+    let guest = Guest::new(vec![Ok(reply("m2", json!({})))]);
+    assert!(fixture.project(&guest).round(None).is_err());
+    assert!(guest.calls("upload.begin").is_empty());
+    assert!(guest.applies().is_empty());
+}
+
+#[test]
+fn the_first_plan_reports_changes_without_bootstrap_writes() {
+    let fixture = Fixture::new();
+    fixture.write("a.txt", b"mac");
+    let guest = Guest::new(vec![]);
+    {
+        let mut state = guest.0.lock().unwrap();
         state.hashes.insert(
-            "m6".into(),
-            json!({"a.txt": {"kind":"file","mode":0o644,"size":6,"sha256":sha(b"first\n")}}),
+            "s1".into(),
+            json!({"a.txt": {
+                "kind":"file", "size":4, "mode":0o644, "sha256":sha(b"base")
+            }}),
         );
-    });
-    guest.push(reply("m6", json!({})));
-    let status = project.round(None).unwrap();
-    // Changed on both sides since the agreed content: a conflict, and "second" is not
-    // folded onto a stale base.
-    assert_eq!(status["conflicts"], json!(["a.txt"]));
-    assert_eq!(guest.applies().last().unwrap()["entries"], json!([]));
-    assert_eq!(fixture.read("a.txt"), b"second\n");
+        state.hashes.insert(
+            "m9".into(),
+            json!({"a.txt": {
+                "kind":"file", "size":4, "mode":0o644, "sha256":sha(b"base")
+            }}),
+        );
+    }
+    let plan = fixture.project(&guest).plan().unwrap();
+    assert_eq!(plan["uploads"]["paths"], json!(["a.txt"]));
+    assert!(!fixture.directory().exists());
+    assert!(guest.calls("project.ensure").is_empty());
+    assert!(guest.calls("sync.mac.hashes").is_empty());
+    assert!(guest.applies().is_empty());
+}
+
+#[test]
+fn replay_records_sent_content_when_the_mac_file_was_deleted() {
+    let fixture = Fixture::new();
+    fixture.save(
+        "manifest.json",
+        json!({"a.txt": fixture.agreed("a.txt", b"base", "s1", 0o644)}),
+    );
+    fixture.write("a.txt", b"first");
+    let guest = Guest::new(vec![
+        Err(lost()),
+        Ok(reply(
+            "m2",
+            json!({
+                "applied":["a.txt"], "merge":"merged"
+            }),
+        )),
+    ]);
+    let project = fixture.project(&guest);
+    assert!(project.round(None).is_err());
+    std::fs::remove_file(fixture.root.join("a.txt")).unwrap();
+    project.round(None).unwrap();
+    assert_eq!(fixture.saved("manifest.json")["a.txt"]["h"], sha(b"first"));
+    guest.push(reply("m3", json!({"applied":["a.txt"], "merge":"merged"})));
+    project.round(None).unwrap();
+    assert_eq!(guest.applies()[2]["entries"][0]["kind"], "absent");
+}
+
+#[test]
+fn replay_does_not_overwrite_a_mac_restore_of_the_agreed_content() {
+    for changed in [Some(b"first".as_slice()), None] {
+        let fixture = Fixture::new();
+        fixture.save(
+            "manifest.json",
+            json!({
+                "a.txt":fixture.agreed("a.txt", b"base", "s1", 0o644)
+            }),
+        );
+        match changed {
+            Some(bytes) => fixture.write("a.txt", bytes),
+            None => std::fs::remove_file(fixture.root.join("a.txt")).unwrap(),
+        }
+        let guest = Guest::new(vec![
+            Err(lost()),
+            Ok(reply(
+                "m2",
+                json!({
+                    "applied":["a.txt"], "merge":"merged",
+                    "outbound":{"s1":[change("a.txt", changed, 0o644)]}
+                }),
+            )),
+        ]);
+        guest.file("m2", "a.txt", changed);
+        let project = fixture.project(&guest);
+        assert!(project.round(None).is_err());
+        fixture.write("a.txt", b"base");
+        project.round(None).unwrap();
+        assert_eq!(fixture.read("a.txt"), b"base");
+    }
+}
+
+#[test]
+fn the_plan_refuses_an_active_round_without_changing_its_records() {
+    let fixture = Fixture::new();
+    fixture.save("manifest.json", json!({}));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(fixture.directory().join("round.lock"))
+        .unwrap();
+    let _held = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive).unwrap();
+    let guest = Guest::new(vec![]);
+    assert!(matches!(
+        fixture.project(&guest).plan(),
+        Err(mac_sync::MacSyncError::Busy)
+    ));
+    assert!(guest.calls("sync.mac.head").is_empty());
+}
+
+#[test]
+fn the_plan_includes_executable_bit_changes_in_both_directions() {
+    let fixture = Fixture::new();
+    fixture.save(
+        "manifest.json",
+        json!({
+            "mac.txt": fixture.agreed("mac.txt", b"content", "s1", 0o644),
+            "vm.txt": fixture.agreed("vm.txt", b"content", "s1", 0o644),
+        }),
+    );
+    std::fs::set_permissions(
+        fixture.root.join("mac.txt"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let guest = Guest::new(vec![]);
+    guest.0.lock().unwrap().hashes.insert(
+        "m9".into(),
+        json!({
+            "mac.txt":{"kind":"file", "size":7, "mode":0o644, "sha256":sha(b"content")},
+            "vm.txt":{"kind":"file", "size":7, "mode":0o755, "sha256":sha(b"content")},
+        }),
+    );
+    let plan = fixture.project(&guest).plan().unwrap();
+    assert_eq!(plan["uploads"]["paths"], json!(["mac.txt"]));
+    assert_eq!(plan["macWrites"]["paths"], json!(["vm.txt"]));
 }
 
 #[test]
@@ -1550,7 +1631,35 @@ fn a_mac_save_during_the_fetch_is_not_overwritten() {
     });
     fixture.project(&guest).round(None).unwrap();
     assert_eq!(fixture.read("a.txt"), b"saved during the fetch\n");
-    assert_eq!(fixture.saved("manifest.json")["a.txt"]["h"], sha(b"agreed\n"));
+    assert_eq!(
+        fixture.saved("manifest.json")["a.txt"]["h"],
+        sha(b"agreed\n")
+    );
+}
+
+#[test]
+fn a_mac_restore_of_the_same_bytes_during_the_fetch_is_not_overwritten() {
+    let fixture = Fixture::new();
+    fixture.save(
+        "manifest.json",
+        json!({
+            "a.txt": fixture.agreed("a.txt", b"agreed\n", "s1", 0o644)
+        }),
+    );
+    let guest = Guest::new(vec![Ok(reply(
+        "m2",
+        json!({
+            "outbound":{"s1":[change("a.txt", Some(b"agent\n"), 0o644)]}
+        }),
+    ))]);
+    guest.file("m2", "a.txt", Some(b"agent\n"));
+    let root = fixture.root.clone();
+    guest.hook("sync.mac.read", move |_| {
+        std::fs::write(root.join("save"), b"agreed\n").unwrap();
+        std::fs::rename(root.join("save"), root.join("a.txt")).unwrap();
+    });
+    fixture.project(&guest).round(None).unwrap();
+    assert_eq!(fixture.read("a.txt"), b"agreed\n");
 }
 
 #[test]
@@ -1581,7 +1690,10 @@ fn configuration_waits_for_a_running_round() {
     });
     let started = std::time::Instant::now();
     let status = mac_sync::configure(&fixture.state, "p1", Some(false), false).unwrap();
-    assert!(started.elapsed() >= Duration::from_millis(250), "configure waited");
+    assert!(
+        started.elapsed() >= Duration::from_millis(250),
+        "configure waited"
+    );
     assert_eq!(status["state"], "paused");
     release.join().unwrap();
 }
@@ -1642,12 +1754,18 @@ fn the_plan_reads_both_sides_and_writes_nothing() {
         .collect::<BTreeSet<_>>();
     assert_eq!(
         methods,
-        BTreeSet::from(["sync.mac.head".to_owned(), "sync.mac.hashes".to_owned()])
+        BTreeSet::from(["sync.mac.head".to_owned(), "sync.mac.preview".to_owned()])
     );
-    assert_eq!(plan["pending"]["operation"], "mac-b0b9d7d728304f14a37fb152d47cea7b");
+    assert_eq!(
+        plan["pending"]["operation"],
+        "mac-b0b9d7d728304f14a37fb152d47cea7b"
+    );
     assert_eq!(plan["uploads"]["paths"], json!(["new-mac.txt", "up.txt"]));
     assert_eq!(plan["deletionsToMain"]["paths"], json!(["gone-mac.txt"]));
-    assert_eq!(plan["macWrites"]["paths"], json!(["down.txt", "new-vm.txt"]));
+    assert_eq!(
+        plan["macWrites"]["paths"],
+        json!(["down.txt", "new-vm.txt"])
+    );
     assert_eq!(plan["macDeletions"]["paths"], json!(["gone-main.txt"]));
     assert_eq!(plan["conflicts"]["paths"], json!(["both.txt"]));
     assert_eq!(plan["uploads"]["count"], 2);
