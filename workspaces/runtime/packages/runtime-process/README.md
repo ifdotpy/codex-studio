@@ -176,8 +176,15 @@ half-closes both supervisor connections and waits for their EOF, which follows
 supervisor ownership release. This allows another backend identity to reattach
 without racing the old connections. Both detach waits run concurrently under
 the [`SUPERVISOR_DETACH_TIMEOUT`](src/provider_task.rs) bound, leaving time to
-report cleanup inside the backend's worker shutdown budget. An unconfirmed detach is reported
-through `TaskExit::cleanup_error`, while the supervisor retains its child.
+report cleanup inside the backend's worker shutdown budget. This limits how
+long failure reporting waits; it does not guarantee a successful detach within
+that time. A supervisor busy with an in-flight child write can release ownership
+later, so an immediate restart may still receive an ownership refusal and retry.
+An unconfirmed detach is reported through `TaskExit::cleanup_error`, while the
+supervisor retains its child. If preparation fails before it returns an
+attachment, `AdapterError::PreparationCleanupUnconfirmed` carries both the
+preparation error and any cleanup failure to the startup caller. A confirmed
+detach preserves the original preparation error.
 
 Both channels hold 16 entries with a 1 MiB serialized upper bound per entry (plus proportional
 JSON allocation overhead). One outstanding RPC and at most 32 numeric response

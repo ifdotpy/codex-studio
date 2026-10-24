@@ -115,7 +115,14 @@ impl SupervisorProviderTaskFactory {
             Ok(Ok(generation)) => generation,
             _ => {
                 let exit = attachment.shutdown().await;
-                return Err(exit.result.err().unwrap_or(AdapterError::Timeout));
+                let cause = exit.result.err().unwrap_or(AdapterError::Timeout);
+                return Err(match exit.cleanup_error {
+                    Some(cleanup_error) => AdapterError::PreparationCleanupUnconfirmed {
+                        cause: Box::new(cause),
+                        cleanup_error,
+                    },
+                    None => cause,
+                });
             }
         };
         Ok(PreparedProviderTask {

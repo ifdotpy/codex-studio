@@ -293,6 +293,14 @@ pub enum AdapterError {
     ConsumerClosed,
     #[error("provider task failed")]
     TaskFailed,
+    /// Preparation failed and supervisor ownership release was not confirmed.
+    /// Preserve the original typed cause as well as the cleanup report.
+    #[error("{cause}; provider preparation cleanup failed: {cleanup_error}")]
+    PreparationCleanupUnconfirmed {
+        #[source]
+        cause: Box<AdapterError>,
+        cleanup_error: String,
+    },
     #[error("provider stdout exceeded its {limit}-byte bound")]
     OutputLimit { limit: usize },
     #[error(transparent)]

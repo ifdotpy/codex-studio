@@ -4,7 +4,9 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, future::Future, task::Poll};
 use studio_runtime_process::{
     BackendId, BackendIdentity, Generation, ProviderHandle, ProviderLaunchSpec,
-    provider_seam::{JournalPayload, OpenOptions, ProviderTaskFactory, SessionClock, Shutdown},
+    provider_seam::{
+        AdapterError, JournalPayload, OpenOptions, ProviderTaskFactory, SessionClock, Shutdown,
+    },
     provider_task::SupervisorProviderTaskFactory,
 };
 use studio_runtime_providers::{Frame, RequestId};
@@ -151,6 +153,78 @@ async fn cancelled_prepare_never_returns_a_usable_generation() {
             .await
             .is_err()
     );
+}
+
+async fn rejected_prepare(confirm_detach: bool) -> AdapterError {
+    use tokio::io::AsyncReadExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let listener = UnixListener::bind(root.path().join("supervisor.sock")).unwrap();
+    let factory = SupervisorProviderTaskFactory::new(BackendIdentity {
+        backend_id: BackendId("rejected-prepare".into()),
+        state_dir: root.path().into(),
+    });
+    let prepare = tokio::spawn(async move {
+        factory
+            .prepare(
+                ProviderHandle::for_account("fixture"),
+                options(),
+                Shutdown::default(),
+            )
+            .await
+    });
+    let (socket, _) = listener.accept().await.unwrap();
+    let mut stream = BufReader::new(socket);
+    request(&mut stream).await;
+    respond(
+        &mut stream,
+        json!({"ok":false,"protocol":2,"error":"fixture handshake rejected"}),
+    )
+    .await;
+    assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
+    if confirm_detach {
+        stream.get_mut().shutdown().await.unwrap();
+    } else {
+        // Withhold the supervisor EOF after observing the adapter's FIN.
+        tokio::time::pause();
+    }
+    prepare.await.unwrap().err().expect("prepare must fail")
+}
+
+#[tokio::test]
+async fn prepare_reports_handshake_error_and_unconfirmed_detach() {
+    let error = rejected_prepare(false).await;
+    let report = error.to_string();
+    assert!(report.contains("fixture handshake rejected"), "{report}");
+    assert!(
+        report.contains("supervisor detach was not confirmed"),
+        "prepare lost its cleanup failure: {report}"
+    );
+    assert!(
+        report.contains(&AdapterError::Timeout.to_string()),
+        "{report}"
+    );
+    let source = std::error::Error::source(&error).expect("original preparation error");
+    assert!(source.to_string().contains("fixture handshake rejected"));
+    let AdapterError::PreparationCleanupUnconfirmed { cause, .. } = error else {
+        panic!("preparation must retain its typed cause and cleanup failure");
+    };
+    assert!(matches!(
+        *cause,
+        AdapterError::Supervisor(studio_runtime_process::SupervisorError::ProtocolMismatch {
+            detail, ..
+        }) if detail == "fixture handshake rejected"
+    ));
+}
+
+#[tokio::test]
+async fn prepare_preserves_handshake_error_after_confirmed_detach() {
+    assert!(matches!(
+        rejected_prepare(true).await,
+        AdapterError::Supervisor(studio_runtime_process::SupervisorError::ProtocolMismatch {
+            detail, ..
+        }) if detail == "fixture handshake rejected"
+    ));
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
