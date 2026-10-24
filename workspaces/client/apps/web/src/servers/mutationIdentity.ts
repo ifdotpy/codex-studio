@@ -15,6 +15,63 @@ const UNCERTAIN_RESPONSE_CODES = new Set([
   "request_conflict",
 ]);
 
+type MonitorInputEntry = {
+  requestId: string;
+  payloadDigest: string;
+  uncertain: boolean;
+};
+
+function monitorInputJournalKey(monitorId: string): string {
+  if (!monitorId) throw new Error("A monitor ID is required for input.");
+  return `studio-monitor-input:${monitorId}`;
+}
+
+function readMonitorInput(
+  storage: Storage,
+  key: string,
+): MonitorInputEntry | undefined {
+  const raw = storage.getItem(key);
+  if (raw === null) return;
+  try {
+    const entry = JSON.parse(raw);
+    if (
+      entry &&
+      typeof entry === "object" &&
+      Object.keys(entry).length === 3 &&
+      typeof entry.requestId === "string" &&
+      entry.requestId &&
+      typeof entry.payloadDigest === "string" &&
+      /^[0-9a-f]{64}$/.test(entry.payloadDigest) &&
+      typeof entry.uncertain === "boolean"
+    )
+      return entry as MonitorInputEntry;
+  } catch {}
+  throw new Error(
+    "The monitor input journal is invalid. Do not send another input until its result is confirmed.",
+  );
+}
+
+export function pendingMonitorInput(
+  storage: Storage,
+  monitorId: string,
+): { requestId: string } | null {
+  const entry = readMonitorInput(storage, monitorInputJournalKey(monitorId));
+  return entry ? { requestId: entry.requestId } : null;
+}
+
+// The caller must first verify an exact acknowledged or rejected process receipt.
+export function finishMonitorInput(
+  storage: Storage,
+  monitorId: string,
+  requestId: string,
+): boolean {
+  const key = monitorInputJournalKey(monitorId);
+  const entry = readMonitorInput(storage, key);
+  if (!entry || entry.requestId !== requestId) return false;
+  storage.removeItem(key);
+  return true;
+}
+
 export function serverMutationResponseIsUncertain(
   status: number,
   body: unknown,
@@ -33,41 +90,13 @@ export function createMutationJournal(
   serverId: string | null,
   storage: Storage,
 ) {
-  type MonitorInputEntry = {
-    requestId: string;
-    payloadDigest: string;
-    uncertain: boolean;
-  };
-
-  function readMonitorInput(key: string): MonitorInputEntry | undefined {
-    const raw = storage.getItem(key);
-    if (raw === null) return;
-    try {
-      const entry = JSON.parse(raw);
-      if (
-        entry &&
-        typeof entry === "object" &&
-        Object.keys(entry).length === 3 &&
-        typeof entry.requestId === "string" &&
-        entry.requestId &&
-        typeof entry.payloadDigest === "string" &&
-        /^[0-9a-f]{64}$/.test(entry.payloadDigest) &&
-        typeof entry.uncertain === "boolean"
-      )
-        return entry as MonitorInputEntry;
-    } catch {}
-    throw new Error(
-      "The monitor input journal is invalid. Do not send another input until its result is confirmed.",
-    );
-  }
-
   async function beginMonitorInput(body: unknown, explicitRequestId?: string) {
     const value =
       body && typeof body === "object" ? (body as Record<string, unknown>) : {};
     if (typeof value.id !== "string" || !value.id) {
       throw new Error("A monitor ID is required for input.");
     }
-    const key = `studio-monitor-input:${value.id}`;
+    const key = monitorInputJournalKey(value.id);
     const serialized = JSON.stringify(body);
     const payloadDigest = await sha256Hex(
       new TextEncoder().encode(MONITOR_INPUT_PATH + "\n" + serialized),
@@ -80,7 +109,7 @@ export function createMutationJournal(
       value.requestId,
       value.request_id,
     ].find((id): id is string => typeof id === "string" && !!id);
-    const saved = readMonitorInput(key);
+    const saved = readMonitorInput(storage, key);
     if (
       saved &&
       (saved.payloadDigest !== payloadDigest ||
@@ -100,7 +129,7 @@ export function createMutationJournal(
         };
     storage.setItem(key, JSON.stringify(entry));
     const currentEntry = () => {
-      const current = readMonitorInput(key);
+      const current = readMonitorInput(storage, key);
       return current?.requestId === entry.requestId &&
         current.payloadDigest === entry.payloadDigest
         ? current
