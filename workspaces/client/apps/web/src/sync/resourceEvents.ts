@@ -71,9 +71,11 @@ export type ResourceVersion = {
 
 export type ResourceProgressEvent =
   components["schemas"]["ResourceProgressEvent"];
-export type ResourceProgress =
-  | Pick<components["schemas"]["AuthProgressEvent"], "resource" | "value">
-  | Pick<components["schemas"]["VaultReadinessEvent"], "resource" | "value">;
+export type ResourceProgress = ResourceProgressEvent extends infer Progress
+  ? Progress extends { resource: infer Resource; value: infer Value }
+    ? { resource: Resource; value: Value }
+    : never
+  : never;
 type Version = ResourceVersion;
 
 export type ResourceConnectionState =
@@ -784,7 +786,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const resource = candidate.resource as ResourceRef | undefined;
     if (
       !resource ||
-      (resource.kind !== "auth-progress" && resource.kind !== "vault-readiness")
+      (resource.kind !== "auth-progress" &&
+        resource.kind !== "vault-readiness" &&
+        resource.kind !== "vault-job-progress")
     )
       throw new TypeError("Invalid progress resource");
     if (resource.kind === "auth-progress") {
@@ -800,6 +804,19 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             )))
       )
         throw new TypeError("Invalid auth progress");
+    } else if (resource.kind === "vault-job-progress") {
+      const receipt = candidate.value as Record<string, unknown> | null;
+      if (
+        typeof resource.requestId !== "string" ||
+        !["setup", "login", "pull"].includes(resource.job) ||
+        (receipt !== null &&
+          (!receipt ||
+            receipt.requestId !== resource.requestId ||
+            !["running", "done", "failed", "signin"].includes(
+              String(receipt.state),
+            )))
+      )
+        throw new TypeError("Invalid vault job progress");
     } else if (
       typeof resource.prefix !== "string" ||
       typeof candidate.value !== "boolean"

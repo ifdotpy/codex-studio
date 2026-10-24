@@ -40643,6 +40643,9 @@
           },
           {
             "$ref": "#/components/schemas/VaultReadinessEvent"
+          },
+          {
+            "$ref": "#/components/schemas/VaultJobProgressEvent"
           }
         ],
         "title": "ResourceProgressEvent"
@@ -40670,6 +40673,7 @@
             "terminals": "#/components/schemas/TerminalsResource",
             "transcript": "#/components/schemas/TranscriptResource",
             "transcripts": "#/components/schemas/TranscriptsResource",
+            "vault-job-progress": "#/components/schemas/VaultJobProgressResource",
             "vault-readiness": "#/components/schemas/VaultReadinessResource",
             "voice": "#/components/schemas/VoiceResource",
             "workspace": "#/components/schemas/WorkspaceResource"
@@ -40742,6 +40746,9 @@
           },
           {
             "$ref": "#/components/schemas/VaultReadinessResource"
+          },
+          {
+            "$ref": "#/components/schemas/VaultJobProgressResource"
           }
         ],
         "title": "ResourceRef"
@@ -55189,6 +55196,93 @@
           "name"
         ],
         "title": "VaultAwsProfileDto",
+        "type": "object"
+      },
+      "VaultJobProgressEvent": {
+        "additionalProperties": false,
+        "description": "Transient subscribed progress; never persisted to the server or client entity store.",
+        "properties": {
+          "epoch": {
+            "minLength": 1,
+            "title": "Epoch",
+            "type": "string"
+          },
+          "protocol": {
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
+            "title": "Protocol",
+            "type": "integer"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/VaultJobProgressResource"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VaultSetupResponse"
+              },
+              {
+                "$ref": "#/components/schemas/VaultLoginResponse"
+              },
+              {
+                "$ref": "#/components/schemas/VaultPullResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workspaceId": {
+            "minLength": 1,
+            "title": "Workspaceid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol",
+          "workspaceId",
+          "epoch",
+          "revision",
+          "resource",
+          "value"
+        ],
+        "title": "VaultJobProgressEvent",
+        "type": "object"
+      },
+      "VaultJobProgressResource": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "enum": [
+              "setup",
+              "login",
+              "pull"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "const": "vault-job-progress",
+            "type": "string"
+          },
+          "requestId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "requestId",
+          "job"
+        ],
+        "title": "VaultJobProgressResource",
         "type": "object"
       },
       "VaultLoginRequest": {

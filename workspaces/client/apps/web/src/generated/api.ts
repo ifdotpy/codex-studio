@@ -18674,7 +18674,8 @@ export interface components {
     /** ResourceProgressEvent */
     ResourceProgressEvent:
       | components["schemas"]["AuthProgressEvent"]
-      | components["schemas"]["VaultReadinessEvent"];
+      | components["schemas"]["VaultReadinessEvent"]
+      | components["schemas"]["VaultJobProgressEvent"];
     /**
      * ResourceRef
      * @description Closed discriminated union of all typed UI resource identities.
@@ -18701,7 +18702,8 @@ export interface components {
       | components["schemas"]["VoiceResource"]
       | components["schemas"]["WorkspaceResource"]
       | components["schemas"]["AuthProgressResource"]
-      | components["schemas"]["VaultReadinessResource"];
+      | components["schemas"]["VaultReadinessResource"]
+      | components["schemas"]["VaultJobProgressResource"];
     /**
      * ResourceRevisionEntry
      * @description Per-resource revision; StateResource uses the entity sequence.
@@ -24541,6 +24543,40 @@ export interface components {
        * @default null
        */
       sso?: boolean | null;
+    };
+    /**
+     * VaultJobProgressEvent
+     * @description Transient subscribed progress; never persisted to the server or client entity store.
+     */
+    VaultJobProgressEvent: {
+      /** Epoch */
+      epoch: string;
+      /**
+       * Protocol
+       * @constant
+       */
+      protocol: 4;
+      resource: components["schemas"]["VaultJobProgressResource"];
+      /** Revision */
+      revision: number;
+      value:
+        | components["schemas"]["VaultSetupResponse"]
+        | components["schemas"]["VaultLoginResponse"]
+        | components["schemas"]["VaultPullResponse"]
+        | null;
+      /** Workspaceid */
+      workspaceId: string;
+    };
+    /** VaultJobProgressResource */
+    VaultJobProgressResource: {
+      /** @enum {string} */
+      job: "setup" | "login" | "pull";
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "vault-job-progress";
+      requestId: string;
     };
     /**
      * VaultLoginRequest

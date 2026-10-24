@@ -882,7 +882,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     }
     let sync_changes = state.sync_changes_handle();
     let cost_scan_cancelled = state.cost_scan_cancellation_handle();
-    let vault_job_owner = VaultJobOwner::start();
+    let vault_job_owner = VaultJobOwner::start(Arc::clone(&sync_changes));
     state = state.with_vault_job_client(vault_job_owner.client());
     state.initialize_bounded_entities().await?;
     let app = match router(state.clone()) {

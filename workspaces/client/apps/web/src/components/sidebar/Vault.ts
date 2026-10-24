@@ -1,3 +1,6 @@
+import { ApiError } from "../../api";
+import * as defaultResources from "../../sync/resourceEvents";
+import { subscribeProgress } from "../../sync/progressSubscription";
 import type { components } from "../../generated/api";
 import type { ProjectChip } from "./MacSync";
 import type { SidebarBackend } from "./services";
@@ -45,38 +48,97 @@ export function deskLink(vault: ProjectVault): string | null {
 }
 
 type JobOptions<T> = {
-  wait?: (ms: number) => Promise<void>;
-  deadline?: number;
+  resources?: Pick<
+    typeof defaultResources,
+    "watchResourceChanges" | "watchResourceConnection"
+  >;
+  signal?: AbortSignal;
   onUpdate?: (job: T) => void;
 };
 
-/**
- * Ask for a job of this Mac's server until it ends. The body keeps the same request id, so a
- * repeated request reports the same job and a lost reply never starts a second one.
- */
+/** Start once with a stable identity. Running receipts travel only on the owner's stream. */
 export async function runJob<T extends { state: string }>(
   backend: Pick<SidebarBackend, "post">,
   url: Parameters<SidebarBackend["post"]>[0],
   body: Record<string, unknown>,
-  {
-    wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms)),
-    deadline = Date.now() + 60 * 60 * 1000,
-    onUpdate,
-  }: JobOptions<T> = {},
+  { resources = defaultResources, onUpdate, signal }: JobOptions<T> = {},
 ): Promise<T> {
-  for (;;) {
-    const job = (await backend.post(url, body, { timeoutMs: 30000 })) as T;
-    onUpdate?.(job);
-    if (job.state !== "running") return job;
-    if (Date.now() > deadline)
-      throw new Error(`${url} takes more than an hour`);
-    await wait(1500);
+  const requestId = body.requestId;
+  if (typeof requestId !== "string" || !requestId)
+    throw new Error("A vault job needs a requestId");
+  const job =
+    url === "/api/vault/aws-login"
+      ? "login"
+      : url === "/api/vault/pull"
+        ? "pull"
+        : "setup";
+  let initial: T;
+  try {
+    initial = (await backend.post(url, body, { timeoutMs: 30000 })) as T;
+  } catch (failure) {
+    if (
+      failure instanceof ApiError &&
+      failure.status < 500 &&
+      ![408, 429].includes(failure.status)
+    )
+      throw failure;
+    // A lost response never changes the identity or starts another logical job.
+    initial = (await backend.post(url, body, { timeoutMs: 30000 })) as T;
   }
+  onUpdate?.(initial);
+  if (initial.state !== "running") return initial;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let stop: (() => void) | undefined;
+    const cleanup = () => {
+      stop?.();
+      signal?.removeEventListener("abort", abort);
+    };
+    const fail = (failure: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(failure);
+    };
+    const abort = () => fail(new Error("Stopped watching the vault job"));
+    const accept = (update: T) => {
+      if (settled) return;
+      onUpdate?.(update);
+      if (update.state !== "running") {
+        settled = true;
+        cleanup();
+        resolve(update);
+      }
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    stop = subscribeProgress(
+      resources,
+      { kind: "vault-job-progress", requestId, job },
+      (progress) => {
+        if (
+          progress.resource.kind === "vault-job-progress" &&
+          progress.resource.requestId === requestId &&
+          progress.resource.job === job &&
+          progress.value
+        )
+          accept(progress.value as unknown as T);
+      },
+      async () =>
+        accept((await backend.post(url, body, { timeoutMs: 30000 })) as T),
+      fail,
+    );
+    // Cached stream baselines can settle synchronously during subscription.
+    if (settled) cleanup();
+  });
 }
 
 /** Pull the latest vault state into a new folder below `to` (Downloads when left out). */
 export async function pullVault(
-  backend: Pick<SidebarBackend, "post">,
+  backend: Pick<SidebarBackend, "post" | "resources">,
   projectId: string,
   to: string | null,
   {
@@ -88,7 +150,7 @@ export async function pullVault(
     backend,
     "/api/vault/pull",
     { projectId, requestId, ...(to ? { to } : {}) },
-    options,
+    { ...options, resources: options.resources ?? backend.resources },
   );
 }
 

@@ -7,7 +7,7 @@ import type {
 
 type ProgressResource = Extract<
   ResourceRef,
-  { kind: "auth-progress" | "vault-readiness" }
+  { kind: "auth-progress" | "vault-readiness" | "vault-job-progress" }
 >;
 type ProgressEvents = {
   watchResourceChanges: (
@@ -21,10 +21,12 @@ type ProgressEvents = {
 
 /** Subscribe through the existing stream. HTTP is reserved for recovery or an
  * explicit refresh; ordinary resource hints never cause a read. */
-export function subscribeProgress(
+export function subscribeProgress<R extends ProgressResource>(
   events: ProgressEvents,
-  resource: ProgressResource,
-  accept: (progress: ResourceProgress) => void,
+  resource: R,
+  accept: (
+    progress: Extract<ResourceProgress, { resource: { kind: R["kind"] } }>,
+  ) => void,
   recover: () => Promise<unknown>,
   failed: (error: unknown) => void,
 ) {
@@ -52,7 +54,13 @@ export function subscribeProgress(
         missingRecovered = true;
         refresh();
       }
-    } else accept(progress);
+    } else
+      accept(
+        progress as Extract<
+          ResourceProgress,
+          { resource: { kind: R["kind"] } }
+        >,
+      );
   });
   const stopConnection = events.watchResourceConnection((state) => {
     if (state === "degraded" || state === "offline") interrupted = true;

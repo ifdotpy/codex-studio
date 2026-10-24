@@ -537,6 +537,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         "ResourceTokenRatesEvent",
         "AuthProgressEvent",
         "VaultReadinessEvent",
+        "VaultJobProgressEvent",
     ] {
         for bound in ["const", "minimum", "maximum"] {
             expect_number(

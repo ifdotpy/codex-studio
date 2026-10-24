@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { test } from "../playwright.mjs";
 
-for (const flow of ["vault", "auth"]) {
-  test(`transient ${flow} progress has zero idle HTTP reads`, async ({
+for (const flow of ["vault", "auth", "vault-job"]) {
+  test(`transient ${flow === "vault-job" ? "vault" : flow} progress has zero ${flow === "vault-job" ? "job receipt" : "idle HTTP"} reads`, async ({
     browser,
   }) => {
     const root = resolve(import.meta.dirname, "../..");
@@ -42,7 +42,7 @@ for (const flow of ["vault", "auth"]) {
             import VaultSetup from '/src/components/sidebar/VaultSetup.tsx';
             import ClaudeSignIn from '/src/components/ClaudeSignIn.tsx';
             import {ServerServicesProvider} from '/src/servers/ServerServicesContext.tsx';
-            window.reads={facts:0,auth:0}; window.selectors=[];
+            window.reads={facts:0,auth:0,jobs:0}; window.selectors=[];
             const listeners=new Map();
             const resources={
               watchResourceChanges(resource,accept){const key=JSON.stringify(resource);listeners.set(key,accept);window.selectors.push(resource);return()=>listeners.delete(key)},
@@ -54,11 +54,11 @@ for (const flow of ["vault", "auth"]) {
               saved:(key,fallback)=>key==='claude-sign-in:fixture:claude-one'?'login-one':fallback,
               save:()=>{}, stableRequestId:()=>'', clearStableRequestId:()=>{},
             };
-            const backend={post:async()=>{window.reads.facts++;return {prefix:'project-one',keys:false,site:'https://desk.example',region:'eu-west-1',profiles:[]}}};
-            const services={owner:{id:'local',origin:location.origin},api,resources,fileDialogs:{showVaultKeys:async()=>{},canShowVaultKeys:()=>true}};
             const flow=new URL(location.href).searchParams.get('flow');
+            const backend={post:async(path,body)=>{if(path!=='/api/vault/setup/facts'){window.reads.jobs++;return fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json())}window.reads.facts++;return {prefix:'project-one',keys:flow==='vault-job',site:'https://desk.example',region:'eu-west-1',profiles:flow==='vault-job'?[{name:'fixture',signedIn:true}]:[]}}};
+            const services={owner:{id:'local',origin:location.origin},api,resources,fileDialogs:{showVaultKeys:async()=>{},canShowVaultKeys:()=>true}};
             createRoot(document.getElementById('root')).render(<MantineProvider><ServerServicesProvider services={services}>
-              {flow==='vault'?<VaultSetup entry={{vault:{projectId:'p1'}}} name='Project' backend={backend} onClose={()=>{}} onDone={()=>{}}/>:
+              {flow!=='auth'?<VaultSetup entry={{vault:{projectId:'p1'}}} name='Project' backend={backend} onClose={()=>{}} onDone={()=>{window.ready=true}}/>:
               <ClaudeSignIn account={{id:'claude-one',label:'Claude',provider:'claude',status:'signedOut'}} scope='fixture' onClose={()=>{}} onReady={()=>{window.ready=true}}/>}
             </ServerServicesProvider></MantineProvider>);`;
           },
@@ -68,6 +68,24 @@ for (const flow of ["vault", "auth"]) {
     const page = await browser.newPage();
     try {
       await server.listen();
+      const requests = [];
+      page.on("request", (request) => {
+        if (
+          /\/api\/vault\/(setup|aws-login|pull)$/.test(
+            new URL(request.url()).pathname,
+          )
+        )
+          requests.push(request.method());
+      });
+      await page.route("**/api/vault/setup", async (route) =>
+        route.fulfill({
+          json: {
+            requestId: route.request().postDataJSON().requestId,
+            state: "running",
+            prefix: "project-one",
+          },
+        }),
+      );
       await page.clock.install();
       await page.goto(
         `http://127.0.0.1:${server.httpServer.address().port}/check?flow=${flow}`,
@@ -83,14 +101,33 @@ for (const flow of ["vault", "auth"]) {
           true,
           "keep the subscribed prefix fixed while generating its paper key",
         );
+      if (flow === "vault-job") {
+        await page
+          .getByRole("button", { name: "Create vault", exact: true })
+          .click();
+        await page.waitForFunction(
+          () =>
+            window.reads.jobs === 1 &&
+            window.selectors.some((r) => r.kind === "vault-job-progress"),
+        );
+      }
       const before = await page.evaluate(() => ({ ...window.reads }));
       await page.clock.fastForward(10_000);
       assert.deepEqual(await page.evaluate(() => window.reads), before);
       assert.deepEqual(
         before,
-        flow === "vault" ? { facts: 1, auth: 0 } : { facts: 0, auth: 0 },
+        flow === "vault"
+          ? { facts: 1, auth: 0, jobs: 0 }
+          : flow === "vault-job"
+            ? { facts: 1, auth: 0, jobs: 1 }
+            : { facts: 0, auth: 0, jobs: 0 },
       );
-      const kind = flow === "vault" ? "vault-readiness" : "auth-progress";
+      const kind =
+        flow === "vault"
+          ? "vault-readiness"
+          : flow === "vault-job"
+            ? "vault-job-progress"
+            : "auth-progress";
       await page.waitForFunction(
         (kind) => window.selectors.some((resource) => resource.kind === kind),
         kind,
@@ -101,7 +138,22 @@ for (const flow of ["vault", "auth"]) {
             { kind: "vault-readiness", prefix: "project-one" },
             true,
           );
-        else
+        else if (flow === "vault-job") {
+          const resource = window.selectors.find(
+            (r) => r.kind === "vault-job-progress",
+          );
+          window.progress(resource, {
+            requestId: resource.requestId,
+            state: "running",
+            prefix: "project-one",
+            progress: "creating stack",
+          });
+          window.progress(resource, {
+            requestId: resource.requestId,
+            state: "done",
+            prefix: "project-one",
+          });
+        } else
           window.progress(
             { kind: "auth-progress", requestId: "login-one" },
             {
@@ -114,6 +166,12 @@ for (const flow of ["vault", "auth"]) {
       if (flow === "vault")
         await page.getByText("The paper key of project-one is made.").waitFor();
       else await page.waitForFunction(() => window.ready === true);
+      if (flow === "vault-job")
+        assert.deepEqual(
+          requests,
+          ["POST"],
+          "only the explicit start POST occurs during the running job",
+        );
       console.log(
         JSON.stringify({
           flow,

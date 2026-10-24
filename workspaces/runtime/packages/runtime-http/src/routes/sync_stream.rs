@@ -448,6 +448,10 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
                 .ok()?,
         )
         .ok(),
+        ResourceRef::VaultJobProgressResource(resource) => serde_json::to_vec(
+            &super::host_secrets::job_progress(&state, resource.job, &resource.request_id).await,
+        )
+        .ok(),
         ResourceRef::VaultReadinessResource(resource) => {
             let settings = super::host_secrets::settings_dir(&state.state_dir);
             studio_runtime_process::blocking_pool::spawn_blocking(
@@ -535,7 +539,7 @@ async fn readiness_source(
 
 /// Progress is deliberately separate from resources/entityChanges: OAuth links
 /// must never enter SQLite, RxDB, entity replay, or durable checkpoints.
-async fn append_progress_frames(
+pub(super) async fn append_progress_frames(
     state: &HttpState,
     view: &ResourceChanges,
     frames: &mut VecDeque<Event>,
@@ -546,7 +550,7 @@ async fn append_progress_frames(
                 (Some(login), Some(id)) => login.progress(id).await.unwrap_or(Value::Null),
                 _ => Value::Null,
             },
-            Some("vault-readiness") => {
+            Some("vault-job-progress") | Some("vault-readiness") => {
                 let Some(bytes) = resource_content(state.clone(), resource.clone()).await else {
                     continue;
                 };
@@ -1617,6 +1621,34 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[tokio::test]
+    async fn state_stream_vault_job_progress_includes_missing_receipt() {
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            "/unused".into(),
+            0,
+            None,
+            None,
+            None,
+        );
+        state.validators = crate::validation::Registry::compile(&[]).expect("validators");
+        let view = ResourceChanges {
+            cursor: state.sync_changes.snapshot(),
+            resources: vec![json!({"kind":"vault-job-progress","requestId":"one","job":"setup"})],
+            versions: vec![1],
+            entity_reset: false,
+            overflow: false,
+        };
+        let mut frames = VecDeque::new();
+        append_progress_frames(&state, &view, &mut frames).await;
+        assert_eq!(
+            frames.len(),
+            1,
+            "missing receipts must have an explicit transient baseline"
+        );
+    }
 
     #[tokio::test]
     async fn state_stream_progress_frames_are_transient_and_scoped() {

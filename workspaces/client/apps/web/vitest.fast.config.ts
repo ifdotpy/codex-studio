@@ -11,6 +11,7 @@ export default {
       "src/sync/entityProjection.test.mjs",
       "src/sync/resourceEvents.live.test.ts",
       "src/sync/progressSubscription.test.ts",
+      "src/components/sidebar/Vault.test.ts",
       "src/hooks/chatPrefetch.test.ts",
       "src/sync/drafts.publication.test.ts",
       "src/sync/transcriptCache.test.ts",
