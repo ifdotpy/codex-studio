@@ -99,8 +99,17 @@ jobs:
           directory: ${{ runner.temp }}/rust-workspace-tests
           # The nextest archive is already zstd-compressed.
           compression-level: "0"
+      - name: Pack inputs for checks that never compile Rust
+        run: |
+          mkdir -p "$RUNNER_TEMP/prepared-check-inputs"
+          tar -cf "$RUNNER_TEMP/prepared-check-inputs/prepared-check-inputs.tar" workspaces/client/apps/web/dist workspaces/client/apps/web/src/wasm/generated target/debug/codex-process-supervisor target/debug/studio-runtime-server
+      - uses: ./.github/actions/upload-build-output
+        with:
+          name: prepared-check-inputs
+          directory: ${{ runner.temp }}/prepared-check-inputs
 
   fast-rest:
+    needs: rust-build-tests
     name: "Fast tier: remaining checks"
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -109,10 +118,12 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/fast-tier-setup
-      - uses: ./.github/actions/client-build-setup
+      - uses: ./.github/actions/download-build-output
         with:
-          native: "true"
-          renderer-checks: "false"
+          name: prepared-check-inputs
+          directory: ${{ runner.temp }}/prepared-check-inputs
+      - name: Restore the exact renderer, WASM and supervisor inputs
+        run: tar -xf "$RUNNER_TEMP/prepared-check-inputs/prepared-check-inputs.tar"
       - name: List facade recipes
         run: just --list
       - name: Run non-Rust fast-tier checks
@@ -128,7 +139,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: facade-full-log-fast-rest
-          path: ${{ runner.temp }}/codex-studio-cache/codex-studio/checks/run-*/full.log
+          path: ${{ runner.temp }}/codex-studio-cache/codex-studio/checks/run-*/
           if-no-files-found: ignore
 
   fast-rust:
@@ -175,6 +186,7 @@ jobs:
           if-no-files-found: ignore
 
   fast-browser-smoke:
+    needs: rust-build-tests
     name: "Fast tier: browser smoke"
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -183,11 +195,14 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/fast-tier-setup
-      - uses: ./.github/actions/client-build-setup
+      - uses: ./.github/actions/download-build-output
+        with:
+          name: prepared-check-inputs
+          directory: ${{ runner.temp }}/prepared-check-inputs
+      - name: Restore the exact browser fixture and renderer inputs
+        run: tar -xf "$RUNNER_TEMP/prepared-check-inputs/prepared-check-inputs.tar"
       - name: Select the browser cache
         run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright" >> "$GITHUB_ENV"
-      - name: Build the server the browser fixtures run
-        run: cargo build --locked -p studio-runtime-server
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ms-playwright
@@ -195,7 +210,7 @@ jobs:
       - name: Install the cached Chromium browser
         run: pnpm --filter codex-agents-web exec playwright install chromium
       - name: Run browser smoke subset
-        run: TMPDIR="$RUNNER_TEMP" just test-browser-smoke
+        run: CODEX_STUDIO_RUNTIME_SERVER="$PWD/target/debug/studio-runtime-server" TMPDIR="$RUNNER_TEMP" just test-browser-smoke --prepared
       - name: Upload browser smoke diagnostics
         if: failure() || cancelled()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

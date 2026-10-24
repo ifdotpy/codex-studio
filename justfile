@@ -1,6 +1,8 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set positional-arguments
 
+export CARGO_BUILD_JOBS := `node workspaces/tooling/apps/repository-checks/gate-config.mjs`
+
 facade := justfile_directory() / "workspaces/tooling/apps/repository-checks/facade.mjs"
 rust-target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() / "target")
 rust-http-server := rust-target / "debug/studio-runtime-server"
@@ -72,11 +74,11 @@ boundaries-check:
 check-affected base *args:
     @node {{quote(facade)}} check-affected {{quote(base)}} {{args}}
 
-[doc("Run selected safety witnesses, schema and boundary guards, and focused web/tooling checks.")]
+[doc("Run the fast nextest profile and JS/guest witnesses in three concurrent lanes.")]
 test-fast:
     @node {{quote(facade)}} test-fast
 
-[doc("Run the previous broad local regression recipe, including browser smoke.")]
+[doc("Run the broad nextest profile and JS/guest checks with one renderer build and browser smoke.")]
 test-comprehensive:
     @node {{quote(facade)}} test-comprehensive
 
@@ -84,7 +86,7 @@ test-comprehensive:
 test-fast-rest:
     @node {{quote(facade)}} test-fast-rest
 
-[doc("Run the comprehensive non-Rust remainder used by hosted CI.")]
+[doc("Run JS and guest checks against prebuilt WASM/supervisor artifacts; never compile Rust.")]
 test-fast-rest-non-rust:
     @node {{quote(facade)}} test-fast-rest-non-rust
 
@@ -98,7 +100,7 @@ test-fast-rust-partition partition count archive="":
       source=(--archive-file "$3" --workspace-remap . --extract-to . --extract-overwrite)
       supervisor="$PWD/target/debug/codex-process-supervisor"
     else
-      cargo build -p studio-process-supervisor --locked
+      cargo build --workspace --tests --bins --locked
       source=(--workspace --locked)
       supervisor="$(node -p 'require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "debug", "codex-process-supervisor")')"
     fi
@@ -112,7 +114,7 @@ build-rust-test-archive file:
       echo "Unset CARGO_TARGET_DIR: test-fast-rust-partition extracts the archive into ./target" >&2
       exit 1
     fi
-    cargo build -p studio-process-supervisor --locked
+    cargo build --workspace --tests --bins --locked
     cargo nextest archive --workspace --locked --archive-file "$1"
     if ! tar -tf "$1" | grep -x 'target/debug/codex-process-supervisor' >/dev/null; then
       echo "The archive lacks target/debug/codex-process-supervisor, which test-fast-rust-partition selects" >&2
@@ -150,8 +152,8 @@ benchmark-client-interactions baseline output:
     @STUDIO_BENCHMARK_VARIANTS={{quote(output + "/variants.json")}} STUDIO_BENCHMARK_OUTPUT={{quote(output + "/measurements.json")}} PLAYWRIGHT_INCLUDE_SPECIAL=1 pnpm --filter codex-agents-web exec node scripts/run-browser-tests.mjs --config playwright.config.ts --project=performance tests/performance/interaction-benchmark.spec.mjs --workers=1
 
 [doc("Run the browser smoke subset included in the comprehensive tier and hosted CI.")]
-test-browser-smoke:
-    @node {{quote(facade)}} test-browser-smoke
+test-browser-smoke *args:
+    @node {{quote(facade)}} test-browser-smoke {{args}}
 
 [doc("Check the main user scenarios on the app installed on this Mac, with its own test chats. See docs/testing.md, Installed scenario smoke.")]
 smoke-installed *args:
