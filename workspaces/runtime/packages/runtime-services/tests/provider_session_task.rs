@@ -432,6 +432,87 @@ done"#
     });
 }
 
+/// A requested shutdown keeps the provider's whole exit tail even when the
+/// account has stopped consuming events and every bounded lane is full. In the
+/// live incident streamed deltas filled the lanes and the bridge's final
+/// `turn/completed`, written on stdin EOF, was lost behind them.
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_keeps_the_stdout_tail_beyond_full_lanes_in_order() {
+    use studio_runtime_process::provider_stdio::StdioProviderTaskFactory;
+
+    const HANG_GUARD: Duration = Duration::from_secs(10);
+    // Exceed the session's unsettled horizon and both bounded lanes.
+    const DELTAS: usize = MAX_UNSETTLED + 2 * LANE_CAPACITY + 1;
+    let root = tempfile::tempdir().unwrap();
+    let script = format!(
+        r#"IFS= read -r initialize
+printf '{{"id":"attachment-1:1","result":{{}}}}\n'
+IFS= read -r initialized
+index=0
+while [ "$index" -lt {DELTAS} ]; do
+    printf '{{"method":"fixture/delta","index":%s}}\n' "$index"
+    index=$((index + 1))
+done
+cat >/dev/null
+printf '{{"method":"fixture/completed"}}\n'"#
+    );
+    tokio::time::timeout(HANG_GUARD, async {
+        let factory = Arc::new(StdioProviderTaskFactory {
+            deadline: None,
+            max_frame_bytes: 1024,
+            max_output_bytes: None,
+            stderr_log: None,
+        });
+        let mut opts = options();
+        opts.launch = ProviderLaunchSpec::new(
+            vec!["/bin/sh".into(), "-c".into(), script],
+            BTreeMap::new(),
+            root.path().to_path_buf(),
+        );
+        let mut cfg = config();
+        cfg.timeout_ms = HANG_GUARD.as_millis() as u64;
+        let mut session = SessionHandle::open(
+            factory,
+            ProviderHandle::for_account("stdio-shutdown-tail"),
+            opts,
+            cfg,
+        )
+        .await
+        .unwrap();
+        status(&mut session, InitializationStatus::Ready).await;
+        // Nothing consumes or settles events, like the stopped account worker.
+        let exit = session.shutdown().await;
+        let mut retained = vec![];
+        while let Ok(event) = session.events.try_recv() {
+            retained.extend(event.journal);
+        }
+        for event in exit.undelivered {
+            retained.extend(event.journal);
+        }
+        assert_eq!(retained.len(), DELTAS + 2, "every frame is retained");
+        for (index, entry) in retained.iter().enumerate() {
+            assert_eq!(entry.cursor, EventCursor(index as u64 + 1));
+        }
+        for (index, entry) in retained[1..=DELTAS].iter().enumerate() {
+            let JournalPayload::Frame(Frame::UnknownMethod(frame)) = &entry.payload else {
+                panic!("expected a delta fixture notification");
+            };
+            assert_eq!(frame.fields.get("index"), Some(&json!(index)));
+        }
+        let JournalPayload::Frame(Frame::UnknownMethod(last)) = &retained[DELTAS + 1].payload
+        else {
+            panic!("expected the completed fixture notification");
+        };
+        assert_eq!(last.method, "fixture/completed");
+        let adapter = exit.adapter.expect("real stdio adapter completion");
+        assert!(adapter.result.is_ok(), "{:?}", adapter.result);
+        assert!(adapter.cleanup_error.is_none());
+    })
+    .await
+    .expect("stdio shutdown tail hang guard");
+}
+
 #[tokio::test(start_paused = true)]
 async fn initialization_requires_reply_and_written_notification_receipt() {
     let (mut session, mut peer) = open().await;
