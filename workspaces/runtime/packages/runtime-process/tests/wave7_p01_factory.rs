@@ -388,3 +388,117 @@ async fn running_child_started_with_a_previous_command_reattaches() {
     .await
     .unwrap();
 }
+
+/// A running child started before a launch variable existed lacks it. The
+/// Claude bridges of 69637aa6e were started without
+/// `STUDIO_CLAUDE_CREDENTIAL_IDENTITY`, which a later launch adds. Such a child
+/// is still the provider of this launch: it reattaches with its own
+/// environment and is not restarted. A child whose environment differs in any
+/// other way stays unverifiable.
+#[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture; `which` exits at once"
+)]
+async fn running_child_started_before_a_launch_variable_existed_reattaches() {
+    use studio_runtime_process::HealthRequest;
+    use studio_runtime_store::supervisor_journal::launch_signature;
+    let (state, mut supervisor) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-process/tests/wave7_p01_factory",
+        || {
+            let state = support::DisposableState::new();
+            let supervisor = support::SupervisorProcess::start(&state);
+            (state, supervisor)
+        },
+    )
+    .await
+    .unwrap();
+    let state = std::sync::Arc::new(state);
+    let factory = SupervisorProviderTaskFactory::new(state.identity());
+    let handle = ProviderHandle::for_account("retained");
+    let node = std::process::Command::new("which")
+        .arg("node")
+        .output()
+        .unwrap();
+    assert!(node.status.success());
+    let node = String::from_utf8(node.stdout).unwrap().trim().to_owned();
+    let command = vec![node, "-e".to_owned(), "process.stdin.resume()".to_owned()];
+    let previous = support::child_environment(&state.0);
+    let with = |name: &str, value: &str| {
+        let mut environment = previous.clone();
+        environment.insert(name.to_owned(), value.to_owned());
+        environment
+    };
+    let launch = |environment: BTreeMap<String, String>| OpenOptions {
+        clock: SessionClock::default(),
+        launch: ProviderLaunchSpec::new(command.clone(), environment, state.0.clone()),
+        expected_generation: None,
+    };
+    let attach = |environment: BTreeMap<String, String>| {
+        let factory = &factory;
+        let handle = handle.clone();
+        let options = launch(environment.clone());
+        let mut reopened = launch(environment);
+        async move {
+            let prepared = factory
+                .prepare(handle.clone(), options, Shutdown::default())
+                .await?;
+            reopened.expected_generation = Some(prepared.generation());
+            prepared.open(handle, reopened, Shutdown::default()).await
+        }
+    };
+    let mut attachment = attach(previous.clone()).await.unwrap();
+    let started = attachment.status.borrow().info.clone().unwrap();
+    supervisor.own_child(started.pid);
+    let _exit = attachment.shutdown().await;
+
+    assert!(
+        attach(with("STUDIO_CLAUDE_OPTIONS", "{\"configDir\":\"changed\"}"))
+            .await
+            .is_err(),
+        "a running child with another launch environment is refused"
+    );
+    let mut attachment = attach(with(
+        "STUDIO_CLAUDE_CREDENTIAL_IDENTITY",
+        "claude:a@example.test",
+    ))
+    .await
+    .unwrap();
+    let info = attachment.status.borrow().info.clone().unwrap();
+    assert!(info.resumed);
+    assert_eq!(info.pid, started.pid);
+    assert_eq!(info.generation, started.generation);
+    let _exit = attachment.shutdown().await;
+    let running = {
+        let state = state.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-process/tests/wave7_p01_factory",
+            move || {
+                support::connect_client(&state)
+                    .health(HealthRequest::default())
+                    .unwrap()
+                    .handles
+                    .into_iter()
+                    .find(|handle| handle.id == "account:retained")
+                    .map(|handle| (handle.pid, handle.signature))
+            },
+        )
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        running,
+        Some((
+            Some(started.pid),
+            launch_signature(&command, &previous, state.0.to_str())
+        )),
+        "the reattached child keeps its own environment"
+    );
+    // Fixture teardown owns the supervisor and its surviving child.
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-process/tests/wave7_p01_factory",
+        move || drop(supervisor),
+    )
+    .await
+    .unwrap();
+}

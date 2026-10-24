@@ -66,6 +66,7 @@ export function NativeError({
   planType,
   limits,
   openLimits,
+  refreshLimits,
   newChat,
   chooseChat,
   refresh,
@@ -74,6 +75,8 @@ export function NativeError({
   planType?: string;
   limits?: Json | null;
   openLimits?: () => void;
+  /** Read the account limits of this chat again. */
+  refreshLimits?: () => void;
   newChat?: () => void;
   chooseChat?: () => void;
   refresh?: () => Promise<void>;
@@ -141,6 +144,7 @@ export function NativeError({
           agentId={agent.id}
           usageResume={usageResume ?? undefined}
           inline
+          onRefresh={refreshLimits}
         />
       )}
       {retry && (

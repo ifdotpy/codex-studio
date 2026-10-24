@@ -46,18 +46,6 @@ pub enum BudgetRuntimeError {
     Json(#[from] serde_json::Error),
 }
 
-/// Read team totals with the same durable history checks as admission.
-pub fn status(
-    store: &RuntimeStore,
-    tx: &Transaction<'_>,
-    root_id: &str,
-    histories: &BTreeMap<String, HistoryObservation>,
-    now: f64,
-) -> Result<crate::budget::BudgetStatus, BudgetError> {
-    recheck_history_bindings(&store.root().join("analytics.sqlite3"), tx, histories)?;
-    crate::budget_service::status(tx, root_id, histories, true, now)
-}
-
 /// Prepare current history evidence for every member of a team.
 ///
 /// This method does filesystem and read-only analytics work only. Its bounded

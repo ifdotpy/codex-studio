@@ -49,8 +49,6 @@ import { useWorkerModels } from "../agents/WorkerModelPicker";
 import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import TeamChats from "./messages/TeamChats";
 import FilePreview, { type PreviewTarget } from "../FilePreview";
-import { ProfileCapabilities } from "./ProfileCapabilities";
-import { capabilityDraft, parseCapabilities } from "./profileCapabilityFields";
 import "./Workspace.css";
 import {
   WorkspacePanelHost,
@@ -1074,8 +1072,6 @@ function Profiles(c: Context) {
     isDefault: !!row.isDefault,
   }));
   const draftModel = typeof draft?.model === "string" ? draft.model : "";
-  const capabilities = capabilityDraft(draft ?? {});
-  const parsedCapabilities = parseCapabilities(capabilities);
   if (draftModel && !profileModels.some((row) => row.value === draftModel))
     profileModels.unshift({ value: draftModel, label: draftModel });
   return (
@@ -1168,11 +1164,9 @@ function Profiles(c: Context) {
             className="workspace-form"
             onSubmit={async (e) => {
               e.preventDefault();
-              if (!parsedCapabilities.values) return;
               setBusy(true);
               try {
                 await c.run("/api/profiles", {
-                  ...parsedCapabilities.values,
                   action: "save",
                   id: typeof draft.id === "string" ? draft.id : undefined,
                   isNew: draft.isNew === true,
@@ -1246,19 +1240,7 @@ function Profiles(c: Context) {
                 setDraft({ ...draft, instructions: e.target.value })
               }
             />
-            <ProfileCapabilities
-              value={capabilities}
-              errors={parsedCapabilities.errors}
-              onChange={(field, value) =>
-                setDraft({ ...draft, [field]: value })
-              }
-            />
-            <Button
-              variant="filled"
-              type="submit"
-              loading={busy}
-              disabled={!parsedCapabilities.values}
-            >
+            <Button variant="filled" type="submit" loading={busy}>
               Save profile
             </Button>
           </form>

@@ -192,5 +192,26 @@ async fn lazy_member_moves_its_history_before_its_input_is_claimed() {
         "pending",
         "a refused move leaves the input queued"
     );
+
+    // Each later wake holds the blocked member until Retry or Cancel. It does
+    // not run the move again (a write and a log line per wake).
+    let moves = || {
+        state
+            .bridge
+            .faults
+            .operations
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _, _)| name == "account_transfer_move")
+            .count()
+    };
+    let moves_before = moves();
+    let reads_before = reads.0.lock().unwrap().len();
+    state.wake(&worker).await;
+    worker_barrier(&worker).await;
+    assert_eq!(moves(), moves_before, "a blocked member is not moved again");
+    assert_eq!(reads.0.lock().unwrap().len(), reads_before);
+    assert_eq!(state.event_status("input").await, "pending");
     worker.shutdown().await.unwrap();
 }

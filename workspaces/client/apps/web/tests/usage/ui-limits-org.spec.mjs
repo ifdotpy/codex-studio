@@ -42,7 +42,7 @@ function Fixture(){const[screen,setScreen]=useState('limits');const[at,setAt]=us
 window.refreshFixture=()=>setAt(Date.now()/1000);const limits={accountKey:'claude',at,eligibility:{agentId:'another-worker',accountKey:'claude',provider:'claude',model:'opus',allowed:true,canRun:true,fresh:true,checkedAt:now,validUntil:now+3600,resetAt:null,buckets:[],overage:'unavailable'},data:{rateLimits:{limitId:'claude',primary:{usedPercent:100,resetsAt:now+3600}},rateLimitsByLimitId:{'claude-opus':{limitName:'Opus',secondary:{usedPercent:100,resetsAt:now+7200}},'claude-sonnet':{limitName:'Sonnet',secondary:{usedPercent:20,resetsAt:now+3600}}}}};
 return <MantineProvider theme={theme} defaultColorScheme="auto"><main style={{padding:12,maxWidth:900,margin:'auto',minWidth:0}}>
 <Button onClick={()=>setScreen(screen==='limits'?'accounts':'limits')}>{screen==='limits'?'Show accounts':'Show limits'}</Button>
-{screen==='limits'?<><div data-notice><NativeError agent={agent} limits={limits}/></div><div style={{position:'fixed',bottom:12,right:12}} data-usage><Usage agent={agent} stateDir='fixture' limits={limits} accounts={[{key:'claude',provider:'claude',label:'Research',limits,reload:async()=>window.refreshFixture()}]} accountLabel='Research' opened={limitsOpen} onChange={setLimitsOpen} reload={async()=>window.refreshFixture()}/></div></>:<>
+{screen==='limits'?<><div data-notice><NativeError agent={agent} limits={limits} refreshLimits={()=>window.refreshFixture()}/></div><div style={{position:'fixed',bottom:12,right:12}} data-usage><Usage agent={agent} stateDir='fixture' limits={limits} accounts={[{key:'claude',provider:'claude',label:'Research',limits,reload:async()=>window.refreshFixture()}]} accountLabel='Research' opened={limitsOpen} onChange={setLimitsOpen} reload={async()=>window.refreshFixture()}/></div></>:<>
 <AccountSignInNotice account={account} errors={[]} onSignIn={key=>window.signedInAccount=key}/>
 <Accounts managerOnly state={{data:{accounts:[account],archivedAccounts:[],defaultAccountKey:'claude',defaultAccountGroups:[],logins:[]},setData:()=>{},refresh:async()=>{},error:'',scope:'fixture'}} onError={()=>{}}/>
 <ClaudeProfile account={account} onSaved={()=>{}} expanded/></>}
@@ -126,19 +126,28 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
           await route.fulfill({ json: { items: [], accounts: [], cost: 0 } });
       });
       await page.goto(server.resolvedUrls.local[0]);
+      // The chat notice is one plain line; the details stay on the limits page.
       await page
         .locator("[data-notice]")
-        .getByText("Overage rejected", { exact: true })
+        .getByText(/^Limit reached\. Resets at /)
         .waitFor({ timeout: 10_000 });
-      const eligibility = page.locator(
-        "[data-notice] .model-limit-eligibility",
+      const notice = await page.locator("[data-notice]").innerText();
+      for (const detail of [
+        /Applicable buckets/,
+        /Overage/,
+        /Current eligibility is unknown/,
+        /Cannot run now/,
+      ])
+        assert.doesNotMatch(notice, detail);
+      assert.equal(
+        await page.locator("[data-notice] .model-limit-eligibility").count(),
+        0,
       );
-      assert.match(
-        await eligibility.innerText(),
-        /Applicable buckets: claude, claude-sonnet/,
-      );
-      assert.doesNotMatch(await eligibility.innerText(), /claude-opus/);
-      assert.match(await eligibility.innerText(), /Cannot run now/);
+      await expect(
+        page
+          .locator("[data-notice]")
+          .getByRole("button", { name: "Refresh", exact: true }),
+      ).toBeVisible();
       await page.screenshot({
         path: resolve(output, `notice-rejected-${width}.png`),
         fullPage: true,
@@ -162,9 +171,18 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
       await page
         .getByRole("button", { name: "Account limits", exact: true })
         .click();
-      await expect(
-        page.locator(".account-limits-panel .model-limit-eligibility"),
-      ).toContainText("Cannot run now");
+      await page
+        .locator(".account-limits-panel")
+        .getByText("Model eligibility details", { exact: true })
+        .click();
+      const eligibility = page.locator(
+        ".account-limits-panel .model-limit-eligibility",
+      );
+      await expect(eligibility).toContainText(
+        "Applicable buckets: claude, claude-sonnet",
+      );
+      assert.doesNotMatch(await eligibility.innerText(), /claude-opus/);
+      await expect(eligibility).toContainText("Cannot run now");
       await expect(
         page.locator(".account-limits-panel .model-limit-eligibility"),
       ).toContainText("Overage rejected");

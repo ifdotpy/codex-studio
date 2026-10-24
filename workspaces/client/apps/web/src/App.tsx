@@ -1,4 +1,7 @@
-import TeamBudget from "./components/agents/TeamBudget";
+import {
+  TeamRetainedWorktrees,
+  useRetainedWorktrees,
+} from "./components/agents/RetainedWorktrees";
 import { EdgeRail } from "./components/edge-rail/EdgeRail";
 import { useEdgeRail } from "./components/edge-rail/useEdgeRail";
 import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
@@ -890,6 +893,9 @@ export default function App({ active = true }: { active?: boolean }) {
       );
   const team = (lead && catalog.team(lead.id)) || emptyAgents;
   const workers = (lead && catalog.workers(lead.id)) || emptyAgents;
+  // Deleted workers whose worktree cleanup kept the folder.
+  const retainedWorktrees = useRetainedWorktrees(lead, workers);
+  const hasTeam = workers.length > 0 || retainedWorktrees.length > 0;
   useTeamTokenRateStream(
     lead?.id,
     Boolean(
@@ -2562,7 +2568,7 @@ export default function App({ active = true }: { active?: boolean }) {
             <X size={16} />
           </ActionIcon>
         </div>
-        {lead && <TeamBudget key={lead.id} lead={lead} members={workers} />}
+        <TeamRetainedWorktrees items={retainedWorktrees} />
         <TeamSummary
           workers={workers}
           answers={answerIds}
@@ -2719,7 +2725,7 @@ export default function App({ active = true }: { active?: boolean }) {
       >
         Chat settings
       </Menu.Item>
-      {!!lead && (
+      {hasTeam && (
         <Menu.Item
           id="chat-actions-team"
           aria-label="Team"
@@ -2869,7 +2875,7 @@ export default function App({ active = true }: { active?: boolean }) {
       <EdgeRail
         geometry={railGeometry}
         team={
-          lead
+          hasTeam
             ? {
                 busy: workers.filter((worker) => busy.has(worker.status ?? ""))
                   .length,
@@ -3000,7 +3006,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 <Settings2 size={18} />
               </ActionIcon>
             )}
-            {!railGeometry && !!lead && (
+            {!railGeometry && hasTeam && (
               <Button
                 leftSection={<Users size={16} />}
                 id="team-toggle"
@@ -3308,7 +3314,7 @@ export default function App({ active = true }: { active?: boolean }) {
           data-ready={workspacePanelSlot ? "yes" : "no"}
           data-layout-mode={rowLayout.panelLayout.mode}
         />
-        {!!lead &&
+        {hasTeam &&
           (narrowTeam ? (
             <Drawer
               opened={teamOpen}

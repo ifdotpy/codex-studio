@@ -4176,16 +4176,6 @@
             ],
             "title": "Autowake"
           },
-          "budgetBlocked": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "canSend": {
             "anyOf": [
               {
@@ -4196,16 +4186,6 @@
               }
             ],
             "title": "Cansend"
-          },
-          "capabilityProfile": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/WorkerCapabilitiesDto"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "capacityRetry": {
             "anyOf": [
@@ -4261,18 +4241,6 @@
               }
             ],
             "title": "Compactions"
-          },
-          "completedWorkerTurns": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "concurrency": {
             "anyOf": [
@@ -5353,16 +5321,6 @@
             ],
             "title": "Tail"
           },
-          "terminalReason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "threadId": {
             "anyOf": [
               {
@@ -5373,28 +5331,6 @@
               }
             ],
             "title": "Threadid"
-          },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "tokenUsageAccounting": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "tokensUsed": {
             "anyOf": [
@@ -23577,21 +23513,6 @@
             "title": "Account Key",
             "type": "string"
           },
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "concurrency": {
             "default": 32,
             "maximum": 2048,
@@ -23615,21 +23536,6 @@
             ],
             "default": null,
             "title": "Daybreak Enabled"
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "effort": {
             "anyOf": [
@@ -23678,33 +23584,6 @@
             "minimum": 1,
             "title": "Maxagents",
             "type": "integer"
-          },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "model": {
             "anyOf": [
@@ -23777,21 +23656,6 @@
           "role": {
             "$ref": "#/components/schemas/AgentRole-Input",
             "default": "orchestrator"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "tokenBudget": {
             "anyOf": [
@@ -28676,6 +28540,31 @@
           "detail"
         ],
         "title": "IdentityAlert",
+        "type": "object"
+      },
+      "IdleCompactionSettings": {
+        "additionalProperties": false,
+        "properties": {
+          "minTokens": {
+            "default": 200000,
+            "maximum": 9007199254740991,
+            "minimum": 100000,
+            "type": "integer"
+          },
+          "mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "log",
+              "compact"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "minTokens"
+        ],
         "type": "object"
       },
       "ImageMountDiagnostics": {
@@ -35153,6 +35042,9 @@
             "title": "Childresultcoalesceseconds",
             "type": "integer"
           },
+          "idleCompaction": {
+            "$ref": "#/components/schemas/IdleCompactionSettings"
+          },
           "idleSessionUnloadMinutes": {
             "description": "Minutes a lead's or ordinary chat's idle Codex thread or Claude session stays loaded, and an account's provider process keeps running after its last thread unloaded. A managed worker without a running turn, pending input, or active monitor unloads at once. The next message resumes a thread. 0 never unloads.",
             "maximum": 1440,
@@ -38250,36 +38142,6 @@
             "title": "Action",
             "type": "string"
           },
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "effort": {
             "anyOf": [
               {
@@ -38330,33 +38192,6 @@
             "default": null,
             "title": "Isnew"
           },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "anyOf": [
               {
@@ -38391,21 +38226,6 @@
             ],
             "title": "Role",
             "type": "string"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "title": "ProfileBody",
@@ -38489,21 +38309,6 @@
             "default": null,
             "title": "Syncentitiesafter"
           },
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "deleted": {
             "anyOf": [
               {
@@ -38515,21 +38320,6 @@
             ],
             "default": null,
             "title": "Deleted"
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "effort": {
             "anyOf": [
@@ -38575,33 +38365,6 @@
             "default": null,
             "title": "Instructions"
           },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "anyOf": [
               {
@@ -38641,21 +38404,6 @@
             ],
             "default": null,
             "title": "Role"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "title": "ProfileMutation",
@@ -38664,36 +38412,6 @@
       "ProfileRecord": {
         "additionalProperties": false,
         "properties": {
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "effort": {
             "anyOf": [
               {
@@ -38721,33 +38439,6 @@
             "title": "Instructions",
             "type": "string"
           },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "title": "Model",
             "type": "string"
@@ -38763,21 +38454,6 @@
             ],
             "title": "Role",
             "type": "string"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [
@@ -44942,6 +44618,48 @@
           }
         },
         "title": "RestartRecoveryRecordResponse",
+        "type": "object"
+      },
+      "RetainedWorktreesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "retainedWorktrees": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "cleanup": {
+                  "$ref": "#/components/schemas/WorkspaceCleanupSummaryDto"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "cleanup"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rootId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rootId",
+          "retainedWorktrees"
+        ],
         "type": "object"
       },
       "RetryAction": {
@@ -54159,89 +53877,6 @@
         "title": "TasksResource",
         "type": "object"
       },
-      "TeamBudgetSummary": {
-        "additionalProperties": false,
-        "properties": {
-          "incomplete": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "agentId": {
-                  "type": "string"
-                },
-                "reason": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "agentId",
-                "reason"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "reached": {
-            "type": "boolean"
-          },
-          "retainedWorktrees": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "cleanup": {
-                  "$ref": "#/components/schemas/WorkspaceCleanupSummaryDto"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "name": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "id",
-                "cleanup"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "rootId": {
-            "type": "string"
-          },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "tokensUsed": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "rootId",
-          "tokenBudget",
-          "reached",
-          "incomplete"
-        ],
-        "type": "object"
-      },
       "TerminalClose": {
         "additionalProperties": false,
         "properties": {
@@ -56368,6 +56003,10 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "idleCompaction": {
+            "description": "The notice confirms a completed idle compaction of a Claude session.",
+            "type": "boolean"
           },
           "inputs": {
             "anyOf": [
@@ -62596,104 +62235,6 @@
         "title": "WorkViewRecordResponse",
         "type": "object"
       },
-      "WorkerCapabilitiesDto": {
-        "additionalProperties": false,
-        "properties": {
-          "allowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "disallowedTools": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "maxTurns": {
-            "anyOf": [
-              {
-                "maximum": 4294967295,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "mcpServers": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "^[A-Za-z0-9_.:/-]+$",
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "WorkerContinueRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "type": "string"
-          },
-          "request_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "request_id"
-        ],
-        "type": "object"
-      },
       "WorkerDefaults": {
         "additionalProperties": false,
         "properties": {
@@ -67214,127 +66755,6 @@
           }
         },
         "summary": "Account Transfer"
-      }
-    },
-    "/api/agents/continue": {
-      "post": {
-        "operationId": "continue_worker_api_agents_continue_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WorkerContinueRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/studio_api__work__models__MessageReceipt"
-                }
-              }
-            },
-            "description": "Successful Response",
-            "headers": {
-              "Access-Control-Allow-Origin": {
-                "$ref": "#/components/headers/AccessControlAllowOrigin"
-              },
-              "Access-Control-Expose-Headers": {
-                "$ref": "#/components/headers/AccessControlExposeHeaders"
-              },
-              "Cache-Control": {
-                "$ref": "#/components/headers/CacheControl"
-              },
-              "Content-Encoding": {
-                "$ref": "#/components/headers/ContentEncoding"
-              },
-              "Content-Length": {
-                "$ref": "#/components/headers/ContentLength"
-              },
-              "Content-Security-Policy": {
-                "$ref": "#/components/headers/ContentSecurityPolicy"
-              },
-              "Content-Type": {
-                "$ref": "#/components/headers/ContentType"
-              },
-              "Referrer-Policy": {
-                "$ref": "#/components/headers/ReferrerPolicy"
-              },
-              "Server-Timing": {
-                "$ref": "#/components/headers/ServerTiming"
-              },
-              "Vary": {
-                "$ref": "#/components/headers/Vary"
-              },
-              "X-Content-Type-Options": {
-                "$ref": "#/components/headers/XContentTypeOptions"
-              },
-              "X-Studio-API-Schema": {
-                "$ref": "#/components/headers/StudioApiSchema"
-              },
-              "X-Studio-Server": {
-                "$ref": "#/components/headers/StudioServer"
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ApiError400",
-            "description": "Bad Request"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "408": {
-            "$ref": "#/components/responses/ApiError408",
-            "description": "Request Timeout"
-          },
-          "409": {
-            "$ref": "#/components/responses/ApiError409",
-            "description": "Conflict"
-          },
-          "410": {
-            "$ref": "#/components/responses/ApiError410",
-            "description": "Gone"
-          },
-          "413": {
-            "$ref": "#/components/responses/ApiError413",
-            "description": "Content Too Large"
-          },
-          "415": {
-            "$ref": "#/components/responses/ApiError415",
-            "description": "Unsupported Media Type"
-          },
-          "426": {
-            "$ref": "#/components/responses/ApiError426",
-            "description": "Upgrade Required"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "502": {
-            "$ref": "#/components/responses/ApiError502",
-            "description": "Bad Gateway"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "Post Message"
       }
     },
     "/api/agents/finder-view": {
@@ -78054,6 +77474,102 @@
         "summary": "Rename"
       }
     },
+    "/api/retained-worktrees": {
+      "get": {
+        "operationId": "retained_worktrees_api_retained_worktrees_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Agent",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetainedWorktreesResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Retained Worktrees"
+      }
+    },
     "/api/room/delete": {
       "post": {
         "operationId": "delete_room_api_room_delete_post",
@@ -80298,102 +79814,6 @@
           }
         },
         "summary": "Read bounded task output within its owner workspace"
-      }
-    },
-    "/api/team-budget": {
-      "get": {
-        "operationId": "team_budget_api_team_budget_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "agent",
-            "required": true,
-            "schema": {
-              "maxLength": 200,
-              "minLength": 1,
-              "title": "Agent",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TeamBudgetSummary"
-                }
-              }
-            },
-            "description": "Successful Response",
-            "headers": {
-              "Access-Control-Allow-Origin": {
-                "$ref": "#/components/headers/AccessControlAllowOrigin"
-              },
-              "Access-Control-Expose-Headers": {
-                "$ref": "#/components/headers/AccessControlExposeHeaders"
-              },
-              "Cache-Control": {
-                "$ref": "#/components/headers/CacheControl"
-              },
-              "Content-Encoding": {
-                "$ref": "#/components/headers/ContentEncoding"
-              },
-              "Content-Length": {
-                "$ref": "#/components/headers/ContentLength"
-              },
-              "Content-Security-Policy": {
-                "$ref": "#/components/headers/ContentSecurityPolicy"
-              },
-              "Content-Type": {
-                "$ref": "#/components/headers/ContentType"
-              },
-              "Referrer-Policy": {
-                "$ref": "#/components/headers/ReferrerPolicy"
-              },
-              "Server-Timing": {
-                "$ref": "#/components/headers/ServerTiming"
-              },
-              "Vary": {
-                "$ref": "#/components/headers/Vary"
-              },
-              "X-Content-Type-Options": {
-                "$ref": "#/components/headers/XContentTypeOptions"
-              },
-              "X-Studio-API-Schema": {
-                "$ref": "#/components/headers/StudioApiSchema"
-              },
-              "X-Studio-Server": {
-                "$ref": "#/components/headers/StudioServer"
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ApiError400",
-            "description": "Bad Request"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "Processes"
       }
     },
     "/api/terminals": {
