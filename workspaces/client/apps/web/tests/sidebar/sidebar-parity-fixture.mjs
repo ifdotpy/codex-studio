@@ -231,6 +231,11 @@ export async function sidebarParityFixture(
         return true;
       };
       const workspaceId = workspaceIds[owner];
+      if (path === "/api/retained-worktrees")
+        return reply({
+          rootId: url.searchParams.get("agent"),
+          retainedWorktrees: [],
+        });
       if (path === "/api/sync/identity")
         return reply(syncIdentityFixture(workspaceId));
       if (path === "/api/sync/preferences") {
