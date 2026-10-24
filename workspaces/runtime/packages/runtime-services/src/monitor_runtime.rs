@@ -1004,6 +1004,38 @@ pub async fn reconcile_unknown(
         .await
 }
 
+/// Settle an unanswered retained command in one transaction. No intermediate
+/// recovery is visible to a monitor tick. A result that already committed wins.
+pub async fn settle_unanswered(
+    store: &RuntimeStore,
+    id: &str,
+    operation: &Operation,
+    reason: &str,
+    now: f64,
+) -> Result<(), MonitorError> {
+    let id = id.to_owned();
+    let operation = operation.clone();
+    let reason: String = reason.chars().take(12000).collect();
+    store
+        .transaction_with(move |tx| {
+            let (before, actor) = snapshot(tx, &id)?;
+            if before.operation() != Some(&operation) {
+                return Err(MonitorError::Refused("Monitor operation identity changed"));
+            }
+            if !before.active() {
+                return Ok(());
+            }
+            let recovery = policy::restart_recovery(&before, now)?;
+            let recovering = MonitorSnapshot::checked(
+                recovery.record,
+                serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?,
+            )?;
+            let loss = policy::restart_lost(&recovering, &reason, now)?;
+            apply(tx, &before, &actor, &loss, now)
+        })
+        .await
+}
+
 /// Deadline losses that may still be in their late-answer window at `now`.
 /// The policy (`awaits_late_answer`) decides; this query only narrows the rows.
 pub async fn late_answer_ids(store: &RuntimeStore, now: f64) -> Result<Vec<String>, MonitorError> {
@@ -1120,6 +1152,15 @@ pub async fn reattach(
     store
         .transaction_with(move |tx| {
             let (snapshot, actor) = snapshot(tx, &id)?;
+            // A provider read runs outside this transaction. Its exact proof
+            // can arrive after an exit or another reattach already committed.
+            if !snapshot.recovering()
+                && snapshot.operation() == Some(&proof.operation)
+                && proof.operation_id == format!("monitor:{}", snapshot.id())
+                && !proof.current_connection.is_empty()
+            {
+                return Ok(policy::ReattachDisposition::Superseded);
+            }
             let decision = policy::reattach(&snapshot, &proof)?;
             apply(tx, &snapshot, &actor, &decision, now)?;
             Ok(if decision.effects.contains(&Effect::Terminate) {

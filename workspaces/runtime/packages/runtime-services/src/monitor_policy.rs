@@ -1046,6 +1046,8 @@ pub fn reattach(
 pub enum ReattachDisposition {
     AwaitExit,
     Cancel,
+    /// Another transaction settled or reattached this exact command.
+    Superseded,
 }
 
 /// Build the same initial row as Python. Identity, actor and time are server-owned;

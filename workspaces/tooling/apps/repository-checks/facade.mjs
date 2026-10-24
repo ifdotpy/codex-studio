@@ -1742,6 +1742,8 @@ function fastTierCommands(root) {
               "test(/^analytics_history_checkpoint::terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices$/)",
               "test(/^analytics_history_schedule::tests::/)",
               "test(/^monitor_start_preparation::/)",
+              "test(/^monitor_deadline_answer::/)",
+              "test(monitor_port::tests::an_unanswered_deadline_is_lost_until_a_late_answer_completes_it_once)",
               "test(monitor_port::tests::startup_resources_refuse_replacement)",
               "test(model_catalog::tests::)",
               "test(/^monitor_wake_guarantees::/)",

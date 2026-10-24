@@ -806,6 +806,10 @@ impl MonitorRuntime {
                     monitor_runtime::snapshot(tx, &id_for_read)
                 })
                 .await?;
+            if !snapshot.recovering() {
+                scan.monitor.clone_from(id);
+                continue;
+            }
             match self.port.reattach(&snapshot).await? {
                 ReattachOutcome::Running(proof) => {
                     match monitor_runtime::reattach(&self.store, id, &proof, now).await? {
@@ -826,6 +830,10 @@ impl MonitorRuntime {
                             continue;
                         }
                         crate::monitor_policy::ReattachDisposition::AwaitExit => (),
+                        crate::monitor_policy::ReattachDisposition::Superseded => {
+                            scan.monitor.clone_from(id);
+                            continue;
+                        }
                     }
                     if let Err(error) = self.port.await_exit(&snapshot) {
                         monitor_runtime::reconcile_unknown(&self.store, id, now).await?;

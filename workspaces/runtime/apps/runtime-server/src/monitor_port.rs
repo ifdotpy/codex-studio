@@ -314,18 +314,14 @@ impl RetainedMonitorPort {
                 studio_runtime_services::diagnostics::log_stderr(format_args!(
                     "monitor {id} retained exit wait ended: {error}"
                 ));
-                let (store, monitor_id) = (port.store.as_ref(), id.as_str());
+                let (store, monitor_id, operation) = (port.store.as_ref(), id.as_str(), &operation);
                 if let Err(error) = studio_runtime_services::monitor_driver::retry_terminal_write(
                     port.as_ref(),
                     "monitor retained exit loss",
                     || async move {
                         let now = studio_runtime_services::event_write::unix_time()?;
-                        studio_runtime_services::monitor_runtime::reconcile_unknown(
-                            store, monitor_id, now,
-                        )
-                        .await?;
-                        studio_runtime_services::monitor_runtime::settle_reattach(
-                            store, monitor_id, reason, now,
+                        studio_runtime_services::monitor_runtime::settle_unanswered(
+                            store, monitor_id, operation, reason, now,
                         )
                         .await
                     },

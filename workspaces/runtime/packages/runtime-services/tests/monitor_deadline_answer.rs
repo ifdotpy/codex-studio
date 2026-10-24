@@ -61,3 +61,128 @@ fn other_losses_and_rule_checks_stay_lost_after_an_answer() {
         assert_eq!(after, record, "{proof} rule={rule}");
     }
 }
+
+/// Reproduce the exact transaction order of a deadline waiter racing a tick.
+/// The tick observes a recovery and obtains its proof before the waiter commits
+/// the loss. The proof must not make the next tick fail or reopen the command.
+#[tokio::test]
+async fn a_reattach_proof_observed_before_deadline_loss_is_superseded() {
+    use studio_runtime_services::monitor_runtime;
+    use studio_runtime_store::MonitorsRepository;
+    let root = fixtures::tempdir();
+    let store = fixtures::store(root.path(), "stale-proof").await;
+    let case = fixtures::corpus(root.path()).remove(0);
+    fixtures::seed(&store, &case).await;
+    let id = case["before"]["id"].as_str().expect("id");
+    let operation: Operation =
+        serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
+    monitor_runtime::reconcile_unknown(&store, id, 2900.0)
+        .await
+        .expect("recovery");
+    let mut proof = monitor_policy::ReattachProof {
+        operation,
+        operation_id: format!("monitor:{id}"),
+        native_id: None,
+        current_connection: "current".into(),
+    };
+    monitor_runtime::settle_reattach(&store, id, monitor_policy::DEADLINE_PASSED, 3000.0)
+        .await
+        .expect("deadline loss");
+    let read = || {
+        MonitorsRepository::get(&store.test_reader().expect("reader"), id)
+            .expect("read")
+            .expect("monitor")
+            .value()
+            .clone()
+    };
+    let before = read();
+    let result = monitor_runtime::reattach(&store, id, &proof, 3001.0).await;
+    assert!(
+        result.is_ok(),
+        "a superseded exact proof must not fail a tick: {:?}",
+        result.err()
+    );
+    assert_eq!(
+        read(),
+        before,
+        "the stale proof must not reopen the command"
+    );
+    assert_eq!(
+        fixtures::events(&store).as_array().expect("events").len(),
+        1
+    );
+    proof.operation_id = "monitor:another-command".into();
+    assert!(
+        monitor_runtime::reattach(&store, id, &proof, 3002.0)
+            .await
+            .is_err(),
+        "a superseded proof still needs its exact command identity"
+    );
+}
+
+#[tokio::test]
+async fn an_unanswered_command_commits_only_its_loss_and_replays_without_changes() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use studio_runtime_services::monitor_runtime;
+    use studio_runtime_store::{MonitorsRepository, ObservedTable};
+    let root = fixtures::tempdir();
+    let store = fixtures::store(root.path(), "atomic-loss").await;
+    let case = fixtures::corpus(root.path()).remove(0);
+    fixtures::seed(&store, &case).await;
+    let id = case["before"]["id"].as_str().expect("id");
+    let operation: Operation =
+        serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
+    let commits = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&commits);
+    store.add_table_change_observer(ObservedTable::Monitors, move || {
+        observed.fetch_add(1, Ordering::SeqCst);
+    });
+    for now in [3000.0, 3001.0] {
+        monitor_runtime::settle_unanswered(
+            &store,
+            id,
+            &operation,
+            monitor_policy::DEADLINE_PASSED,
+            now,
+        )
+        .await
+        .expect("atomic deadline loss");
+        let record = MonitorsRepository::get(&store.test_reader().expect("reader"), id)
+            .expect("read")
+            .expect("monitor")
+            .value()
+            .clone();
+        assert_eq!(record["status"], "lost");
+        assert_eq!(record["finished"], 3000.0);
+        assert_eq!(
+            record["reattachRecovery"]["proof"],
+            monitor_policy::DEADLINE_PASSED
+        );
+        assert_eq!(
+            commits.load(Ordering::SeqCst),
+            1,
+            "one terminal commit, no intermediate recovery"
+        );
+        assert_eq!(
+            fixtures::events(&store).as_array().expect("events").len(),
+            1
+        );
+    }
+    let mut wrong_operation = operation.clone();
+    wrong_operation.connection_id = "different-command".into();
+    assert!(
+        monitor_runtime::settle_unanswered(
+            &store,
+            id,
+            &wrong_operation,
+            monitor_policy::DEADLINE_PASSED,
+            3002.0
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(commits.load(Ordering::SeqCst), 1);
+}
