@@ -11,7 +11,6 @@ mod analytics_history_checkpoint;
 mod browser_host_flow;
 mod budget_corpus;
 mod catalog_reads_corpus;
-mod change_notifications;
 mod claude_accounts;
 mod claude_bridge_org;
 mod claude_controls_actor;
