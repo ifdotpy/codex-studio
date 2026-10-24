@@ -26,6 +26,14 @@ use tokio::sync::Notify;
 
 const COMPOSED_DELETE_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+async fn fixture_store(
+    root: Option<&Path>,
+) -> Result<RuntimeStore, studio_runtime_store::StoreError> {
+    let store = RuntimeStore::open(root).await?;
+    studio_runtime_services::entity_publication::install(&store);
+    Ok(store)
+}
+
 fn template(root: &Path) {
     let schema: Value = serde_json::from_str(include_str!(
         "../../runtime-store/tests/fixtures/live-state-schema.json"
@@ -200,7 +208,7 @@ async fn composed_stop_dispatches_active_voice_session_after_commit() {
         .expect("Python stop case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
@@ -289,7 +297,7 @@ async fn production_stop_cancels_usage_and_capacity_continuations_in_store() {
 
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(&store, records).await;
     store
         .transaction(|tx| {
@@ -385,7 +393,7 @@ async fn committed_delete_succeeds_when_post_commit_delivery_fails() {
         .expect("delete case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("records"),
@@ -433,7 +441,7 @@ async fn committed_delete_drains_its_intent_despite_unrelated_cleanup_failure() 
         "workspaceCleanupIntent":studio_runtime_services::workspace_cleanup_runtime::queued_cleanup_intent("a-broken-cleanup", 1, studio_runtime_services::workspace_cleanup_runtime::CleanupAction::Archive)
     }));
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(&store, records).await;
     let ports = ProductionLifecyclePorts::new(
         store.clone(),
@@ -496,7 +504,7 @@ async fn production_delete_releases_deleted_worker_work_item() {
 
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(&store, records).await;
     let ports = ProductionLifecyclePorts::new(
         Arc::clone(&store),
@@ -804,7 +812,7 @@ async fn clone_store(base: &Path, root: &Path) -> RuntimeStore {
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
         fs::copy(base.join(name), root.join(name)).expect("clone schema");
     }
-    RuntimeStore::open(Some(root))
+    fixture_store(Some(root))
         .await
         .expect("open cloned fixture")
 }
@@ -844,6 +852,9 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
         .expect("sync projection rows")
         .iter()
         .filter(|row| row[0] != "workspace")
+        // The frozen Python oracle predates receipt entities. Check their
+        // source status separately below while preserving its legacy witness.
+        .filter(|row| row[0] != "messageReceipt")
         .filter(|row| {
             row[5] == 0
                 || expected_sync
@@ -863,6 +874,33 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
     });
     with_delete_settlement_sync(&mut expected_sync, &case["expected"]["records"]["tables"]);
     assert_eq!(actual_sync, expected_sync, "{} sync_entities", case["name"]);
+    for row in saved["sync"].as_array().expect("sync rows") {
+        if row[0] != "messageReceipt" || row[5] != 0 {
+            continue;
+        }
+        let payload: Value =
+            serde_json::from_str(row[4].as_str().expect("receipt payload")).expect("receipt JSON");
+        let event = saved["tables"]["runtime_events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .find(|event| event["id"] == row[1])
+            .expect("receipt source event");
+        let agent = saved["tables"]["runtime_agents"]
+            .as_array()
+            .expect("agents")
+            .iter()
+            .find(|agent| agent["id"] == event["agent"]);
+        if agent.is_some_and(|agent| {
+            !studio_runtime_services::event_write::truthy(agent.get("deletedAt"))
+        }) {
+            assert_eq!(
+                payload["value"]["status"], event["status"],
+                "receipt status for {}",
+                row[1]
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -920,9 +958,7 @@ async fn python_stop_corpus_complete_records_and_exact_descendants() {
         drop(db);
         assert_records(&store, &case);
         drop(store);
-        let store = RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("restart");
+        let store = fixture_store(Some(root.path())).await.expect("restart");
         assert_records(&store, &case);
     }
 }
@@ -935,7 +971,7 @@ async fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
         .expect("unknown corpus");
     let base = tempfile::tempdir().expect("template");
     template(base.path());
-    let store = RuntimeStore::open(Some(base.path())).await.expect("open");
+    let store = fixture_store(Some(base.path())).await.expect("open");
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
@@ -972,11 +1008,7 @@ async fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
             );
             assert_eq!(state(&store), before, "{boundary} {table}");
             drop(store);
-            let store = Arc::new(
-                RuntimeStore::open(Some(root.path()))
-                    .await
-                    .expect("restart"),
-            );
+            let store = Arc::new(fixture_store(Some(root.path())).await.expect("restart"));
             assert_eq!(state(&store), before);
             store
                 .transaction(|tx| {
@@ -1086,7 +1118,7 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
         for boundary in ["BEFORE", "AFTER"] {
             let root = tempfile::tempdir().expect("root");
             template(root.path());
-            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+            let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
             seed(
                 &store,
                 serde_json::from_value(case["records"].clone()).expect("Python rows"),
@@ -1212,7 +1244,7 @@ async fn production_child_notification_matches_python_corpus() {
         .expect("Python child-stop corpus case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
@@ -1306,7 +1338,7 @@ async fn production_restart_scan_settles_durable_deleted_agent_state() {
 
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(&store, records).await;
 
     // Constructing the production bundle represents process restart. The
@@ -1464,7 +1496,7 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         .expect("Python delete case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
@@ -1769,7 +1801,7 @@ async fn production_interrupt_requires_in_flight_active_turn() {
 
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(&store, records).await;
     let ports = ProductionLifecyclePorts::new(
         store.clone(),
@@ -1835,7 +1867,7 @@ async fn production_unknown_interrupt_is_never_resent_on_repeated_stop() {
         .expect("Python running stop case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("Python rows"),
@@ -1913,7 +1945,7 @@ async fn deletion_requires_release_only_for_releasable_deleted_owner_work() {
     case["records"]["tables"]["runtime_work"][0]["status"] = json!("ready");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("rows"),
@@ -1958,7 +1990,7 @@ async fn effect_adapter_failure_rolls_back_its_own_writes() {
         .expect("case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("rows"),
@@ -1972,9 +2004,7 @@ async fn effect_adapter_failure_rolls_back_its_own_writes() {
             .is_err()
     );
     drop(store);
-    let store = RuntimeStore::open(Some(root.path()))
-        .await
-        .expect("restart");
+    let store = fixture_store(Some(root.path())).await.expect("restart");
     assert_eq!(state(&store), before);
 }
 
@@ -2004,7 +2034,7 @@ async fn successful_adapter_cannot_resurrect_stopped_agent() {
         .expect("case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("rows"),
@@ -2025,9 +2055,7 @@ async fn successful_adapter_cannot_resurrect_stopped_agent() {
         ))
     ));
     drop(store);
-    let store = RuntimeStore::open(Some(root.path()))
-        .await
-        .expect("restart");
+    let store = fixture_store(Some(root.path())).await.expect("restart");
     assert_eq!(state(&store), before);
 }
 
@@ -2058,7 +2086,7 @@ async fn successful_adapter_cannot_replace_attempt_or_provider_identity() {
     for field in ["startAttempt", "threadId", "accountKey", "provider"] {
         let root = tempfile::tempdir().expect("root");
         template(root.path());
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+        let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
         seed(
             &store,
             serde_json::from_value(case["records"].clone()).expect("rows"),
@@ -2105,7 +2133,7 @@ async fn lost_wake_preserves_committed_stop_for_restart() {
         .expect("case");
     let root = tempfile::tempdir().expect("root");
     template(root.path());
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    let store = Arc::new(fixture_store(Some(root.path())).await.expect("open"));
     seed(
         &store,
         serde_json::from_value(case["records"].clone()).expect("rows"),
@@ -2116,8 +2144,6 @@ async fn lost_wake_preserves_committed_stop_for_restart() {
         .await
         .expect("a lost wake preserves the committed stop result");
     drop(store);
-    let store = RuntimeStore::open(Some(root.path()))
-        .await
-        .expect("restart");
+    let store = fixture_store(Some(root.path())).await.expect("restart");
     assert_records(&store, &case);
 }

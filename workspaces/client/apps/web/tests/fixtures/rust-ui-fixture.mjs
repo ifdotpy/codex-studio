@@ -313,15 +313,31 @@ const WAKING_EVENT_KINDS_WITH_CHATTER = ["user"];
 const ENTITY_PAGE_SIZE = 500;
 
 /** Entities of one collection in the snapshot the renderer also reads. */
-async function readEntities(origin, collection) {
+export async function readEntities(origin, collection) {
+  const deadline = Date.now() + IDLE_WAIT_MS;
   const values = [];
   let after = 0;
   for (;;) {
-    const page = await (
-      await fetch(
-        `${origin}/api/sync/pull?scope=state:entities:v1&after=${after}&limit=${ENTITY_PAGE_SIZE}&fresh=1`,
-      )
-    ).json();
+    const response = await fetch(
+      `${origin}/api/sync/pull?scope=state:entities:v1&after=${after}&limit=${ENTITY_PAGE_SIZE}&fresh=1`,
+    );
+    if (response.status === 409 && Date.now() < deadline) {
+      await response.body?.cancel();
+      await new Promise((resolveWait) => setTimeout(resolveWait, IDLE_POLL_MS));
+      continue;
+    }
+    if (!response.ok)
+      throw new Error(
+        `Fixture entity read failed (${response.status}): ${await response.text()}`,
+      );
+    if (Date.now() >= deadline)
+      throw new Error("Fixture entity pagination did not settle");
+    const page = await response.json();
+    if (page.reset === true) {
+      values.length = 0;
+      after = 0;
+      continue;
+    }
     for (const document of page.documents) {
       if (document.collection === collection && document.op === "upsert")
         values.push(document.value);

@@ -190,13 +190,10 @@ test("Background controls", async ({ context }, testInfo) => {
       };
     });
     const errors = [];
-    const taskSummaryReads = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.route("**/api/**", async (route) => {
       const req = route.request(),
         path = new URL(req.url()).pathname;
-      if (req.method() === "GET" && path === "/api/task")
-        taskSummaryReads.push(req.url());
       let body = {};
       if (req.method() === "POST") {
         body = req.postDataJSON();
@@ -597,11 +594,6 @@ test("Background controls", async ({ context }, testInfo) => {
     assert.equal(receiptLookupCount, 2);
     assert.equal(selectedStopDispatches, 1);
     await drawer.locator('[data-task="native-task"]').click();
-    assert.deepEqual(
-      taskSummaryReads,
-      [],
-      "opening task summaries performs zero task GETs",
-    );
     await drawer
       .getByRole("button", { name: "Send via agent", exact: true })
       .waitFor();
@@ -619,12 +611,6 @@ test("Background controls", async ({ context }, testInfo) => {
     assert.equal(writes.at(-1).path, "/api/processes/action");
     assert.equal(writes.at(-1).body.action, "stop_selected");
     assert.equal(writes.at(-1).body.process.key, "native-key");
-    assert.deepEqual(
-      taskSummaryReads,
-      [],
-      "task summary idle GET count is zero",
-    );
-    console.log(JSON.stringify({ taskSummaryGets: taskSummaryReads.length }));
     await page.screenshot({
       path: testInfo.outputPath("native-command-controls.png"),
     });

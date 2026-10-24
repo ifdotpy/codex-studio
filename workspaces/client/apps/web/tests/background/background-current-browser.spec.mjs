@@ -148,6 +148,7 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
       agent,
       kind: "command",
       command: "command " + id,
+      tail: "Summary output " + id,
       created: Date.now() / 1000 - 30,
       processId: "123",
     });
@@ -262,6 +263,21 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
     );
     await page.locator('[data-task="active"]').click();
     await page.getByRole("region", { name: "Command controls" }).waitFor();
+    await page
+      .locator(".task-output")
+      .getByText("Summary output active", { exact: true })
+      .waitFor();
+    activeCommand.tail = "Updated summary output";
+    await render();
+    await page
+      .locator(".task-output")
+      .getByText("Updated summary output", { exact: true })
+      .waitFor();
+    assert.equal(
+      calls.filter((call) => call.path === "/api/task").length,
+      0,
+      "streamed task summaries issue zero idle GETs",
+    );
     data.runtime.tasks.find((task) => task.id === "active").status =
       "completed";
     await render();
@@ -406,6 +422,8 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
       1,
       "Visibility changes cannot replay or cancel work",
     );
+    assert.equal(calls.filter((call) => call.path === "/api/task").length, 0);
+    console.log(JSON.stringify({ taskSummaryIdleGets: 0 }));
     assert.deepEqual(errors, []);
     console.log(
       "PASS: current snapshot only, completion hides details, approval acknowledgment releases controls before refresh, filters, chat scope, 320/1920 viewports, no history reads or duplicate writes",

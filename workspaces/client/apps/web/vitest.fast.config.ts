@@ -40,6 +40,7 @@ export default {
       "src/pythonBackendRemoval.test.mjs",
       "src/sync/draftPayload.test.mjs",
       "src/scrollFollowFixture.test.mjs",
+      "src/receiptSummaryFixture.test.ts",
       "src/transcriptPageBounds.test.ts",
       "src/components/message-delivery/messageDelivery.test.mjs",
       "src/components/claudeRepairModel.test.ts",
