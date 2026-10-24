@@ -1227,13 +1227,9 @@ mod tests {
                     .as_str()
                     .is_some_and(|value| !value.is_empty())
             );
-            assert!(!result.as_object().unwrap().contains_key("_syncEntities"));
-            assert!(
-                !result
-                    .as_object()
-                    .unwrap()
-                    .contains_key("_syncEntitiesAfter")
-            );
+            let result_object = result.as_object().expect("mutation result is an object");
+            assert!(!result_object.contains_key("_syncEntities"));
+            assert!(!result_object.contains_key("_syncEntitiesAfter"));
             bodies.push(bytes);
         }
         assert_eq!(bodies[0], bodies[1]);
