@@ -3925,6 +3925,41 @@ mod tests {
         json!({"records":[{"agentId":"agent","rootId":"agent","turnId":"turn","active":true,"estimated":false,"rate":rate as f64,"outputTokens":rate as f64}]})
     }
 
+    #[tokio::test]
+    async fn voice_stream_delivers_records_and_session_without_a_followup_read() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('voice-chat',?1)",
+                [json!({"id":"voice-chat","rootId":"voice-chat","epoch":0,"status":"idle","isLead":true}).to_string()])?;
+            tx.execute("INSERT INTO voice_sessions(id,agent,created,state) VALUES('session','voice-chat',1,'ready')", [])?;
+            tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('first','voice-chat','session','user','hello','','','{}',1)", [])?;
+            Ok(())
+        }).await.expect("voice fixture");
+        let http = HttpState::new("token".into(), "workspace".into(), root.path().display().to_string(), 4321, None, Some(store.clone()), None);
+        let mut state = test_stream(&http.sync_changes, &http.token_rates, http.resource_notifications.clone(), vec![json!({"kind":"voice","agentId":"voice-chat"})]);
+        state.http_state = Some(http.clone());
+        state.store = Some(store.clone());
+        http.sync_changes.notify_one();
+        let (frame, state) = next_frame(state).await.expect("voice event");
+        let event = event_document(frame).await;
+        let batch = &event["resourceVersions"][0]["voiceRecords"];
+        assert_eq!(batch["records"][0]["id"], "first");
+        assert_eq!(batch["session"]["session_id"], "session");
+        let cursor = batch["cursor"].as_i64().expect("cursor");
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('second','voice-chat','session','assistant','answer','','','{}',2)", [])?;
+            Ok(())
+        }).await.expect("voice update");
+        http.sync_changes.notify_one();
+        let (frame, _) = next_frame(state).await.expect("voice delta");
+        let event = event_document(frame).await;
+        let batch = &event["resourceVersions"][0]["voiceRecords"];
+        assert_eq!(batch["after"], cursor);
+        assert_eq!(batch["records"].as_array().expect("records").len(), 1);
+        assert_eq!(batch["records"][0]["id"], "second");
+    }
+
     fn test_stream(
         hub: &Arc<ChangeNotificationHub>,
         tokens: &TokenRateHub,
