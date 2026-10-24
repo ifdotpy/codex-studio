@@ -422,7 +422,7 @@ Source and Save a copy retain the complete file within the file API limit.
 6. The existing transaction saves effects and replay receipts together.
 
 `/compact`, `/review`, `/stop`, and `/stop-team` are local commands.
-Team capacity and token budgets remain available through `codex-control configure`.
+Team capacity is a chat setting in the Studio window (`POST /api/configure`).
 One lead can delegate a batch of work to dozens of agents.
 The browser can close while the canvas server continues the work.
 
@@ -774,10 +774,12 @@ and all-agent scopes, a period filter, call details, and JSON export.
 
 ## Capacity and work ownership
 
-Each team defaults to 32 concurrent agents and a maximum of 64 total agents,
-including its lead. `codex-control configure` supports 1 to 64 concurrent agents and 1 to 256
-agents in the team. `CODEX_CANVAS_CONCURRENCY` sets the server-wide cap, default 32,
-maximum 64. Lead turns have priority when a slot becomes free.
+Each team defaults to `DEFAULT_SUBAGENT_CONCURRENCY` concurrent subagents and
+`DEFAULT_MAX_TEAM_AGENTS` agents in total, including its lead. The chat settings
+(`POST /api/configure`) change them within the bounds of
+[`agent_limits.rs`](../workspaces/runtime/packages/runtime-schema/src/agent_limits.rs).
+`CODEX_CANVAS_CONCURRENCY` sets the server-wide cap (default
+`DEFAULT_GLOBAL_CONCURRENCY`). Lead turns have priority when a slot becomes free.
 Lowering a limit does not interrupt existing turns.
 
 Chat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.
@@ -1177,27 +1179,14 @@ limit, then the least loaded one.
 
 ## Terminal control
 
-`codex-control` talks to the same canvas server. It does not create a second
-app-server process. Set `CODEX_CANVAS_URL` or pass `--url` for another local port.
-
-```bash
-codex-control models
-codex-control create 'Review the project and delegate independent checks' \
-  --cwd /absolute/project --name Lead --concurrency 32 --max-agents 64
-codex-control list
-codex-control send AGENT_ID 'Inspect the worker results and continue'
-codex-control monitor AGENT_ID 'your-command' --timeout-minutes 60
-codex-control transcript AGENT_ID
-codex-control stop LEAD_ID
-codex-control configure LEAD_ID --concurrency 12
-codex-control configure LEAD_ID --token-budget 2000000
-```
-
-Change concurrency separately from the stored-team and token limits. The command
-reads the current setting revision and prints its request ID and expected
-revision before saving. After an uncertain response, repeat the same target
-value with those exact `--request-id` and `--expected-mode-revision` values;
-do not run a fresh save to discover whether the previous one applied.
+No terminal command controls agents. The Python `codex-control` command was removed
+with the Python backend ([CLI usage](cli.md)). Use the Studio window. A script can use
+the same server's HTTP API, for example `POST /api/agents` to create a chat,
+`POST /api/messages` to send, `POST /api/configure` for team settings, and
+`POST /api/stop` to stop. A changed subagent concurrency carries the current setting
+revision and a request ID; after an uncertain response, repeat the same target value
+with the same request ID and expected revision, and do not save a fresh value to find
+out whether the earlier one applied.
 
 ## Verification
 
