@@ -2,6 +2,7 @@
 //! here; domain services publish changes without session or subscriber knowledge.
 
 use futures_util::future::BoxFuture;
+use studio_runtime_store::SyncDocumentsRepository;
 
 use crate::error::ApiError;
 use crate::generated::{ResourceRef, ResourceRevisionEntry, SubscriptionCursor};

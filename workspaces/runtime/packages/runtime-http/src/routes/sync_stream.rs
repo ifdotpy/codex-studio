@@ -1476,9 +1476,14 @@ fn resource_changes_event(
         .map(|(resource, revision)| {
             let state = matches!(resource, ResourceRef::StateResource(_));
             let drafts = matches!(resource, ResourceRef::DraftsResource(_));
+            let entity_changes = state.then(|| changes.take()).flatten();
+            let complete = entity_changes.is_some() && !view.entity_reset;
             ResourceRevisionEntry {
-                cursor: None,
-                reply_kind: None,
+                cursor: complete.then(|| SubscriptionCursor {
+                    workspace_id: workspace.into(),
+                    seq: sequence,
+                }),
+                reply_kind: complete.then_some(crate::generated::SubscriptionReplyKind::Delta),
                 discovery_snapshot: None,
                 voice_records: None,
                 revision: if state {
@@ -1489,7 +1494,7 @@ fn resource_changes_event(
                     *revision
                 },
                 draft_changes: drafts.then(|| draft_changes.take()).flatten().map(Some),
-                entity_changes: state.then(|| changes.take()).flatten().map(Some),
+                entity_changes: entity_changes.map(Some),
                 entity_sequence_reset: state.then_some(Some(view.entity_reset)),
                 entity_sequences: None,
                 transcript_changes: None,
@@ -4131,7 +4136,6 @@ mod tests {
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: Some(tokens.subscribe()),
             last_token_rates: None,
-            since: BTreeMap::new(),
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -4181,7 +4185,6 @@ mod tests {
             notifications: notifications.clone(),
             token_rates: Some(token_hub.subscribe()),
             last_token_rates: None,
-            since: BTreeMap::new(),
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -4469,7 +4472,6 @@ mod tests {
             notifications,
             token_rates: Some(tokens.subscribe()),
             last_token_rates: None,
-            since: BTreeMap::new(),
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -4688,7 +4690,6 @@ mod tests {
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: Some(TokenRateHub::new().subscribe()),
             last_token_rates: None,
-            since: BTreeMap::new(),
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,

@@ -594,6 +594,8 @@ export function createSyncClient(options: SyncClientOptions) {
         selector[scope.agentField] &&
         entity.value &&
         (entity.value as { agent?: string }).agent !==
+          selector[scope.agentField] &&
+        (entity.value as { rootId?: string }).rootId !==
           selector[scope.agentField]
       )
         return false;
@@ -661,7 +663,13 @@ export function createSyncClient(options: SyncClientOptions) {
   ) {
     // Older browsers keep the existing pull path. Tab-local serialization cannot
     // protect a shared projection from another tab's reset.
-    if (!canSerializeEntityProjectionWrites()) return;
+    if (!canSerializeEntityProjectionWrites()) {
+      if (event.resourceVersions.some((entry) => entry.cursor))
+        throw new Error(
+          "Subscription cursor persistence requires the projection write lock",
+        );
+      return;
+    }
     const { db, workspaceId } = await syncDatabase();
     if (!isCurrent() || workspaceId !== event.workspaceId) return;
     for (const [index, entry] of event.resourceVersions.entries()) {

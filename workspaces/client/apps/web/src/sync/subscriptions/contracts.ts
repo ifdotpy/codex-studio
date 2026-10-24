@@ -15,10 +15,12 @@ export type SubscriptionOptions = { graceMs?: number };
 /** Retain interest after the final consumer leaves, in milliseconds. */
 export const DEFAULT_SUBSCRIPTION_GRACE_MS = 20_000;
 
-/** Stable diagnostic identity only. Never decode a reference from this key. */
+/** Stable identity for subscription ownership and durable cursor keys. Never decode it. */
 export function subscriptionKey(ref: ResourceRef): string {
   return JSON.stringify(
-    Object.entries(ref).sort(([left], [right]) => left.localeCompare(right)),
+    Object.entries(ref)
+      .filter(([, value]) => value !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right)),
   );
 }
 

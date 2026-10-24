@@ -9,7 +9,10 @@ const { resumeListeners, syncDatabase } = vi.hoisted(() => ({
   resumeListeners: new Set<() => void>(),
   syncDatabase: vi.fn(),
 }));
-vi.mock("./client", () => ({ syncDatabase }));
+vi.mock("./client", () => ({
+  syncDatabase,
+  readSubscriptionCursor: vi.fn(async () => undefined),
+}));
 vi.mock("../usage/tokenRate", async (original) => ({
   ...(await original<typeof import("../usage/tokenRate")>()),
   configureTokenRateStream: vi.fn(),

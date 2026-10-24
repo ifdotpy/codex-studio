@@ -1058,6 +1058,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         return [
           {
             revision: resourceVersion.revision,
+            ...(resourceVersion.cursor
+              ? { cursor: resourceVersion.cursor, replyKind: "delta" as const }
+              : {}),
             ...(resource.kind === "state" && resourceVersion.entitySequenceReset
               ? { entitySequenceReset: true }
               : resource.kind === "state" &&
@@ -1228,7 +1231,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const since = await Promise.all(
       resources.map(async (resource) => ({
         resource,
-        since: await options.sync.readSubscriptionCursor?.(resource),
+        since: await options.sync
+          .readSubscriptionCursor?.(resource)
+          .catch(() => undefined),
       })),
     );
     if (openingGeneration !== subscriptionGeneration || !coordinatorActive)
@@ -1484,7 +1489,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const add = await Promise.all(
       addedResources.map(async (resource) => ({
         resource,
-        since: await options.sync.readSubscriptionCursor?.(resource),
+        since: await options.sync
+          .readSubscriptionCursor?.(resource)
+          .catch(() => undefined),
       })),
     );
     if (source !== connected || subscriptionRequest !== controller) return;
