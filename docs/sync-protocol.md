@@ -96,10 +96,14 @@ A successful reconnection reconciles the current subscriptions once. It does
 not retry user commands, messages, credit charges or other writes.
 
 A transient failure while reconciling a notified resource may retry that same
-outstanding read a finite number of times, with backoff and jitter. These retries
-stop when the connection is unavailable or the consumer unsubscribes. Exhaustion
-leaves a visible error until an explicit retry or a new change/reconnection; it
-must not start a periodic refresh loop. Successful reads do not schedule retries.
+outstanding read within the shared [read-recovery attempt budget](../workspaces/client/apps/web/src/sync/readRetry.ts),
+with increasing backoff. The budget counts failed attempts, including the initial
+attempt, for both sync pulls and resource reads. Exhaustion reports a visible
+read-recovery error and leaves no retry timer. Only a newer resource version or
+unversioned notification, a transition back to a live stream, or an explicit user
+retry starts a fresh budget. Duplicate or older versions, repeated live status,
+and page resume do not replenish it. Retries pause while hidden or offline and
+stop when the consumer unsubscribes. Successful reads do not schedule retries.
 Draft storage bootstrap permits three delayed retries (1, 3 and 10 seconds) after
 its initial attempt, then pauses until explicit activity or resume. Pending-write
 recovery keeps its existing journal and operation identities.

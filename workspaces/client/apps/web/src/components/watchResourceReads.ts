@@ -3,7 +3,7 @@ import {
   watchResourceConnection as defaultWatchResourceConnection,
 } from "../sync/resourceEvents";
 import { onResume } from "../sync/resume";
-import { readRetryDelay, retryableReadError } from "../sync/readRetry";
+import { ReadRecoveryBudget, retryableReadError } from "../sync/readRetry";
 import type {
   ResourceRef,
   ResourceStreamState,
@@ -47,7 +47,9 @@ export function watchResourceReads(
   const lastSuccessfulVersions = new Map<string, ResourceVersion>();
   let readingTrigger: ReadTrigger | undefined;
   let scheduled = false;
+  let recovery = new ReadRecoveryBudget();
   let retryCount = 0;
+  const notifiedVersions = new Map<string, ResourceVersion>();
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
   const canRead = () =>
@@ -83,6 +85,7 @@ export function watchResourceReads(
       )
         return;
     }
+    if (recovery.exhaustedError) return;
     if (waitForBaseline && !baselineSeen && !fallbackReady) return;
     dirty = true;
     dirtyTrigger = trigger;
@@ -115,6 +118,7 @@ export function watchResourceReads(
             )
               continue;
             readingTrigger = currentTrigger;
+            const currentRecovery = recovery;
             try {
               await read(currentTrigger?.version);
               if (currentTrigger?.version)
@@ -125,13 +129,25 @@ export function watchResourceReads(
               retryCount = 0;
             } catch (error) {
               if (!active) break;
+              // A newer notification owns the next read and its fresh budget.
+              if (currentRecovery !== recovery) continue;
+              let reportedError = error;
+              let delay: number | undefined;
+              if (retryableReadError(error)) {
+                try {
+                  delay = recovery.nextDelay(error, retryCount++);
+                } catch (exhausted) {
+                  reportedError = exhausted;
+                }
+              }
               try {
-                failed(error);
+                failed(reportedError);
               } catch {
                 // The failure reporter cannot prevent recovery of the read.
               }
               if (!active) break;
-              if (retryableReadError(error)) {
+              if (currentRecovery !== recovery) continue;
+              if (delay !== undefined) {
                 dirty = true;
                 if (currentTrigger && !dirtyTrigger)
                   dirtyTrigger = currentTrigger;
@@ -139,10 +155,11 @@ export function watchResourceReads(
                   retryTimer = setTimeout(() => {
                     retryTimer = undefined;
                     refresh(dirtyTrigger?.version, dirtyTrigger?.resourceKey);
-                  }, readRetryDelay(retryCount++));
+                  }, delay);
                 }
                 break;
               }
+              if (recovery.exhaustedError) dirty = false;
             } finally {
               if (readingTrigger === currentTrigger) readingTrigger = undefined;
             }
@@ -173,27 +190,48 @@ export function watchResourceReads(
     const resourceKey = JSON.stringify(resource);
     return watchResourceChanges(
       resource,
-      (version) => refresh(version, resourceKey),
+      (version) => {
+        const previous = notifiedVersions.get(resourceKey);
+        if (
+          !version ||
+          !previous ||
+          version.epoch !== previous.epoch ||
+          version.revision > previous.revision
+        ) {
+          if (recovery.exhaustedError) retryCount = 0;
+          recovery = new ReadRecoveryBudget();
+          if (version) notifiedVersions.set(resourceKey, version);
+        }
+        refresh(version, resourceKey);
+      },
       { waitForBaseline },
     );
   });
   let fallbackStarted = false;
-  const stopConnection = waitForBaseline
-    ? watchResourceConnection((status, stream: ResourceStreamState) => {
-        if (
-          !baselineSeen &&
-          !fallbackStarted &&
-          status !== "schema-mismatch" &&
-          (stream === "stopped" ||
-            status === "degraded" ||
-            status === "offline")
-        ) {
-          fallbackStarted = true;
-          fallbackReady = true;
-          refresh();
-        }
-      })
-    : () => {};
+  let wasLive = false;
+  const stopConnection = watchResourceConnection(
+    (status, stream: ResourceStreamState) => {
+      const reconnected = status === "live" && !wasLive;
+      wasLive = status === "live";
+      if (reconnected && (dirty || recovery.exhaustedError)) {
+        recovery = new ReadRecoveryBudget();
+        retryCount = 0;
+        clearRetry();
+        refresh(dirtyTrigger?.version, dirtyTrigger?.resourceKey);
+      }
+      if (
+        waitForBaseline &&
+        !baselineSeen &&
+        !fallbackStarted &&
+        status !== "schema-mismatch" &&
+        (stream === "stopped" || status === "degraded" || status === "offline")
+      ) {
+        fallbackStarted = true;
+        fallbackReady = true;
+        refresh();
+      }
+    },
+  );
   const dispose = () => {
     active = false;
     dirty = false;
@@ -206,5 +244,12 @@ export function watchResourceReads(
       document.removeEventListener("visibilitychange", pause);
     for (const stop of stops) stop();
   };
-  return Object.assign(dispose, { refresh });
+  return Object.assign(dispose, {
+    refresh: () => {
+      recovery = new ReadRecoveryBudget();
+      retryCount = 0;
+      clearRetry();
+      refresh();
+    },
+  });
 }

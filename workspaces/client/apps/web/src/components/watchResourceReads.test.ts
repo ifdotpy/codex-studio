@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
+import { READ_RECOVERY_MAX_ATTEMPTS } from "../sync/readRetry";
 import type { ResourceRef, ResourceVersion } from "../sync/resourceEvents";
 
 const {
@@ -397,49 +398,55 @@ describe("watchResourceReads", () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(read).toHaveBeenCalledTimes(6);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
     stop();
   });
 
-  it.each(["new version", "reconnect", "user retry"])(
-    "exhausts persistent 503 reads and resets only on %s",
-    async (reset) => {
-      vi.useFakeTimers();
-      const read = vi.fn(async () => {
-        throw new ApiError("Unavailable", 503);
-      });
-      const failed = vi.fn();
-      const stop = watchResourceReads(output, read, failed);
-      const baseline = { epoch: "workspace", revision: 1 };
-      try {
-        notify(output, baseline);
-        await vi.advanceTimersByTimeAsync(120_000);
-        expect(read).toHaveBeenCalledTimes(6);
-        expect(failed).toHaveBeenLastCalledWith(
-          expect.objectContaining({ name: "ReadRecoveryExhaustedError" }),
-        );
-        expect(vi.getTimerCount()).toBe(0);
+  it.each([
+    "new version",
+    "new epoch",
+    "notification",
+    "reconnect",
+    "user retry",
+  ])("exhausts persistent 503 reads and resets only on %s", async (reset) => {
+    vi.useFakeTimers();
+    const read = vi.fn(async () => {
+      throw new ApiError("Unavailable", 503);
+    });
+    const failed = vi.fn();
+    const stop = watchResourceReads(output, read, failed);
+    const baseline = { epoch: "workspace", revision: 1 };
+    try {
+      notify(output, baseline);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(read).toHaveBeenCalledTimes(READ_RECOVERY_MAX_ATTEMPTS);
+      expect(failed).toHaveBeenLastCalledWith(
+        expect.objectContaining({ name: "ReadRecoveryExhaustedError" }),
+      );
+      expect(vi.getTimerCount()).toBe(0);
 
-        notify(output, baseline);
-        for (const resume of resumeListeners) resume();
-        await vi.advanceTimersByTimeAsync(120_000);
-        expect(read).toHaveBeenCalledTimes(6);
+      notify(output, baseline);
+      for (const resume of resumeListeners) resume();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(read).toHaveBeenCalledTimes(READ_RECOVERY_MAX_ATTEMPTS);
 
-        if (reset === "new version")
-          notify(output, { epoch: "workspace", revision: 2 });
-        else if (reset === "reconnect") {
-          for (const listener of connectionListeners)
-            listener("degraded", "connecting");
-          for (const listener of connectionListeners) listener("live", "open");
-        } else stop.refresh();
-        await vi.advanceTimersByTimeAsync(120_000);
-        expect(read).toHaveBeenCalledTimes(12);
-        expect(vi.getTimerCount()).toBe(0);
-      } finally {
-        stop();
-      }
-    },
-  );
+      if (reset === "new version")
+        notify(output, { epoch: "workspace", revision: 2 });
+      else if (reset === "new epoch")
+        notify(output, { ...baseline, epoch: "next-workspace" });
+      else if (reset === "notification") notify(output);
+      else if (reset === "reconnect") {
+        for (const listener of connectionListeners)
+          listener("degraded", "connecting");
+        for (const listener of connectionListeners) listener("live", "open");
+      } else stop.refresh();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(read).toHaveBeenCalledTimes(2 * READ_RECOVERY_MAX_ATTEMPTS);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stop();
+    }
+  });
 
   it("preserves the backoff during frequent resource changes", async () => {
     vi.useFakeTimers();
