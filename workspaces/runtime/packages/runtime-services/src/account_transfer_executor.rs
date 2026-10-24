@@ -1017,6 +1017,16 @@ impl TransferExecutor for AccountTransferExecutor {
                 studio_runtime_providers::ProviderKind::of_field(operation.get("targetProvider"))
                     .map_err(|_| TransferError::Refused("Invalid transfer provider"))?
                     .key();
+            if let Some(accounts) = &self.preparation.account_driver {
+                // The registry snapshot is already validated and performs no auth refresh.
+                // Transfer preparation must not depend on an earlier HTTP model read.
+                let snapshot = accounts.snapshot().map_err(|_| {
+                    TransferError::Refused(
+                        "The account registry is unavailable for transfer preparation",
+                    )
+                })?;
+                self.catalog.retain_accounts(&snapshot.accounts);
+            }
             let (home, registered_provider) =
                 self.catalog
                     .account_profile(target_account)
@@ -2030,6 +2040,15 @@ mod retained_executor_tests {
     /// agent uses it. The source reads start its session first.
     #[tokio::test]
     async fn source_reads_start_a_dormant_source_session() {
+        assert_dormant_source_reads(false).await;
+    }
+
+    #[tokio::test]
+    async fn startup_transfer_reads_registered_profiles_before_any_http_catalog_request() {
+        assert_dormant_source_reads(true).await;
+    }
+
+    async fn assert_dormant_source_reads(register_from_driver: bool) {
         let root = tempfile::tempdir().expect("test fixture operation succeeds");
         let store = Arc::new(
             RuntimeStore::open(Some(root.path()))
@@ -2068,10 +2087,30 @@ mod retained_executor_tests {
             dormant: Mutex::new(Some("source".into())),
         });
         let catalog = ModelCatalogService::new();
-        catalog.retain_accounts(&[
-            json!({"id":"source","home":"/tmp/source","provider":"codex"}),
-            json!({"id":"target","home":"/tmp/target","provider":"codex"}),
-        ]);
+        let account_driver = if register_from_driver {
+            let registry_path = root.path().join("fixture-accounts.json");
+            let registry = json!({"version":1,"defaultAccountKey":"source","accounts":{
+                "source":{"id":"source","home":root.path().join("source-home"),
+                    "provider":"codex","label":"Source","source":"Codex CLI","status":"signedOut"},
+                "target":{"id":"target","home":root.path().join("target-home"),
+                    "provider":"codex","label":"Target","source":"Codex CLI","status":"signedOut"}
+                },"logins":{},"deleteReceipts":{}});
+            fs::write(
+                &registry_path,
+                serde_json::to_vec(&registry).expect("fixture registry"),
+            )
+            .expect("save fixture account metadata");
+            let driver = crate::account_driver::AccountDriver::open(&registry_path)
+                .expect("open fixture account metadata without authentication reads");
+            assert!(catalog.account_profile("target").is_none());
+            Some(Arc::new(driver))
+        } else {
+            catalog.retain_accounts(&[
+                json!({"id":"source","home":"/tmp/source","provider":"codex"}),
+                json!({"id":"target","home":"/tmp/target","provider":"codex"}),
+            ]);
+            None
+        };
         let resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
             thread_config: Default::default(),
@@ -2084,7 +2123,7 @@ mod retained_executor_tests {
             shared_home: String::new(),
             filesystem_inputs: None,
             claude_account_pin: serde_json::Value::Null,
-            account_driver: None,
+            account_driver,
             account_session: Some(session.clone()),
             guest_rpc: None,
             vm_provider_launch: None,
@@ -2101,12 +2140,27 @@ mod retained_executor_tests {
         .await;
 
         // The queued source input refuses the move only after the source reads ran.
-        assert!(matches!(
-            result,
-            Err(TransferError::Refused(
-                "Source native thread has queued input; saved input remains queued"
-            ))
-        ));
+        assert!(
+            matches!(
+                &result,
+                Err(TransferError::Refused(
+                    "Source native thread has queued input; saved input remains queued"
+                ))
+            ),
+            "transfer preparation must reach source queue admission: {result:?}"
+        );
+        if register_from_driver {
+            assert_eq!(
+                catalog.account_profile("target"),
+                Some((
+                    root.path()
+                        .join("target-home")
+                        .to_string_lossy()
+                        .into_owned(),
+                    "codex".into()
+                ))
+            );
+        }
         assert_eq!(
             *session
                 .requests
