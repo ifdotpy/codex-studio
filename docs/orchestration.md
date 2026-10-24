@@ -1303,6 +1303,8 @@ account admission, or permission settings change as part of these budgets.
 that lead's team. Actions are `inspect`, `recover`, `reset_tools`, `archive`, `archive_finished`,
 `restore`, `list_archived`, and `maintenance_report`. Inspection returns bounded blocker IDs. Recovery reads the exact
 native turn through the existing reconciler; a failed read leaves its outcome unknown.
+Manual recovery never requeues or replays input, including input absent from native history.
+The worker stays held until a new instruction enables delivery.
 
 Studio releases an idle Codex thread subscription after 15 minutes. It first
 checks Studio input and request receipts, tasks, monitors, the native thread,
