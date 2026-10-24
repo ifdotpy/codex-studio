@@ -541,7 +541,8 @@ mod tests {
                     ("gone", json!({"name":"Deleted worker","deletedAt":now})),
                 ] {
                     let mut agent = json!({"id":id,"rootId":id,"epoch":0,"status":"waiting",
-                        "autoWake":true,"cwd":"/tmp","accountKey":"default","provider":"codex"});
+                        "autoWake":true,"cwd":std::env::temp_dir().to_string_lossy(),
+                        "accountKey":"default","provider":"codex"});
                     agent.as_object_mut().expect("object").extend(
                         extra.as_object().expect("object").clone(),
                     );
