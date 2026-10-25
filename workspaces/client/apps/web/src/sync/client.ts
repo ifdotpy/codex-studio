@@ -949,6 +949,14 @@ export function createSyncClient(options: SyncClientOptions) {
               return;
             }
             const snapshot = { ...entry.viewSnapshot };
+            if (
+              snapshot.terminalOutput &&
+              entry.replyKind === "delta" &&
+              previous?.workspaceId === workspaceId &&
+              previous.viewSnapshot?.terminalOutput?.offset >
+                snapshot.terminalOutput.offset
+            )
+              throw new Error("Terminal output cursor has no local base");
             if (snapshot.terminalOutput)
               snapshot.terminalOutput = mergeTerminalOutput(
                 previous?.workspaceId === workspaceId

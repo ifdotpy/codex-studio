@@ -1334,9 +1334,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const since = await Promise.all(
       resources.map(async (resource) => ({
         resource,
-        since: await options.sync
-          .readSubscriptionCursor?.(resource)
-          .catch(() => undefined),
+        since: entityDelivery.requiresSnapshot(resource)
+          ? undefined
+          : await options.sync
+              .readSubscriptionCursor?.(resource)
+              .catch(() => undefined),
       })),
     );
     if (openingGeneration !== subscriptionGeneration || !coordinatorActive)
@@ -1608,9 +1610,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const add = await Promise.all(
       addedResources.map(async (resource) => ({
         resource,
-        since: await options.sync
-          .readSubscriptionCursor?.(resource)
-          .catch(() => undefined),
+        since: entityDelivery.requiresSnapshot(resource)
+          ? undefined
+          : await options.sync
+              .readSubscriptionCursor?.(resource)
+              .catch(() => undefined),
       })),
     );
     if (source !== connected || subscriptionRequest !== controller) return;

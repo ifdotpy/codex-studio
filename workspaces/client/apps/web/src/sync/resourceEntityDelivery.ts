@@ -1,3 +1,4 @@
+import { subscriptionKey } from "./subscriptions/cursors";
 import type { ResourceChangeEvent } from "./subscriptions/events";
 
 const MAX_PENDING_FRAMES = 8;
@@ -24,6 +25,59 @@ export class ResourceEntityDelivery {
   private running = false;
   private current: ResourceChangeEvent | undefined;
   private storageBlocked = false;
+  // A skipped terminal snapshot invalidates its interval base until a newer
+  // authoritative snapshot commits, including deltas already beyond the old offset.
+  private terminalSnapshotsRequired = new Map<
+    string,
+    { epoch: string; revision: number }
+  >();
+
+  requiresSnapshot(resource: ResourceChangeEvent["resources"][number]) {
+    return this.terminalSnapshotsRequired.has(subscriptionKey(resource));
+  }
+
+  private revoke(event: ResourceChangeEvent) {
+    for (const [index, entry] of event.resourceVersions.entries()) {
+      const resource = entry.resource ?? event.resources[index];
+      if (
+        resource?.kind !== "terminal-output" ||
+        entry.replyKind !== "snapshot" ||
+        !entry.viewSnapshot?.terminalOutput
+      )
+        continue;
+      const key = subscriptionKey(resource);
+      const required = this.terminalSnapshotsRequired.get(key);
+      if (
+        !required ||
+        required.epoch !== event.epoch ||
+        required.revision < entry.revision
+      )
+        this.terminalSnapshotsRequired.set(key, {
+          epoch: event.epoch,
+          revision: entry.revision,
+        });
+    }
+    return revokeCursorProof(event);
+  }
+
+  private restoreTerminalBases(event: ResourceChangeEvent) {
+    for (const [index, entry] of event.resourceVersions.entries()) {
+      const resource = entry.resource ?? event.resources[index];
+      if (
+        resource?.kind !== "terminal-output" ||
+        entry.replyKind !== "snapshot" ||
+        !entry.cursor
+      )
+        continue;
+      const key = subscriptionKey(resource);
+      const required = this.terminalSnapshotsRequired.get(key);
+      if (
+        required &&
+        (required.epoch !== event.epoch || entry.revision >= required.revision)
+      )
+        this.terminalSnapshotsRequired.delete(key);
+    }
+  }
 
   constructor(
     private readonly persist: (
@@ -36,13 +90,38 @@ export class ResourceEntityDelivery {
   /** Cancel reads from an earlier subscription set and retain active pull hints. */
   invalidate() {
     this.generation++;
-    if (this.current) this.dispatch(revokeCursorProof(this.current));
-    for (const pending of this.pending)
-      this.dispatch(revokeCursorProof(pending));
+    if (this.current) this.dispatch(this.revoke(this.current));
+    for (const pending of this.pending) this.dispatch(this.revoke(pending));
     this.pending = [];
   }
 
+  private withholdUnsafeTerminalIntervals(event: ResourceChangeEvent) {
+    for (const [index, entry] of event.resourceVersions.entries()) {
+      const resource = entry.resource ?? event.resources[index];
+      if (resource?.kind !== "terminal-output") continue;
+      const required = this.terminalSnapshotsRequired.get(
+        subscriptionKey(resource),
+      );
+      if (
+        required &&
+        (entry.replyKind === "delta" ||
+          (entry.replyKind === "snapshot" &&
+            required.epoch === event.epoch &&
+            entry.revision < required.revision))
+      ) {
+        // Keep only a scoped recovery hint until the skipped snapshot's base
+        // commits; an old snapshot replay cannot satisfy that requirement.
+        if (entry.viewSnapshot?.terminalOutput) {
+          entry.viewSnapshot = { ...entry.viewSnapshot };
+          delete entry.viewSnapshot.terminalOutput;
+        }
+        revokeCursorProof({ ...event, resourceVersions: [entry] });
+      }
+    }
+  }
+
   receive(event: ResourceChangeEvent) {
+    this.withholdUnsafeTerminalIntervals(event);
     const hasInitialSnapshot =
       (event.reason === "initial" || event.reason === "reconnect") &&
       event.resourceVersions?.some(
@@ -80,12 +159,11 @@ export class ResourceEntityDelivery {
       this.generation++;
       // Preserve all resource hints when data delivery falls back to pull.
       // A frame can also contain transcript, panel or queue invalidations.
-      if (this.current) this.dispatch(revokeCursorProof(this.current));
-      for (const pending of this.pending)
-        this.dispatch(revokeCursorProof(pending));
+      if (this.current) this.dispatch(this.revoke(this.current));
+      for (const pending of this.pending) this.dispatch(this.revoke(pending));
       this.pending = [];
       this.epoch = event.epoch;
-      this.dispatch(revokeCursorProof(event));
+      this.dispatch(this.revoke(event));
       return;
     }
     this.epoch = event.epoch;
@@ -100,6 +178,8 @@ export class ResourceEntityDelivery {
       for (;;) {
         const event = this.pending.shift();
         if (!event) break;
+        // A reset may have failed while this interval was already queued.
+        this.withholdUnsafeTerminalIntervals(event);
         this.current = event;
         const generation = this.generation;
         let expired = false;
@@ -126,17 +206,18 @@ export class ResourceEntityDelivery {
             }),
           ]);
         } catch (error) {
-          revokeCursorProof(event);
+          this.revoke(event);
           console.error("Stream entity persistence failed", error);
         } finally {
           clearTimeout(timer);
         }
         // A later baseline or overflow already requests the complete range.
+        if (isCurrent()) this.restoreTerminalBases(event);
         if (generation === this.generation) this.dispatch(event);
         this.current = undefined;
         if (expired) {
           for (const pending of this.pending)
-            this.dispatch(revokeCursorProof(pending));
+            this.dispatch(this.revoke(pending));
           this.pending = [];
           break;
         }

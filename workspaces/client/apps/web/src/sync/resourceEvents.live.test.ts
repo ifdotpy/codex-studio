@@ -1004,3 +1004,81 @@ it("a cancelled staging failure cannot close its replacement stream", async () =
   expect(replacement.closed).toBe(false);
   expect(f.sources).toHaveLength(2);
 });
+
+it("reopens a terminal with a fresh snapshot after its reset base could not persist", async () => {
+  const f = await fixture();
+  const resource = { kind: "terminal-output", terminalId: "shell" } as const;
+  const cursor = { workspaceId: "workspace", seq: 40 };
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "terminal-output" ? cursor : undefined,
+  );
+  let stop = f.transport.watchResourceChanges(resource, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 1 });
+  const frame = (revision: number, text: string, offset: number) => ({
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision,
+    reason: "change",
+    resources: [resource],
+    resourceVersions: [
+      {
+        revision,
+        cursor: { workspaceId: "workspace", seq: offset },
+        replyKind: "snapshot",
+        viewSnapshot: {
+          terminalOutput: { text, offset, status: "running", truncated: false },
+        },
+      },
+    ],
+  });
+  f.source.emit("resources", {
+    ...frame(10, "o".repeat(40), 40),
+    reason: "initial",
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+  f.persist.mockRejectedValueOnce(new Error("disk full"));
+  f.source.emit("resources", frame(11, "new", 3));
+  await vi.advanceTimersByTimeAsync(0);
+  stop();
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 2 });
+  stop = f.transport.watchResourceChanges(resource, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  expect(f.post).toHaveBeenLastCalledWith(
+    "/api/sync/subscriptions",
+    expect.objectContaining({ add: [{ resource }] }),
+    expect.anything(),
+  );
+  f.source.emit("subscriptions", { gen: 3 });
+  f.source.onerror?.();
+  await vi.advanceTimersByTimeAsync(10000);
+  const url = new URL(f.urls.at(-1)!, "http://studio.test");
+  expect(
+    JSON.parse(url.searchParams.get("since") ?? "[]").some(
+      (entry: { resource: unknown }) =>
+        JSON.stringify(entry.resource) === JSON.stringify(resource),
+    ),
+  ).toBe(false);
+  const resumed = f.sources.at(-1)!;
+  resumed.emit("session", { sessionId: "session-two" });
+  resumed.emit("api-schema", { hash: API_SCHEMA_HASH });
+  resumed.emit("resources", { ...frame(12, "new", 3), reason: "reconnect" });
+  await vi.advanceTimersByTimeAsync(0);
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "terminal-output"
+      ? { workspaceId: "workspace", seq: 3 }
+      : undefined,
+  );
+  resumed.onerror?.();
+  await vi.advanceTimersByTimeAsync(10000);
+  const recovered = new URL(f.urls.at(-1)!, "http://studio.test");
+  expect(JSON.parse(recovered.searchParams.get("since")!)).toContainEqual({
+    resource,
+    since: { workspaceId: "workspace", seq: 3 },
+  });
+  stop();
+  quiet.mockRestore();
+});
