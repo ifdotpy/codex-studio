@@ -1087,6 +1087,8 @@ struct ActorProviderSession {
     control: SessionControl,
     launch_request: preparation::VmProviderLaunchRequest,
     bootstrap: Option<Value>,
+    /// Credential-copy proof for one exact, unsubmitted auth continuation attempt.
+    auth_recovery_refresh: Option<Value>,
 }
 impl Worker {
     async fn handle_vm_message(&mut self, message: VmForwardedMessage) -> Result<(), WorkerError> {
@@ -2289,8 +2291,27 @@ impl Worker {
         launch: Result<Option<preparation::VmProviderLaunchRequest>, WorkerError>,
     ) -> Result<Option<Box<submission::Ready>>, WorkerError> {
         let method = commit.method;
-        let actor_session = match self.ensure_vm_session(launch).await {
+        let actor_session = match self
+            .ensure_vm_session(launch, &commit.context.intent, method)
+            .await
+        {
             Ok(session) => session,
+            Err(error @ WorkerError::PreparationPending(_)) if method != Method::TurnInterrupt => {
+                let intent = commit.context.intent.clone();
+                let blocked_intent = intent.clone();
+                let resources = self.resources.clone();
+                let since = self.bridge.agent_wakes.sequence();
+                let step = self
+                    .db("vm-session-auth-pending", move |store| async move {
+                        store::preparation_step(&store, &resources, &blocked_intent, async move {
+                            Err::<(), WorkerError>(error)
+                        })
+                        .await
+                    })
+                    .await?;
+                let _ready = self.preparation_ready(step, &intent, since);
+                return Ok(None);
+            }
             Err(WorkerError::PreparationRefused(reason)) if method != Method::TurnInterrupt => {
                 let blocked_intent = commit.context.intent.clone();
                 let resources = self.resources.clone();
@@ -2546,26 +2567,18 @@ impl Worker {
     async fn ensure_vm_session(
         &mut self,
         launch: Result<Option<preparation::VmProviderLaunchRequest>, WorkerError>,
+        intent: &TurnIntent,
+        method: Method,
     ) -> Result<Option<String>, WorkerError> {
         let Some(request) = launch? else {
             return Ok(None);
         };
+        let existing_session = self.vm_sessions.contains_key(&request.agent_id);
         if let Some(session) = self.vm_sessions.get(&request.agent_id) {
             if session.launch_request != request {
                 return Err(WorkerError::PreparationRefused(
                     "vm-agent/session-identity-changed".into(),
                 ));
-            }
-            if session.session.status.borrow().initialization == InitializationStatus::Ready {
-                let bootstrap = session.bootstrap.clone();
-                if let Some(payload) = bootstrap {
-                    self.bootstrap_vm_provider(&request.agent_id, request.epoch, payload)
-                        .await?;
-                    if let Some(session) = self.vm_sessions.get_mut(&request.agent_id) {
-                        session.bootstrap = None;
-                    }
-                }
-                return Ok(Some(request.agent_id));
             }
         } else {
             let resolver = self.resources.vm_provider_launch.clone().ok_or_else(|| {
@@ -2715,6 +2728,9 @@ impl Worker {
                 },
             }
         }
+        if existing_session && request.provider == "claude" && method != Method::TurnInterrupt {
+            self.refresh_vm_auth_recovery(&request, intent).await?;
+        }
         let bootstrap = self
             .vm_sessions
             .get(&request.agent_id)
@@ -2727,6 +2743,185 @@ impl Worker {
             }
         }
         Ok(Some(request.agent_id))
+    }
+
+    /// An auth continuation on an existing process must not use its old guest copy.
+    /// Reader reattach and ordinary turn preparation do not enter this refresh lane.
+    async fn refresh_vm_auth_recovery(
+        &mut self,
+        request: &preparation::VmProviderLaunchRequest,
+        intent: &TurnIntent,
+    ) -> Result<(), WorkerError> {
+        let Some(proof) = self.vm_auth_recovery_binding(request, intent).await? else {
+            return Ok(());
+        };
+        let session = self
+            .vm_sessions
+            .get(&request.agent_id)
+            .ok_or(WorkerError::StaleVmActor)?;
+        let incarnation = session.incarnation;
+        if session.launch_request != *request
+            || session.session.status.borrow().initialization != InitializationStatus::Ready
+        {
+            return Err(WorkerError::StaleVmActor);
+        }
+        if session.auth_recovery_refresh.as_ref() == Some(&proof) {
+            return Ok(());
+        }
+        let resolver = self.resources.vm_provider_launch.clone().ok_or_else(|| {
+            WorkerError::PreparationPending(PreparationBlock::new(
+                studio_runtime_schema::agent_progress::StartWaitReason::ProviderSession,
+                "provider-session/vm-launch-resolver",
+            ))
+        })?;
+        match self
+            .drive(resolver.refresh_claude_credentials(vec![request.clone()]))
+            .await
+        {
+            Ok(()) => {}
+            Err(WorkerError::PreparationRefused(reason)) => {
+                return Err(WorkerError::PreparationPending(PreparationBlock::new(
+                    studio_runtime_schema::agent_progress::StartWaitReason::ProviderSession,
+                    reason,
+                )));
+            }
+            result => result?,
+        }
+        if self
+            .vm_auth_recovery_binding(request, intent)
+            .await?
+            .as_ref()
+            != Some(&proof)
+        {
+            return Err(WorkerError::StaleVmActor);
+        }
+        let session = self
+            .vm_sessions
+            .get_mut(&request.agent_id)
+            .ok_or(WorkerError::StaleVmActor)?;
+        if session.incarnation != incarnation
+            || session.launch_request != *request
+            || session.session.status.borrow().initialization != InitializationStatus::Ready
+        {
+            return Err(WorkerError::StaleVmActor);
+        }
+        session.auth_recovery_refresh = Some(proof);
+        Ok(())
+    }
+
+    async fn vm_auth_recovery_binding(
+        &mut self,
+        request: &preparation::VmProviderLaunchRequest,
+        intent: &TurnIntent,
+    ) -> Result<Option<Value>, WorkerError> {
+        if self.closing
+            || request.account_key != self.account
+            || request.generation != self.generation.0
+            || intent.agent_id != request.agent_id
+            || intent.epoch != request.epoch
+            || intent.account_key != request.account_key
+            || intent.provider.key() != "claude"
+            || self.session.status.borrow().generation != self.generation
+            || self.session.status.borrow().initialization != InitializationStatus::Ready
+            || self
+                .resources
+                .account_session
+                .as_ref()
+                .is_some_and(|session| {
+                    session
+                        .current_scope(&request.account_key)
+                        .is_none_or(|scope| {
+                            scope.account != request.account_key
+                                || scope.generation != request.generation
+                        })
+                })
+        {
+            return Err(WorkerError::StaleVmActor);
+        }
+        let request = request.clone();
+        let intent = intent.clone();
+        self.db("vm_auth_recovery_binding", move |store| async move {
+            store
+                .read_async("runtime-services/vm-auth-recovery", move |db| {
+                    let Some(row) =
+                        AgentRepository::get(db, &AgentId::from(request.agent_id.as_str()))?
+                    else {
+                        return Err(WorkerError::StaleVmActor);
+                    };
+                    let fields = &row.extra;
+                    let wait = fields.get("usageResume").unwrap_or(&Value::Null);
+                    let auth_attempt = fields
+                        .get("authResumeAttempt")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    if auth_attempt == 0 || wait["cause"] != "auth" || wait["status"] != "started" {
+                        return Ok(None);
+                    }
+                    let attempt = fields.get("startAttempt").unwrap_or(&Value::Null);
+                    let guest_home = fields
+                        .get("layrHome")
+                        .and_then(Value::as_str)
+                        .unwrap_or(crate::linux_vm_provider::DEFAULT_GUEST_HOME);
+                    if !crate::linux_vm_provider::vm_actor_matches(
+                        db,
+                        &request.agent_id,
+                        request.epoch,
+                        &request.account_key,
+                        Some("claude"),
+                    )? || row.status != studio_runtime_store::AgentStatus::Starting
+                        || fields.get("autoWake") != Some(&json!(true))
+                        || fields.get("nativeFailureHold") == Some(&json!(true))
+                        || [
+                            "executionMove",
+                            "lazyAccountTransfer",
+                            "accountTransferId",
+                            "workspaceOperation",
+                        ]
+                        .iter()
+                        .any(|key| fields.get(*key).is_some_and(|value| !value.is_null()))
+                        || fields.get("cwd").and_then(Value::as_str) != Some(request.cwd.as_str())
+                        || guest_home != request.guest_home
+                        || fields.get("threadId").and_then(Value::as_str)
+                            != intent.thread_id.as_deref()
+                        || attempt["id"] != intent.attempt_id
+                        || attempt["epoch"] != request.epoch
+                        || attempt["accountKey"] != request.account_key
+                        || attempt["submitted"] != false
+                        || wait["epoch"] != request.epoch
+                        || wait["accountKey"] != request.account_key
+                        || fields.get("threadId") != Some(&wait["threadId"])
+                        || wait["authAttempt"]
+                            .as_u64()
+                            .and_then(|attempt| attempt.checked_add(1))
+                            != Some(auth_attempt)
+                    {
+                        return Err(WorkerError::StaleVmActor);
+                    }
+                    let Some(wait_id) = wait["id"].as_str().filter(|id| !id.is_empty()) else {
+                        return Err(WorkerError::StaleVmActor);
+                    };
+                    let saved: Option<String> = db
+                        .query_row(
+                            "SELECT record FROM runtime_usage_resumes WHERE id=?1 AND agent=?2",
+                            rusqlite::params![wait_id, request.agent_id],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    if saved
+                        .as_deref()
+                        .map(serde_json::from_str::<Value>)
+                        .transpose()
+                        .map_err(|_| WorkerError::StaleVmActor)?
+                        .as_ref()
+                        != Some(wait)
+                    {
+                        return Err(WorkerError::StaleVmActor);
+                    }
+                    Ok(Some(json!([intent.attempt_id, auth_attempt, wait])))
+                })
+                .await
+        })
+        .await
     }
 
     /// Confirm that a retained VM session still represents the current durable

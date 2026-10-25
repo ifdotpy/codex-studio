@@ -329,6 +329,7 @@ impl Worker {
                 control,
                 launch_request: request,
                 bootstrap,
+                auth_recovery_refresh: None,
             },
         );
         let now = tokio::time::Instant::now();
