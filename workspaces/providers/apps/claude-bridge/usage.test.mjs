@@ -191,6 +191,33 @@ test("tool identity keeps its original turn across responses and nested tool own
   usage.registerTool("nested", usage.turnFor("parent", "current"));
   expect(usage.turnFor("nested", "current")).toBe("original");
 });
+test("unfinished subagent responses keep their original turn and repeated ids add no gap", () => {
+  const usage = new ResponseUsage();
+  usage.registerTool("parent", "original");
+  const start = events.find((e) => e.type === "message_start");
+  if (!start) throw new Error("missing SDK fixture");
+  for (const turn of ["later", "even-later"]) {
+    const responseId = "unfinished-" + turn;
+    const message = { ...start.message, id: responseId };
+    usage.observe(frame({ ...start, message }, "parent"), turn);
+    expect(
+      usage.observe(frame({ type: "message_stop" }, "parent"), turn),
+    ).toEqual([
+      {
+        kind: "gap",
+        responseId,
+        model: message.model,
+        reason: "unconfirmedStop",
+        turnId: "original",
+      },
+    ]);
+    usage.observe(frame({ ...start, message }, "parent"), "replay-turn");
+    expect(
+      usage.observe(frame({ type: "message_stop" }, "parent"), "replay-turn"),
+    ).toEqual([]);
+  }
+});
+
 test("context windows use the response model and its SDK canonical alias", () => {
   const usage = new ResponseUsage();
   usage.recordModels({
