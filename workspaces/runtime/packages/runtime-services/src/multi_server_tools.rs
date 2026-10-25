@@ -540,6 +540,7 @@ impl ServerTools {
                 if let Some(location) = location {
                     payload["location"] = location;
                 }
+                payload[crate::project_locations::LOCATION_ADMISSION_FIELD]=crate::project_locations::location_admission(tx,&project_id,Some((&actor_id,epoch)))?;
                 Ok(Ok(payload))
             })
             .await?;
