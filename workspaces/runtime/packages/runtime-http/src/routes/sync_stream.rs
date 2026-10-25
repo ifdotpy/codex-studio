@@ -4588,7 +4588,9 @@ mod tests {
                 })
                 .await
                 .expect("login progress");
-            assert_eq!(progress.resources, vec![resources[0].clone()]);
+            // Models have no content fingerprint. The completion wake keeps
+            // their safe refresh together with the explicit account progress.
+            assert_eq!(progress.resources, resources.to_vec());
             assert_eq!(
                 progress.cursor.resource_revision, progress.cursor.revision,
                 "the existing completion wake still reaches related account resources"

@@ -622,7 +622,18 @@ fn worktree_identity(
     let expected = match (&owner.common_dir, lexical_owned) {
         (Some(recorded), _) => CanonicalPath::existing(recorded),
         (None, crate::worktree_root::OwnedRoot::Repository { repository, .. }) => {
-            CanonicalPath::existing(repository.join(".git"))
+            let git = repository.join(".git");
+            if git.is_file() {
+                // Legacy workers can belong to a linked project. Prove that
+                // project is registered before using its common directory.
+                let project = CanonicalPath::existing(repository)
+                    .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+                let main = owning_repository(&project)?;
+                registered_worktree_branch(&main, &project)?;
+                CanonicalPath::existing(main.join(".git"))
+            } else {
+                CanonicalPath::existing(git)
+            }
         }
         (None, crate::worktree_root::OwnedRoot::Linked(_)) => {
             return Err(WorkspaceCleanupError::InvalidRecord);

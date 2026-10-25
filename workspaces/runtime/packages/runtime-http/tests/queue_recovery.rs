@@ -109,16 +109,18 @@ async fn send_now_recovers_proven_unsent_failed_batch_and_replays_lost_http_succ
     let body = promotion(&app).await;
     let (status, receipt) = call(&app, Some(body.clone())).await;
     assert_eq!(status, 200, "{receipt}");
-    assert!(
-        receipt["_syncEntities"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["collection"] == "agent"
-                && row["id"] == ACTOR
-                && row["value"]["status"] == "queued"),
-        "{receipt}"
-    );
+    assert!(receipt.get("_syncEntities").is_none(), "{receipt}");
+    assert!(receipt.get("_syncEntitiesAfter").is_none(), "{receipt}");
+    let queued: String = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT json_extract(record,'$.status') FROM runtime_agents WHERE id=?1",
+            [ACTOR],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(queued, "queued", "the source transaction queues the agent");
     let claim = store
         .transaction_with(|tx| {
             SchedulerRepository::claim_for_preparation(tx, ACTOR, 0, "ordinary-retry", 20.0, 32)
@@ -137,12 +139,7 @@ async fn send_now_recovers_proven_unsent_failed_batch_and_replays_lost_http_succ
     let state = snapshot(&store);
     let (status, replay) = call(&app, Some(body.clone())).await;
     assert_eq!(status, 200, "{replay}");
-    // HTTP delta hints are not part of the durable queue operation receipt.
-    let mut durable = receipt.clone();
-    let durable = durable.as_object_mut().unwrap();
-    durable.remove("_syncEntities");
-    durable.remove("_syncEntitiesAfter");
-    assert_eq!(replay, json!(durable));
+    assert_eq!(replay, receipt, "the durable receipt replays unchanged");
     assert_eq!(snapshot(&store), state);
     let mut conflicting = body;
     conflicting["message_id"] = json!("original-0");
