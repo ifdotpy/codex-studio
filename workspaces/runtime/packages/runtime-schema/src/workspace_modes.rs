@@ -8,6 +8,14 @@ pub const SHARED_WORKSPACE_MODE: &str = "shared";
 /// Default workspace mode for a new chat on macOS and Linux.
 pub const DEFAULT_CHAT_WORKSPACE_MODE: &str = "layr-native";
 
+pub fn worker_modes() -> Vec<&'static str> {
+    CHAT_WORKSPACE_MODES
+        .iter()
+        .copied()
+        .chain([SHARED_WORKSPACE_MODE])
+        .collect()
+}
+
 pub fn accepts_chat(mode: &str) -> bool {
     CHAT_WORKSPACE_MODES.contains(&mode)
 }
@@ -18,10 +26,11 @@ pub fn accepts_worker(mode: &str) -> bool {
 
 pub fn update_openapi(document: &mut Value) {
     for (name, worker) in [("CreateAgentRequest", true), ("CreateLeadRequest", false)] {
-        let mut modes = CHAT_WORKSPACE_MODES.to_vec();
-        if worker {
-            modes.push(SHARED_WORKSPACE_MODE);
-        }
+        let modes = if worker {
+            worker_modes()
+        } else {
+            CHAT_WORKSPACE_MODES.to_vec()
+        };
         document["components"]["schemas"][name]["properties"]["workspaceMode"] = json!({
             "default": DEFAULT_CHAT_WORKSPACE_MODE, "enum": modes,
             "title": "Workspacemode", "type": "string"
@@ -47,6 +56,26 @@ pub fn check_openapi(document: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_tool_catalog_matches_workspace_mode_owner() {
+        // The legacy catalog preserves old native prompt contracts and is not a new-chat consumer.
+        let catalog: Value = serde_json::from_str(include_str!(
+            "../../runtime-services/src/account_worker/preparation-resources.json"
+        ))
+        .expect("current tool catalog");
+        let spawn = catalog["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["name"] == "orchestration_spawn")
+            .expect("spawn tool");
+        assert_eq!(
+            spawn.pointer("/inputSchema/properties/agents/items/properties/workspace/enum"),
+            Some(&json!(worker_modes())),
+            "runtime-schema/src/workspace_modes.rs owns the current workspace modes"
+        );
+    }
 
     #[test]
     fn new_workspaces_reject_removed_mode_and_accept_native_layr() {

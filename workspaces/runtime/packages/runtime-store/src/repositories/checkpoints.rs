@@ -770,7 +770,6 @@ fn completion_source(agent: &Value) -> Value {
         "status",
         "deletedAt",
         "agentArchive",
-        "imageWorkspace",
         "worktreeReady",
     ];
     Value::Object(
@@ -796,7 +795,6 @@ fn same_workspace_activity(current: &WorkspaceSnapshot, expected: &WorkspaceSnap
         "workspaceOperation",
         "workspaceReservationId",
         "deletedAt",
-        "imageWorkspace",
         "executionMode",
         "workspaceMode",
         "checkpointHistoryHead",

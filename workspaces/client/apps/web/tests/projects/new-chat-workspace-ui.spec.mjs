@@ -371,7 +371,9 @@ test("a paired server uses its own platform and catalog", async ({
     await expect(
       dialog.getByRole("button", { name: "Start chat", exact: true }),
     ).toBeEnabled();
-    await expect(dialog.getByText("Workspace", { exact: true })).toHaveCount(0);
+    await expect(
+      dialog.getByRole("radio", { name: "Layr", exact: true }),
+    ).toBeChecked();
     await expect(
       dialog
         .getByRole("listbox", { name: "Main agent model", exact: true })
@@ -383,7 +385,7 @@ test("a paired server uses its own platform and catalog", async ({
     await expect.poll(() => remote.creations.length).toBe(1);
     expect(local.creations).toHaveLength(0);
     expect(remote.creations[0]).toMatchObject({
-      workspaceMode: "worktree",
+      workspaceMode: "layr-native",
       model: "gpt-5.6-sol",
     });
     expect(remote.modelReads.length).toBeGreaterThan(0);
@@ -469,3 +471,23 @@ for (const system of ["Darwin", "Linux"]) {
     }
   });
 }
+
+test("Linux offers Layr VM only when its server has the Studio VM", async ({
+  page,
+}) => {
+  const { server, creations } = await setup("Linux");
+  try {
+    const dialog = await openNewChat(page, server);
+    await expect(
+      dialog.getByRole("radio", { name: "Layr", exact: true }),
+    ).toBeChecked();
+    await dialog.getByRole("radio", { name: "Layr VM", exact: true }).check();
+    await dialog
+      .getByRole("button", { name: "Start chat", exact: true })
+      .click();
+    await expect.poll(() => creations.length).toBe(1);
+    expect(creations[0].workspaceMode).toBe("layr");
+  } finally {
+    await server.close();
+  }
+});

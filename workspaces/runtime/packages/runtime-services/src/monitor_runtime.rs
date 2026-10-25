@@ -929,6 +929,7 @@ const MONITOR_START_ACTOR_INPUTS: &[&str] = &[
     "/profile/id",
     "/role",
     "/isLead",
+    "/workspaceMode",
     "/layrScratch",
 ];
 
@@ -958,6 +959,8 @@ pub async fn reserve_start(
             }
             let current_actor = actor.value();
             if snapshot.record() != &prepared.monitor
+                || crate::legacy_image_workspace::is_legacy(&current_actor)
+                    != crate::legacy_image_workspace::is_legacy(&prepared.actor)
                 || MONITOR_START_ACTOR_INPUTS
                     .iter()
                     .any(|path| current_actor.pointer(path) != prepared.actor.pointer(path))
