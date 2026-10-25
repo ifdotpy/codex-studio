@@ -319,6 +319,7 @@ export class ResourceEntityDelivery {
           if (persistenceFailed && this.failed) {
             // A fresh subscription must recover the whole missed interval.
             // Queued deltas have no applied base and cannot prove liveness.
+            for (const pending of this.pending) revokeCursorProof(pending);
             this.pending = [];
             if (this.failed(event, persistenceError) === false)
               this.dispatch(event);

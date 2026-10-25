@@ -866,6 +866,7 @@ it.each(["overflow", "inline removal", "staged removal"])(
     const source = mocks.sources[0];
     source.emit("api-schema", { hash: API_SCHEMA_HASH });
     let finish!: () => void;
+    source.emit("session", { sessionId: "quiet-work-discard-session" });
     const gate = new Promise<void>((resolve) => {
       finish = resolve;
     });

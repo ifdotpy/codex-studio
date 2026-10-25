@@ -75,6 +75,32 @@ describe("bounded stream entity delivery", () => {
     expect(failed).not.toHaveBeenCalled();
   });
 
+  it("revokes every queued receipt before recovering a failed current write", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let reject!: (error: Error) => void;
+    const persist = vi.fn(
+      () =>
+        new Promise<void>((_resolve, failed) => {
+          reject = failed;
+        }),
+    );
+    const failed = vi.fn();
+    const delivery = new ResourceEntityDelivery(persist, vi.fn(), failed);
+    const queued: ResourceChangeEvent = frame(2);
+    queued.resourceVersions[0].cursor = {
+      workspaceId: queued.workspaceId,
+      seq: 2,
+    };
+    queued.resourceVersions[0].replyKind = "snapshot";
+    delivery.receive(frame(1));
+    delivery.receive(queued);
+    reject(new Error("current Work write failed"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failed).toHaveBeenCalledOnce();
+    expect(queued.resourceVersions[0].cursor).toBeUndefined();
+    expect(queued.resourceVersions[0].replyKind).toBeUndefined();
+  });
+
   it("persists in order before listeners can request a pull", async () => {
     let finish!: () => void;
     const first = new Promise<void>((resolve) => {
