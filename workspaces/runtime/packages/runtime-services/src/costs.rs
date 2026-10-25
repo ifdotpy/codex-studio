@@ -347,6 +347,8 @@ pub fn usage_reconciliation(
     let mut missing_recorded = 0;
     let mut missing_evidence = 0;
     let mut mismatched = 0;
+    let mut unknown_recorded = 0;
+    let mut known_recorded = 0;
     let mut recorded_token_total = Some(studio_runtime_schema::usage::UsageTokens {
         reasoning_output: Some(0),
         ..Default::default()
@@ -365,22 +367,32 @@ pub fn usage_reconciliation(
         let recorded_model = recorded.as_ref().and_then(|row| row.model.as_deref());
         let evidence_model = native.as_ref().and_then(|row| row.model.as_deref());
         let conflict = native.as_ref().is_some_and(|row| row.conflict);
-        let mismatch = conflict || (recorded.is_some() && native.is_some()
-            && (!same_billable_tokens(recorded_tokens, evidence_tokens) || recorded_model != evidence_model));
+        let mismatch = recorded_tokens.is_some() && evidence_tokens.is_some()
+            && (conflict || !same_billable_tokens(recorded_tokens, evidence_tokens) || recorded_model != evidence_model);
         mismatched += usize::from(mismatch);
         let recorded_cost = price_response(catalog, recorded_model, recorded_tokens);
         let evidence_cost = price_response(catalog, evidence_model, evidence_tokens);
-        if recorded.is_some() { recorded_token_total = add_tokens(recorded_token_total.take(), recorded_tokens); recorded_total = recorded_total.zip(recorded_cost).map(|(total, cost)| total + cost); }
+        if recorded.is_some() {
+            if recorded_tokens.is_some() {
+                known_recorded += 1;
+                recorded_token_total = add_tokens(recorded_token_total.take(), recorded_tokens);
+                recorded_total = recorded_total.zip(recorded_cost).map(|(total, cost)| total + cost);
+            } else { unknown_recorded += 1; }
+        }
         if native.is_some() { evidence_token_total = add_tokens(evidence_token_total.take(), evidence_tokens); evidence_total = evidence_total.zip(evidence_cost).map(|(total, cost)| total + cost); }
         json!({"responseId": id, "model":recorded_model.or(evidence_model),
             "recordedTokens":recorded_tokens,"recordedEvidence":recorded.as_ref().map(|row| row.evidence),
             "evidenceTokens":evidence_tokens,"recordedCostUsd":recorded_cost,"evidenceCostUsd":evidence_cost,
             "journalConflict":conflict,"mismatched":mismatch})
     }).collect::<Vec<_>>();
+    if known_recorded == 0 && unknown_recorded > 0 {
+        recorded_total = None;
+        recorded_token_total = None;
+    }
     let unresolved_gaps = !gaps.is_empty();
     Ok(
         json!({"agentId":agent_id,"counts":{"responses":responses.len(),"missingRecorded":missing_recorded,
-        "missingEvidence":missing_evidence,"mismatched":mismatched},"responses":responses,
+        "missingEvidence":missing_evidence,"mismatched":mismatched,"unknownRecorded":unknown_recorded,"rejectedEntries":budget.rejected},"responses":responses,
         "files":budget.files,"gaps":gaps.into_values().collect::<Vec<_>>(),"providerCosts":provider_costs.into_iter().map(|(model,cost)|json!({"model":model,"providerCostUsd":cost})).collect::<Vec<_>>(),
         "totals":{"recordedCostUsd":recorded_total,"evidenceCostUsd":evidence_total,"recordedTokens":recorded_token_total,"evidenceTokens":evidence_token_total},
         "incomplete":budget.incomplete || budget.truncated || missing_evidence > 0 || unresolved_gaps,"truncated":budget.truncated}),
@@ -529,12 +541,23 @@ fn read_codex_evidence(
             continue;
         };
         let profile = expand_home(PathBuf::from(profile));
-        let path = match budget.discovery.resolve(
+        let remaining_entries = MAX_EVIDENCE_ENTRIES.saturating_sub(budget.entries);
+        let (discovered, examined) = budget.discovery.resolve_with_entry_budget(
             &profile,
             &thread,
             &std::sync::atomic::AtomicBool::new(false),
-        ) {
+            remaining_entries,
+        );
+        budget.entries += examined;
+        let path = match discovered {
             Ok(RolloutPath::Found(path)) => path,
+            Err(
+                crate::analytics_history::HistoryError::DiscoveryLimit
+                | crate::analytics_history::HistoryError::DiscoveryRoundLimit,
+            ) => {
+                budget.report(&profile, EvidenceFileKind::CodexRollout, true, true);
+                continue;
+            }
             _ => {
                 budget.report(&profile, EvidenceFileKind::CodexRollout, true, false);
                 continue;
@@ -558,14 +581,19 @@ fn read_codex_evidence(
     Ok(())
 }
 
-fn parse_codex_evidence(bytes: &[u8], thread: &str) -> (Vec<(String, NativeResponse)>, bool) {
+fn parse_codex_evidence(
+    bytes: &[u8],
+    thread: &str,
+    limit: usize,
+) -> (Vec<(String, NativeResponse)>, bool, bool) {
     use crate::analytics_rollout::{RolloutAction, RolloutContext};
     use studio_runtime_schema::usage::{UsageObservation, UsageProvider, parse_token_usage};
     let Ok(mut context) = RolloutContext::from_record(json!({"threadId":thread})) else {
-        return (Vec::new(), true);
+        return (Vec::new(), true, false);
     };
     let mut rows = BTreeMap::new();
     let mut incomplete = false;
+    let mut truncated = false;
     for (index, line) in bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
@@ -594,6 +622,15 @@ fn parse_codex_evidence(bytes: &[u8], thread: &str) -> (Vec<(String, NativeRespo
                             tokens,
                             ..
                         }) => {
+                            if rows.len() == limit && !rows.contains_key(&response_id) {
+                                truncated = true;
+                                continue;
+                            }
+                            #[cfg(test)]
+                            if !rows.contains_key(&response_id) {
+                                EVIDENCE_RESPONSES_MATERIALIZED
+                                    .with(|count| count.set(count.get() + 1));
+                            }
                             merge_native(
                                 &mut rows,
                                 response_id,
@@ -613,7 +650,7 @@ fn parse_codex_evidence(bytes: &[u8], thread: &str) -> (Vec<(String, NativeRespo
             }
         }
     }
-    (rows.into_iter().collect(), incomplete)
+    (rows.into_iter().collect(), incomplete, truncated)
 }
 
 // Session identifier and state-file byte caps for local cost scans.
@@ -667,6 +704,7 @@ struct EvidenceFileReport {
     kind: EvidenceFileKind,
     incomplete: bool,
     truncated: bool,
+    reason: Option<&'static str>,
 }
 
 enum NativeFileData {
@@ -691,12 +729,30 @@ struct EvidenceBudget {
     incomplete: bool,
     truncated: bool,
     files: Vec<EvidenceFileReport>,
+    rejected: usize,
     discovery: crate::analytics_history::DiscoveryRound,
+    roots: BTreeMap<PathBuf, Option<std::sync::Arc<crate::analytics_history::NativeEvidenceRoot>>>,
 }
 #[cfg(test)]
-thread_local! { static EVIDENCE_FILE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+thread_local! {
+    static EVIDENCE_FILE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static EVIDENCE_RESPONSES_MATERIALIZED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 impl EvidenceBudget {
+    fn root(
+        &mut self,
+        root: &Path,
+    ) -> Option<std::sync::Arc<crate::analytics_history::NativeEvidenceRoot>> {
+        self.roots
+            .entry(root.to_owned())
+            .or_insert_with(|| {
+                crate::analytics_history::NativeEvidenceRoot::new(root)
+                    .ok()
+                    .map(std::sync::Arc::new)
+            })
+            .clone()
+    }
     fn visit(&mut self) -> bool {
         if self.entries >= MAX_EVIDENCE_ENTRIES {
             self.truncated = true;
@@ -717,7 +773,21 @@ impl EvidenceBudget {
             kind,
             incomplete,
             truncated,
+            reason: if truncated {
+                Some("Native evidence exceeded the request allowance")
+            } else if incomplete {
+                Some("Native evidence is unavailable or incomplete")
+            } else {
+                None
+            },
         });
+    }
+    fn reject(&mut self, path: &Path, kind: EvidenceFileKind, reason: &'static str) {
+        self.rejected += 1;
+        self.report(path, kind, true, false);
+        if let Some(report) = self.files.last_mut() {
+            report.reason = Some(reason);
+        }
     }
     fn load(
         &mut self,
@@ -741,10 +811,14 @@ impl EvidenceBudget {
         }
         // The importer owns confinement/open/regular-file validation. It runs on
         // every lookup, including hits, so a changed symlink cannot bypass it.
-        let opened = match crate::analytics_history::open_confined_native_file(root, path) {
+        let Some(anchor) = self.root(root) else {
+            self.reject(path, kind, "Configured native root is unavailable");
+            return None;
+        };
+        let opened = match anchor.open(path) {
             Ok(opened) => opened,
-            Err(_) => {
-                self.report(path, kind, true, false);
+            Err(error) => {
+                self.reject(path, kind, error.reason());
                 return None;
             }
         };
@@ -796,11 +870,10 @@ impl EvidenceBudget {
                         }
                     }
                     EvidenceFileKind::ClaudeJournal => {
-                        let (mut rows, bad_lines) =
-                            parse_claude_log_reader(std::io::Cursor::new(bytes));
+                        let (rows, bad_lines, limited) =
+                            parse_claude_log_reader_limited(std::io::Cursor::new(bytes), remaining);
                         incomplete |= bad_lines;
-                        truncated |= rows.len() > remaining;
-                        rows.truncate(remaining);
+                        truncated |= limited;
                         Some(NativeFileData::Claude(rows))
                     }
                     EvidenceFileKind::CodexRollout => {
@@ -815,11 +888,10 @@ impl EvidenceBudget {
                             incomplete = true;
                             None
                         } else {
-                            let (mut rows, bad_lines) =
-                                parse_codex_evidence(&bytes, thread.unwrap_or_default());
+                            let (rows, bad_lines, limited) =
+                                parse_codex_evidence(&bytes, thread.unwrap_or_default(), remaining);
                             incomplete |= bad_lines;
-                            truncated |= rows.len() > remaining;
-                            rows.truncate(remaining);
+                            truncated |= limited;
                             Some(NativeFileData::Codex(rows))
                         }
                     }
@@ -905,12 +977,9 @@ fn read_local_claude_usage_inner(
             .join("sessions")
             .join(format!("{thread_id}.json"));
         if let Some(budget) = budget.as_deref_mut() {
-            if let Some(cached) = budget.load(
-                &server_root.join("sessions"),
-                &state_path,
-                EvidenceFileKind::ClaudeState,
-                None,
-            ) && let Some(NativeFileData::State(native)) = &cached.data
+            if let Some(cached) =
+                budget.load(state_root, &state_path, EvidenceFileKind::ClaudeState, None)
+                && let Some(NativeFileData::State(native)) = &cached.data
             {
                 ids.extend(native.iter().cloned());
             }
@@ -924,6 +993,19 @@ fn read_local_claude_usage_inner(
             ids.extend(native.iter().cloned());
         }
         let projects = config.join("projects");
+        if let Some(budget) = budget.as_deref_mut() {
+            let Some(anchor) = budget.root(&config) else {
+                budget.report(&projects, EvidenceFileKind::ClaudeJournal, true, false);
+                continue;
+            };
+            if !budget.visit() {
+                break;
+            }
+            if let Err(error) = anchor.directory(&projects) {
+                budget.reject(&projects, EvidenceFileKind::ClaudeJournal, error.reason());
+                continue;
+            }
+        }
         let project_entries = match fs::read_dir(&projects) {
             Ok(entries) => entries,
             Err(_) => {
@@ -949,6 +1031,20 @@ fn read_local_claude_usage_inner(
                 }
             };
             let project_path = project.path();
+            if let Some(budget) = budget.as_deref_mut() {
+                let Some(anchor) = budget.root(&config) else {
+                    budget.report(&project_path, EvidenceFileKind::ClaudeJournal, true, false);
+                    continue;
+                };
+                if let Err(error) = anchor.directory(&project_path) {
+                    budget.reject(
+                        &project_path,
+                        EvidenceFileKind::ClaudeJournal,
+                        error.reason(),
+                    );
+                    continue;
+                }
+            }
             match project.file_type() {
                 Ok(kind) if kind.is_dir() => {}
                 Ok(_) => continue,
@@ -963,7 +1059,7 @@ fn read_local_claude_usage_inner(
                 let path = project_path.join(format!("{id}.jsonl"));
                 let log = if let Some(budget) = budget.as_deref_mut() {
                     let Some(cached) =
-                        budget.load(&project_path, &path, EvidenceFileKind::ClaudeJournal, None)
+                        budget.load(&config, &path, EvidenceFileKind::ClaudeJournal, None)
                     else {
                         continue;
                     };
@@ -1188,7 +1284,16 @@ fn parse_claude_log(path: &Path) -> Option<Vec<LogUsage>> {
     Some(parse_claude_log_reader(BufReader::new(file)).0)
 }
 
-fn parse_claude_log_reader(mut reader: impl BufRead) -> (Vec<LogUsage>, bool) {
+fn parse_claude_log_reader(reader: impl BufRead) -> (Vec<LogUsage>, bool) {
+    let (rows, incomplete, _) = parse_claude_log_reader_limited(reader, usize::MAX);
+    (rows, incomplete)
+}
+
+fn parse_claude_log_reader_limited(
+    mut reader: impl BufRead,
+    limit: usize,
+) -> (Vec<LogUsage>, bool, bool) {
+    let mut truncated = false;
     let mut incomplete = false;
     let mut rows: Vec<LogUsage> = Vec::new();
     let mut seen = BTreeMap::<String, usize>::new();
@@ -1270,7 +1375,13 @@ fn parse_claude_log_reader(mut reader: impl BufRead) -> (Vec<LogUsage>, bool) {
                 rows[index].tokens != tokens || rows[index].model != model;
             continue;
         }
+        if rows.len() == limit {
+            truncated = true;
+            continue;
+        }
         seen.insert(id.clone(), rows.len());
+        #[cfg(test)]
+        EVIDENCE_RESPONSES_MATERIALIZED.with(|count| count.set(count.get() + 1));
         rows.push(LogUsage {
             id,
             model,
@@ -1278,7 +1389,7 @@ fn parse_claude_log_reader(mut reader: impl BufRead) -> (Vec<LogUsage>, bool) {
             conflicting_usage: false,
         });
     }
-    (rows, incomplete)
+    (rows, incomplete, truncated)
 }
 
 fn valid_claude_timestamp(value: Option<&str>) -> bool {
@@ -1363,6 +1474,140 @@ mod tests {
         )
     }
 
+    fn reconciliation_codex_fixture(
+        root: &std::path::Path,
+    ) -> (CostMember, BTreeMap<String, Value>) {
+        fs::create_dir_all(root.join("sessions")).expect("sessions");
+        let mut lines = vec![
+            json!({"type":"session_meta","payload":{"id":"thread"}}),
+            json!({"type":"turn_context","payload":{"model":"gpt-test"}}),
+        ];
+        for id in ["one", "two", "three"] {
+            lines.push(json!({"type":"token_usage_record","payload":{"response_id":id,"usage":{"input_tokens":10,"output_tokens":2}}}));
+        }
+        lines.push(json!({"type":"token_usage_record","payload":{"response_id":"one","usage":{"input_tokens":10,"output_tokens":9}}}));
+        fs::write(
+            root.join("sessions/rollout-test-thread.jsonl"),
+            lines
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .expect("rollout");
+        (
+            member(json!({"accountKey":"codex","threadId":"thread"})),
+            BTreeMap::from([("codex".into(), json!({"provider":"codex","home":root}))]),
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn usage_reconciliation_journal_ancestor_symlink_cannot_escape_profile() {
+        let root = tempfile::tempdir().expect("state");
+        let external = tempfile::tempdir().expect("external");
+        let (members, accounts) = reconciliation_journal_fixture(root.path());
+        let projects = root.path().join("profile/projects");
+        fs::rename(&projects, external.path().join("projects")).expect("move projects");
+        std::os::unix::fs::symlink(external.path().join("projects"), &projects)
+            .expect("ancestor link");
+        let mut budget = super::EvidenceBudget::default();
+        let rows = super::read_local_claude_usage_inner(
+            root.path(),
+            &members,
+            &accounts,
+            Some(&mut budget),
+        )
+        .expect("comparison");
+        assert!(
+            rows.is_empty(),
+            "configured profile root must confine ancestors too"
+        );
+        assert!(budget.incomplete);
+        assert_eq!(budget.rejected, 1);
+        assert!(
+            budget
+                .files
+                .iter()
+                .any(|file| file.reason.is_some_and(|reason| reason.contains("symlink")))
+        );
+    }
+
+    #[test]
+    fn usage_reconciliation_discovery_consumes_remaining_request_entries() {
+        let root = tempfile::tempdir().expect("profile");
+        let (member, accounts) = reconciliation_codex_fixture(root.path());
+        let mut budget = super::EvidenceBudget {
+            entries: super::MAX_EVIDENCE_ENTRIES - 2,
+            ..Default::default()
+        };
+        let mut rows = BTreeMap::new();
+        super::read_codex_evidence(&member, &accounts, &mut rows, &mut budget).expect("comparison");
+        assert!(
+            budget.truncated,
+            "native discovery exhaustion must be truncation"
+        );
+        assert!(budget.entries <= super::MAX_EVIDENCE_ENTRIES);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn usage_reconciliation_claude_parser_materializes_only_remaining_responses() {
+        let root = tempfile::tempdir().expect("state");
+        let (members, accounts) = reconciliation_journal_fixture(root.path());
+        let journal = root.path().join("profile/projects/project/thread.jsonl");
+        let original: Value =
+            serde_json::from_slice(&fs::read(&journal).expect("journal")).expect("row");
+        let lines = ["one", "two", "three"].map(|id| {
+            let mut row = original.clone();
+            row["message"]["id"] = json!(id);
+            row.to_string()
+        });
+        let mut duplicate = original;
+        duplicate["message"]["id"] = json!("one");
+        duplicate["message"]["usage"]["output_tokens"] = json!(9);
+        fs::write(&journal, format!("{}\n{duplicate}", lines.join("\n"))).expect("rows");
+        super::EVIDENCE_RESPONSES_MATERIALIZED.with(|count| count.set(0));
+        let mut budget = super::EvidenceBudget {
+            responses: super::MAX_RECONCILIATION_RESPONSES - 1,
+            ..Default::default()
+        };
+        let rows = super::read_local_claude_usage_inner(
+            root.path(),
+            &members,
+            &accounts,
+            Some(&mut budget),
+        )
+        .expect("comparison");
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].usage.conflicting_usage);
+        assert_eq!(
+            super::EVIDENCE_RESPONSES_MATERIALIZED.with(std::cell::Cell::get),
+            1
+        );
+        assert!(budget.truncated);
+    }
+
+    #[test]
+    fn usage_reconciliation_codex_parser_materializes_only_remaining_responses() {
+        let root = tempfile::tempdir().expect("profile");
+        let (member, accounts) = reconciliation_codex_fixture(root.path());
+        super::EVIDENCE_RESPONSES_MATERIALIZED.with(|count| count.set(0));
+        let mut budget = super::EvidenceBudget {
+            responses: super::MAX_RECONCILIATION_RESPONSES - 1,
+            ..Default::default()
+        };
+        let mut rows = BTreeMap::new();
+        super::read_codex_evidence(&member, &accounts, &mut rows, &mut budget).expect("comparison");
+        assert_eq!(rows.len(), 1);
+        assert!(rows["one"].conflict);
+        assert_eq!(
+            super::EVIDENCE_RESPONSES_MATERIALIZED.with(std::cell::Cell::get),
+            1
+        );
+        assert!(budget.truncated);
+    }
+
     #[test]
     fn usage_reconciliation_partial_state_is_incomplete_instead_of_a_request_error() {
         let root = tempfile::tempdir().expect("state");
@@ -1438,6 +1683,34 @@ mod tests {
             1,
             "unchanged native evidence must be reused"
         );
+        let journal = root.path().join("profile/projects/project/thread.jsonl");
+        let original = fs::read_to_string(&journal).expect("original");
+        let replacement = journal.with_extension("replacement");
+        fs::write(&replacement, original.replace("response", "replaced")).expect("replacement");
+        fs::rename(&replacement, &journal).expect("replace inode");
+        let mut budget = super::EvidenceBudget::default();
+        let rows = super::read_local_claude_usage_inner(
+            root.path(),
+            &members,
+            &accounts,
+            Some(&mut budget),
+        )
+        .expect("replacement");
+        assert_eq!(rows[0].usage.id, "replaced");
+        assert_eq!(super::EVIDENCE_FILE_READS.with(std::cell::Cell::get), 2);
+        fs::write(&journal, b"").expect("truncate");
+        let mut budget = super::EvidenceBudget::default();
+        assert!(
+            super::read_local_claude_usage_inner(
+                root.path(),
+                &members,
+                &accounts,
+                Some(&mut budget)
+            )
+            .expect("truncated")
+            .is_empty()
+        );
+        assert_eq!(super::EVIDENCE_FILE_READS.with(std::cell::Cell::get), 3);
     }
 
     #[test]

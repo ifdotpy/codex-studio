@@ -14,6 +14,7 @@ pub struct DiscoveryRound {
     entries: usize,
     profile_entry_limit: usize,
     round_entry_limit: usize,
+    request_entries_remaining: Option<usize>,
 }
 
 impl Default for DiscoveryRound {
@@ -24,6 +25,7 @@ impl Default for DiscoveryRound {
             entries: 0,
             profile_entry_limit: MAX_PROFILE_DISCOVERY_ENTRIES,
             round_entry_limit: MAX_ROUND_DISCOVERY_ENTRIES,
+            request_entries_remaining: None,
         }
     }
 }
@@ -76,6 +78,24 @@ impl DiscoveryRound {
         self.entries = 0;
     }
 
+    /// Diagnostics supplies the remaining shared request allowance. Importer's
+    /// ordinary resolver keeps its existing limits and behavior.
+    pub(crate) fn resolve_with_entry_budget(
+        &mut self,
+        profile: &Path,
+        thread: &str,
+        cancel: &AtomicBool,
+        allowance: usize,
+    ) -> (Result<RolloutPath, HistoryError>, usize) {
+        if allowance == 0 {
+            return (Err(HistoryError::DiscoveryRoundLimit), 0);
+        }
+        self.request_entries_remaining = Some(allowance);
+        let result = self.resolve(profile, thread, cancel);
+        let remaining = self.request_entries_remaining.take().unwrap_or(allowance);
+        (result, allowance - remaining)
+    }
+
     pub fn resolve(
         &mut self,
         profile: &Path,
@@ -126,6 +146,12 @@ impl DiscoveryRound {
         })
     }
     fn visit(&mut self, profile_entries: &mut usize) -> Result<(), HistoryError> {
+        if let Some(remaining) = &mut self.request_entries_remaining {
+            if *remaining == 0 {
+                return Err(HistoryError::DiscoveryRoundLimit);
+            }
+            *remaining -= 1;
+        }
         *profile_entries += 1;
         if *profile_entries > self.profile_entry_limit {
             return Err(HistoryError::DiscoveryLimit);

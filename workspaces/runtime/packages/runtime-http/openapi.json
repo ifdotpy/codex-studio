@@ -56752,6 +56752,17 @@
             ],
             "type": "string"
           },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Human-readable coverage failure or refusal reason."
+          },
           "truncated": {
             "type": "boolean"
           }
@@ -56760,7 +56771,8 @@
           "file",
           "kind",
           "incomplete",
-          "truncated"
+          "truncated",
+          "reason"
         ],
         "type": "object"
       },
@@ -57149,7 +57161,17 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "rejectedEntries": {
+                "description": "Native paths refused by configured-root or regular-file validation.",
+                "minimum": 0,
+                "type": "integer"
+              },
               "responses": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknownRecorded": {
+                "description": "Recorded responses with absent or null token categories; excluded from known totals and token mismatch comparisons.",
                 "minimum": 0,
                 "type": "integer"
               }
@@ -57158,7 +57180,9 @@
               "responses",
               "missingRecorded",
               "missingEvidence",
-              "mismatched"
+              "mismatched",
+              "unknownRecorded",
+              "rejectedEntries"
             ],
             "type": "object"
           },

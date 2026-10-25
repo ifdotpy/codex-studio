@@ -86,9 +86,13 @@ mod tests {
         conflict["message"]["usage"]["output_tokens"] = json!(99);
         let mut missing = journal.clone();
         missing["message"]["id"] = json!("response-missing-recorded");
+        let mut unknown_null = journal.clone();
+        unknown_null["message"]["id"] = json!("response-unknown-null");
+        let mut unknown_missing = journal.clone();
+        unknown_missing["message"]["id"] = json!("response-unknown-missing");
         std::fs::write(
             project.join("thread.jsonl"),
-            format!("{journal}\n{conflict}\n{missing}\n"),
+            format!("{journal}\n{conflict}\n{missing}\n{unknown_null}\n{unknown_missing}\n"),
         )
         .expect("journal");
         std::fs::create_dir_all(root.path().join("model-pricing")).expect("pricing directory");
@@ -103,6 +107,13 @@ mod tests {
                 AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&json!({"id":id,"agentId":"archived","rootId":"archived",
                     "threadId":"thread","turnId":"turn","at":1,"accountKey":"claude","responseId":response,"model":"claude-sonnet-4-5",
                     "inputTokensAreUncached":true,"last":{"inputTokens":100,"cachedInputTokens":20,"cacheWriteInputTokens":5,"outputTokens":10},"total":{}}))?;
+            }
+            for (id, explicit_null) in [("response-unknown-null",true),("response-unknown-missing",false)] {
+                let mut row = json!({"id":id,"agentId":"archived","rootId":"archived","threadId":"thread","at":1,"accountKey":"claude",
+                    "responseId":id,"model":"claude-sonnet-4-5","inputTokensAreUncached":true,
+                    "last":{"cachedInputTokens":20,"cacheWriteInputTokens":5,"outputTokens":10},"total":{}});
+                if explicit_null { row["last"]["inputTokens"] = Value::Null; }
+                AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&row)?;
             }
             for (id,at,observation) in [
                 ("gap",2,json!({"kind":"gap","responseId":"response-gap","reason":"streamInterrupted"})),
@@ -172,7 +183,7 @@ mod tests {
                 serde_json::from_value(value.clone()).expect("generated route contract");
             assert_eq!(
                 value["counts"],
-                json!({"responses":3,"missingRecorded":1,"missingEvidence":1,"mismatched":1})
+                json!({"responses":5,"missingRecorded":1,"missingEvidence":1,"mismatched":1,"unknownRecorded":2,"rejectedEntries":0})
             );
             assert_eq!(value["gaps"][0]["responseId"], "response-gap");
             assert_eq!(
@@ -185,6 +196,17 @@ mod tests {
                 .iter()
                 .find(|row| row["responseId"] == "response-1")
                 .expect("matched response");
+            for id in ["response-unknown-null", "response-unknown-missing"] {
+                let unknown = value["responses"]
+                    .as_array()
+                    .expect("rows")
+                    .iter()
+                    .find(|row| row["responseId"] == id)
+                    .expect("unknown row");
+                assert!(unknown["recordedTokens"].is_null());
+                assert!(unknown["recordedCostUsd"].is_null());
+                assert_eq!(unknown["mismatched"], false);
+            }
             assert_eq!(row["recordedEvidence"], "legacy");
             assert_eq!(row["recordedTokens"]["output"], 10);
             assert_eq!(row["evidenceTokens"]["output"], 10);
@@ -192,7 +214,7 @@ mod tests {
             assert_eq!(row["recordedCostUsd"], json!(0.000135));
             assert_eq!(row["evidenceCostUsd"], json!(0.000135));
             assert_eq!(value["totals"]["recordedCostUsd"], json!(0.00027));
-            assert_eq!(value["totals"]["evidenceCostUsd"], json!(0.00027));
+            assert_eq!(value["totals"]["evidenceCostUsd"], json!(0.00054));
         }
         // A malformed or oversized native state file is a file-local coverage
         // failure; the direct journal remains useful and the route stays 200.
@@ -229,7 +251,7 @@ mod tests {
                 report["truncated"],
                 size > studio_runtime_services::costs::MAX_RECONCILIATION_NATIVE_BYTES
             );
-            assert_eq!(value["counts"]["responses"], 3);
+            assert_eq!(value["counts"]["responses"], 5);
             assert_eq!(value["responses"][0]["evidenceTokens"]["output"], 10);
         }
     }

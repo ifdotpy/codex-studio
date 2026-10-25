@@ -638,3 +638,10 @@ evidence by the validated open file's identity and parser inputs. One request
 shares the byte, entry and response allowances in `costs.rs` across every state,
 journal and rollout file. A damaged, unreadable or truncated file contributes a
 `files` coverage report; other valid evidence stays available.
+
+Configured native roots and their ancestors may be symlinks; validation rejects
+symlinks only on traversed descendant paths. Discovery charges examined entries
+to the same diagnostic request allowance, and response parsers retain at most the
+remaining response allowance while still detecting conflicting retained replays.
+The diagnostic counts unknown recorded responses separately: absent/null categories
+remain unknown, contribute no known totals, and do not create token mismatches.

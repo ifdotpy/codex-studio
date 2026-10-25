@@ -726,20 +726,21 @@ pub(crate) struct OpenedNativeFile {
 
 pub(crate) enum NativeFileRejection {
     OutsideProfile,
+    Symlink,
     IdentityChanged,
     Unreadable,
 }
 impl NativeFileRejection {
     fn status(&self) -> &'static str {
         match self {
-            Self::OutsideProfile => "outsideProfile",
+            Self::OutsideProfile | Self::Symlink => "outsideProfile",
             Self::IdentityChanged => "identityChanged",
             Self::Unreadable => "unreadable",
         }
     }
     fn message(&self) -> &'static str {
         match self {
-            Self::OutsideProfile => "Native rollout outsideProfile",
+            Self::OutsideProfile | Self::Symlink => "Native rollout outsideProfile",
             Self::IdentityChanged => "Native rollout changed while opening",
             Self::Unreadable => "Native rollout unreadable",
         }
@@ -749,53 +750,126 @@ pub(crate) enum NativeFileOpenError {
     Read(HistoryError),
     Refused(NativeFileRejection),
 }
+impl NativeFileOpenError {
+    pub(crate) fn reason(&self) -> &'static str {
+        match self {
+            Self::Read(_) => "Native path could not be read",
+            Self::Refused(NativeFileRejection::Symlink) => {
+                "Native path traverses a symlink below its configured root"
+            }
+            Self::Refused(NativeFileRejection::OutsideProfile) => {
+                "Native path is outside its configured root"
+            }
+            Self::Refused(NativeFileRejection::IdentityChanged) => {
+                "Native file changed identity while opening"
+            }
+            Self::Refused(NativeFileRejection::Unreadable) => "Native path has the wrong file kind",
+        }
+    }
+}
 
-/// Shared by the importer and read-only diagnostics; never opens a non-regular
-/// file or a canonical target outside the expected native profile/session root.
+/// A configured native root, resolved once. The root and its ancestors may be
+/// symlinks; only descendants along a traversed session path are rejected.
+pub(crate) struct NativeEvidenceRoot {
+    configured: PathBuf,
+    canonical: CanonicalPath,
+}
+impl NativeEvidenceRoot {
+    pub(crate) fn new(root: &Path) -> Result<Self, NativeFileOpenError> {
+        let canonical = CanonicalPath::existing(root).map_err(|error| {
+            NativeFileOpenError::Read(HistoryError::io(PROFILE_DIRECTORY)(error))
+        })?;
+        Ok(Self {
+            configured: root.to_owned(),
+            canonical,
+        })
+    }
+    fn path(&self, path: &Path) -> Result<CanonicalPath, NativeFileOpenError> {
+        let (mut walked, relative) = if let Ok(relative) = path.strip_prefix(&self.configured) {
+            (self.configured.clone(), relative)
+        } else if let Ok(relative) = path.strip_prefix(self.canonical.as_path()) {
+            (self.canonical.as_path().to_owned(), relative)
+        } else {
+            return Err(NativeFileOpenError::Refused(
+                NativeFileRejection::OutsideProfile,
+            ));
+        };
+        for component in relative.components() {
+            match component {
+                std::path::Component::Normal(name) => walked.push(name),
+                std::path::Component::CurDir => continue,
+                _ => {
+                    return Err(NativeFileOpenError::Refused(
+                        NativeFileRejection::OutsideProfile,
+                    ));
+                }
+            }
+            let metadata = fs::symlink_metadata(&walked).map_err(|error| {
+                NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error))
+            })?;
+            if metadata.file_type().is_symlink() {
+                return Err(NativeFileOpenError::Refused(NativeFileRejection::Symlink));
+            }
+        }
+        let resolved = CanonicalPath::existing(path)
+            .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?;
+        if !resolved.starts_with(&self.canonical) {
+            return Err(NativeFileOpenError::Refused(
+                NativeFileRejection::OutsideProfile,
+            ));
+        }
+        Ok(resolved)
+    }
+    pub(crate) fn directory(&self, path: &Path) -> Result<PathBuf, NativeFileOpenError> {
+        let resolved = self.path(path)?;
+        if !resolved.is_dir() {
+            return Err(NativeFileOpenError::Refused(
+                NativeFileRejection::Unreadable,
+            ));
+        }
+        Ok(resolved.into_path_buf())
+    }
+    pub(crate) fn open(&self, path: &Path) -> Result<OpenedNativeFile, NativeFileOpenError> {
+        let resolved = self.path(path)?;
+        let before = fs::metadata(&resolved)
+            .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?;
+        if !before.is_file() {
+            return Err(NativeFileOpenError::Refused(
+                NativeFileRejection::Unreadable,
+            ));
+        }
+        let file = File::open(&resolved)
+            .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?;
+        if filesystem_identity(&before) != filesystem_identity(&metadata)
+            || self.path(path)? != resolved
+        {
+            return Err(NativeFileOpenError::Refused(
+                NativeFileRejection::IdentityChanged,
+            ));
+        }
+        if !metadata.is_file() {
+            return Err(NativeFileOpenError::Refused(
+                NativeFileRejection::Unreadable,
+            ));
+        }
+        Ok(OpenedNativeFile {
+            file,
+            metadata,
+            path: resolved.into_path_buf(),
+        })
+    }
+}
+
+/// Shared by importer and diagnostics; regular files remain pinned to the
+/// configured root and no traversed descendant can authorize a symlink escape.
 pub(crate) fn open_confined_native_file(
     root: &Path,
     path: &Path,
 ) -> Result<OpenedNativeFile, NativeFileOpenError> {
-    let resolved = CanonicalPath::existing(path)
-        .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?;
-    let root = CanonicalPath::existing(root)
-        .map_err(|error| NativeFileOpenError::Read(HistoryError::io(PROFILE_DIRECTORY)(error)))?;
-    if !resolved.starts_with(root) {
-        return Err(NativeFileOpenError::Refused(
-            NativeFileRejection::OutsideProfile,
-        ));
-    }
-    let before = fs::metadata(&resolved)
-        .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?;
-    if !before.is_file() {
-        return Err(NativeFileOpenError::Refused(
-            NativeFileRejection::Unreadable,
-        ));
-    }
-    let file = File::open(&resolved)
-        .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?;
-    if filesystem_identity(&before) != filesystem_identity(&metadata)
-        || CanonicalPath::existing(path)
-            .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?
-            != resolved
-    {
-        return Err(NativeFileOpenError::Refused(
-            NativeFileRejection::IdentityChanged,
-        ));
-    }
-    if !metadata.is_file() {
-        return Err(NativeFileOpenError::Refused(
-            NativeFileRejection::Unreadable,
-        ));
-    }
-    Ok(OpenedNativeFile {
-        file,
-        metadata,
-        path: resolved.into_path_buf(),
-    })
+    NativeEvidenceRoot::new(root)?.open(path)
 }
 
 /// Native session header identity; the first supported alias is authoritative.
@@ -1522,5 +1596,45 @@ mod invalid_record_tests {
                     .is_some_and(|diagnostic| diagnostic.contains("analytics_history/"))
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod native_validation_tests {
+    #[test]
+    fn usage_reconciliation_importer_keeps_nested_sessions_and_symlinked_roots() {
+        use super::*;
+        let directory = tempfile::tempdir().expect("native profile");
+        let profile = directory.path().join("profile");
+        let nested = profile.join("sessions/2026/10/25");
+        fs::create_dir_all(&nested).expect("nested sessions");
+        fs::write(
+            nested.join("rollout-test-thread.jsonl"),
+            format!(
+                "{}\n",
+                json!({"type":"session_meta","payload":{"id":"thread"}})
+            ),
+        )
+        .expect("rollout");
+        #[cfg(unix)]
+        let profile = {
+            let alias = directory.path().join("configured-profile");
+            std::os::unix::fs::symlink(&profile, &alias).expect("configured root alias");
+            alias
+        };
+        let path = profile.join("sessions/2026/10/25/rollout-test-thread.jsonl");
+        let agent = json!({"id":"agent","rootId":"agent","threadId":"thread","accountKey":"default","provider":"codex"});
+        let batch = prepare(
+            HistorySnapshot::from_records(agent, None).expect("snapshot"),
+            &profile,
+            RolloutPath::Found(path),
+            BatchLimits::default(),
+            1.0,
+            &AtomicBool::new(false),
+        )
+        .expect("import nested native file");
+        assert!(batch.advanced());
+        assert_eq!(batch.checkpoint()["status"], "current");
+        assert_eq!(batch.checkpoint()["importedRecords"], 1);
     }
 }

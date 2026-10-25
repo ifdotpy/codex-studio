@@ -391,3 +391,8 @@ incomplete/truncated flags. Native file failures remain local to that report;
 they do not turn the comparison into an HTTP error. Native reads use shared
 importer confinement and session-header checks, cached parsing, and one request
 budget owned by [`costs.rs`](../runtime-services/src/costs.rs).
+
+`counts.unknownRecorded` reports recorded responses whose legacy categories are
+absent or null. Such rows retain null tokens/costs, are excluded from known totals,
+and are not token mismatches. `counts.rejectedEntries` and each file's `reason`
+explain native path validation refusals without aborting other evidence reads.

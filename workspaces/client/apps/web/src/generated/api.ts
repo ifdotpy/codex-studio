@@ -24757,6 +24757,8 @@ export interface components {
       incomplete: boolean;
       /** @enum {string} */
       kind: "claudeState" | "claudeJournal" | "codexRollout";
+      /** @description Human-readable coverage failure or refusal reason. */
+      reason: string | null;
       truncated: boolean;
     };
     /**
@@ -24903,7 +24905,11 @@ export interface components {
         mismatched: number;
         missingEvidence: number;
         missingRecorded: number;
+        /** @description Native paths refused by configured-root or regular-file validation. */
+        rejectedEntries: number;
         responses: number;
+        /** @description Recorded responses with absent or null token categories; excluded from known totals and token mismatch comparisons. */
+        unknownRecorded: number;
       };
       files: components["schemas"]["UsageEvidenceFile"][];
       gaps: components["schemas"]["UsageObservation"][];
