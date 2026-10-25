@@ -14,7 +14,8 @@
         "cacheReadInput": 32,
         "cacheWriteInput": 42,
         "output": 720,
-        "reasoningOutput": 20
+        "reasoningOutput": 20,
+        "cacheWriteInput1h": 0
       }
     }
   },

@@ -5,6 +5,10 @@ import os from "node:os";
 import { isDeepStrictEqual } from "node:util";
 import { execFileSync } from "node:child_process";
 
+// Owner: runtime-services/src/pricing.rs; parity checked by installed-smoke tests.
+// Ratio of one-hour cache-write USD/million to the selected input USD/million.
+export const CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER = 2.0;
+
 export const NOTES_FILE = "notes.txt";
 export const NOTES_MARKER = "STUDIO_USAGE_READ_ONLY_NOTE";
 
@@ -37,6 +41,14 @@ export function nativeTokens(usage, provider) {
       usage.cache_write_input_tokens ??
       usage.cacheWriteInputTokens ??
       0,
+    ...(provider === "claude"
+      ? {
+          cacheWriteInput1h: Math.min(
+            usage.cache_creation?.ephemeral_1h_input_tokens ?? 0,
+            usage.cache_creation_input_tokens ?? 0,
+          ),
+        }
+      : {}),
     output: usage.output_tokens ?? usage.outputTokens ?? 0,
     reasoningOutput:
       usage.reasoning_output_tokens ?? usage.reasoningOutputTokens ?? 0,
@@ -44,14 +56,21 @@ export function nativeTokens(usage, provider) {
 }
 
 export function sumTokens(rows) {
-  return Object.fromEntries(
-    TOKEN_CATEGORIES.map((key) => [
-      key,
-      rows.some((row) => row.tokens[key] == null)
-        ? null
-        : rows.reduce((sum, row) => sum + row.tokens[key], 0),
-    ]),
-  );
+  return {
+    ...Object.fromEntries(
+      TOKEN_CATEGORIES.map((key) => [
+        key,
+        rows.some((row) => row.tokens[key] == null)
+          ? null
+          : rows.reduce((sum, row) => sum + row.tokens[key], 0),
+      ]),
+    ),
+    // Contract v4: an absent lifetime split contributes zero one-hour writes.
+    cacheWriteInput1h: rows.reduce(
+      (sum, row) => sum + (row.tokens.cacheWriteInput1h ?? 0),
+      0,
+    ),
+  };
 }
 
 export function totalTokens(tokens) {
@@ -286,6 +305,13 @@ export function usageTable(evidence, label) {
     "recorded USD": row.recorded.recomputedCostUsd ?? null,
     "truth USD": row.truth.recomputedCostUsd ?? null,
     "saved truth USD": row.truth.costUsd ?? null,
+    "CLI provider USD":
+      row.provider === "claude"
+        ? (row.reconciliation?.providerCosts?.reduce(
+            (sum, model) => sum + model.providerCostUsd,
+            0,
+          ) ?? null)
+        : null,
     "saved displayed USD": row.displayedCost?.totalUSD ?? null,
     "analytics latency":
       row.analyticsLatency
@@ -367,7 +393,15 @@ export function compareEvidence(oldEvidence, newEvidence) {
         ...row,
         truth: {
           ...row.truth,
-          recomputedCostUsd: reprice(row.truth?.responses, row.provider),
+          recomputedCostUsd: reprice(
+            row.truth?.responses?.map((response) => ({
+              ...response,
+              tokens: response.rawUsage
+                ? nativeTokens(response.rawUsage, row.provider)
+                : response.tokens,
+            })),
+            row.provider,
+          ),
         },
         recorded: recorded
           ? {
@@ -412,10 +446,12 @@ export function priceResponses(responses, catalog, provider) {
       thresholds.some((threshold) => context >= threshold)
     )
       throw new Error("Usage smoke exceeds base-rate pricing scope");
+    const hour = tokens.cacheWriteInput1h ?? 0;
     const parts = [
       [tokens.uncachedInput, cost.input],
       [tokens.cacheReadInput, cost.cache_read],
-      [tokens.cacheWriteInput, cost.cache_write],
+      [tokens.cacheWriteInput - hour, cost.cache_write],
+      [hour, cost.input * CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER],
       [tokens.output, cost.output],
     ];
     if (parts.some(([tokens, rate]) => tokens > 0 && !Number.isFinite(rate)))

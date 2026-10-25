@@ -327,6 +327,10 @@ impl RawRates {
     }
 }
 
+/// Anthropic one-hour cache-write USD per million as a ratio to the selected input rate.
+/// Other-language consumers: installed-smoke/usage.mjs, guarded by its owner parity test.
+pub const CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER: f64 = 2.0;
+
 /// Token counts of one priced sample; a missing count is `None`.
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -334,6 +338,7 @@ pub struct TokenUsage {
     pub input_tokens: Option<f64>,
     pub cached_input_tokens: Option<f64>,
     pub cache_write_input_tokens: Option<f64>,
+    pub cache_write_input_1h_tokens: Option<f64>,
     pub output_tokens: Option<f64>,
 }
 
@@ -396,13 +401,19 @@ fn price_with_rates(
     let write_rate = selected
         .and_then(|tier| tier.cache_write)
         .or(rates.cache_write);
-    if (cached > 0.0 && read_rate.is_none()) || (cache_write > 0.0 && write_rate.is_none()) {
+    let hour = match usage.cache_write_input_1h_tokens {
+        None => 0.0,
+        Some(value) if value.is_finite() && value >= 0.0 && value <= cache_write => value,
+        Some(_) => return Price::incomplete(tier_used),
+    };
+    if (cached > 0.0 && read_rate.is_none()) || (cache_write > hour && write_rate.is_none()) {
         return Price::incomplete(tier_used);
     }
     let total = (base * input_rate
         + output * output_rate
         + cached * read_rate.unwrap_or(0.0)
-        + cache_write * write_rate.unwrap_or(0.0))
+        + (cache_write - hour) * write_rate.unwrap_or(0.0)
+        + hour * CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER * input_rate)
         / 1_000_000.0;
     Price {
         amount_usd: Some(total),
@@ -438,6 +449,24 @@ mod tests {
         .expect("valid catalog")
     }
 
+    #[test]
+    fn cache_write_1h_prices_selected_input_tier_and_preserves_legacy() {
+        let catalog = catalog();
+        let split = usage(
+            json!({"inputTokens":100,"cachedInputTokens":20,"cacheWriteInputTokens":10,"cacheWriteInput1hTokens":6,"outputTokens":5}),
+        );
+        let price = catalog.price_usage("openai", "gpt-test", split, Some(100.0), true);
+        assert_eq!(price.amount_usd, Some(384.0 / 1_000_000.0));
+        let legacy = usage(
+            json!({"inputTokens":100,"cachedInputTokens":20,"cacheWriteInputTokens":10,"outputTokens":5}),
+        );
+        assert_eq!(
+            catalog
+                .price_usage("openai", "gpt-test", legacy, Some(100.0), true)
+                .amount_usd,
+            Some(360.0 / 1_000_000.0)
+        );
+    }
     #[test]
     fn prices_cached_tokens_and_inclusive_context_tier() {
         let value = catalog().price_usage(

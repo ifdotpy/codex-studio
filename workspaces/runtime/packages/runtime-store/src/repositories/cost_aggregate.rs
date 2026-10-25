@@ -40,10 +40,10 @@ CREATE TABLE analytics_cost_rows (
     id TEXT PRIMARY KEY, root TEXT NOT NULL, agent TEXT NOT NULL, thread TEXT, turn TEXT,
     seq INTEGER NOT NULL, at REAL NOT NULL, model TEXT, account_key TEXT, response TEXT,
     input REAL, cached REAL, cache_write REAL, output REAL, uncached INTEGER NOT NULL,
-    counted INTEGER NOT NULL, counted_model TEXT, eligible INTEGER, final_evidence INTEGER NOT NULL);
+    counted INTEGER NOT NULL, counted_model TEXT, eligible INTEGER, final_evidence INTEGER NOT NULL, cache_write_1h REAL);
 CREATE TABLE analytics_cost_groups (
     root TEXT NOT NULL, model TEXT, account TEXT NOT NULL, input REAL, cached REAL,
-    cache_write REAL, output REAL, uncached INTEGER NOT NULL, count INTEGER NOT NULL);
+    cache_write REAL, output REAL, uncached INTEGER NOT NULL, count INTEGER NOT NULL, cache_write_1h REAL);
 ";
 
 /// Indexes of the aggregate, built after the backfill loaded its rows.
@@ -57,7 +57,7 @@ CREATE INDEX analytics_cost_groups_key ON analytics_cost_groups(
 ";
 
 const ROW_COLUMNS: &str = "id,agent,thread,turn,seq,at,model,account_key,response,\
-    input,cached,cache_write,output,uncached,counted,counted_model,eligible,final_evidence";
+    input,cached,cache_write,output,uncached,counted,counted_model,eligible,final_evidence,cache_write_1h";
 
 /// The account key of a usage row or agent record without `accountKey`.
 pub const DEFAULT_ACCOUNT: &str = "default";
@@ -88,6 +88,7 @@ pub struct CostTokens {
     pub input_tokens: Option<f64>,
     pub cached_input_tokens: Option<f64>,
     pub cache_write_input_tokens: Option<f64>,
+    pub cache_write_input_1h_tokens: Option<f64>,
     pub output_tokens: Option<f64>,
 }
 
@@ -109,6 +110,7 @@ impl From<&UsageTokens> for CostTokens {
             input_tokens: Some(tokens.uncached_input as f64),
             cached_input_tokens: Some(tokens.cache_read_input as f64),
             cache_write_input_tokens: Some(tokens.cache_write_input as f64),
+            cache_write_input_1h_tokens: tokens.cache_write_input_1h.map(|n| n as f64),
             output_tokens: Some(tokens.output as f64),
         }
     }
@@ -373,6 +375,7 @@ struct GroupKey {
     input: Option<u64>,
     cached: Option<u64>,
     cache_write: Option<u64>,
+    cache_write_1h: Option<u64>,
     output: Option<u64>,
     uncached: bool,
 }
@@ -429,6 +432,7 @@ impl CostRow {
                 input_tokens: row.get(base + 9)?,
                 cached_input_tokens: row.get(base + 10)?,
                 cache_write_input_tokens: row.get(base + 11)?,
+                cache_write_input_1h_tokens: row.get(base + 18)?,
                 output_tokens: row.get(base + 12)?,
             },
             uncached: row.get(base + 13)?,
@@ -449,6 +453,7 @@ impl CostRow {
             input: amount_key(self.tokens.input_tokens),
             cached: amount_key(self.tokens.cached_input_tokens),
             cache_write: amount_key(self.tokens.cache_write_input_tokens),
+            cache_write_1h: amount_key(self.tokens.cache_write_input_1h_tokens),
             output: amount_key(self.tokens.output_tokens),
             uncached: self.uncached,
         }
@@ -597,6 +602,19 @@ pub fn install(db: &Connection) -> StoreResult<()> {
         if !columns.contains("final_evidence") {
             db.execute_batch("ALTER TABLE analytics_cost_rows ADD COLUMN final_evidence INTEGER NOT NULL DEFAULT 0")?;
         }
+        // Nullable columns are metadata-only additions: preserve every old fact/group.
+        for table in ["analytics_cost_rows", "analytics_cost_groups"] {
+            let has_split = db
+                .prepare(&format!("PRAGMA table_info({table})"))?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<HashSet<_>, _>>()?
+                .contains("cache_write_1h");
+            if !has_split {
+                db.execute_batch(&format!(
+                    "ALTER TABLE {table} ADD COLUMN cache_write_1h REAL"
+                ))?;
+            }
+        }
     }
     Ok(())
 }
@@ -667,7 +685,7 @@ fn backfill(db: &Connection) -> StoreResult<()> {
     count_scope(&scope_root, &scope)?;
     for ((root, key), count) in groups {
         db.execute_cached(
-            "INSERT INTO analytics_cost_groups VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO analytics_cost_groups VALUES (?,?,?,?,?,?,?,?,?,?)",
             params![
                 root,
                 key.model,
@@ -677,7 +695,8 @@ fn backfill(db: &Connection) -> StoreResult<()> {
                 amount(key.cache_write),
                 amount(key.output),
                 key.uncached,
-                count
+                count,
+                amount(key.cache_write_1h)
             ],
         )?;
     }
@@ -735,7 +754,7 @@ fn cost_row(
 
 fn insert_row(db: &Connection, root: &str, row: &CostRow) -> rusqlite::Result<usize> {
     db.execute_cached(
-        "INSERT INTO analytics_cost_rows VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO analytics_cost_rows VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         params![
             row.id,
             root,
@@ -755,7 +774,8 @@ fn insert_row(db: &Connection, root: &str, row: &CostRow) -> rusqlite::Result<us
             row.counted.is_some(),
             row.counted.clone().flatten(),
             row.eligible,
-            row.final_evidence
+            row.final_evidence,
+            row.tokens.cache_write_input_1h_tokens
         ],
     )
 }
@@ -763,7 +783,7 @@ fn insert_row(db: &Connection, root: &str, row: &CostRow) -> rusqlite::Result<us
 /// Add `delta` rows to one group of `root`, deleting a group that reaches zero.
 fn add_to_group(db: &Connection, root: &str, key: &GroupKey, delta: i64) -> rusqlite::Result<()> {
     const MATCH: &str = "root=?2 AND model IS ?3 AND account=?4 AND input IS ?5 AND cached IS ?6 \
-        AND cache_write IS ?7 AND output IS ?8 AND uncached=?9";
+        AND cache_write IS ?7 AND output IS ?8 AND uncached=?9 AND cache_write_1h IS ?10";
     let values = params![
         delta,
         root,
@@ -773,7 +793,8 @@ fn add_to_group(db: &Connection, root: &str, key: &GroupKey, delta: i64) -> rusq
         amount(key.cached),
         amount(key.cache_write),
         amount(key.output),
-        key.uncached
+        key.uncached,
+        amount(key.cache_write_1h)
     ];
     let updated = db.execute_cached(
         &format!("UPDATE analytics_cost_groups SET count=count+?1 WHERE {MATCH}"),
@@ -781,7 +802,7 @@ fn add_to_group(db: &Connection, root: &str, key: &GroupKey, delta: i64) -> rusq
     )?;
     if updated == 0 {
         db.execute_cached(
-            "INSERT INTO analytics_cost_groups VALUES (?2,?3,?4,?5,?6,?7,?8,?9,?1)",
+            "INSERT INTO analytics_cost_groups VALUES (?2,?3,?4,?5,?6,?7,?8,?9,?1,?10)",
             values,
         )?;
     } else if delta < 0 {
@@ -938,7 +959,7 @@ pub fn cost_groups(
 ) -> Result<Vec<CostGroup>, StoreError> {
     let mut groups = db
         .prepare_cached(
-            "SELECT model,account,input,cached,cache_write,output,uncached,count
+            "SELECT model,account,input,cached,cache_write,output,uncached,count,cache_write_1h
              FROM analytics_cost_groups WHERE root=?1",
         )?
         .query_map([root], |row| {
@@ -949,6 +970,7 @@ pub fn cost_groups(
                     input: amount_key(row.get(2)?),
                     cached: amount_key(row.get(3)?),
                     cache_write: amount_key(row.get(4)?),
+                    cache_write_1h: amount_key(row.get(8)?),
                     output: amount_key(row.get(5)?),
                     uncached: row.get(6)?,
                 },
@@ -997,6 +1019,7 @@ pub fn cost_groups(
                 input_tokens: amount(key.input),
                 cached_input_tokens: amount(key.cached),
                 cache_write_input_tokens: amount(key.cache_write),
+                cache_write_input_1h_tokens: amount(key.cache_write_1h),
                 output_tokens: amount(key.output),
             },
             input_uncached: key.uncached,
@@ -1013,6 +1036,24 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::json;
     use std::path::Path;
+
+    #[tokio::test]
+    async fn typed_usage_cache_write_1h_separates_cost_groups() {
+        let temp = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_,StoreError>(|tx,_| {
+            for (id,split) in [("legacy",None),("zero",Some(0)),("hour",Some(10))] {
+                let mut tokens = json!({"uncachedInput":1,"cacheReadInput":2,"cacheWriteInput":10,"output":3});
+                if let Some(split) = split { tokens["cacheWriteInput1h"] = json!(split); }
+                AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&json!({"id":id,"agentId":"agent","rootId":"root","at":1,"last":{},"total":{},
+                    "studioUsage":{"kind":"response","responseId":id,"model":"claude-test","evidence":"live","tokens":tokens}}))?;
+            }
+            let groups = super::cost_groups(tx,"root",&Default::default())?;
+            assert_eq!(groups.len(),3,"absence, zero and one-hour costs have distinct identities");
+            assert!(groups.iter().all(|group| group.count==1));
+            Ok(())
+        }).await.expect("split groups");
+    }
 
     #[test]
     fn typed_usage_migrated_suppression_uses_linear_predicate_work() {
@@ -1180,6 +1221,20 @@ mod tests {
         assert_eq!(groups[0].tokens.input_tokens, Some(10.0));
         assert_eq!(groups[0].tokens.output_tokens, Some(2.0));
         assert_eq!(groups[0].count, 1);
+        assert_eq!(groups[0].tokens.cache_write_input_1h_tokens, None);
+        super::install(&db).expect("migration is idempotent");
+        assert_eq!(
+            super::cost_groups(&db, "root", &Default::default()).expect("groups"),
+            groups
+        );
+        let split: Option<f64> = db
+            .query_row(
+                "SELECT cache_write_1h FROM analytics_cost_rows WHERE id='legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy fact");
+        assert_eq!(split, None, "migration never invents a legacy lifetime");
     }
 
     #[tokio::test]

@@ -207,6 +207,7 @@ fn tokens(value: &Value, provider: UsageProvider) -> Result<UsageTokens, UsagePa
         uncached_input,
         cache_read_input,
         cache_write_input,
+        cache_write_input_1h: None,
         output: count("outputTokens", true)?,
         reasoning_output: value
             .get("reasoningOutputTokens")
