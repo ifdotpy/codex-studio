@@ -303,10 +303,10 @@ test("native platform filter keeps every common clause identical", () => {
   assert.match(source, /inherits = "ci"/);
 });
 
-test("only the two exact Git process fixtures reserve all fast runner slots", () => {
+test("only the four exact Git process fixtures reserve all fast runner slots", () => {
   const source = readFileSync(".config/nextest.toml", "utf8");
   const expectedFilter =
-    "package(=studio-runtime-services) & kind(lib) & (test(=agent_management_store::archive_finished_tests::archive_finished_removes_accepted_worktree_and_target_and_keeps_dirty_work) | test(=task_gate::tests::acceptance_gate_command_checks_revision_source_changes_and_exit_code))";
+    "package(=studio-runtime-services) & kind(lib) & (test(=agent_management_store::archive_finished_tests::archive_finished_removes_accepted_worktree_and_target_and_keeps_dirty_work) | test(=task_gate::tests::acceptance_gate_command_checks_revision_source_changes_and_exit_code) | test(=bounded_child::tests::fixture_git_config_does_not_read_the_supplied_hostile_global_file) | test(=bounded_child::tests::fixture_git_config_isolates_nested_git_and_preserves_other_request_inputs))";
   const reservations = [
     ...source.matchAll(
       /\[\[profile\.([^\].]+)\.overrides\]\]\n([\s\S]*?)(?=\n\[|$)/g,

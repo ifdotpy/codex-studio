@@ -119,7 +119,7 @@ default-filter = '''
 # These real Git process chains keep their existing deadlines without competing
 # with other nextest cases. Reserve slots only for these exact library tests.
 [[profile.fast.overrides]]
-filter = 'package(=studio-runtime-services) & kind(lib) & (test(=agent_management_store::archive_finished_tests::archive_finished_removes_accepted_worktree_and_target_and_keeps_dirty_work) | test(=task_gate::tests::acceptance_gate_command_checks_revision_source_changes_and_exit_code))'
+filter = 'package(=studio-runtime-services) & kind(lib) & (test(=agent_management_store::archive_finished_tests::archive_finished_removes_accepted_worktree_and_target_and_keeps_dirty_work) | test(=task_gate::tests::acceptance_gate_command_checks_revision_source_changes_and_exit_code) | test(=bounded_child::tests::fixture_git_config_does_not_read_the_supplied_hostile_global_file) | test(=bounded_child::tests::fixture_git_config_isolates_nested_git_and_preserves_other_request_inputs))'
 threads-required = "num-test-threads"
 
 # Nextest platform overrides replace the whole filter and have no filter aliases.
