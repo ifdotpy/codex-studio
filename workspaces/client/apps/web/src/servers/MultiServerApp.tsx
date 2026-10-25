@@ -68,6 +68,7 @@ import ServerManager from "./ServerManager";
 import ServerAccountsPanel from "./ServerAccountsPanel";
 import { accountServers } from "./accountServers";
 import { readServerAccounts, type ServerAccount } from "./navigation";
+import { serverAccountRows } from "./serverAccountRows";
 import {
   studioPreferencesStorageKey,
   parseStudioPreferences,
@@ -765,6 +766,22 @@ function MultiServerShell({
         ?.focus({ preventScroll: true });
     });
   };
+  const rememberAccountFocus = (
+    serverId: string,
+    command: Extract<
+      ServerCommand,
+      { action: "account-sign-in" | "account-action" }
+    >,
+  ) => {
+    const exact = command.accountKey
+      ? serverAccountRows(accountsServers, accountsByServer).find(
+          (row) => row.byServer[serverId]?.accountKey === command.accountKey,
+        )
+      : undefined;
+    restoreAccountActionFocus.current =
+      exact?.key ||
+      `${command.provider}:${(command.email || command.label).toLocaleLowerCase()}`;
+  };
   const settings = (
     <Modal
       opened={manager}
@@ -806,7 +823,7 @@ function MultiServerShell({
               }}
               startAccount={(id, command) => {
                 restoreManagerAfterAccountDialog.current = manager;
-                restoreAccountActionFocus.current = `${command.provider}:${(command.email || command.label).toLocaleLowerCase()}`;
+                rememberAccountFocus(id, command);
                 if (servers.some((server) => server.id === id))
                   setManager(false);
                 else discovery.addAgain(id);
@@ -814,7 +831,7 @@ function MultiServerShell({
               }}
               accountAction={(id, command) => {
                 restoreManagerAfterAccountDialog.current = manager;
-                restoreAccountActionFocus.current = `${command.provider}:${(command.email || command.label).toLocaleLowerCase()}`;
+                rememberAccountFocus(id, command);
                 setManager(false);
                 send(id, command);
               }}

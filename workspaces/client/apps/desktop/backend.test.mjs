@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import {
   realpathSync,
   mkdtempSync,
@@ -31,6 +31,32 @@ const record = {
 };
 const timing = { attemptTimeoutMs: 50, timeoutMs: 250, retryDelayMs: 10 };
 
+afterEach(() => {
+  vi.clearAllTimers();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+function virtualTimeouts() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  // Node's native AbortSignal.timeout does not follow Vitest's fake clock.
+  vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+    const controller = new AbortController();
+    setTimeout(
+      () => controller.abort(new DOMException("Timed out", "TimeoutError")),
+      ms,
+    );
+    return controller.signal;
+  });
+}
+const aborted = (signal) =>
+  new Promise((_, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), {
+      once: true,
+    });
+  });
+
 test("desktop recognizes backend exit by signal during startup", () => {
   assert.equal(
     backendExitStatus({ exitCode: null, signalCode: "SIGTERM" }),
@@ -51,104 +77,91 @@ async function serve(handler, run) {
   }
 }
 
-test("retry a timed-out identity read", async () => {
-  let calls = 0;
-  await serve(
-    (req, res) => {
-      if (++calls === 1) return;
-      res.end(JSON.stringify(record));
-    },
-    async (origin) => {
-      assert.deepEqual(await identity(origin, state, timing), record);
-      assert.equal(calls, 2);
-    },
-  );
-});
-
-test("retry a timeout while reading the response body", async () => {
-  let calls = 0;
-  await serve(
-    (req, res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      if (++calls === 1) return res.write("{");
-      res.end(JSON.stringify(record));
-    },
-    async (origin) => {
-      assert.deepEqual(await identity(origin, state, timing), record);
-      assert.equal(calls, 2);
-    },
-  );
-});
+test.each(["headers", "body"])(
+  "retry a timeout while reading identity %s",
+  async (phase) => {
+    virtualTimeouts();
+    const fetch = vi.fn(async (_url, { signal }) => {
+      if (fetch.mock.calls.length === 1) {
+        if (phase === "headers") return aborted(signal);
+        return { ok: true, json: () => aborted(signal) };
+      }
+      return Response.json(record);
+    });
+    vi.stubGlobal("fetch", fetch);
+    const pending = identity("http://backend.invalid", state, timing);
+    await vi.advanceTimersByTimeAsync(
+      timing.attemptTimeoutMs + timing.retryDelayMs,
+    );
+    assert.deepEqual(await pending, record);
+    assert.equal(fetch.mock.calls.length, 2);
+  },
+);
 
 test("a server that never responds reaches a bounded failure", async () => {
-  await serve(
-    () => {},
-    async (origin) => {
-      await assert.rejects(
-        identity(origin, state, timing),
-        /No replacement backend was started/,
-      );
-    },
+  virtualTimeouts();
+  vi.stubGlobal("fetch", async (_url, { signal }) => aborted(signal));
+  const pending = assert.rejects(
+    identity("http://backend.invalid", state, timing),
+    /No replacement backend was started/,
   );
+  await vi.advanceTimersByTimeAsync(timing.timeoutMs - 1);
+  await vi.advanceTimersByTimeAsync(1);
+  await pending;
 });
 
 test("a refusal after a timeout cannot authorize a replacement", async () => {
-  const original = globalThis.fetch;
+  virtualTimeouts();
   let calls = 0;
-  globalThis.fetch = async (url, { signal }) => {
+  vi.stubGlobal("fetch", async (_url, { signal }) => {
     if (++calls > 1)
       throw new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } });
-    return new Promise((resolve, reject) =>
-      signal.addEventListener("abort", () => reject(signal.reason)),
-    );
-  };
-  const keepAlive = setInterval(() => {}, 1000);
-  try {
-    await assert.rejects(
-      identity("http://127.0.0.1:4620", state, timing),
-      /No replacement backend was started/,
-    );
-  } finally {
-    clearInterval(keepAlive);
-    globalThis.fetch = original;
-  }
+    return aborted(signal);
+  });
+  const pending = assert.rejects(
+    identity("http://backend.invalid", state, timing),
+    /No replacement backend was started/,
+  );
+  await vi.advanceTimersByTimeAsync(timing.timeoutMs);
+  await pending;
+  assert.ok(calls > 1);
 });
 
-test("incompatible identity and invalid JSON fail without retries", async () => {
-  for (const body of [
-    "not JSON",
-    JSON.stringify({ ...record, stateDir: "/different" }),
-    JSON.stringify({ ...record, backendKind: "python" }),
-    JSON.stringify({ ...record, backendKind: undefined }),
-    JSON.stringify({ ...record, protocol: 0 }),
-    JSON.stringify({ ...record, protocol: 2 }),
-    JSON.stringify({ ...record, backendBuild: undefined }),
-    JSON.stringify({ ...record, backendBuild: null }),
-    JSON.stringify({ ...record, backendBuild: 123 }),
-    JSON.stringify({ ...record, backendBuild: "unknown" }),
-    JSON.stringify({ ...record, backendBuild: "a".repeat(63) }),
-  ]) {
-    let calls = 0;
-    await serve(
-      (req, res) => {
-        calls++;
-        res.end(body);
-      },
-      async (origin) => {
-        await assert.rejects(identity(origin, state, timing), /incompatible/);
-        assert.equal(calls, 1);
-      },
-    );
-  }
+test.each([
+  "not JSON",
+  JSON.stringify({ ...record, stateDir: "/different" }),
+  JSON.stringify({ ...record, backendKind: "python" }),
+  JSON.stringify({ ...record, backendKind: undefined }),
+  JSON.stringify({ ...record, protocol: 0 }),
+  JSON.stringify({ ...record, protocol: 2 }),
+  JSON.stringify({ ...record, backendBuild: undefined }),
+  JSON.stringify({ ...record, backendBuild: null }),
+  JSON.stringify({ ...record, backendBuild: 123 }),
+  JSON.stringify({ ...record, backendBuild: "unknown" }),
+  JSON.stringify({ ...record, backendBuild: "a".repeat(63) }),
+])("incompatible identity %s fails without retries", async (body) => {
+  const fetch = vi.fn(async () => new Response(body));
+  vi.stubGlobal("fetch", fetch);
+  await assert.rejects(
+    identity("http://backend.invalid", state, timing),
+    /incompatible/,
+  );
+  assert.equal(fetch.mock.calls.length, 1);
 });
 
 test("a slow existing backend attaches without spawning a process", async () => {
   const canonicalState = realpathSync(tmpdir());
   const data = { ...record, stateDir: canonicalState };
+  virtualTimeouts();
+  const requested = Promise.withResolvers();
+  let reply;
   await serve(
-    (req, res) => setTimeout(() => res.end(JSON.stringify(data)), 1200),
+    (_req, res) => {
+      reply = () => res.end(JSON.stringify(data));
+      requested.resolve();
+    },
     async (origin) => {
-      const result = await ensureBackend({
+      const pending = ensureBackend({
         resources: "/missing-desktop-assets",
         port: Number(new URL(origin).port),
         env: {
@@ -157,6 +170,10 @@ test("a slow existing backend attaches without spawning a process", async () => 
             "/missing-desktop-assets/bin/studio-runtime-server",
         },
       });
+      await requested.promise;
+      await vi.advanceTimersByTimeAsync(1200);
+      reply();
+      const result = await pending;
       assert.deepEqual(result, {
         ...data,
         origin,

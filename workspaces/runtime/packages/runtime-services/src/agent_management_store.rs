@@ -887,7 +887,7 @@ mod archive_finished_tests {
         std::fs::create_dir_all(&repository).expect("repository");
         let git = |args: &[&str]| {
             let output =
-                crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
+                crate::bounded_child::run_with_isolated_git_config(crate::bounded_child::Request {
                     program: std::ffi::OsStr::new("git"),
                     git_directory: Some(repository.as_os_str()),
                     args,
@@ -897,7 +897,7 @@ mod archive_finished_tests {
                     stderr_limit: 4096,
                     timeout: std::time::Duration::from_secs(10),
                 })
-                .expect("bounded fixture Git succeeds");
+                .unwrap_or_else(|error| panic!("bounded fixture git {args:?} failed: {error:?}"));
             assert!(!output.stdout.truncated);
             String::from_utf8(output.stdout.bytes)
                 .expect("git UTF8")

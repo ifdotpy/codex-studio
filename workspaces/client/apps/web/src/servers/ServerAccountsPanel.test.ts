@@ -114,6 +114,51 @@ it("shows an exact-account sign-in action without opening account details", () =
   });
 });
 
+it("binds each visible duplicate profile label to that profile's exact sign-in key", () => {
+  const { startAccount } = render({
+    accountsByServer: {
+      local: [
+        { ...account, accountKey: "personal", label: "Personal", plan: "Max" },
+        { ...account, accountKey: "team", label: "Team", plan: "Team" },
+      ],
+    },
+  });
+  for (const [label, accountKey] of [
+    ["Personal", "personal"],
+    ["Team", "team"],
+  ]) {
+    const login = controls.find(
+      (button) => button["aria-label"] === `Sign in to ${label} on Workstation`,
+    );
+    expect(login).toBeDefined();
+    login?.onClick?.(
+      {} as Parameters<NonNullable<ActionButtonProps["onClick"]>>[0],
+    );
+    expect(startAccount).toHaveBeenLastCalledWith(
+      "local",
+      expect.objectContaining({ label, accountKey }),
+    );
+  }
+});
+
+it("keeps both ambiguous keyless profiles visible without sending a login", () => {
+  const { accountKey: _key, ...legacy } = account;
+  const { startAccount } = render({
+    accountsByServer: { local: [legacy, { ...legacy }] },
+  });
+  const logins = controls.filter(
+    (button) => button["aria-label"] === "Sign in to Work on Workstation",
+  );
+  expect(logins).toHaveLength(2);
+  for (const login of logins) {
+    expect(login.disabled).toBe(true);
+    login.onClick?.(
+      {} as Parameters<NonNullable<ActionButtonProps["onClick"]>>[0],
+    );
+  }
+  expect(startAccount).not.toHaveBeenCalled();
+});
+
 it("does not send a login from an older row before its exact account identity is known", () => {
   const { accountKey: _key, ...legacy } = account;
   const { startAccount } = render({ accountsByServer: { local: [legacy] } });

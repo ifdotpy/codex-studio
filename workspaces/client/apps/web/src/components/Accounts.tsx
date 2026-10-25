@@ -66,6 +66,7 @@ import AccountManagerHost from "./AccountManagerHost";
 import AccountAddDialog, { type AddAccountIntent } from "./AccountAddDialog";
 import {
   accountForExternalCommand,
+  matchingAccountsForExternalCommand,
   confirmAccountDeleteRequest,
   getOrCreateAccountDeleteRequest,
 } from "./accountDeleteRequests";
@@ -891,15 +892,13 @@ export default function Accounts({
       command.action === "account-action" &&
       command.operation === "configure-profile"
     ) {
-      const account = state.data.accounts.find(
-        (candidate) =>
-          candidate.provider === "claude" &&
-          (command.email
-            ? candidate.email?.toLocaleLowerCase() ===
-              command.email.toLocaleLowerCase()
-            : candidate.label === command.label),
-      );
-      if (account) setClaudeProfileChoice(account);
+      const account = accountForExternalCommand(state.data.accounts, command);
+      if (account?.provider === "claude") setClaudeProfileChoice(account);
+      else if (
+        matchingAccountsForExternalCommand(state.data.accounts, command)
+          .length > 1
+      )
+        setError("Multiple saved accounts match. Select the exact profile.");
       else setError("This Claude account is no longer saved on this server.");
       onExternalCommandHandled?.();
       return;
@@ -913,6 +912,13 @@ export default function Accounts({
         return;
       }
       const account = accountForExternalCommand(current.accounts, command);
+      if (
+        matchingAccountsForExternalCommand(current.accounts, command).length > 1
+      ) {
+        setError("Multiple saved accounts match. Select the exact profile.");
+        onExternalCommandHandled?.();
+        return;
+      }
       if (command.action === "account-sign-in") {
         if (command.accountKey && !account) {
           setError("This account is no longer saved on this server.");

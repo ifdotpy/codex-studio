@@ -62,11 +62,10 @@ function saveDeleteRequest(
   }
 }
 
-export function accountForExternalCommand<T extends AccountDeleteTarget>(
-  accounts: T[],
-  identity: ExternalAccountIdentity,
-) {
-  return accounts.find(
+export function matchingAccountsForExternalCommand<
+  T extends AccountDeleteTarget,
+>(accounts: T[], identity: ExternalAccountIdentity) {
+  return accounts.filter(
     (candidate) =>
       (candidate.provider === "claude" ? "claude" : "codex") ===
         identity.provider &&
@@ -77,6 +76,14 @@ export function accountForExternalCommand<T extends AccountDeleteTarget>(
             identity.email.toLocaleLowerCase()
           : candidate.label === identity.label),
   );
+}
+
+export function accountForExternalCommand<T extends AccountDeleteTarget>(
+  accounts: T[],
+  identity: ExternalAccountIdentity,
+) {
+  const matches = matchingAccountsForExternalCommand(accounts, identity);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export function getOrCreateAccountDeleteRequest(

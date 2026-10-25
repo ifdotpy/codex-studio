@@ -63,7 +63,7 @@ their removed Python commands are not current instructions.
 | Full deterministic Rust corpora, manual heavy         | `just test-rust-runtime-corpora`         |
 | Full account-worker crash matrix, manual heavy        | `just test-crash-matrix-full`            |
 | Provider-session scheduling diagnostic, manual heavy  | `just test-rust-session-fairness`        |
-| Guest module worker aggregation and crash, manual     | `just test-guest-runner-processes`       |
+| Guest worker and suite process cleanup, manual        | `just test-guest-runner-processes`       |
 | Detached host_exec lifecycle and guest broker, manual | `just test-host-exec-processes`          |
 | Many-agent scenario, manual heavy                     | `just test-rust-many-agents`             |
 | Continuation corpus and store faults, manual heavy    | `just test-rust-usage-resume-corpora`    |
@@ -74,7 +74,8 @@ their removed Python commands are not current instructions.
 The fast guest wrapper tests use an injected executor for ordered results,
 failure counts, and broken-pool cleanup. The actual guest suite remains in the
 fast tier with the default spawn-based process pool. The manual guest runner
-check keeps the two real worker-process scenarios outside the fast tier.
+check keeps the real worker aggregation/crash scenarios and suite process
+ownership/cleanup fixtures outside the fast tier.
 
 The fast host_exec witnesses check private token creation, the actual Unix socket,
 authentication, retirement, and startup outcomes without a process-start deadline.

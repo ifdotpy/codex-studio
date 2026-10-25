@@ -450,21 +450,28 @@ export default function ServerAccountsPanel({
                               ).map((operation) => (
                                 <Menu.Item
                                   key={operation}
+                                  disabled={cannotSignIn(server)}
                                   color={
                                     operation === "remove" ||
                                     operation === "disconnect"
                                       ? "red"
                                       : undefined
                                   }
-                                  onClick={() =>
+                                  onClick={() => {
+                                    if (cannotSignIn(server)) return;
+                                    const accountKey = exactAccountKey(
+                                      server.id,
+                                    );
+                                    if (!accountKey) return;
                                     accountAction(server.id, {
                                       action: "account-action",
+                                      accountKey,
                                       operation,
                                       provider: row.provider,
                                       email: row.email,
                                       label: row.label,
-                                    })
-                                  }
+                                    });
+                                  }}
                                 >
                                   {operation === "rename"
                                     ? "Rename"

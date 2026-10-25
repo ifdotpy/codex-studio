@@ -120,6 +120,7 @@ export type ServerCommand =
     }
   | {
       action: "account-action";
+      accountKey?: string;
       operation:
         | "rename"
         | "default"
@@ -289,6 +290,8 @@ export function isServerCommand(value: unknown): value is ServerCommand {
         command.provider === "claude") &&
       (command.email === null || typeof command.email === "string") &&
       typeof command.label === "string" &&
+      (command.accountKey === undefined ||
+        (typeof command.accountKey === "string" && !!command.accountKey)) &&
       (command.nextLabel === undefined || typeof command.nextLabel === "string")
     );
   return command.action === "open"

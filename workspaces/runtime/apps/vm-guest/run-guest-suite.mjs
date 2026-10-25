@@ -94,10 +94,7 @@ function workingFolders(pids) {
     ],
     { encoding: "utf8", timeout: PROBE_TIMEOUT_MS },
   );
-  if (
-    pids !== undefined &&
-    (listed.error || listed.status !== 0 || listed.signal)
-  )
+  if (listed.error || listed.status !== 0 || listed.signal)
     throw new Error(
       `lsof did not list the selected working folders: ${listed.error?.message || listed.stderr || listed.signal || `exit ${listed.status}`}`,
     );
@@ -113,7 +110,7 @@ function workingFolders(pids) {
 /**
  * The processes that belong to a suite run in `folder`: they name the folder in their
  * arguments, or they work in it. Optional PIDs bound both probes to a caller's
- * known process set. The production suite omits them to find every leaked process.
+ * known process set. The ordinary suite omits them to inspect this operator's processes.
  */
 export function suiteProcesses(folder, { pids } = {}) {
   if (pids !== undefined) {
@@ -129,7 +126,9 @@ export function suiteProcesses(folder, { pids } = {}) {
   const listed = spawnSync(
     "ps",
     [
-      ...(pids === undefined ? ["-A"] : ["-p", pids.join(",")]),
+      ...(pids === undefined
+        ? ["-u", String(os.userInfo().uid)]
+        : ["-p", pids.join(",")]),
       "-ww",
       "-o",
       "pid=",
@@ -263,11 +262,18 @@ function main() {
       timeout: SUITE_TIMEOUT_MS,
     });
   } finally {
+    process.stderr.write(run?.stderr ?? "");
+    console.error(
+      `run-guest-suite: Python result: ${JSON.stringify({
+        status: run?.status ?? null,
+        signal: run?.signal ?? null,
+        error: run?.error?.message ?? null,
+      })}`,
+    );
     leaked = stopSuiteProcesses(temporary);
     rmSync(temporary, { recursive: true, force: true });
   }
   const output = run.stderr ?? "";
-  process.stderr.write(output);
   for (const { pid, command } of leaked)
     console.error(
       `run-guest-suite: stopped a process that the suite left running: ${pid} ${command}`,

@@ -1,7 +1,7 @@
 // The leak check of the guest suite runner (run-guest-suite.mjs): it finds the processes
 // that name the run's folder or work in it, stops them, and leaves other processes alone.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -12,33 +12,97 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { stopSuiteProcesses, suiteProcesses } from "./run-guest-suite.mjs";
 
-const WAIT = "process.send('ready'); setTimeout(() => {}, 60000)";
-
-async function start(args, cwd) {
-  const child = spawn(process.execPath, args, {
-    cwd,
-    detached: true,
-    stdio: ["ignore", "ignore", "ignore", "ipc"],
-  });
-  child.exited = once(child, "exit");
-  await once(child, "message");
-  child.disconnect();
-  return child;
-}
-
-function alive(pid) {
+function runnerFixture({ probeFails = false, suiteFails = false } = {}) {
+  const folder = mkdtempSync(path.join(os.tmpdir(), "guest-runner-boundary-"));
+  const log = path.join(folder, "calls.jsonl");
+  const calls = () =>
+    existsSync(log)
+      ? readFileSync(log, "utf8").trim().split("\n").map(JSON.parse)
+      : [];
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
+    for (const name of ["python", "ps", "lsof"]) {
+      const script =
+        name === "python"
+          ? `if(process.argv.includes('-c')) process.stdout.write('1\\n');
+else { appendFileSync(${JSON.stringify(log)},JSON.stringify({name:'suite',temporary:process.env.TMPDIR})+'\\n'); process.stderr.write('fixture Python result\\nRan 1 tests in 0.001s\\n${suiteFails ? "FAILED (failures=1)" : "OK"}\\n'); process.exit(${suiteFails ? 1 : 0}); }`
+          : `const args=process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)},JSON.stringify({name:${JSON.stringify(name)},args})+'\\n');
+if (${probeFails === true || probeFails === name} || (${JSON.stringify(name)}==='ps' && (args.includes('-A') || args[args.indexOf('-u')+1]!==${JSON.stringify(String(os.userInfo().uid))}))) {process.stderr.write('fixture cleanup probe refused');process.exit(2);}`;
+      writeFileSync(
+        path.join(folder, name),
+        `#!${process.execPath}\nimport {appendFileSync} from 'node:fs';\n${script}\n`,
+        { mode: 0o700 },
+      );
+    }
+    const run = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL("run-guest-suite.mjs", import.meta.url))],
+      {
+        encoding: "utf8",
+        timeout: 10000,
+        env: {
+          ...process.env,
+          PATH: folder + path.delimiter + (process.env.PATH ?? ""),
+          STUDIO_GUEST_PYTHON: path.join(folder, "python"),
+          STUDIO_SUPERVISOR_BINARY: process.execPath,
+        },
+      },
+    );
+    return { run, calls: calls() };
+  } finally {
+    // A failed cleanup probe leaves its own temporary folder for inspection.
+    // The fixture records that exact path before it can fail.
+    for (const call of calls()) {
+      if (call.name !== "suite") continue;
+      assert.match(path.basename(call.temporary), /^g[^/]+$/);
+      assert.equal(
+        path.dirname(call.temporary),
+        process.platform === "darwin" ? "/private/tmp" : os.tmpdir(),
+      );
+      rmSync(call.temporary, { recursive: true, force: true });
+    }
+    rmSync(folder, { recursive: true, force: true });
   }
 }
+
+test("the actual runner limits whole-suite cleanup probes to its operator UID", () => {
+  const { run, calls } = runnerFixture();
+  assert.equal(run.status, 0, run.stderr);
+  const probe = calls.find(({ name }) => name === "ps");
+  assert(probe, "normal completion still checks for leaked processes");
+  assert(!probe.args.includes("-A"));
+  assert.equal(
+    probe.args[probe.args.indexOf("-u") + 1],
+    String(os.userInfo().uid),
+  );
+  assert.match(run.stderr, /fixture Python result/);
+});
+
+test("the actual runner preserves the Python failure before a cleanup probe failure", () => {
+  const { run } = runnerFixture({ probeFails: true, suiteFails: true });
+  assert.notEqual(run.status, 0);
+  assert.match(run.stderr, /fixture Python result/);
+  assert.match(run.stderr, /FAILED \(failures=1\)/);
+  assert.match(run.stderr, /ps did not list the processes/);
+  assert(
+    run.stderr.indexOf("fixture Python result") <
+      run.stderr.indexOf("ps did not list the processes"),
+  );
+});
+
+// Linux uses /proc instead of lsof for its working-folder proof.
+if (!existsSync("/proc/self/cwd"))
+  test("the actual runner refuses an unknown whole-suite working-folder probe", () => {
+    const { run, calls } = runnerFixture({ probeFails: "lsof" });
+    assert.notEqual(run.status, 0);
+    assert(calls.some(({ name }) => name === "lsof"));
+    assert.match(run.stderr, /fixture Python result/);
+    assert.match(run.stderr, /lsof did not list/);
+  });
 
 // Refuse a global probe before it can inspect processes outside this fixture.
 // Valid scoped probes still execute the actual operating-system commands.
@@ -79,76 +143,6 @@ process.exit(result.status??92);
     },
   };
 }
-
-test(
-  "processes that a suite run leaves are found and stopped, others stay",
-  { timeout: 10000 },
-  async () => {
-    const folder = mkdtempSync(path.join(os.tmpdir(), "guest-suite-"));
-    const work = path.join(folder, "work");
-    mkdirSync(work);
-    const outside = mkdtempSync(path.join(os.tmpdir(), "guest-other-"));
-    const children = await Promise.all([
-      start(["-e", WAIT, path.join(folder, "state")], outside),
-      start(["-e", WAIT], work),
-      start(
-        ["-e", `process.on("SIGTERM", () => {}); ${WAIT}`, folder],
-        outside,
-      ),
-      start(["-e", WAIT], outside),
-    ]);
-    const [named, working, stubborn, other] = children.map(({ pid }) => pid);
-    const pids = [named, working, stubborn, other];
-    const probes = scopedProbeGuard(folder, pids);
-    try {
-      const found = suiteProcesses(folder, { pids }).map(({ pid }) => pid);
-      for (const pid of [named, working, stubborn])
-        assert.ok(found.includes(pid), `${pid}`);
-      assert.ok(!found.includes(other));
-      const stopped = stopSuiteProcesses(folder, {
-        exitGrace: 0,
-        stopGrace: 25,
-        pids,
-      })
-        .map(({ pid }) => pid)
-        .sort();
-      assert.deepEqual(stopped, [named, working, stubborn].sort());
-      await Promise.all(children.slice(0, 3).map((child) => child.exited));
-      for (const pid of [named, working, stubborn])
-        assert.ok(!alive(pid), `${pid}`);
-      assert.deepEqual(
-        suiteProcesses(folder, { pids: [named, working, stubborn] }),
-        [],
-      );
-      assert.ok(alive(other), "a process of another folder keeps running");
-      assert.deepEqual(stopSuiteProcesses(folder, { exitGrace: 0, pids }), []);
-      assert(probes.probes().some(({ name }) => name === "ps"));
-      if (process.platform === "darwin") {
-        const last = probes
-          .probes()
-          .filter(({ name }) => name === "lsof")
-          .at(-1);
-        assert(last, "the working-folder owner uses the real scoped lsof");
-        assert.equal(
-          last.args[last.args.indexOf("-p") + 1],
-          String(other),
-          "known-dead PIDs do not enter the final cwd probe",
-        );
-      }
-    } finally {
-      probes.restore();
-      for (const pid of [named, working, stubborn, other])
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // It already ended.
-        }
-      await Promise.all(children.map((child) => child.exited));
-      rmSync(folder, { recursive: true, force: true });
-      rmSync(outside, { recursive: true, force: true });
-    }
-  },
-);
 
 test("empty and invalid PID selections never fall back to global probes", () => {
   const folder = mkdtempSync(path.join(os.tmpdir(), "guest-empty-scope-"));
@@ -225,58 +219,6 @@ test("a failed or interrupted scoped ps probe is not an empty selection", () => 
     rmSync(folder, { recursive: true, force: true });
   }
 });
-
-// The Linux owner reads /proc directly and does not invoke lsof.
-if (!existsSync("/proc/self/cwd"))
-  test("a failed scoped cwd probe refuses cleanup without signals", async () => {
-    const folder = mkdtempSync(path.join(os.tmpdir(), "guest-failed-cwd-"));
-    const child = await start(["-e", WAIT], folder);
-    const probes = scopedProbeGuard(folder, [child.pid]);
-    const originalKill = process.kill;
-    const signals = [];
-    process.kill = (pid, signal) => {
-      if (signal !== 0) signals.push({ pid, signal });
-      return originalKill.call(process, pid, signal);
-    };
-    try {
-      // Restrict executable lookup too, so a missing lsof cannot use another copy.
-      process.env.PATH = path.join(folder, "probe-bin");
-      for (const script of [
-        `#!${process.execPath}\nprocess.stderr.write('fixture cwd probe refused'); process.exit(1)\n`,
-        `#!${process.execPath}\nprocess.exit(2)\n`,
-        `#!${process.execPath}\nprocess.kill(process.pid, 'SIGTERM')\n`,
-        "#!/missing-fixture-interpreter\n",
-      ]) {
-        writeFileSync(path.join(folder, "probe-bin", "lsof"), script, {
-          mode: 0o700,
-        });
-        assert.throws(
-          () =>
-            stopSuiteProcesses(folder, {
-              pids: [child.pid],
-              exitGrace: 0,
-              stopGrace: 0,
-            }),
-          /lsof did not list/,
-        );
-        assert(
-          alive(child.pid),
-          "a failed cwd proof must not signal the owned child",
-        );
-        assert.deepEqual(
-          signals,
-          [],
-          "cleanup sends no signals without the cwd proof",
-        );
-      }
-    } finally {
-      process.kill = originalKill;
-      probes.restore();
-      child.kill("SIGKILL");
-      await child.exited;
-      rmSync(folder, { recursive: true, force: true });
-    }
-  });
 
 function moduleExecutor(folder, broken = false) {
   const script = `

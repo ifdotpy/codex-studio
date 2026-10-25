@@ -33,6 +33,14 @@ it("resolves an exact account key without selecting a duplicate or a missing rep
   expect(
     accountForExternalCommand(accounts, { ...identity, provider: "codex" }),
   ).toBeUndefined();
+  const { accountKey: _key, ...legacy } = identity;
+  expect(accountForExternalCommand(accounts, legacy)).toBeUndefined();
+  expect(
+    accountForExternalCommand(
+      accounts.map((row) => ({ ...row, email: null })),
+      { ...legacy, email: null },
+    ),
+  ).toBeUndefined();
 });
 
 it("resolves an external account action to the account's stored delete identity", () => {

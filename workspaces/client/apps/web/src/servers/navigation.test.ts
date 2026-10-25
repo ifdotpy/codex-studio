@@ -33,6 +33,23 @@ it("accepts an exact public account key and rejects malformed keys", () => {
   expect(isServerCommand({ ...command, forceAdd: true })).toBe(false);
 });
 
+it.each(["configure-profile", "rename", "default", "disconnect", "remove"])(
+  "validates exact account keys for %s commands",
+  (operation) => {
+    const command = {
+      action: "account-action",
+      operation,
+      provider: "claude",
+      email: "same@example.test",
+      label: "Team",
+      accountKey: "team",
+    };
+    expect(isServerCommand(command)).toBe(true);
+    expect(isServerCommand({ ...command, accountKey: 12 })).toBe(false);
+    expect(isServerCommand({ ...command, accountKey: "" })).toBe(false);
+  },
+);
+
 it("accepts account commands with only public account identity fields", () => {
   expect(
     isServerCommand({

@@ -78,6 +78,21 @@ pub(crate) fn run_without_git_environment(request: Request<'_>) -> Result<Output
     run_with_environment(request, true)
 }
 
+/// Test fixtures must not use the developer's Git configuration or prompt.
+#[cfg(test)]
+pub(crate) fn run_with_isolated_git_config(request: Request<'_>) -> Result<Output, ChildError> {
+    let mut environment = request.environment.to_vec();
+    environment.extend([
+        ("GIT_CONFIG_GLOBAL", "/dev/null"),
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_TERMINAL_PROMPT", "0"),
+    ]);
+    run_without_git_environment(Request {
+        environment: &environment,
+        ..request
+    })
+}
+
 #[allow(
     clippy::disallowed_methods,
     reason = "bounded child polling executes on the calling labeled blocking worker"
@@ -299,6 +314,58 @@ mod tests {
     use std::ffi::OsStr;
     use std::io::Cursor;
     use std::time::Duration;
+
+    #[test]
+    fn fixture_git_config_does_not_read_the_supplied_hostile_global_file() {
+        let root = tempfile::tempdir().expect("isolated configuration directory");
+        let config = root.path().join("hostile.gitconfig");
+        std::fs::write(&config, "[commit]\n gpgsign = true\n[gpg]\n format = ssh\n[core]\n fsmonitor = fixture-must-not-run\n")
+            .expect("write inert configuration values");
+        let output = super::run_with_isolated_git_config(Request {
+            program: OsStr::new("git"),
+            git_directory: None,
+            args: &["config", "--global", "--list"],
+            environment: &[("GIT_CONFIG_GLOBAL", config.to_str().expect("fixture path"))],
+            input: None,
+            stdout_limit: 4096,
+            stderr_limit: 4096,
+            timeout: Duration::from_secs(5),
+        })
+        .expect("bounded read-only Git configuration probe");
+        assert_eq!(
+            output.stdout.bytes, b"",
+            "fixture Git must not read caller-supplied signing or fsmonitor configuration"
+        );
+        assert!(!output.stdout.truncated);
+    }
+
+    #[test]
+    fn fixture_git_config_isolates_nested_git_and_preserves_other_request_inputs() {
+        let root = tempfile::tempdir().expect("isolated configuration directory");
+        let config = root.path().join("hostile.gitconfig");
+        std::fs::write(
+            &config,
+            "[commit]\n gpgsign = true\n[core]\n fsmonitor = fixture-must-not-run\n",
+        )
+        .expect("write inert configuration values");
+        let output = super::run_with_isolated_git_config(Request {
+            program: OsStr::new("sh"),
+            git_directory: None,
+            args: &["-c", "printf '%s:%s:%s\\n' \"$FIXTURE_SCOPE\" \"$GIT_CONFIG_NOSYSTEM\" \"$GIT_TERMINAL_PROMPT\"; git config --global --list"],
+            environment: &[
+                ("GIT_CONFIG_GLOBAL", config.to_str().expect("fixture path")),
+                ("GIT_CONFIG_NOSYSTEM", "0"),
+                ("GIT_TERMINAL_PROMPT", "1"),
+                ("FIXTURE_SCOPE", "kept"),
+            ],
+            input: None,
+            stdout_limit: 4096,
+            stderr_limit: 4096,
+            timeout: Duration::from_secs(5),
+        }).expect("bounded read-only nested Git configuration probe");
+        assert_eq!(output.stdout.bytes, b"kept:1:0\n");
+        assert!(!output.stdout.truncated);
+    }
 
     /// A group signal after the leader is reaped could reach another group that
     /// reuses the ID. The descendant cleanup must signal while the exited leader

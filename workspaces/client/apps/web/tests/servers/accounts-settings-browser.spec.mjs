@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
+import { test, expect, apiSchemaHeaders } from "../playwright.mjs";
 import { fixture } from "./multi-server-fixture.mjs";
 
 function waitForPost(page, pathname, matches = () => true) {
@@ -23,7 +23,7 @@ test("collapsed account sign-in keeps exact ownership at phone and desktop width
     {
       id: "decoy-claude-profile",
       provider: "claude",
-      label: "Work",
+      label: "Personal",
       email: "work@example.test",
       plan: "Max",
       status: "signedOut",
@@ -32,9 +32,9 @@ test("collapsed account sign-in keeps exact ownership at phone and desktop width
     {
       id: "exact-claude-profile",
       provider: "claude",
-      label: "Work",
+      label: "Team",
       email: "work@example.test",
-      plan: "Max",
+      plan: "Team",
       status: "signedOut",
       isDefault: true,
     },
@@ -50,6 +50,20 @@ test("collapsed account sign-in keeps exact ownership at phone and desktop width
     received = resolve;
   });
   const posts = [];
+  const profilePosts = [];
+  await page.route("**/api/claude/profiles", async (route) => {
+    const body = route.request().postDataJSON();
+    profilePosts.push(body);
+    await route.fulfill({
+      headers: apiSchemaHeaders(),
+      json: {
+        accounts: local.accounts(),
+        archivedAccounts: [],
+        defaultAccountKey: "exact-claude-profile",
+        logins: [],
+      },
+    });
+  });
   await page.route("**/api/accounts/claude/login", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     const body = route.request().postDataJSON();
@@ -57,6 +71,7 @@ test("collapsed account sign-in keeps exact ownership at phone and desktop width
     received();
     await held;
     await route.fulfill({
+      headers: apiSchemaHeaders(),
       json: {
         requestId: body.login_id,
         accountKey: body.account_key,
@@ -74,11 +89,14 @@ test("collapsed account sign-in keeps exact ownership at phone and desktop width
     const settings = page.getByRole("dialog", { name: "Studio settings" });
     await settings.getByRole("tab", { name: "Accounts", exact: true }).click();
     const row = settings.locator(
-      '[data-account-identity="claude:work@example.test"]',
+      '[data-account-identity*="exact-claude-profile"]',
+    );
+    const personal = settings.locator(
+      '[data-account-identity*="decoy-claude-profile"]',
     );
     const details = row.getByRole("button", { name: /^Limit details for/ });
     const login = row.getByRole("button", {
-      name: "Sign in to Work on Local",
+      name: "Sign in to Team on Local",
       exact: true,
     });
     for (const width of [1440, 320]) {
@@ -86,6 +104,16 @@ test("collapsed account sign-in keeps exact ownership at phone and desktop width
       await expect(details).toHaveAttribute("aria-expanded", "false");
       await expect(login).toBeVisible();
       await expect(login).toBeEnabled();
+      await expect(row.locator(".account-identity strong")).toHaveText("Team");
+      await expect(personal.locator(".account-identity strong")).toHaveText(
+        "Personal",
+      );
+      await expect(
+        personal.getByRole("button", {
+          name: "Sign in to Personal on Local",
+          exact: true,
+        }),
+      ).toBeVisible();
       expect(
         await row
           .locator(".account-identity strong")
@@ -110,6 +138,28 @@ test("collapsed account sign-in keeps exact ownership at phone and desktop width
         .evaluate((term) => term.nextElementSibling.textContent),
     ).resolves.toBe("Local");
     await details.click();
+    const actions = row.getByRole("button", {
+      name: "Actions for work@example.test",
+      exact: true,
+    });
+    await actions.click();
+    await page
+      .getByRole("menuitem", { name: "Configure", exact: true })
+      .click();
+    const profile = page.getByRole("dialog", {
+      name: "Configure Claude",
+      exact: true,
+    });
+    await expect(profile).toBeVisible();
+    await profile
+      .getByRole("button", { name: "Save Claude profile", exact: true })
+      .click();
+    await expect(profile).toContainText("Claude profile saved.");
+    expect(profilePosts).toHaveLength(1);
+    expect(profilePosts[0].account_key).toBe("exact-claude-profile");
+    await profile.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(settings).toBeVisible();
+    await expect(actions).toBeFocused();
     expect(posts).toHaveLength(0);
     await login.click();
     const dialog = page.getByRole("dialog", { name: /Sign in to Claude/ });
