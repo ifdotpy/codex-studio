@@ -66,11 +66,11 @@ function pause(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
-/** The working folder of each process of this user, by PID. */
-function workingFolders() {
+/** The working folders of selected PIDs, or all processes of this user. */
+function workingFolders(pids) {
   const folders = new Map();
   if (existsSync("/proc/self/cwd")) {
-    for (const name of readdirSync("/proc")) {
+    for (const name of pids ?? readdirSync("/proc")) {
       if (!/^\d+$/.test(name)) continue;
       try {
         folders.set(+name, readlinkSync(`/proc/${name}/cwd`));
@@ -82,9 +82,25 @@ function workingFolders() {
   }
   const listed = spawnSync(
     "lsof",
-    ["-a", "-d", "cwd", "-u", String(os.userInfo().uid), "-F", "pn"],
+    [
+      "-a",
+      "-d",
+      "cwd",
+      "-u",
+      String(os.userInfo().uid),
+      ...(pids === undefined ? [] : ["-p", pids.join(",")]),
+      "-F",
+      "pn",
+    ],
     { encoding: "utf8", timeout: PROBE_TIMEOUT_MS },
   );
+  if (
+    pids !== undefined &&
+    (listed.error || listed.status !== 0 || listed.signal)
+  )
+    throw new Error(
+      `lsof did not list the selected working folders: ${listed.error?.message || listed.stderr || listed.signal || `exit ${listed.status}`}`,
+    );
   let pid = null;
   for (const line of (listed.stdout ?? "").split("\n")) {
     if (line.startsWith("p")) pid = +line.slice(1);
@@ -96,23 +112,65 @@ function workingFolders() {
 
 /**
  * The processes that belong to a suite run in `folder`: they name the folder in their
- * arguments, or they work in it.
+ * arguments, or they work in it. Optional PIDs bound both probes to a caller's
+ * known process set. The production suite omits them to find every leaked process.
  */
-export function suiteProcesses(folder) {
+export function suiteProcesses(folder, { pids } = {}) {
+  if (pids !== undefined) {
+    if (
+      !Array.isArray(pids) ||
+      [...pids].some((pid) => !Number.isSafeInteger(pid) || pid <= 0)
+    )
+      throw new Error("PID selection must contain only positive integers");
+    pids = [...new Set(pids)];
+    if (pids.length === 0) return [];
+  }
   const folders = [...new Set([folder, realpathSync(folder)])];
-  const listed = spawnSync("ps", ["-A", "-ww", "-o", "pid=", "-o", "args="], {
-    encoding: "utf8",
-    timeout: PROBE_TIMEOUT_MS,
-  });
+  const listed = spawnSync(
+    "ps",
+    [
+      ...(pids === undefined ? ["-A"] : ["-p", pids.join(",")]),
+      "-ww",
+      "-o",
+      "pid=",
+      "-o",
+      "args=",
+    ],
+    {
+      encoding: "utf8",
+      timeout: PROBE_TIMEOUT_MS,
+    },
+  );
+  // ps exits 1 when none of the selected processes still exist. Errors,
+  // timeouts, diagnostics, and partial output must not become an empty result.
+  if (
+    pids !== undefined &&
+    !listed.error &&
+    listed.status === 1 &&
+    !listed.stdout?.trim() &&
+    !listed.stderr?.trim()
+  )
+    return [];
   if (listed.error || listed.status !== 0)
     throw new Error(
       `ps did not list the processes: ${listed.error?.message ?? listed.stderr}`,
     );
-  const cwd = workingFolders();
+  const rows = listed.stdout
+    .split("\n")
+    .map((line) => line.match(/^\s*(\d+)\s+(.*)$/))
+    .filter(Boolean);
+  if (
+    pids !== undefined &&
+    (rows.length === 0 || rows.some((row) => !pids.includes(+row[1])))
+  )
+    throw new Error("ps did not list only confirmed selected processes");
+  // lsof reports failure for a requested PID that has ended, even when
+  // another selected PID remains. Probe only the PIDs that ps confirms.
+  const cwd = workingFolders(
+    pids === undefined ? undefined : rows.map((row) => +row[1]),
+  );
   const found = [];
-  for (const line of listed.stdout.split("\n")) {
-    const match = line.match(/^\s*(\d+)\s+(.*)$/);
-    if (!match) continue;
+  for (const match of rows) {
     const pid = +match[1];
     if (pid === process.pid) continue;
     const command = match[2];
@@ -142,9 +200,9 @@ function waitForExit(processes, milliseconds) {
  */
 export function stopSuiteProcesses(
   folder,
-  { exitGrace = EXIT_GRACE_MS, stopGrace = STOP_GRACE_MS } = {},
+  { exitGrace = EXIT_GRACE_MS, stopGrace = STOP_GRACE_MS, pids } = {},
 ) {
-  const leaked = waitForExit(suiteProcesses(folder), exitGrace);
+  const leaked = waitForExit(suiteProcesses(folder, { pids }), exitGrace);
   for (const { pid } of leaked) {
     try {
       process.kill(pid, "SIGTERM");
