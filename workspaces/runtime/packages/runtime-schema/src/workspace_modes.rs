@@ -5,8 +5,24 @@ use serde_json::{Value, json};
 pub const CHAT_WORKSPACE_MODES: &[&str] = &["layr-native", "layr", "worktree"];
 /// Additional workspace choice for a worker that uses its parent's folder.
 pub const SHARED_WORKSPACE_MODE: &str = "shared";
-/// Default workspace mode for a new chat on macOS and Linux.
+/// Preferred workspace mode when the host can run native Layr.
 pub const DEFAULT_CHAT_WORKSPACE_MODE: &str = "layr-native";
+/// Default mode for a top-level task agent and fallback for an unavailable native host.
+pub const DEFAULT_AGENT_WORKSPACE_MODE: &str = "worktree";
+/// Server system names that always support the native workspace.
+pub const ALWAYS_NATIVE_SYSTEMS: &[&str] = &["Darwin"];
+/// Server system names that require a ready native capability.
+pub const CAPABILITY_NATIVE_SYSTEMS: &[&str] = &["Linux"];
+
+pub fn default_chat_workspace_mode(system: &str, native_ready: bool) -> &'static str {
+    if ALWAYS_NATIVE_SYSTEMS.contains(&system)
+        || (native_ready && CAPABILITY_NATIVE_SYSTEMS.contains(&system))
+    {
+        DEFAULT_CHAT_WORKSPACE_MODE
+    } else {
+        DEFAULT_AGENT_WORKSPACE_MODE
+    }
+}
 
 pub fn worker_modes() -> Vec<&'static str> {
     CHAT_WORKSPACE_MODES
@@ -31,10 +47,15 @@ pub fn update_openapi(document: &mut Value) {
         } else {
             CHAT_WORKSPACE_MODES.to_vec()
         };
-        document["components"]["schemas"][name]["properties"]["workspaceMode"] = json!({
-            "default": DEFAULT_CHAT_WORKSPACE_MODE, "enum": modes,
-            "title": "Workspacemode", "type": "string"
-        });
+        let mut property = json!({"enum":modes,"title":"Workspacemode","type":"string"});
+        if worker {
+            property["default"] = json!(DEFAULT_AGENT_WORKSPACE_MODE);
+        } else {
+            property["description"] = json!(
+                "When omitted, the server selects native Layr on macOS, or on Linux when the native capability is ready; otherwise it selects worktree."
+            );
+        }
+        document["components"]["schemas"][name]["properties"]["workspaceMode"] = property;
     }
 }
 
@@ -56,6 +77,26 @@ pub fn check_openapi(document: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_defaults_require_the_native_linux_capability() {
+        assert_eq!(default_chat_workspace_mode("Darwin", false), "layr-native");
+        assert_eq!(default_chat_workspace_mode("Linux", true), "layr-native");
+        assert_eq!(default_chat_workspace_mode("Linux", false), "worktree");
+        assert_eq!(default_chat_workspace_mode("Windows", true), "worktree");
+        let mut document = json!({});
+        update_openapi(&mut document);
+        assert!(
+            document["components"]["schemas"]["CreateLeadRequest"]["properties"]["workspaceMode"]
+                .get("default")
+                .is_none()
+        );
+        assert_eq!(
+            document["components"]["schemas"]["CreateAgentRequest"]["properties"]["workspaceMode"]
+                ["default"],
+            DEFAULT_AGENT_WORKSPACE_MODE
+        );
+    }
 
     #[test]
     fn current_tool_catalog_matches_workspace_mode_owner() {

@@ -467,18 +467,22 @@ async fn ui_summary(
 ) -> Result<Json<crate::generated::UiSummaryResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let vm_state_dir = state.vm_state_dir;
-    let has_studio_vm = studio_runtime_process::blocking_pool::spawn_blocking(
+    let native_state_dir = store.state_dir().to_path_buf();
+    let (has_studio_vm, native_layr) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/ui-summary/vm-capability",
         move || {
             #[cfg(unix)]
-            {
-                studio_runtime_services::linux_vm_runtime::studio_vm_is_created(&vm_state_dir)
-            }
+            let has_vm =
+                studio_runtime_services::linux_vm_runtime::studio_vm_is_created(&vm_state_dir);
             #[cfg(not(unix))]
-            {
+            let has_vm = {
                 let _ = vm_state_dir;
                 false
-            }
+            };
+            (
+                has_vm,
+                studio_runtime_services::layr_native::capability(&native_state_dir),
+            )
         },
     )
     .await
@@ -506,6 +510,8 @@ async fn ui_summary(
             let mut value =
                 system_reads::ui_summary(transaction, accounts).map_err(ApiError::stored)?;
             value["hasStudioVm"] = Value::Bool(has_studio_vm);
+            value["nativeLayr"] =
+                serde_json::to_value(native_layr).map_err(|_| ApiError::internal())?;
             super::generated_json::<crate::generated::UiSummaryResponse>(value)
         })
         .await?;

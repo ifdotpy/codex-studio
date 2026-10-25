@@ -20,6 +20,7 @@ async function setup(
   signed = false,
   provider = "codex",
   hasStudioVm = true,
+  nativeReady = true,
 ) {
   const creations = [];
   const changes = [];
@@ -74,6 +75,12 @@ async function setup(
           busy: false,
           system,
           hasStudioVm,
+          nativeLayr: {
+            ready: nativeReady,
+            reason: nativeReady
+              ? null
+              : "Native Layr requires a btrfs store and root daemon.",
+          },
           agentsRunning: 0,
           alerts: [],
           accounts: [
@@ -514,6 +521,40 @@ test("Linux offers Layr VM only when its server has the Studio VM", async ({
       .click();
     await expect.poll(() => creations.length).toBe(1);
     expect(creations[0].workspaceMode).toBe("layr");
+  } finally {
+    await server.close();
+  }
+});
+
+test("Linux without native Layr defaults to WT and explains the unavailable option", async ({
+  page,
+}) => {
+  const { server, creations } = await setup(
+    "Linux",
+    "Local",
+    false,
+    "codex",
+    false,
+    false,
+  );
+  try {
+    const dialog = await openNewChat(page, server);
+    await expect(
+      dialog.getByRole("radio", { name: "Layr", exact: true }),
+    ).toBeDisabled();
+    await expect(
+      dialog.getByRole("radio", { name: "WT", exact: true }),
+    ).toBeChecked();
+    await expect(
+      dialog.getByText("Native Layr requires a btrfs store and root daemon.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await dialog
+      .getByRole("button", { name: "Start chat", exact: true })
+      .click();
+    await expect.poll(() => creations.length).toBe(1);
+    expect(creations[0].workspaceMode).toBe("worktree");
   } finally {
     await server.close();
   }

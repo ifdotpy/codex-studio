@@ -9,7 +9,7 @@ import { isServerCommand } from "../servers/navigation";
 
 test.each([
   ["Darwin", "layr-native"],
-  ["Linux", "layr-native"],
+  ["Linux", "worktree"],
   ["Windows", "worktree"],
   [undefined, "worktree"],
 ])("%s defaults to %s", (system, mode) =>
@@ -168,4 +168,20 @@ test("a Claude lead request leaves worker defaults to the server unless explicit
       "claude-opus-5-5",
     ).worker_defaults,
   ).toEqual(worker_defaults);
+});
+
+test("Linux without a native capability uses worktree", () => {
+  expect(defaultWorkspaceMode("Linux")).toBe("worktree");
+});
+
+test("Linux uses native Layr only when the server capability is ready", () => {
+  expect(defaultWorkspaceMode("Linux", { ready: true, reason: null })).toBe(
+    "layr-native",
+  );
+  expect(
+    defaultWorkspaceMode("Linux", {
+      ready: false,
+      reason: "A btrfs store is required.",
+    }),
+  ).toBe("worktree");
 });

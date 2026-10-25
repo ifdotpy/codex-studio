@@ -793,7 +793,8 @@ maximum 64. Lead turns have priority when a slot becomes free.
 Lowering a limit does not interrupt existing turns.
 
 Chat creation selects `workspaceMode`: `layr-native`, `layr`, or `worktree`.
-New lead chats default to native Layr on macOS and Linux.
+New lead chats default to native Layr on macOS. Linux selects native Layr only
+when the server reports a ready native capability; otherwise it selects WT.
 `Layr VM` appears only when the server has the Studio Linux VM.
 `WT` selects a Git worktree.
 

@@ -33,6 +33,9 @@ studio-runtime-server native-layr install --state /path/to/studio-state \
 ```
 
 The host must use APFS on macOS or btrfs on Linux.
+The new chat selector reads `nativeLayr.ready` and `nativeLayr.reason` from `/api/ui-summary`.
+Linux defaults to WT unless its native capability is ready.
+The probe requires a btrfs store and a listening root daemon at `<Studio state>/layr-native/layr.sock`.
 Commands run as the Studio user with `LAYR_ROOT` set to the owned store.
 `LAYR_DIRECT=1` selects the host backend without another service.
 A Linux store requires btrfs permissions for the Studio user.

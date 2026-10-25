@@ -69,11 +69,14 @@ provider-compatible defaults.
 
 Chat creation selects `workspaceMode`.
 
-| Mode                          | Platform                         | Agent workspace       |
-| ----------------------------- | -------------------------------- | --------------------- |
-| `layr-native` (Layr, default) | macOS and Linux                  | Native Layr lines     |
-| `layr` (Layr VM)              | Servers with the Studio Linux VM | Owned lines in the VM |
-| `worktree` (WT)               | macOS and Linux                  | Git worktrees         |
+| Mode                 | Platform                         | Agent workspace       |
+| -------------------- | -------------------------------- | --------------------- |
+| `layr-native` (Layr) | macOS and Linux                  | Native Layr lines     |
+| `layr` (Layr VM)     | Servers with the Studio Linux VM | Owned lines in the VM |
+| `worktree` (WT)      | macOS and Linux                  | Git worktrees         |
+
+Layr is the default on macOS. Linux uses Layr only when its native capability is ready.
+Otherwise, Linux defaults to WT. The selector shows the reason when Layr is unavailable.
 
 A `worktree` worker gets its Git worktree at `<root>/codex-agents/<agent id>`.
 By default `<root>` is `.worktrees` in the worker's repository. To place the

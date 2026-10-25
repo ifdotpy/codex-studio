@@ -47,3 +47,41 @@ describe("new chat actions", () => {
     expect(markup).toMatch(/data-variant="filled"[^>]*>[\s\S]*?Start chat/);
   });
 });
+
+it("disables unavailable native Layr on Linux and explains the fallback", () => {
+  const markup = renderToStaticMarkup(
+    createElement(
+      MantineProvider,
+      { theme },
+      createElement(ProjectServerCards, {
+        project: {
+          id: "linux",
+          name: "Linux",
+          path: "/folder",
+          locations: [
+            { serverId: "linux", projectId: "linux", path: "/folder" },
+          ],
+        },
+        servers: [
+          {
+            id: "linux",
+            label: "Linux",
+            system: "Linux",
+            hasStudioVm: false,
+            nativeLayr: { ready: false, reason: "A btrfs store is required." },
+          },
+        ],
+        onChoose: () => {},
+        onAdd: () => {},
+        onCancel: () => {},
+      }),
+    ),
+  );
+  expect(markup).toContain("A btrfs store is required.");
+  expect(
+    markup.match(/<input(?=[^>]*value="layr-native")[^>]*>/)?.[0],
+  ).toContain('disabled=""');
+  expect(markup.match(/<input(?=[^>]*value="worktree")[^>]*>/)?.[0]).toContain(
+    'checked=""',
+  );
+});

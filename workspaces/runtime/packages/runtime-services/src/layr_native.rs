@@ -17,6 +17,11 @@ pub fn binary_path(state_dir: &Path) -> PathBuf {
     state_dir.join(NATIVE_LAYR_DIRECTORY).join("bin/layr")
 }
 
+/// Dedicated Linux root-daemon socket for this Studio state directory.
+pub fn socket_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(NATIVE_LAYR_DIRECTORY).join("layr.sock")
+}
+
 pub fn is_native(record: &Value) -> bool {
     record["workspaceMode"] == "layr-native"
 }
@@ -79,8 +84,8 @@ mod tests {
     }
 }
 
-pub mod install;
 mod capability;
+pub mod install;
 pub use capability::{NativeLayrCapability, capability};
 mod runtime;
 pub use runtime::{

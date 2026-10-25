@@ -1,6 +1,6 @@
 import {
   CHAT_WORKSPACE_MODES,
-  DEFAULT_CHAT_WORKSPACE_MODE,
+  defaultChatWorkspaceMode,
 } from "../generated/workspaceModes";
 import {
   get,
@@ -68,10 +68,11 @@ export function settingsForNewChatAccount(
   };
 }
 
-export function defaultWorkspaceMode(system?: string) {
-  return system === "Darwin" || system === "Linux"
-    ? DEFAULT_CHAT_WORKSPACE_MODE
-    : "worktree";
+export function defaultWorkspaceMode(
+  system?: string,
+  nativeLayr?: GetResult<"/api/ui-summary">["nativeLayr"],
+) {
+  return defaultChatWorkspaceMode(system, nativeLayr?.ready === true);
 }
 
 type ChatReadOptions = {
