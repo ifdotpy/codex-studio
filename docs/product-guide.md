@@ -425,7 +425,7 @@ A chat keeps its directory and account.
 Use **Delete project…** in either project sidebar menu to delete a registered
 project, including all its chats, archived chats, workers and shared rooms.
 Confirmation stops running agents. History, cost accounting, the project folder
-and Git worktrees remain; disposable managed images and VM worker lines may be
+and Git worktrees remain; disposable managed images and virtual machine worker lines may be
 removed. Deletion cannot be undone in Studio. Projects spanning servers are
 refused. If the result is unconfirmed, **Recover saved request** checks the same
 intention with its original identity; it does not start another deletion.
