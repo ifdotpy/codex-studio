@@ -337,3 +337,29 @@ it("not_applied multi-server refusal restores readers and releases the intention
   expect(f.options.onResume).toHaveBeenCalledWith(new Set(["lead"]));
   expect(f.values.size).toBe(0);
 });
+
+it("does not release confirmed IDs from an incomplete projection", async () => {
+  const f = fixture();
+  let complete!: (value: unknown) => void;
+  f.post.mockReturnValueOnce(
+    new Promise((resolve) => {
+      complete = resolve;
+    }),
+  );
+  f.render().open("project");
+  f.render().dialog.onConfirm();
+  f.render();
+  const request = f.post.mock.calls[0][1];
+  f.options.data = { ...data, entitiesComplete: false, threads: [] };
+  f.render();
+  complete({
+    id: request.id,
+    request_id: request.request_id,
+    outcome: "deleted",
+    deletedAgentIds: ["lead"],
+    deletedRoomIds: [],
+  });
+  await f.settle();
+  expect(f.options.onResume).not.toHaveBeenCalled();
+  expect(f.options.onSuspend).toHaveBeenLastCalledWith(new Set(["lead"]));
+});

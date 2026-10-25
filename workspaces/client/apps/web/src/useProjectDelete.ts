@@ -183,7 +183,11 @@ export function useProjectDelete(options: {
             ...(current.data?.chats || []),
           ].map((row) => row.id),
         );
-        for (const id of ids) if (present.has(id)) suppression.ids.add(id);
+        const complete =
+          current.data?.entitiesComplete === true &&
+          current.data.entityWorkspaceId === current.workspaceId;
+        for (const id of ids)
+          if (!complete || present.has(id)) suppression.ids.add(id);
         publishSuppression();
         current.onFinish(ids);
         pendingRef.current = null;
