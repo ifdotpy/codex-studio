@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { ReactElement, ReactNode } from "react";
 import type { Agent, Message } from "../types";
+import type { Account } from "./Accounts";
 
 const h = vi.hoisted(() => ({
   cursor: 0,
@@ -205,12 +206,11 @@ it("message info reads on open and reopen but not streamed turn metadata changes
 it("Claude account status and key updates do not reload settings; explicit retry does", async () => {
   h.post.mockRejectedValue(new Error("Sign in with claude auth login first"));
   let currentAgent = agent;
-  let account = {
-    key: "claude",
+  let account: Account = {
     id: "claude",
     home: "/fixture",
     source: "fixture",
-    status: "signed_out",
+    status: "signedOut",
     provider: "claude",
     label: "Claude",
   };
