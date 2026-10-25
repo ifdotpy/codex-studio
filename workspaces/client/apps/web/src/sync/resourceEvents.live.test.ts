@@ -623,10 +623,14 @@ it("T28 recently viewed chat switching sends no subscription changes within grac
     const refs = ["chat-a", "chat-b"].map(
       (agentId) => ({ kind: "transcript", agentId }) as const,
     );
+    let acknowledgedGeneration = 0;
     const settle = async () => {
       await vi.advanceTimersByTimeAsync(50);
       const request = f.post.mock.calls.at(-1)?.[1];
-      if (request) f.source.emit("subscriptions", { gen: request.gen });
+      if (request && request.gen > acknowledgedGeneration) {
+        acknowledgedGeneration = request.gen;
+        f.source.emit("subscriptions", { gen: request.gen });
+      }
       await vi.advanceTimersByTimeAsync(50);
     };
     let stop = events.watchResourceChanges(refs[0], () => {});
@@ -640,6 +644,8 @@ it("T28 recently viewed chat switching sends no subscription changes within grac
       stop = events.watchResourceChanges(refs[step % refs.length], () => {});
       await settle();
     }
+    expect(f.sources).toHaveLength(1);
+    expect(f.source.closed).toBe(false);
     const posts = f.post.mock.calls.length - baseline;
     measurements.push({ mode, switches: 10, subscriptionPosts: posts });
     expect(posts).toBe(mode === "grace" ? 0 : 10);
