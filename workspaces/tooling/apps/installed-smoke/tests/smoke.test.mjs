@@ -1685,3 +1685,26 @@ test("saved Claude runs reprice native one-hour truth and display the CLI estima
     assert.equal(row["CLI provider USD"], run.expectedCostUsd);
   }
 });
+
+test("mixed legacy and v4 token totals retain the known one-hour subset", async () => {
+  const { sumTokens, totalTokens } = await import("../usage.mjs");
+  const legacy = {
+    tokens: {
+      uncachedInput: 0,
+      cacheReadInput: 0,
+      cacheWriteInput: 10,
+      output: 0,
+    },
+  };
+  const v4 = { tokens: { ...legacy.tokens, cacheWriteInput1h: 10 } };
+  for (const rows of [
+    [legacy, v4],
+    [v4, legacy],
+  ]) {
+    const total = sumTokens(rows);
+    assert.equal(total.cacheWriteInput, 20);
+    assert.equal(total.cacheWriteInput1h, 10);
+    assert.equal(totalTokens(total), 20, "subset is not counted twice");
+  }
+  assert.equal(sumTokens([legacy]).cacheWriteInput1h, 0);
+});

@@ -56,14 +56,21 @@ export function nativeTokens(usage, provider) {
 }
 
 export function sumTokens(rows) {
-  return Object.fromEntries(
-    TOKEN_CATEGORIES.map((key) => [
-      key,
-      rows.some((row) => row.tokens[key] == null)
-        ? null
-        : rows.reduce((sum, row) => sum + row.tokens[key], 0),
-    ]),
-  );
+  return {
+    ...Object.fromEntries(
+      TOKEN_CATEGORIES.map((key) => [
+        key,
+        rows.some((row) => row.tokens[key] == null)
+          ? null
+          : rows.reduce((sum, row) => sum + row.tokens[key], 0),
+      ]),
+    ),
+    // Contract v4: an absent lifetime split contributes zero one-hour writes.
+    cacheWriteInput1h: rows.reduce(
+      (sum, row) => sum + (row.tokens.cacheWriteInput1h ?? 0),
+      0,
+    ),
+  };
 }
 
 export function totalTokens(tokens) {

@@ -430,10 +430,13 @@ fn add_tokens(
         cache_write_input: total
             .cache_write_input
             .checked_add(tokens.cache_write_input)?,
-        cache_write_input_1h: total
-            .cache_write_input_1h
-            .zip(tokens.cache_write_input_1h)
-            .and_then(|(a, b)| a.checked_add(b)),
+        // Contract v4: absence uses legacy pricing, so it contributes zero one-hour writes.
+        cache_write_input_1h: Some(
+            total
+                .cache_write_input_1h
+                .unwrap_or(0)
+                .checked_add(tokens.cache_write_input_1h.unwrap_or(0))?,
+        ),
         output: total.output.checked_add(tokens.output)?,
         reasoning_output: total
             .reasoning_output
@@ -1495,6 +1498,26 @@ mod tests {
         SKIPPED_LINE_COUNTER
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[tokio::test]
+    async fn usage_reconciliation_cache_write_1h_mixed_legacy_totals() {
+        let temp = tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_,StoreError>(|tx,_| {
+            AnalyticsCaptureRepository::write(tx,CaptureTable::Agents,&json!({"id":"agent","rootId":"agent","accountKey":"claude","provider":"claude"}))?;
+            for (id, hour) in [("legacy",None),("v4",Some(10))] {
+                let mut tokens = json!({"uncachedInput":0,"cacheReadInput":0,"cacheWriteInput":10,"output":0});
+                if let Some(hour) = hour { tokens["cacheWriteInput1h"] = json!(hour); }
+                AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&json!({"id":id,"agentId":"agent","rootId":"agent","at":1,"last":{},"total":{},
+                    "studioUsage":{"kind":"response","responseId":id,"model":"claude-test","evidence":"live","tokens":tokens}}))?;
+            }
+            Ok(())
+        }).await.expect("mixed responses");
+        let result = super::usage_reconciliation(&store, "agent", &Default::default())
+            .expect("public reconciliation");
+        assert_eq!(result["totals"]["recordedTokens"]["cacheWriteInput"], 20);
+        assert_eq!(result["totals"]["recordedTokens"]["cacheWriteInput1h"], 10);
     }
 
     #[tokio::test]
