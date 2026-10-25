@@ -169,10 +169,9 @@ test("Draft sync ui", async ({
     const waitText = (page, text) =>
       expect(page.locator("#message")).toHaveValue(text, { timeout: 15_000 });
     await phone.goto(origin);
-    if (!(await phone.locator("#sidebar").isVisible()))
-      await phone
-        .getByRole("button", { name: "Back to chats", exact: true })
-        .click();
+    await phone
+      .getByRole("button", { name: "Back to chats", exact: true })
+      .click();
     await phone
       .getByRole("button", { name: /^Other project/ })
       .first()
