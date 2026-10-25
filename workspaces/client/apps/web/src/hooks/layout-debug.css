@@ -1,5 +1,6 @@
 .layout-debug {
   position: fixed;
+  transform: translateY(var(--mobile-viewport-top, 0px));
   top: max(8px, env(safe-area-inset-top, 0px));
   left: max(8px, env(safe-area-inset-left, 0px));
   z-index: var(--layout-layers-app);

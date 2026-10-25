@@ -31,6 +31,8 @@ export function LayoutDebug() {
           `any-pointer coarse: ${any.matches}`,
           `maxTouchPoints: ${navigator.maxTouchPoints}`,
           `innerWidth: ${window.innerWidth}px`,
+          `innerHeight: ${window.innerHeight}px`,
+          `visualViewport: ${window.visualViewport ? `h ${window.visualViewport.height}, offTop ${window.visualViewport.offsetTop}, pageTop ${window.visualViewport.pageTop}, scrollY ${window.scrollY}` : "unavailable"}`,
           `visualViewport.width: ${window.visualViewport ? `${window.visualViewport.width}px` : "unavailable"}`,
           `display-mode: ${standalone.matches || (navigator as Navigator & { standalone?: boolean }).standalone ? "standalone" : "browser"}`,
           `root height: ${style.height}`,
@@ -49,7 +51,9 @@ export function LayoutDebug() {
     any.addEventListener("change", update);
     standalone.addEventListener("change", update);
     window.addEventListener("resize", update);
+    window.addEventListener("scroll", update);
     window.visualViewport?.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("scroll", update);
     update();
     return () => {
       resize.disconnect();
@@ -59,7 +63,9 @@ export function LayoutDebug() {
       any.removeEventListener("change", update);
       standalone.removeEventListener("change", update);
       window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update);
       window.visualViewport?.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("scroll", update);
     };
   }, [enabled]);
   return enabled ? (

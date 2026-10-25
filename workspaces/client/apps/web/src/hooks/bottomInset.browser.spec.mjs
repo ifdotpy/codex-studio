@@ -123,6 +123,10 @@ test("Duo uses the bottom band for passive status and keeps every target above H
     await expect(debug).toContainText("innerWidth: 951px");
     await expect(debug).toContainText("visualViewport.width: 951px");
     await expect(debug).toContainText("display-mode: browser");
+    await expect(debug).toContainText("innerHeight: 669px");
+    await expect(debug).toContainText(
+      "visualViewport: h 669, offTop 0, pageTop 0, scrollY 0",
+    );
     await expect(debug).toContainText("root height: 669px");
     await expect(debug).toContainText(
       "root padding T/R/B/L: 0px / 84px / 34px / 0px",
@@ -138,6 +142,39 @@ test("Duo uses the bottom band for passive status and keeps every target above H
       await debug.evaluate((node) => node.scrollWidth <= node.clientWidth),
     ).toBe(true);
     await page.screenshot({ path: test.info().outputPath("layout-debug.png") });
+    await page.evaluate(() => {
+      Object.defineProperty(window, "innerHeight", {
+        configurable: true,
+        value: 323,
+      });
+      Object.defineProperty(window, "scrollY", {
+        configurable: true,
+        value: 346,
+      });
+      for (const [key, value] of Object.entries({
+        height: 323,
+        offsetTop: 346,
+        pageTop: 346,
+      }))
+        Object.defineProperty(window.visualViewport, key, {
+          configurable: true,
+          value,
+        });
+      window.visualViewport.dispatchEvent(new Event("scroll"));
+      window.dispatchEvent(new Event("scroll"));
+    });
+    await expect(debug).toContainText("innerHeight: 323px");
+    await expect(debug).toContainText(
+      "visualViewport: h 323, offTop 346, pageTop 346, scrollY 346",
+    );
+    await expect
+      .poll(() =>
+        debug.evaluate(
+          (n) =>
+            n.getBoundingClientRect().top - window.visualViewport.offsetTop,
+        ),
+      )
+      .toBe(8);
   } finally {
     await page.close();
     await server.close();
