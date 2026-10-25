@@ -284,6 +284,10 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
     await vi.waitFor(() =>
       expect(accept).toHaveBeenLastCalledWith(
         expect.objectContaining({ text: "a🙂" }),
+        expect.objectContaining({
+          replyKind: "snapshot",
+          cursor: { workspaceId, seq: 2 },
+        }),
       ),
     );
     await write("a🙂中");
@@ -340,6 +344,10 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
     await vi.waitFor(() =>
       expect(accept).toHaveBeenLastCalledWith(
         expect.objectContaining({ text: "new", status: "exited" }),
+        expect.objectContaining({
+          replyKind: "delta",
+          cursor: { workspaceId, seq: 3 },
+        }),
       ),
     );
     await write("new" + "x".repeat(SYNC_TERMINAL_STREAM_MAX_CHARS + 1));
