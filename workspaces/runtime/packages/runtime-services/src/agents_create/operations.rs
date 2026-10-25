@@ -3749,21 +3749,14 @@ mod tests {
         assert!(!image_provision_is_current(&terminal, 7));
     }
 
-    #[test]
-    fn lead_project_folder_must_belong_to_selected_project() {
-        let connection = rusqlite::Connection::open_in_memory().expect("open project fixture");
-        connection
-            .execute(
-                "CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
-                [],
-            )
-            .expect("project table");
-        connection
-            .execute(
-                "CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
-                [],
-            )
-            .expect("paired clients table");
+    #[tokio::test]
+    async fn lead_project_folder_must_belong_to_selected_project() {
+        // Production always prepares the sync schema before exposing a store.
+        // Use that owner here so binding admission reads a real project version.
+        let state = tempfile::tempdir().expect("project fixture state");
+        let store = RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("open project fixture");
         let project = json!({
             "id":"project:example",
             "path":"project:example",
@@ -3772,12 +3765,6 @@ mod tests {
             "locations":[{"serverId":"local-server","path":"/work/example"}],
             "folders":[{"id":"folder-a","name":"Nested","parentId":null}]
         });
-        connection
-            .execute(
-                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
-                ("project:example", project.to_string()),
-            )
-            .expect("save local project");
         let alias = json!({
             "id":"/work/alias",
             "path":"/work/alias",
@@ -3787,21 +3774,22 @@ mod tests {
             "projectAliases":[{"serverId":"home-server","projectId":"project:remote","name":"Remote"}],
             "folders":[{"id":"remote-folder","name":"Nested","parentId":null}]
         });
-        connection
-            .execute(
-                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
-                ("/work/alias", alias.to_string()),
-            )
-            .expect("save remote project alias");
-        connection
-            .execute(
-                "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
-                (
-                    "home-server",
-                    json!({"id":"home-server","kind":"server","status":"paired"}).to_string(),
-                ),
-            )
-            .expect("paired home server");
+        store
+            .transaction(move |tx| {
+                studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
+                studio_runtime_store::ProjectsRepository::put_project(tx, &alias)?;
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                    (
+                        "home-server",
+                        json!({"id":"home-server","kind":"server","status":"paired"}).to_string(),
+                    ),
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("project and paired-server fixtures");
+        let connection = store.test_reader().expect("project fixture reader");
         let valid = resolve_project_binding_from(
             &connection,
             "/work/example",
