@@ -32,7 +32,9 @@ Claude's wire profile consumes the shared
 [method policy](../runtime-schema/src/provider_method_policy.rs) to serialize
 selected operations within each thread while allowing independent threads to
 proceed. `studio-contracts` generates the bridge's copy of the same policy. Cancellation and definitely unsent
-rejection release that thread's lane.
+rejection release that request's ownership. Recovery restores all unresolved
+owners of a thread without replaying requests; fresh serialized work waits until
+every owner settles. Unknown deadlines keep their reservations.
 
 ## Callers and checks
 

@@ -84,8 +84,6 @@ pub enum SessionError {
     MissingRequest,
     #[error("Claude thread-serialized request requires a thread id")]
     MissingThreadId,
-    #[error("recovery contains conflicting active requests for a serialized thread")]
-    ConflictingRecoveredThread,
     #[error("initialized notification cannot be marked written in this state")]
     InitializationNotReady,
 }
@@ -115,7 +113,9 @@ pub struct SessionState {
     /// `Pending` and whose deadline is finite, earliest first. It lets
     /// `expire` and `next_deadline_ms` touch only due requests.
     deadlines: BTreeSet<(u64, RequestId)>,
-    active_threads: BTreeMap<String, RequestId>,
+    // Recovery can restore several uncertain owners. Fresh writes wait until
+    // every restored identity settles; none of those identities is replayed.
+    active_threads: BTreeMap<String, BTreeSet<RequestId>>,
     queued_threads: BTreeMap<String, VecDeque<RequestId>>,
 }
 
@@ -227,11 +227,8 @@ impl SessionState {
         let serialized = self.wire.per_thread_serialized
             && !lightweight
             && thread_serialization_rule(ticket.method.as_str()).is_some();
-        if serialized {
-            let thread = thread_id.as_ref().ok_or(SessionError::MissingThreadId)?;
-            if self.active_threads.contains_key(thread) {
-                return Err(SessionError::ConflictingRecoveredThread);
-            }
+        if serialized && thread_id.is_none() {
+            return Err(SessionError::MissingThreadId);
         }
         self.track_existing_request_until(
             ticket.id.clone(),
@@ -243,7 +240,10 @@ impl SessionState {
             if let Some(pending) = self.pending.get_mut(&ticket.id) {
                 pending.serialized = true;
             }
-            self.active_threads.insert(thread, ticket.id.clone());
+            self.active_threads
+                .entry(thread)
+                .or_default()
+                .insert(ticket.id.clone());
         }
         if unknown {
             self.book.mark_unknown(&ticket.id)?;
@@ -416,7 +416,7 @@ impl SessionState {
             if let std::collections::btree_map::Entry::Vacant(entry) =
                 self.active_threads.entry(thread.clone())
             {
-                entry.insert(ticket.id.clone());
+                entry.insert(BTreeSet::from([ticket.id.clone()]));
                 actions.extend(self.write_request(&ticket)?);
             } else {
                 self.queued_threads
@@ -587,7 +587,7 @@ impl SessionState {
                 if pending.serialized
                     && let Some(thread) = pending.thread_id
                 {
-                    actions.extend(self.release_thread(&thread)?);
+                    actions.extend(self.release_thread(&thread, &pending.ticket.id)?);
                 }
                 Ok(actions)
             }
@@ -705,8 +705,12 @@ impl SessionState {
         let Some(thread) = pending.thread_id else {
             return Ok(Vec::new());
         };
-        if self.active_threads.get(&thread) == Some(&ticket.id) {
-            self.release_thread(&thread)
+        if self
+            .active_threads
+            .get(&thread)
+            .is_some_and(|owners| owners.contains(&ticket.id))
+        {
+            self.release_thread(&thread, &ticket.id)
         } else {
             if let Some(queue) = self.queued_threads.get_mut(&thread) {
                 queue.retain(|id| id != &ticket.id);
@@ -715,14 +719,25 @@ impl SessionState {
         }
     }
 
-    fn release_thread(&mut self, thread: &str) -> Result<Vec<Action>, SessionError> {
+    fn release_thread(
+        &mut self,
+        thread: &str,
+        settled: &RequestId,
+    ) -> Result<Vec<Action>, SessionError> {
+        let Some(owners) = self.active_threads.get_mut(thread) else {
+            return Ok(Vec::new());
+        };
+        if !owners.remove(settled) || !owners.is_empty() {
+            return Ok(Vec::new());
+        }
         let Some(queue) = self.queued_threads.get_mut(thread) else {
             self.active_threads.remove(thread);
             return Ok(Vec::new());
         };
         while let Some(id) = queue.pop_front() {
             if let Some(pending) = self.pending.get(&id) {
-                self.active_threads.insert(thread.to_owned(), id);
+                self.active_threads
+                    .insert(thread.to_owned(), BTreeSet::from([id]));
                 let ticket = pending.ticket.clone();
                 let mut actions = vec![Action::ThreadReleased {
                     thread_id: thread.to_owned(),
@@ -915,7 +930,10 @@ mod request_body_tests {
                 .expect("duplicate reply")
                 .is_empty()
         );
-        assert_eq!(session.active_threads.get("t"), Some(&queued.id));
+        assert_eq!(
+            session.active_threads.get("t"),
+            Some(&BTreeSet::from([queued.id]))
+        );
     }
 
     #[test]

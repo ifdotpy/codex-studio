@@ -2293,3 +2293,43 @@ async fn active_barrier_holds_new_requests_but_not_callback_answers_or_interrupt
     written(write(&mut peer).await);
     session.checked_shutdown().await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn multiple_recovered_thread_owners_open_without_replay_and_hold_fresh_work() {
+    let (factory, mut peer) = fake();
+    let mut cfg = config();
+    cfg.wire = studio_runtime_providers::ProviderKind::Claude.wire();
+    for id in [42, 43] {
+        let mut record = recovered(RequestId::Number(id), Method::ClaudeSettings, 1000);
+        record.thread_id = Some("thread".into());
+        cfg.recovered.push(record);
+    }
+    let mut session =
+        SessionHandle::open(factory, ProviderHandle::for_account("test"), options(), cfg)
+            .await
+            .expect("multiple unresolved same-thread requests must not block account startup");
+    ready(&mut session, &mut peer).await;
+    session
+        .control
+        .submit(session.control.prepare(serialized(44, 1000)).await.unwrap())
+        .await
+        .unwrap();
+    pending(peer.commands.recv()).await;
+    for (cursor, id) in [(1, 43), (2, 42)] {
+        peer.events
+            .send(entry(
+                cursor,
+                1,
+                JournalPayload::Frame(reply(RequestId::Number(id))),
+            ))
+            .await
+            .unwrap();
+        session.events.recv().await.unwrap();
+        if cursor == 1 {
+            pending(peer.commands.recv()).await;
+        }
+    }
+    written(write(&mut peer).await);
+    pending(peer.commands.recv()).await;
+    session.checked_shutdown().await;
+}

@@ -1251,3 +1251,62 @@ fn malformed_reply_does_not_consume_pending_request_before_real_reply() {
         |action| matches!(action, Action::Resolve { ticket: resolved, .. } if resolved == &ticket)
     ));
 }
+
+#[test]
+fn recovered_same_thread_requests_hold_fresh_work_until_every_owner_settles() {
+    for order in [[0, 1], [1, 0]] {
+        for settlement in ["reply", "cancel", "unsent"] {
+            let mut session = state(true);
+            let restored = [80, 81].map(|id| RequestTicket {
+                generation: 9,
+                id: RequestId::Number(id),
+                method: Method::ClaudeSettings,
+            });
+            for ticket in &restored {
+                session
+                    .restore_request(ticket, Some("t".into()), 10, false, false)
+                    .expect("all unresolved same-thread identities restore without writes");
+            }
+            let (fresh, actions) = session
+                .submit(
+                    Method::TurnStart,
+                    json!({"threadId":"t"}),
+                    0,
+                    100,
+                    Some("t".into()),
+                    false,
+                )
+                .expect("fresh request queues");
+            assert!(actions.is_empty());
+            if settlement != "cancel" {
+                let (_, expired) = session.expire(10);
+                assert!(
+                    outgoing(&expired).is_empty(),
+                    "unknown expiry retains reservations"
+                );
+            }
+            for (index, owner) in order.into_iter().enumerate() {
+                let ticket = &restored[owner];
+                let actions = match settlement {
+                    "cancel" => session.cancel(ticket).expect("cancel one owner"),
+                    "unsent" => session
+                        .reject_unsent(ticket)
+                        .expect("retire one proven-unsent owner"),
+                    _ => session
+                        .receive(reply_for_test(ticket.id.clone()))
+                        .expect("late reply settles one owner"),
+                };
+                let writes = outgoing(&actions);
+                if index == 0 {
+                    assert!(
+                        writes.is_empty(),
+                        "the other restored owner still holds the thread"
+                    );
+                } else {
+                    assert_eq!(writes.len(), 1);
+                    assert_eq!(writes[0]["id"], json!(fresh.id));
+                }
+            }
+        }
+    }
+}
