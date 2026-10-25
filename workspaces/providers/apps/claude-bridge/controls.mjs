@@ -38,7 +38,11 @@ export function explicitNativeCommand(text, commands) {
 // first part is the history boundary; the last can own a file checkpoint.
 function nativeParts(turn) {
   const input = turn.items?.find((item) => item.type === "userMessage");
-  const ids = input ? nativeInputIds(input) : [turn.nativeMessageId || turn.id];
+  // Older forks remapped only nativeMessageId. Without a composite receipt,
+  // that SDK-verified boundary remains authoritative over the original item.
+  const ids = input?.nativeIds
+    ? nativeInputIds(input)
+    : [turn.nativeMessageId || input?.nativeId || turn.id];
   if (!ids || (turn.nativeMessageId && !ids.includes(turn.nativeMessageId)))
     throw new Error("The exact Claude turn boundary is unavailable");
   return ids;
@@ -78,11 +82,20 @@ function turnPositions(turns, messages) {
   return positions;
 }
 function remapTurn(turn, source, forkMessages) {
+  const initialIds = nativeParts(turn);
   const first = partPositions(turn, source)[0];
   turn.nativeMessageId = forkMessages[first].uuid;
+  const initial = turn.items?.find((item) => item.type === "userMessage");
   for (const item of turn.items || []) {
-    if (item.type !== "userMessage" || !item.nativeId) continue;
-    const ids = nativeInputIds(item);
+    if (item.type !== "userMessage") continue;
+    // A withdrawn input has a logical receipt but no native history to remap.
+    if (
+      item.delivery === "steer" &&
+      ["not_applied", "cancelled"].includes(item.deliveryStatus)
+    )
+      continue;
+    if (!item.nativeId && item !== initial) continue;
+    const ids = item === initial ? initialIds : nativeInputIds(item);
     if (!ids) throw new Error("Claude fork lost a retained input boundary");
     const remapped = ids.map((id) => {
       const index = source.findIndex((message) => message.uuid === id);

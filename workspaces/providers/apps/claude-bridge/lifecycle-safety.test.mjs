@@ -480,3 +480,74 @@ test.each(["direct", "timer", "success"])(
     }
   },
 );
+
+test.each(["not_applied", "cancelled"])(
+  "rollback preserves an unapplied steer receipt: %s",
+  async (status) => {
+    const session = {
+      id: "source",
+      cwd: "/project",
+      started: true,
+      turns: turns(),
+    };
+    session.turns[0].items = [
+      { type: "userMessage", nativeId: "u1" },
+      {
+        type: "userMessage",
+        nativeId: "unread",
+        delivery: "steer",
+        deliveryStatus: status,
+      },
+    ];
+    const forkSession = vi.fn(async () => ({ sessionId: "target" }));
+    await rollbackSession(
+      session,
+      { requestId: "rollback", turnId: "final2" },
+      {
+        persist: vi.fn(),
+        forkSession,
+        getSessionMessages: async (id) =>
+          id === "source"
+            ? messages()
+            : messages()
+                .slice(0, 2)
+                .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+      },
+    );
+    expect(forkSession).toHaveBeenCalledTimes(1);
+    expect(session.controlRequests.rollback.status).toBe("completed");
+    expect(session.turns[0].items[1].deliveryStatus).toBe(status);
+  },
+);
+
+test("fork accepts the authoritative boundary of a legacy remapped turn", async () => {
+  const source = {
+    id: "source",
+    cwd: "/project",
+    started: true,
+    turns: [
+      {
+        id: "original",
+        status: "completed",
+        nativeMessageId: "u1",
+        items: [{ type: "userMessage", nativeId: "original" }],
+      },
+    ],
+  };
+  const target = await forkAtTurn(
+    source,
+    {},
+    {
+      persist: vi.fn(),
+      forkSession: async () => ({ sessionId: "target" }),
+      getSessionMessages: async (id) =>
+        id === "source"
+          ? messages().slice(0, 2)
+          : messages()
+              .slice(0, 2)
+              .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+    },
+  );
+  expect(target.turns[0].nativeMessageId).toBe("fork0");
+  expect(target.turns[0].items[0].nativeId).toBe("fork0");
+});
