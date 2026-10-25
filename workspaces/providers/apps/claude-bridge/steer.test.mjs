@@ -1177,3 +1177,39 @@ fsp.appendFile=async(file,data,...args)=>{
   });
   await read(bridge, "after rejected steer");
 });
+
+test.concurrent("an old withdrawn clear receipt cannot retire its consumed redelivery attempt", async ({
+  startBridge,
+}) => {
+  const sdk = FAKE_SDK.replace(
+    "}return input;};",
+    String.raw`}if(!input.done&&input.value.message.content[0].text==='/clear'){await new Promise(resolve=>process.stdout.write(JSON.stringify({method:'fixture/consumed-clear',params:{}})+'\n',resolve));process.kill(process.pid,'SIGKILL');}return input;};`,
+  );
+  const bridge = await startBridge({}, sdk);
+  const old = await running(bridge, "unread-result");
+  await steer(bridge, old, "redelivered-clear", "/clear");
+  await end(bridge);
+  assert.deepEqual((await completed(bridge, old)).params.turn.unappliedSteers, [
+    "redelivered-clear",
+  ]);
+  await release(bridge, ".release");
+  const redelivery = bridge
+    .call("turn/start", {
+      threadId: bridge.thread,
+      clientUserMessageId: "redelivered-clear",
+      input: text("/clear"),
+    })
+    .catch(() => null);
+  await bridge.note((note) => note.method === "fixture/consumed-clear");
+  await redelivery;
+  await bridge.restart();
+  const state = await bridge.call("claude/state", { threadId: bridge.thread });
+  assert.equal(state.turns.at(-1).status, "uncertain");
+  await assert.rejects(
+    bridge.call("turn/start", {
+      threadId: bridge.thread,
+      input: text("after consumed clear"),
+    }),
+    /native session.*unknown/i,
+  );
+});

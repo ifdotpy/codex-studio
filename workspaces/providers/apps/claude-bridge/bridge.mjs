@@ -21,6 +21,8 @@ import {
   persistNativeSession,
   guardNativeSessionInput,
   cancelNativeSessionInput,
+  nativeInputAttempt,
+  newNativeInputAttempt,
   guardNativeSessionStart,
   assertNativeSessionReady,
   sessionStartHook,
@@ -1177,7 +1179,7 @@ async function finalizeTurn(s, active, turn, result, error, state) {
     turn.startOutcome = "not_applied";
   }
   if (turn.startOutcome === "not_applied")
-    cancelNativeSessionInput(s, turn.clientUserMessageId || turn.id);
+    cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0]));
   turn.status = turn.interrupted
     ? "interrupted"
     : error || result?.is_error || result?.subtype !== "success"
@@ -1240,7 +1242,7 @@ async function finalizeTurn(s, active, turn, result, error, state) {
   const unappliedSteers = state.unappliedSteers;
   for (const item of turn.items) {
     if (item.delivery === "steer" && item.deliveryStatus === "cancelled") {
-      cancelNativeSessionInput(s, item.id);
+      cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
       unappliedSteers.push(item.id);
       continue;
     }
@@ -1252,7 +1254,7 @@ async function finalizeTurn(s, active, turn, result, error, state) {
     if (queued < 0) continue;
     active.input.values.splice(queued, 1);
     item.deliveryStatus = "not_applied";
-    cancelNativeSessionInput(s, item.id);
+    cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
     item.error = "Claude finished before reading this steer";
     unappliedSteers.push(item.id);
   }
@@ -1295,7 +1297,7 @@ async function reconcileClosedSteers(s, turn, unapplied) {
       turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
     } else if (outcome === "not_applied") {
       item.deliveryStatus = "not_applied";
-      cancelNativeSessionInput(s, item.id);
+      cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
       item.error = "Claude stopped before reading this steer";
       unapplied.push(item.id);
     } else {
@@ -1460,7 +1462,7 @@ async function startSession(s, active, p) {
     await guardNativeSessionStart(
       s,
       persist,
-      initial?.clientUserMessageId || initial?.id,
+      nativeInputAttempt(initial, initial?.items[0]),
     );
     const q = query({
       prompt: prompt(),
@@ -2202,7 +2204,8 @@ function newActive(turn) {
 }
 function userMessage(s, turn, groups, id) {
   turn.nativeSessionId = s.nativeId || s.id;
-  guardNativeSessionInput(s, groups, id || turn.id);
+  const item = turn.items.find((item) => item.id === id) || turn.items[0];
+  guardNativeSessionInput(s, groups, newNativeInputAttempt(turn, item));
   const messages = sdkInputMessages(
     s.nativeId || s.id,
     id || turn.id,
@@ -2210,7 +2213,6 @@ function userMessage(s, turn, groups, id) {
     nativeUserMessageId,
   );
   const message = messages.at(-1);
-  const item = turn.items.find((item) => item.id === id) || turn.items[0];
   if (item === turn.items[0]) turn.nativeMessageId = messages[0].uuid;
   if (messages.length > 1) {
     item.nativeIds = messages.map((part) => part.uuid);
@@ -3026,7 +3028,7 @@ async function handle(method, p) {
       active.pendingSteers.delete(id);
       if (item) {
         item.deliveryStatus = "not_applied";
-        cancelNativeSessionInput(s, item.id);
+        cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
         item.error = error.message;
         await persistLive(s);
       }

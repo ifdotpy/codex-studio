@@ -375,6 +375,8 @@ for (const kind of ["system retry", "tool references", "non-input attachment"])
         attachment: {
           type: "deferred_tools_delta",
           addedNames: ["mcp__fixture__echo"],
+          addedLines: ["mcp__fixture__echo"],
+          removedNames: [],
         },
       });
     await fs.writeFile(
@@ -387,3 +389,48 @@ for (const kind of ["system retry", "tool references", "non-input attachment"])
     );
     expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
   });
+
+for (const content of [[{ type: "text", text: "Studio instruction" }], 42])
+  test(`an unknown input-shaped attachment remains unknown: ${JSON.stringify(content)}`, async () => {
+    const f = await fixture();
+    const row = {
+      ...f.rows[5],
+      type: "attachment",
+      uuid: randomUUID(),
+      parentUuid: f.ids[5],
+      message: undefined,
+      attachment: { type: "future-input", content },
+    };
+    await fs.writeFile(
+      f.file,
+      [...f.rows, row].map(JSON.stringify).join("\n") + "\n",
+    );
+    const index = await readHistoryIndex(f.session);
+    expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
+      "unknown",
+    );
+  });
+
+test("a known output attachment with an input-shaped payload stays unknown", async () => {
+  const f = await fixture();
+  const row = {
+    ...f.rows[5],
+    type: "attachment",
+    uuid: randomUUID(),
+    parentUuid: f.ids[5],
+    message: undefined,
+    attachment: {
+      type: "deferred_tools_record",
+      entries: [],
+      content: [{ type: "text", text: "Studio instruction" }],
+    },
+  };
+  await fs.writeFile(
+    f.file,
+    [...f.rows, row].map(JSON.stringify).join("\n") + "\n",
+  );
+  const index = await readHistoryIndex(f.session);
+  expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
+    "unknown",
+  );
+});

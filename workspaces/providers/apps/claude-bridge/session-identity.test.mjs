@@ -250,8 +250,8 @@ test("another new-session source durably saves target and identity before hook r
 });
 
 for (const deliveryStatus of ["not_applied", "cancelled"])
-  for (const matches of [true, false])
-    test(`saved ${deliveryStatus} receipt retires only its matching transition guard: ${matches}`, async () => {
+  for (const match of ["exact", "input", "turn", "attempt"])
+    test(`saved ${deliveryStatus} receipt retires only its matching transition guard: ${match}`, async () => {
       const { randomUUID } = await import("node:crypto");
       const { createSessionStore } = await import("./session-store.mjs");
       const { assertNativeSessionReady } =
@@ -264,6 +264,7 @@ for (const deliveryStatus of ["not_applied", "cancelled"])
       const root = await fs.mkdtemp(path.join(base, "saved-guard-"));
       try {
         const id = randomUUID();
+        const attemptId = randomUUID();
         const session = {
           id,
           cwd: root,
@@ -272,7 +273,9 @@ for (const deliveryStatus of ["not_applied", "cancelled"])
             from: id,
             source: "input",
             status: "pending",
-            inputId: matches ? "clear-steer" : "other-steer",
+            inputId: match === "input" ? "other-steer" : "clear-steer",
+            turnId: match === "turn" ? "other-turn" : "turn",
+            attemptId: match === "attempt" ? randomUUID() : attemptId,
           },
           turns: [
             {
@@ -284,6 +287,7 @@ for (const deliveryStatus of ["not_applied", "cancelled"])
                   type: "userMessage",
                   delivery: "steer",
                   deliveryStatus,
+                  nativeSubmissionAttemptId: attemptId,
                 },
               ],
             },
@@ -291,7 +295,7 @@ for (const deliveryStatus of ["not_applied", "cancelled"])
         };
         await createSessionStore(root).persist(session);
         const restored = await createSessionStore(root).get(id);
-        if (matches) {
+        if (match === "exact") {
           expect(restored.pendingNativeSession).toBeUndefined();
           expect(() => assertNativeSessionReady(restored)).not.toThrow();
           expect(

@@ -285,7 +285,11 @@ try {
           guardNativeSessionInput(
             session,
             [{ origin: "human", blocks: [{ type: "text", text: "/clear" }] }],
-            "clear-input",
+            {
+              inputId: "clear-input",
+              turnId: randomUUID(),
+              attemptId: randomUUID(),
+            },
           );
           await persist();
           push("/clear");

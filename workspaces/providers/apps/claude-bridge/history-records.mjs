@@ -122,6 +122,63 @@ const queuedCommand = z.object({
     deliveryId: z.string().optional(),
   }),
 });
+// Non-input attachment kinds have a closed outer payload shape. Their named
+// provider-owned objects remain opaque; new kinds or payload keys need review.
+const opaqueObject = z.record(z.string(), z.unknown());
+const names = z.array(z.string());
+const nonInputAttachment = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("environment"),
+    snapshot: z.object({
+      workingDirectory: z.string(),
+      isWorktree: z.boolean(),
+      isGitRepo: z.boolean(),
+      additionalWorkingDirectories: names,
+      platform: z.string(),
+      shell: z.string(),
+      osVersion: z.string(),
+    }),
+  }),
+  z.strictObject({
+    type: z.literal("model"),
+    identity: z.object({
+      modelId: z.string(),
+      marketingName: z.string(),
+      knowledgeCutoff: z.string(),
+    }),
+    text: z.string(),
+  }),
+  z.strictObject({
+    type: z.literal("total_tokens_reminder"),
+    text: z.string(),
+  }),
+  z.strictObject({ type: z.literal("session_context"), context: opaqueObject }),
+  z.strictObject({ type: z.literal("date"), date: z.iso.date() }),
+  z.strictObject({
+    type: z.literal("prompt_snapshot"),
+    systemPrompt: names,
+    tools: z.array(opaqueObject).optional(),
+    cliPrefix: z.string().optional(),
+    reminderFold: z.boolean(),
+    echoWireToolInputs: z.boolean(),
+    contextRendering: z.string(),
+  }),
+  z.strictObject({
+    type: z.literal("deferred_tools_delta"),
+    addedNames: names,
+    addedLines: names,
+    removedNames: names,
+    wireHiddenNames: names.optional(),
+    readdedNames: names.optional(),
+    pendingMcpServers: names.optional(),
+    needsAuthMcpServers: names.optional(),
+    failedMcpServers: names.optional(),
+  }),
+  z.strictObject({
+    type: z.literal("deferred_tools_record"),
+    entries: z.array(opaqueObject),
+  }),
+]);
 const metadataTypes = new Set([
   "summary",
   "file-history-snapshot",
@@ -171,15 +228,10 @@ export function historyRecordKind(row) {
     if (!object(attachment) || typeof attachment.type !== "string") return null;
     if (attachment.type === "queued_command")
       return queuedCommand.safeParse(row).success ? "input" : null;
-    // An unknown attachment using input identity/prompt fields cannot be
-    // silently reclassified as provider output. New output kinds need no list.
-    if (
-      ["source_uuid", "commandUuid", "deliveryId", "prompt"].some((key) =>
-        Object.hasOwn(attachment, key),
-      )
-    )
-      return null;
-    return basicChain.safeParse(row).success ? "nonInput" : null;
+    return basicChain.safeParse(row).success &&
+      nonInputAttachment.safeParse(attachment).success
+      ? "nonInput"
+      : null;
   }
   if (["assistant", "system", "progress"].includes(row.type))
     return basicChain.safeParse(row).success ? "nonInput" : null;
