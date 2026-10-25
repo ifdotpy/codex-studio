@@ -359,8 +359,8 @@ impl WireObject<'_> {
         let Self {
             method,
             id,
-            params,
-            result,
+            mut params,
+            mut result,
             error,
             mut fields,
         } = self;
@@ -370,6 +370,9 @@ impl WireObject<'_> {
             }
         };
         let Some(method) = method else {
+            if let Some(result) = result.as_mut() {
+                sanitize_failure_payload(result);
+            }
             let id = id.ok_or(CodecError::MalformedFrame(
                 "expected a method or response id",
             ))?;
@@ -396,6 +399,12 @@ impl WireObject<'_> {
                 fields,
             }));
         };
+        if id.is_none()
+            && matches!(known, Method::TurnCompleted | Method::ProtocolError)
+            && let Some(params) = params.as_mut()
+        {
+            sanitize_failure_payload(params);
+        }
         Ok(match id {
             Some(id) => Frame::Request(RequestFrame {
                 id,
@@ -620,4 +629,22 @@ pub fn validate_initialize_params(params: &Value) -> Result<(), CodecError> {
         fields: Map::new(),
     }))
     .map(|_| ())
+}
+
+/// Only the bounded Claude extension is normalized; native policy fields stay unchanged.
+fn sanitize_failure_payload(payload: &mut Value) {
+    for pointer in ["/error", "/turn/error"] {
+        if let Some(error) = payload.pointer_mut(pointer) {
+            studio_runtime_schema::claude_failure::sanitize_error(error);
+        }
+    }
+    for pointer in ["/turns", "/thread/turns"] {
+        if let Some(turns) = payload.pointer_mut(pointer).and_then(Value::as_array_mut) {
+            for turn in turns {
+                if let Some(error) = turn.get_mut("error") {
+                    studio_runtime_schema::claude_failure::sanitize_error(error);
+                }
+            }
+        }
+    }
 }

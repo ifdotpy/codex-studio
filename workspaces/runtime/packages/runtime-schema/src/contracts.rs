@@ -828,6 +828,9 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     for (name, schema) in crate::usage::schemas() {
         openapi["components"]["schemas"][name] = schema;
     }
+    openapi["components"]["schemas"]["ClaudeFailure"] = crate::claude_failure::schema();
+    openapi["components"]["schemas"]["NativeProviderError"]["properties"]["claudeFailure"] =
+        serde_json::json!({"$ref":"#/components/schemas/ClaudeFailure"});
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
         (
@@ -854,6 +857,16 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/claude-failure.generated.mjs".into(),
+            text: format!(
+                "// {HEADER}\nexport const claudeFailureSchema = JSON.parse(\n  '{}',\n);\n",
+                serde_json::to_string(&crate::claude_failure::schema())
+                    .expect("failure schema")
+                    .replace('\\', "\\\\")
+                    .replace('\'', "\\'")
+            ),
+        },
         Rendered {
             path: "workspaces/providers/apps/claude-bridge/provider-method-policy.generated.mjs"
                 .into(),

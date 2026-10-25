@@ -338,3 +338,69 @@ fn wire_envelope_round_trips_valid_objects_and_refuses_malformed_ones() {
         }
     }
 }
+
+#[test]
+fn claude_failure_metadata_is_bounded_and_redacted_before_retention() {
+    let wire = json!({"method":"turn/completed","params":{"turn":{"id":"t","status":"failed","error":{"codexErrorInfo":"unauthorized","claudeFailure":{"apiError":"provider_credentials","apiErrorStatus":401,"apiErrorCode":"new_gate","provider":"bedrock","remedy":"refresh_credentials","promptTokens":210001,"maxContextTokens":200000,"error_details":"Bearer secret","token":"sk-secret","message":"private prompt"}}}}});
+    let DecodedJournalPayload::Frame(frame) = decode_journal_entry(
+        1,
+        1,
+        serde_json::to_vec(&wire).expect("wire fixture serializes"),
+    )
+    .payload
+    else {
+        panic!("frame")
+    };
+    let encoded =
+        String::from_utf8(encode_line(&frame).expect("frame encodes")).expect("frame is UTF-8");
+    assert!(!encoded.contains("secret"));
+    assert!(!encoded.contains("private prompt"));
+    let value: Value = serde_json::from_str(&encoded).expect("encoded frame is JSON");
+    assert_eq!(
+        value["params"]["turn"]["error"]["claudeFailure"],
+        json!({"apiError":"provider_credentials","apiErrorStatus":401,"apiErrorCode":"new_gate","provider":"bedrock","remedy":"refresh_credentials","promptTokens":210001,"maxContextTokens":200000})
+    );
+    assert_eq!(
+        value["params"]["turn"]["error"]["codexErrorInfo"],
+        "unauthorized"
+    );
+}
+
+#[test]
+fn claude_failure_sanitizer_preserves_unknown_methods_and_handles_turn_history() {
+    let raw = json!({"apiError":"media_removed","apiErrorStatus":400,"token":"secret"});
+    let future = json!({"method":"future/error","params":{"turn":{"error":{"claudeFailure":raw}}}});
+    let DecodedJournalPayload::Frame(frame) = decode_journal_entry(
+        1,
+        1,
+        serde_json::to_vec(&future).expect("future fixture serializes"),
+    )
+    .payload
+    else {
+        panic!("frame")
+    };
+    assert_eq!(
+        serde_json::from_slice::<Value>(&encode_line(&frame).expect("frame encodes"))
+            .expect("encoded frame is JSON"),
+        future
+    );
+    for result in [
+        json!({"thread":{"turns":[{"error":{"claudeFailure":raw}}]}}),
+        json!({"turns":[{"error":{"claudeFailure":raw}}]}),
+    ] {
+        let wire = json!({"id":1,"result":result});
+        let DecodedJournalPayload::Frame(frame) = decode_journal_entry(
+            1,
+            1,
+            serde_json::to_vec(&wire).expect("wire fixture serializes"),
+        )
+        .payload
+        else {
+            panic!("frame")
+        };
+        let encoded =
+            String::from_utf8(encode_line(&frame).expect("frame encodes")).expect("frame is UTF-8");
+        assert!(!encoded.contains("secret"));
+        assert!(encoded.contains("media_removed"));
+    }
+}

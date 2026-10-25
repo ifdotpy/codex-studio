@@ -7,6 +7,18 @@ export const missingFailureReason =
 export function failureMessage(value: unknown): string {
   const error = nativeErrorView(value);
   const message = error.title || error.message;
+  const raw =
+    typeof value === "object" && value !== null && "claudeFailure" in value
+      ? value.claudeFailure
+      : undefined;
+  const code =
+    typeof raw === "object" &&
+    raw !== null &&
+    "apiErrorCode" in raw &&
+    typeof raw.apiErrorCode === "string"
+      ? raw.apiErrorCode
+      : "";
+  if (code) return `${message} (${code})`;
   return !message.trim() ||
     /^(?:failed|error|turn failed|Codex ended this turn with an error\.?|Codex reported an error\.?)$/i.test(
       message.trim(),

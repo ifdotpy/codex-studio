@@ -224,3 +224,28 @@ fn a_command_item_from_an_earlier_turn_still_captures_later_events() {
     assert_eq!(item["turnId"], "turn-a", "the item keeps its starting turn");
     assert_eq!(item["stream"]["deltas"], 1, "the later delta is counted");
 }
+
+#[test]
+fn claude_failure_metadata_reaches_stored_analytics_without_text_or_credentials() {
+    let (mut db, agent) = started_turn();
+    let metadata = json!({"apiError":"tool_history_mismatch","apiErrorStatus":400,"apiErrorCode":"tool_pair_gate","promptTokens":210001,"maxContextTokens":200000});
+    let mut unsafe_metadata = metadata.clone();
+    unsafe_metadata["error_details"] = json!("secret prompt");
+    unsafe_metadata["credential"] = json!("Bearer secret");
+    capture(
+        &mut db,
+        &agent,
+        "turn/completed",
+        json!({"turn":{"id":"turn","status":"failed","error":{"codexErrorInfo":"badRequest","claudeFailure":unsafe_metadata}}}),
+        20.,
+    );
+    let raw: String = db
+        .query_row("SELECT record FROM analytics_turns LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .expect("analytics row reads");
+    let stored: Value = serde_json::from_str(&raw).expect("analytics row is JSON");
+    assert_eq!(stored["error"]["claudeFailure"], metadata);
+    assert_eq!(stored["error"]["codexErrorInfo"], "badRequest");
+    assert!(!raw.contains("secret"));
+}

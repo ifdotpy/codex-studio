@@ -1577,6 +1577,15 @@ impl SchedulerRepository {
         native_error: Option<&Value>,
         unapplied_steers: &[&str],
     ) -> StoreResult<bool> {
+        let mut error = error;
+        if let Some(error) = error.as_mut() {
+            studio_runtime_schema::claude_failure::sanitize_error(error);
+        }
+        let mut native_error = native_error.cloned();
+        if let Some(error) = native_error.as_mut() {
+            studio_runtime_schema::claude_failure::sanitize_error(error);
+        }
+        let native_error = native_error.as_ref();
         let receipt_input = json!({"agent":agent_id,"epoch":epoch,"turn":turn_id,"status":status,"error":error,"nativeStatus":native_status,"nativeError":native_error});
         if let Some(result) =
             ExecutionHistoryRepository::replay(transaction, attempt_id, "terminal", &receipt_input)?

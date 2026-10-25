@@ -247,3 +247,43 @@ test("native error rendering handles structured and plain errors", () => {
     '<img src=x onerror="alert(1)"> {text}',
   );
 });
+
+test("Claude causes use plain words and preserve the raw code", () => {
+  const view = nativeErrorView({
+    message: "API failed",
+    codexErrorInfo: "badRequest",
+    claudeFailure: {
+      apiError: "tool_history_mismatch",
+      apiErrorCode: "new_server_gate",
+      apiErrorStatus: 400,
+    },
+  });
+  assert.equal(view.title, "Tool history does not match");
+  assert.equal(view.kind, "badRequest");
+  assert.match(view.message, /tool calls and results/);
+  assert.match(view.details, /new_server_gate/);
+});
+
+test("Claude token counts and unknown server codes remain useful", () => {
+  const view = nativeErrorView({
+    claudeFailure: {
+      apiErrorCode: "future_server_gate",
+      promptTokens: 210001,
+      maxContextTokens: 200000,
+    },
+  });
+  assert.equal(view.title, "Claude request failed");
+  assert.match(view.message, /210001.*200000/);
+  assert.match(view.details, /future_server_gate/);
+});
+
+test("Claude cause metadata preserves the native limit reset text", () => {
+  const view = nativeErrorView({
+    message: "Usage limit reached. Try again at 20:00 UTC",
+    codexErrorInfo: "rateLimitExceeded",
+    claudeFailure: { error: "rate_limit", apiError: "usage_limit_reached" },
+  });
+  assert.match(view.message, /Try again at 20:00 UTC/);
+  assert.equal(view.kind, "rateLimitExceeded");
+  assert.equal(view.title, "Claude usage limit reached");
+});

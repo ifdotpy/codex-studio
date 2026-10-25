@@ -7,6 +7,7 @@ export default {
     ...base.test,
     name: "fast",
     include: [
+      "src/nativeErrors.schema.test.mjs",
       "src/precompressedAssets.test.mjs",
       "src/scrollbars.test.mjs",
       "src/sync/subscriptions/store.test.ts",

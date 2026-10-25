@@ -1,3 +1,4 @@
+import { claudeFailureView } from "./claudeFailure";
 import { errorDetails } from "./errorPresentation.ts";
 import { DISK_FULL_ERROR_PATTERN } from "./generated/sharedValues.ts";
 import type { Agent } from "./types";
@@ -178,7 +179,18 @@ export function isDiskFullError(value: unknown): boolean {
 
 export function nativeErrorView(value: unknown, planType?: string) {
   const view = codexErrorView(value, planType);
-  if (!isDiskFullError(value)) return view;
+  if (!isDiskFullError(value)) {
+    const record = objectRecord(parseError(value));
+    const claude = claudeFailureView(record?.claudeFailure);
+    if (!claude) return view;
+    return {
+      ...view,
+      ...claude,
+      message: ["usageLimitExceeded", "rateLimitExceeded"].includes(view.kind)
+        ? view.message
+        : claude.message,
+    };
+  }
   return {
     ...view,
     message: DISK_FULL_MESSAGE,

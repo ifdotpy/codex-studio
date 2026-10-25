@@ -781,3 +781,50 @@ fn a_restart_of_an_attempt_without_a_supervisor_identity_records_no_supervisor()
         );
     }
 }
+
+#[test]
+fn terminal_claude_error_keeps_only_bounded_failure_metadata() {
+    let mut connection = database();
+    put(
+        &connection,
+        json!({"status":"running","provider":"claude","autoWake":true,"inFlight":true,"turnId":"turn","turnEpoch":0,"startAttempt":{"id":"attempt","epoch":0,"submitted":true,"turnId":"turn","threadId":"thread","accountKey":ACCOUNT,"events":["message"],"connectionGeneration":1,"requestTicket":"ticket"}}),
+    );
+    connection.execute_batch("INSERT INTO runtime_events VALUES('message','agent','user','message','dispatching',2,0,NULL,NULL);").expect("event writes");
+    let metadata = json!({"apiError":"provider_credentials","apiErrorStatus":401,"apiErrorCode":"cloud_access_denied","provider":"bedrock","remedy":"refresh_credentials"});
+    let mut unsafe_metadata = metadata.clone();
+    unsafe_metadata["error_details"] = json!("secret request text");
+    unsafe_metadata["credentials"] = json!("Bearer secret");
+    let error = json!({"codexErrorInfo":"unauthorized","claudeFailure":unsafe_metadata});
+    assert!(with(&mut connection, |tx| {
+        SchedulerRepository::settle_terminal(
+            tx,
+            AGENT,
+            0,
+            "attempt",
+            "turn",
+            AgentStatus::Failed,
+            Some(error.clone()),
+            "failed",
+            Some(&error),
+            &[],
+        )
+        .expect("terminal outcome settles")
+    }));
+    let saved = stored(&connection);
+    assert_eq!(saved["lastCompletedTurnError"]["claudeFailure"], metadata);
+    assert_eq!(saved["error"]["codexErrorInfo"], "unauthorized");
+    let receipts: String = connection
+        .query_row(
+            "SELECT record FROM runtime_execution_attempts WHERE id='attempt'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("execution attempt reads");
+    let receipt: Value = serde_json::from_str(&receipts).expect("execution receipt");
+    assert_eq!(
+        receipt["receipts"]["terminal"]["input"]["nativeError"]["claudeFailure"],
+        metadata
+    );
+    assert!(!receipts.contains("secret"));
+    assert!(!saved.to_string().contains("secret"));
+}
