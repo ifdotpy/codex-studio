@@ -2186,6 +2186,7 @@ export default function Conversation(p: {
             {agent?.source === "managed" && (
               <Usage
                 key={p.agent?.accountKey || "default"}
+                visible={p.visible ?? true}
                 agent={{
                   ...agent,
                   accountKey: p.agent?.accountKey || "default",

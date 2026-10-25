@@ -591,6 +591,23 @@ describe("resource read callers", () => {
     expect(get).not.toHaveBeenCalled();
   });
 
+  it("releases cost interest when the mounted footer is hidden", () => {
+    mount(() =>
+      Usage({
+        agent: { id: "hidden" } as Agent,
+        stateDir: "private-fixture",
+        limits: null,
+        reload: vi.fn(),
+        visible: false,
+        opened: true,
+      }),
+    );
+    expect(subscription).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "session-cost" }),
+    );
+    expect(subscription).not.toHaveBeenCalledWith({ kind: "costs" });
+  });
+
   it("applies both cost display projections without GETs", async () => {
     const session = {
       rootId: "lead",

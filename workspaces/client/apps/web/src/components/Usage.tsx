@@ -189,6 +189,7 @@ export default function Usage({
   onChange,
   limitsLoading,
   accounts = [],
+  visible = true,
 }: {
   agent: Agent;
   stateDir: string;
@@ -199,6 +200,7 @@ export default function Usage({
   onChange?: (opened: boolean) => void;
   limitsLoading?: boolean;
   accounts?: UsageAccount[];
+  visible?: boolean;
 }) {
   const { peekSessionCost, storeSessionCost } = useServerSessionCosts();
   const { subscribeStateProjection } = useServerSync();
@@ -327,8 +329,8 @@ export default function Usage({
     (Partial<GetResult<"/api/costs">> & { error?: string | null }) | null
   >(null);
   const rootId = agent.rootId || agent.id;
-  useSubscription({ kind: "session-cost", agentId: rootId });
-  useSubscription(limitsOpened ? { kind: "costs" } : null);
+  useSubscription(visible ? { kind: "session-cost", agentId: rootId } : null);
+  useSubscription(visible && limitsOpened ? { kind: "costs" } : null);
   const costScope = JSON.stringify([stateDir, rootId]);
   const [sessionCostState, setSessionCostState] = useState<{
     scope: string;
