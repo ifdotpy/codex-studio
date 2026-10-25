@@ -1,3 +1,6 @@
+import { subscriptionKey } from "../../src/sync/subscriptions/contracts.ts";
+import { SYNC_PROTOCOL_VERSION } from "../../src/generated/api.ts";
+
 /** Maximum fixture baseline wait, in milliseconds. */
 const RESOURCE_BASELINE_TIMEOUT_MS = 15_000;
 
@@ -61,5 +64,3 @@ export async function readResourceBaselines(origin, resources) {
     await reader.cancel();
   }
 }
-import { subscriptionKey } from "../../src/sync/subscriptions/contracts.ts";
-import { SYNC_PROTOCOL_VERSION } from "../../src/generated/api.ts";
