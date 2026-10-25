@@ -96,7 +96,9 @@ mod tests {
         )
         .await
         .expect("journal");
-        tokio::fs::create_dir_all(root.path().join("model-pricing")).await.expect("pricing directory");
+        tokio::fs::create_dir_all(root.path().join("model-pricing"))
+            .await
+            .expect("pricing directory");
         tokio::fs::write(root.path().join("model-pricing/models-dev-v1.json"), json!({"version":1,"catalog":{"providers":{
             "anthropic":{"models":{"claude-sonnet-4-5":{"cost":{"input":1,"output":2,"cache_read":0.5,"cache_write":1}}}},
             "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":1}}}}
@@ -220,13 +222,17 @@ mod tests {
         // A malformed or oversized native state file is a file-local coverage
         // failure; the direct journal remains useful and the route stays 200.
         let sessions = root.path().join("account-servers/claude/sessions");
-        tokio::fs::create_dir_all(&sessions).await.expect("native states");
+        tokio::fs::create_dir_all(&sessions)
+            .await
+            .expect("native states");
         let state_path = sessions.join("thread.json");
         for size in [
             4,
             studio_runtime_services::costs::MAX_RECONCILIATION_NATIVE_BYTES + 1,
         ] {
-            let file = tokio::fs::File::create(&state_path).await.expect("state file");
+            let file = tokio::fs::File::create(&state_path)
+                .await
+                .expect("state file");
             file.set_len(size).await.expect("sparse state boundary");
             let request = Request::builder()
                 .uri("/api/diagnostics/usage-reconciliation?agent=archived")
