@@ -211,6 +211,16 @@ class AgentHandlers:
     async def head(self, context):
         return await self.layr(context, "rev-parse", "head", root=True)
 
+    async def state_id(self, context, state):
+        """Resolve an immutable UUID or display ID to layr's display form."""
+        try:
+            parsed = uuid.UUID(state) if isinstance(state, str) else None
+        except ValueError:
+            parsed = None
+        require(parsed is not None and state.lower() in {parsed.hex, str(parsed)},
+                "Supply an exact layr state ID")
+        return await self.layr(context, "rev-parse", "--verify", state.lower(), root=True)
+
     async def branch_line(self, params, project, record):
         parent = self.context(params["parentAgentId"])
         require(parent["projectId"] == params["projectId"] and not parent["readOnly"],
@@ -366,8 +376,9 @@ class AgentHandlers:
         if method == "line.status":
             return {**context, "stateId": await self.head(context)}
         if method == "line.evidence":
-            state = await self.head(context)
-            require(state == params.get("stateId"), "The submitted state is not the line head")
+            state = params.get("stateId")
+            require(await self.state_id(context, state) == await self.head(context),
+                    "The submitted state is not the line head")
             return {"projectId": context["projectId"], "line": context["line"], "stateId": state}
         if method == "line.save":
             turn = identifier(params.get("turnId"))
@@ -382,8 +393,9 @@ class AgentHandlers:
             source = self.context(params["sourceAgentId"])
             require(source["projectId"] == context["projectId"] and not source["readOnly"], "The source line is invalid")
             expected = params.get("expectedStateId")
-            require(isinstance(expected, str) and expected == await self.head(source), "The reviewed state changed")
-            output = await self.layr(context, "merge", source["line"], "--expect", expected)
+            canonical = await self.state_id(source, expected)
+            require(canonical == await self.head(source), "The reviewed state changed")
+            output = await self.layr(context, "merge", source["line"], "--expect", canonical)
             return {"stateId": await self.head(context), "reviewedStateId": expected, "output": output}
         if method == "handoff.ensure":
             return await self.handoff(context, params)

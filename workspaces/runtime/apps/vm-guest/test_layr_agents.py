@@ -139,6 +139,60 @@ class ReviewerLines(unittest.IsolatedAsyncioTestCase):
 
 
 
+class StateEvidence(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        with patch.object(AgentHandlers, "join_project_groups"):
+            self.temp = tempfile.TemporaryDirectory()
+            self.addCleanup(self.temp.cleanup)
+            self.handlers = AgentHandlers(Path(self.temp.name) / "state", Path(self.temp.name) / "store")
+        self.lead = {"agentId": "lead", "projectId": "proof", "line": "main", "readOnly": False}
+        self.worker = {"agentId": "worker", "projectId": "proof", "line": "worker", "readOnly": False}
+        self.handlers.context = lambda agent: self.lead if agent == "lead" else self.worker
+        self.state_uuid = "01a17245-dfbb-76b3-850d-c214d39dd76e"
+        self.display = "c214d39dd76e76b3850d01a17245dfbb"
+        self.stale_uuid = "01a17245-6bbd-735d-83ec-a7df12501445"
+        self.stale_display = "a7df12501445735d83ec01a172456bbd"
+        self.calls = []
+
+        async def layr(context, *args, **options):
+            self.calls.append((context["agentId"], args))
+            if args[0] == "rev-parse":
+                return {self.state_uuid: self.display, self.display: self.display,
+                        self.stale_uuid: self.stale_display, self.stale_display: self.stale_display,
+                        "head": self.display}[args[-1]]
+            return "merged"
+        self.handlers.layr = layr
+
+    async def test_evidence_accepts_both_exact_state_forms_and_preserves_the_request(self):
+        for state in (self.state_uuid, self.display):
+            with self.subTest(state=state):
+                result = await self.handlers.dispatch_locked("evidence", "line.evidence",
+                    {"agentId": "worker", "stateId": state}, None)
+                self.assertEqual(result["stateId"], state)
+
+    async def test_merge_accepts_both_exact_state_forms_with_an_exact_expect(self):
+        for state in (self.state_uuid, self.display):
+            with self.subTest(state=state):
+                self.calls.clear()
+                result = await self.handlers.dispatch_locked("merge", "line.merge",
+                    {"agentId": "lead", "sourceAgentId": "worker", "expectedStateId": state}, None)
+                self.assertEqual(result["reviewedStateId"], state)
+                self.assertIn(("lead", ("merge", "worker", "--expect", self.display)), self.calls)
+
+    async def test_stale_ids_and_moving_refs_never_merge(self):
+        for state in (self.stale_uuid, self.stale_display, "head", "worker", "--show-toplevel",
+                      None, "", "bad", "{" + self.state_uuid + "}", "urn:uuid:" + self.state_uuid):
+            with self.subTest(state=state):
+                self.calls.clear()
+                with self.assertRaises(GuestError):
+                    await self.handlers.dispatch_locked("evidence", "line.evidence",
+                        {"agentId": "worker", "stateId": state}, None)
+                with self.assertRaises(GuestError):
+                    await self.handlers.dispatch_locked("merge", "line.merge",
+                        {"agentId": "lead", "sourceAgentId": "worker", "expectedStateId": state}, None)
+                self.assertFalse(any(args[0] == "merge" for _, args in self.calls))
+
+
 class TaskHandoff(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
