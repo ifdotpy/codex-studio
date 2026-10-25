@@ -1252,7 +1252,7 @@ export class Smoke {
     );
     if (provider === "codex" && longResponseIds.length < 2)
       throw new CheckFailed("Turn 2 has fewer than two native model responses");
-    return `${id}: ${truth.responses.length} native responses, ${responses.length} recorded responses`;
+    return `${id}: ${truth.responses.length} native responses, ${recorded.responses.length} recorded responses`;
   }
 
   /** Match the UI publication to a fresh cost generation containing final-turn usage. */
