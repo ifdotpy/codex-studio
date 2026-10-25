@@ -1002,7 +1002,7 @@ fn host_worktree(
         || record["parentId"].as_str().is_none()
         || record["executionMode"] == "vm"
         || !((record["worktree"] == true && record["worktreeReady"] == true)
-            || (record["imageWorkspace"] == true && record["imageWorkspaceReady"] == true))
+            || (crate::layr_native::is_native(record) && record["layrReady"] == true))
     {
         return Ok(None);
     }
@@ -1010,11 +1010,9 @@ fn host_worktree(
     if !Path::new(&tree).is_absolute() {
         return Err(invalid("agent/cwd"));
     }
-    // hostProjectPath survives worktree provisioning. Image copies also retain
-    // imageWorkspaceRepo. The root paths protect the lead for nested workers.
+    // hostProjectPath preserves the source identity. The root paths protect nested workers.
     let mut fence = Vec::new();
     for value in [
-        &record["imageWorkspaceRepo"],
         &record["hostProjectPath"],
         &root["cwd"],
         &root["hostProjectPath"],
@@ -2077,77 +2075,161 @@ mod workspace_fence_tests {
             .expect("store");
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
             .expect("resources");
-        store.transaction_with(move |tx| {
-            let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
+        store
+            .transaction_with(move |tx| {
+                let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
                 "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout"});
-            AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
-            for (mode, provider, role, ready, fenced, expected_sandbox) in [
-                ("worktree", "claude", "implementer", true, true, "danger-full-access"),
-                ("image", "claude", "implementer", true, true, "danger-full-access"),
-                ("shared", "claude", "implementer", true, false, "danger-full-access"),
-                ("worktree", "claude", "reviewer", true, false, "read-only"),
-                ("image", "claude", "reviewer", true, false, "read-only"),
-                ("worktree", "claude", "implementer", false, false, "danger-full-access"),
-                ("image", "claude", "implementer", false, false, "danger-full-access"),
-                ("worktree", "codex", "implementer", true, false, "danger-full-access"),
-            ] {
-                let record = json!({"id":"worker","rootId":"lead","parentId":"lead",
+                AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
+                for (mode, provider, role, ready, fenced, expected_sandbox) in [
+                    (
+                        "worktree",
+                        "claude",
+                        "implementer",
+                        true,
+                        true,
+                        "danger-full-access",
+                    ),
+                    (
+                        "layr-native",
+                        "claude",
+                        "implementer",
+                        true,
+                        true,
+                        "danger-full-access",
+                    ),
+                    (
+                        "shared",
+                        "claude",
+                        "implementer",
+                        true,
+                        false,
+                        "danger-full-access",
+                    ),
+                    ("worktree", "claude", "reviewer", true, false, "read-only"),
+                    (
+                        "layr-native",
+                        "claude",
+                        "reviewer",
+                        true,
+                        false,
+                        "read-only",
+                    ),
+                    (
+                        "worktree",
+                        "claude",
+                        "implementer",
+                        false,
+                        false,
+                        "danger-full-access",
+                    ),
+                    (
+                        "layr-native",
+                        "claude",
+                        "implementer",
+                        false,
+                        false,
+                        "danger-full-access",
+                    ),
+                    (
+                        "worktree",
+                        "codex",
+                        "implementer",
+                        true,
+                        false,
+                        "danger-full-access",
+                    ),
+                ] {
+                    let record = json!({"id":"worker","rootId":"lead","parentId":"lead",
                     "epoch":1,"status":"queued","isLead":false,"role":role,"provider":provider,
                     "cwd":"/worker copy:quoted\"path","hostProjectPath":"/parent copy",
-                    "imageWorkspaceRepo":if mode == "image" { json!("/image source") } else { Value::Null },
                     "workspaceMode":mode,"worktree":mode == "worktree","worktreeReady":ready,
-                    "imageWorkspace":mode == "image","imageWorkspaceReady":ready,
+                    "layrReady":mode == "layr-native" && ready,
                     "yoloMode":true,"claudeOptions":{"permissionMode":"bypassPermissions"}});
-                for resumed in [false, true] {
-                    let mut record = record.clone();
-                    if resumed {
-                        // A current thread retains the catalog selected at start.
-                        record["threadId"] = json!("existing-thread");
-                        record["nativeToolSource"] = json!("current");
-                    }
-                    let snapshot = thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"),
-                        None)?;
-                    let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
-                        thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
-                        other => panic!("expected thread launch, got {other:?}"),
-                    };
-                    let options = attempt.params.get("claude").unwrap_or(&Value::Null);
-                    if provider == "claude" && role == "reviewer" {
-                        assert_eq!(options["permissionMode"], "plan");
-                        assert_eq!(attempt.params["sandbox"], "read-only");
-                        assert_eq!(attempt.params["approvalPolicy"], "on-request");
-                    }
-                    if fenced {
-                        assert_eq!(options["permissionMode"], "bypassPermissions");
-                        assert_eq!(options["env"]["CLAUDE_CODE_HOST_WORKTREE"], record["cwd"]);
-                        let fence: Vec<String> = serde_json::from_str(
-                            options["env"]["CLAUDE_CODE_HOST_WORKTREE_FENCE"].as_str().expect("JSON fence"))
-                            .expect("fence array");
-                        let expected = if mode == "image" {
-                            vec!["/image source", "/parent copy", "/source checkout"]
-                        } else { vec!["/parent copy", "/source checkout"] };
-                        assert_eq!(fence, expected);
-                        let mut current = snapshot.clone();
-                        current.actor.prepare_attempt = Some(attempt.attempt_id.clone());
-                        let receipt = thread::ProviderReceipt {
-                            identity: attempt.receipt_identity(),
-                            thread_id: Some("existing-thread".into()),
-                            fields: Map::new(),
-                            reattached: false,
+                    for resumed in [false, true] {
+                        let mut record = record.clone();
+                        if resumed {
+                            // A current thread retains the catalog selected at start.
+                            record["threadId"] = json!("existing-thread");
+                            record["nativeToolSource"] = json!("current");
+                        }
+                        let snapshot = thread_snapshot(
+                            tx,
+                            &resources,
+                            &record,
+                            "connection",
+                            Path::new("/state"),
+                            None,
+                        )?;
+                        let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
+                            thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => {
+                                attempt
+                            }
+                            other => panic!("expected thread launch, got {other:?}"),
                         };
-                        assert!(matches!(thread::reduce_receipt(&attempt, &current, Some(&receipt), None, json!(1)),
-                            thread::ReceiptOutcome::Accepted { .. }));
-                        current.host_worktree.as_mut().expect("worker fence").fence.push("/changed-source".into());
-                        assert_eq!(thread::reduce_receipt(&attempt, &current, Some(&receipt), None, json!(1)),
-                            thread::ReceiptOutcome::Stale(thread::StaleReason::Settings));
-                    } else {
-                        assert!(options.get("env").is_none(), "{mode}/{provider}/{role}/{ready}: {options}");
+                        let options = attempt.params.get("claude").unwrap_or(&Value::Null);
+                        if provider == "claude" && role == "reviewer" {
+                            assert_eq!(options["permissionMode"], "plan");
+                            assert_eq!(attempt.params["sandbox"], "read-only");
+                            assert_eq!(attempt.params["approvalPolicy"], "on-request");
+                        }
+                        if fenced {
+                            assert_eq!(options["permissionMode"], "bypassPermissions");
+                            assert_eq!(options["env"]["CLAUDE_CODE_HOST_WORKTREE"], record["cwd"]);
+                            let fence: Vec<String> = serde_json::from_str(
+                                options["env"]["CLAUDE_CODE_HOST_WORKTREE_FENCE"]
+                                    .as_str()
+                                    .expect("JSON fence"),
+                            )
+                            .expect("fence array");
+                            let expected = vec!["/parent copy", "/source checkout"];
+                            assert_eq!(fence, expected);
+                            let mut current = snapshot.clone();
+                            current.actor.prepare_attempt = Some(attempt.attempt_id.clone());
+                            let receipt = thread::ProviderReceipt {
+                                identity: attempt.receipt_identity(),
+                                thread_id: Some("existing-thread".into()),
+                                fields: Map::new(),
+                                reattached: false,
+                            };
+                            assert!(matches!(
+                                thread::reduce_receipt(
+                                    &attempt,
+                                    &current,
+                                    Some(&receipt),
+                                    None,
+                                    json!(1)
+                                ),
+                                thread::ReceiptOutcome::Accepted { .. }
+                            ));
+                            current
+                                .host_worktree
+                                .as_mut()
+                                .expect("worker fence")
+                                .fence
+                                .push("/changed-source".into());
+                            assert_eq!(
+                                thread::reduce_receipt(
+                                    &attempt,
+                                    &current,
+                                    Some(&receipt),
+                                    None,
+                                    json!(1)
+                                ),
+                                thread::ReceiptOutcome::Stale(thread::StaleReason::Settings)
+                            );
+                        } else {
+                            assert!(
+                                options.get("env").is_none(),
+                                "{mode}/{provider}/{role}/{ready}: {options}"
+                            );
+                        }
+                        assert_eq!(attempt.params["sandbox"], expected_sandbox);
                     }
-                    assert_eq!(attempt.params["sandbox"], expected_sandbox);
                 }
-            }
-            Ok::<_, WorkerError>(())
-        }).await.expect("production snapshot and provider params");
+                Ok::<_, WorkerError>(())
+            })
+            .await
+            .expect("production snapshot and provider params");
     }
 
     #[test]

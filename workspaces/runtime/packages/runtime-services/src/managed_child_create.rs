@@ -475,6 +475,12 @@ pub(crate) async fn spawn_agents(
             })
             .unwrap_or("worktree");
         validate_vm_parent_workspace(workspace, vm_actor)?;
+        if workspace == "layr-native" && !crate::layr_native::is_native(&parent_value) {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "A native Layr workspace requires a native Layr parent",
+            )
+            .into());
+        }
         if !studio_runtime_schema::workspace_modes::accepts_worker(workspace) {
             return Err(crate::managed_host_tools::Error::Invalid("Unknown workspace mode").into());
         }

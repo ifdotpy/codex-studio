@@ -1102,7 +1102,7 @@ async fn create_child(
         parent_workspace,
         parent.get("executionMode").and_then(Value::as_str) == Some("vm"),
     )?;
-    validate_vm_parent_for_create(workspace, &parent)?;
+    validate_parent_workspace_for_create(workspace, &parent)?;
     if workspace == "layr" && !cfg!(target_os = "macos") {
         return Err(OperationError::Invalid(
             "This server supports only worktree chats",
@@ -1333,7 +1333,15 @@ async fn create_child(
     Ok(result)
 }
 
-fn validate_vm_parent_for_create(workspace: &str, parent: &Value) -> Result<(), OperationError> {
+fn validate_parent_workspace_for_create(
+    workspace: &str,
+    parent: &Value,
+) -> Result<(), OperationError> {
+    if workspace == "layr-native" && !crate::layr_native::is_native(parent) {
+        return Err(OperationError::Invalid(
+            "A native Layr workspace requires a native Layr parent",
+        ));
+    }
     if workspace == "layr" && parent.get("executionMode").and_then(Value::as_str) != Some("vm") {
         return Err(OperationError::Invalid(
             "A VM workspace requires a VM parent",
@@ -1361,6 +1369,14 @@ fn child_role_workspace<'a>(
             "A VM reviewer must use the parent's layr workspace",
         ));
     }
+    if role == "reviewer"
+        && parent_workspace == "layr-native"
+        && requested_workspace.is_some_and(|mode| mode != "layr-native")
+    {
+        return Err(OperationError::Invalid(
+            "A native Layr reviewer must use the parent's workspace",
+        ));
+    }
     let workspace = requested_workspace.unwrap_or(
         if role == "reviewer" && !vm_parent && parent_workspace != "layr-native" {
             "shared"
@@ -1368,13 +1384,10 @@ fn child_role_workspace<'a>(
             parent_workspace
         },
     );
-    let worktree = match workspace {
-        "worktree" => true,
-        "shared" => false,
-        "layr-native" => false,
-        "layr" => false,
-        _ => return Err(OperationError::Invalid("Unknown workspace mode")),
-    };
+    if !studio_runtime_schema::workspace_modes::accepts_worker(workspace) {
+        return Err(OperationError::Invalid("Unknown workspace mode"));
+    }
+    let worktree = workspace == "worktree";
     Ok((role, workspace, worktree))
 }
 
@@ -3790,6 +3803,24 @@ mod tests {
     }
 
     #[test]
+    fn native_child_requires_a_native_parent() {
+        assert!(
+            validate_parent_workspace_for_create(
+                "layr-native",
+                &json!({"workspaceMode":"worktree"})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_parent_workspace_for_create(
+                "layr-native",
+                &json!({"workspaceMode":"layr-native"})
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn explicit_shared_workspace_gives_an_implementer_the_parent_directory() {
         assert_eq!(
             child_role_workspace(None, Some("shared"), "worktree", false)
@@ -3828,12 +3859,14 @@ mod tests {
             ("implementer", "layr", false)
         );
         assert!(matches!(
-            validate_vm_parent_for_create("layr", &json!({"executionMode":"native"})),
+            validate_parent_workspace_for_create("layr", &json!({"executionMode":"native"})),
             Err(OperationError::Invalid(
                 "A VM workspace requires a VM parent"
             ))
         ));
-        assert!(validate_vm_parent_for_create("layr", &json!({"executionMode":"vm"})).is_ok());
+        assert!(
+            validate_parent_workspace_for_create("layr", &json!({"executionMode":"vm"})).is_ok()
+        );
         assert_eq!(
             child_role_workspace(Some("reviewer"), None, "layr", true)
                 .expect("VM reviewer inherits layr workspace"),
@@ -3846,7 +3879,8 @@ mod tests {
             ))
         ));
         assert!(
-            validate_vm_parent_for_create("worktree", &json!({"executionMode":"native"})).is_ok()
+            validate_parent_workspace_for_create("worktree", &json!({"executionMode":"native"}))
+                .is_ok()
         );
     }
 

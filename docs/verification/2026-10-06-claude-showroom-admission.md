@@ -64,8 +64,8 @@ control contracts pass. Negative cases cover post-admission errors, a distinct
 queued steer, and a queued steer whose literal ID aliases the original native
 UUID. Independent review passes after the alias correction.
 
-The merge with `origin/main` preserves both image workspace cleanup and the
-incoming agent-room synchronization. The image workspace and scoped agent
+The merge with `origin/main` preserves both legacy workspace cleanup and the
+incoming agent-room synchronization. The legacy workspace and scoped agent
 contracts pass. Staged-content lint and format checks pass.
 
 ## Remaining uncertainty

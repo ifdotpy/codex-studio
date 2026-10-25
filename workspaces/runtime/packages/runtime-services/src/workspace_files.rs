@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn local_file_metadata_and_content_follow_symlinks() {
-        let directory = tempfile_dir();
+        let directory = tempfile::tempdir().expect("fixture directory");
         let root = directory.path();
         let target = root.join("outside.md");
         fs::write(&target, "content").expect("target writes");
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn file_content_is_bounded_and_metadata_is_not_limited() {
-        let directory = tempfile_dir();
+        let directory = tempfile::tempdir().expect("fixture directory");
         let root = directory.path();
         let file = root.join("large.bin");
         let content = fs::File::create(&file).expect("file creates");

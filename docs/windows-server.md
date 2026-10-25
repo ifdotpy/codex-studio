@@ -99,8 +99,7 @@ Tailscale nodes on ports 443 and 8443. It records each origin with its port.
 
 The native server discovers Codex and Claude through Windows executable
 discovery, including `.cmd` shims. Native implementers use Git worktrees under
-the Windows repository. They do not use image workspaces or the WSL2 server's
-Linux workspace.
+the Windows repository.
 
 ## POSIX dependencies and port plan
 
@@ -110,7 +109,7 @@ and are not imported by the Windows server path.
 
 | Current dependency and locations                                                                                                                                                                                                                                                                                                                     | Windows plan                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fcntl.flock`: `codex_runtime.py`, `codex_process_supervisor.py`, `codex_live_updates.py`, `codex_native_binary.py`, `codex_payloads.py`, `codex_claude_login.py`, `codex_workspace_images.py`, `codex_linux_vm.py`                                                                                                                                  | Add one small cross-platform file-lock module. Use `LockFileEx` on a byte range for Windows and `flock` on POSIX. Keep exclusive and shared modes, nonblocking behavior, process-exit release, and existing lock-file identity. Keep the image-workspace and Linux-VM code behind platform guards. Use contract tests for contention, crash release, and retry.                                                                                                                                                                                     |
+| `fcntl.flock`: `codex_runtime.py`, `codex_process_supervisor.py`, `codex_live_updates.py`, `codex_native_binary.py`, `codex_payloads.py`, `codex_claude_login.py`, `codex_linux_vm.py`                                                                                                                                                               | Add one small cross-platform file-lock module. Use `LockFileEx` on a byte range for Windows and `flock` on POSIX. Keep exclusive and shared modes, nonblocking behavior, process-exit release, and existing lock-file identity. Keep the Linux VM code behind platform guards. Use contract tests for contention, crash release, and retry.                                                                                                                                                                                                         |
 | Unix domain sockets: `studio_api/server.py` optional `canvas.sock`; `codex_process_supervisor.py` client and `ThreadingUnixStreamServer`                                                                                                                                                                                                             | Keep the already-present loopback TCP API on `127.0.0.1`. Do not create the optional canvas socket on Windows. Replace supervisor IPC with a local Windows named pipe. Set an explicit discretionary access control list (DACL) for the service account, deny network clients, validate the client identity, and retain framed messages, bounded reads, stable request IDs, and existing receipts. The default named-pipe DACL is too broad for this protocol.                                                                                      |
 | Process groups, sessions, and signals: runtime, process supervisor, model-catalog reader, and native-binary checks use `start_new_session`; supervisor, terminal, worktree, and Claude-login cleanup use `os.killpg` and `SIGTERM`/`SIGKILL`; `codex_canvas.py` maps `SIGTERM` to shutdown                                                           | Create each supervised child with `CreateProcess` or Python `subprocess.Popen`, assign it to a Windows Job Object before it can create descendants, and save its process creation time. Use `TerminateJobObject` only after rechecking the saved identity. Give graceful shutdown a bounded wait, then terminate the verified job. Use service-control events for server shutdown; use `CTRL_BREAK_EVENT` only for compatible console children. Never use `taskkill /IM`, broad PID-only termination, or `os.kill(pid, signal)` as ownership proof. |
 | Process identity: supervisor `process_start_time()` has Darwin and Linux implementations and persists PID, process group, and start time                                                                                                                                                                                                             | Add a Windows implementation based on process creation time from `GetProcessTimes`; open processes with minimum rights and treat access denied, PID reuse, missing job membership, or unreadable creation time as unknown. Record job identity and process creation time with the existing durable handle.                                                                                                                                                                                                                                          |
@@ -128,15 +127,14 @@ The file-mode inventory also includes `codex_account_transfer.py`,
 `codex_portable_history.py`, `codex_work.py`, and `codex_workspace.py`.
 Keep their private writes under the same Windows ACL policy.
 
-`codex_workspace_images.py` uses image and mount helpers and is not a Windows
-workspace backend. Select the existing Git worktree fallback for native Windows
-workers. macOS and Linux servers support native Layr and Git worktrees.
+Native Windows workers use Git worktrees.
+macOS and Linux servers support native Layr and Git worktrees.
 
 Apple Virtualization Framework stay unsupported on Windows. Audit the import
 graph so a native Windows server does not import these modules at startup.
 
 The named file groups above are the server-path inventory. Other POSIX-only
-files belong to platform-specific image, VM, desktop-recovery, benchmark, or
+files belong to platform-specific VM, desktop-recovery, benchmark, or
 build paths. Keep those paths outside the Windows service import graph.
 
 ## Native Windows worker path
@@ -200,7 +198,6 @@ steps. Do not run the Python server as administrator.
 
 ## Work not supported on Windows
 
-- Image workspaces. Native Windows workers use Git worktrees.
 - The Apple Virtualization Framework Linux VM. Use the separate WSL2 Studio
   server for Linux workers on `kukuka-win`.
 - macOS Keychain and launchd in the native host process.

@@ -749,7 +749,16 @@ fn usage_resume_pending(agent: &Agent) -> bool {
 /// The scheduler claims input only for queued agents, so its pending input
 /// waits for a manual resume that an archive rules out. Python `_blockers`
 /// refused this archive with `input_delivery`; the Rust owner settles it.
+fn legacy_finished(agent: &Agent) -> bool {
+    agent.flag("legacyWorkspaceFinished")
+        && crate::legacy_image_workspace::is_legacy(&agent.record)
+        && !agent.active()
+}
+
 fn failed_without_retry(agent: &Agent) -> bool {
+    if legacy_finished(agent) {
+        return true;
+    }
     agent.identity.status == AgentStatus::Failed
         && !agent.active()
         && !agent.flag("startAttempt")
@@ -760,6 +769,9 @@ fn failed_without_retry(agent: &Agent) -> bool {
 /// Python `_completed_native_turn`: a durable completion of the last submitted
 /// turn proves that no native turn is left to wait for.
 fn completed_native_turn(agent: &Agent) -> bool {
+    if legacy_finished(agent) {
+        return true;
+    }
     let record = &agent.record;
     let attempt_turn = record.pointer("/startAttempt/turnId");
     let turn = record
@@ -1756,6 +1768,28 @@ mod archive_parity_tests {
             vec![json!({"id":"task-done","agent":"worker","status":"completed"})],
         ));
         assert_eq!(result["status"], "archived", "{result}");
+    }
+
+    #[test]
+    fn legacy_finished_worker_archives_without_a_native_executor() {
+        let mut snapshot = records(
+            worker(json!({
+                "workspaceMode":"image", "legacyWorkspaceFinished":true,
+                "autoWake":false, "lastCompletedTurn":null,
+                "startAttempt":{"submitted":true,"turnId":"legacy-turn"}
+            })),
+            Vec::new(),
+            Vec::new(),
+        );
+        snapshot.tables.insert(
+            "runtime_events".into(),
+            vec![json!({
+                "id":"legacy-input", "agent":"worker", "epoch":2, "status":"pending"
+            })],
+        );
+        let result = archive(snapshot);
+        assert_eq!(result["status"], "archived", "{result}");
+        assert_eq!(result["settledInputs"], json!(["legacy-input"]));
     }
 
     #[test]

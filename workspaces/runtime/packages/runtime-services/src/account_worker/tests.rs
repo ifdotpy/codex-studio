@@ -335,13 +335,11 @@ async fn seed_fixture_root(root: &std::path::Path) -> RuntimeStore {
         "turnId":null,"inFlight":false,"turnEpoch":0,"usageResumeEnabled":true,"tokensUsed":0,
         "compactions":0,"compactionsObservedOnly":false,"contextUsage":null,"created":1.0,
         "error":null,"tail":"","executionMode":"native","hostProjectPath":root,"layrReady":false,
-        "worktreeReady":false,"environment":"host","imageWorkspace":false,"imageWorkspaceReady":false
+        "worktreeReady":false,"environment":"host"
     }).as_object().unwrap().clone());
     record.as_object_mut().unwrap().extend(json!({
         "profileId":null,"profileInstructions":"","workspaceBackend":null,"workspaceModeExplicit":false,
-        "workspaceInGit":false,"imageWorkspacePhase":null,"imageWorkspaceRepo":null,
-        "imageWorkspaceSubpath":".","imageWorkspaceBaseRef":null,"imageWorkspaceHasGit":false,
-        "imageWorkspaceCreatedAt":null,"imageWorkspaceError":null,"worktreeWarning":null,
+        "workspaceInGit":false,"worktreeWarning":null,
         "workerBaseRef":null,"workerBaseCommit":null,"workerBaseBehindMain":null,"workerBaseMainRef":null,
         "cyberAccessProgram":null,"subagentConcurrencyVersion":2,"maxAgentsExplicit":false,"concurrency":1
     }).as_object().unwrap().clone());

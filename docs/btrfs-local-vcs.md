@@ -658,9 +658,7 @@ Design:
 
 Studio integration:
 
-- Use layr for Linux workspaces instead of the overlayfs engine
-  ([image workspaces](workspace-images.md)) and the git status change detector
-  ([Linux VM workspaces](linux-vm-workspaces.md)), behind the same public API.
+- Use Layr for native and [Linux VM workspaces](linux-vm-workspaces.md).
 - Call `layr cache repair` and `layr save` at the end of each agent turn; run `layr daemon` in the
   VM.
 - The read-only network share of the main line and `states/`.
