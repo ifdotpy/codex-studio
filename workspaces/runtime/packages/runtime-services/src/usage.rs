@@ -693,6 +693,15 @@ struct CodexModelDay {
     unpriced: bool,
 }
 
+/// One recovered response, retaining its original event time across replay files.
+struct CodexResponse {
+    at: chrono::DateTime<chrono::FixedOffset>,
+    model: String,
+    tokens: studio_runtime_schema::usage::UsageTokens,
+    /// At least one original record belongs to this session rather than fork replay.
+    eligible: bool,
+}
+
 /// Scan the Codex session logs of one profile and build the aggregate cost
 /// report. Reads `sessions` and the sibling `archived_sessions` under `home`;
 /// a fork's replayed parent responses are excluded from its costs.
@@ -749,7 +758,7 @@ where
     }
     let catalog = fetch_catalog();
     let mut days = BTreeMap::<(String, String), CodexModelDay>::new();
-    let mut responses = BTreeSet::new();
+    let mut responses = BTreeMap::<String, CodexResponse>::new();
     for path in files.values() {
         let file = File::open(path).map_err(|_| UsageError::Scan)?;
         let mut rollout = crate::analytics_rollout::RolloutContext::from_record(
@@ -787,7 +796,9 @@ where
                             .map_err(|_| UsageError::Scan)?;
                     }
                 }
-                Some("turn_context" | "token_usage_record" | "compacted") => {}
+                Some("turn_context" | "token_usage_record") => {}
+                // A snapshot carries no original response time. Its replay must
+                // never turn an old response into today's billable evidence.
                 _ => continue,
             }
             // Keep the scanner's older nested model context compatibility. Token
@@ -824,39 +835,54 @@ where
                     continue;
                 };
                 let Some(at) = at else { continue };
-                if fork_at.is_some_and(|forked| at < forked) {
-                    continue;
-                }
-                let day = at
-                    .with_timezone(&chrono::Local)
-                    .format("%Y-%m-%d")
-                    .to_string();
-                if day < since_day || !responses.insert(response_id) {
-                    continue;
-                }
-                let name = codex_model_name(&model);
-                let total = tokens.total().ok_or(UsageError::Scan)?;
-                let input = total - tokens.output;
-                // The shared conversion has already split Codex's inclusive input.
-                let usage = crate::pricing::TokenUsage {
-                    input_tokens: Some(tokens.uncached_input as f64),
-                    cached_input_tokens: Some(tokens.cache_read_input as f64),
-                    cache_write_input_tokens: Some(tokens.cache_write_input as f64),
-                    output_tokens: Some(tokens.output as f64),
+                let response = CodexResponse {
+                    at,
+                    model,
+                    tokens,
+                    eligible: !fork_at.is_some_and(|forked| at < forked),
                 };
-                let cost = catalog
-                    .as_ref()
-                    .map(|catalog| {
-                        catalog.price_usage("openai", &name, usage, Some(input as f64), true)
+                // Canonicalize all original records before applying the report
+                // window: resume/archive traversal order cannot move usage forward.
+                responses
+                    .entry(response_id)
+                    .and_modify(|previous| {
+                        previous.at = previous.at.min(response.at);
+                        previous.eligible |= response.eligible;
                     })
-                    .and_then(|price| price.amount_usd);
-                let entry = days.entry((day, name)).or_default();
-                entry.tokens += total;
-                match cost {
-                    Some(cost) => entry.cost_usd += cost,
-                    None => entry.unpriced = true,
-                }
+                    .or_insert(response);
             }
+        }
+    }
+    for response in responses.into_values() {
+        check_codex_scan(started, cancelled)?;
+        let day = response
+            .at
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string();
+        if !response.eligible || day < since_day {
+            continue;
+        }
+        let name = codex_model_name(&response.model);
+        let tokens = response.tokens;
+        let total = tokens.total().ok_or(UsageError::Scan)?;
+        let input = total - tokens.output;
+        // The shared conversion has already split Codex's inclusive input.
+        let usage = crate::pricing::TokenUsage {
+            input_tokens: Some(tokens.uncached_input as f64),
+            cached_input_tokens: Some(tokens.cache_read_input as f64),
+            cache_write_input_tokens: Some(tokens.cache_write_input as f64),
+            output_tokens: Some(tokens.output as f64),
+        };
+        let cost = catalog
+            .as_ref()
+            .map(|catalog| catalog.price_usage("openai", &name, usage, Some(input as f64), true))
+            .and_then(|price| price.amount_usd);
+        let entry = days.entry((day, name)).or_default();
+        entry.tokens += total;
+        match cost {
+            Some(cost) => entry.cost_usd += cost,
+            None => entry.unpriced = true,
         }
     }
     let today = local_day(now);
@@ -1413,6 +1439,7 @@ mod tests {
             record(59, "r1", 400_000, 100_000, 40_000),
             count(59, 400_000, 100_000, 40_000),
             count(58, 400_000, 100_000, 40_000),
+            record(58, "r1", 400_000, 100_000, 40_000),
             json!({"timestamp":at(57),"type":"compacted","payload":{
                 "latest_token_usage_record":serde_json::from_str::<Value>(&record(57,"r1",400_000,100_000,40_000)).expect("valid response fixture")["payload"]}}).to_string(),
             record(56, "r2", 600_000, 100_000, 60_000),
@@ -1462,6 +1489,104 @@ mod tests {
         assert_eq!(report["historyDays"], 30);
         let latest = (now - chrono::Duration::minutes(9)).with_timezone(&chrono::Local);
         assert_eq!(report["sourceDay"], latest.format("%Y-%m-%d").to_string());
+    }
+
+    #[test]
+    fn codex_session_fixture_replays_keep_original_time_before_history_filtering() {
+        let now = chrono::Utc::now();
+        let usage = json!({"response_id":"old-response", "usage":{
+            "input_tokens":1_000_000,"cached_input_tokens":200_000,"output_tokens":100_000,
+            "reasoning_output_tokens":0,"total_tokens":1_100_000}});
+        let context = json!({"type":"turn_context","payload":{"model":"gpt-test"}});
+        for (case, age_days, original_file, replay_file, compacted) in [
+            (
+                "same file",
+                31,
+                Some("sessions/a.jsonl"),
+                "sessions/a.jsonl",
+                true,
+            ),
+            (
+                "archived original visited last",
+                31,
+                Some("archived_sessions/z.jsonl"),
+                "sessions/a.jsonl",
+                true,
+            ),
+            (
+                "archived original visited first",
+                31,
+                Some("archived_sessions/a.jsonl"),
+                "sessions/z.jsonl",
+                true,
+            ),
+            (
+                "snapshot without original time",
+                31,
+                None,
+                "sessions/a.jsonl",
+                true,
+            ),
+            (
+                "direct replay visited first",
+                31,
+                Some("archived_sessions/z.jsonl"),
+                "sessions/a.jsonl",
+                false,
+            ),
+            (
+                "recent original stays on its day",
+                2,
+                Some("archived_sessions/z.jsonl"),
+                "sessions/a.jsonl",
+                false,
+            ),
+        ] {
+            let root = tempfile::tempdir().expect("fixture directory");
+            for directory in ["sessions", "archived_sessions"] {
+                std::fs::create_dir(root.path().join(directory)).expect("fixture sessions");
+            }
+            let old = json!({"timestamp":(now-chrono::Duration::days(age_days)).to_rfc3339(),
+                "type":"token_usage_record","payload":usage});
+            if let Some(path) = original_file {
+                std::fs::write(root.path().join(path), format!("{context}\n{old}\n"))
+                    .expect("original record");
+            }
+            let replay = if compacted {
+                json!({"timestamp":now.to_rfc3339(),"type":"compacted",
+                    "payload":{"latest_token_usage_record":usage}})
+            } else {
+                json!({"timestamp":now.to_rfc3339(),"type":"token_usage_record","payload":usage})
+            };
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(root.path().join(replay_file))
+                .expect("replay file");
+            writeln!(file, "{context}\n{replay}").expect("replay record");
+            let catalog = crate::pricing::PricingCatalog::from_value(&json!({"providers":{
+                "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2,"cache_read":0.5}}}},
+                "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2}}}}
+            }}))
+            .expect("fixture catalog");
+            let report = super::scan_codex_sessions_with_catalog(
+                root.path(),
+                now.timestamp() as f64,
+                &AtomicBool::new(false),
+                || Some(catalog),
+            )
+            .expect("scan replay fixture");
+            assert_eq!(report["todayUSD"], Value::Null, "{case}");
+            assert_eq!(report["todayTokens"], Value::Null, "{case}");
+            if age_days > 30 {
+                assert_eq!(report["last30DaysUSD"], Value::Null, "{case}");
+                assert_eq!(report["last30DaysTokens"], Value::Null, "{case}");
+            } else {
+                assert_eq!(report["last30DaysUSD"], 1.1, "{case}");
+                assert_eq!(report["last30DaysTokens"], 1_100_000, "{case}");
+            }
+        }
     }
 
     #[test]
