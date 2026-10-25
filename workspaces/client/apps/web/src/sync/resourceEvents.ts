@@ -482,6 +482,16 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       previous.revision >= version.revision
     ) {
       if (previous.revision === version.revision) {
+        // A failed delivery retains its revision as a recovery hint. An
+        // applied reconnect at that same revision must replace the hint with
+        // its durable receipt, so readers can become ready without a change.
+        if (
+          !hasAppliedResourceBaseline(previous) &&
+          hasAppliedResourceBaseline(version)
+        ) {
+          resourceValues.set(key, version);
+          return true;
+        }
         if (version.reason) previous.reason = version.reason;
         resourceValues.delete(key);
         resourceValues.set(key, previous);
@@ -1949,7 +1959,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             ? progressValues.get(key) === progress
             : resourceValues.get(key) === known)
         )
-          callback(known);
+          try {
+            callback(known);
+          } catch (error) {
+            frameFailed(error);
+          }
       });
     }
     let stopped = false;

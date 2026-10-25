@@ -267,6 +267,68 @@ it("fences an active baseline replay when its stream fails during registration",
   ]);
 });
 
+it("promotes a same-revision recovery hint only after its applied receipt arrives", async () => {
+  const f = await fixture();
+  const store = createSubscriptionStore(f.transport);
+  disposals.push(store.dispose);
+  store.watchResourceChanges({ kind: "state" }, () => {});
+  expect(store.getSnapshot({ kind: "state" }).status).toBe("loading");
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 1,
+    reason: "reconnect",
+    resources: [{ kind: "state" }],
+    resourceVersions: [
+      {
+        revision: 1,
+        cursor: { workspaceId: "workspace", seq: 1 },
+        replyKind: "delta",
+      },
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot({ kind: "state" }).status).toBe("live");
+  expect(f.get).not.toHaveBeenCalled();
+});
+
+it("reports a deferred baseline listener failure through normal transport recovery", async () => {
+  const f = await fixture();
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "initial",
+    resources: [{ kind: "state" }],
+    resourceVersions: [
+      {
+        revision: 2,
+        cursor: { workspaceId: "workspace", seq: 2 },
+        replyKind: "snapshot",
+        entityChanges: { after: 0, through: 2, documents: [] },
+      },
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  const listener = vi
+    .fn()
+    .mockImplementationOnce(() => {})
+    .mockImplementation(() => {
+      throw new Error("listener unavailable");
+    });
+  f.transport.watchResourceChanges({ kind: "state" }, listener, {
+    waitForBaseline: true,
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(status).toHaveBeenCalledWith("degraded", expect.any(String));
+  error.mockRestore();
+});
+
 it("delivers subscribed auth progress without sending its URL to the entity persister", async () => {
   const f = await fixture();
   const resource = { kind: "auth-progress", requestId: "login-one" } as const;
