@@ -23,7 +23,7 @@ export function createEntityDataObserver(
     const selectedAgent = scope.agentField
       ? reference[scope.agentField]
       : undefined;
-    const needsTeam = Boolean(selectedAgent && ref.kind !== "work");
+    const needsTeam = Boolean(selectedAgent && scope.includeTeamMembers);
     const selectedId = scope.idField ? reference[scope.idField] : undefined;
     const collections = needsTeam
       ? [...scope.collections, "agentSummary"]
@@ -83,7 +83,8 @@ export function createEntityDataObserver(
               if (
                 scope.agentField &&
                 reference[scope.agentField] &&
-                (!("agent" in entity.value) ||
+                (!scope.includeTeamMembers ||
+                  !("agent" in entity.value) ||
                   !selectedAgents.has(entity.value.agent)) &&
                 (!("rootId" in entity.value) ||
                   entity.value.rootId !== selectedAgent)

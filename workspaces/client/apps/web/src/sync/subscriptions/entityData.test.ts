@@ -101,6 +101,8 @@ it("ignores offscreen workspace changes and preserves unchanged typed row identi
   const first = row("first", "lead", 1),
     second = row("second", "lead", 2),
     hidden = row("hidden", "other", 3);
+  // WorkItem permits extra properties. A direct agent field never changes its root-only scope.
+  Object.assign(hidden.entity.value, { agent: "lead" });
   const send = (values: unknown[]) =>
     emit(values.map((value) => ({ toJSON: () => structuredClone(value) })));
   send([first, second, hidden]);
