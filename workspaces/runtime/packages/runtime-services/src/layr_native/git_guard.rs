@@ -9,6 +9,7 @@ use std::{
 use studio_runtime_store::path_identity::CanonicalPath;
 
 const MARKER: &str = "# Studio native Layr Git guard.";
+const LAUNCHER_MARKER: &str = "# Studio native Layr launcher.";
 const COMMIT_REFUSAL: &str =
     "Git commit is disabled inside a native Layr line. Use layr save -m \"message\".";
 
@@ -64,6 +65,43 @@ fn real_git_path(state_dir: &Path) -> PathBuf {
     binary_path(state_dir).with_file_name("git-real.json")
 }
 
+/// The managed entry selects real Git for Layr's own child processes only.
+pub(super) fn executable_path(state_dir: &Path) -> PathBuf {
+    binary_path(state_dir).with_file_name("layr-real")
+}
+
+fn install_layr_entry(state_dir: &Path, real_git: &Path) -> Result<(), NativeLayrError> {
+    let entry = binary_path(state_dir);
+    let executable = executable_path(state_dir);
+    if entry.is_file() {
+        let mut prefix = Vec::new();
+        fs::File::open(&entry)?.take(128).read_to_end(&mut prefix)?;
+        if !executable.is_file() && !String::from_utf8_lossy(&prefix).contains(LAUNCHER_MARKER) {
+            // Upgrade an existing installation without removing its entry first.
+            let temporary = executable.with_extension("new");
+            fs::copy(&entry, &temporary)?;
+            fs::rename(temporary, &executable)?;
+        }
+    }
+    if !executable.is_file() {
+        return Err(NativeLayrError::Refused(
+            "The managed Layr executable is unavailable".into(),
+        ));
+    }
+    let git_directory = real_git
+        .parent()
+        .ok_or_else(|| NativeLayrError::Refused("Missing real Git directory".into()))?;
+    let script = format!(
+        "#!/bin/sh\n{LAUNCHER_MARKER}\nPATH={}:\"$PATH\"\nexport PATH\nexec {} \"$@\"\n",
+        quote(&git_directory.to_string_lossy()),
+        quote(&executable.to_string_lossy())
+    );
+    if fs::read(&entry).ok().as_deref() != Some(script.as_bytes()) {
+        crate::atomic_file::replace(&entry, script.as_bytes(), Some(0o755), true)?;
+    }
+    Ok(())
+}
+
 /// Called under the native binary install lock. Resolve Git once, before publishing its wrapper.
 pub(super) fn ensure(state_dir: &Path) -> Result<(), NativeLayrError> {
     let state_dir = CanonicalPath::existing(state_dir)?.into_path_buf();
@@ -99,6 +137,7 @@ pub(super) fn ensure(state_dir: &Path) -> Result<(), NativeLayrError> {
     if fs::read(&wrapper).ok().as_deref() != Some(script.as_bytes()) {
         crate::atomic_file::replace(&wrapper, script.as_bytes(), Some(0o755), true)?;
     }
+    install_layr_entry(&state_dir, &real_git)?;
     Ok(())
 }
 
@@ -149,6 +188,15 @@ mod tests {
     use std::{ffi::OsStr, fs, time::Duration};
 
     fn invoke(program: &Path, cwd: &Path, args: &[&str]) -> Result<String, ChildError> {
+        invoke_environment(program, cwd, args, &[])
+    }
+
+    fn invoke_environment(
+        program: &Path,
+        cwd: &Path,
+        args: &[&str],
+        environment: &[(&str, &str)],
+    ) -> Result<String, ChildError> {
         let mut command = vec![
             "-c",
             "cd \"$1\"; shift; exec \"$@\"",
@@ -161,7 +209,7 @@ mod tests {
             program: OsStr::new("/bin/sh"),
             git_directory: None,
             args: &command,
-            environment: &[],
+            environment,
             input: None,
             stdout_limit: 4096,
             stderr_limit: 4096,
@@ -273,5 +321,245 @@ mod tests {
             .expect("hook executable");
         let error = invoke(&hook, root.path(), &[]).expect_err("hook must refuse commit");
         assert!(matches!(error,ChildError::Failed(reason) if reason.contains("layr save -m")));
+    }
+
+    fn managed_layr_calls_real_git(args: &[&str], expected: &str) {
+        let root = tempfile::tempdir().expect("fixture directory");
+        let state = root.path().join("state with quote'");
+        let line = store_path(&state).join("projects/project/lines/worker");
+        let bin = binary_path(&state)
+            .parent()
+            .expect("binary parent")
+            .to_path_buf();
+        fs::create_dir_all(&line).expect("line");
+        fs::create_dir_all(&bin).expect("managed bin");
+        let real = root.path().join("real bin'");
+        fs::create_dir_all(&real).expect("real bin");
+        crate::atomic_file::replace(
+            &real.join("git"),
+            b"#!/bin/sh\nprintf 'real\\n'; printf '%s\\n' \"$@\"\n",
+            Some(0o755),
+            false,
+        )
+        .expect("real Git fixture");
+        fs::write(
+            real_git_path(&state),
+            serde_json::to_vec(&real.join("git")).expect("path JSON"),
+        )
+        .expect("saved Git path");
+        crate::atomic_file::replace(&binary_path(&state), b"#!/bin/sh\ncase \"$1:$2\" in save:-m) exec git update-index ;; save:) exec git write-tree ;; git:sync) exec git update-ref ;; git:push) shift; exec git \"$@\" ;; esac\n", Some(0o755), false).expect("old managed Layr binary");
+        ensure(&state).expect("install launcher");
+        ensure(&state).expect("repeat install");
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        assert_eq!(
+            invoke_environment(&binary_path(&state), &line, args, &[("PATH", &path)])
+                .expect("Layr internal Git"),
+            expected
+        );
+        assert!(
+            invoke_environment(&bin.join("git"), &line, &["push"], &[("PATH", &path)]).is_err(),
+            "agent Git writes remain refused"
+        );
+    }
+
+    #[test]
+    fn managed_layr_named_save_uses_real_git() {
+        managed_layr_calls_real_git(&["save", "-m", "message"], "real\nupdate-index\n");
+    }
+
+    #[test]
+    fn managed_layr_automatic_save_uses_real_git() {
+        managed_layr_calls_real_git(&["save"], "real\nwrite-tree\n");
+    }
+
+    #[test]
+    fn managed_layr_git_sync_uses_real_git() {
+        managed_layr_calls_real_git(&["git", "sync"], "real\nupdate-ref\n");
+    }
+
+    #[test]
+    fn managed_layr_git_push_uses_real_git() {
+        managed_layr_calls_real_git(
+            &["git", "push", "origin", "worker"],
+            "real\npush\norigin\nworker\n",
+        );
+    }
+
+    fn real_managed_layr_git_operation(operation: &str) {
+        let binary = PathBuf::from(
+            std::env::var_os("STUDIO_LAYR_NATIVE_TEST_BINARY")
+                .expect("Set STUDIO_LAYR_NATIVE_TEST_BINARY"),
+        );
+        let root = tempfile::tempdir().expect("fixture directory");
+        let root_path = CanonicalPath::existing(root.path())
+            .expect("canonical root")
+            .into_path_buf();
+        let state = root_path.join("state");
+        let source = root_path.join("source");
+        fs::create_dir_all(&source).expect("source");
+        assert_eq!(
+            invoke(&binary, &source, &["--version"])
+                .expect("Layr version")
+                .trim(),
+            format!("layr version {}", super::super::LAYR_VERSION)
+        );
+        fs::create_dir_all(binary_path(&state).parent().expect("binary parent")).expect("bin");
+        fs::copy(binary, binary_path(&state)).expect("copy real Layr");
+        fs::write(source.join("file"), "first\n").expect("source file");
+        let real_git = find_real_git().expect("host Git");
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "-qm",
+                "initial",
+            ],
+        ] {
+            invoke(&real_git, &source, &args).expect("source Git repository");
+        }
+        let remote = root_path.join("remote.git");
+        invoke(
+            &real_git,
+            &source,
+            &["init", "--bare", "-q", remote.to_str().expect("remote")],
+        )
+        .expect("local bare remote");
+        invoke(
+            &real_git,
+            &source,
+            &["remote", "add", "origin", remote.to_str().expect("remote")],
+        )
+        .expect("origin");
+        ensure(&state).expect("install managed entries");
+        let path = format!(
+            "{}:{}",
+            binary_path(&state).parent().expect("bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let store = store_path(&state);
+        let environment = [
+            ("PATH", path.as_str()),
+            ("LAYR_ROOT", store.to_str().expect("store")),
+            ("LAYR_DIRECT", "1"),
+            ("LAYR_SOCKET", ""),
+        ];
+        let layr = |cwd: &Path, args: &[&str]| {
+            let mut command = vec!["-c", "exec \"$@\" 2>&1", "layr-test"];
+            let entry = binary_path(&state);
+            command.push(entry.to_str().expect("entry"));
+            command.extend(args);
+            invoke_environment(Path::new("/bin/sh"), cwd, &command, &environment)
+                .expect("real managed Layr command")
+        };
+        layr(
+            &source,
+            &[
+                "init",
+                "project",
+                "--from",
+                source.to_str().expect("source"),
+            ],
+        );
+        let main = store.join("projects/project/lines/main");
+        layr(&main, &["line", "new", "worker", "main"]);
+        let line = main.with_file_name("worker");
+        let before = invoke(&real_git, &line, &["rev-parse", "HEAD"]).expect("initial Git head");
+        fs::write(line.join("file"), "first\nsecond\n").expect("worker edit");
+        layr(&line, &["add", "file"]);
+        match operation {
+            "named" => {
+                let output = layr(&line, &["save", "-m", "named"]);
+                assert!(!output.contains("warning:"), "{output}");
+                assert_ne!(
+                    invoke(&real_git, &line, &["rev-parse", "HEAD"]).expect("new Git head"),
+                    before
+                );
+                assert_eq!(
+                    invoke(&real_git, &line, &["show", "HEAD:file"]).expect("saved Git content"),
+                    "first\nsecond\n"
+                );
+                invoke(&real_git, &line, &["diff", "--cached", "--exit-code"])
+                    .expect("index matches head");
+            }
+            "automatic" => {
+                let output = layr(&line, &["save"]);
+                assert!(!output.contains("warning:"), "{output}");
+                assert_eq!(layr(&line, &["show", "head@{0}:file"]), "first\nsecond\n");
+                assert_eq!(
+                    invoke(&real_git, &line, &["rev-parse", "HEAD"]).expect("named head"),
+                    before
+                );
+            }
+            "sync" => {
+                layr(&line, &["save", "-m", "named"]);
+                let output = layr(&line, &["git", "sync"]);
+                let head =
+                    invoke(&real_git, &line, &["rev-parse", "HEAD"]).expect("synced Git head");
+                assert!(output.starts_with(head.trim()), "{output}: {head}");
+            }
+            "push" => {
+                layr(&line, &["save", "-m", "named"]);
+                layr(&line, &["git", "push", "origin", "worker"]);
+                let remote_head = invoke(
+                    &real_git,
+                    &source,
+                    &[
+                        "--git-dir",
+                        remote.to_str().expect("remote"),
+                        "rev-parse",
+                        "refs/heads/worker",
+                    ],
+                )
+                .expect("pushed branch");
+                assert_eq!(
+                    remote_head,
+                    invoke(&real_git, &line, &["rev-parse", "HEAD"]).expect("exported head")
+                );
+            }
+            _ => panic!("unknown fixture operation"),
+        }
+        assert!(
+            invoke_environment(
+                &binary_path(&state).with_file_name("git"),
+                &line,
+                &["push", "origin", "worker"],
+                &environment
+            )
+            .is_err(),
+            "agent Git writes must fail"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires STUDIO_LAYR_NATIVE_TEST_BINARY and APFS or btrfs"]
+    fn real_managed_layr_named_save_updates_git_without_warning() {
+        real_managed_layr_git_operation("named");
+    }
+
+    #[test]
+    #[ignore = "requires STUDIO_LAYR_NATIVE_TEST_BINARY and APFS or btrfs"]
+    fn real_managed_layr_automatic_save_keeps_named_git_head() {
+        real_managed_layr_git_operation("automatic");
+    }
+
+    #[test]
+    #[ignore = "requires STUDIO_LAYR_NATIVE_TEST_BINARY and APFS or btrfs"]
+    fn real_managed_layr_git_sync_records_the_exported_head() {
+        real_managed_layr_git_operation("sync");
+    }
+
+    #[test]
+    #[ignore = "requires STUDIO_LAYR_NATIVE_TEST_BINARY and APFS or btrfs"]
+    fn real_managed_layr_git_push_updates_local_bare_remote() {
+        real_managed_layr_git_operation("push");
     }
 }

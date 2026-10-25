@@ -8,6 +8,10 @@ The chat selector calls this mode **Layr**.
 ## Store and installation
 
 Studio owns one host store at `<Studio state>/layr-native/store`.
+The managed `bin/layr` entry starts `bin/layr-real` with the real Git directory first in its child process's `PATH`.
+Layr can maintain its Git object store and export commits through that entry.
+The agent's `PATH` still selects the managed Git guard, which refuses Git writes in native lines.
+An existing installation receives this entry when Studio checks its managed binary.
 `NATIVE_LAYR_DIRECTORY` in `runtime-store/src/path.rs` owns the installation directory.
 `STORE_DIRECTORY` in `layr_native.rs` owns the store subdirectory.
 The state directory must stay outside project folders.
@@ -242,3 +246,15 @@ The check uses a separate state directory and store.
 It verifies import exclusions, warm caches, exact-state merge, deletion, and retained state reads.
 It does not prove a live model turn or the HTTP path.
 On Linux, run this isolated check as root on btrfs.
+
+Check the managed Layr entry with a real Git repository and a local bare remote:
+
+```sh
+STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.1 \
+  CARGO_INCREMENTAL=0 cargo test -j 4 -p studio-runtime-services --lib \
+  layr_native::git_guard::tests::real_managed_layr_ \
+  -- --ignored --test-threads=1
+```
+
+These four checks cover named saves, automatic saves, Git sync, and Git push.
+They also verify that the managed Git entry still refuses agent writes.

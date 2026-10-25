@@ -91,9 +91,9 @@ fn install_unlocked(state_dir: &Path, source: &Path) -> Result<(), NativeLayrErr
         timeout: Duration::from_secs(1800),
     })
     .map_err(|error| NativeLayrError::Refused(format!("Host Layr build failed: {error:?}")))?;
-    let temporary = directory.join("bin/layr.new");
+    let temporary = directory.join("bin/layr-real.new");
     fs::copy(target.join("release/layr"), &temporary)?;
-    fs::rename(temporary, binary_path(state_dir))?;
+    fs::rename(temporary, super::git_guard::executable_path(state_dir))?;
     super::git_guard::ensure(state_dir)?;
     Ok(())
 }
