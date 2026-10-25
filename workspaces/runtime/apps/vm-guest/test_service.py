@@ -18,7 +18,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 from common import GuestError, MAX_LINE, process_identity
@@ -1054,6 +1054,30 @@ class SupervisorReasons(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeEvidence(unittest.IsolatedAsyncioTestCase):
+    async def test_operator_handshake_does_not_claim_backend_ownership(self):
+        from native import Native, SUPERVISOR_PROTOCOL_V2
+
+        with tempfile.TemporaryDirectory() as temporary:
+            native = Native(Path(temporary))
+            for operator in (False, True):
+                with self.subTest(operator=operator):
+                    reader = AsyncMock()
+                    reader.readline.side_effect = [
+                        json.dumps({"ok": True, "protocol": SUPERVISOR_PROTOCOL_V2}).encode() + b"\n",
+                        json.dumps({"requestId": "request", "result": {}}).encode() + b"\n",
+                    ]
+                    writer = Mock(drain=AsyncMock())
+                    with patch("native.asyncio.open_unix_connection", return_value=(reader, writer)), \
+                            patch("native.uuid.uuid4") as operation:
+                        operation.return_value.hex = "request"
+                        await native.call("health", operator=operator)
+                    hello = json.loads(writer.write.call_args_list[0].args[0])
+                    expected = {"protocol": SUPERVISOR_PROTOCOL_V2, "stateDir": str(native.root), "operator": operator}
+                    if not operator:
+                        expected["backendId"] = native.backend
+                    self.assertEqual(hello, expected)
+                    writer.close.assert_called_once()
+
     async def test_an_unproven_supervisor_request_leaves_a_journal_line(self):
         # 2026-10-18: a `next` poll got outcome_unknown and the guest kept no record of why.
         from native import Native
