@@ -80,6 +80,8 @@ mod tests {
 }
 
 pub mod install;
+mod capability;
+pub use capability::{NativeLayrCapability, capability};
 mod runtime;
 pub use runtime::{
     NativeLayrError, agent_value, evidence, main_path, merge, operation, prepare, project_id,
