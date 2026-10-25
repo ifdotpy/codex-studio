@@ -174,7 +174,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
     return () => {
       active = false;
     };
-  }, [workspace, agent?.id, lookupAttempt]);
+  }, [scope, lookupAttempt]);
   const enriched = useMemo(() => {
     const last = new Map<string, number>();
     const unconfirmed = new Set(

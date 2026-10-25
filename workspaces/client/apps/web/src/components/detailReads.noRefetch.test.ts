@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
-import type { ReactElement, ReactNode } from "react";
+import { createElement, type ReactElement, type ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { Agent, Message } from "../types";
 import type { Account } from "./Accounts";
 
@@ -64,6 +65,7 @@ import MessageInfo from "./conversation/transcript/MessageInfo";
 import { ClaudeSettings } from "./ClaudeSettings";
 import ClaudeRepairNotice from "./ClaudeRepairNotice";
 import ProjectLocationsSettings from "./ProjectLocationsSettings";
+import { NativeNotice } from "./NativeNotice";
 
 function render<T>(read: () => T) {
   h.cursor = 0;
@@ -137,6 +139,13 @@ it("new failed and uncertain turns use inline errors without analytics reads", a
           item.turnError === "Streamed failure",
       ),
     ).toBe(true);
+    if (turnStatus === "failed") {
+      const markup = renderToStaticMarkup(
+        createElement(NativeNotice, { item: inline.items.at(-1)! }),
+      );
+      expect(markup).toContain("Streamed failure");
+      expect(h.get).not.toHaveBeenCalled();
+    }
   }
 });
 
@@ -161,6 +170,35 @@ it("historical error first load and an explicit retry still read once each", asy
   expect(result.failed.has("past")).toBe(true);
   result.retry("past");
   render(read);
+  await settle();
+  expect(h.get).toHaveBeenCalledTimes(2);
+});
+
+it("opening a different thread loads its historical errors once", async () => {
+  h.get.mockResolvedValue({ turns: [] });
+  const items: Message[] = [
+    {
+      id: "old",
+      role: "assistant",
+      text: "",
+      turnId: "old",
+      turnStatus: "failed",
+    },
+  ];
+  render(() => useTurnErrors(items, agent, "thread-switch"));
+  await settle();
+  const nextAgent = { ...agent, threadId: "next-thread" };
+  render(() => useTurnErrors(items, nextAgent, "thread-switch"));
+  await settle();
+  expect(h.get).toHaveBeenCalledTimes(2);
+  expect(h.get.mock.calls[1][1].query.thread).toBe("next-thread");
+  render(() =>
+    useTurnErrors(
+      [...items, { ...items[0], id: "live", turnId: "live" }],
+      nextAgent,
+      "thread-switch",
+    ),
+  );
   await settle();
   expect(h.get).toHaveBeenCalledTimes(2);
 });
@@ -227,11 +265,26 @@ it("Claude account status and key updates do not reload settings; explicit retry
     (node) => node.props.children === "Retry Claude settings",
   );
   expect(retry).toBeDefined();
-  h.post.mockResolvedValue({ settings: {}, turns: [], tasks: [] });
+  h.post.mockResolvedValue({
+    settings: { permissionMode: "acceptEdits" },
+    turns: [],
+    tasks: [],
+  });
   retry!.props.onClick();
   render(read);
   await settle();
   expect(h.post).toHaveBeenCalledTimes(2);
+  expect(render(read).props["aria-busy"]).toBe(false);
+  expect(
+    find(render(read), (node) => node.props.label === "Permission mode")!.props
+      .value,
+  ).toBe("acceptEdits");
+  expect(
+    find(
+      render(read),
+      (node) => node.props.children === "Retry Claude settings",
+    ),
+  ).toBeUndefined();
 });
 
 it("repair scope changes hide old evidence without reads; refresh uses the current agent", async () => {
