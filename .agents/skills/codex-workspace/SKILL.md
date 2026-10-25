@@ -38,6 +38,9 @@ before it creates workers. Check the spawn result for the commit and any warning
 that it is behind main. A retry with the same request_id keeps the same commit.
 Supply bounded ownership, a completion check, and explicit commit authority.
 Chat creation selects `workspaceMode`.
+New lead chats on macOS default to Layr (`layr-native`).
+Linux defaults to WT (`worktree`) until the native capability probe reports ready.
+When ready, Linux defaults to Layr. An explicit native choice requires a ready probe.
 
 | Mode          | UI label | Agent environment                | Worker workspace         |
 | ------------- | -------- | -------------------------------- | ------------------------ |

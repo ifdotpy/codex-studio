@@ -10,6 +10,9 @@ A line is a folder: `<root>/projects/<project>/lines/<line>`.
 Run write commands in your own line. Enter another line with `cd` only when you own it.
 
 In Studio, use the assigned store and line. Do not import the project again.
+In native mode, a reviewer's `cwd` is its private `layrScratch` folder.
+Its `layrReadCwd` points to main for trusted `layr_read` calls. Main stays read-only.
+Claude's reviewer sandbox denies store writes and Unix sockets.
 
 These recipes require version 0.2.0. Check with `layr --version`.
 The old Git verbs are removed. Use `head` for a layr revision.
@@ -96,6 +99,11 @@ Try runs as the caller. It does not isolate network access or system calls.
 
 Batch creation makes `agent-1` through `agent-4`. Read the JSON paths before you assign work.
 Only the owner changes a line. The lead owns main in Studio.
+
+Native Studio archive pins the saved state at `pins/studio/archive/<sha256(agent ID)>` before line deletion.
+The pin has no expiry. The receipt records `archiveRef` and `stateId`.
+Studio does not remove these pins automatically.
+After review or explicit discard, an operator can run `layr ref delete <archiveRef>` to permit normal garbage collection.
 
 Submit the full saved state ID. Inspect that state before acceptance.
 Expect pins the source state. A moved source line refuses the merge.
