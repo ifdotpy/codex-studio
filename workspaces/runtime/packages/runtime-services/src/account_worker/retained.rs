@@ -315,6 +315,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ClaudeFileBackups
                 | Method::ClaudeSettings
                 | Method::ClaudeStopTask
+                | Method::ClaudeShellPolicy
                 | Method::ThreadRollback
                 | Method::ThreadQueueList
                 | Method::TurnInterrupt
@@ -947,6 +948,18 @@ mod validation_tests {
             }),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
         }
+    }
+
+    #[test]
+    fn shell_policy_is_actor_bound_maintenance() {
+        let mut request = turns_request("full", 1, true);
+        request.method = Method::ClaudeShellPolicy;
+        request.operation = "shell-policy:fixture-agent:tick".into();
+        request.expected_scope = Some(request.scope.clone());
+        request.params = json!({"threadId":"fixture-thread","settings":studio_runtime_schema::shell_policy::Settings::default(),"eligible":true,"critical":true});
+        assert!(validate(&request).is_ok());
+        request.actor = None;
+        assert_eq!(validate(&request), Err(PortError::Invalid));
     }
 
     #[test]

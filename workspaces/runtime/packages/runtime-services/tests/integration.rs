@@ -48,6 +48,7 @@ mod rules_engine_corpus;
 mod rules_tick_atomic;
 mod scheduler_python_parity;
 mod session_cost_golden;
+mod shell_policy;
 mod startup_recovery;
 mod startup_recovery_corpus;
 mod submit_gates_corpus;

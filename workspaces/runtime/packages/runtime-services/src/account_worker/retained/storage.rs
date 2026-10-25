@@ -68,6 +68,34 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         && !studio_runtime_store::truthy(agent_record.extra.get("deletedAt"))
         && agent_record.extra.get("deleted") != Some(&json!(true));
     let actor_identity = common_identity && agent_record.epoch == actor.epoch;
+    if call.method == "claude/shellPolicy" {
+        let settings = studio_runtime_store::OrchestrationSettingsRepository::shell_policy(tx)?;
+        if call.params["settings"] != serde_json::to_value(settings).map_err(StoreError::from)?
+            || call.params["eligible"].as_bool().is_none()
+            || call.params["critical"].as_bool().is_none()
+            || !call.operation.starts_with("shell-policy:")
+        {
+            return Ok(false);
+        }
+    }
+    if call.method == "claude/shellPolicy"
+        && call.params["eligible"] == true
+        && !crate::shell_policy::eligible(tx, &agent_record.value())?
+    {
+        return Ok(false);
+    }
+    if call.method == "command/exec/terminate"
+        && let Some(process) = call.params["processId"].as_str()
+        && let Some(monitor) = studio_runtime_store::MonitorsRepository::get(tx, process)?
+        && !crate::shell_policy::monitor_cleanup_allowed(
+            tx,
+            &agent_record.value(),
+            monitor.value(),
+            crate::idle_compaction::wall_now(),
+        )?
+    {
+        return Ok(false);
+    }
     let deleted_voice_stop = authorize_deleted_voice_stop(tx, call, actor, &agent_record.extra)?;
     let repair_fork = if call.method == "thread/fork" {
         let repair = agent_record
@@ -614,6 +642,27 @@ mod replay_identity_tests {
             method: "thread/read".into(),
             params: json!({"threadId":"thread-1","includeTurns":false}),
         }
+    }
+
+    #[tokio::test]
+    async fn shell_policy_handoff_rechecks_activity_and_stored_settings() {
+        let root = tempfile::tempdir().expect("root");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.transaction(|tx| {
+            let mut request = call();
+            request.method = "claude/shellPolicy".into();
+            request.operation = "shell-policy:agent-1:tick".into();
+            request.params = json!({"threadId":"thread-1","settings":studio_runtime_schema::shell_policy::Settings::default(),"eligible":true,"critical":true});
+            let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
+            AgentRepository::put(tx,&agent)?;
+            assert!(authorize(tx,&request).expect("eligible handoff"));
+            agent.extra.insert("inFlight".into(),json!(true)); AgentRepository::put(tx,&agent)?;
+            assert!(!authorize(tx,&request).expect("active handoff refused"));
+            agent.extra.insert("inFlight".into(),json!(false)); AgentRepository::put(tx,&agent)?;
+            request.params["settings"]["pressureCleanup"] = json!(false);
+            assert!(!authorize(tx,&request).expect("settings mismatch refused"));
+            Ok::<_,StoreError>(())
+        }).await.expect("policy boundaries");
     }
 
     #[tokio::test]

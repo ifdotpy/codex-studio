@@ -16419,6 +16419,29 @@
         "title": "AutoPairRequest",
         "type": "object"
       },
+      "BackgroundShellPolicySettings": {
+        "additionalProperties": false,
+        "properties": {
+          "pressureCleanup": {
+            "default": true,
+            "description": "Stop background shells after 30 idle minutes under critical memory pressure, with no active turn or delegates.",
+            "type": "boolean"
+          },
+          "quietThresholdMs": {
+            "default": 0,
+            "description": "Milliseconds without shell output before one check-in. Use 0 to disable, or at least 10000.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "quietThresholdMs",
+          "pressureCleanup"
+        ],
+        "title": "BackgroundShellPolicySettings",
+        "type": "object"
+      },
       "BlockingPoolGroupMetrics": {
         "additionalProperties": false,
         "properties": {
@@ -33893,6 +33916,9 @@
             "minimum": 0,
             "title": "Idlesessionunloadminutes",
             "type": "integer"
+          },
+          "shellPolicy": {
+            "$ref": "#/components/schemas/BackgroundShellPolicySettings"
           }
         },
         "required": [

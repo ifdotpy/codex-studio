@@ -13,6 +13,7 @@ export default {
       "journal-repair.test.mjs",
       // Check zero idle timers, exact deadline recovery, and rearming on progress, results and Studio waits.
       "stall-watch.test.mjs",
+      "shell-policy.test.mjs",
       // Final stream accounting, deferred result totals and explicit unfinished-response gaps.
       "usage.test.mjs",
       "usage-bridge.test.mjs",

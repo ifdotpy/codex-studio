@@ -870,12 +870,21 @@ fn exit_event(
     if repository::exit_event(tx, &event_id)?.is_some() {
         return Ok(());
     }
+    let mut payload =
+        serde_json::to_value(payload).map_err(studio_runtime_store::StoreError::from)?;
+    if monitor["shellPressureCleanup"].is_object() {
+        payload["stopCause"] = json!("memory_pressure");
+        payload["message"] = json!(format!(
+            "Studio requested this monitor stop under critical memory pressure after {} idle minutes.",
+            studio_runtime_schema::shell_policy::PRESSURE_IDLE_MS / 60_000
+        ));
+    }
     enqueue(
         tx,
         actor,
         &event_id,
         "monitor_exit",
-        &serde_json::to_value(payload).map_err(studio_runtime_store::StoreError::from)?,
+        &payload,
         (can_wake, monitor_epoch),
         now,
     )

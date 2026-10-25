@@ -343,6 +343,20 @@ pub async fn cancel_checked(
                         }
                     }
                     decision.record["cancelDispatch"] = dispatch;
+                    // We still hold this monitor's native sequence. Only a
+                    // proved not-sent stop can withdraw an expired policy intent.
+                    if retry_reason == Some(NotSentReason::Transient)
+                        && current.record()["shellPressureCleanup"].is_object()
+                        && !crate::shell_policy::monitor_cleanup_allowed(tx, &actor.value(), current.record(), crate::idle_compaction::wall_now())?
+                    {
+                        let report = json!({"id":format!("monitor:{}:{}:cleanup_skipped",current.id(),current.record()["shellPressureCleanup"]["generation"]),"kind":"cleanup_skipped","message":format!("Cleanup checks changed before the stop. Studio left monitor {} running.",current.id())});
+                        crate::shell_policy::observe(tx, &actor.value(), &report, now).map_err(|_| MonitorError::Refused("Could not record the shell cleanup outcome"))?;
+                        decision.record["cancelRequested"] = json!(false);
+                        if let Some(record) = decision.record.as_object_mut() {
+                            record.remove("cancelDispatch");
+                            record.remove("shellPressureCleanup");
+                        }
+                    }
                     monitor_runtime::apply(tx, &current, &actor, &decision, now)?;
                     Ok::<_, MonitorError>(response_error)
                 } else {
@@ -421,6 +435,15 @@ pub fn reserve_cancel(
 ) -> Result<(Value, Option<Operation>), MonitorError> {
     let (snapshot, actor) = monitor_runtime::snapshot(tx, id)?;
     let mut decision = monitor_policy::cancel(&snapshot, owner, now)?;
+    // An explicit owner stop is independent of the automatic pressure policy.
+    // Its permission check above must pass before removing the extra guard.
+    if owner.is_some() && decision.record["shellPressureCleanup"].is_object() {
+        decision
+            .record
+            .as_object_mut()
+            .expect("checked monitor object")
+            .remove("shellPressureCleanup");
+    }
     let dispatch_status = snapshot
         .record()
         .pointer("/cancelDispatch/status")

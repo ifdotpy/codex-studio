@@ -8402,6 +8402,19 @@ export interface components {
       /** Serverid */
       serverId: string;
     };
+    /** BackgroundShellPolicySettings */
+    BackgroundShellPolicySettings: {
+      /**
+       * @description Stop background shells after 30 idle minutes under critical memory pressure, with no active turn or delegates.
+       * @default true
+       */
+      pressureCleanup: boolean;
+      /**
+       * @description Milliseconds without shell output before one check-in. Use 0 to disable, or at least 10000.
+       * @default 0
+       */
+      quietThresholdMs: number;
+    };
     /** BlockingPoolGroupMetrics */
     BlockingPoolGroupMetrics: {
       /** Closureavgms */
@@ -15885,6 +15898,7 @@ export interface components {
        * @description Minutes a lead's or ordinary chat's idle Codex thread or Claude session stays loaded, and an account's provider process keeps running after its last thread unloaded. A managed worker without a running turn, pending input, or active monitor unloads at once. The next message resumes a thread. 0 never unloads.
        */
       idleSessionUnloadMinutes: number;
+      shellPolicy?: components["schemas"]["BackgroundShellPolicySettings"];
     };
     /** OrchestrationSettingsResponse */
     OrchestrationSettingsResponse: {
