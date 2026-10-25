@@ -1,5 +1,18 @@
-import { useModelCatalogReader } from "../agents/WorkerModelPicker";
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useServerStorage } from "../../servers/ServerServicesContext";
+import { serverLocalStorage } from "../../servers/storage";
+import {
+  preferenceStorageForServer,
+  readPreferenceFields,
+  watchPreferenceWrites,
+  writePreferenceValue,
+} from "../../sync/uiPreferenceStore";
+import {
+  MODEL_WHITELIST_PREFERENCE_KEY,
+  MODEL_WHITELIST_MAX_KEYS,
+  MODEL_WHITELIST_KEY_MAX_CODEPOINTS,
+  MODEL_WHITELIST_KEY_PATTERN,
+} from "../../generated/sharedValues";
 import {
   INHERITED_MODEL,
   modelForValue,
@@ -8,32 +21,71 @@ import {
 
 /** null includes the entire catalog, including models added in the future. */
 export type ModelWhitelist = readonly string[] | null;
-// Temporary in-memory storage for the experimental redesign. Persistence is
-// pending the owner's contract decision; replace only this read/write/subscribe
-// boundary when the approved preference backend is available.
-const whitelists = new Map<string, ModelWhitelist>();
-const listeners = new Set<() => void>();
-export const readModelWhitelist = (scope = "default") =>
-  whitelists.get(scope) ?? null;
-export function subscribeModelWhitelist(listener: () => void) {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
+const fieldName = JSON.stringify([MODEL_WHITELIST_PREFERENCE_KEY]);
+const keyPattern = new RegExp(MODEL_WHITELIST_KEY_PATTERN);
+export function validModelWhitelist(value: unknown): value is ModelWhitelist {
+  return (
+    value === null ||
+    (Array.isArray(value) &&
+      value.length <= MODEL_WHITELIST_MAX_KEYS &&
+      new Set(value).size === value.length &&
+      value.every(
+        (key) =>
+          typeof key === "string" &&
+          [...key].length <= MODEL_WHITELIST_KEY_MAX_CODEPOINTS &&
+          keyPattern.test(key),
+      ))
+  );
 }
-export function writeModelWhitelist(value: ModelWhitelist, scope = "default") {
-  if (value === null) whitelists.delete(scope);
-  else whitelists.set(scope, [...new Set(value)]);
-  listeners.forEach((listener) => listener());
+function storageFor(scope?: string | Storage) {
+  if (typeof scope !== "string") return scope ?? serverLocalStorage;
+  return scope === "default" || scope === "local"
+    ? serverLocalStorage
+    : preferenceStorageForServer(scope);
+}
+export function readModelWhitelist(scope?: string | Storage): ModelWhitelist {
+  const field = readPreferenceFields("server", storageFor(scope))[fieldName];
+  if (!field) return null;
+  return validModelWhitelist(field.value) ? field.value : [];
+}
+export function modelWhitelistReadError(storage: Storage) {
+  const field = readPreferenceFields("server", storage)[fieldName];
+  return field && !validModelWhitelist(field.value)
+    ? "Saved model selection is invalid. Choose models again to replace it."
+    : "";
+}
+export const subscribeModelWhitelist = watchPreferenceWrites;
+export function writeModelWhitelist(
+  value: ModelWhitelist,
+  scope?: string | Storage,
+) {
+  const unique = value === null ? null : [...new Set(value)];
+  if (!validModelWhitelist(unique)) throw new Error("Invalid model selection.");
+  writePreferenceValue(
+    MODEL_WHITELIST_PREFERENCE_KEY,
+    unique,
+    storageFor(scope),
+  );
 }
 export function useModelWhitelist() {
-  const { scope } = useModelCatalogReader();
-  const getSnapshot = useCallback(() => readModelWhitelist(scope), [scope]);
-  return useSyncExternalStore(
+  const storage = useServerStorage();
+  const getSnapshot = useCallback(
+    () =>
+      JSON.stringify(
+        readPreferenceFields("server", storage)[fieldName] ?? null,
+      ),
+    [storage],
+  );
+  const serialized = useSyncExternalStore(
     subscribeModelWhitelist,
     getSnapshot,
     getSnapshot,
   );
+  return useMemo(() => {
+    const field = JSON.parse(serialized) as { value: unknown } | null;
+    const value = field === null ? null : field.value;
+    return validModelWhitelist(value) ? value : [];
+  }, [serialized]);
 }
 
 /** Provider-qualified resolved identity keeps catalog aliases in one preference. */

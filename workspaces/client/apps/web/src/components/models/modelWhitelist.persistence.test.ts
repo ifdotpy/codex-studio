@@ -1,0 +1,173 @@
+import { beforeEach, afterEach, expect, it, vi } from "vitest";
+import { createUiPreferenceBridge } from "../../sync/uiPreferenceBridge";
+import {
+  readPreferenceFields,
+  receivePreferenceFields,
+  preferenceStorageForServer,
+} from "../../sync/uiPreferenceStore";
+import {
+  readPreferenceWriteStatus,
+  retryPreferenceWrites,
+} from "../../sync/uiPreferenceStatus";
+import type { syncPost } from "../../api";
+import { readModelWhitelist, writeModelWhitelist } from "./modelWhitelist";
+
+const key = '["studio-model-whitelist-v1"]';
+const other = '["codex-project-tree:/state","/repo"]';
+function memoryStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    get length() {
+      return values.size;
+    },
+    key: (i) => [...values.keys()][i] ?? null,
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => {
+      values.set(key, value);
+    },
+    removeItem: (key) => {
+      values.delete(key);
+    },
+    clear: () => values.clear(),
+  };
+}
+beforeEach(() => {
+  vi.stubGlobal("localStorage", memoryStorage());
+  vi.stubGlobal("window", new EventTarget());
+  vi.stubGlobal("document", new EventTarget());
+  vi.stubGlobal(
+    "StorageEvent",
+    class extends Event {
+      constructor(type: string, _options?: unknown) {
+        super(type);
+      }
+    },
+  );
+});
+afterEach(() => vi.unstubAllGlobals());
+const expectState = async (
+  storage: Storage,
+  state: "saved" | "saving" | "error",
+) =>
+  vi.waitFor(() =>
+    expect(readPreferenceWriteStatus(storage, "server").state).toBe(state),
+  );
+
+it("persists server-only selections via HTTP, restores an SSE projection after reload, and preserves unrelated settings", async () => {
+  const local = preferenceStorageForServer("local");
+  const remote = preferenceStorageForServer("remote");
+  const fields = {
+    [other]: { value: true, timestamp: 1, writer: "other-client" },
+  };
+  const post = vi.fn<typeof syncPost<"/api/sync/preferences">>(
+    async (_path, body) => ({ fields: body.fields ?? {} }),
+  );
+  const bridge = createUiPreferenceBridge(local, post);
+  const stop = bridge.start();
+  bridge.receiveProjection({ server: { fields } });
+  await expectState(local, "saved");
+  writeModelWhitelist(["codex:astra"], local);
+  await expectState(local, "saved");
+  expect(post).toHaveBeenCalledWith(
+    "/api/sync/preferences",
+    {
+      scope: "server",
+      fields: expect.objectContaining({
+        [key]: expect.objectContaining({ value: ["codex:astra"] }),
+        [other]: fields[other],
+      }),
+    },
+    { requestId: expect.stringMatching(/^ui-preferences:[0-9a-f]{64}$/) },
+  );
+  expect(readModelWhitelist(remote)).toBeNull();
+  expect(readPreferenceFields("server", local)[other]).toEqual(fields[other]);
+  const saved = readPreferenceFields("server", local);
+  stop();
+  local.clear();
+  expect(readModelWhitelist(local)).toBeNull();
+  const reloaded = createUiPreferenceBridge(local, post);
+  const stopReloaded = reloaded.start();
+  reloaded.receiveProjection({ server: { fields: saved } });
+  expect(readModelWhitelist(local)).toEqual(["codex:astra"]);
+  expect(readPreferenceWriteStatus(local, "server").state).toBe("saved");
+  stopReloaded();
+});
+
+it("shows failed writes and retries an uncertain successful write with the same identity and versions", async () => {
+  const storage = preferenceStorageForServer("local");
+  let loseResponse = true;
+  let committed: ReturnType<typeof readPreferenceFields> = {};
+  const post = vi.fn<typeof syncPost<"/api/sync/preferences">>(
+    async (_path, body) => {
+      committed = { ...committed, ...body.fields };
+      if (loseResponse) {
+        loseResponse = false;
+        throw new Error("Response lost");
+      }
+      return { fields: committed };
+    },
+  );
+  const bridge = createUiPreferenceBridge(storage, post);
+  const stop = bridge.start();
+  bridge.receiveProjection({});
+  writeModelWhitelist([], storage);
+  await expectState(storage, "error");
+  expect(readPreferenceWriteStatus(storage, "server")).toEqual({
+    state: "error",
+    error: expect.stringContaining("Response lost"),
+  });
+  expect(readModelWhitelist(storage)).toEqual([]);
+  expect(committed[key].value).toEqual([]);
+  retryPreferenceWrites(storage);
+  await expectState(storage, "saved");
+  expect(post.mock.calls[1]).toEqual(post.mock.calls[0]);
+  expect(readPreferenceWriteStatus(storage, "server").state).toBe("saved");
+  stop();
+});
+
+it("keeps newer rapid edits while an earlier request is in flight and clock-corrected", async () => {
+  const storage = preferenceStorageForServer("local");
+  let finish!: (value: {
+    fields: ReturnType<typeof readPreferenceFields>;
+  }) => void;
+  const post = vi
+    .fn<typeof syncPost<"/api/sync/preferences">>()
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockImplementation(async (_path, body) => ({ fields: body.fields ?? {} }));
+  const bridge = createUiPreferenceBridge(storage, post);
+  const stop = bridge.start();
+  bridge.receiveProjection({});
+  writeModelWhitelist(["codex:astra"], storage);
+  await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+  writeModelWhitelist(["codex:astra", "claude:opus"], storage);
+  const first = post.mock.calls[0][1].fields!;
+  finish({ fields: { ...first, [key]: { ...first[key], timestamp: 1 } } });
+  await expectState(storage, "saved");
+  expect(post).toHaveBeenCalledTimes(2);
+  expect(post.mock.calls[1][2]?.requestId).not.toBe(
+    post.mock.calls[0][2]?.requestId,
+  );
+  expect(readModelWhitelist(storage)).toEqual(["codex:astra", "claude:opus"]);
+  expect(readPreferenceWriteStatus(storage, "server").state).toBe("saved");
+  stop();
+});
+
+it("retains explicit null and none through projected updates, ignoring older server choices", () => {
+  const storage = preferenceStorageForServer("local");
+  writeModelWhitelist([], storage);
+  const field = readPreferenceFields("server", storage)[key];
+  receivePreferenceFields(
+    "server",
+    { [key]: { ...field, timestamp: 0, value: null } },
+    storage,
+  );
+  expect(readModelWhitelist(storage)).toEqual([]);
+  writeModelWhitelist(null, storage);
+  expect(readPreferenceFields("server", storage)[key].value).toBeNull();
+  expect(readModelWhitelist(storage)).toBeNull();
+});
