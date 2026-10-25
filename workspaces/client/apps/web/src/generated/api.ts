@@ -11354,7 +11354,7 @@ export interface components {
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
       /**
        * Workspacemode
-       * @default layr-native
+       * @description When omitted, the server selects native Layr on macOS, or on Linux when the native capability is ready; otherwise it selects worktree.
        * @enum {string}
        */
       workspaceMode?: "layr-native" | "layr" | "worktree";
@@ -14661,6 +14661,11 @@ export interface components {
       kind: "native";
       /** Path */
       path: null | string;
+    };
+    /** @description Native Layr readiness for this server state directory. */
+    NativeLayrCapability: {
+      ready: boolean;
+      reason?: string | null;
     };
     /** NativeNameFailureRecordResponse */
     NativeNameFailureRecordResponse: {
@@ -24289,6 +24294,7 @@ export interface components {
        * @default false
        */
       hasStudioVm?: boolean;
+      nativeLayr?: components["schemas"]["NativeLayrCapability"];
       /** Projects */
       projects: components["schemas"]["SummaryProject"][];
       /** Ready */

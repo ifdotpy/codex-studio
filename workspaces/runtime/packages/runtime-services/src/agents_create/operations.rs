@@ -141,14 +141,59 @@ pub struct AgentAdmission {
 }
 
 pub(crate) const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
-/// Task agents use Git worktrees. Lead chats use native Layr on supported hosts.
-const DEFAULT_WORKSPACE_MODE: &str = "worktree";
-fn default_workspace_mode(lead: bool) -> &'static str {
-    if lead && cfg!(any(target_os = "macos", target_os = "linux")) {
-        studio_runtime_schema::workspace_modes::DEFAULT_CHAT_WORKSPACE_MODE
-    } else {
-        DEFAULT_WORKSPACE_MODE
+/// Resolve defaults through the shared contract; filesystem capability reads stay outside SQL.
+const DEFAULT_WORKSPACE_MODE: &str =
+    studio_runtime_schema::workspace_modes::DEFAULT_AGENT_WORKSPACE_MODE;
+fn default_workspace_mode(lead: bool, native_ready: bool) -> &'static str {
+    if !lead {
+        return DEFAULT_WORKSPACE_MODE;
     }
+    let system = if cfg!(target_os = "macos") {
+        "Darwin"
+    } else if cfg!(target_os = "linux") {
+        "Linux"
+    } else {
+        "unsupported"
+    };
+    studio_runtime_schema::workspace_modes::default_chat_workspace_mode(system, native_ready)
+}
+
+async fn native_capability(
+    context: &Context<'_>,
+) -> Result<crate::layr_native::NativeLayrCapability, OperationError> {
+    let state_dir = context.store.state_dir().to_path_buf();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "agents-create/native-capability",
+        move || crate::layr_native::capability(&state_dir),
+    )
+    .await
+    .map_err(|_| OperationError::Internal)
+}
+
+async fn creation_workspace_mode(
+    context: &Context<'_>,
+    request: &Creation,
+    lead: bool,
+) -> Result<String, OperationError> {
+    if let Some(mode) = &request.workspace {
+        return Ok(mode.clone());
+    }
+    if !lead {
+        return Ok(DEFAULT_WORKSPACE_MODE.into());
+    }
+    // An omitted mode is part of a durable request's first resolution. Capability changes
+    // must not change its replay identity.
+    if let Some(id) = request.id.clone() {
+        let saved=context.store.read_async("agents-create/default-replay", move |tx| {
+            use rusqlite::OptionalExtension;
+            let signature:Option<String>=tx.query_row("SELECT signature FROM runtime_lead_requests WHERE id=?1 UNION ALL SELECT json_extract(record,'$.quickCreateRequest') FROM runtime_agents WHERE id=?1 AND json_type(record,'$.quickCreateRequest')='text' LIMIT 1", [&id], |row|row.get(0)).optional().map_err(StoreError::from)?;
+            Ok::<_,StoreError>(signature.and_then(|value|serde_json::from_str::<Value>(&value).ok()).and_then(|value|value["workspaceMode"].as_str().map(str::to_owned)))
+        }).await?;
+        if let Some(saved) = saved {
+            return Ok(saved);
+        }
+    }
+    Ok(default_workspace_mode(true, native_capability(context).await?.ready).into())
 }
 
 pub async fn lead(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
@@ -166,12 +211,9 @@ pub async fn replay_lead_request(
     let Some(id) = request.id.as_deref() else {
         return Ok(None);
     };
-    let workspace = request
-        .workspace
-        .as_deref()
-        .unwrap_or(default_workspace_mode(true));
+    let workspace = creation_workspace_mode(context, request, true).await?;
     let cwd = request.cwd.as_deref().map(project_directory).transpose()?;
-    let signature = lead_signature(&request.intent, workspace, cwd.as_deref());
+    let signature = lead_signature(&request.intent, &workspace, cwd.as_deref());
     let validate = std::sync::Arc::clone(&context.validate);
     let id = id.to_owned();
     context
@@ -553,11 +595,7 @@ async fn create(
     draft: bool,
 ) -> Result<Value, OperationError> {
     let id = request.id.clone().map_or_else(new_id, Ok)?;
-    let workspace = request
-        .workspace
-        .as_deref()
-        .unwrap_or(default_workspace_mode(draft))
-        .to_owned();
+    let workspace = creation_workspace_mode(context, &request, draft).await?;
     let requested_cwd = project_directory_async(request.cwd.clone()).await?;
     if !draft {
         // Import source is part of the durable creation identity. Keep it in
@@ -656,6 +694,11 @@ async fn create(
     }
     if !studio_runtime_schema::workspace_modes::accepts_chat(&workspace) {
         return Err(OperationError::Invalid("Unknown workspace mode"));
+    }
+    if workspace == "layr-native" && !native_capability(context).await?.ready {
+        return Err(OperationError::Invalid(
+            "Native Layr is not ready on this server. Select WT or configure its store and daemon.",
+        ));
     }
     if workspace == "layr" && !cfg!(target_os = "macos") {
         return Err(OperationError::Invalid(
@@ -2968,15 +3011,26 @@ mod tests {
     use crate::host_worker_create::CreationCatalog as _;
 
     #[test]
+    fn review_regression_agent_default_matches_runtime_mode_owner() {
+        let mut document = json!({});
+        studio_runtime_schema::workspace_modes::update_openapi(&mut document);
+        assert_eq!(
+            document["components"]["schemas"]["CreateAgentRequest"]["properties"]["workspaceMode"]
+                ["default"],
+            default_workspace_mode(false, false)
+        );
+    }
+
+    #[test]
     fn default_workspace_mode_follows_platform_defaults() {
-        assert_eq!(default_workspace_mode(false), DEFAULT_WORKSPACE_MODE);
+        assert_eq!(default_workspace_mode(false, false), DEFAULT_WORKSPACE_MODE);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         assert_eq!(
-            default_workspace_mode(true),
+            default_workspace_mode(true, true),
             studio_runtime_schema::workspace_modes::DEFAULT_CHAT_WORKSPACE_MODE
         );
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        assert_eq!(default_workspace_mode(true), DEFAULT_WORKSPACE_MODE);
+        assert_eq!(default_workspace_mode(true, true), DEFAULT_WORKSPACE_MODE);
     }
 
     #[test]

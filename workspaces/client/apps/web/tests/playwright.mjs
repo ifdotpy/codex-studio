@@ -1062,7 +1062,7 @@ export { browserExecutablePath, waitForFixturePort };
 /** @typedef {Pick<TaskEntityDto, "id" | "turnId" | "agent" | "kind" | "status" | "created" | "finished" | "name" | "command" | "query" | "cwd" | "processId" | "durationMs" | "timeout_ms" | "interactive" | "stdinClosed" | "stdinCloseRequested" | "stdinError" | "cancelRequested" | "exitCode" | "bytes" | "log" | "outputTruncated">} TestTask */
 /** @typedef {Pick<ProjectEntityDto, "homeServerId" | "locations" | "locationsRevision" | "projectAliases" | "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams" | "workerBaseRef" | "workerBaseRevision" | "workerEnvironment" | "workerEnvironmentRevision">} TestProject */
 /** @typedef {Pick<ComplaintEntityDto, "id" | "leadId" | "author" | "authorName" | "leadName" | "title" | "status" | "needsUserResponse" | "created" | "readAt" | "recipient" | "version">} TestComplaint */
-/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], viewScopedAgents?: boolean, workDetails?: import("../src/generated/api").components["schemas"]["WorkItem"][], agentDetails?: import("../src/generated/api").components["schemas"]["AgentDetailEntityDto"][], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], accountsSummary?: import("../src/generated/api").components["schemas"]["AccountsSummaryDto"], desktop?: import("../src/generated/api").components["schemas"]["DesktopEntityDto"], accountCostsByAccount?: Record<string, import("../src/generated/api").components["schemas"]["AccountCostEntityDto"]>, sessionCostsByAgent?: Record<string, import("../src/generated/api").components["schemas"]["SessionCostEntityDto"]>, terminals?: import("../src/generated/api").components["schemas"]["TerminalEntityDto"][], studioErrors?: import("../src/generated/api").components["schemas"]["StudioError"][], rateLimits: AccountRateLimitsDto | null, queuesByAgent?: Record<string, import("../src/generated/api").components["schemas"]["QueueView"]>, rateLimitsByAccount: Record<string, AccountRateLimitsDto>, stateDir?: string }} TestRuntimeView */
+/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], viewScopedAgents?: boolean, workDetails?: import("../src/generated/api").components["schemas"]["WorkItem"][], agentDetails?: import("../src/generated/api").components["schemas"]["AgentDetailEntityDto"][], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], accountsSummary?: import("../src/generated/api").components["schemas"]["AccountsSummaryDto"], desktop?: import("../src/generated/api").components["schemas"]["DesktopEntityDto"], accountCostsByAccount?: Record<string, import("../src/generated/api").components["schemas"]["AccountCostEntityDto"]>, sessionCostsByAgent?: Record<string, import("../src/generated/api").components["schemas"]["SessionCostEntityDto"]>, terminals?: import("../src/generated/api").components["schemas"]["TerminalEntityDto"][], studioErrors?: import("../src/generated/api").components["schemas"]["StudioError"][], rateLimits: AccountRateLimitsDto | null, queuesByAgent?: Record<string, import("../src/generated/api").components["schemas"]["QueueView"]>, rateLimitsByAccount: Record<string, AccountRateLimitsDto>, modelsByAccount?: Record<string, import("../src/generated/api").components["schemas"]["ModelEntityDto"][]>, stateDir?: string }} TestRuntimeView */
 /** @typedef {{ token: string, stateDir?: string, chats: ChatEntityDto[], edges: EdgeEntityDto[], runtime: TestRuntimeView, threads: TestAgent[] }} TestStateView */
 /** @typedef {Omit<TestStateView, "token" | "threads">} EntityFixtureState */
 
@@ -1527,6 +1527,17 @@ function entityValuesFromSnapshot(snapshot) {
     if (isJsonObject(runtime[field]))
       for (const [id, value] of Object.entries(runtime[field]))
         if (isJsonObject(value)) values.push({ collection, id, value });
+  }
+  for (const [account, models] of Object.entries(
+    runtime.modelsByAccount ?? {},
+  )) {
+    for (const model of models) {
+      values.push({
+        collection: "model",
+        id: JSON.stringify([account, model.model]),
+        value: model,
+      });
+    }
   }
   append("terminal", runtime.terminals);
   if (isJsonObject(runtime.queuesByAgent)) {

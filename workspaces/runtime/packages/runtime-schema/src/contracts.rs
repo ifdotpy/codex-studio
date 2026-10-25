@@ -798,6 +798,46 @@ fn subscription_scopes_ts(
     text
 }
 
+fn workspace_modes_ts() -> String {
+    use crate::workspace_modes as modes;
+    let mut text = format!(
+        "// {HEADER}\nexport const CHAT_WORKSPACE_MODES = [\n{},\n] as const;\n",
+        modes::CHAT_WORKSPACE_MODES
+            .iter()
+            .map(|mode| format!("  {}", json_string(mode)))
+            .collect::<Vec<_>>()
+            .join(",\n")
+    );
+    for (name, values) in [
+        ("ALWAYS_NATIVE_SYSTEMS", modes::ALWAYS_NATIVE_SYSTEMS),
+        (
+            "CAPABILITY_NATIVE_SYSTEMS",
+            modes::CAPABILITY_NATIVE_SYSTEMS,
+        ),
+    ] {
+        writeln!(
+            text,
+            "export const {name} = {} as const;",
+            serde_json::to_string(values).expect("mode names serialize")
+        )
+        .expect("String write");
+    }
+    for (name, value) in [
+        (
+            "DEFAULT_CHAT_WORKSPACE_MODE",
+            modes::DEFAULT_CHAT_WORKSPACE_MODE,
+        ),
+        (
+            "DEFAULT_AGENT_WORKSPACE_MODE",
+            modes::DEFAULT_AGENT_WORKSPACE_MODE,
+        ),
+    ] {
+        writeln!(text, "export const {name} = {};", json_string(value)).expect("String write");
+    }
+    text.push_str("export function defaultChatWorkspaceMode(system?: string, nativeReady = false) {\n  return ALWAYS_NATIVE_SYSTEMS.some((value) => value === system) ||\n    (nativeReady && CAPABILITY_NATIVE_SYSTEMS.some((value) => value === system))\n    ? DEFAULT_CHAT_WORKSPACE_MODE\n    : DEFAULT_AGENT_WORKSPACE_MODE;\n}\n");
+    text
+}
+
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     let mut openapi = read_json(root, OPENAPI_PATH)?;
@@ -838,18 +878,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let mut rendered = vec![
         Rendered {
             path: web("workspaceModes.ts"),
-            text: format!(
-                "// {HEADER}\nexport const CHAT_WORKSPACE_MODES = {} as const;\nexport const DEFAULT_CHAT_WORKSPACE_MODE = {};\n",
-                format!(
-                    "[\n{},\n]",
-                    crate::workspace_modes::CHAT_WORKSPACE_MODES
-                        .iter()
-                        .map(|mode| format!("  {}", json_string(mode)))
-                        .collect::<Vec<_>>()
-                        .join(",\n")
-                ),
-                json_string(crate::workspace_modes::DEFAULT_CHAT_WORKSPACE_MODE)
-            ),
+            text: workspace_modes_ts(),
         },
         Rendered {
             path: web("subscriptionEntities.ts"),

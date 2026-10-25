@@ -347,6 +347,11 @@ fn post_managed_message(
         }
         return Err(invalid_stored("runtime_events", input.id));
     }
+    if crate::legacy_image_workspace::is_legacy(&agent.value()) {
+        return Err(CoordinationError::InvalidRequest(
+            "This legacy workspace is finished. Start a new chat to send a message.",
+        ));
+    }
     let root = if agent.root_id == agent.id {
         agent.clone()
     } else {
@@ -1470,6 +1475,55 @@ mod tests {
                 .expect("metadata after retry"),
             Some(metadata)
         );
+    }
+
+    #[test]
+    fn review_regression_legacy_chat_refuses_new_message_without_writes() {
+        let mut connection = database();
+        let mut lead = studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from("lead"),
+        )
+        .unwrap()
+        .unwrap();
+        lead.status = studio_runtime_store::AgentStatus::Completed;
+        lead.extra.insert("workspaceMode".into(), json!("image"));
+        lead.extra
+            .insert("legacyWorkspaceFinished".into(), json!(true));
+        lead.extra.insert("autoWake".into(), json!(false));
+        studio_runtime_store::AgentRepository::put(&connection, &lead).unwrap();
+        let tx = connection.transaction().unwrap();
+        let result = post_message_with_admission(
+            &tx,
+            PostManagedMessage {
+                room: "lead",
+                id: "legacy-new-message",
+                text: "Please continue",
+                delivery: DeliveryMoment::CurrentTurn,
+                assets: &[],
+            },
+            &AllowAdmission,
+        );
+        assert!(
+            matches!(result, Err(CoordinationError::InvalidRequest(message)) if message.contains("legacy workspace")),
+            "{result:?}"
+        );
+        assert_eq!(
+            tx.query_row(
+                "SELECT count(*) FROM runtime_events WHERE id='legacy-new-message'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        let saved = studio_runtime_store::AgentRepository::get(
+            &tx,
+            &studio_runtime_store::AgentId::from("lead"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(saved.extra["autoWake"], false);
     }
 
     struct AllowAdmission;

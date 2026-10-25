@@ -33,7 +33,7 @@ so models learn it quickly, and it has equal convenience. It does not take the n
    share. There is no mirror copy. `layr export` makes a normal copy on request, and backups use
    `btrfs send` and the remote (changed on 2026-10-09: first from "the Mac folder is the source of
    truth", then from a one-way mirror, to remove sync and the extra copy).
-7. Chat creation selects `layr-native`, `layr`, or `worktree`. Native Layr is the default.
+7. Chat creation selects `layr-native`, `layr`, or `worktree`. Native Layr is the default on macOS. Linux uses it only when the native capability is ready; otherwise it uses WT.
    Layr VM runs the lead and agents in the Studio Linux VM.
    Native Git worktrees remain available.
 8. No staged rollout: all parts of the utility are built together.

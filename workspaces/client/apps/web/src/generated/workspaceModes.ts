@@ -4,4 +4,13 @@ export const CHAT_WORKSPACE_MODES = [
   "layr",
   "worktree",
 ] as const;
+export const ALWAYS_NATIVE_SYSTEMS = ["Darwin"] as const;
+export const CAPABILITY_NATIVE_SYSTEMS = ["Linux"] as const;
 export const DEFAULT_CHAT_WORKSPACE_MODE = "layr-native";
+export const DEFAULT_AGENT_WORKSPACE_MODE = "worktree";
+export function defaultChatWorkspaceMode(system?: string, nativeReady = false) {
+  return ALWAYS_NATIVE_SYSTEMS.some((value) => value === system) ||
+    (nativeReady && CAPABILITY_NATIVE_SYSTEMS.some((value) => value === system))
+    ? DEFAULT_CHAT_WORKSPACE_MODE
+    : DEFAULT_AGENT_WORKSPACE_MODE;
+}

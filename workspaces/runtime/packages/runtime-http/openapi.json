@@ -23171,7 +23171,7 @@
             "default": null
           },
           "workspaceMode": {
-            "default": "layr-native",
+            "description": "When omitted, the server selects native Layr on macOS, or on Linux when the native capability is ready; otherwise it selects worktree.",
             "enum": [
               "layr-native",
               "layr",
@@ -31533,6 +31533,29 @@
           "path"
         ],
         "title": "NativeFinderViewResponse",
+        "type": "object"
+      },
+      "NativeLayrCapability": {
+        "additionalProperties": false,
+        "description": "Native Layr readiness for this server state directory.",
+        "properties": {
+          "ready": {
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ready"
+        ],
         "type": "object"
       },
       "NativeNameFailureRecordResponse": {
@@ -55733,6 +55756,9 @@
             "default": false,
             "description": "The server has a created Studio Linux VM.",
             "type": "boolean"
+          },
+          "nativeLayr": {
+            "$ref": "#/components/schemas/NativeLayrCapability"
           },
           "projects": {
             "items": {

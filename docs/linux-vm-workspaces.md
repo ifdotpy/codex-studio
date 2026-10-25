@@ -1,7 +1,9 @@
 # Layr VM chats
 
 Chat creation accepts `workspaceMode`: `layr-native`, `layr`, or `worktree`.
-New lead chats on macOS and Linux default to native Layr (`layr-native`).
+New lead chats on macOS default to native Layr (`layr-native`).
+Linux uses native Layr only when its btrfs store and root daemon are ready.
+Otherwise, Linux defaults to WT (`worktree`).
 Select Layr VM (`layr`) only on a server with the Studio Linux VM.
 Select WT (`worktree`) for Git worktrees.
 
