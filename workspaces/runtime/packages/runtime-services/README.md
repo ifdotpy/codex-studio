@@ -603,3 +603,11 @@ usage owner's transitional `parse_legacy_totals` projection. This old-total path
 retains its existing budget treatment for migration compatibility. It preserves unknown
 token categories as unknown; remove this path after those bridges and their replay
 window have retired. Codex live notifications use its generated native schema.
+
+## Account cost scans
+
+The usage service reserves an account scan before dispatching blocking
+work. Reservation identity includes the workspace state directory; a concurrent
+interest joins the existing refresh. Cache ages in `usage.rs` decide whether an
+explicit interest needs work and bound failed attempts; they do not schedule a
+timer. Saved scan results continue to notify the bounded entity publisher.

@@ -858,6 +858,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/costs/interest": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Request an on-demand account cost refresh; results arrive through sync entities */
+    post: operations["cost_interest_api_costs_interest_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/desktop": {
     parameters: {
       query?: never;
@@ -11464,6 +11481,10 @@ export interface components {
       providers: {
         [key: string]: number;
       };
+    };
+    /** CostInterestRequest */
+    CostInterestRequest: {
+      account_key: string;
     };
     /** CostsResource */
     CostsResource: {
@@ -30352,6 +30373,30 @@ export interface operations {
       500: components["responses"]["ApiError500"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
+    };
+  };
+  cost_interest_api_costs_interest_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CostInterestRequest"];
+      };
+    };
+    responses: {
+      /** @description Interest accepted; joins an existing refresh when one is active */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": Record<string, never>;
+        };
+      };
     };
   };
   desktop_api_desktop_get: {

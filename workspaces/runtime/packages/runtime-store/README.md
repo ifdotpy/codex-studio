@@ -354,3 +354,12 @@ completed retention may replace an old large `tail` with a preview and
 `outputTruncated` / `outputPreviewOnly` flags. Rust preserves either record
 shape. `analytics_meta.fileMigrationV1` is accepted only when its JSON phase is
 `complete`; an absent marker is `NotStarted`.
+
+## Scoped analytics cost notifications
+
+`add_analytics_root_change_observer` reports the roots written to
+`analytics_usage_roots` by a committed usage-generation change. Both analytics
+transaction adapters collect bounded row hints and resolve roots after commit.
+Rollback emits nothing; unknown scope, deleted roots, hint overflow, or uncertain
+commit emits `ChangedRoots::Full`. The existing unscoped commit observers remain
+available. Observers enqueue work and never read the database within callbacks.

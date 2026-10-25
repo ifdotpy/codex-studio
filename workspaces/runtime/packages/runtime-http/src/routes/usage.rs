@@ -17,6 +17,11 @@ pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/costs", OperationStatus::Implemented, costs),
         post(
+            "/api/costs/interest",
+            OperationStatus::Implemented,
+            cost_interest,
+        ),
+        post(
             "/api/limits/reset",
             OperationStatus::Implemented,
             reset_limits,
@@ -58,68 +63,35 @@ async fn costs(
         .duration_since(UNIX_EPOCH)
         .map_err(|_| ApiError::internal())?
         .as_secs_f64();
-    let refresh_cancelled = state.cost_scan_cancellation_handle();
-    let state_dir = std::path::PathBuf::from(state.state_dir.clone());
-    let refresh_state_dir = state_dir.clone();
-    let refresh_account = account.clone();
-    let refresh_key = account_key.clone();
-    let snapshot_key = account_key.clone();
-    let notification_key = refresh_key.clone();
-    let notifications = state.resource_notifications.clone();
+    let state_dir = std::path::PathBuf::from(&state.state_dir);
     let mut result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/usage",
-        move || usage::account_cost_snapshot(&state_dir, &snapshot_key, &account, now),
+        move || usage::account_cost_snapshot(&state_dir, &account_key, &account, now),
     )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(cost_error)?;
-    let refresh_due = result.get("_refreshDue").and_then(Value::as_bool) == Some(true);
-    if let Some(object) = result.as_object_mut() {
-        object.remove("_refreshDue");
-    }
-    let refresh_claimed = refresh_due
-        && result.get("refreshing").and_then(Value::as_bool) != Some(true)
-        && usage::claim_cost_refresh_attempt(&account_key);
-    if refresh_claimed {
-        let refresh_worker = state.track_cost_refresh_worker();
-        if let Some(object) = result.as_object_mut() {
-            object.insert("refreshing".to_owned(), Value::Bool(true));
-        }
-        tokio::spawn(async move {
-            let _refresh_worker = refresh_worker;
-            let outcome = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/routes/usage",
-                move || {
-                    usage::refresh_account_costs_report(
-                        &refresh_state_dir,
-                        &refresh_key,
-                        &refresh_account,
-                        &refresh_cancelled,
-                    )
-                },
-            )
-            .await;
-            let cache_saved = matches!(&outcome, Ok((true, _)));
-            match outcome {
-                Ok((_, Ok(()))) => {}
-                Ok((_, Err(UsageError::ScannerCancelled))) => {}
-                Ok((_, Err(error))) => eprintln!("Local cost refresh failed: {error}"),
-                Err(error) => eprintln!("Local cost refresh task failed: {error}"),
-            }
-            if cache_saved {
-                let request = serde_json::json!({
-                    "requestId": format!("local-costs:{}:{now}", notification_key),
-                    "resources": [{"kind":"costs"}],
-                });
-                if let Err(error) = notifications.publish_once(&request) {
-                    eprintln!("Could not publish local cost refresh: {error}");
-                }
-            }
-        });
+    if let Some(fields) = result.as_object_mut() {
+        fields.remove("_refreshDue");
     }
     Ok(Json(super::generated_json::<
         crate::generated::AccountCostResponse,
     >(result)?))
+}
+
+async fn cost_interest(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::CostInterestRequest>,
+) -> Result<Json<Value>, ApiError> {
+    crate::bounded_entities::request_cost_refresh(&state, &body.account_key)
+        .await
+        .map_err(|error| match error {
+            studio_runtime_store::StoreError::RecordContract("unknown cost account") => {
+                ApiError::new(StatusCode::BAD_REQUEST, "Unknown cost account")
+            }
+            error => ApiError::stored(error),
+        })?;
+    Ok(Json(serde_json::json!({})))
 }
 
 async fn reset_limits(
