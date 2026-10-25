@@ -70,6 +70,21 @@ describe("Settings server rows", () => {
     expect(row.peer).toBeUndefined();
     expect(row.registered?.id).toBe("manual");
   });
+  it("keeps an intentionally paused connection neutral without claiming active or offline", () => {
+    const rows = serverRows(
+      [
+        { id: "local", label: "local", origin: "http://localhost:4444" },
+        {
+          id: "remote",
+          label: "remote",
+          origin: "https://remote.tailnet.ts.net",
+        },
+      ],
+      [peer("remote", "paired")],
+      { local: "paused", remote: "paused" },
+    );
+    expect(rows.map((row) => row.status)).toEqual(["Online", "Paired"]);
+  });
   it("uses relative last contact time and clamps future clock skew", () => {
     expect(relativeSeen(1001, 1000)).toBe("just now");
     expect(relativeSeen(880, 1000)).toBe("2 min ago");

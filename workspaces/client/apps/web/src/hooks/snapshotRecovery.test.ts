@@ -84,3 +84,36 @@ it.each(["credentials", "database"])(
     expect(read).toHaveBeenCalledTimes(READ_RECOVERY_MAX_ATTEMPTS * 3);
   },
 );
+
+it.each([true, false])(
+  "does not turn the browser offline hint into a startup failure (initiallyOnline=%s)",
+  (online) => {
+    vi.stubGlobal("window", new EventTarget());
+    vi.stubGlobal("document", { hidden: false });
+    vi.stubGlobal("navigator", { onLine: online });
+    h.database.mockResolvedValue({ workspaceId: "workspace" });
+    h.session.mockResolvedValue({ token: "token" });
+    useSnapshot();
+    stops = h.effects.flatMap((effect) => {
+      const stop = effect();
+      return stop ? [stop] : [];
+    });
+    h.connection?.("live");
+    window.dispatchEvent(new Event("offline"));
+    expect(h.writes).not.toContainEqual(
+      expect.objectContaining({
+        startupError: expect.stringContaining("Offline"),
+      }),
+    );
+    h.connection?.("degraded");
+    expect(h.writes).toContainEqual(
+      expect.objectContaining({
+        transportError: "Live updates are reconnecting.",
+      }),
+    );
+    h.connection?.("paused");
+    expect(h.writes.at(-1)).toEqual(
+      expect.objectContaining({ transportError: "" }),
+    );
+  },
+);

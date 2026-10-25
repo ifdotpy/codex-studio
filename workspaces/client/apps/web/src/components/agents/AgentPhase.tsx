@@ -28,6 +28,24 @@ import "./provider-activity.css";
 import { useChatWait, type ChatWaitSource } from "../../hooks/conversationData";
 import { useVisualActivityRef } from "../../hooks/useVisualActivity";
 
+// Delivery can remain pending while a healthy connection awaits its receipt.
+// Choose the copy and icon together so only transport loss looks disconnected.
+function phaseNotice(connection: string, savedMessagePending: boolean) {
+  if (connection === "reconnecting")
+    return {
+      message: savedMessagePending
+        ? "Connection lost. Your message is saved and will send when connected."
+        : "Connection lost. Reconnecting…",
+      Icon: WifiOff,
+    };
+  if (savedMessagePending)
+    return {
+      message: "Your message is saved and waiting for delivery.",
+      Icon: Clock3,
+    };
+  return null;
+}
+
 export default function AgentPhase({
   agent,
   connection,
@@ -43,6 +61,7 @@ export default function AgentPhase({
 }) {
   const visualRef = useVisualActivityRef<HTMLDivElement>();
   if (!agent) return null;
+  const notice = phaseNotice(connection, savedMessagePending);
   const safety = agent.nativeSafetyBuffering;
   if (
     safety?.showBufferingUi === true &&
@@ -104,12 +123,7 @@ export default function AgentPhase({
     interrupted: "Interrupted",
     idle: "Ready",
   };
-  if (
-    ["idle", "completed"].includes(phase) &&
-    connection !== "reconnecting" &&
-    !savedMessagePending
-  )
-    return null;
+  if (["idle", "completed"].includes(phase) && !notice) return null;
   const icons: Record<string, typeof Brain> = {
     thinking: Brain,
     writing: PenLine,
@@ -133,16 +147,9 @@ export default function AgentPhase({
     interrupted: CircleAlert,
     paused: Pause,
   };
-  const Icon =
-    connection === "reconnecting" || savedMessagePending
-      ? WifiOff
-      : icons[phase] || Circle;
+  const Icon = notice?.Icon || icons[phase] || Circle;
   const waiting = ["waiting", "parked"].includes(phase);
-  const liveWait =
-    waiting &&
-    wait?.live &&
-    connection !== "reconnecting" &&
-    !savedMessagePending;
+  const liveWait = waiting && wait?.live && !notice;
   const native = ["retrying", "auth", "safety"].includes(phase)
     ? typeof agent.nativeStatus === "object"
       ? agent.nativeStatus
@@ -160,7 +167,7 @@ export default function AgentPhase({
   return (
     <div
       ref={visualRef}
-      className={`agent-phase ${(active && !waiting) || liveWait ? "active" : ""}${connection === "reconnecting" || savedMessagePending ? " studio-recovery-banner" : ""}`}
+      className={`agent-phase ${(active && !waiting) || liveWait ? "active" : ""}${notice ? " studio-recovery-banner" : ""}`}
       role="status"
       data-phase={phase}
       data-wait-state={waiting ? (wait?.live ? "live" : "ended") : undefined}
@@ -175,10 +182,7 @@ export default function AgentPhase({
       ) : (
         <Icon size={15} />
       )}
-      {waiting &&
-      wait?.live &&
-      connection !== "reconnecting" &&
-      !savedMessagePending ? (
+      {liveWait ? (
         <details className="agent-phase-wait">
           <summary>{wait.label}</summary>
           <div className="agent-phase-wait-details">
@@ -208,10 +212,8 @@ export default function AgentPhase({
       ) : (
         <div className="agent-phase-copy">
           <span>
-            {savedMessagePending ? (
-              "Connection lost. Your message is saved and will send when connected."
-            ) : connection === "reconnecting" ? (
-              "Connection lost. Reconnecting…"
+            {notice ? (
+              notice.message
             ) : (
               <ErrorDescription
                 value={nativeMessage || nativeErrorMessage || message}
@@ -219,9 +221,7 @@ export default function AgentPhase({
               />
             )}
           </span>
-          {(savedMessagePending ||
-            connection === "reconnecting" ||
-            (typeof details === "string" && details)) && (
+          {(notice || (typeof details === "string" && details)) && (
             <details>
               <summary>Details</summary>
               {savedMessagePending && connectionDetails && (
@@ -233,16 +233,13 @@ export default function AgentPhase({
           )}
         </div>
       )}
-      {active &&
-        !waiting &&
-        connection !== "reconnecting" &&
-        !savedMessagePending && (
-          <span className="phase-dots" aria-hidden="true">
-            <i />
-            <i />
-            <i />
-          </span>
-        )}
+      {active && !waiting && !notice && (
+        <span className="phase-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+      )}
       {phase === "tool" && (agent.activity?.tools?.length ?? 0) > 1 && (
         <small>{agent.activity?.tools?.length} tools</small>
       )}
