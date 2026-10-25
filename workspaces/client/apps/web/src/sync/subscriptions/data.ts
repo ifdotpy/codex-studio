@@ -38,22 +38,18 @@ export function createDataObserver(
       const viewData =
         ref.kind === "processes"
           ? view?.processes
-          : ref.kind === "work"
-            ? view?.work
-            : ref.kind === "complaint"
-              ? view?.complaint
-              : ref.kind === "room"
-                ? (view?.room ?? view?.legacyMessages)
-                : ref.kind === "terminal-output"
-                  ? view?.terminalOutput
-                  : undefined;
+          : ref.kind === "complaint"
+            ? view?.complaint
+            : ref.kind === "room"
+              ? (view?.room ?? view?.legacyMessages)
+              : ref.kind === "terminal-output"
+                ? view?.terminalOutput
+                : undefined;
       return viewData;
     };
     if (
       recoverView &&
-      ["processes", "work", "complaint", "room", "terminal-output"].includes(
-        ref.kind,
-      )
+      ["processes", "complaint", "room", "terminal-output"].includes(ref.kind)
     ) {
       let stopped = false;
       const stop = watchResourceReads(

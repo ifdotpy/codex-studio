@@ -9,7 +9,6 @@ it.each([
     "complaint",
     { id: "message", text: "Reply" },
   ],
-  [{ kind: "work", agentId: "lead" }, "work", { items: [], rootId: "lead" }],
   [
     { kind: "room", roomId: "team" },
     "room",
@@ -61,23 +60,73 @@ it("an oversized view recovers once and subsequent complete frames resume zero-r
     },
     watchResourceConnection: () => () => {},
   };
-  const read = vi.fn(async () => ({ items: [], rootId: "lead" }));
+  const read = vi.fn(async () => ({ processes: [] }));
   const accept = vi.fn();
   const stop = createDataObserver(
     () => ({}) as any,
     events,
     undefined,
     read,
-  )({ kind: "work", agentId: "lead" }, accept, vi.fn());
+  )({ kind: "processes", agentId: "lead" }, accept, vi.fn());
   expect(read).not.toHaveBeenCalled();
   receive({ epoch: "server", revision: 1 });
   await vi.waitFor(() => expect(accept).toHaveBeenCalledOnce());
   receive({
     epoch: "server",
     revision: 2,
-    viewSnapshot: { work: { items: [], rootId: "lead" } },
+    viewSnapshot: { processes: { processes: [] } },
   });
   await vi.waitFor(() => expect(accept).toHaveBeenCalledTimes(2));
   expect(read).toHaveBeenCalledOnce();
   stop();
+});
+
+it("work baselines and updates use the entity observer even when view recovery exists", async () => {
+  let receive: (version: any) => void = () => {};
+  let publish: (data: any) => void = () => {};
+  const stopEvents = vi.fn();
+  const stopEntities = vi.fn();
+  const events = {
+    watchResourceChanges: (_ref: unknown, accept: typeof receive) => {
+      receive = accept;
+      return stopEvents;
+    },
+    watchResourceConnection: () => () => {},
+  };
+  const observe = vi.fn((_ref, accept) => {
+    publish = accept;
+    return stopEntities;
+  });
+  const recover = vi.fn();
+  const accept = vi.fn();
+  const ref = { kind: "work", agentId: "lead" } as const;
+  const dispose = createDataObserver(
+    () => ({}) as any,
+    events,
+    observe,
+    recover,
+  )(ref, accept, vi.fn());
+  expect(observe).toHaveBeenCalledOnce();
+  const first = { items: [{ id: "assignment", title: "Before" }], tasks: [] };
+  publish(first);
+  receive({
+    epoch: "server",
+    revision: 1,
+    cursor: { workspaceId: "w", seq: 1 },
+    replyKind: "snapshot",
+  });
+  const next = { items: [{ id: "assignment", title: "After" }], tasks: [] };
+  publish(next);
+  receive({
+    epoch: "server",
+    revision: 2,
+    cursor: { workspaceId: "w", seq: 2 },
+    replyKind: "delta",
+  });
+  await Promise.resolve();
+  expect(accept.mock.calls).toEqual([[first], [next]]);
+  expect(recover).not.toHaveBeenCalled();
+  dispose();
+  expect(stopEvents).toHaveBeenCalledOnce();
+  expect(stopEntities).toHaveBeenCalledOnce();
 });
