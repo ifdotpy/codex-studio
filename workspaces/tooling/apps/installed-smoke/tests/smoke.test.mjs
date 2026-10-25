@@ -1359,3 +1359,80 @@ test("legacy recorded categories stay unknown and use persisted adapter preceden
   );
   assert.equal(response.tokens.uncachedInput, 10);
 });
+
+test("comparison reprojects old snapshots and preserves unknown categories and gaps", async () => {
+  const { compareEvidence } = await import("../usage.mjs");
+  const old = {
+    format: "old-fixture",
+    providers: [
+      {
+        provider: "claude",
+        agentId: "a",
+        truth: {
+          tokens: {
+            uncachedInput: 10,
+            cacheReadInput: 2,
+            cacheWriteInput: 1,
+            output: 4,
+            reasoningOutput: 0,
+          },
+        },
+        recorded: {
+          tokens: {
+            uncachedInput: 10,
+            cacheReadInput: 0,
+            cacheWriteInput: 0,
+            output: 2,
+            reasoningOutput: 0,
+          },
+        },
+        budget: { tokensUsed: 12 },
+        analytics: {
+          timeline: [
+            {
+              responseId: "r",
+              usageSource: "claudeResponse",
+              delta: {
+                inputTokens: 10,
+                cachedInputTokens: null,
+                cacheWriteInputTokens: 0,
+                outputTokens: 2,
+                reasoningOutputTokens: null,
+              },
+            },
+            {
+              responseId: "g",
+              studioUsage: {
+                kind: "gap",
+                responseId: "g",
+                reason: "queryClosed",
+              },
+            },
+          ],
+        },
+      },
+    ],
+  };
+  const original = structuredClone(old);
+  const compared = compareEvidence(old, old);
+  for (const row of compared) {
+    assert.equal(
+      row["recorded input/read/write/output/reasoning"],
+      "10/unknown/0/2/unknown",
+    );
+    assert.equal(row["recorded/truth"], null);
+    assert.equal(row["unpriced gaps"], 1);
+    assert.match(row["recorded projection"], /persisted-usage-v3/);
+  }
+  assert.deepEqual(old, original);
+  const withoutRaw = structuredClone(old);
+  delete withoutRaw.providers[0].analytics;
+  const [unavailable] = compareEvidence(withoutRaw, old);
+  assert.equal(
+    unavailable["recorded input/read/write/output/reasoning"],
+    "unknown/unknown/unknown/unknown/unknown",
+  );
+  assert.equal(unavailable["recorded/truth"], null);
+  assert.equal(unavailable["unpriced gaps"], null);
+  assert.match(unavailable["recorded projection"], /unknown.*old-fixture/);
+});

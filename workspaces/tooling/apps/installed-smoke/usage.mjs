@@ -263,7 +263,8 @@ export function usageTable(evidence, label) {
       totalTokens(row.recorded.tokens) == null
         ? null
         : totalTokens(row.recorded.tokens) / totalTokens(row.truth.tokens),
-    "unpriced gaps": row.recorded.gaps?.length ?? 0,
+    "unpriced gaps": row.recorded.gaps?.length ?? null,
+    "recorded projection": row.recorded.projection ?? "persisted-usage-v3",
     "budget tokens": row.budget.tokensUsed,
     accounting: row.budget.tokenUsageAccounting,
     "truth priced USD": row.truth.costUsd ?? null,
@@ -282,8 +283,30 @@ export function usageTable(evidence, label) {
   }));
 }
 
+/** Re-project both saved runs without mutating snapshots or trusting old derived totals. */
 export function compareEvidence(oldEvidence, newEvidence) {
-  return [...usageTable(oldEvidence, "OLD"), ...usageTable(newEvidence, "NEW")];
+  const project = (evidence) => ({
+    ...evidence,
+    providers: evidence.providers.map((row) => {
+      const available = Array.isArray(row.analytics?.timeline);
+      const recorded = available ? recordedUsage(row.analytics) : null;
+      return {
+        ...row,
+        recorded: recorded
+          ? { ...recorded, tokens: sumTokens(recorded.responses) }
+          : {
+              tokens: Object.fromEntries(
+                TOKEN_CATEGORIES.map((key) => [key, null]),
+              ),
+              projection: `unknown: raw analytics unavailable (saved format ${evidence.format ?? "unversioned"})`,
+            },
+      };
+    }),
+  });
+  return [
+    ...usageTable(project(oldEvidence), "OLD"),
+    ...usageTable(project(newEvidence), "NEW"),
+  ];
 }
 
 /** Independent base-rate arithmetic; refuse tiered requests rather than guess. */
