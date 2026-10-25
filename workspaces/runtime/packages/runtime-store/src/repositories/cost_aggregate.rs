@@ -27,6 +27,9 @@ use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
 use serde::Deserialize;
+use studio_runtime_schema::usage::{
+    UsageEvidence, UsageObservation, UsageProvider, UsageTokens, parse_analytics_usage_row,
+};
 
 use crate::{CachedSql, StoreError, StoreResult};
 
@@ -135,6 +138,127 @@ pub struct CostGroup {
 /// A Claude log response that replaces the analytics row of the same
 /// (account key, Studio thread, response id).
 pub type CostReceipt = (String, String, String);
+
+/// One recorded response for diagnostics; missing legacy counts remain unknown.
+#[derive(Clone, Debug)]
+pub struct RecordedResponse {
+    pub agent_id: String,
+    pub response_id: String,
+    pub model: Option<String>,
+    pub tokens: Option<UsageTokens>,
+    pub evidence: UsageEvidence,
+    /// Server observation timestamp, seconds since Unix epoch.
+    pub at: f64,
+}
+
+/// Journal receipts eligible to replace provisional rows, and those superseded by final evidence.
+#[derive(Clone, Debug, Default)]
+pub struct JournalPartition {
+    pub accepted: BTreeSet<CostReceipt>,
+    pub superseded: BTreeSet<CostReceipt>,
+}
+
+/// Read response evidence for exactly these agents in stable observation order.
+pub fn recorded_responses(
+    db: &Connection,
+    agent_ids: &[String],
+) -> StoreResult<Vec<RecordedResponse>> {
+    recorded_responses_bounded(db, agent_ids, usize::MAX).map(|(rows, _)| rows)
+}
+
+/// Bound response decoding; the boolean reports whether additional matching rows exist.
+pub fn recorded_responses_bounded(
+    db: &Connection,
+    agent_ids: &[String],
+    limit: usize,
+) -> StoreResult<(Vec<RecordedResponse>, bool)> {
+    let ids = serde_json::to_string(agent_ids)?;
+    let sql_limit = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
+    let mut statement = db.prepare_cached(
+        "SELECT agent,at,record FROM analytics_usage WHERE agent IN (SELECT value FROM json_each(?1))
+         AND COALESCE(json_extract(record,'$.studioUsage.kind'),'response')='response'
+         AND COALESCE(json_extract(record,'$.studioUsage.responseId'),json_extract(record,'$.responseId'),'')<>''
+         ORDER BY at,seq LIMIT ?2",
+    )?;
+    let mut source = statement.query(params![ids, sql_limit])?;
+    let mut rows = Vec::new();
+    while let Some(row) = source.next()? {
+        if rows.len() == limit {
+            return Ok((rows, true));
+        }
+        let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(2)?)?;
+        let fields = UsageCostFields::deserialize(&value)?;
+        let parsed = parse_analytics_usage_row(UsageProvider::Codex, &value);
+        let (response_id, model, tokens, evidence) = match parsed {
+            Ok(UsageObservation::Response {
+                response_id,
+                model,
+                tokens,
+                evidence,
+                ..
+            }) => (
+                response_id,
+                (!model.is_empty()).then_some(model),
+                Some(tokens),
+                evidence,
+            ),
+            Err(error) if value.get("studioUsage").is_some() => {
+                return Err(StoreError::SchemaValidation(error.to_string()));
+            }
+            _ => (
+                fields.response_id.as_deref().unwrap_or_default().to_owned(),
+                fields.model.as_deref().map(str::to_owned),
+                None,
+                UsageEvidence::Legacy,
+            ),
+        };
+        rows.push(RecordedResponse {
+            agent_id: row.get(0)?,
+            response_id,
+            model,
+            tokens,
+            evidence,
+            at: row.get(1)?,
+        });
+    }
+    Ok((rows, false))
+}
+
+/// Preserve final live/recovered responses; only missing or legacy evidence accepts journal recovery.
+pub fn partition_journal_receipts(
+    db: &Connection,
+    receipts: &BTreeSet<CostReceipt>,
+) -> StoreResult<JournalPartition> {
+    let mut result = JournalPartition::default();
+    let mut statement = db.prepare_cached(
+        "SELECT record FROM analytics_usage WHERE thread=?1
+         AND COALESCE(json_extract(record,'$.studioUsage.responseId'),json_extract(record,'$.responseId'))=?2
+         AND COALESCE(json_extract(record,'$.accountKey'),'default')=?3",
+    )?;
+    for receipt @ (account, thread, response) in receipts {
+        let mut rows = statement.query(params![thread, response, account])?;
+        let mut final_response = false;
+        while let Some(row) = rows.next()? {
+            let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(0)?)?;
+            match parse_analytics_usage_row(UsageProvider::Claude, &value) {
+                Ok(UsageObservation::Response {
+                    evidence: UsageEvidence::Live | UsageEvidence::Recovered,
+                    ..
+                }) => final_response = true,
+                Err(error) if value.get("studioUsage").is_some() => {
+                    return Err(StoreError::SchemaValidation(error.to_string()));
+                }
+                _ => {}
+            }
+        }
+        if final_response {
+            result.superseded.insert(receipt.clone());
+        } else {
+            result.accepted.insert(receipt.clone());
+        }
+    }
+    Ok(result)
+}
 
 /// Group identity; field order is the summation order of a priced total.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -691,6 +815,33 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::json;
     use std::path::Path;
+
+    #[tokio::test]
+    async fn typed_usage_evidence_queries_bound_rows_and_partition_journal() {
+        let temp = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            for (id, evidence) in [("legacy", "legacy"), ("final", "recovered")] {
+                let row = json!({"id":id,"agentId":"agent","rootId":"root","threadId":"thread","at":1,
+                    "responseId":id,"model":"m","accountKey":"acct","last":{},"total":{},
+                    "studioUsage":{"kind":"response","responseId":id,"model":"m","evidence":evidence,
+                        "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2}}});
+                AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &row)?;
+            }
+            let agents = ["agent".to_owned()];
+            let (rows, truncated) = super::recorded_responses_bounded(tx, &agents, 1)?;
+            assert!(truncated);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].tokens.as_ref().expect("known tokens").output, 2);
+            assert_eq!(super::recorded_responses(tx, &agents)?.len(), 2);
+            let receipts = ["legacy", "final", "missing"].map(|id| ("acct".to_owned(), "thread".to_owned(), id.to_owned())).into();
+            let partition = super::partition_journal_receipts(tx, &receipts)?;
+            assert_eq!(partition.accepted.len(), 2);
+            assert_eq!(partition.superseded.len(), 1);
+            assert!(partition.superseded.contains(&("acct".to_owned(),"thread".to_owned(),"final".to_owned())));
+            Ok(())
+        }).await.expect("typed evidence query");
+    }
 
     #[tokio::test]
     async fn typed_usage_cumulative_never_contributes_response_costs() {

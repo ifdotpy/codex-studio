@@ -1,4 +1,7 @@
 //! Provider-neutral accounting observations. This module alone interprets usage wire keys.
+pub mod persisted;
+pub use persisted::parse_analytics_usage_row;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
