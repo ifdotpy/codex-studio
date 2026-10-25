@@ -334,7 +334,8 @@ impl UsageObservation {
                                 .ok_or(BudgetError::Overflow)?,
                         ),
                         Some(total.total().ok_or(BudgetError::Overflow)?),
-                        None,
+                        studio_runtime_schema::usage::legacy_notice_response_association(params)
+                            .map(str::to_owned),
                         turn_id.clone(),
                         identity_usage,
                         false,
