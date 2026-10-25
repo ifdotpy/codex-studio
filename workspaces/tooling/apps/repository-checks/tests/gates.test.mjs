@@ -212,6 +212,54 @@ test("interrupt waits for running children and cancels unstarted dependents", as
   assert.equal(result.exitCode, 1);
 });
 
+test("the real HTTP web fixture does not overlap Rust witness execution", async () => {
+  const steps = gateSteps(process.cwd(), "test-fast").filter((step) =>
+    ["wasm", "renderer", "workspace", "rust-tests", "web unit tests"].includes(
+      step.id,
+    ),
+  );
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const trace = [];
+  const result = executeRecipe(process.cwd(), "test-fast", steps, {
+    write: () => {},
+    execute: async (_root, _item, _case, _json, options) => {
+      if (options.label === "Rust nextest") {
+        started.resolve();
+        await release.promise;
+        trace.push("Rust finished");
+      }
+      trace.push(options.label);
+      return { status: "passed", exitCode: 0, durationSeconds: 0 };
+    },
+  });
+  await started.promise;
+  try {
+    assert.ok(
+      !trace.includes("web unit tests"),
+      "the draft HTTP fixture must not compete with Rust witnesses",
+    );
+  } finally {
+    release.resolve();
+    await result;
+  }
+  assert.ok(trace.indexOf("Rust finished") < trace.indexOf("web unit tests"));
+  for (const name of ["test-fast", "test-comprehensive", "test-fast-rest"]) {
+    assert.equal(
+      gateSteps(process.cwd(), name).find(
+        (step) => step.id === "web unit tests",
+      ).lane,
+      "rust",
+    );
+  }
+  const nonRust = gateSteps(process.cwd(), "test-fast-rest-non-rust");
+  assert.equal(
+    nonRust.find((step) => step.id === "web unit tests").requires,
+    "workspace",
+  );
+  assert.ok(nonRust.every((step) => !step.requiresCargo));
+});
+
 test(
   "owned process groups clean nested children after failure and cancellation",
   { skip: process.platform === "win32" },

@@ -774,6 +774,9 @@ export function gateSteps(root, name) {
         web,
         fast ? "test:unit:fast" : "test:unit:prepared",
       ),
+      // The real HTTP draft fixture runs after Rust witnesses in this lane.
+      // Keep its startup deadline without competing with our nextest workers.
+      lane: "rust",
       requires: "workspace",
     },
     ...["studio-claude-bridge", "codex-agents-desktop"].map((packageName) => ({
