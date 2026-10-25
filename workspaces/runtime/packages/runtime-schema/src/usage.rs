@@ -432,6 +432,17 @@ pub fn legacy_notice_identity(
     ]))
 }
 
+/// Optional response association on imported cumulative notices. This is only a
+/// recovery hint: it resolves notice ambiguity and never creates a response charge.
+/// Native live notices do not carry it; token_count imports retain the hint.
+pub fn legacy_notice_response_association(params: &Value) -> Option<&str> {
+    params.get("tokenUsage")?.as_object()?;
+    params
+        .get("responseId")?
+        .as_str()
+        .filter(|id| !id.is_empty())
+}
+
 /// OpenAPI fragments rendered from the accounting owner, including named leaf types.
 pub fn schemas() -> serde_json::Map<String, Value> {
     let mut generator = schemars::generate::SchemaSettings::draft2020_12()

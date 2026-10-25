@@ -416,6 +416,62 @@ fn exact_response_replay_is_noop_and_conflicting_replay_records_fault() {
     );
 }
 
+#[test]
+fn legacy_notice_association_clears_reset_ambiguity_without_response_charge() {
+    let cases: Vec<Value> = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
+    let case = cases
+        .iter()
+        .find(|case| case["name"] == "notice-reset-ambiguity")
+        .expect("reset case");
+    let outputs = run(case, &records(case));
+    let final_state = &outputs
+        .as_array()
+        .expect("outputs")
+        .last()
+        .expect("last output")["stored"];
+    assert_eq!(
+        final_state["states"]["a"]["ambiguousNotices"],
+        json!([]),
+        "recovered response association resolves the existing notice receipt"
+    );
+    assert_eq!(final_state["agents"]["a"]["tokensUsed"], 110);
+    assert!(
+        final_state["usage"]
+            .as_array()
+            .expect("usage rows")
+            .iter()
+            .all(|row| row["kind"] == "notice")
+    );
+}
+
+#[test]
+fn pre_and_post_upgrade_rollout_notices_produce_identical_budget_state() {
+    let cases: Vec<Value> = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
+    let mut before = cases
+        .into_iter()
+        .find(|case| case["name"] == "notice-reset-ambiguity")
+        .expect("reset case");
+    for step in before["steps"].as_array_mut().expect("steps") {
+        step["source"] = json!("history");
+        step["params"]["usageSource"] = json!("tokenCount");
+    }
+    let mut after = before.clone();
+    for step in after["steps"].as_array_mut().expect("steps") {
+        let observation = studio_runtime_schema::usage::parse_token_usage(
+            studio_runtime_schema::usage::UsageProvider::Codex,
+            &step["params"],
+        )
+        .expect("rollout usage");
+        step["params"]["studioUsage"] = serde_json::to_value(observation).expect("canonical usage");
+    }
+    let initial = records(&before);
+    assert_eq!(
+        run(&before, &initial),
+        run(&after, &initial),
+        "typed conversion preserves imported notice receipts and associations"
+    );
+}
+
 fn fixture() -> (Value, Value) {
     static FIXTURE: std::sync::OnceLock<(Value, Value)> = std::sync::OnceLock::new();
     FIXTURE
