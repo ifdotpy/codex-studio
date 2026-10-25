@@ -148,6 +148,7 @@ function MultiServerShell({
   };
   const restoreManagerAfterAccountDialog = useRef(false);
   const restoreAccountActionFocus = useRef<string | null>(null);
+  const accountSettingsPanel = useRef<HTMLDivElement>(null);
   const discovery = useServerDiscovery(
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
     (server) => add(server, false),
@@ -759,7 +760,9 @@ function MultiServerShell({
     restoreAccountActionFocus.current = null;
     requestAnimationFrame(() => {
       const row = [
-        ...document.querySelectorAll<HTMLElement>("[data-account-identity]"),
+        ...(accountSettingsPanel.current?.querySelectorAll<HTMLElement>(
+          "[data-account-identity]",
+        ) || []),
       ].find((candidate) => candidate.dataset.accountIdentity === identity);
       row
         ?.querySelector<HTMLButtonElement>('[aria-label^="Actions for "]')
@@ -792,7 +795,11 @@ function MultiServerShell({
       classNames={{ body: "studio-settings-body" }}
       onEnterTransitionEnd={restoreAccountFocus}
     >
-      <div className="studio-settings-panel" data-testid="studio-settings">
+      <div
+        ref={accountSettingsPanel}
+        className="studio-settings-panel"
+        data-testid="studio-settings"
+      >
         <StudioSettingsLayout
           value={managerTab}
           initialDetail={!!restoreAccountActionFocus.current}

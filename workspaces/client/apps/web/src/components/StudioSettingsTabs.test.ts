@@ -13,11 +13,10 @@ const render = (initialDetail?: boolean) =>
         value: "accounts",
         onChange: () => {},
         initialDetail,
-        children: createElement(
-          Tabs.Panel,
-          { value: "accounts" },
-          "Saved accounts",
-        ),
+        children: createElement(Tabs.Panel, {
+          value: "accounts",
+          children: "Saved accounts",
+        }),
       }),
     ),
   );
