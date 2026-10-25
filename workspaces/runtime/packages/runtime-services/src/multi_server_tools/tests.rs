@@ -184,10 +184,7 @@ async fn seeded_store_with_identity(
                 "INSERT INTO runtime_server_links(id,record) VALUES(?1,?2)",
                 rusqlite::params![LINK, link.to_string()],
             )?;
-            tx.execute(
-                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
-                rusqlite::params![project, project_record.to_string()],
-            )?;
+            ProjectsRepository::put_project(tx, &project_record)?;
             tx.execute(
                 "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
                 rusqlite::params![PEER, peer.to_string()],

@@ -90,7 +90,7 @@ pub struct WorktreePlan {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum WorkspaceRefusal {
-    #[error("This legacy workspace is finished")]
+    #[error("{}", crate::legacy_image_workspace::FINISHED_MESSAGE)]
     ImageWorkspaceUnsupported,
     #[error("VmWorkspaceUnsupported")]
     VmWorkspaceUnsupported,

@@ -60,6 +60,8 @@ import { menuActions, renameCommand, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
+import { useProjectDelete } from "./useProjectDelete";
+import { ProjectDeleteDialog } from "./components/ProjectDeleteDialog";
 import {
   beginConversationDelete,
   claimConversationDeletePost,
@@ -645,6 +647,9 @@ export default function App({ active = true }: { active?: boolean }) {
     null,
   );
   const conversationDeleteLock = useRef(false);
+  const [projectDeleteScope, setProjectDeleteScope] = useState<
+    ReadonlySet<string>
+  >(new Set());
   const startedConversationDeletes = useRef(
     new WeakSet<PendingConversationDelete>(),
   );
@@ -680,15 +685,22 @@ export default function App({ active = true }: { active?: boolean }) {
     [data?.runtime?.events],
   );
   const prefetchData = useMemo(() => {
-    if (!data || !pendingConversationDelete?.scope.size) return data;
+    if (
+      !data ||
+      (!pendingConversationDelete?.scope.size && !projectDeleteScope.size)
+    )
+      return data;
     return {
       ...data,
       threads: withoutAgentDeleteScope(
         data.threads,
-        pendingConversationDelete.scope,
+        new Set([
+          ...(pendingConversationDelete?.scope || []),
+          ...projectDeleteScope,
+        ]),
       ),
     };
-  }, [data, pendingConversationDelete]);
+  }, [data, pendingConversationDelete, projectDeleteScope]);
   const prepareChat = useChatPrefetch(
     prefetchData,
     opened,
@@ -872,7 +884,10 @@ export default function App({ active = true }: { active?: boolean }) {
   const leads = catalog.leads;
   const agent = catalog.byId.get(opened || "");
   useSubscription(
-    active && agent && !(mobileClient && sidebar)
+    active &&
+      agent &&
+      !projectDeleteScope.has(agent.id) &&
+      !(mobileClient && sidebar)
       ? { kind: "agentDetail", agentId: agent.id }
       : null,
   );
@@ -899,6 +914,7 @@ export default function App({ active = true }: { active?: boolean }) {
     Boolean(
       workers.length &&
       !team.some((member) => pendingConversationDelete?.scope.has(member.id)) &&
+      !team.some((member) => projectDeleteScope.has(member.id)) &&
       (narrowTeam ? teamOpen : wideTeamOpen),
     ),
   );
@@ -982,8 +998,10 @@ export default function App({ active = true }: { active?: boolean }) {
     (!cachedLimits || (matchingSnapshot.at || 0) > (cachedLimits.at || 0))
       ? matchingSnapshot
       : cachedLimits || null;
-  const chatData = useChatSnapshot(data, lead?.id);
-  const scopedConversationData = useChatSnapshot(data, lead?.id, true);
+  const readableLeadId =
+    lead?.id && !projectDeleteScope.has(lead.id) ? lead.id : undefined;
+  const chatData = useChatSnapshot(data, readableLeadId);
+  const scopedConversationData = useChatSnapshot(data, readableLeadId, true);
   // The conversation reads a narrow projection, so a worker's progress does not
   // render it; its wait state arrives through a source that filters unchanged waits.
   const conversationSnapshot =
@@ -1021,7 +1039,23 @@ export default function App({ active = true }: { active?: boolean }) {
     },
     [forgetCreated, setDrafts],
   );
+  const projectDeletion = useProjectDelete({
+    data,
+    workspaceId,
+    services: sidebarServices,
+    onSuspend: (scope) => {
+      prepareChat.suspend(scope);
+      setProjectDeleteScope(scope);
+    },
+    onResume: (scope) => {
+      prepareChat.resume(scope);
+      setProjectDeleteScope(new Set());
+    },
+    onFinish: finishConversationDelete,
+    notify,
+  });
   const open = useCommittedCallback((id: string, messageId?: string) => {
+    if (projectDeleteScope.has(id)) return;
     prepareChat(id);
     navigationIntent.current++;
     setJumpTarget(
@@ -1038,6 +1072,7 @@ export default function App({ active = true }: { active?: boolean }) {
     if (!data) return;
     if (
       agent?.sharedRoomId &&
+      !projectDeleteScope.has(agent.sharedRoomId) &&
       data.runtime?.rooms.some(
         (room) => room.id === agent.sharedRoomId && !room.userHidden,
       )
@@ -1058,6 +1093,7 @@ export default function App({ active = true }: { active?: boolean }) {
       const selected = saved<string | null>(key, null);
       if (
         selected &&
+        !projectDeleteScope.has(selected) &&
         (data.threads.some((item) => item.id === selected) ||
           data.runtime?.rooms.some((item) => item.id === selected) ||
           data.chats.some((item) => item.id === selected))
@@ -1083,16 +1119,21 @@ export default function App({ active = true }: { active?: boolean }) {
     }
     if (!opened || (!agent && !room && !legacy))
       setOpened(
-        mostRecentActivity(leads)?.id ||
+        mostRecentActivity(
+          leads.filter((lead) => !projectDeleteScope.has(lead.id)),
+        )?.id ||
           mostRecentActivity(
             data.runtime?.rooms.filter(
-              (room) => room.radio?.direct && !room.userHidden,
+              (room) =>
+                room.radio?.direct &&
+                !room.userHidden &&
+                !projectDeleteScope.has(room.id),
             ) || [],
           )?.id ||
           null,
       );
     else save(key, opened);
-  }, [data, opened, agent, room, legacy, mobileClient]);
+  }, [data, opened, agent, room, legacy, mobileClient, projectDeleteScope]);
   useEffect(() => {
     const onError = (event: Event) => {
       if (activeScreen.current) notify((event as CustomEvent<string>).detail);
@@ -2272,6 +2313,8 @@ export default function App({ active = true }: { active?: boolean }) {
         if (agent) folders(agent);
       } else if (command.action === "project-account")
         openSidebarProjectAccount(command.path);
+      else if (command.action === "delete-project")
+        projectDeletion.open(command.projectId);
       else if (command.action === "new-shared-chat") {
         setSidebar(false);
         setSharedCreate({ path: command.path });
@@ -2408,6 +2451,7 @@ export default function App({ active = true }: { active?: boolean }) {
           addProject={openAddProject}
           changeProject={folders}
           projectFolders={(path) => openProjectFolders(path)}
+          deleteProject={projectDeletion.open}
           projectAccount={openSidebarProjectAccount}
           creating={creating}
           refresh={refresh}
@@ -2908,7 +2952,11 @@ export default function App({ active = true }: { active?: boolean }) {
             )}
           </div>
           <UIErrorBoundary label="this conversation" resetKey={opened}>
-            {opened && pendingConversationDelete?.scope.has(opened) ? (
+            {opened && projectDeleteScope.has(opened) ? (
+              <div className="chat-empty-state" role="status">
+                Project deletion in progress or unconfirmed.
+              </div>
+            ) : opened && pendingConversationDelete?.scope.has(opened) ? (
               <div className="chat-empty-state" role="status">
                 {pendingConversationDelete.phase === "submitting"
                   ? "Deleting chat…"
@@ -3609,6 +3657,7 @@ export default function App({ active = true }: { active?: boolean }) {
         selectedAccount={selectedAccount}
         setClaudeLoginKey={setClaudeLoginKey}
       />
+      <ProjectDeleteDialog {...projectDeletion.dialog} />
       <Modal
         opened={!!modal}
         padding={

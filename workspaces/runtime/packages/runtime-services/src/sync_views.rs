@@ -577,6 +577,9 @@ fn active_agent<'a>(context: &'a RoomViewContext, id: &str) -> Option<&'a Value>
 
 /// Build the viewer-independent renderer view for one persisted room.
 pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Value> {
+    if studio_runtime_store::ProjectsRepository::room_retired(record) {
+        return None;
+    }
     let kind = record.get("kind").and_then(Value::as_str)?;
     let mut view = record.as_object()?.clone();
     view.insert(

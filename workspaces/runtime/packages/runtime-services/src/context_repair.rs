@@ -995,7 +995,7 @@ pub async fn repair_idle(
         assert_available(&agent)?;
         if agent["executionMode"] == "vm"
         {
-            const NOTE: &str = "Automatic context repair is skipped for Linux workers. The rollout stays in the guest. The next turn can proceed.";
+            const NOTE: &str = "Automatic context repair is skipped for VM workers. The rollout stays in the guest. The next turn can proceed.";
             if agent.get("contextRepairNote").and_then(Value::as_str) != Some(NOTE) {
                 agent["contextRepairNote"] = json!(NOTE);
                 ContextRepairRepository::put_agent(db, &agent)?;
@@ -1181,7 +1181,7 @@ async fn repair_idle_with_broker_inner(
         assert_available(&agent)?;
         if agent["executionMode"] == "vm"
         {
-            const NOTE: &str = "Automatic context repair is skipped for Linux workers. The rollout stays in the guest. The next turn can proceed.";
+            const NOTE: &str = "Automatic context repair is skipped for VM workers. The rollout stays in the guest. The next turn can proceed.";
             agent["contextRepairNote"] = json!(NOTE);
             ContextRepairRepository::put_agent(tx, &agent)?;
             return Ok((agent, Vec::new(), Vec::new(), Vec::new(), None, String::new()));

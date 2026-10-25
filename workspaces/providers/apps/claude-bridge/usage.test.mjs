@@ -1,6 +1,11 @@
 // @ts-check
 import { expect, test } from "vitest";
-import { ResponseUsage, cumulativeUsage, modelTokens } from "./usage.mjs";
+import {
+  ResponseUsage,
+  cumulativeUsage,
+  modelTokens,
+  responseTokens,
+} from "./usage.mjs";
 import { events, modelUsage } from "./usage-fixtures.mjs";
 /** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKPartialAssistantMessage} StreamMessage */
 /** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKResultMessage} ResultMessage */
@@ -33,6 +38,7 @@ test("message deltas replace input, cache and output categories; stop finalizes 
         uncachedInput: 12,
         cacheReadInput: 32,
         cacheWriteInput: 42,
+        cacheWriteInput1h: 0,
         output: 720,
         reasoningOutput: 20,
       },
@@ -227,4 +233,36 @@ test("a pricing alias with conflicting candidate windows remains unknown", () =>
     if (event.type === "message_stop")
       expect(observations[0]).not.toHaveProperty("modelContextWindow");
   }
+});
+
+test("one-hour writes are clamped against final stream write totals", () => {
+  const start = events.find((e) => e.type === "message_start");
+  const delta = events.find((e) => e.type === "message_delta");
+  if (!start || !delta) throw new Error("missing SDK fixtures");
+  const initial = {
+    ...start.message.usage,
+    cache_creation: {
+      ephemeral_1h_input_tokens: 99,
+      ephemeral_5m_input_tokens: 0,
+    },
+  };
+  expect(responseTokens(initial)).toMatchObject({ cacheWriteInput1h: 40 });
+  const usage = new ResponseUsage();
+  usage.observe(
+    frame({ ...start, message: { ...start.message, usage: initial } }),
+    "turn",
+  );
+  usage.observe(
+    frame({
+      ...delta,
+      usage: { ...delta.usage, cache_creation_input_tokens: 6 },
+    }),
+    "turn",
+  );
+  expect(
+    usage.observe(frame({ type: "message_stop" }), "turn")[0],
+  ).toMatchObject({ tokens: { cacheWriteInput: 6, cacheWriteInput1h: 6 } });
+  expect(responseTokens({ ...initial, cache_creation: null })).toMatchObject({
+    cacheWriteInput1h: 0,
+  });
 });

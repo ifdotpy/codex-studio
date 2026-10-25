@@ -498,6 +498,7 @@ struct ClaudeUsage {
     input: Option<u64>,
     cached: Option<u64>,
     write: Option<u64>,
+    write_1h: Option<u64>,
     output: Option<u64>,
 }
 
@@ -600,6 +601,12 @@ where
                     input: value("input_tokens"),
                     cached: value("cache_read_input_tokens"),
                     write: value("cache_creation_input_tokens"),
+                    write_1h: value("cache_creation_input_tokens").map(|write| {
+                        usage["cache_creation"]["ephemeral_1h_input_tokens"]
+                            .as_u64()
+                            .unwrap_or(0)
+                            .min(write)
+                    }),
                     // An absent output count marks pricing as incomplete;
                     // it cannot prove zero output usage.
                     output: usage.get("output_tokens").and_then(Value::as_u64),
@@ -638,6 +645,7 @@ where
             input_tokens: row.input.map(|tokens| tokens as f64),
             cached_input_tokens: row.cached.map(|tokens| tokens as f64),
             cache_write_input_tokens: row.write.map(|tokens| tokens as f64),
+            cache_write_input_1h_tokens: row.write_1h.map(|tokens| tokens as f64),
             output_tokens: row.output.map(|tokens| tokens as f64),
         };
         let context = row
@@ -872,6 +880,7 @@ where
             input_tokens: Some(tokens.uncached_input as f64),
             cached_input_tokens: Some(tokens.cache_read_input as f64),
             cache_write_input_tokens: Some(tokens.cache_write_input as f64),
+            cache_write_input_1h_tokens: tokens.cache_write_input_1h.map(|n| n as f64),
             output_tokens: Some(tokens.output as f64),
         };
         let cost = catalog
@@ -1686,6 +1695,30 @@ mod tests {
         assert_eq!(cached["stale"], false);
         assert_eq!(cached["refreshing"], false);
         assert_eq!(cached["data"]["todayUSD"], 0.3);
+    }
+
+    #[test]
+    fn cache_write_1h_account_scan_prices_native_split() {
+        let directory = tempfile::tempdir().expect("profile");
+        let logs = directory.path().join("projects/sample");
+        std::fs::create_dir_all(&logs).expect("projects");
+        let now = chrono::DateTime::from_timestamp(1_700_049_600, 0).expect("time");
+        let row = json!({"type":"assistant","timestamp":now.to_rfc3339(),"message":{"id":"r","model":"claude-test","usage":{
+            "input_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":10,"cache_creation":{"ephemeral_1h_input_tokens":99},"output_tokens":4}}});
+        std::fs::write(logs.join("thread.jsonl"), format!("{row}\n{row}\n")).expect("journal");
+        let catalog = crate::pricing::PricingCatalog::from_value(&json!({"providers":{
+            "openai":{"models":{"gpt":{"cost":{"input":1,"output":1}}}},
+            "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2,"cache_read":0.5,"cache_write":1.25}}}}
+        }})).expect("catalog");
+        let result = super::scan_claude_sessions_with_catalog(
+            directory.path(),
+            now.timestamp() as f64,
+            &AtomicBool::new(false),
+            || Some(catalog),
+        )
+        .expect("scan");
+        assert_eq!(result["todayUSD"], 31.5 / 1_000_000.0);
+        assert_eq!(result["last30DaysUSD"], 31.5 / 1_000_000.0);
     }
 
     #[test]

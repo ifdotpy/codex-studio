@@ -197,6 +197,8 @@ describe("complete multi-server sidebar projection", () => {
         agentId: "same",
         agentName: "Local",
         reason: "Delivery uncertain",
+        count: 1,
+        firstAt: 100,
         at: 100,
         detail: "",
         subject: "",

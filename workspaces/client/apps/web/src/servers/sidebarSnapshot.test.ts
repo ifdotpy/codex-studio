@@ -325,6 +325,8 @@ describe("server sidebar projection", () => {
       agentId: "worker",
       agentName: "Worker",
       reason: "Connection ended",
+      count: 1,
+      firstAt: 100,
       at: 100,
       detail: "",
       subject: "",

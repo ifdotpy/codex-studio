@@ -126,3 +126,16 @@ it("tracks actual transport loss and recovery independently of transcript freshn
   expect(h.writes).toHaveLength(updates);
   expect(h.get).not.toHaveBeenCalled();
 });
+
+it("keeps an intentionally paused stream separate from a lost connection", () => {
+  useMessages("chat", "agent", true, "workspace", "workspace");
+  runEffects();
+  h.connection?.("live");
+  h.connection?.("paused");
+  expect(h.writes.at(-1)).toBe("paused");
+  expect(h.writes).not.toContain("reconnecting");
+  h.connection?.("connecting");
+  h.connection?.("live");
+  expect(h.writes.at(-1)).toBe("live");
+  expect(h.get).not.toHaveBeenCalled();
+});

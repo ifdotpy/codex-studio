@@ -343,13 +343,6 @@ export function useSnapshot(
         });
       }
     };
-    const offline = () =>
-      dispatchProjectionStatus({
-        type: "startup-failed",
-        error: "Offline. Your chats and drafts are saved here.",
-      });
-    window.addEventListener("offline", offline);
-    if (navigator.onLine === false) offline();
     const restart = async () => {
       clearTimeout(retry);
       recovery = new ReadRecoveryBudget();
@@ -385,7 +378,6 @@ export function useSnapshot(
       credentialRetry.current = undefined;
       retryInitialization.current = undefined;
       stopConnection();
-      window.removeEventListener("offline", offline);
     };
   }, [refresh]);
   useEffect(
@@ -1040,8 +1032,8 @@ export function useMessages(
     // Only transport loss means that the chat is reconnecting.
     return watchResourceConnection((status) => {
       updateConnection(
-        status === "live"
-          ? "live"
+        status === "live" || status === "paused"
+          ? status
           : status === "degraded" || status === "offline"
             ? "reconnecting"
             : "",

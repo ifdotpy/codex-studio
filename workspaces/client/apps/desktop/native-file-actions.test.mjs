@@ -212,7 +212,7 @@ test("main and preload enforce safe native file action boundaries", async () => 
     metadata = { path: await fs.realpath(executable), name: "run.command" };
     await assert.rejects(
       invoke("fileAction", { action: "open", target }),
-      /Quick Look/,
+      /Preview/,
     );
     const openCount = calls.filter((row) => row[0] === "open").length;
     assert.equal(
@@ -224,7 +224,7 @@ test("main and preload enforce safe native file action boundaries", async () => 
     metadata = { path: await fs.realpath(output), name: "report.txt" };
     await assert.rejects(
       invoke("fileAction", { action: "open", target }),
-      /Quick Look/,
+      /Preview/,
     );
     await fs.chmod(output, 0o600);
     let resume;

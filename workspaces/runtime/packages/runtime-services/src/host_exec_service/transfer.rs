@@ -220,7 +220,7 @@ impl HostService {
         )?;
         let skipped = |reason: &str| Ok(json!({"path": cache, "primed": false, "reason": reason}));
         if protocol::under(cache, &mac_only) {
-            return skipped("Mac-only path");
+            return skipped("Host-only path");
         }
         if protocol::is_symlink(&target)
             || (target.exists() && !Self::bare(&target, cache, &mac_only))
@@ -228,13 +228,13 @@ impl HostService {
             return skipped("the slot has the folder");
         }
         let Some(folder) = self.project_folder(text(op, "projectId")) else {
-            return skipped("no project folder on this Mac");
+            return skipped("no project folder on this host");
         };
         let Ok(origin) = protocol::inside(&folder, Some(&protocol::text_value(cache)), true) else {
-            return skipped("the Mac path crosses a symbolic link");
+            return skipped("the host path crosses a symbolic link");
         };
         if !origin.is_dir() {
-            return skipped("the project folder on this Mac has no such folder");
+            return skipped("the project folder on this host has no such folder");
         }
         let temporary = slot.join("prime");
         let cloned = {
@@ -357,7 +357,7 @@ impl HostService {
         let name = protocol::relative(name)?;
         require(
             !protocol::under(&name, &Self::mac_only(op)),
-            "The path stays on the Mac (macOnly)",
+            "The path stays on the host (macOnly)",
             INVALID,
         )?;
         let path = protocol::inside(
@@ -367,10 +367,10 @@ impl HostService {
         )?;
         let skipped = |reason: &str| Ok(json!({"cloned": false, "reason": reason}));
         let Some(folder) = self.project_folder(text(op, "projectId")) else {
-            return skipped("no project folder on this Mac");
+            return skipped("no project folder on this host");
         };
         let Ok(origin) = protocol::inside(&folder, Some(&protocol::text_value(&name)), true) else {
-            return skipped("the Mac path crosses a symbolic link");
+            return skipped("the host path crosses a symbolic link");
         };
         let Ok(info) = fs::symlink_metadata(&origin) else {
             return skipped("the project folder has no such file");
@@ -463,7 +463,7 @@ impl HostService {
             let name = protocol::relative(item.get("path"))?;
             require(
                 !protocol::under(&name, mac_only),
-                "The path stays on the Mac (macOnly)",
+                "The path stays on the host (macOnly)",
                 INVALID,
             )?;
             let path = protocol::inside(
@@ -562,7 +562,7 @@ impl HostService {
         let name = protocol::relative(name)?;
         require(
             !protocol::under(&name, &Self::mac_only(op)),
-            "The path stays on the Mac (macOnly)",
+            "The path stays on the host (macOnly)",
             INVALID,
         )?;
         let entry = entry
@@ -696,7 +696,7 @@ impl HostService {
         let name = protocol::relative(params.get("path"))?;
         require(
             !protocol::under(&name, mac_only),
-            "The path stays on the Mac (macOnly)",
+            "The path stays on the host (macOnly)",
             INVALID,
         )?;
         let entry_file = self

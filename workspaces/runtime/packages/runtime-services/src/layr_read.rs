@@ -134,9 +134,9 @@ fn error_text(error: &GuestError) -> String {
                 .flatten()
                 .collect::<Vec<_>>()
                 .join(": ");
-            format!("Linux guest layr.exec: {text}")
+            format!("VM guest layr.exec: {text}")
         }
-        error => format!("Linux guest layr.exec failed: {error}"),
+        error => format!("VM guest layr.exec failed: {error}"),
     }
 }
 

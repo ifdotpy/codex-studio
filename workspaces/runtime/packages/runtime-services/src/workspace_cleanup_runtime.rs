@@ -16,6 +16,19 @@ use thiserror::Error;
 #[path = "workspace_cleanup_submodules.rs"]
 mod submodules;
 
+/// Archive metadata retained for cleanup after final deletion revokes restoration.
+pub(crate) const DELETED_ARCHIVE_FIELD: &str = "deletedArchive";
+fn cleanup_archive(agent: &Value) -> Option<&Value> {
+    agent
+        .get("agentArchive")
+        .filter(|value| value.is_object())
+        .or_else(|| {
+            agent
+                .get(DELETED_ARCHIVE_FIELD)
+                .filter(|value| value.is_object())
+        })
+}
+
 const INTENT_FIELD: &str = "workspaceCleanupIntent";
 const GUEST_TIMEOUT: Duration = Duration::from_secs(3_600);
 
@@ -122,12 +135,7 @@ pub async fn cleanup_agent_workspace_with_ports(
     if agent.get("deletedAt").is_none() {
         return Err(WorkspaceCleanupError::InvalidRecord);
     }
-    if action == CleanupAction::Archive
-        && agent
-            .get("agentArchive")
-            .and_then(Value::as_object)
-            .is_none()
-    {
+    if action == CleanupAction::Archive && cleanup_archive(&agent).is_none() {
         return Err(WorkspaceCleanupError::InvalidRecord);
     }
     let effects = plan(&agent, action, store.state_dir())?;
@@ -487,7 +495,7 @@ pub(crate) fn check_archive_worktree(
 
 /// Describe stale worktrees through the cleanup owner's exact path checks.
 /// A clean Git tree alone does not authorize removal of the worker.
-pub(crate) fn maintenance_worktree(agent: &Value) -> Option<Value> {
+pub(crate) fn maintenance_worktree(agent: &Value, state_dir: &std::path::Path) -> Option<Value> {
     if agent["worktreeReady"] != true {
         return None;
     }
@@ -516,7 +524,7 @@ pub(crate) fn maintenance_worktree(agent: &Value) -> Option<Value> {
         "worktree folder missing"
     } else if metadata.is_err() {
         "The worktree folder state is unavailable"
-    } else if check_archive_worktree(agent).is_ok() {
+    } else if check_archive_worktree(agent, state_dir).is_ok() {
         "The Git worktree is clean. Inspect the worker before removal"
     } else {
         "The worktree is changed or unverified. Preserve its files for inspection"
@@ -792,8 +800,8 @@ fn lifecycle_identity(agent: &Value) -> Value {
         "epoch":agent.get("epoch"),
         "cwd":agent.get("cwd"),
         "deletedAt":agent.get("deletedAt"),
-        "archiveAt":agent.pointer("/agentArchive/at"),
-        "archiveEpoch":agent.pointer("/agentArchive/epoch")
+        "archiveAt":cleanup_archive(agent).and_then(|archive|archive.get("at")),
+        "archiveEpoch":cleanup_archive(agent).and_then(|archive|archive.get("epoch"))
     })
 }
 
@@ -2544,7 +2552,7 @@ mod tests {
     async fn linked_project_cleanup_retries_a_proven_unsent_archive_without_user_input() {
         let f = linked_project_fixture().await;
         let expected = agent(&f.store);
-        let effect = super::plan(&expected, CleanupAction::Archive)
+        let effect = super::plan(&expected, CleanupAction::Archive, f.store.state_dir())
             .expect("archive plan")
             .remove(0);
         let (request, _) = begin_effect(

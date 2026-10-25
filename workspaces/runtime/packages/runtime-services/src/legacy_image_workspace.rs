@@ -3,6 +3,30 @@
 use serde_json::{Value, json};
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
 
+/// Refusal for an executor removed from this build.
+pub const FINISHED_MESSAGE: &str = "This legacy workspace is finished";
+
+/// The legacy store path is excluded from source archives. This does not open a workspace.
+pub(crate) fn store_dir() -> std::path::PathBuf {
+    std::env::var_os("CODEX_WORKSPACE_STORE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            studio_runtime_store::resolve_state_dir()
+                .map(|path| path.into_path_buf())
+                .ok()
+                .or_else(|| {
+                    std::env::var_os("CODEX_AGENTS_STATE_DIR").map(std::path::PathBuf::from)
+                })
+                .unwrap_or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_default()
+                        .join(".local/state/codex-agents")
+                })
+                .join("workspaces")
+        })
+}
+
 pub fn is_legacy(record: &Value) -> bool {
     record["workspaceMode"] == "image" || record["imageWorkspace"] == true
 }

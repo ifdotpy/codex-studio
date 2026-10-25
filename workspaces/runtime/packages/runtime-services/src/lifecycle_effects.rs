@@ -1058,6 +1058,9 @@ fn release_work(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), Ma
             .and_then(Iterator::collect::<Result<Vec<_>, _>>)
             .map_err(studio_runtime_store::StoreError::from)?;
     }
+    if let Some(scope) = effect.owner_scope() {
+        owners.retain(|owner| scope.contains(owner));
+    }
     let mut candidates = Vec::new();
     for owner in owners {
         let Some(agent) = AgentRepository::get(tx, &AgentId::from(owner.as_str()))? else {

@@ -1,5 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createResourceEvents } from "./resourceEvents";
+import {
+  resourceCoordinationNames,
+  RESOURCE_COORDINATION_VERSION,
+} from "./resourceConnection";
 import { createSubscriptionStore } from "./subscriptions/store";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
@@ -11,7 +15,6 @@ vi.mock("../usage/tokenRate", () => ({
   receiveResourceTokenRates: vi.fn(),
   getWorkspaceTokenRates: vi.fn(() => ({ records: [] })),
 }));
-vi.mock("./resume", () => ({ onResume: () => () => {} }));
 
 vi.mock("./entityTransfer", async (original) => {
   const module = await original<typeof import("./entityTransfer")>();
@@ -67,17 +70,23 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function fixture(follower = false, session = true, peerOwner = false) {
+async function fixture(
+  follower = false,
+  session = true,
+  peerOwner = false,
+  baseline = true,
+) {
   vi.useFakeTimers();
-  vi.stubGlobal("window", {
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  });
-  vi.stubGlobal("document", {
-    hidden: false,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  });
+  const browser = new EventTarget();
+  const page = Object.assign(new EventTarget(), { hidden: false });
+  vi.spyOn(browser, "addEventListener");
+  vi.spyOn(browser, "removeEventListener");
+  vi.spyOn(page, "addEventListener");
+  vi.spyOn(page, "removeEventListener");
+  vi.stubGlobal("window", browser);
+  vi.stubGlobal("document", page);
+  const lockNames: string[] = [];
+  const channelNames: string[] = [];
   let acquire: ((lock: Lock | null) => Promise<void>) | undefined;
   vi.stubGlobal("navigator", {
     onLine: true,
@@ -89,6 +98,7 @@ async function fixture(follower = false, session = true, peerOwner = false) {
               _options: unknown,
               callback: (lock: Lock | null) => Promise<void>,
             ) => {
+              lockNames.push(_name);
               acquire = callback;
               return callback(
                 peerOwner
@@ -108,7 +118,8 @@ async function fixture(follower = false, session = true, peerOwner = false) {
     follower || peerOwner
       ? class {
           onmessage: ((event: MessageEvent) => void) | null = null;
-          constructor() {
+          constructor(name: string) {
+            channelNames.push(name);
             deliverPeer = (event) => this.onmessage?.(event);
           }
           postMessage(message: unknown) {
@@ -118,6 +129,7 @@ async function fixture(follower = false, session = true, peerOwner = false) {
         }
       : undefined,
   );
+  let peerSequence = 0;
   const peer = (name: string, event: unknown) =>
     deliverPeer?.({
       data: {
@@ -125,6 +137,7 @@ async function fixture(follower = false, session = true, peerOwner = false) {
         tabId: "owner",
         apiSchemaHash: API_SCHEMA_HASH,
         kind: name === "token-rates" ? name : "resource-event",
+        health: health("live", 1, peerSequence++),
         event,
       },
     } as MessageEvent);
@@ -182,18 +195,21 @@ async function fixture(follower = false, session = true, peerOwner = false) {
   if (!follower && session)
     source.emit("session", { sessionId: "session-one" });
   if (!follower) source.emit("api-schema", { hash: API_SCHEMA_HASH });
-  source.emit("resources", {
-    protocol: SYNC_PROTOCOL_VERSION,
-    workspaceId: "workspace",
-    epoch: "epoch",
-    revision: 1,
-    reason: "initial",
-    resources: [state],
-    resourceVersions: [{ revision: 1 }],
-  });
+  if (baseline)
+    source.emit("resources", {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision: 1,
+      reason: "initial",
+      resources: [state],
+      resourceVersions: [{ revision: 1 }],
+    });
   await vi.advanceTimersByTimeAsync(25);
   return {
     transport,
+    lockNames,
+    channelNames,
     source,
     sources,
     urls,
@@ -1511,4 +1527,378 @@ it("relays legacy revision-only hints from an owner to a follower", async () => 
   follower.source.emit("resources", message.event);
   await vi.advanceTimersByTimeAsync(0);
   expect(accept).toHaveBeenCalledOnce();
+});
+
+function health(
+  status = "live",
+  generation = 1,
+  sequence = 1,
+  validatedAt = Date.now(),
+) {
+  return { status, generation, sequence, sentAt: Date.now(), validatedAt };
+}
+
+it("connection: fresh healthy owner proof recovers a quiet follower without reads", async () => {
+  const f = await fixture(true);
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  await vi.advanceTimersByTimeAsync(12_000);
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+  const reads = f.get.mock.calls.length;
+  for (let sequence = 1; sequence <= 20; sequence++) {
+    f.control("leader-heartbeat", { health: health("live", 1, sequence) });
+    expect(status.mock.lastCall?.[0]).toBe("live");
+    await vi.advanceTimersByTimeAsync(3_000);
+  }
+  expect(f.sources).toHaveLength(0);
+  expect(f.get).toHaveBeenCalledTimes(reads);
+});
+
+it("connection: peer liveness and degraded owner proof never heal a follower", async () => {
+  const f = await fixture(true);
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  await vi.advanceTimersByTimeAsync(12_000);
+  for (let sequence = 1; sequence <= 20; sequence++) {
+    f.control("leader-heartbeat", {});
+    f.control("leader-heartbeat", { health: health("degraded", 1, sequence) });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(status.mock.lastCall?.[0]).toBe("degraded");
+  }
+});
+
+it("connection: rejects replayed, expired, wrong workspace/schema and replaced-source health", async () => {
+  const f = await fixture(true);
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  const prior = health("live", 1, 1);
+  f.control("leader-heartbeat", { health: prior });
+  f.control("status", { status: "degraded", health: health("degraded", 2, 2) });
+  for (const fields of [
+    { health: prior },
+    { health: health("live", 1, 3) },
+    { health: health("live", 2, 2) },
+    { health: health("live", 2, 3, Date.now() - 45_001) },
+    { workspaceId: "elsewhere", health: health("live", 2, 4) },
+    { apiSchemaHash: "old-schema", health: health("live", 2, 5) },
+  ]) {
+    f.control("leader-heartbeat", fields);
+    expect(status.mock.lastCall?.[0]).toBe("degraded");
+  }
+  f.control("leader-heartbeat", { health: health("live", 2, 6) });
+  expect(status.mock.lastCall?.[0]).toBe("live");
+});
+
+it("connection: live status without current server proof cannot heal", async () => {
+  const f = await fixture(true);
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  await vi.advanceTimersByTimeAsync(12_000);
+  f.control("status", { status: "live" });
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+});
+
+it("connection: browser offline hint preserves a validated stream and online is not proof", async () => {
+  const f = await fixture();
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  Object.assign(navigator, { onLine: false });
+  window.dispatchEvent(new Event("offline"));
+  expect(f.source.closed).toBe(false);
+  expect(status.mock.lastCall?.[0]).toBe("live");
+  f.source.onerror?.();
+  expect(status.mock.lastCall?.[0]).toBe("offline");
+  Object.assign(navigator, { onLine: true });
+  window.dispatchEvent(new Event("online"));
+  await vi.advanceTimersByTimeAsync(60);
+  expect(f.sources).toHaveLength(2);
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+  f.sources[1]!.onopen?.();
+  f.sources[1]!.emit("api-schema", { hash: API_SCHEMA_HASH });
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+});
+
+it("connection: hidden pause is local and real resume events coalesce once", async () => {
+  const f = await fixture();
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  Object.assign(document, { hidden: true });
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(status.mock.lastCall?.[0]).toBe("paused");
+  expect(f.source.closed).toBe(true);
+  Object.assign(document, { hidden: false });
+  document.dispatchEvent(new Event("visibilitychange"));
+  window.dispatchEvent(new Event("online"));
+  window.dispatchEvent(new Event("pageshow"));
+  await vi.advanceTimersByTimeAsync(100);
+  expect(f.sources).toHaveLength(2);
+  expect(status.mock.lastCall?.[0]).toBe("connecting");
+});
+
+it("connection: hidden follower ignores live peer frames and visible follower recovers from paused owner", async () => {
+  const f = await fixture(true);
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  Object.assign(document, { hidden: true });
+  document.dispatchEvent(new Event("visibilitychange"));
+  f.control("leader-heartbeat", { health: health() });
+  expect(status.mock.lastCall?.[0]).toBe("paused");
+  Object.assign(document, { hidden: false });
+  document.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(60);
+  f.control("status", { status: "paused", health: health("paused", 1, 2) });
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+  f.control("leader-heartbeat", { health: health("live", 2, 3) });
+  expect(status.mock.lastCall?.[0]).toBe("live");
+});
+
+it("connection: real lifecycle removes every registered listener across disposal and restart", async () => {
+  const f = await fixture();
+  for (let cycle = 0; cycle < 2; cycle++) {
+    f.transport.dispose();
+    for (const target of [window, document]) {
+      const added = vi.mocked(target.addEventListener).mock.calls;
+      const removed = vi.mocked(target.removeEventListener).mock.calls;
+      expect(
+        added.every(([kind, fn]) =>
+          removed.some(([name, listener]) => name === kind && listener === fn),
+        ),
+      ).toBe(true);
+    }
+    if (cycle === 0) {
+      f.transport.watchResourceChanges({ kind: "state" }, vi.fn());
+      await vi.advanceTimersByTimeAsync(0);
+    }
+  }
+});
+
+it("connection: owner health snapshots retain server freshness and invalidate replacement source", async () => {
+  const f = await fixture(false, true, true);
+  await vi.advanceTimersByTimeAsync(3_000);
+  const first = [...f.posted]
+    .reverse()
+    .find((message) => message.kind === "leader-heartbeat");
+  expect(first.health).toMatchObject({
+    status: "live",
+    validatedAt: expect.any(Number),
+  });
+  await vi.advanceTimersByTimeAsync(3_000);
+  const quiet = [...f.posted]
+    .reverse()
+    .find((message) => message.kind === "leader-heartbeat");
+  expect(quiet.health.validatedAt).toBe(first.health.validatedAt);
+  expect(quiet.health.sequence).toBeGreaterThan(first.health.sequence);
+  f.source.onerror?.();
+  const failed = [...f.posted]
+    .reverse()
+    .find((message) => message.kind === "status");
+  expect(failed.health.status).toBe("degraded");
+  expect(failed.health.validatedAt).toBeUndefined();
+  expect(failed.health.generation).toBeGreaterThan(first.health.generation);
+});
+
+it("connection: first and late quiet followers recover only from fresh scoped owner proof", async () => {
+  const f = await fixture(true, true, false, false);
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  expect(status.mock.lastCall?.[0]).toBe("connecting");
+  f.control("leader-heartbeat", {});
+  f.control("status", { status: "live" });
+  expect(status.mock.lastCall?.[0]).toBe("connecting");
+  f.control("leader-heartbeat", { health: health() });
+  expect(status.mock.lastCall?.[0]).toBe("live");
+});
+
+it("connection: offline hint preserves fresh follower proof and plain heartbeats cannot extend it", async () => {
+  const f = await fixture(true);
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  Object.assign(navigator, { onLine: false });
+  window.dispatchEvent(new Event("offline"));
+  expect(status.mock.lastCall?.[0]).toBe("live");
+  Object.assign(navigator, { onLine: true });
+  for (let i = 0; i < 5; i++) {
+    f.control("leader-heartbeat", {});
+    await vi.advanceTimersByTimeAsync(3_000);
+  }
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+});
+
+it("connection: owner A B A can recover while prior ownership replay stays rejected", async () => {
+  const f = await fixture(true);
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  f.control("leader-heartbeat", { health: health("live", 1, 1) });
+  await vi.advanceTimersByTimeAsync(1);
+  f.control("leader-heartbeat", {
+    tabId: "owner-B",
+    health: health("degraded", 1, 1),
+  });
+  f.control("leader-heartbeat", { health: health("live", 1, 2) });
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+  f.control("leader-heartbeat", { health: health("live", 2, 3) });
+  expect(status.mock.lastCall?.[0]).toBe("live");
+});
+
+it("connection: degraded owner cached resource and token replay applies without healing", async () => {
+  const f = await fixture(true);
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  f.control("status", { status: "degraded", health: health("degraded", 2, 1) });
+  f.control("resource-event", {
+    health: health("degraded", 2, 2),
+    event: {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision: 1,
+      reason: "initial",
+      resources: [{ kind: "state" }],
+      resourceVersions: [{ revision: 1 }],
+    },
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+  f.control("token-rates", {
+    health: health("degraded", 2, 3),
+    event: {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision: 2,
+      snapshot: true,
+      removed: [],
+      records: [],
+    },
+  });
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+});
+
+it("connection: cancelling a pending server frame cannot publish live proof for replacement", async () => {
+  const f = await fixture(false, true, true);
+  let finish!: () => void;
+  f.persist.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "change",
+    resources: [{ kind: "state" }],
+    resourceVersions: [
+      {
+        revision: 2,
+        cursor: { workspaceId: "workspace", seq: 2 },
+        replyKind: "delta",
+      },
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  f.source.onerror?.();
+  finish();
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+  const failed = [...f.posted]
+    .reverse()
+    .find((message) => message.kind === "status");
+  expect(failed.health.validatedAt).toBeUndefined();
+});
+
+it("connection: actual lock and channel share the version and schema coordination scope", async () => {
+  const f = await fixture(false, true, true);
+  const names = resourceCoordinationNames(location.origin, "workspace");
+  expect(f.lockNames).toEqual([names.lock]);
+  expect(f.channelNames).toEqual([names.channel]);
+  for (const name of Object.values(names)) {
+    expect(name).toContain(
+      `${RESOURCE_COORDINATION_VERSION}:${API_SCHEMA_HASH}:${location.origin}:workspace`,
+    );
+  }
+  expect(resourceCoordinationNames(location.origin, "other")).not.toEqual(
+    names,
+  );
+  expect(
+    resourceCoordinationNames("http://other.test", "workspace"),
+  ).not.toEqual(names);
+});
+
+it("connection: validated progress keeps owner health fresh through a false offline hint", async () => {
+  const f = await fixture(false, true, true);
+  const resource = { kind: "vault-readiness", prefix: "vault" } as const;
+  f.transport.watchResourceChanges(resource, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 1 });
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  const follower = await fixture(true);
+  follower.transport.watchResourceChanges(resource, vi.fn());
+  const followerStatus = vi.fn();
+  follower.transport.watchResourceConnection(followerStatus);
+  for (let revision = 2; revision <= 4; revision++) {
+    await vi.advanceTimersByTimeAsync(20_000);
+    f.source.emit("resource-progress", {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision,
+      resource,
+      value: true,
+    });
+    const relay = [...f.posted]
+      .reverse()
+      .find((message) => message.kind === "resource-progress");
+    follower.control("resource-progress", relay);
+    expect(followerStatus.mock.lastCall?.[0]).toBe("live");
+  }
+  Object.assign(navigator, { onLine: false });
+  window.dispatchEvent(new Event("offline"));
+  expect(f.source.closed).toBe(false);
+  expect(status.mock.lastCall?.[0]).toBe("live");
+  const proof = [...f.posted]
+    .reverse()
+    .find((message) => message.kind === "resource-progress");
+  expect(proof.health.validatedAt).toBe(Date.now());
+});
+
+it("connection: foreign, stale and invalid progress cannot heal a replacement stream", async () => {
+  const f = await fixture(false, true, true);
+  const resource = { kind: "vault-readiness", prefix: "vault" } as const;
+  f.transport.watchResourceChanges(resource, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 1 });
+  const progress = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 10,
+    resource,
+    value: true,
+  };
+  f.source.emit("resource-progress", progress);
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  f.source.onerror?.();
+  await vi.advanceTimersByTimeAsync(1_000);
+  const replacement = f.sources[1]!;
+  replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
+  for (const fields of [
+    { workspaceId: "foreign" },
+    { epoch: "foreign" },
+    { revision: 9 },
+  ]) {
+    replacement.emit("resource-progress", { ...progress, ...fields });
+    expect(status.mock.lastCall?.[0]).toBe("degraded");
+  }
+  const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+  replacement.emit("resource-progress", { ...progress, value: "invalid" });
+  expect(replacement.closed).toBe(true);
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+  quiet.mockRestore();
 });

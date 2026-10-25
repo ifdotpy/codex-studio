@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Disjoint billable token categories; reasoning is already included in output.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UsageTokens {
     /// Base-rate input, excluding cache reads and writes; tokens.
@@ -16,11 +16,41 @@ pub struct UsageTokens {
     pub cache_read_input: u64,
     /// Input written to the prompt cache; tokens.
     pub cache_write_input: u64,
+    /// Subset of cache writes with a one-hour lifetime; tokens, absent for legacy pricing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_1h: Option<u64>,
     /// All generated output, including reasoning; tokens.
     pub output: u64,
     /// Known reasoning subset of output; tokens, absent when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_output: Option<u64>,
+}
+// Serde's remote derive reads the owner's fields; the wrapper enforces the cross-field subset.
+#[derive(Deserialize)]
+#[serde(remote = "UsageTokens", rename_all = "camelCase", deny_unknown_fields)]
+struct UsageTokensWire {
+    uncached_input: u64,
+    cache_read_input: u64,
+    cache_write_input: u64,
+    #[serde(default)]
+    cache_write_input_1h: Option<u64>,
+    output: u64,
+    #[serde(default)]
+    reasoning_output: Option<u64>,
+}
+impl<'de> Deserialize<'de> for UsageTokens {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let tokens = UsageTokensWire::deserialize(deserializer)?;
+        if tokens
+            .cache_write_input_1h
+            .is_some_and(|hour| hour > tokens.cache_write_input)
+        {
+            return Err(serde::de::Error::custom(
+                "cacheWriteInput1h exceeds cacheWriteInput",
+            ));
+        }
+        Ok(tokens)
+    }
 }
 impl UsageTokens {
     /// Total billable tokens, counting reasoning only once.
@@ -36,6 +66,7 @@ impl UsageTokens {
         self.uncached_input < previous.uncached_input
             || self.cache_read_input < previous.cache_read_input
             || self.cache_write_input < previous.cache_write_input
+            || matches!((self.cache_write_input_1h, previous.cache_write_input_1h), (Some(current), Some(old)) if current < old)
             || self.output < previous.output
             || matches!((self.reasoning_output, previous.reasoning_output), (Some(current), Some(old)) if current < old)
     }
@@ -259,6 +290,7 @@ impl CodexTokenUsageBreakdown {
             uncached_input: input - read - write,
             cache_read_input: read,
             cache_write_input: write,
+            cache_write_input_1h: None,
             output: positive(self.output_tokens)?,
             reasoning_output: Some(positive(self.reasoning_output_tokens)?),
         })
@@ -315,6 +347,7 @@ fn legacy_tokens(value: &Value, provider: UsageProvider) -> Result<UsageTokens, 
         uncached_input: input,
         cache_read_input: read,
         cache_write_input: write,
+        cache_write_input_1h: None,
         output: count(value, "outputTokens", false)?,
         reasoning_output: value
             .get("reasoningOutputTokens")
@@ -596,6 +629,21 @@ mod tests {
                 ..
             }
         ));
+    }
+    #[test]
+    fn cache_write_1h_contract_validates_subset_and_reset() {
+        let value = json!({"uncachedInput":1,"cacheReadInput":2,"cacheWriteInput":10,"cacheWriteInput1h":8,"output":3});
+        let tokens: UsageTokens = serde_json::from_value(value.clone()).expect("one-hour subset");
+        assert_eq!(tokens.total(), Some(16));
+        let mut decreased = value.clone();
+        decreased["cacheWriteInput1h"] = json!(7);
+        let decreased: UsageTokens = serde_json::from_value(decreased).expect("decreased split");
+        assert!(decreased.decreased_from(&tokens));
+        for invalid in [json!(11), json!(-1), json!(0.5)] {
+            let mut value = value.clone();
+            value["cacheWriteInput1h"] = invalid;
+            assert!(serde_json::from_value::<UsageTokens>(value).is_err());
+        }
     }
     #[test]
     fn studio_usage_rejects_unknown_fields_and_negative_or_fractional_tokens() {

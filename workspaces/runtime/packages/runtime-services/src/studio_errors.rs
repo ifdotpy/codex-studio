@@ -15,9 +15,10 @@ use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use studio_runtime_schema::shared_values::{
-    BACKEND_RESTARTED_TURN_ERROR, MONITOR_OWNER_STOPPED_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
-    PROVIDER_RESUME_UNKNOWN_ERROR, PROVIDER_START_NOT_SENT_ERROR,
-    PROVIDER_THREAD_START_UNKNOWN_ERROR, VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+    BACKEND_RESTARTED_TURN_ERROR, LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+    MONITOR_OWNER_STOPPED_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR, PROVIDER_RESUME_UNKNOWN_ERROR,
+    PROVIDER_START_NOT_SENT_ERROR, PROVIDER_THREAD_START_UNKNOWN_ERROR,
+    VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 };
 use studio_runtime_store::{EventWriteRepository, StoreError, StudioErrorSources, Transaction};
 
@@ -143,6 +144,7 @@ fn agent_kind(status: &str, error: &str) -> Option<Kind> {
         PROVIDER_DISCONNECTED_TURN_ERROR,
         BACKEND_RESTARTED_TURN_ERROR,
         VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+        LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
         PROVIDER_RESUME_UNKNOWN_ERROR,
         PROVIDER_THREAD_START_UNKNOWN_ERROR,
     ];
@@ -152,6 +154,7 @@ fn agent_kind(status: &str, error: &str) -> Option<Kind> {
     if matches!(status, "failed" | "interrupted" | "paused")
         && (error.starts_with("WorkspaceRecoveryRequired")
             || error.starts_with("workspace-readiness/")
+            || error.starts_with("The VM helper is unavailable")
             || error.starts_with("The Linux VM helper is unavailable"))
     {
         return Some(Kind::WorkspaceFailed);
@@ -909,6 +912,21 @@ mod tests {
                 "{error}"
             );
         }
+        for error in [
+            VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+            LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+        ] {
+            assert_eq!(
+                agent_kind("interrupted", error),
+                Some(Kind::TurnDisconnected)
+            );
+        }
+        for error in [
+            "The VM helper is unavailable",
+            "The Linux VM helper is unavailable",
+        ] {
+            assert_eq!(agent_kind("failed", error), Some(Kind::WorkspaceFailed));
+        }
         assert_eq!(agent_kind("paused", "Stopped by user"), None);
         assert_eq!(agent_kind("failed", "This content was flagged"), None);
     }
@@ -1042,8 +1060,9 @@ mod tests {
                     .iter()
                     .filter(|row| row["monitorId"].is_string())
                     .map(|row| {
-                        let id = row["id"].as_str().expect("id").to_owned();
+                        assert!(row["id"].as_str().expect("id").starts_with(MONITOR_GROUP_PREFIX));
                         let monitor = row["monitorId"].as_str().expect("monitor id").to_owned();
+                        let id = format!("monitor:{monitor}");
                         assert_eq!(row["subject"], format!("run {monitor}"));
                         assert_eq!(row["at"], now - 1.0);
                         (id, (row["kind"].as_str().expect("kind"), row["agentName"].as_str().expect("name")))

@@ -24,11 +24,11 @@ struct ProductionSources;
 
 impl Sources for ProductionSources {
     fn workspaces(&self) -> Result<Vec<Value>, String> {
-        crate::image_workspace::list_workspaces().map_err(|error| error.to_string())
+        Err(crate::legacy_image_workspace::FINISHED_MESSAGE.to_owned())
     }
 
-    fn base(&self, repo: &Path) -> Result<Value, String> {
-        crate::image_workspace::base_status(repo).map_err(|error| error.to_string())
+    fn base(&self, _repo: &Path) -> Result<Value, String> {
+        Err(crate::legacy_image_workspace::FINISHED_MESSAGE.to_owned())
     }
 
     #[cfg(unix)]
@@ -110,7 +110,8 @@ async fn report_with(
 fn collect(lead: &Value, team: &[Value], state_dir: &Path, sources: &dyn Sources) -> Value {
     let mut worktrees = Vec::new();
     for agent in team {
-        if let Some(row) = crate::workspace_cleanup_runtime::maintenance_worktree(agent) {
+        if let Some(row) = crate::workspace_cleanup_runtime::maintenance_worktree(agent, state_dir)
+        {
             worktrees.push(row);
         }
     }
@@ -127,11 +128,7 @@ fn collect(lead: &Value, team: &[Value], state_dir: &Path, sources: &dyn Sources
     if let Some(repo) = lead["imageWorkspaceBaseRepo"].as_str() {
         repos.insert(repo);
     }
-    if !repos.is_empty()
-        || team
-            .iter()
-            .any(crate::image_workspace::is_image_workspace_agent)
-    {
+    if !repos.is_empty() || team.iter().any(crate::legacy_image_workspace::is_legacy) {
         match sources.workspaces() {
             Ok(rows) => {
                 result["workspaces"] = json!(rows.iter().filter_map(|workspace| {

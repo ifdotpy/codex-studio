@@ -270,6 +270,10 @@ fn shared_values_ts() -> String {
                 "VM_PROVIDER_DISCONNECTED_TURN_ERROR",
                 values::VM_PROVIDER_DISCONNECTED_TURN_ERROR,
             ),
+            (
+                "LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR",
+                values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+            ),
             ("DISK_FULL_ERROR_PATTERN", values::DISK_FULL_ERROR_PATTERN),
         ],
     );
@@ -490,6 +494,11 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
     )?;
     crate::workspace_modes::check_openapi(openapi)?;
+    expect_number(
+        openapi,
+        "/components/schemas/ProjectDeleteRequest/properties/expected_project_seq/maximum",
+        values::MAX_SAFE_INTEGER,
+    )?;
     check_delivery_parity(openapi)?;
     let modes = serde_json::json!(crate::claude_permissions::PERMISSION_MODES);
     for path in [
@@ -980,6 +989,28 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
+    // Analytics embeds the same accounting owner with local schema references.
+    let usage_defs: serde_json::Value = serde_json::from_str(
+        &serde_json::to_string(&crate::usage::schemas())
+            .map_err(|error| error.to_string())?
+            .replace("#/components/schemas/", "#/$defs/"),
+    )
+    .map_err(|error| error.to_string())?;
+    for name in ["analytics-usage", "analytics-notice"] {
+        let path =
+            format!("workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json");
+        let mut schema = read_json(root, &path)?;
+        for (name, value) in usage_defs
+            .as_object()
+            .ok_or("usage definitions must be an object")?
+        {
+            schema["$defs"][name] = value.clone();
+        }
+        rendered.push(Rendered {
+            path,
+            text: serde_json::to_string_pretty(&schema).map_err(|error| error.to_string())? + "\n",
+        });
+    }
     let draft_schema = studio_client_domain::drafts::schema().to_value();
     rendered.push(Rendered {
         path: "workspaces/runtime/packages/runtime-http/draft-payload.schema.json".into(),

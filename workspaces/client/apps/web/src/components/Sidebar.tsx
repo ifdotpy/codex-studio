@@ -128,6 +128,7 @@ export type SidebarProps = {
   changeProject: (agent: Agent) => void;
   projectAccount: (path: string) => void;
   projectFolders?: (path: string) => void;
+  deleteProject?: (path: string) => void;
   creating: boolean;
   rename: (id: string, name: string) => Promise<void>;
   remove: (id: string, room: boolean) => void;
@@ -1619,24 +1620,13 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                       >
                         Project account
                       </Menu.Item>
-                      {group.registered && !group.hasChats && (
+                      {group.registered && p.deleteProject && (
                         <Menu.Item
+                          color="red"
                           disabled={!canEdit(projectTarget(group.path))}
-                          onClick={async () => {
-                            try {
-                              await services
-                                .owner({ kind: "project", path: group.path })
-                                .post("/api/projects", {
-                                  action: "remove",
-                                  path: group.path,
-                                });
-                              await p.refresh?.();
-                            } catch (error) {
-                              p.notify?.(errorText(error));
-                            }
-                          }}
+                          onClick={() => p.deleteProject?.(group.path)}
                         >
-                          Remove from sidebar
+                          Delete project…
                         </Menu.Item>
                       )}
                     </Menu.Dropdown>
@@ -1649,7 +1639,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                     ))}
                     {syncEntries.length > 0 && <Menu.Divider />}
                     {syncEntries.length > 0 && (
-                      <Menu.Label>Mac folder sync</Menu.Label>
+                      <Menu.Label>Folder sync</Menu.Label>
                     )}
                     {syncEntries.flatMap((entry) => {
                       const suffix = entry.server ? ` (${entry.server})` : "";
@@ -1682,7 +1672,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                               })
                             }
                           >
-                            {`Sync ${entry.sync.deletes} Mac deletions${suffix}`}
+                            {`Sync ${entry.sync.deletes} local deletions${suffix}`}
                           </Menu.Item>
                         ),
                         <Menu.Item
@@ -1732,7 +1722,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                               })
                             }
                           >
-                            {`Unlock on this Mac…${suffix}`}
+                            {`Unlock on this computer…${suffix}`}
                           </Menu.Item>
                         ),
                         actions(entry).includes("finder") && (
@@ -1740,7 +1730,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                             key={`${key}:finder`}
                             onClick={() => void revealPath(entry.vault.disk!)}
                           >
-                            {`Show in Finder${suffix}`}
+                            {`Show folder${suffix}`}
                           </Menu.Item>
                         ),
                         actions(entry).includes("pull") && (

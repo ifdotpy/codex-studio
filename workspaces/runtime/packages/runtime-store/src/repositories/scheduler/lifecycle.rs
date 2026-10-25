@@ -419,6 +419,7 @@ impl SchedulerRepository {
                         Some(
                             PROVIDER_DISCONNECTED_TURN_ERROR
                                 | VM_PROVIDER_DISCONNECTED_TURN_ERROR
+                                | LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR
                                 | BACKEND_RESTARTED_TURN_ERROR
                         )
                     )
@@ -2615,7 +2616,11 @@ pub(super) fn transport_continuation_allowed(agent: &AgentRecord) -> bool {
         && agent.extra.get("turnId").is_some_and(Value::is_string)
         && matches!(
             agent.extra.get("error").and_then(Value::as_str),
-            Some(PROVIDER_DISCONNECTED_TURN_ERROR | VM_PROVIDER_DISCONNECTED_TURN_ERROR)
+            Some(
+                PROVIDER_DISCONNECTED_TURN_ERROR
+                    | VM_PROVIDER_DISCONNECTED_TURN_ERROR
+                    | LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR
+            )
         )
         && !matches!(
             agent

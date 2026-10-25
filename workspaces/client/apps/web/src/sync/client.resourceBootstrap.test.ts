@@ -295,6 +295,7 @@ it("waits for the applied cold SSE baseline and publishes it without a speculati
     expect(f.snapshots.at(-1)?.threads[0]?.name).toBe("SSE baseline"),
   );
   expect(f.snapshots.at(-1)?.entitiesComplete).toBe(true);
+  expect(f.snapshots.at(-1)?.entityWorkspaceId).toBe(f.workspaceId);
   expect(f.dispatch).toHaveBeenCalledOnce();
   expect(f.pulls()).toEqual([]);
   expect(
@@ -743,11 +744,19 @@ it.each([
     stops.push(finish, store.dispose, transport.dispose);
     if (follower) {
       await vi.waitFor(() => expect(peer).toBeTypeOf("function"));
+      const validatedAt = Date.now();
       peer({
         kind: "resource-event",
         apiSchemaHash: API_SCHEMA_HASH,
         workspaceId: f.workspaceId,
         tabId: "owner",
+        health: {
+          status: "live",
+          generation: 1,
+          sequence: 1,
+          sentAt: validatedAt,
+          validatedAt,
+        },
         event: f.frame(5),
       });
     } else {

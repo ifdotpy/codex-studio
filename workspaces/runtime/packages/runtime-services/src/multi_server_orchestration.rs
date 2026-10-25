@@ -2433,6 +2433,26 @@ pub struct OrchestrationDriver {
 const MAX_OUTBOX_BATCH: usize = 32;
 pub(crate) const REMOTE_ANCHOR_INPUT_FIELD: &str = "anchor";
 
+fn check_project_reservation(
+    tx: &Transaction<'_>,
+    action: &str,
+    payload: &Value,
+    exact_legacy_reservation: bool,
+) -> Result<(), AccessError> {
+    if matches!(action, "add_location" | "remove_location") {
+        crate::project_locations::check_location_admission(tx, payload, exact_legacy_reservation)
+            .map_err(|error| match error {
+            crate::project_locations::LocationError::Store(error) => AccessError::from(error),
+            _ => refused(
+                409,
+                "project_location_changed",
+                "The project or caller changed before location reservation",
+            ),
+        })?;
+    }
+    Ok(())
+}
+
 /// Persist a peer-delivery intent in the caller's owning transaction. The
 /// caller sends it only after that transaction commits.
 pub fn enqueue_in_transaction(
@@ -2470,6 +2490,7 @@ pub fn enqueue_in_transaction(
         }
         return Ok(());
     }
+    check_project_reservation(transaction, action, payload, false)?;
     transaction.execute(
         "INSERT INTO runtime_server_outbox(id,server,body,state,created_at,next_at,fingerprint,attempts) VALUES(?1,?2,?3,'queued',?4,0,?5,0)",
         params![request_id, server, envelope.body, now, envelope.fingerprint],
@@ -2570,6 +2591,7 @@ impl OrchestrationDriver {
             let saved=outbox(tx,&envelope_for_claim.key,now)?;
             let decision=decide_delivery(saved.as_ref(),&envelope_for_claim.fingerprint,Some(&server_for_claim),true,&envelope_for_claim.action,now)?;
             if matches!(decision,DeliveryDecision::Execute) {
+                check_project_reservation(tx,&envelope_for_claim.action,&envelope_for_claim.value()["payload"],saved.is_some())?;
                 // An in-flight claim is not due: the pump replays a running peer
                 // operation only after its exchange deadline has passed.
                 tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint,attempts,next_at) VALUES(?1,?2,?3,'running',?4,?5,0,?6) ON CONFLICT(id) DO UPDATE SET state='running',next_at=?6",params![envelope_for_claim.key,server_for_claim,envelope_for_claim.body,now,envelope_for_claim.fingerprint,in_flight_until])?;

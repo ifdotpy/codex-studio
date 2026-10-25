@@ -198,15 +198,12 @@ async fn vm_notifications_commit_real_account_streams_and_preserve_scoped_acks()
 }
 
 fn delta(actor: &str, text: &str) -> Frame {
-    let mut bytes = serde_json::to_vec(&json!({"method":"item/agentMessage/delta","params":{
-        "threadId":format!("thread-{actor}"),"turnId":"turn","itemId":"answer","delta":text}}))
-    .expect("notification JSON");
-    bytes.push(b'\n');
-    studio_runtime_providers::LineDecoder::new()
-        .push(&bytes)
-        .expect("notification frame")
-        .pop()
-        .expect("one frame")
+    let payload = json!({"method":"item/agentMessage/delta","params":{
+        "threadId":format!("thread-{actor}"),"turnId":"turn","itemId":"answer","delta":text}});
+    match studio_runtime_providers::decode_journal_value(0, 0, &payload).payload {
+        studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame,
+        other => panic!("invalid notification: {other:?}"),
+    }
 }
 
 fn running(tx: &rusqlite::Transaction<'_>, actor: &str, native: bool) -> Result<(), StoreError> {

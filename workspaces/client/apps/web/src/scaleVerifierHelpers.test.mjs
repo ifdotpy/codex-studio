@@ -1,3 +1,7 @@
+import {
+  auditTeamDiagnostics,
+  pendingTeamInputs,
+} from "../scripts/uiTeamScaleAudit.mjs";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
@@ -1624,6 +1628,35 @@ describe("scale verifier retained-input audit", () => {
         canvas
           .prepare("INSERT INTO runtime_events VALUES (?,?,?,?,?)")
           .run(...row, "secret message text");
+      // A busy foreign team displaces the own retained input from the bounded
+      // SSE projection. The authoritative runtime row must remain visible.
+      canvas.exec(
+        "CREATE TABLE sync_entities(id TEXT PRIMARY KEY,collection TEXT,status TEXT)",
+      );
+      for (let index = 0; index < 250; index += 1) {
+        canvas
+          .prepare("INSERT INTO runtime_events VALUES (?,?,?,?,?)")
+          .run(
+            `new-${index}`,
+            "foreign-agent",
+            "user",
+            "delivered",
+            "secret foreign text",
+          );
+        if (index >= 50)
+          canvas
+            .prepare("INSERT INTO sync_entities VALUES (?,?,?)")
+            .run(`new-${index}`, "event", "delivered");
+      }
+      expect(
+        canvas.prepare("SELECT count(*) AS count FROM sync_entities").get()
+          .count,
+      ).toBe(200);
+      expect(
+        canvas
+          .prepare("SELECT id FROM sync_entities WHERE id='child:worker:1'")
+          .get(),
+      ).toBeUndefined();
     } finally {
       canvas.close();
     }
@@ -1653,6 +1686,29 @@ describe("scale verifier retained-input audit", () => {
       },
     ]);
     expect(JSON.stringify(rows)).not.toContain("secret message text");
+    const pending = pendingTeamInputs(rows, ["lead", "worker"]);
+    const gauges = {
+      "/queues/durableInputPending": 13,
+      "/queues/recoveryPending": 0,
+    };
+    // Another chat drained one input while this team's retained input stayed.
+    const audit = auditTeamDiagnostics({
+      before: gauges,
+      after: { ...gauges, "/queues/durableInputPending": 12 },
+      stateDir: directory,
+      workspaceId: "workspace",
+      agentIds: ["lead", "worker"],
+      deadlineAt: performance.now() + 5000,
+    });
+    expect(audit.failures).toContainEqual({
+      kind: "teamInputsPending",
+      count: 1,
+      inputs: pending,
+    });
+    expect(audit.teamInputAudit.pending).toEqual(pending);
+    expect(pending).toEqual([
+      { id: "child:worker:1", agent: "lead", status: "pending" },
+    ]);
     expect(() =>
       readRetainedInputRows(
         directory,

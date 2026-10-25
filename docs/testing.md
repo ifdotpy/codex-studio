@@ -470,7 +470,14 @@ composite actions. Heavy and load checks remain outside hosted CI.
 backend through headless Chromium: it creates a lead chat in the dialog, types one
 prompt, and measures agent visibility, UI responsiveness, API latency, SQLite lock
 counters and process load while the team runs. It deletes the chat and its agents
-afterward and checks that no provider or tool process leaked (`--keep` skips this).
+afterward and checks that no agent or identifiable provider/tool process owned by
+the run remains (`--keep` skips this). Loaded-thread totals remain evidence only:
+the diagnostics API exposes counts, not the identities needed to attribute a
+loaded thread to this run on a shared server. Agent summaries and scoped details
+arrive through the current SSE resource contract. Multipart entity transfers stay
+staged until every page is continuous and the complete marker arrives; incomplete
+required transfers make the audit inconclusive and fail the run. Cleanup reports
+agents and owned processes separately from the unverified owned-thread boundary.
 It is a manual, announced live run, outside every test tier. A small run:
 `PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright node
 workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs --workers 3`; `--help`
@@ -490,11 +497,24 @@ Before the cleanup, a strict audit (`scripts/uiTeamScaleAudit.mjs`) reads the
 lead and worker transcripts, the lead's tool requests, the backend journal of the
 run window (`journalctl --user --unit codex-studio`, `--journal-unit` changes it)
 and diagnostics counters. The run fails on a failed or interrupted turn, a worker
-with more than one turn or an error, a `child_result` delivered twice or never,
+with unexplained extra turns or an error, a `child_result` delivered twice or never,
 any input delivered twice, a tool call or request without a result, a tool request
 applied while the model was told it failed, a lead final report made before the
 last worker reply, a backend restart, an `ERROR` or panic journal line, a growing
-error counter or a non-empty input queue. Everything else suspicious (failed lead
+error counter, or pending durable inputs on the run's own lead or workers.
+Shared-server input/recovery gauges are evidence only: the summary reports their
+baseline, end and delta, without attributing other chats' work to this team. The scoped input audit reads
+a fenced, read-only snapshot of every retained `runtime_events` row through
+`readRetainedInputRows` in
+[`verify-rust-chat-scale.mjs`](../workspaces/client/apps/web/scripts/verify-rust-chat-scale.mjs).
+The bounded event SSE window is not authoritative for pending-input absence.
+The audit uses the status projection owned by
+[`scaleVerifierHelpers.mjs`](../workspaces/client/apps/web/scripts/scaleVerifierHelpers.mjs).
+Baseline and final global gauges remain in the evidence. A worker's extra turn
+triggered by a unique `agent_message` from the run's lead is attributed to the
+lead and reported as an anomaly with the message text; repeated input identities
+still fail. An empty journal grep result is a clean journal, not a read failure.
+Everything else suspicious (failed lead
 tool calls, placeholder answers, repeated final reports, long lead input waits,
 start-order inversions, provider retries, other journal warnings) is listed under
 `anomalies` in `summary.txt` and `evidence.json`.
