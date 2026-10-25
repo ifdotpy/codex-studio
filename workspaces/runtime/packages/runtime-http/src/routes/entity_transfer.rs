@@ -391,6 +391,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restored_ownership_replaces_the_old_scope_and_delivers_the_new_scope() {
+        let (_directory, state) = fixture().await;
+        let store = state.store.as_ref().unwrap();
+        store.transaction(|tx| { SyncDocumentsRepository::put_entity(tx,"task","restored",json!({"id":"restored","agent":"alpha","kind":"command","status":"running","created":1}),false)?; Ok(()) }).await.unwrap();
+        let alpha: ResourceRef =
+            serde_json::from_value(json!({"kind":"tasks","agentId":"alpha"})).unwrap();
+        let beta: ResourceRef =
+            serde_json::from_value(json!({"kind":"tasks","agentId":"beta"})).unwrap();
+        let (_, _, baseline) = prepare(&state, &event(&state), alpha.clone(), None)
+            .await
+            .unwrap();
+        store.transaction(|tx| {
+            SyncDocumentsRepository::put_entity(tx,"task","restored",json!({}),true)?;
+            SyncDocumentsRepository::put_entity(tx,"task","restored",json!({"id":"restored","agent":"beta","kind":"command","status":"running","created":1}),false)?;
+            Ok(())
+        }).await.unwrap();
+        let (old, _, _) = prepare(&state, &event(&state), alpha, Some(baseline.clone()))
+            .await
+            .unwrap();
+        let old = serde_json::to_value(old.unwrap()).unwrap();
+        assert_eq!(old["replyKind"], "snapshot");
+        assert!(
+            old["entityChanges"]["documents"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let (new, _, _) = prepare(&state, &event(&state), beta, Some(baseline))
+            .await
+            .unwrap();
+        let new = serde_json::to_value(new.unwrap()).unwrap();
+        assert_eq!(
+            new["entityChanges"]["documents"][0]["value"]["agent"],
+            "beta"
+        );
+    }
+
+    #[tokio::test]
     async fn snapshot_continuation_below_tombstone_floor_makes_bounded_progress() {
         let (_directory, state) = fixture().await;
         let store = state.store.as_ref().expect("store");
