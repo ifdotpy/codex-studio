@@ -4146,7 +4146,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_stream_falls_back_for_oversize_pruned_or_unreadable_intervals() {
-        for scenario in ["documents", "bytes", "pruned", "payload"] {
+        for scenario in ["documents", "bytes", "pruned", "payload", "envelope"] {
             let root = tempfile::tempdir().expect("isolated state");
             let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
             let hub = Arc::new(ChangeNotificationHub::new());
@@ -4165,11 +4165,32 @@ mod tests {
                 if scenario == "pruned" {
                     tx.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor','1')", [])?;
                 }
-                if scenario == "payload" {
-                    tx.execute("UPDATE sync_entities SET payload='broken'", [])?;
+                if scenario == "payload" || scenario == "envelope" {
+                    // Movement triggers reject a malformed agentSummary UPDATE.
+                    // Model an already corrupt/imported non-membership record
+                    // instead, with all production triggers still installed.
+                    tx.execute("UPDATE sync_generation SET value=value+1 WHERE id=1", [])?;
+                    let payload=if scenario=="payload" {"broken"} else {"{}"};
+                    tx.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) SELECT 'workspace','corrupt-import',value,'corrupt-fixture',?1,0 FROM sync_generation WHERE id=1", [payload])?;
                 }
                 Ok(())
             }).await.expect("interval");
+            if scenario == "payload" || scenario == "envelope" {
+                store.test_read_transaction(|tx| {
+                    let collections:Vec<String>=serde_json::from_str(studio_runtime_schema::sync_protocol::global_entity_collections_json()).expect("global collection owner");
+                    assert!(collections.iter().any(|collection|collection=="workspace"));
+                    let rows=SyncDocumentsRepository::entities_after(tx,0,SYNC_ENTITY_STREAM_MAX_DOCUMENTS)?;
+                    let corrupt=rows.iter().find(|row|row.collection=="workspace" && row.id=="corrupt-import").expect("stored corruption in the selected collection and sequence interval");
+                    assert!(corrupt.sequence>0 && corrupt.sequence<=SyncDocumentsRepository::entity_sequence(tx)?);
+                    assert_eq!(corrupt.payload.as_deref(),Some(if scenario=="payload" {"broken"} else {"{}"}));
+                    assert!(crate::routes::sync_documents::entity_document(corrupt).is_none(),"canonical decoder rejects the corrupt record");
+                    if scenario=="envelope" {
+                        let page=SyncDocumentsRepository::resume_entity_scope(tx,Some(0),Some(studio_runtime_schema::sync_protocol::global_entity_collections_json()),None,None,true,SYNC_ENTITY_STREAM_MAX_DOCUMENTS)?;
+                        assert!(page.rows.iter().any(|row|row.id=="corrupt-import"),"valid JSON reaches the decoder through the actual scoped reader");
+                    }
+                    Ok(())
+                }).expect("selected corruption witness");
+            }
             hub.notify_one();
             let (event, _) = next_frame(state).await.expect("revision fallback");
             let event = event_document(event).await;
