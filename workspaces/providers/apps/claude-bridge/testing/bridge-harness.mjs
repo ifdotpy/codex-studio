@@ -94,17 +94,22 @@ export async function startBridge(
     root,
     notes,
     async advanceTime(ms) {
+      if (child.exitCode !== null) return;
       const controller = new AbortController();
       const timer = setTimeout(
         () => controller.abort(new Error("virtual clock hung")),
         HANG_GUARD_MS,
       );
       try {
-        const advanced = once(child, "message", { signal: controller.signal });
+        const advanced = Promise.race([
+          once(child, "message", { signal: controller.signal }),
+          once(child, "exit", { signal: controller.signal }),
+        ]);
         child.send({ advance: ms });
         await advanced;
       } finally {
         clearTimeout(timer);
+        controller.abort();
       }
     },
     async advanceUntil(predicate) {
@@ -176,9 +181,13 @@ export async function startBridge(
       await bridge.call("thread/resume", { threadId: bridge.thread });
     },
     async close() {
+      const exited =
+        child.exitCode === null ? once(child, "exit") : Promise.resolve();
       child.stdin.end();
-      if (child.exitCode === null)
-        await new Promise((resolve) => child.once("exit", resolve));
+      if (clock)
+        while (child.exitCode === null)
+          await bridge.advanceTime(VIRTUAL_STEP_MS);
+      await exited;
       await fs.rm(root, { recursive: true, force: true });
     },
   };

@@ -61,12 +61,45 @@ function mergeUsage(initial, delta) {
 export class ResponseUsage {
   /** @type {Map<StreamMessage['parent_tool_use_id'], {message: Message, turnId: string | undefined}>} */
   pending = new Map();
+  /** @type {Map<string, string>} */
+  parentTurns = new Map();
+  /** @type {Map<string, number>} */
+  modelWindows = new Map();
+  closed = false;
+
+  /** @param {string | undefined} [model] @param {number | undefined} [window] */
+  constructor(model, window) {
+    if (model !== undefined && window !== undefined && window > 0)
+      this.modelWindows.set(model, window);
+  }
+
+  /** @param {string | null | undefined} parent @param {string | undefined} turnId */
+  turnFor(parent, turnId) {
+    return parent == null ? turnId : (this.parentTurns.get(parent) ?? turnId);
+  }
+
+  /** @param {string} toolId @param {string | undefined} turnId */
+  registerTool(toolId, turnId) {
+    if (turnId !== undefined && !this.parentTurns.has(toolId))
+      this.parentTurns.set(toolId, turnId);
+  }
+
+  /** @param {ResultMessage['modelUsage']} models */
+  recordModels(models) {
+    for (const [model, usage] of Object.entries(models ?? {})) {
+      if (usage.contextWindow > 0) {
+        this.modelWindows.set(model, usage.contextWindow);
+        if (usage.canonicalModel)
+          this.modelWindows.set(usage.canonicalModel, usage.contextWindow);
+      }
+    }
+  }
 
   /** @param {StreamMessage} frame @param {string | undefined} turnId
-   * @param {number | undefined} [modelContextWindow]
    * @returns {UsageObservation[]}
    */
-  observe(frame, turnId, modelContextWindow) {
+  observe(frame, turnId) {
+    if (this.closed) return [];
     const parent = frame.parent_tool_use_id ?? null;
     const event = frame.event;
     /** @type {UsageObservation[]} */
@@ -74,9 +107,10 @@ export class ResponseUsage {
     if (event.type === "message_start") {
       const previous = this.pending.get(parent);
       if (previous) observations.push(this.gap(previous, "streamInterrupted"));
+      if (parent !== null) this.registerTool(parent, turnId);
       this.pending.set(parent, {
         message: structuredClone(event.message),
-        turnId,
+        turnId: this.turnFor(parent, turnId),
       });
     } else {
       const current = this.pending.get(parent);
@@ -85,6 +119,7 @@ export class ResponseUsage {
         current.message.usage = mergeUsage(current.message.usage, event.usage);
       if (event.type === "message_stop") {
         this.pending.delete(parent);
+        const modelContextWindow = this.modelWindows.get(current.message.model);
         observations.push({
           kind: "response",
           responseId: current.message.id,
@@ -119,6 +154,7 @@ export class ResponseUsage {
    * @returns {UsageObservation[]}
    */
   finish(reason, turnId) {
+    if (reason === "queryClosed") this.closed = true;
     /** @type {UsageObservation[]} */
     const observations = [];
     for (const [parent, current] of this.pending) {
