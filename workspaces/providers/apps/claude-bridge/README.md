@@ -62,8 +62,11 @@ metadata and conversation APIs, and the SDK's typed transcript-store import.
 The import preserves hidden service parts that the conversation API omits;
 each part keeps its original SDK UUID and prompt framing. A pinned complete
 file read guards against the SDK silently skipping malformed or unknown rows.
-The [record schemas](history-records.mjs) validate supported record types, system
-subtypes, auxiliary payloads and content blocks before an absence proof.
+The [record schemas](history-records.mjs) strictly validate input-bearing prompt,
+queue-operation and queued-command payloads, including every known queue field.
+Assistant/system/progress/summary records, tool-result-only user messages and
+non-input attachments receive basic identity checks; their evolving payloads do
+not change input presence. Unknown top-level record types remain unknown.
 Missing sessions, unsupported structures, torn or changed files, broken ancestry,
 and files outside the [reader's coverage](native-history.mjs) remain unknown.
 Only complete authoritative absence permits redelivery. Each snapshot builds
@@ -106,7 +109,9 @@ reset IDs are never used for resume. Checkpoints from the previous session are
 invalidated. Restart verifies an unresolved target against the SDK history before
 resuming it. A missing or unproven target stays visibly unknown and blocks native
 input/history operations; the old session is never silently resumed. A proven
-unread input releases its guard without submitting it. There is no query-lifetime
+unread or cancelled input releases its matching guard without submitting it,
+including finalization, Stop, rejected steer saves and saved-receipt recovery.
+An unrelated receipt cannot release another input's guard. There is no query-lifetime
 guard: an unclean ordinary restart still uses the last confirmed session. If an
 unsolicited transition crashes before its hook reaches Studio, that last
 persisted session remains the fallback; the new session has not continued work
@@ -121,6 +126,9 @@ SDK/CLI witness. It uses disposable configuration below the user's cache and a
 local HTTP provider fixture, verifies both composite orders through fork,
 rollback and recovery, and proves clear/resume with three distinct identities.
 It makes no real model request and prints its retained evidence directory.
+`node testing/cli-history-compatibility-witness.mjs` also checks a local 503 retry
+and a real ToolSearch session with tool references and deferred-tool attachments;
+both must retain exact input coverage through recovery, fork and rollback.
 
 The pinned SDK exposes hidden-part provenance only through the alpha
 `importSessionToStore` API. The ordinary non-alpha conversation API filters it

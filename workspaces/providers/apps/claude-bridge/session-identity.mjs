@@ -5,7 +5,7 @@ import { nativeUuid } from "./native-history.mjs";
 
 /** @typedef {"init" | import("@anthropic-ai/claude-agent-sdk").SessionStartHookInput["source"]} TransitionSource */
 /** @typedef {{from: string, target?: string, source: TransitionSource | "input", status: "pending" | "unknown", inputId?: string}} PendingTransition */
-/** @typedef {{ id: string, nativeId?: string, cwd: string, nativeHistoryCwd?: string, started?: boolean, pendingNativeSession?: PendingTransition, nativeSessionTransitionError?: string, nativeSessionTransitions?: {from: string, to: string, source: string}[], turns: {nativeSessionId?: string, fileCheckpointMessageId?: string, fileCheckpointSource?: unknown, nativeHistoryDetached?: boolean}[] }} NativeSession */
+/** @typedef {{ id: string, nativeId?: string, cwd: string, nativeHistoryCwd?: string, started?: boolean, pendingNativeSession?: PendingTransition, nativeSessionTransitionError?: string, nativeSessionTransitions?: {from: string, to: string, source: string}[], turns: {id?: string, clientUserMessageId?: string, startOutcome?: string, items?: {id?: string, deliveryStatus?: string}[], nativeSessionId?: string, fileCheckpointMessageId?: string, fileCheckpointSource?: unknown, nativeHistoryDetached?: boolean}[] }} NativeSession */
 /** @typedef {{nativeSessionId?: string, nativeHistoryDetached?: boolean}} NativeTurn */
 
 /** Persisted native identity comes only from init or the typed SessionStart hook.
@@ -62,6 +62,11 @@ export function guardNativeSessionInput(session, groups, inputId) {
         ),
     )
   ) {
+    if (
+      session.pendingNativeSession?.source === "input" &&
+      session.pendingNativeSession.inputId !== inputId
+    )
+      throw new Error("Another Claude native session transition is pending");
     session.pendingNativeSession = {
       from: session.nativeId || session.id,
       source: "input",
@@ -76,25 +81,25 @@ export function guardNativeSessionInput(session, groups, inputId) {
  */
 export function cancelNativeSessionInput(session, inputId) {
   const pending = session.pendingNativeSession;
-  if (
-    pending &&
-    !pending.target &&
-    (pending.source === "init" || pending.inputId === inputId)
-  ) {
+  if (pending && !pending.target && pending.inputId === inputId) {
     delete session.pendingNativeSession;
     delete session.nativeSessionTransitionError;
+    return true;
   }
+  return false;
 }
 
 /** Guard the native process initialization before spawning it.
  * @param {NativeSession} session
  * @param {(session: NativeSession) => Promise<unknown>} persist
+ * @param {string} [inputId]
  */
-export async function guardNativeSessionStart(session, persist) {
+export async function guardNativeSessionStart(session, persist, inputId) {
   session.pendingNativeSession ||= {
     from: session.nativeId || session.id,
     source: "init",
     status: "pending",
+    ...(inputId ? { inputId } : {}),
   };
   await persist(session);
 }
@@ -167,6 +172,24 @@ export async function persistNativeSession(
 export async function reconcileNativeSession(session, options) {
   const pending = session.pendingNativeSession;
   if (!pending) return false;
+  // Receipt persistence can precede guard cleanup during a crash. A saved
+  // definitive withdrawal is enough to retire that exact pre-input intent.
+  if (
+    !pending.target &&
+    typeof pending.inputId === "string" &&
+    session.turns.some(
+      (turn) =>
+        (turn.startOutcome === "not_applied" &&
+          (turn.clientUserMessageId || turn.id) === pending.inputId) ||
+        turn.items?.some(
+          (item) =>
+            item.id === pending.inputId &&
+            ["not_applied", "cancelled"].includes(item.deliveryStatus || ""),
+        ),
+    )
+  ) {
+    if (cancelNativeSessionInput(session, pending.inputId)) return true;
+  }
   const valid =
     nativeUuid(pending.from) &&
     pending.from === (session.nativeId || session.id) &&

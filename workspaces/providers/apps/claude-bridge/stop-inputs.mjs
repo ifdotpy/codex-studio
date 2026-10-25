@@ -1,3 +1,4 @@
+import { cancelNativeSessionInput } from "./session-identity.mjs";
 // SDK 0.3.285 implements interrupt({cancelQueued:true}) in sdk.mjs, although
 // sdk.d.ts still declares interrupt() without arguments. The CLI receipt uses
 // native UUIDs; Studio settles only its original input identities.
@@ -53,6 +54,7 @@ export async function interruptInputQueue(session, active, beforeInterrupt) {
     if (uuids.every((uuid) => cancelled.has(uuid) && !survivors.has(uuid))) {
       receipt.cancelled.push(identity);
       markCancelled(identity, item);
+      cancelNativeSessionInput(session, identity);
     } else if (
       uuids.some((uuid) => cancelled.has(uuid) || survivors.has(uuid)) ||
       (!native && item.deliveryStatus === "submitted")

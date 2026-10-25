@@ -1,6 +1,6 @@
 // @ts-check
 import * as sdk from "@anthropic-ai/claude-agent-sdk";
-import { supportedHistoryRecord } from "./history-records.mjs";
+import { historyRecordKind } from "./history-records.mjs";
 import { isDeepStrictEqual } from "node:util";
 import {
   readNativeHistory,
@@ -10,8 +10,18 @@ import {
 
 /** One UUID lookup for a complete history snapshot, shared by controls and recovery.
  * @param {sdk.SessionMessage[]} messages
+ * @param {Set<string>} [inputIds]
+ * @param {Set<string>} [uncertainIds]
  */
-export function messageIndex(messages) {
+export function messageIndex(
+  messages,
+  inputIds = new Set(
+    messages
+      .filter((message) => message.type === "user")
+      .map((message) => message.uuid),
+  ),
+  uncertainIds = new Set(),
+) {
   /** @type {Map<string, number>} */
   const positions = new Map();
   for (const [position, message] of messages.entries())
@@ -38,18 +48,16 @@ export function messageIndex(messages) {
         new Set(ids).size !== ids.length ||
         new Set(anchors).size !== anchors.length ||
         !this.positions(anchors) ||
-        !this.positions(anchors)?.every(
-          (position) => messages[position]?.type === "user",
+        !this.positions(anchors)?.every((position) =>
+          inputIds.has(messages[position]?.uuid ?? ""),
         )
       )
         return "unknown";
       const found = this.positions(ids);
-      if (
-        found &&
-        found.every((position) => messages[position]?.type === "user")
-      )
-        return "delivered";
-      return ids.every((id) => !positions.has(id)) ? "not_applied" : "unknown";
+      if (found && ids.every((id) => inputIds.has(id))) return "delivered";
+      return ids.every((id) => !inputIds.has(id) && !uncertainIds.has(id))
+        ? "not_applied"
+        : "unknown";
     },
   };
 }
@@ -59,13 +67,17 @@ export function messageIndex(messages) {
 // The raw reader is only an integrity guard: SDK parsers silently discard bad
 // records. A stable, complete, strictly recognized file is required before any
 // absence or branch can be trusted. Unknown CLI formats fail closed.
-const CHAIN_TYPES = new Set(["user", "assistant", "attachment", "system"]);
 /** @param {sdk.SessionStoreEntry[]} rows @param {string} sessionId @param {string} cwd */
 function verifiedChain(rows, sessionId, cwd) {
   /** @type {sdk.SessionStoreEntry[]} */
   const chain = [];
   const seen = new Set();
-  let previous = null;
+  /** @type {Map<string, string | null>} */
+  const nearestInput = new Map();
+  /** @type {string | null} */
+  let previousInput = null;
+  const inputIds = new Set();
+  const uncertainIds = new Set();
   for (const row of rows) {
     if (
       !row ||
@@ -74,66 +86,61 @@ function verifiedChain(rows, sessionId, cwd) {
       typeof row.type !== "string"
     )
       return null;
-    if (!supportedHistoryRecord(row)) return null;
+    const kind = historyRecordKind(row);
+    if (!kind) return null;
     if (row.uuid !== undefined) {
       if (!nativeUuid(row.uuid) || seen.has(row.uuid)) return null;
       seen.add(row.uuid);
     }
-    if (
-      row.isCompactSummary ||
-      row.type === "summary" ||
-      row.subtype === "compact_boundary"
-    )
-      return null;
-    if (row.isSidechain === true) continue;
-    if (!CHAIN_TYPES.has(row.type)) continue;
+    if (kind === "queue") {
+      if (row.sessionId !== sessionId) return null;
+      if (nativeUuid(row.commandUuid)) uncertainIds.add(row.commandUuid);
+      continue;
+    }
+    if (row.isSidechain === true || kind === "metadata") continue;
     if (
       !nativeUuid(row.uuid) ||
       row.sessionId !== sessionId ||
       row.cwd !== cwd ||
-      row.isSidechain !== false ||
-      row.parentUuid !== previous
+      row.isSidechain !== false
     )
       return null;
-    previous = row.uuid;
-    if (row.type === "user" || row.type === "assistant") {
-      const body = row.message;
-      if (
-        !body ||
-        typeof body !== "object" ||
-        Array.isArray(body) ||
-        !("role" in body) ||
-        body.role !== row.type ||
-        !("content" in body) ||
-        !(typeof body.content === "string" || Array.isArray(body.content))
-      )
-        return null;
-      chain.push(row);
-    }
     if (
-      row.type === "attachment" &&
-      row.attachment &&
-      typeof row.attachment === "object" &&
-      "type" in row.attachment &&
-      row.attachment.type === "queued_command"
-    ) {
-      if (
-        !("source_uuid" in row.attachment) ||
-        !nativeUuid(row.attachment.source_uuid)
-      )
-        return null;
-      // A queued attachment is positive evidence, even when the CLI absorbed its
-      // text. It is never guessed to be absent from the filtered SDK view.
+      row.parentUuid !== null &&
+      (typeof row.parentUuid !== "string" || !nearestInput.has(row.parentUuid))
+    )
+      return null;
+    const ancestor =
+      row.parentUuid === null
+        ? null
+        : (nearestInput.get(/** @type {string} */ (row.parentUuid)) ?? null);
+    // Inputs must belong to one proven conversation; output/progress may be
+    // siblings and carry evolving payloads without changing input coverage.
+    if (
+      kind === "input" &&
+      previousInput !== null &&
+      ancestor !== previousInput
+    )
+      return null;
+    nearestInput.set(row.uuid, kind === "input" ? row.uuid : ancestor);
+    if (kind === "input") previousInput = row.uuid;
+    if (row.type === "user" || row.type === "assistant") {
+      chain.push(row);
+      if (kind === "input") inputIds.add(row.uuid);
+    }
+    if (row.type === "attachment" && kind === "input") {
+      const attachment = /** @type {{source_uuid: string}} */ (row.attachment);
+      inputIds.add(attachment.source_uuid);
       chain.push({
         ...row,
         queuedProvenance: true,
         type: "user",
-        uuid: /** @type {string} */ (row.attachment.source_uuid),
+        uuid: attachment.source_uuid,
         message: { role: "user", content: [] },
       });
     }
   }
-  return chain.length ? chain : null;
+  return chain.length ? Object.assign(chain, { inputIds, uncertainIds }) : null;
 }
 
 /** @typedef {{id: string, nativeId?: string, cwd: string, nativeHistoryCwd?: string}} HistorySession */
@@ -220,9 +227,9 @@ export async function readHistoryIndex(session, options = {}) {
       if (
         chain.some(
           (row) =>
+            chain.inputIds.has(/** @type {string} */ (row.uuid)) &&
             !row.isMeta &&
             !row.queuedProvenance &&
-            row.type !== "system" &&
             !visibleIds.has(/** @type {string} */ (row.uuid)),
         )
       )
@@ -240,6 +247,8 @@ export async function readHistoryIndex(session, options = {}) {
               parent_tool_use_id: null,
               parent_agent_id: null,
             })),
+            chain.inputIds,
+            chain.uncertainIds,
           ),
           { entries },
         ),
@@ -281,5 +290,7 @@ export function inputHistoryOutcome(rows, scope) {
       parent_tool_use_id: null,
       parent_agent_id: null,
     })),
+    chain.inputIds,
+    chain.uncertainIds,
   ).outcome(scope.inputIds, scope.anchorIds);
 }

@@ -92,7 +92,9 @@ for (const serviceFirst of [true, false])
           (n) => n.method === "turn/completed" && n.params.turn.id === turn.id,
         );
         expect(done.params.turn.unappliedSteers).toEqual(
-          damage === "absent" ? ["exact-input"] : undefined,
+          ["absent", "unknown system"].includes(damage)
+            ? ["exact-input"]
+            : undefined,
         );
         const thread = (
           await bridge.call("thread/read", {
@@ -107,11 +109,11 @@ for (const serviceFirst of [true, false])
         expect(item.deliveryStatus).toBe(
           damage === "all"
             ? "delivered"
-            : damage === "absent"
+            : ["absent", "unknown system"].includes(damage)
               ? "not_applied"
               : "submitted",
         );
-        if (!["all", "absent"].includes(damage))
+        if (!["all", "absent", "unknown system"].includes(damage))
           expect(item.error).toMatch(/unknown/);
       } finally {
         await bridge.close();

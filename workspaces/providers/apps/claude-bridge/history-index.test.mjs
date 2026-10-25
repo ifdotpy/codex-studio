@@ -207,7 +207,6 @@ test("post-clear controls use current native turns while preserving earlier mirr
 });
 
 for (const [kind, change] of [
-  ["unknown system subtype", { type: "system", subtype: "future-input" }],
   ["malformed auxiliary", { type: "queue-operation", operation: 42 }],
   [
     "malformed content block",
@@ -309,3 +308,82 @@ test("bridge sources have no absolute host import dependencies", async () => {
     );
   }
 });
+
+for (const [field, value] of [
+  ["content", 42],
+  ["commandUuid", "not-a-uuid"],
+  ["reason", []],
+  ["deliveryId", {}],
+])
+  test(`queue input payload rejects malformed ${field}`, async () => {
+    const f = await fixture();
+    const rows = [
+      ...f.rows,
+      {
+        type: "queue-operation",
+        operation: "enqueue",
+        timestamp: new Date().toISOString(),
+        sessionId: f.session.nativeId,
+        [field]: value,
+      },
+    ];
+    await fs.writeFile(f.file, rows.map(JSON.stringify).join("\n") + "\n");
+    const index = await readHistoryIndex(f.session);
+    expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
+      "unknown",
+    );
+  });
+
+for (const kind of ["system retry", "tool references", "non-input attachment"])
+  test(`non-input ${kind} preserves complete input coverage`, async () => {
+    const f = await fixture();
+    const extra = { ...f.rows[5], uuid: randomUUID(), parentUuid: f.ids[5] };
+    if (kind === "future system subtype")
+      Object.assign(extra, {
+        type: "system",
+        subtype: "future-output",
+        message: undefined,
+      });
+    if (kind === "system retry")
+      Object.assign(extra, {
+        type: "system",
+        subtype: "api_error",
+        source: "request_retry",
+        message: undefined,
+        error: { status: 503 },
+      });
+    if (kind === "tool references")
+      Object.assign(extra, {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "fixture",
+              content: [
+                { type: "tool_reference", tool_name: "mcp__fixture__echo" },
+              ],
+            },
+          ],
+        },
+      });
+    if (kind === "non-input attachment")
+      Object.assign(extra, {
+        type: "attachment",
+        message: undefined,
+        attachment: {
+          type: "deferred_tools_delta",
+          addedNames: ["mcp__fixture__echo"],
+        },
+      });
+    await fs.writeFile(
+      f.file,
+      [...f.rows, extra].map(JSON.stringify).join("\n") + "\n",
+    );
+    const index = await readHistoryIndex(f.session);
+    expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
+      "not_applied",
+    );
+    expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
+  });

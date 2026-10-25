@@ -1096,3 +1096,84 @@ test("bridge request and notification guards are disposed after settlement", asy
     vi.useRealTimers();
   }
 });
+
+for (const value of ["/clear", "ordinary steer"])
+  test.concurrent(`withdrawn ${value} releases its transition guard before restart`, async ({
+    startBridge,
+  }) => {
+    const bridge = await startBridge();
+    const turn = await running(bridge, "unread-result");
+    await steer(bridge, turn, "guard-steer", value);
+    await end(bridge);
+    const done = await completed(bridge, turn);
+    assert.deepEqual(done.params.turn.unappliedSteers, ["guard-steer"]);
+    await bridge.restart();
+    const next = await bridge.call("turn/start", {
+      threadId: bridge.thread,
+      input: text("after withdrawn steer"),
+    });
+    await read(bridge, "after withdrawn steer");
+    assert.equal(next.turn.status, "inProgress");
+  });
+
+for (const value of ["/clear", "ordinary steer"])
+  test.concurrent(`Stop cancels ${value} and restart remains available`, async ({
+    startBridge,
+  }) => {
+    const bridge = await startBridge();
+    const turn = await running(bridge, "unread-result");
+    await steer(bridge, turn, "cancel-guard-steer", value);
+    const receipt = await bridge.call("turn/interrupt", {
+      threadId: bridge.thread,
+      turnId: turn,
+    });
+    assert.ok(receipt.cancelled.includes("cancel-guard-steer"));
+    await completed(bridge, turn);
+    await bridge.restart();
+    await bridge.call("turn/start", {
+      threadId: bridge.thread,
+      input: text("after cancelled steer"),
+    });
+    await read(bridge, "after cancelled steer");
+  });
+
+test.concurrent("a rejected clear steer save releases its unsubmitted transition guard", async ({
+  startBridge,
+}) => {
+  const sdk = FAKE_SDK.replace(
+    "import fs from 'node:fs';",
+    String.raw`import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+const append=fsp.appendFile;
+fsp.appendFile=async(file,data,...args)=>{
+ const marker=process.cwd()+'/.reject-steer';
+ if(fs.existsSync(marker)&&String(file).includes('/sessions/')&&String(data).includes('rejected-guard-steer')){fs.rmSync(marker);throw new Error('steer save denied');}
+ return append(file,data,...args);
+};`,
+  ).replace(
+    "yield {type:'system',subtype:'init'};",
+    "yield {type:'system',subtype:'init'};mark(cwd+'/.steady-to-steer');",
+  );
+  const bridge = await startBridge({}, sdk);
+  const turn = await running(bridge, "unread-result");
+  // Resuming the generator after init proves its awaited save also settled
+  // earlier echo saves. The injected failure must belong to the steer write.
+  await bridge.note(
+    (note) =>
+      note.method === "fixture/signal" &&
+      note.params.name === path.join(bridge.root, ".steady-to-steer"),
+  );
+  await fs.writeFile(path.join(bridge.root, ".reject-steer"), "");
+  await assert.rejects(
+    steer(bridge, turn, "rejected-guard-steer", "/clear"),
+    /steer save denied/,
+  );
+  await end(bridge);
+  await completed(bridge, turn);
+  await bridge.restart();
+  await bridge.call("turn/start", {
+    threadId: bridge.thread,
+    input: text("after rejected steer"),
+  });
+  await read(bridge, "after rejected steer");
+});

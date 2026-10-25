@@ -1240,6 +1240,7 @@ async function finalizeTurn(s, active, turn, result, error, state) {
   const unappliedSteers = state.unappliedSteers;
   for (const item of turn.items) {
     if (item.delivery === "steer" && item.deliveryStatus === "cancelled") {
+      cancelNativeSessionInput(s, item.id);
       unappliedSteers.push(item.id);
       continue;
     }
@@ -1251,6 +1252,7 @@ async function finalizeTurn(s, active, turn, result, error, state) {
     if (queued < 0) continue;
     active.input.values.splice(queued, 1);
     item.deliveryStatus = "not_applied";
+    cancelNativeSessionInput(s, item.id);
     item.error = "Claude finished before reading this steer";
     unappliedSteers.push(item.id);
   }
@@ -1293,6 +1295,7 @@ async function reconcileClosedSteers(s, turn, unapplied) {
       turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
     } else if (outcome === "not_applied") {
       item.deliveryStatus = "not_applied";
+      cancelNativeSessionInput(s, item.id);
       item.error = "Claude stopped before reading this steer";
       unapplied.push(item.id);
     } else {
@@ -1454,7 +1457,11 @@ async function startSession(s, active, p) {
     const externalMcpServers = await movedExternalConfigs(s);
     const titleOptions = ephemeralSessionOptions(s);
     const mode = titleOptions.permissionMode || permissionMode(s, p);
-    await guardNativeSessionStart(s, persist);
+    await guardNativeSessionStart(
+      s,
+      persist,
+      initial?.clientUserMessageId || initial?.id,
+    );
     const q = query({
       prompt: prompt(),
       options: {
@@ -3019,6 +3026,7 @@ async function handle(method, p) {
       active.pendingSteers.delete(id);
       if (item) {
         item.deliveryStatus = "not_applied";
+        cancelNativeSessionInput(s, item.id);
         item.error = error.message;
         await persistLive(s);
       }

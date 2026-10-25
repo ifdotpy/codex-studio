@@ -248,3 +248,58 @@ test("another new-session source durably saves target and identity before hook r
   expect(snapshots[1].pendingNativeSession).toBeUndefined();
   expect(completedWrites).toBe(2);
 });
+
+for (const deliveryStatus of ["not_applied", "cancelled"])
+  for (const matches of [true, false])
+    test(`saved ${deliveryStatus} receipt retires only its matching transition guard: ${matches}`, async () => {
+      const { randomUUID } = await import("node:crypto");
+      const { createSessionStore } = await import("./session-store.mjs");
+      const { assertNativeSessionReady } =
+        await import("./session-identity.mjs");
+      const base = path.join(
+        os.homedir(),
+        ".cache/codex-studio/pivot1-v5-history",
+      );
+      await fs.mkdir(base, { recursive: true });
+      const root = await fs.mkdtemp(path.join(base, "saved-guard-"));
+      try {
+        const id = randomUUID();
+        const session = {
+          id,
+          cwd: root,
+          started: true,
+          pendingNativeSession: {
+            from: id,
+            source: "input",
+            status: "pending",
+            inputId: matches ? "clear-steer" : "other-steer",
+          },
+          turns: [
+            {
+              id: "turn",
+              status: "completed",
+              items: [
+                {
+                  id: "clear-steer",
+                  type: "userMessage",
+                  delivery: "steer",
+                  deliveryStatus,
+                },
+              ],
+            },
+          ],
+        };
+        await createSessionStore(root).persist(session);
+        const restored = await createSessionStore(root).get(id);
+        if (matches) {
+          expect(restored.pendingNativeSession).toBeUndefined();
+          expect(() => assertNativeSessionReady(restored)).not.toThrow();
+          expect(
+            (await createSessionStore(root).get(id)).pendingNativeSession,
+          ).toBeUndefined();
+        } else
+          expect(() => assertNativeSessionReady(restored)).toThrow(/unknown/);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
