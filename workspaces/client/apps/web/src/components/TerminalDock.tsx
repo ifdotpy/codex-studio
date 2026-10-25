@@ -543,7 +543,7 @@ export default function TerminalDock({
   );
 }
 
-function ShellView({
+export function ShellView({
   shell,
   notify,
 }: {
@@ -554,8 +554,11 @@ function ShellView({
     kind: "terminal-output",
     terminalId: shell.id,
   });
+  const [manualOutput, setManualOutput] =
+    useState<GetResult<"/api/terminals/output">>();
+  useEffect(() => setManualOutput(undefined), [output.data]);
   const outputRef = useRef(output.data);
-  outputRef.current = output.data;
+  outputRef.current = manualOutput ?? output.data;
   const offsetRef = useRef(0);
   const applyOutputRef = useRef<() => void>(() => {});
   const { get, post, syncPost } = useServerApi();
@@ -815,7 +818,13 @@ function ShellView({
           <button
             onClick={() => {
               fenceInput();
-              setRetry((value) => value + 1);
+              void get("/api/terminals/output", { query: { id: shell.id } })
+                .then((value) => {
+                  setManualOutput(value);
+                  setFailure("");
+                  setRetry((attempt) => attempt + 1);
+                })
+                .catch((error) => setFailure(errorText(error)));
             }}
           >
             Reconnect

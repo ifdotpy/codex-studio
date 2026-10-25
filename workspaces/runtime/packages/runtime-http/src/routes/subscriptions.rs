@@ -183,7 +183,10 @@ async fn view_value(
                     .await
                     .map_err(super::terminals::terminal_error)?;
             if offset > output["offset"].as_i64().unwrap_or_default() {
-                output = studio_runtime_services::terminal_driver::output(&store, &r.terminal_id, 0).await.map_err(super::terminals::terminal_error)?;
+                output =
+                    studio_runtime_services::terminal_driver::output(&store, &r.terminal_id, 0)
+                        .await
+                        .map_err(super::terminals::terminal_error)?;
             }
             // Worst-case JSON escaping is six bytes per scalar. This bound leaves
             // room for resource metadata and the event envelope.
@@ -495,6 +498,140 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeSet;
 
+    #[tokio::test]
+    async fn subscribed_views_carry_bounded_records_and_terminal_resume() {
+        use std::sync::Arc;
+        use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
+        let directory = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        store.transaction_with(|tx| {
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"idle","name":"Lead","threadId":"thread"}))?)?;
+            tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('message',?1)", [json!({"id":"message","leadId":"lead","recipient":"lead","status":"open","responses":[],"author":"lead","text":"Initial complaint","created":1,"version":1}).to_string()])?;
+            tx.execute("INSERT INTO runtime_rooms(id,record) VALUES('broadcast:lead',?1)", [json!({"id":"broadcast:lead","kind":"broadcast","rootId":"lead","members":["lead"],"name":"Team"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES('first','broadcast:lead','lead','First message',1,'{}')", [])?;
+            tx.execute("INSERT INTO user_terminals(id,record,output,offset) VALUES('shell',?1,'a🙂',0)", [json!({"id":"shell","agent":"lead","title":"Shell","cwd":"/","created":1,"status":"running"}).to_string()])?;
+            Ok::<_,StoreError>(())
+        }).await.expect("source records");
+        let workspace = store
+            .test_read_transaction(|tx| SyncDocumentsRepository::workspace_id(tx))
+            .expect("workspace");
+        let state = HttpState::new(
+            "token".into(),
+            workspace,
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        for (resource, field) in [
+            (json!({"kind":"processes","agentId":"lead"}), "processes"),
+            (json!({"kind":"work","agentId":"lead"}), "work"),
+            (
+                json!({"kind":"complaint","complaintId":"message"}),
+                "complaint",
+            ),
+            (json!({"kind":"room","roomId":"broadcast:lead"}), "room"),
+            (
+                json!({"kind":"terminal-output","terminalId":"shell"}),
+                "terminalOutput",
+            ),
+        ] {
+            let resource: ResourceRef = serde_json::from_value(resource).expect("typed reference");
+            let baseline = initial_snapshot(state.clone(), resource.clone(), None)
+                .await
+                .expect("baseline");
+            let baseline = serde_json::to_value(baseline).expect("frame");
+            assert!(
+                !baseline["viewSnapshot"][field].is_null(),
+                "{field} baseline"
+            );
+            let mut event:crate::generated::ResourceChangeEvent = serde_json::from_value(json!({"protocol":studio_runtime_schema::SYNC_PROTOCOL_VERSION,"workspaceId":state.workspace_id,"epoch":"epoch","revision":2,"reason":"change","resources":[resource],"resourceVersions":[{"revision":2}]})).expect("event");
+            attach_view_snapshots(Some(&state), &mut event).await;
+            let live = serde_json::to_value(event).expect("live frame");
+            assert_eq!(
+                live["resourceVersions"][0]["viewSnapshot"][field],
+                baseline["viewSnapshot"][field]
+            );
+            assert!(
+                serde_json::to_vec(&live).expect("encoded").len() <= SYNC_STREAM_EVENT_MAX_BYTES
+            );
+        }
+        let resource: ResourceRef =
+            serde_json::from_value(json!({"kind":"terminal-output","terminalId":"shell"}))
+                .expect("terminal ref");
+        let cursor = SubscriptionCursor {
+            workspace_id: state.workspace_id.clone(),
+            seq: 2,
+        };
+        let first = initial_snapshot(state.clone(), resource.clone(), None)
+            .await
+            .expect("first");
+        assert_eq!(
+            serde_json::to_value(first).expect("first frame")["viewSnapshot"]["terminalOutput"]["text"],
+            "a🙂"
+        );
+        store
+            .transaction_with(|tx| {
+                tx.execute(
+                    "UPDATE user_terminals SET output='a🙂中' WHERE id='shell'",
+                    [],
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("output commit");
+        let resumed = initial_snapshot(state.clone(), resource.clone(), Some(cursor))
+            .await
+            .expect("resume");
+        let resumed = serde_json::to_value(resumed).expect("resumed frame");
+        assert_eq!(resumed["viewSnapshot"]["terminalOutput"]["text"], "中");
+        assert_eq!(resumed["cursor"]["seq"], 3);
+        assert_eq!(resumed["replyKind"], "delta");
+        let future = initial_snapshot(
+            state.clone(),
+            resource.clone(),
+            Some(SubscriptionCursor {
+                workspace_id: state.workspace_id.clone(),
+                seq: 99,
+            }),
+        )
+        .await
+        .expect("future cursor snapshot");
+        let future = serde_json::to_value(future).expect("future frame");
+        assert_eq!(future["replyKind"], "snapshot");
+        assert_eq!(future["viewSnapshot"]["terminalOutput"]["text"], "a🙂中");
+        let oversized =
+            "x".repeat(studio_runtime_schema::shared_values::SYNC_TERMINAL_STREAM_MAX_CHARS + 1);
+        store
+            .transaction_with(move |tx| {
+                tx.execute(
+                    "UPDATE user_terminals SET output=?1 WHERE id='shell'",
+                    [oversized],
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("large append");
+        let bounded = initial_snapshot(state, resource, None)
+            .await
+            .expect("bounded output");
+        let bounded = serde_json::to_value(bounded).expect("bounded frame");
+        assert_eq!(
+            bounded["viewSnapshot"]["terminalOutput"]["text"]
+                .as_str()
+                .expect("text")
+                .chars()
+                .count(),
+            studio_runtime_schema::shared_values::SYNC_TERMINAL_STREAM_MAX_CHARS
+        );
+        assert_eq!(bounded["viewSnapshot"]["terminalOutput"]["truncated"], true);
+    }
+
     #[test]
     fn every_generated_resource_has_exactly_one_handler_and_data_contract() {
         let document: Value =
@@ -542,6 +679,8 @@ mod tests {
                     .unwrap_or_else(|| {
                         if schema["type"] == "integer" {
                             schema.get("minimum").cloned().unwrap_or(json!(1))
+                        } else if schema["type"] == "boolean" {
+                            json!(false)
                         } else {
                             json!("test")
                         }

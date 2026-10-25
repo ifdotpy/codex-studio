@@ -1446,6 +1446,7 @@ fn resource_changes_event(
                 reply_kind: complete.then_some(crate::generated::SubscriptionReplyKind::Delta),
                 discovery_snapshot: None,
                 voice_records: None,
+                view_snapshot: None,
                 revision: if state {
                     sequence
                 } else if drafts {
@@ -1548,7 +1549,7 @@ fn initial_resource_sse_events(revision: i64, payload: ResourceChangeEvent) -> V
         || !payload
             .resource_versions
             .iter()
-            .any(|entry| entry.transcript_snapshot.is_some())
+            .any(|entry| entry.transcript_snapshot.is_some() || entry.view_snapshot.is_some())
     {
         return vec![resource_sse_event(revision, payload)];
     }
@@ -1631,6 +1632,7 @@ fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event 
         entry.draft_changes = None;
         entry.discovery_snapshot = None;
         entry.voice_records = None;
+        entry.view_snapshot = None;
     }
     sse_event("resources", Some(revision), payload)
 }
@@ -3091,6 +3093,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn state_stream_oversized_view_snapshot_releases_cursor_for_scoped_recovery() {
+        let mut event: ResourceChangeEvent = serde_json::from_value(resource_event(
+            "workspace",
+            "epoch",
+            1,
+            "change",
+            &[json!({"kind":"complaint","complaintId":"message"})],
+            0,
+            false,
+        ))
+        .expect("event");
+        event.resource_versions[0].view_snapshot = Some(serde_json::from_value(json!({"complaint":{"id":"message","version":1,"text":"x".repeat(SYNC_STREAM_EVENT_MAX_BYTES),"responses":[]}})).expect("snapshot"));
+        event.resource_versions[0].cursor = Some(SubscriptionCursor {
+            workspace_id: "workspace".into(),
+            seq: 1,
+        });
+        let bytes = frame_bytes(resource_sse_event(1, event)).await;
+        assert!(bytes.len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+        let text = std::str::from_utf8(&bytes).expect("UTF8");
+        let value: Value = serde_json::from_str(
+            text.lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data"),
+        )
+        .expect("JSON");
+        assert!(value["resourceVersions"][0].get("viewSnapshot").is_none());
+        assert!(value["resourceVersions"][0].get("cursor").is_none());
     }
 
     #[tokio::test]

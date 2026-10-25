@@ -773,10 +773,7 @@ export function useMessages(
       if (!id) return;
       const request = ++revision.current;
       const current = () =>
-        active.current === scope &&
-        syncActive.current !== scope &&
-        request === revision.current &&
-        allowed();
+        active.current === scope && request === revision.current && allowed();
       try {
         if (kind === "room") {
           const page = roomPages.current.get(scope);
@@ -975,6 +972,11 @@ export function useMessages(
   ]);
   useEffect(() => {
     const data = roomSubscription.data;
+    if (roomSubscription.error) {
+      setNotice(errorText(roomSubscription.error));
+      setLoadedId(scope);
+      return;
+    }
     if (!id || !enabled || kind === "agent" || !data) return;
     if (Array.isArray(data)) {
       setLoadedId(scope);
@@ -1027,6 +1029,7 @@ export function useMessages(
     scope,
     roomSubscription.data,
     roomSubscription.status,
+    roomSubscription.error,
   ]);
   const fetchPage = async (query: {
     before?: string;

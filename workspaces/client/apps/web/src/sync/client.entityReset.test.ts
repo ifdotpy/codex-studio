@@ -1350,4 +1350,101 @@ describe("entity pull reset wiring", () => {
       });
     },
   );
+  it("persists terminal records and cursor atomically, replays without duplicate output, and leaves the old cursor on failure", async () => {
+    const workspaceId = "8".repeat(32);
+    const rows = new Map<string, Record<string, any>>();
+    let fail = false;
+    const projections = {
+      database: { name: "terminal-resume" },
+      storageInstance: {
+        findDocumentsById: vi.fn(async (ids: string[]) =>
+          ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
+        ),
+        bulkWrite: vi.fn(
+          async (writes: { document: Record<string, any> }[]) => {
+            if (fail) throw new Error("disk unavailable");
+            for (const { document } of writes) rows.set(document.id, document);
+            return { error: [] };
+          },
+        ),
+      },
+      $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
+    };
+    mocks.createRxDatabase
+      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+      .mockResolvedValueOnce({
+        addCollections: vi.fn(async () => ({ projections })),
+      });
+    mocks.syncGet.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (_key: string, callback: () => Promise<unknown>) => callback(),
+      },
+    });
+    const client = await import("./client");
+    const resource = { kind: "terminal-output", terminalId: "shell" } as const;
+    const event = (
+      text: string,
+      seq: number,
+      replyKind: "snapshot" | "delta",
+    ): ResourceChangeEvent => ({
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId,
+      epoch: "epoch",
+      revision: seq,
+      reason: "initial",
+      resources: [resource],
+      resourceVersions: [
+        {
+          revision: seq,
+          cursor: { workspaceId, seq },
+          replyKind,
+          viewSnapshot: {
+            terminalOutput: {
+              text,
+              offset: seq,
+              status: "running",
+              truncated: false,
+            },
+          },
+        },
+      ],
+    });
+    await client.persistResourceEntityChanges(
+      event("a🙂", 2, "snapshot"),
+      () => true,
+    );
+    const resumed = event("中", 3, "delta");
+    await client.persistResourceEntityChanges(resumed, () => true);
+    expect(resumed.resourceVersions[0].viewSnapshot?.terminalOutput?.text).toBe(
+      "a🙂中",
+    );
+    const replay = event("中", 3, "delta");
+    await client.persistResourceEntityChanges(replay, () => true);
+    expect(replay.resourceVersions[0].viewSnapshot?.terminalOutput?.text).toBe(
+      "a🙂中",
+    );
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 3,
+    });
+    const record = [...rows.values()].find(
+      (row) => JSON.parse(row.payload).viewSnapshot?.terminalOutput,
+    );
+    expect(JSON.parse(record!.payload)).toMatchObject({
+      workspaceId,
+      seq: 3,
+      viewSnapshot: { terminalOutput: { text: "a🙂中", offset: 3 } },
+    });
+    fail = true;
+    await expect(
+      client.persistResourceEntityChanges(event("x", 4, "delta"), () => true),
+    ).rejects.toThrow("disk unavailable");
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 3,
+    });
+  });
 });

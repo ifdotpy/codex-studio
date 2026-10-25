@@ -5,7 +5,7 @@ import type { ResourceVersion } from "../resourceEvents";
 import type { createSyncClient } from "../client";
 import type { SubscriptionTransport } from "./store";
 
-/** Projection observers read the existing local store; they never issue a GET. */
+/** Apply inline stream values; only oversized/missing recovery frames may read HTTP. */
 export function createDataObserver(
   sync: () => Pick<
     ReturnType<typeof createSyncClient>,

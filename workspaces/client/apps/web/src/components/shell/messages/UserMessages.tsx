@@ -259,7 +259,7 @@ export default function UserMessages({
   );
 }
 
-function UserMessage({
+export function UserMessage({
   message,
   data,
   focused,
