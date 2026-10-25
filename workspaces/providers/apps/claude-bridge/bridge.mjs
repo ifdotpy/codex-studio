@@ -1,4 +1,5 @@
 import { prepareIdleSummary, applyIdleSummary } from "./idle-summary.mjs";
+import { claudeFailure, terminalClaudeFailure } from "./failure-causes.mjs";
 import { ResponseUsage, cumulativeUsage } from "./usage.mjs";
 import { isThreadSerialized } from "./provider-method-policy.generated.mjs";
 import {
@@ -1193,6 +1194,7 @@ async function finalizeTurn(s, active, turn, result, error, state) {
     "Claude turn failed";
   const errorInfo =
     turn.apiErrorInfo || claudeErrorInfo(error?.error, errorMessage);
+  const failureCause = terminalClaudeFailure(turn.claudeFailure, error, result);
   if (turn.stallError) turn.error = turn.stallError;
   else if (error || turn.status === "failed")
     turn.error = {
@@ -1224,6 +1226,7 @@ async function finalizeTurn(s, active, turn, result, error, state) {
           }
         : {}),
       ...turn.limitError,
+      ...(failureCause ? { claudeFailure: failureCause } : {}),
     };
   const answer = turn.items
     .filter(
@@ -2158,6 +2161,7 @@ async function startSession(s, active, p) {
             .map((b) => b.text)
             .join("\n");
           turn.apiErrorInfo = claudeErrorInfo(m.error, errorText);
+          turn.claudeFailure = claudeFailure(m);
           // A turn that Claude starts itself has no Studio turn when its
           // rate_limit_event arrives. The refused request names the limit.
           const info = m.api_error_params?.rate_limit_info;
