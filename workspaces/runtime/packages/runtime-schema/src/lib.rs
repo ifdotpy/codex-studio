@@ -692,6 +692,8 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         "SubscriptionCursor",
         "SubscriptionReplyKind",
         "ResourceProgressEvent",
+        "ResourceEntityTransferEvent",
+        "EntityChangeBatch",
         "RoomEntityDto",
         "RuleEntityDto",
         "RuntimeLockOperation",

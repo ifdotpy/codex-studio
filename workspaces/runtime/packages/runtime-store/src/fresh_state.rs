@@ -419,6 +419,7 @@ fn seed_workspace(transaction: &rusqlite::Transaction<'_>, state_dir: &Path) -> 
         crate::AGENT_PROJECTIONS_SEED_MARKER,
         crate::SUMMARY_ENTITIES_SEED_MARKER,
         crate::CONVERSATION_DETAILS_SEED_MARKER,
+        crate::WORK_DETAILS_SEED_MARKER,
     ] {
         transaction.execute(
             "INSERT OR IGNORE INTO sync_entity_meta(key,value) VALUES(?1,'1')",

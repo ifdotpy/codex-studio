@@ -16,6 +16,7 @@ pub(crate) mod compose;
 mod context_repair;
 pub(crate) mod desktop;
 pub use desktop::{backend_build_identity, initialize_backend_identity};
+mod entity_transfer;
 pub(crate) mod extractors;
 mod federation;
 mod host_secrets;

@@ -42,6 +42,10 @@ prepares the supervisor, contracts tool and HTTP fixture without package-only or
 release builds; one workspace nextest invocation selects the tests. Consumers get
 explicit debug binary paths. Browser smoke uses the prepared renderer and fixture,
 without repeating WASM generation, main TypeScript checking or the renderer build.
+The real IndexedDB staging witness runs in the provisioned browser smoke job;
+its two-tab owner lease, orphan cleanup and cancellation assertions need Chromium
+and Web Locks. The [smoke selector](../workspaces/client/apps/web/package.json)
+includes it, while deterministic transfer assembly remains in the short unit tier.
 Hosted Rust jobs build only the renderer bundle; API drift and TypeScript checks
 run once in their owning jobs. Run it on the exact commit before every push to `main` and before packaging for
 installation. Run `just test-fast` before every PR and merge and state its result

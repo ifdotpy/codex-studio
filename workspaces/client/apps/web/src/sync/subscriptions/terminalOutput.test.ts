@@ -27,3 +27,24 @@ it("rejects gaps and missing local bases and replaces expired snapshots", () => 
     mergeTerminalOutput(output("a", 1), output("new", 9), false).text,
   ).toBe("new");
 });
+
+it("replaces an authoritative reset snapshot even when the terminal offset decreases", () => {
+  expect(
+    mergeTerminalOutput(output("old history", 40), output("new", 3), false),
+  ).toEqual(output("new", 3));
+  expect(
+    mergeTerminalOutput(
+      output("old", 3),
+      { ...output("tail", 7), truncated: true },
+      false,
+    ).text,
+  ).toBe("tail");
+});
+
+it("keeps the retained-history notice across empty status intervals", () => {
+  const previous = { ...output("tail", 20), truncated: true };
+  expect(
+    mergeTerminalOutput(previous, { ...output("", 20), status: "exited" }, true)
+      .truncated,
+  ).toBe(true);
+});

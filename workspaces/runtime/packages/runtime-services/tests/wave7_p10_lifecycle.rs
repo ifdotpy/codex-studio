@@ -866,9 +866,87 @@ fn assert_conversation_detail_sources(snapshot: &Value) {
     }
 }
 
+// Work partitions postdate the frozen oracle too. Compare their complete live
+// set with source records instead of letting added projections alter that oracle.
+fn assert_work_detail_sources(store: &RuntimeStore, snapshot: &Value) {
+    use studio_runtime_store::entity_publication::WorkHistoryKind;
+    let db = store.test_reader().expect("work source reader");
+    let mut expected = BTreeMap::new();
+    for source in snapshot["tables"]["runtime_work"]
+        .as_array()
+        .expect("work source rows")
+    {
+        let id = source["id"].as_str().expect("work id");
+        let mut detail = source.clone();
+        for kind in WorkHistoryKind::ALL {
+            detail[kind.field()] = json!([]);
+            for (index, value) in source[kind.field()]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                let entry_id = format!("{id}:{index}");
+                expected.insert((kind.collection().to_owned(), entry_id.clone()), json!({
+                    "id":entry_id,"taskId":id,"rootId":source["rootId"],"index":index,"value":value
+                }));
+            }
+        }
+        detail["submissionRefusal"] =
+            studio_runtime_services::work_write::current_submission_refusal(&db, source)
+                .expect("canonical current refusal");
+        expected.insert(("workDetail".to_owned(), id.to_owned()), detail);
+    }
+    let actual = snapshot["sync"]
+        .as_array()
+        .expect("sync rows")
+        .iter()
+        .filter(|row| is_work_partition(row[0].as_str().expect("collection")) && row[5] == 0)
+        .map(|row| {
+            let collection = row[0].as_str().expect("collection");
+            let id = row[1].as_str().expect("id");
+            let payload: Value = serde_json::from_str(row[4].as_str().expect("work payload"))
+                .expect("work entity JSON");
+            assert_eq!(payload["collection"], collection);
+            assert_eq!(payload["id"], id);
+            (
+                (collection.to_owned(), id.to_owned()),
+                payload["value"].clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(actual, expected, "complete scoped work source projection");
+}
+
+fn is_work_partition(collection: &str) -> bool {
+    collection == "workDetail"
+        || studio_runtime_store::entity_publication::WorkHistoryKind::ALL
+            .into_iter()
+            .any(|kind| kind.collection() == collection)
+}
+
+fn unrelated_work_projection_rows(snapshot: &Value) -> Vec<Value> {
+    snapshot["sync"]
+        .as_array()
+        .expect("sync rows")
+        .iter()
+        .filter(|row| {
+            let collection = row[0].as_str().expect("collection");
+            if collection != "work" && !is_work_partition(collection) {
+                return false;
+            }
+            let payload: Value = serde_json::from_str(row[4].as_str().expect("work payload"))
+                .expect("work entity JSON");
+            row[1] == "unrelated-work" || payload["value"]["taskId"] == "unrelated-work"
+        })
+        .cloned()
+        .collect()
+}
+
 fn assert_records(store: &RuntimeStore, case: &Value) {
     let saved = state(store);
     assert_conversation_detail_sources(&saved);
+    assert_work_detail_sources(store, &saved);
     for (table, expected) in case["expected"]["records"]["tables"]
         .as_object()
         .expect("tables")
@@ -908,6 +986,7 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
                 && row[0] != "queue"
                 && row[0] != "questionHistory"
                 && row[0] != "retainedWorktree"
+                && !is_work_partition(row[0].as_str().expect("collection"))
         })
         // The frozen Python oracle predates receipt entities. Check their
         // source status separately below while preserving its legacy witness.
@@ -1002,6 +1081,8 @@ async fn python_stop_corpus_complete_records_and_exact_descendants() {
             serde_json::from_value(case["records"].clone()).expect("Python rows"),
         )
         .await;
+        let unrelated_work_before = (case["name"] == "delete-unrelated-open-work")
+            .then(|| unrelated_work_projection_rows(&state(&store)));
         let actions = case["actions"]
             .as_array()
             .cloned()
@@ -1042,9 +1123,24 @@ async fn python_stop_corpus_complete_records_and_exact_descendants() {
         );
         drop(db);
         assert_records(&store, &case);
+        if let Some(before) = &unrelated_work_before {
+            assert_eq!(before.len(), 2, "unrelated summary and detail were seeded");
+            assert_eq!(
+                unrelated_work_projection_rows(&state(&store)),
+                *before,
+                "unrelated work rows, sequences and hashes survive deletion unchanged"
+            );
+        }
         drop(store);
         let store = fixture_store(Some(root.path())).await.expect("restart");
         assert_records(&store, &case);
+        if let Some(before) = &unrelated_work_before {
+            assert_eq!(
+                unrelated_work_projection_rows(&state(&store)),
+                *before,
+                "unrelated work projections survive restart unchanged"
+            );
+        }
     }
 }
 

@@ -69,7 +69,6 @@
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
 }
 .fleet-attention {
   margin-block-end: var(--mantine-spacing-md);

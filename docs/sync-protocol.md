@@ -68,6 +68,37 @@ diagnostic key. A parity witness requires exactly one handler and data contract
 for every generated resource kind. Business services publish domain changes
 without tracking sessions or subscribers.
 
+Large entity baselines and deltas use typed `entity-transfer` frames on the same
+connection. Each page is a canonical `EntityChangeBatch` within the shared
+[document and complete-event byte limits](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs).
+The server validates pages and spools the interval to an anonymous temporary file
+from one SQLite read snapshot. It splits at record boundaries first; serialization
+fragments preserve a single existing oversized record. A complete marker proves
+the final interval, without constructing a batch above the canonical document limit.
+
+The fetch stream waits for temporary IndexedDB staging before reading more data.
+Only a complete, validated interval enters the existing projection write lock;
+all scope checks finish before the first write, snapshot pruning follows complete
+staging, and the durable cursor is written last. Interrupted staging leaves the
+previous cache and cursor intact. A write failure retains the old cursor so replay
+can finish idempotently. Each temporary database holds its own lifetime Web Lock;
+close and cancellation remove it, and opening a new owner removes crash orphans
+only after acquiring their unused locks. The normal small event path stays direct,
+and per-scope cursors send only changed records after a baseline. Internal pages
+retain the initial SQLite snapshot's recovery decision even when their checkpoints
+predate the tombstone floor. Source-owned visibility fences in the existing
+[store bootstrap](../workspaces/runtime/packages/runtime-store/src/sync_schema.sql)
+record predicate-field movements for affected direct selectors and team roots.
+Only a relevant movement requests a replacement; status updates, ordinary history
+appends and tombstones retain row deltas. The indexed fence lookup does not scan
+selected histories.
+
+Scoped durable cursor application retains its existing Web Locks requirement.
+Without that API the client reports the existing projection-write-lock error and
+does not apply a partial interval or cursor. Older browser HTTP recovery does not
+provide the typed stream's durable cursor proof. Supported lock-enabled clients
+need no fallback GET for large entity intervals.
+
 Entity change fingerprints cover every selected row, including rows beyond the
 stream's bounded initial page. The store hashes ordered identities and durable
 sequences using the same scope filter as delivery; unrelated view changes stay
@@ -85,6 +116,14 @@ one bounded `/api/transcript/page` read starts before the retained boundary.
 The renderer merges pages by item identity into the current conversation range,
 retaining the scroll anchor and both paging cursors. Live deltas preserve that
 boundary even when the shared transcript projection covers a larger range.
+
+Transcript item hashes stay in the server's private change-detection index; sparse
+deltas carry changed items, removals and optional order without an item revision
+map. The [renderer metadata format](../workspaces/client/apps/web/src/sync/client.ts)
+reads the previous persisted format and drops its unused map on the next write.
+The [API schema identity](../workspaces/runtime/packages/runtime-schema/src/api_schema.rs)
+changes with the wire contract and keys a separate projection cache; draft and
+outbox storage keep their workspace identity.
 
 ## Protocol 4: resource changes
 
@@ -110,13 +149,30 @@ epoch, revision, and ordering checks.
 
 The renderer reads chats and cards only from their `sync_entities` rows, and a
 pull does not rebuild a complete projection. Every writer transaction therefore
-publishes the `runtime_agents` and `runtime_requests` rows it changed before it
+publishes the `runtime_agents`, `runtime_requests`, and `runtime_work` rows it changed before it
 commits. The [store journal](../workspaces/runtime/packages/runtime-store/src/entity_publication.rs)
 records each changed row, and the services publisher projects it through
 `sync_policy::publish_entity_changes`. A write path needs no publish call of its
 own. A path that publishes after its last write is not published twice.
 Volatile agent fields are outside this rule: their writers leave
 `runtime_agents` unchanged on purpose.
+
+Visible Team rows retain an `agentDetail` subscription for command progress,
+errors, and result excerpts; their summaries remain authoritative for status and
+membership. Collapsed finished rows do not retain detail subscriptions.
+
+The assignment Tasks view subscribes to its team's existing `work` resource
+and the root agent's detail for `taskDefaultGate`. Its scoped `workDetail` metadata
+and `workResult`, `workDecision`, and `workRelease` history records reconstruct the
+canonical OpenAPI `WorkItem`. The global `work` summary excludes histories.
+Unchanged history records keep their durable sequences, and unrelated cached
+updates do not notify the Tasks consumer. The source transaction compares its
+old and new history fields and publishes only changed indices; metadata writes
+do not enumerate or serialize history entries. Existing databases seed these
+projections once when the publisher starts, before accepting subscriptions.
+Visible single-agent detail observers select that entity before decoding rows.
+Task actions retain their existing
+request identities and receive their resulting view through the stream.
 
 Retained cleanup folders have their own `retainedWorktree` entities, including
 folders of deleted workers. Question answers remain in `questionHistory` entities
@@ -153,9 +209,21 @@ retains its scoped recovery read.
 Open process and work-review panels and complaint threads receive their bounded
 records in `viewSnapshot` through typed screen subscriptions. Room baselines
 retain a newest-message window and an older-history cursor. Open terminal output
-uses Unicode-scalar offsets; the renderer applies overlapping tails as appends
-and stores the retained output with its resume cursor under the projection write
-lock. A reconnect reuses that applied base or receives a replacement snapshot.
+uses Unicode-scalar offsets. Each live subscription sends an initial snapshot,
+then only output since its last sent cursor, including status updates with no new
+text. Buffer loss, an output reset, or an oversized interval sends a bounded
+replacement snapshot. Removing a terminal selector releases its live cursor.
+The renderer merges intervals and stores retained output and its resume cursor
+under the projection write lock before notifying readers. A fresh transport or
+new stream owner always requests a bounded authoritative snapshot, even when an
+older output cursor is cached. A reconnect under the same owner reuses its
+proven applied base or receives a replacement snapshot. If a replacement snapshot
+cannot be persisted or is skipped during cancellation or overflow, later intervals
+retain only a recovery hint. Re-add and reconnect omit the saved cursor until a
+fresh snapshot commits, so stale output cannot become the new base. The stream
+owner shares its complete merged terminal view with followers as a snapshot only
+after cursor persistence succeeds; cached replay and ordinary appends require no
+terminal output GETs in those followers. Raw server intervals retain delta semantics.
 Saved terminal history and explicit retries remain user actions.
 
 The existing native EventSource transport and RxDB projection cache remain in
@@ -223,6 +291,28 @@ checkpoint, shared by bootstrap pulls, mutation responses and streamed deltas.
 Its ready marker identifies a replacement baseline; ordinary deltas preserve
 that marker and unchanged agent objects. A delta may overlap already applied
 records, but a missing base or forward gap cannot advance the checkpoint.
+
+Subscribed resources own their initial delivery. A cold watcher waits for its
+applied SSE baseline instead of racing it with an unconditional HTTP read.
+Readiness belongs to the exact subscribed ref: a detail or transcript baseline
+does not complete the state resource. The state completion marker proves only
+the canonical state subscription scope, not every detail or historical entity.
+An applied reconnect baseline can restore readiness even when its revision has
+not changed. Identity, authentication, and schema checks retain their existing
+boundaries.
+
+Revision-only hints, gaps, overflow, failed local application, and a failed or
+stopped cold stream enter the existing bounded read recovery path. Connection
+startup alone does not request recovery. Schema mismatch pauses synchronization
+without using recovery reads to bypass it. Recovery errors remain visible and
+do not create a polling loop.
+
+Cursorless process, complaint, and legacy-room views become ready only after
+their current inline value is applied by the view adapter. A failed or discarded inline
+entity application asks the stream owner to reconnect from the durable per-ref
+cursor; a follower asks that owner through browser coordination. Queued deltas
+cannot confirm readiness after their base failed, and a cancelled subscription
+cannot request recovery for its replacement.
 
 ### Connection loss and recovery
 

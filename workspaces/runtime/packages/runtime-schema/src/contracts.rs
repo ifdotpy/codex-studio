@@ -73,8 +73,32 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
+                "MODEL_WHITELIST_PREFERENCE_KEY",
+                json_string(values::MODEL_WHITELIST_PREFERENCE_KEY),
+            ),
+            (
+                "MODEL_WHITELIST_MAX_KEYS",
+                values::MODEL_WHITELIST_MAX_KEYS.to_string(),
+            ),
+            (
+                "MODEL_WHITELIST_KEY_MAX_CODEPOINTS",
+                values::MODEL_WHITELIST_KEY_MAX_CODEPOINTS.to_string(),
+            ),
+            (
+                "MODEL_WHITELIST_KEY_PATTERN",
+                json_string(values::MODEL_WHITELIST_KEY_PATTERN),
+            ),
+            (
                 "SYNC_TERMINAL_STREAM_MAX_CHARS",
                 values::SYNC_TERMINAL_STREAM_MAX_CHARS.to_string(),
+            ),
+            (
+                "MAX_SYNC_RESOURCE_COUNT",
+                values::MAX_SYNC_RESOURCE_COUNT.to_string(),
+            ),
+            (
+                "SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS",
+                values::SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS.to_string(),
             ),
             (
                 "STUDIO_ERRORS_DISMISS_MAX_IDS",
@@ -430,6 +454,16 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     )?;
     expect_number(
         openapi,
+        "/components/schemas/ResourceEntityTransferEvent/properties/transferId/maxLength",
+        values::SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS as i64,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/ResourceEntityTransferEvent/properties/data/maxLength",
+        values::SYNC_STREAM_EVENT_MAX_BYTES as i64,
+    )?;
+    expect_number(
+        openapi,
         "/components/schemas/EntityChangeBatch/properties/documents/maxItems",
         values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
     )?;
@@ -445,11 +479,6 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
             values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
         )?;
     }
-    expect_number(
-        openapi,
-        "/components/schemas/TranscriptStreamDelta/properties/itemRevisions/maxProperties",
-        values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
-    )?;
     expect_number(
         openapi,
         "/components/schemas/TranscriptResource/properties/tail/default",
@@ -731,6 +760,7 @@ fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, St
 
 fn subscription_scopes_ts(
     scopes: &std::collections::BTreeMap<String, crate::sync_protocol::SubscriptionEntityScope>,
+    print_width: usize,
 ) -> String {
     let mut text = format!("// {HEADER}\nexport const SUBSCRIPTION_ENTITY_SCOPES = {{\n");
     for (kind, scope) in scopes {
@@ -740,13 +770,17 @@ fn subscription_scopes_ts(
             json_string(kind)
         };
         writeln!(text, "  {key}: {{").expect("String write");
-        if scope.collections.len() == 1 {
-            writeln!(
-                text,
-                "    collections: [{}],",
-                json_string(&scope.collections[0])
-            )
-            .expect("String write");
+        let inline = format!(
+            "    collections: [{}],",
+            scope
+                .collections
+                .iter()
+                .map(|collection| json_string(collection))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        if inline.chars().count() <= print_width {
+            writeln!(text, "{inline}").expect("String write");
         } else {
             text.push_str("    collections: [\n");
             for collection in &scope.collections {
@@ -768,6 +802,12 @@ fn subscription_scopes_ts(
             )
             .expect("String write");
         }
+        writeln!(
+            text,
+            "    includeTeamMembers: {},",
+            scope.include_team_members
+        )
+        .expect("String write");
         text.push_str("  },\n");
     }
     text.push_str("} as const;\n");
@@ -821,7 +861,13 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         },
         Rendered {
             path: web("subscriptionEntities.ts"),
-            text: subscription_scopes_ts(&scopes),
+            text: subscription_scopes_ts(
+                &scopes,
+                read_json(root, ".oxfmtrc.json")?["printWidth"]
+                    .as_u64()
+                    .and_then(|width| usize::try_from(width).ok())
+                    .ok_or("root Oxfmt printWidth is missing")?,
+            ),
         },
         Rendered {
             path: web("taskReview.ts"),

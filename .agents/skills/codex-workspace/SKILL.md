@@ -61,8 +61,9 @@ registry states before counting workers. Use a new spawn ID only after
 `not_applied` proves the earlier batch did not create workers.
 Queued cancellation prevents execution. Running cancellation requires receipt
 reconciliation; it does not authorize a second mutation.
-Choose each worker's model and reasoning level for its task. The default is
-`gpt-6-luna` with `high` reasoning unless the user sets team defaults.
+Omit model and effort to honor the user's settings. Reviewers use the team
+review defaults; implementers use the worker defaults. Supply an override only
+when the user explicitly requests it.
 Codex and Claude can delegate to each other. Studio selects an account that
 offers the model. A user-selected subagent account applies to all new workers.
 Set `account_key` only when it respects that choice.
@@ -95,8 +96,9 @@ Codex agents use `orchestration_review` for native code review. Supply a stable
 and optional `effort` to override the team review default. Without that default,
 the reviewer uses the caller's model and effort. A different model without
 `effort` uses its native default. The result reports both selected values.
-A Claude agent cannot run native review. To get a review on another model, use
-`orchestration_spawn` with `role: "reviewer"` and `model: "gpt-6-astra"`.
+A Claude agent cannot run native review. To get a managed review, use
+`orchestration_spawn` with `role: "reviewer"`; omitted model and effort honor the
+team review defaults. Supply another model only when the user requests it.
 Studio creates a separate reviewer with read-only access to `cwd`. `cwd`
 defaults to the caller's folder; a relative path starts there, and a shell `cd`
 does not change it. `cwd` must be inside a git repository, or the call fails

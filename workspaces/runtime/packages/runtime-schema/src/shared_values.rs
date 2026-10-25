@@ -78,6 +78,8 @@ pub const SYNC_ENTITY_STREAM_MAX_DOCUMENTS: i64 = 512;
 pub const SYNC_STREAM_EVENT_MAX_BYTES: usize = 262144;
 /// Maximum retained terminal output per stream snapshot and renderer cache, in Unicode scalars.
 pub const SYNC_TERMINAL_STREAM_MAX_CHARS: usize = 16_384;
+/// Maximum transfer identity length, in Unicode code points.
+pub const SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS: usize = 128;
 /// Opaque history cursor prefix that includes the named preceding persisted row.
 /// Synthetic reasoning rows have no runtime_items identity of their own.
 pub const TRANSCRIPT_BEFORE_INCLUSIVE_CURSOR_PREFIX: &str = "@transcript-before-inclusive:";
@@ -343,6 +345,15 @@ pub const IDLE_COMPACTION_MAX_FIRE_FRACTION: f64 = 0.95;
 pub const IDLE_COMPACTION_MAX_LATE_SECONDS: f64 = 60.0;
 /// One-hour prompt cache lifetime, in seconds.
 pub const IDLE_COMPACTION_CACHE_SECONDS: f64 = 3600.0;
+
+/// Server-scoped preference scalar storing enabled provider-qualified model keys.
+pub const MODEL_WHITELIST_PREFERENCE_KEY: &str = "studio-model-whitelist-v1";
+/// Maximum model identities in one explicit whitelist. Unit: keys.
+pub const MODEL_WHITELIST_MAX_KEYS: usize = 2048;
+/// Maximum provider-qualified identity length. Unit: Unicode code points.
+pub const MODEL_WHITELIST_KEY_MAX_CODEPOINTS: usize = 512;
+/// Provider namespace and nonempty model identifier; shared with the renderer validator.
+pub const MODEL_WHITELIST_KEY_PATTERN: &str = r"^[a-z][a-z0-9_-]*:\S+$";
 
 #[cfg(test)]
 mod tests {

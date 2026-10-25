@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import type { ReactElement, ReactNode } from "react";
 const h = vi.hoisted(() => ({
   cursor: 0,
   cells: [] as any[],
@@ -13,6 +14,8 @@ const h = vi.hoisted(() => ({
   storage: {},
   writes: [] as string[],
   nullRefs: 0,
+  refs: [] as any[],
+  errors: new Map<string, Error>(),
 }));
 vi.mock("react", async (original) => {
   const react = await original<typeof import("react")>();
@@ -64,11 +67,14 @@ vi.mock("react", async (original) => {
   };
 });
 vi.mock("../sync/subscriptions", () => ({
-  useSubscription: (ref: any) => ({
-    data: ref ? h.data.get(ref.kind) : undefined,
-    status: ref ? (h.statuses.get(ref.kind) ?? "live") : "stale",
-    error: null,
-  }),
+  useSubscription: (ref: any) => {
+    if (ref) h.refs.push(ref);
+    return {
+      data: ref ? h.data.get(ref.kind) : undefined,
+      status: ref ? (h.statuses.get(ref.kind) ?? "live") : "stale",
+      error: ref ? (h.errors.get(ref.kind) ?? null) : null,
+    };
+  },
 }));
 vi.mock("../sync/client", () => ({}));
 vi.mock("../sync/transcriptCache", () => ({}));
@@ -113,14 +119,14 @@ const snapshot = () =>
     threads: [{ id: "lead", epoch: 1 }],
     runtime: { tasks: [], monitors: [], requests: [], complaints: [] },
   }) as any;
-function render<T>(fn: () => T) {
-  h.cursor = 0;
+function render<T>(fn: () => T, offset = 0) {
+  h.cursor = offset;
   const result = fn();
   for (const effect of h.effects.splice(0)) effect();
   return result;
 }
 afterEach(() => {
-  for (const cell of h.cells) cell.cleanup?.();
+  for (const cell of h.cells) cell?.cleanup?.();
   h.cells = [];
   h.effects = [];
   h.data.clear();
@@ -129,7 +135,166 @@ afterEach(() => {
   h.get.mockClear();
   h.writes = [];
   h.nullRefs = 0;
+  h.refs = [];
+  h.errors.clear();
   vi.unstubAllGlobals();
+});
+function elements(node: ReactNode): ReactElement<any>[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (node && typeof node === "object" && "props" in node) {
+    const element = node as ReactElement<any>;
+    return [element, ...elements(element.props.children)];
+  }
+  return [];
+}
+const processProps = () => ({
+  opened: true,
+  close: vi.fn(),
+  data: snapshot(),
+  leadId: "lead",
+  openAgent: vi.fn(),
+  refresh: vi.fn(),
+  notify: vi.fn(),
+});
+const commandProcess = () => ({
+  id: "command",
+  agent: "lead",
+  created: 2,
+  status: "running",
+  source: "codex_task",
+  key: "command-key",
+  generation: "generation",
+  accountKey: "default",
+  epoch: 1,
+  output: "Streamed command output",
+  capabilities: {
+    readOutput: true,
+    sendInput: true,
+    resize: false,
+    stop: true,
+  },
+});
+it("an open process panel and its selected detail need only two distinct resource subscriptions", () => {
+  h.nullRefs = 100;
+  h.data.set("tasks", []);
+  h.data.set("processes", { processes: [commandProcess()] });
+  const view = render(() => BackgroundTasks(processProps()));
+  const detail = elements(view).find(
+    (node) => node.props.canStop !== undefined,
+  )!;
+  render(() => (detail.type as Function)(detail.props), 100);
+  expect(h.refs).toEqual([
+    { kind: "tasks", agentId: "lead" },
+    { kind: "processes", agentId: "lead" },
+  ]);
+  expect(h.get).not.toHaveBeenCalled();
+});
+it("process rows use streamed task-only records and authoritative process output without duplicates", () => {
+  h.nullRefs = 100;
+  const props = processProps();
+  props.data.runtime.tasks = [
+    { id: "stale", agent: "lead", created: 1, status: "running", kind: "tool" },
+  ];
+  const process = commandProcess();
+  h.data.set("processes", { processes: [process] });
+  h.data.set("tasks", [
+    { ...process, kind: "command", tail: "Older task output" },
+    {
+      id: "tool",
+      agent: "lead",
+      created: 1,
+      status: "running",
+      kind: "tool",
+      name: "webSearch",
+    },
+    {
+      id: "claude",
+      agent: "lead",
+      created: 1,
+      status: "running",
+      kind: "tool",
+      itemId: "task:background",
+    },
+  ]);
+  const read = () => BackgroundTasks(props);
+  const view = render(read);
+  const rows = elements(view).filter((node) => node.props.select);
+  expect(rows.map((node) => node.props.task.id).sort()).toEqual([
+    "claude",
+    "command",
+    "tool",
+  ]);
+  expect(
+    rows.find((node) => node.props.task.id === "command")!.props.task.tail,
+  ).toBe("Streamed command output");
+  const detail = elements(view).find(
+    (node) => node.props.canStop !== undefined,
+  )!;
+  const detailView = render(() => (detail.type as Function)(detail.props), 100);
+  expect(
+    elements(detailView).find((node) =>
+      node.props.className?.startsWith("task-output"),
+    )!.props.children,
+  ).toBe("Streamed command output");
+  expect(detail.props.canStop).toBe(true);
+  h.data.set("processes", {
+    processes: [
+      {
+        ...process,
+        output: "Updated output",
+        error: "Streamed error",
+        cancelRequested: true,
+      },
+    ],
+  });
+  const updated = elements(render(read)).find(
+    (node) => node.props.canStop !== undefined,
+  )!;
+  expect(updated.key).toBe(detail.key);
+  expect(updated.props.task).toMatchObject({
+    tail: "Updated output",
+    error: "Streamed error",
+    cancelRequested: true,
+  });
+  h.data.set("tasks", []);
+  expect(
+    elements(render(read))
+      .filter((node) => node.props.select)
+      .map((node) => node.props.task.id),
+  ).toEqual(["command"]);
+  expect(h.get).not.toHaveBeenCalled();
+});
+it.each([false, true])(
+  "a process panel without visible scope has no resource subscriptions (opened=%s)",
+  (opened) => {
+    h.nullRefs = 100;
+    render(() =>
+      BackgroundTasks({
+        ...processProps(),
+        opened,
+        ...(opened ? { leadId: undefined } : {}),
+      }),
+    );
+    expect(h.refs).toEqual([]);
+    expect(h.get).not.toHaveBeenCalled();
+  },
+);
+it("task-only stream failures remain visible beside available process rows", () => {
+  h.nullRefs = 100;
+  h.data.set("processes", { processes: [commandProcess()] });
+  h.statuses.set("tasks", "error");
+  h.errors.set("tasks", new Error("Task stream unavailable"));
+  const nodes = elements(render(() => BackgroundTasks(processProps())));
+  expect(
+    nodes
+      .filter((node) => node.props.role === "alert")
+      .flatMap((node) => node.props.children)
+      .join(""),
+  ).toContain("Task stream unavailable");
+  expect(
+    nodes.filter((node) => node.props.select).map((node) => node.props.task.id),
+  ).toEqual(["command"]);
+  expect(h.get).not.toHaveBeenCalled();
 });
 it("process owner/task events consume process records without GET /api/processes", () => {
   h.nullRefs = 100;
@@ -157,12 +322,23 @@ it("process owner/task events consume process records without GET /api/processes
   );
   expect(h.get).not.toHaveBeenCalled();
 });
-it("work revision changes consume the stream without GET /api/work", () => {
+it("work changes consume the stream without GET /api/work", () => {
   h.nullRefs = 100;
-  h.data.set("work", { items: [], rootId: "lead" });
-  render(() => Tasks({ agentId: "lead", revision: 1 }));
-  h.data.set("work", { items: [], rootId: "lead" });
-  render(() => Tasks({ agentId: "lead", revision: 2 }));
+  h.data.set("agentDetail", { id: "lead", taskDefaultGate: null });
+  const task = {
+    id: "work",
+    rootId: "lead",
+    title: "Before",
+    status: "running",
+  };
+  h.data.set("work", { items: [task], tasks: [] });
+  const titles = () =>
+    elements(render(() => Tasks({ agentId: "lead" })))
+      .filter((node) => node.type === "strong")
+      .map((node) => node.props.children);
+  expect(titles()).toContain("Before");
+  h.data.set("work", { items: [{ ...task, title: "After" }], tasks: [] });
+  expect(titles()).toContain("After");
   expect(h.get).not.toHaveBeenCalled();
 });
 it("complaint version changes consume streamed detail without GET /api/complaint", () => {

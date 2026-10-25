@@ -64,6 +64,37 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(comprehensive.command, /test:browser:smoke:prepared/);
 });
 
+test("real IndexedDB staging belongs to provisioned browser smoke, not Node units", () => {
+  const web = "workspaces/client/apps/web";
+  const spec = readFileSync(
+    `${web}/tests/sync/entity-transfer-storage-browser.spec.mjs`,
+    "utf8",
+  );
+  const title = spec.match(/test\(\s*"([^"]+)"/)?.[1];
+  assert.ok(title, "the real IndexedDB witness must remain registered");
+  const scripts = JSON.parse(
+    readFileSync(`${web}/package.json`, "utf8"),
+  ).scripts;
+  const smoke = scripts["test:browser:smoke:prepared"];
+  const grep = smoke.match(/--grep "([^"]+)"/)?.[1];
+  assert.ok(grep, "package.json owns the smoke selector");
+  assert.match(title, new RegExp(grep));
+  assert.match(spec, /from "\.\.\/playwright\.mjs"/);
+  assert.equal(
+    existsSync(`${web}/src/sync/entityTransfer.storage.test.ts`),
+    false,
+  );
+  const fast = readFileSync(`${web}/vitest.fast.config.ts`, "utf8");
+  assert.doesNotMatch(fast, /entityTransfer\.storage\.test/);
+  assert.match(fast, /"src\/sync\/entityTransfer\.test\.ts"/);
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  const browserJob = workflow.split("  fast-browser-smoke:")[1];
+  assert.match(
+    browserJob,
+    /playwright install chromium[\s\S]+just test-browser-smoke --prepared/,
+  );
+});
+
 test("consolidated Rust targets register every integration test file once", () => {
   const consolidated = discover(process.cwd()).filter(
     (item) =>

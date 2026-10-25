@@ -686,8 +686,8 @@ export async function fixture(
       });
       notify.forEach((send) => send([{ kind: "state" }]));
     },
-    publishState() {
-      notify.forEach((send) => send([{ kind: "state" }]));
+    publishState(resources = [{ kind: "state" }]) {
+      notify.forEach((send) => send(resources));
     },
     mismatchSchema() {
       for (const stream of streams)

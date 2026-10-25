@@ -9,6 +9,9 @@ const { resumeListeners, syncDatabase } = vi.hoisted(() => ({
   resumeListeners: new Set<() => void>(),
   syncDatabase: vi.fn(),
 }));
+vi.mock("../servers/eventSource", () => ({
+  openServerEvents: (url: string) => new EventSource(url),
+}));
 vi.mock("./client", () => ({
   syncDatabase,
   readSubscriptionCursor: vi.fn(async () => undefined),

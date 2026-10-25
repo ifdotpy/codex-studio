@@ -230,13 +230,8 @@ export default function BackgroundTasks({
 }) {
   const { get, post } = useServerApi();
   const services = useServerServices();
-  useSubscription(
-    opened ? { kind: "tasks", ...(leadId ? { agentId: leadId } : {}) } : null,
-  );
-  useSubscription(
-    opened
-      ? { kind: "monitors", ...(leadId ? { agentId: leadId } : {}) }
-      : null,
+  const taskRecords = useSubscription(
+    opened && leadId ? { kind: "tasks", agentId: leadId } : null,
   );
   const controlStorageKey = `process-control:${services?.owner.id || "local"}:${leadId}`;
   const controlScope = useRef(controlStorageKey);
@@ -299,7 +294,9 @@ export default function BackgroundTasks({
   const processIds = new Set(processRecords.map((process) => process.id));
   const tasks = [
     ...processRecords.map(displayProcess),
-    ...data.runtime.tasks
+    // The task stream also carries tools and commands without a process handle.
+    // Process records own the output and controls for overlapping task ids.
+    ...(taskRecords.data ?? [])
       .map((task) => projectTaskForRenderer(task))
       .filter(
         (task): task is DisplayBackgroundTask =>
@@ -626,6 +623,12 @@ export default function BackgroundTasks({
         </p>
       )}
       {processLoading && <p role="status">Loading processes…</p>}
+      {taskRecords.error && (
+        <p role="alert" className="task-error">
+          Task list unavailable: {errorText(taskRecords.error)}
+        </p>
+      )}
+      {taskRecords.status === "loading" && <p role="status">Loading tasks…</p>}
       {controlResult?.response && (
         <p role={controlResult.status === "uncertain" ? "alert" : "status"}>
           Response stop: {String(controlResult.response.status)}
@@ -853,7 +856,6 @@ function TaskDetail({
       setLoadError(errorText(error));
     }
   };
-  useSubscription({ kind: "task", taskId: summary.id });
   const resolvedDetail = detail?.id === summary.id ? detail : null;
   const task = resolvedDetail ? { ...resolvedDetail, ...summary } : summary;
   const monitor = task.kind === "monitor" && "tail" in task ? task : null;

@@ -4433,6 +4433,9 @@
             ],
             "title": "Tail"
           },
+          "taskDefaultGate": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
+          },
           "tokensUsed": {
             "anyOf": [
               {
@@ -6031,6 +6034,9 @@
               }
             ],
             "title": "Tail"
+          },
+          "taskDefaultGate": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
           },
           "threadId": {
             "anyOf": [
@@ -42274,6 +42280,99 @@
         "title": "ResourceChangeEvent",
         "type": "object"
       },
+      "ResourceEntityTransferEvent": {
+        "additionalProperties": false,
+        "description": "Bounded entity-transfer SSE fragment. Each completed page decodes to one canonical EntityChangeBatch; only complete=true commits the staged interval.",
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/components/schemas/SubscriptionCursor"
+          },
+          "data": {
+            "maxLength": 262144,
+            "type": "string"
+          },
+          "epoch": {
+            "minLength": 1,
+            "title": "Epoch",
+            "type": "string"
+          },
+          "pageIndex": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "partCount": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "partIndex": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "protocol": {
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
+            "title": "Protocol",
+            "type": "integer"
+          },
+          "reason": {
+            "enum": [
+              "initial",
+              "change",
+              "reconnect",
+              "overflow",
+              "workspace"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "replyKind": {
+            "$ref": "#/components/schemas/SubscriptionReplyKind"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/ResourceRef"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "transferId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspaceId": {
+            "minLength": 1,
+            "title": "Workspaceid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol",
+          "workspaceId",
+          "epoch",
+          "revision",
+          "reason",
+          "resource",
+          "cursor",
+          "replyKind",
+          "transferId",
+          "pageIndex",
+          "partIndex",
+          "partCount",
+          "complete",
+          "data"
+        ],
+        "type": "object"
+      },
       "ResourceHeartbeatEvent": {
         "additionalProperties": false,
         "description": "Named `heartbeat` SSE payload; it never requests a resource read.",
@@ -50776,7 +50875,11 @@
                   "retainedWorktree",
                   "questionHistory",
                   "agentSummary",
-                  "agentDetail"
+                  "agentDetail",
+                  "workDetail",
+                  "workResult",
+                  "workDecision",
+                  "workRelease"
                 ],
                 "type": "string"
               },
@@ -51000,6 +51103,90 @@
               "value"
             ],
             "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "workDetail",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkItem"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "workResult",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkResultEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "workDecision",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkDecisionEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "workRelease",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkReleaseEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
           }
         ],
         "properties": {
@@ -51066,6 +51253,10 @@
             "terminal": "#/components/schemas/SyncTerminalEntityPayload",
             "uiPreferences": "#/components/schemas/SyncUiPreferencesEntityPayload",
             "work": "#/components/schemas/SyncWorkEntityPayload",
+            "workDecision": "#/components/schemas/SyncWorkDecisionEntityPayload",
+            "workDetail": "#/components/schemas/SyncWorkDetailEntityPayload",
+            "workRelease": "#/components/schemas/SyncWorkReleaseEntityPayload",
+            "workResult": "#/components/schemas/SyncWorkResultEntityPayload",
             "workspace": "#/components/schemas/SyncWorkspaceEntityPayload"
           },
           "propertyName": "collection"
@@ -51163,6 +51354,18 @@
           },
           {
             "$ref": "#/components/schemas/SyncAgentDetailEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncWorkDetailEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncWorkResultEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncWorkDecisionEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncWorkReleaseEntityPayload"
           }
         ]
       },
@@ -51970,6 +52173,54 @@
         "title": "SyncUiPreferencesEntityPayload",
         "type": "object"
       },
+      "SyncWorkDecisionEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "workDecision",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/WorkDecisionEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncWorkDecisionEntityPayload",
+        "type": "object"
+      },
+      "SyncWorkDetailEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "workDetail",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/WorkItem"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncWorkDetailEntityPayload",
+        "type": "object"
+      },
       "SyncWorkEntityPayload": {
         "additionalProperties": false,
         "properties": {
@@ -51992,6 +52243,54 @@
           "value"
         ],
         "title": "SyncWorkEntityPayload",
+        "type": "object"
+      },
+      "SyncWorkReleaseEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "workRelease",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/WorkReleaseEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncWorkReleaseEntityPayload",
+        "type": "object"
+      },
+      "SyncWorkResultEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "workResult",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/WorkResultEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncWorkResultEntityPayload",
         "type": "object"
       },
       "SyncWorkspaceEntityPayload": {
@@ -54891,12 +55190,6 @@
         "title": "TranscriptItemResponse",
         "type": "object"
       },
-      "TranscriptItemRevision": {
-        "description": "Canonical SHA-256 item revision from runtime-store repositories/transcript.rs canonical_hash, encoded as 64 lowercase hexadecimal characters.",
-        "pattern": "^[0-9a-f]{64}$",
-        "title": "TranscriptItemRevision",
-        "type": "string"
-      },
       "TranscriptMessageRecord": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -55606,16 +55899,6 @@
             ],
             "default": null
           },
-          "itemRevisions": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/TranscriptItemRevision"
-            },
-            "maxProperties": 512,
-            "propertyNames": {
-              "$ref": "#/components/schemas/TranscriptStreamItemId"
-            },
-            "type": "object"
-          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/TranscriptMessageRecord"
@@ -55685,8 +55968,7 @@
           "delta",
           "items",
           "truncated",
-          "removed",
-          "itemRevisions"
+          "removed"
         ],
         "title": "TranscriptStreamDelta",
         "type": "object"
@@ -59771,6 +60053,36 @@
         "title": "WorkDecisionDto",
         "type": "object"
       },
+      "WorkDecisionEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rootId": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/WorkDecisionRecord"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "rootId",
+          "index",
+          "value"
+        ],
+        "title": "WorkDecisionEntityDto",
+        "type": "object"
+      },
       "WorkDecisionRecord": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -60244,6 +60556,36 @@
         "title": "WorkList",
         "type": "object"
       },
+      "WorkReleaseEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rootId": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/JsonValue"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "rootId",
+          "index",
+          "value"
+        ],
+        "title": "WorkReleaseEntityDto",
+        "type": "object"
+      },
       "WorkResource": {
         "additionalProperties": false,
         "properties": {
@@ -60261,7 +60603,17 @@
           "agentId"
         ],
         "title": "WorkResource",
-        "type": "object"
+        "type": "object",
+        "x-studio-entity-scope": {
+          "agentField": "agentId",
+          "collections": [
+            "workDetail",
+            "workResult",
+            "workDecision",
+            "workRelease"
+          ],
+          "includeTeamMembers": false
+        }
       },
       "WorkResultDto": {
         "additionalProperties": false,
@@ -60350,6 +60702,36 @@
           "created"
         ],
         "title": "WorkResultDto",
+        "type": "object"
+      },
+      "WorkResultEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rootId": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/WorkResultRecord"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "rootId",
+          "index",
+          "value"
+        ],
+        "title": "WorkResultEntityDto",
         "type": "object"
       },
       "WorkResultRecord": {

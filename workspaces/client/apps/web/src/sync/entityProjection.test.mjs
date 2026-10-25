@@ -15,6 +15,36 @@ import {
 
 import { it } from "vitest";
 
+it("revives a locally evicted source version without reviving authoritative tombstones", () => {
+  const state = emptyEntityProjection();
+  const row = {
+    id: "entity:agentSummary:moved",
+    seq: 3,
+    payload: "",
+    entity: {
+      collection: "agentSummary",
+      id: "moved",
+      value: { id: "moved", status: "idle" },
+    },
+  };
+  applyEntityChanges(state, [row], true);
+  const removed = applyEntityChanges(
+    state,
+    [{ id: row.id, seq: 3, payload: "", _deleted: true, evicted: true }],
+    true,
+  );
+  assert.equal(removed.threads.length, 0);
+  const revived = applyEntityChanges(state, [row], true);
+  assert.equal(revived.threads[0].id, "moved");
+  applyEntityChanges(
+    state,
+    [{ id: row.id, seq: 4, payload: "", _deleted: true }],
+    true,
+  );
+  const stale = applyEntityChanges(state, [row], true);
+  assert.equal(stale.threads.length, 0);
+});
+
 it("retains other agents when one streamed summary or detail changes", () => {
   const state = emptyEntityProjection();
   const row = (collection, id, value, seq) => ({

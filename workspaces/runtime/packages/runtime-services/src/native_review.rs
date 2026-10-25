@@ -78,6 +78,29 @@ pub fn worker_id(key: &str) -> String {
     uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, key.as_bytes()).to_string()
 }
 
+/// Model and reasoning fallback for both managed reviewer spawns and native reviews.
+/// Explicit effort (including null) wins. A different explicit model uses its
+/// native effort; an omitted model uses the team's review default, then the caller.
+pub(crate) fn execution_settings(actor: &Value, root: &Value, args: &Value) -> (Value, Value) {
+    let defaults = &root["reviewDefaults"];
+    let model = args
+        .get("model")
+        .filter(|v| !v.is_null())
+        .or_else(|| defaults.get("model").filter(|v| !v.is_null()))
+        .unwrap_or(&actor["model"])
+        .clone();
+    let effort = if let Some(value) = args.get("effort") {
+        value.clone()
+    } else if args.get("model").is_none() && defaults.get("model").is_some_and(|v| !v.is_null()) {
+        defaults.get("effort").cloned().unwrap_or(Value::Null)
+    } else if model == actor["model"] {
+        actor.get("effort").cloned().unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    (model, effort)
+}
+
 pub struct ReviewPlan {
     actor: Value,
     root: Value,
@@ -114,27 +137,7 @@ impl ReviewPlan {
             return Err(NativeError::Invalid("review.identity"));
         }
         let target = target(&args)?;
-        let defaults = checked_root
-            .extra
-            .get("reviewDefaults")
-            .cloned()
-            .unwrap_or(json!({}));
-        let model = args
-            .get("model")
-            .filter(|v| !v.is_null())
-            .or_else(|| defaults.get("model").filter(|v| !v.is_null()))
-            .unwrap_or(&actor["model"])
-            .clone();
-        let effort = if let Some(value) = args.get("effort") {
-            value.clone()
-        } else if args.get("model").is_none() && defaults.get("model").is_some_and(|v| !v.is_null())
-        {
-            defaults.get("effort").cloned().unwrap_or(Value::Null)
-        } else if model == actor["model"] {
-            actor.get("effort").cloned().unwrap_or(Value::Null)
-        } else {
-            Value::Null
-        };
+        let (model, effort) = execution_settings(&actor, &root, &args);
         let requested = ["model", "effort"]
             .into_iter()
             .filter_map(|k| args.get(k).map(|v| (k.to_owned(), v.clone())))
