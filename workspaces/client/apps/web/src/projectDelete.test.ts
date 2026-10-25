@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
 import { ProjectDeleteIntent, projectReaderScope } from "./projectDelete";
 import type { Agent, Project } from "./types";
+import type { components } from "./generated/api";
 
 const target = { id: "project", name: "Example", path: "/project", seq: 12 };
 const body = {
@@ -172,4 +173,39 @@ describe("project reader suspension", () => {
       ].sort(),
     ).toEqual(["archived", "lead", "legacy", "room", "worker"]);
   });
+});
+
+it.each([
+  "project_remote_scope",
+  "project_sequence_conflict",
+] satisfies components["schemas"]["ProjectDeleteFailureCode"][])(
+  "classifies %s not_applied as a definite refusal",
+  async (code) => {
+    const response: components["schemas"]["ProjectDeleteErrorResponse"] = {
+      code,
+      outcome: "not_applied",
+      error: "Deletion refused without writes",
+    };
+    const intent = new ProjectDeleteIntent(body, "Example", [], storage());
+    await intent.submit(vi.fn().mockRejectedValue(new ApiError(response, 409)));
+    expect(intent.phase).toBe("rejected");
+    expect(intent.error).toContain(response.error);
+  },
+);
+
+it("does not classify unknown failure codes with not_applied as a known project refusal", async () => {
+  const intent = new ProjectDeleteIntent(body, "Example", [], storage());
+  await intent.submit(
+    vi.fn().mockRejectedValue(
+      new ApiError(
+        {
+          code: "unrecognized",
+          outcome: "not_applied",
+          error: "Different contract",
+        },
+        409,
+      ),
+    ),
+  );
+  expect(intent.phase).toBe("unknown");
 });

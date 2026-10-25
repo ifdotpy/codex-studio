@@ -23,6 +23,25 @@ it("retains each project's authoritative sequence for stale-target guards and re
     true,
   )!;
   expect(baseline.runtime.projectSequences).toEqual({ a: 12, b: 13 });
+  const mixed = applyEntityChanges(
+    state,
+    [
+      {
+        id: "entity:room:r",
+        seq: 14,
+        entity: {
+          collection: "room",
+          id: "r",
+          value: { id: "r", name: "Room" },
+        },
+      },
+    ],
+    true,
+  )!;
+  expect(mixed.runtime.projects).toBe(baseline.runtime.projects);
+  expect(mixed.runtime.projectSequences).toBe(
+    baseline.runtime.projectSequences,
+  );
   const after = applyEntityChanges(
     state,
     [{ id: "entity:project:a", seq: 14, _deleted: true }],

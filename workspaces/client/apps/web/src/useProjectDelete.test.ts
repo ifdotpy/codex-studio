@@ -288,3 +288,52 @@ it("never applies an old workspace's late deletion response to the current draft
   expect(f.options.onFinish).not.toHaveBeenCalled();
   expect(f.render().dialog.name).toBeNull();
 });
+
+it("retains suppression after HTTP success until the listed entities retire through SSE", async () => {
+  const f = fixture();
+  f.render().open("project");
+  f.render().dialog.onConfirm();
+  f.render();
+  await f.settle();
+  expect(f.options.onFinish).toHaveBeenCalledWith(["lead"]);
+  expect(f.options.onResume).not.toHaveBeenCalled();
+  expect(f.options.onSuspend).toHaveBeenLastCalledWith(new Set(["lead"]));
+  f.options.data = {
+    ...data,
+    threads: [],
+    runtime: { ...data.runtime, projects: [] },
+  };
+  f.render();
+  expect(f.options.onResume).toHaveBeenCalled();
+});
+
+it("registry-only project removal preserves surviving chats, rooms, drafts and selection", () => {
+  const f = fixture();
+  f.render();
+  f.options.data = { ...data, runtime: { ...data.runtime, projects: [] } };
+  f.render();
+  expect(f.options.onFinish).not.toHaveBeenCalled();
+  expect(f.options.onResume).not.toHaveBeenCalled();
+});
+
+it("not_applied multi-server refusal restores readers and releases the intention", async () => {
+  const f = fixture();
+  f.post.mockRejectedValueOnce(
+    new ApiError(
+      {
+        code: "project_remote_scope",
+        outcome: "not_applied",
+        error: "Project spans servers",
+      },
+      409,
+    ),
+  );
+  f.render().open("project");
+  f.render().dialog.onConfirm();
+  f.render();
+  await f.settle();
+  expect(f.render().dialog.phase).toBe("rejected");
+  expect(f.render().dialog.error).toContain("Project spans servers");
+  expect(f.options.onResume).toHaveBeenCalledWith(new Set(["lead"]));
+  expect(f.values.size).toBe(0);
+});

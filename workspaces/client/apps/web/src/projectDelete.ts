@@ -1,10 +1,37 @@
-import { errorText, type post } from "./api";
+import { ApiError, errorText, type post } from "./api";
 import { definiteDeleteRejection } from "./chatDeleteScope";
 import type { components } from "./generated/api";
 import type { Agent, Project } from "./types";
 
 type DeleteRequest = components["schemas"]["ProjectDeleteRequest"];
 type DeleteReply = components["schemas"]["ProjectDeleteResponse"];
+type DeleteFailureCode = components["schemas"]["ProjectDeleteFailureCode"];
+type DeleteError = components["schemas"]["ProjectDeleteErrorResponse"];
+// Exhaustiveness keeps this classification paired with the generated contract.
+const definitiveCodes = {
+  project_not_found: true,
+  project_workspace_conflict: true,
+  project_sequence_conflict: true,
+  project_request_conflict: true,
+  project_remote_scope: true,
+  project_membership_conflict: true,
+  project_lifecycle_unavailable: true,
+} satisfies Record<DeleteFailureCode, true>;
+
+function definiteProjectRejection(failure: unknown): boolean {
+  if (!(failure instanceof ApiError)) return false;
+  if (failure.response && typeof failure.response === "object") {
+    const response = failure.response as Partial<DeleteError>;
+    if (
+      response.outcome === "not_applied" &&
+      typeof response.error === "string" &&
+      typeof response.code === "string" &&
+      Object.hasOwn(definitiveCodes, response.code)
+    )
+      return true;
+  }
+  return definiteDeleteRejection(failure);
+}
 type IntentStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 const storageKey = (workspaceId: string) =>
   `studio-project-delete-intention-v1:${workspaceId}`;
@@ -162,7 +189,7 @@ export class ProjectDeleteIntent {
       this.result = result;
       this.phase = "deleted";
     } catch (failure) {
-      if (definiteDeleteRejection(failure)) {
+      if (definiteProjectRejection(failure)) {
         this.phase = "rejected";
         this.error = errorText(failure);
       } else {

@@ -603,7 +603,7 @@ export function applyEntityChanges(
         )
         .map((row) => [row.entityId!, row.seq]),
     );
-  }
+  } else next.runtime.projectSequences = prior.runtime.projectSequences;
   changed.clear();
   state.snapshot = next;
   return next;

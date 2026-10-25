@@ -1054,6 +1054,7 @@ export default function App({ active = true }: { active?: boolean }) {
     notify,
   });
   const open = useCommittedCallback((id: string, messageId?: string) => {
+    if (projectDeleteScope.has(id)) return;
     prepareChat(id);
     navigationIntent.current++;
     setJumpTarget(
@@ -1070,6 +1071,7 @@ export default function App({ active = true }: { active?: boolean }) {
     if (!data) return;
     if (
       agent?.sharedRoomId &&
+      !projectDeleteScope.has(agent.sharedRoomId) &&
       data.runtime?.rooms.some(
         (room) => room.id === agent.sharedRoomId && !room.userHidden,
       )
@@ -1090,6 +1092,7 @@ export default function App({ active = true }: { active?: boolean }) {
       const selected = saved<string | null>(key, null);
       if (
         selected &&
+        !projectDeleteScope.has(selected) &&
         (data.threads.some((item) => item.id === selected) ||
           data.runtime?.rooms.some((item) => item.id === selected) ||
           data.chats.some((item) => item.id === selected))
@@ -1115,16 +1118,21 @@ export default function App({ active = true }: { active?: boolean }) {
     }
     if (!opened || (!agent && !room && !legacy))
       setOpened(
-        mostRecentActivity(leads)?.id ||
+        mostRecentActivity(
+          leads.filter((lead) => !projectDeleteScope.has(lead.id)),
+        )?.id ||
           mostRecentActivity(
             data.runtime?.rooms.filter(
-              (room) => room.radio?.direct && !room.userHidden,
+              (room) =>
+                room.radio?.direct &&
+                !room.userHidden &&
+                !projectDeleteScope.has(room.id),
             ) || [],
           )?.id ||
           null,
       );
     else save(key, opened);
-  }, [data, opened, agent, room, legacy, mobileClient]);
+  }, [data, opened, agent, room, legacy, mobileClient, projectDeleteScope]);
   useEffect(() => {
     const onError = (event: Event) => {
       if (activeScreen.current) notify((event as CustomEvent<string>).detail);

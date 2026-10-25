@@ -34,9 +34,30 @@ export function useProjectDelete(options: {
   const prior = useRef<{
     data: Snapshot;
     workspaceId: string;
-    readers: Map<string, Set<string>>;
+    readers: Set<string>;
   } | null>(null);
+  const confirmedSuppression = useRef({
+    workspaceId: "",
+    ids: new Set<string>(),
+  });
   const restored = useRef("");
+  const publishSuppression = () => {
+    const current = latest.current;
+    const scope = new Set(
+      confirmedSuppression.current.workspaceId === current.workspaceId
+        ? confirmedSuppression.current.ids
+        : [],
+    );
+    const intention = pendingRef.current?.intent;
+    if (
+      intention &&
+      intention.request.expected_workspace_id === current.workspaceId &&
+      (intention.phase === "submitting" || intention.phase === "unknown")
+    )
+      for (const id of intention.scope) scope.add(id);
+    if (scope.size) current.onSuspend(scope);
+    else current.onResume(new Set());
+  };
 
   useLayoutEffect(() => {
     const { data, workspaceId, onFinish } = options;
@@ -51,9 +72,7 @@ export function useProjectDelete(options: {
     const sameWorkspace =
       previous?.workspaceId === workspaceId &&
       previous.data.stateDir === data.stateDir;
-    const readers = sameWorkspace
-      ? previous.readers
-      : new Map<string, Set<string>>();
+    const readers = sameWorkspace ? previous.readers : new Set<string>();
     prior.current = { data, workspaceId, readers };
     if (
       sameWorkspace &&
@@ -62,26 +81,40 @@ export function useProjectDelete(options: {
       previous.data.runtime.rooms === data.runtime.rooms
     )
       return;
-    // Retain observed reader IDs until their project retires: agent and project
-    // tombstones can reach React in separate stream publications.
-    const registered = new Set(
-      data.runtime.projects.map((project) => project.id),
+    // Registry removal is not evidence of chat deletion. Only absent entity IDs
+    // from the complete authoritative projection retire their local readers/drafts.
+    const present = new Set(
+      [...data.threads, ...data.runtime.rooms, ...(data.chats || [])].map(
+        (row) => row.id,
+      ),
     );
     const ids = new Set<string>();
-    for (const [projectId, scope] of readers) {
-      if (registered.has(projectId)) continue;
-      for (const id of scope) ids.add(id);
-      readers.delete(projectId);
-    }
-    for (const project of data.runtime.projects) {
-      const scope = readers.get(project.id) || new Set<string>();
+    for (const id of readers)
+      if (!present.has(id)) {
+        ids.add(id);
+        readers.delete(id);
+      }
+    for (const project of data.runtime.projects)
       for (const id of projectReaderScope(
         project,
         data.threads,
         data.runtime.rooms,
       ))
-        scope.add(id);
-      readers.set(project.id, scope);
+        readers.add(id);
+    const suppression = confirmedSuppression.current;
+    if (suppression.workspaceId && suppression.workspaceId !== workspaceId) {
+      suppression.ids.clear();
+      suppression.workspaceId = workspaceId;
+      publishSuppression();
+    }
+    if (suppression.workspaceId === workspaceId) {
+      let changed = false;
+      for (const id of suppression.ids)
+        if (!present.has(id)) {
+          suppression.ids.delete(id);
+          changed = true;
+        }
+      if (changed) publishSuppression();
     }
     if (ids.size) onFinish([...ids]);
   }, [options.data, options.workspaceId]);
@@ -111,7 +144,7 @@ export function useProjectDelete(options: {
       if (!intent) return;
       const next = { intent, backend, attempt: 0 };
       pendingRef.current = next;
-      options.onSuspend(new Set(intent.scope));
+      publishSuppression();
       setPending(next);
     } catch (failure) {
       setError(errorText(failure));
@@ -133,16 +166,32 @@ export function useProjectDelete(options: {
       const { intent } = pending;
       if (intent.phase === "deleted" && intent.result) {
         if (intent.error) latest.current.notify(intent.error);
-        latest.current.onFinish([
+        const ids = [
           ...intent.result.deletedAgentIds,
           ...intent.result.deletedRoomIds,
-        ]);
-        latest.current.onResume(new Set(intent.scope));
+        ];
+        const current = latest.current;
+        const suppression = confirmedSuppression.current;
+        if (suppression.workspaceId !== current.workspaceId) {
+          suppression.workspaceId = current.workspaceId;
+          suppression.ids.clear();
+        }
+        const present = new Set(
+          [
+            ...(current.data?.threads || []),
+            ...(current.data?.runtime.rooms || []),
+            ...(current.data?.chats || []),
+          ].map((row) => row.id),
+        );
+        for (const id of ids) if (present.has(id)) suppression.ids.add(id);
+        publishSuppression();
+        current.onFinish(ids);
         pendingRef.current = null;
         setPending(null);
         setTarget(null);
       } else if (intent.phase === "rejected") {
-        latest.current.onResume(new Set(intent.scope));
+        if (confirmedSuppression.current.ids.size) publishSuppression();
+        else latest.current.onResume(new Set(intent.scope));
         latest.current.notify(intent.error);
       }
       render((value) => value + 1);
@@ -176,7 +225,7 @@ export function useProjectDelete(options: {
   };
   const confirm = () => {
     if (!target || pendingRef.current) return;
-    const { data, workspaceId, services, onSuspend } = latest.current;
+    const { data, workspaceId, services } = latest.current;
     if (!data || !workspaceId || !target.project.id || !target.project.path)
       return;
     if (
@@ -211,7 +260,7 @@ export function useProjectDelete(options: {
       );
       const next = { intent, backend, attempt: 0 };
       pendingRef.current = next;
-      onSuspend(scope);
+      publishSuppression();
       setPending(next);
     } catch (failure) {
       setError(errorText(failure));
