@@ -40,6 +40,24 @@ type StartAccount = (
   command: Extract<ServerCommand, { action: "account-sign-in" }>,
 ) => void;
 
+function serverConnection(status?: string) {
+  if (status === "offline") return { label: "Offline", blocked: true };
+  if (status === "schema-mismatch")
+    return { label: "Update required", blocked: true };
+  if (status === "degraded")
+    return { label: "Connection degraded", blocked: false };
+  if (status === "connecting") return { label: "Connecting", blocked: false };
+  if (status === "live") return null;
+  return { label: "Connection unknown", blocked: false };
+}
+
+function signInStatus(status: string) {
+  if (status === "ready") return "Signed in";
+  if (status === "signedOut" || status === "changed") return "Sign in needed";
+  if (status === "error") return "Sign-in check failed";
+  return "Sign-in status unknown";
+}
+
 /** The copies of one provider account on each server that has it, with the
  * server's full account record. A disconnected copy is left out. */
 export function accountSources(
@@ -49,6 +67,8 @@ export function accountSources(
   servicesFor?: (serverId: string) => ServerServices | undefined,
 ): AccountSource[] {
   return servers.flatMap((server) => {
+    const services = servicesFor?.(server.id);
+    if (servicesFor && !services) return [];
     const listed = row.byServer[server.id];
     const account =
       listed && matchServerAccount(fullAccounts[server.id], listed);
@@ -58,7 +78,7 @@ export function accountSources(
             serverId: server.id,
             serverLabel: server.label,
             account,
-            services: servicesFor?.(server.id),
+            services,
           },
         ]
       : [];
@@ -148,6 +168,26 @@ export default function ServerAccountsPanel({
                 fullAccounts,
                 servicesFor,
               );
+              const exactAccountKey = (serverId: string) =>
+                row.byServer[serverId]?.accountKey ||
+                sources.find((source) => source.serverId === serverId)?.account
+                  .id;
+              const cannotSignIn = (server: StudioServer) =>
+                serverConnection(statuses[server.id])?.blocked === true ||
+                (!!servicesFor && !servicesFor(server.id)) ||
+                (!!row.byServer[server.id] && !exactAccountKey(server.id));
+              const signIn = (server: StudioServer) => {
+                if (cannotSignIn(server)) return;
+                const accountKey = exactAccountKey(server.id);
+                startAccount(server.id, {
+                  action: "account-sign-in",
+                  ...(accountKey ? { accountKey } : {}),
+                  provider: row.provider,
+                  email: row.email,
+                  label: row.label,
+                  serverLabel: server.label,
+                });
+              };
               const facts = (
                 <>
                   <dl className="account-facts">
@@ -155,7 +195,8 @@ export default function ServerAccountsPanel({
                     <dd>{row.email || "Unavailable"}</dd>
                     <dt>Servers</dt>
                     <dd>
-                      {rowServers(row, servers)
+                      {servers
+                        .filter((server) => row.byServer[server.id])
                         .map((server) => server.label)
                         .join(", ")}
                     </dd>
@@ -168,11 +209,13 @@ export default function ServerAccountsPanel({
                     </dd>
                     <dt>Sign-in</dt>
                     <dd>
-                      {Object.values(row.byServer).some(
-                        (account) => account?.status !== "ready",
-                      )
-                        ? "Sign in needed"
-                        : "Signed in"}
+                      {servers
+                        .filter((server) => row.byServer[server.id])
+                        .map(
+                          (server) =>
+                            `${server.label}: ${signInStatus(row.byServer[server.id]!.status)}`,
+                        )
+                        .join(", ")}
                     </dd>
                   </dl>
                   <small className="server-accounts-help">
@@ -189,12 +232,9 @@ export default function ServerAccountsPanel({
                   >
                     {rowServers(row, servers).map((server) => {
                       const account = row.byServer[server.id];
-                      const offline = [
-                        "offline",
-                        "degraded",
-                        "schema-mismatch",
-                      ].includes(statuses[server.id] || "");
-                      const state = offline
+                      const connection = serverConnection(statuses[server.id]);
+                      const blocked = cannotSignIn(server);
+                      const state = blocked
                         ? "offline"
                         : account?.status === "ready"
                           ? "ready"
@@ -207,11 +247,11 @@ export default function ServerAccountsPanel({
                         state === "ready"
                           ? `✓ ${server.label}`
                           : state === "error"
-                            ? `⚠ ${server.label} · error, sign in again`
+                            ? `⚠ ${server.label} · sign-in check failed`
                             : state === "reauth"
-                              ? `⚠ ${server.label} · sign in again`
+                              ? `⚠ ${server.label} · ${signInStatus(account!.status).toLocaleLowerCase()}`
                               : state === "offline"
-                                ? `${server.label} · offline`
+                                ? `${server.label} · ${connection?.label.toLocaleLowerCase() || "connection unknown"}`
                                 : `+ ${server.label}`;
                       const source = sources.find(
                         (item) => item.serverId === server.id,
@@ -226,16 +266,8 @@ export default function ServerAccountsPanel({
                             type="button"
                             className="server-account-chip"
                             data-state={state}
-                            disabled={offline}
-                            onClick={() =>
-                              startAccount(server.id, {
-                                action: "account-sign-in",
-                                provider: row.provider,
-                                email: row.email,
-                                label: row.label,
-                                serverLabel: server.label,
-                              })
-                            }
+                            disabled={blocked}
+                            onClick={() => signIn(server)}
                           >
                             {text}
                           </button>
@@ -285,31 +317,48 @@ export default function ServerAccountsPanel({
                       <span className="account-plan">{row.plan}</span>
                     )}
                     <span className="account-status-markers">
-                      {rowServers(row, servers).some((server) =>
-                        ["offline", "degraded", "schema-mismatch"].includes(
-                          statuses[server.id] || "",
-                        ),
-                      ) && (
-                        <span className="account-strip-state" title="Offline">
-                          <CloudOff size={14} aria-hidden="true" />
-                          <span className="account-strip-state-label">
-                            Offline
+                      {servers
+                        .filter((server) => row.byServer[server.id])
+                        .map((server) => {
+                          const connection = serverConnection(
+                            servicesFor && !servicesFor(server.id)
+                              ? undefined
+                              : statuses[server.id],
+                          );
+                          if (!connection) return null;
+                          const label = `${server.label}: ${connection.label}`;
+                          return (
+                            <span
+                              key={server.id}
+                              className="account-strip-state"
+                              title={label}
+                            >
+                              <CloudOff size={14} aria-hidden="true" />
+                              <span>{label}</span>
+                            </span>
+                          );
+                        })}
+                      {servers
+                        .filter(
+                          (server) =>
+                            row.byServer[server.id]?.status !== "ready" &&
+                            row.byServer[server.id],
+                        )
+                        .map((server) => (
+                          <span
+                            key={server.id}
+                            className="account-strip-state"
+                            title={`${server.label}: ${signInStatus(row.byServer[server.id]!.status)}`}
+                          >
+                            <LogIn size={14} aria-hidden="true" />
+                            <span>
+                              {server.label}:{" "}
+                              <span>
+                                {signInStatus(row.byServer[server.id]!.status)}
+                              </span>
+                            </span>
                           </span>
-                        </span>
-                      )}
-                      {Object.values(row.byServer).some(
-                        (account) => account?.status !== "ready",
-                      ) && (
-                        <span
-                          className="account-strip-state"
-                          title="Sign in needed"
-                        >
-                          <LogIn size={14} aria-hidden="true" />
-                          <span className="account-strip-state-label">
-                            Sign in needed
-                          </span>
-                        </span>
-                      )}
+                        ))}
 
                       {servers
                         .filter((server) => row.byServer[server.id]?.isDefault)
@@ -432,6 +481,37 @@ export default function ServerAccountsPanel({
                           ))}
                       </Menu.Dropdown>
                     </Menu>
+                    <div
+                      className="server-account-login-actions"
+                      role="group"
+                      aria-label={`Sign in for ${row.email || row.label}`}
+                    >
+                      {servers
+                        .filter((server) => row.byServer[server.id])
+                        .map((server) => (
+                          <ActionButton
+                            key={server.id}
+                            actionRole="secondary"
+                            leftSection={<LogIn size={14} aria-hidden="true" />}
+                            aria-label={`Sign in to ${row.label || row.email} on ${server.label}`}
+                            disabled={cannotSignIn(server)}
+                            onClick={() => signIn(server)}
+                          >
+                            Sign in on {server.label}
+                          </ActionButton>
+                        ))}
+                      {servers
+                        .filter(
+                          (server) =>
+                            row.byServer[server.id] &&
+                            !exactAccountKey(server.id),
+                        )
+                        .map((server) => (
+                          <span role="status" key={server.id}>
+                            {server.label}: Account identity unknown.
+                          </span>
+                        ))}
+                    </div>
                   </div>
                   {sources.length ? (
                     <AccountLimitsAcrossServers

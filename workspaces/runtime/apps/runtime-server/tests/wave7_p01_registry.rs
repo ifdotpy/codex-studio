@@ -3581,7 +3581,10 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     // Shutdown closes the bridge's query; whether the bridge persists the
     // aborted turn as interrupted before it exits is a race. Either outcome
     // is safe: an unknown turn is held, a confirmed interruption continues
-    // with a restart notice. Neither resends the interrupted input.
+    // with a restart notice. Shutdown also drains stdout, so the start reply
+    // can arrive before exit. Native history can then confirm completion.
+    // This fixture's SDK finishes an aborted query successfully. No outcome
+    // resends the interrupted input.
     let recovered = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = fixture
@@ -3605,7 +3608,12 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
             let continued = record["restartRecovery"]["stage"] == "continued"
                 && record["status"] == "completed"
                 && record["inFlight"] != true;
-            if held || continued {
+            let finished = record["restartRecovery"]["stage"] == "finished"
+                && record["status"] == "completed"
+                && record["autoWake"] == true
+                && record["inFlight"] != true
+                && record["connectionRecovery"]["outcome"] == "completed";
+            if held || continued || finished {
                 break record;
             }
             restart_changes.changed().await.unwrap();
@@ -3614,7 +3622,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .await
     .unwrap_or_else(|_| {
         panic!(
-            "in-flight Claude turn should be held or continued: {}",
+            "in-flight Claude turn should be held, continued, or finished: {}",
             direct_agent_debug(&fixture.store, &agent_id)
         )
     });
@@ -3635,6 +3643,12 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     if recovered["restartRecovery"]["stage"] == "held" {
         assert_eq!(second_event_status, "uncertain");
         assert_eq!(queries_started, 2, "restart must not resend the turn");
+    } else if recovered["restartRecovery"]["stage"] == "finished" {
+        assert_eq!(second_event_status, "delivered");
+        assert_eq!(
+            queries_started, 2,
+            "a finished turn needs no continuation; the input is not resent"
+        );
     } else {
         assert_eq!(second_event_status, "delivered");
         let continued_events = recovered["startAttempt"]["events"].as_array().unwrap();

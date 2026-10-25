@@ -345,13 +345,19 @@ impl StdioProviderTaskFactory {
                 };
                 let (result, exit_unobserved) = tokio::select! {
                     biased;
-                    _ = Shutdown::cancelled(&mut stop) => (Ok(()), false),
+                    // Dropping the exchange closed stdin, the provider's exit
+                    // request. Keep its final stdout, such as a completed turn,
+                    // before the group is killed.
+                    _ = Shutdown::cancelled(&mut stop) => {
+                        interrupt_stdin_write(&mut pending_write);
+                        (drain_stdout_before_cleanup(&mut reader, &mut inbox, &stop, deadline).await, false)
+                    },
                     // Observe exit before accepting another stdin write. The drain
                     // retains stdout and serves ACKs without touching the dead stdin.
                     exited = leader_exit => match exited {
                         Ok(()) => {
                             interrupt_stdin_write(&mut pending_write);
-                            (drain_stdout_before_cleanup(&mut reader, &mut inbox, &mut stop, deadline).await, false)
+                            (drain_stdout_before_cleanup(&mut reader, &mut inbox, &stop, deadline).await, false)
                         },
                         Err(error) => (Err(process_error(error)), true),
                     },
@@ -364,7 +370,7 @@ impl StdioProviderTaskFactory {
                             // A child can close stdin before exiting. EPIPE must
                             // stop writes without dropping its final stdout.
                             interrupt_stdin_write(&mut pending_write);
-                            let drained = drain_stdout_before_cleanup(&mut reader, &mut inbox, &mut stop, deadline).await;
+                            let drained = drain_stdout_before_cleanup(&mut reader, &mut inbox, &stop, deadline).await;
                             let result = match drained {
                                 Err(AdapterError::Supervisor(SupervisorError::ConnectionLost)) => Err(error),
                                 result => result,
@@ -452,15 +458,18 @@ impl StdioProviderTaskFactory {
     }
 }
 
+/// Delivers the stdout an ended exchange still holds, after leader exit, a
+/// closed stdin, or a requested shutdown, until EOF or the bounded grace.
 async fn drain_stdout_before_cleanup(
     reader: impl std::future::Future<Output = Result<(), AdapterError>>,
     commands: &mut mpsc::Receiver<AdapterCommand>,
-    stop: &mut watch::Receiver<bool>,
+    stop: &watch::Receiver<bool>,
     deadline: Option<Instant>,
 ) -> Result<(), AdapterError> {
     // A full journal or a descendant holding stdout open must not prevent
     // signalling and reaping the still-owned group. Never extend the caller's
-    // deadline, and preserve shutdown's priority and successful result.
+    // deadline. Shutdown does not cut the drain short: frames the provider
+    // writes while exiting are part of its session.
     let grace_deadline = Instant::now() + REAP_GRACE;
     let drain_deadline = deadline.map_or(grace_deadline, |end| end.min(grace_deadline));
     let drain = async {
@@ -469,21 +478,23 @@ async fn drain_stdout_before_cleanup(
             result = commands_after_exit(commands) => result,
         }
     };
-    let result = tokio::select! {
-        biased;
-        _ = Shutdown::cancelled(stop) => Ok(()),
-        result = tokio::time::timeout_at(drain_deadline, drain) => {
-            result.unwrap_or_else(|_| {
-                if deadline.is_some_and(|end| end <= grace_deadline) {
-                    Err(AdapterError::Timeout)
-                } else {
-                    Err(SupervisorError::ConnectionLost.into())
-                }
-            })
-        }
-    };
+    let result = tokio::time::timeout_at(drain_deadline, drain)
+        .await
+        .unwrap_or_else(|_| {
+            if deadline.is_some_and(|end| end <= grace_deadline) {
+                Err(AdapterError::Timeout)
+            } else {
+                Err(SupervisorError::ConnectionLost.into())
+            }
+        });
     close_commands(commands);
-    result
+    // A requested shutdown keeps its successful result whatever ended the drain.
+    // A closed sender counts as shutdown, as in `Shutdown::cancelled`.
+    if *stop.borrow() || stop.has_changed().is_err() {
+        Ok(())
+    } else {
+        result
+    }
 }
 
 fn close_commands(commands: &mut mpsc::Receiver<AdapterCommand>) {
@@ -875,7 +886,7 @@ mod tests {
             Err(SupervisorError::ConnectionLost.into())
         };
         let result =
-            drain_stdout_before_cleanup(reader, &mut inbox, &mut shutdown.subscribe(), None).await;
+            drain_stdout_before_cleanup(reader, &mut inbox, &shutdown.subscribe(), None).await;
         assert!(matches!(
             result,
             Err(AdapterError::Supervisor(SupervisorError::ConnectionLost))
@@ -910,7 +921,7 @@ mod tests {
                     None,
                 ),
                 &mut inbox,
-                &mut shutdown.subscribe(),
+                &shutdown.subscribe(),
                 deadline,
             )
             .await;
@@ -930,8 +941,10 @@ mod tests {
         }
     }
 
+    /// Shutdown keeps the drain going within the same bound: a line written
+    /// after the request still arrives, and the result stays successful.
     #[tokio::test(start_paused = true)]
-    async fn stdout_exit_drain_bounds_an_inherited_pipe_and_honors_shutdown() {
+    async fn stdout_exit_drain_bounds_an_inherited_pipe_and_continues_after_shutdown() {
         for cancel in [false, true] {
             let (mut writer, stdout) = tokio::io::duplex(1024);
             writer.write_all(b"final\n").await.expect("final line");
@@ -939,7 +952,7 @@ mod tests {
             let (entries, mut journal) = mpsc::channel(1);
             let shutdown = Shutdown::default();
             let (_commands, mut inbox) = mpsc::channel(LANE_CAPACITY);
-            let mut stop = shutdown.subscribe();
+            let stop = shutdown.subscribe();
             let started = Instant::now();
             let (result, ()) = tokio::join!(
                 drain_stdout_before_cleanup(
@@ -953,7 +966,7 @@ mod tests {
                         None,
                     ),
                     &mut inbox,
-                    &mut stop,
+                    &stop,
                     None,
                 ),
                 async {
@@ -961,19 +974,21 @@ mod tests {
                     assert_eq!(entry.cursor, EventCursor(1));
                     if cancel {
                         shutdown.cancel();
+                        writer.write_all(b"after\n").await.expect("late line");
+                        let entry = journal.recv().await.expect("late line drained");
+                        assert_eq!(entry.cursor, EventCursor(2));
                     }
                 },
             );
             if cancel {
                 assert!(result.is_ok());
-                assert_eq!(Instant::now(), started);
             } else {
                 assert!(matches!(
                     result,
                     Err(AdapterError::Supervisor(SupervisorError::ConnectionLost))
                 ));
-                assert_eq!(Instant::now() - started, REAP_GRACE);
             }
+            assert_eq!(Instant::now() - started, REAP_GRACE);
             assert!(journal.recv().await.is_none());
             drop(writer);
         }
@@ -1023,6 +1038,51 @@ mod tests {
             Some(true),
             "the group signal comes before the leader is reaped"
         );
+    }
+
+    /// A requested shutdown closes stdin and keeps reading stdout before it kills
+    /// the group. The Claude bridge writes its final frames, such as a
+    /// `turn/completed`, while it exits on stdin EOF; an immediate kill lost them
+    /// and left a finished turn stuck as disconnected.
+    #[tokio::test]
+    async fn shutdown_delivers_frames_written_on_stdin_eof_before_the_kill() {
+        let root = tempfile::tempdir().expect("owned child directory");
+        let mut attachment = StdioProviderTaskFactory {
+            deadline: None,
+            max_frame_bytes: 1024,
+            max_output_bytes: None,
+            stderr_log: None,
+        }
+        .open(
+            ProviderHandle::for_account("stdio-shutdown-drain"),
+            OpenOptions {
+                clock: SessionClock::default(),
+                expected_generation: Some(Generation(1)),
+                launch: ProviderLaunchSpec::new(
+                    vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "cat >/dev/null; printf '%s\\n' \
+                         '{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{}}'"
+                            .into(),
+                    ],
+                    std::collections::BTreeMap::new(),
+                    root.path().to_path_buf(),
+                ),
+            },
+            Shutdown::default(),
+        )
+        .await
+        .expect("child starts");
+        let exit = attachment.shutdown().await;
+        assert!(exit.result.is_ok(), "{:?}", exit.result);
+        assert!(exit.cleanup_error.is_none(), "{:?}", exit.cleanup_error);
+        let entry = attachment
+            .journal
+            .try_recv()
+            .expect("the frame written after stdin EOF is journaled");
+        assert_eq!(entry.cursor, EventCursor(1));
+        assert!(attachment.journal.try_recv().is_err());
     }
     use std::{
         pin::Pin,

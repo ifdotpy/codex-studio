@@ -86,3 +86,47 @@ it("tells another Studio version from a server that does not answer", async () =
     delete (globalThis as { window?: unknown }).window;
   }
 });
+
+it("preserves exact account keys and rejects malformed keys in public summaries", async () => {
+  const account = {
+    accountKey: "exact-profile",
+    provider: "claude",
+    email: null,
+    plan: null,
+    status: "ready",
+    label: "Work",
+    isDefault: false,
+  };
+  let row: unknown = { ...account, privateField: "fixture-only" };
+  (globalThis as { window?: unknown }).window = {
+    codexDesktop: {
+      serverCredentialAction: async () => ({
+        status: 200,
+        headers: [["x-studio-api-schema", API_SCHEMA_HASH]],
+        body: JSON.stringify({
+          chats: [],
+          projects: [],
+          alerts: [],
+          accounts: [row],
+          ready: true,
+          busy: false,
+          system: "fixture",
+          agentsRunning: 0,
+        }),
+      }),
+    },
+  };
+  try {
+    const result = await fetchServerSummary(
+      server,
+      new AbortController().signal,
+    );
+    expect(result.accounts).toEqual([account]);
+    row = { ...account, accountKey: 12 };
+    await expect(
+      fetchServerSummary(server, new AbortController().signal),
+    ).rejects.toThrow("Invalid server account summary.");
+  } finally {
+    delete (globalThis as { window?: unknown }).window;
+  }
+});

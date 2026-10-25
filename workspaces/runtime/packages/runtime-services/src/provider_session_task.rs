@@ -32,6 +32,11 @@ use tokio::{
 /// not count: that journal is finite, and counting it could hold back the
 /// frames the current generation needs to become ready.
 pub const MAX_UNSETTLED: usize = 64;
+/// Provider journal entries the session receives after it requested the
+/// provider's shutdown, beyond those its bounded lane already holds; unit:
+/// entries. They join the undelivered tail of the session exit. The adapter's
+/// drain grace bounds the tail in time; this bounds its memory.
+const SHUTDOWN_TAIL_ENTRIES: usize = 4096;
 const MAX_TIMEOUT_MS: u64 = u32::MAX as u64;
 
 pub struct SessionTaskConfig {
@@ -741,7 +746,9 @@ impl SessionTask {
         }
         self.settled.close();
         self.stop.cancel();
-        let exit = adapter.shutdown().await;
+        // The account may have stopped consuming events, so every lane can be
+        // full. Keep the provider's exit tail, such as a final turn/completed.
+        let (exit, tail) = adapter.shutdown_retaining_tail(SHUTDOWN_TAIL_ENTRIES).await;
         if let Some(future) = flight {
             self.retained.receipt = Some(future.await);
             self.retained.receipt_reported = false;
@@ -761,11 +768,13 @@ impl SessionTask {
                 );
             }
         }
+        // The pending event was received before every entry of the tail.
         let mut undelivered: Vec<_> = self.retained.pending.take().into_iter().collect();
-        while let Ok(journal) = adapter.journal.try_recv() {
+        for journal in tail {
+            let outcomes = self.tail_reply(&journal).into_iter().collect();
             undelivered.push(SessionEvent {
                 journal: Some(journal),
-                outcomes: vec![],
+                outcomes,
             });
         }
         let mut outcomes = self
@@ -792,6 +801,36 @@ impl SessionTask {
             outcomes,
             pending_acknowledgement: self.pending_ack(),
         }
+    }
+
+    /// Correlates a response in the exit tail with its request, as
+    /// `process_journal` does for a delivered entry. Without the reply, the
+    /// account applied the tail's notifications, such as `turn/started`, and
+    /// then settled the request as unknown: a start whose reply was in the tail
+    /// was neither accepted nor unknown, and a server restart could not recover
+    /// it. Only the reply is kept; the terminal path writes nothing, so a
+    /// request this reply would release stays queued and is reported unsent.
+    fn tail_reply(&mut self, entry: &JournalEntry) -> Option<SessionOutcome> {
+        let JournalPayload::Frame(frame @ Frame::Response { .. }) = &entry.payload else {
+            return None;
+        };
+        if entry.generation.0 != self.state.generation() {
+            return None;
+        }
+        let actions = self
+            .state
+            .receive_at(frame.clone(), entry.received_at_ms)
+            .ok()?;
+        actions.into_iter().find_map(|action| match action {
+            Action::Resolve {
+                ticket,
+                outcome: outcome @ RequestOutcome::Reply { .. },
+            } => self
+                .records
+                .remove(&ticket.id)
+                .map(|_| SessionOutcome::Resolved { ticket, outcome }),
+            _ => None,
+        })
     }
 
     fn finish_without_adapter(&mut self, result: Result<(), SessionTaskError>) -> SessionExit {

@@ -9,6 +9,7 @@ export type AccountDeleteTarget = {
 };
 
 export type ExternalAccountIdentity = {
+  accountKey?: string;
   provider: "codex" | "claude";
   email: string | null;
   label: string;
@@ -69,10 +70,12 @@ export function accountForExternalCommand<T extends AccountDeleteTarget>(
     (candidate) =>
       (candidate.provider === "claude" ? "claude" : "codex") ===
         identity.provider &&
-      (identity.email
-        ? candidate.email?.toLocaleLowerCase() ===
-          identity.email.toLocaleLowerCase()
-        : candidate.label === identity.label),
+      (identity.accountKey !== undefined
+        ? candidate.id === identity.accountKey
+        : identity.email
+          ? candidate.email?.toLocaleLowerCase() ===
+            identity.email.toLocaleLowerCase()
+          : candidate.label === identity.label),
   );
 }
 

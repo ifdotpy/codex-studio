@@ -924,6 +924,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const publicAccounts = useMemo(
     () =>
       accounts.data.accounts.map((account) => ({
+        accountKey: account.id,
         provider:
           account.provider === "claude"
             ? ("claude" as const)

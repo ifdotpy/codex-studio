@@ -91,6 +91,21 @@ test("a panel row maps to its server's account by provider and email, or label w
   expect(matchServerAccount(undefined, row)).toBeUndefined();
 });
 
+test("a full account match honors the exact server account key without a label fallback", () => {
+  const first = account({ id: "first", provider: "claude" });
+  const second = account({ id: "second", provider: "claude" });
+  const row = {
+    accountKey: "second",
+    provider: "claude" as const,
+    email: "person@example.test",
+    label: "Work",
+  };
+  expect(matchServerAccount([first, second], row)).toBe(second);
+  expect(matchServerAccount([first], row)).toBeUndefined();
+  const { accountKey: _key, ...legacy } = row;
+  expect(matchServerAccount([first, second], legacy)).toBeUndefined();
+});
+
 test("the account card uses the newest reading with data from any server", () => {
   const older = { server: "studio", limits: limits("a", 100, 10) };
   const newer = { server: "mbp", limits: limits("b", 200, 67) };

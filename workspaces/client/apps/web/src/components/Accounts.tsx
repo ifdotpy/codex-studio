@@ -872,7 +872,11 @@ export default function Accounts({
     setExternalServerLabel(
       command.action === "account-sign-in" ? command.serverLabel : "",
     );
-    if (command.action === "account-sign-in" && command.forceAdd) {
+    if (
+      command.action === "account-sign-in" &&
+      command.forceAdd &&
+      !command.accountKey
+    ) {
       setAddIntent({
         provider: command.provider,
         email: command.email,
@@ -910,7 +914,9 @@ export default function Accounts({
       }
       const account = accountForExternalCommand(current.accounts, command);
       if (command.action === "account-sign-in") {
-        if (account && !command.forceAdd) {
+        if (command.accountKey && !account) {
+          setError("This account is no longer saved on this server.");
+        } else if (account && (!command.forceAdd || command.accountKey)) {
           if (account.provider === "claude") setClaudeLogin(account);
           else setCodexLogin(account);
         } else {

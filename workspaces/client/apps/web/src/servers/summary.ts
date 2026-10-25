@@ -9,7 +9,7 @@ import type { StudioServer } from "./registry";
 import { serverCredentialAdapter } from "./transport";
 import type { CredentialResponse } from "./desktopCredentials";
 import type { ServerNavigation } from "./navigation";
-import type { ServerAccount } from "./navigation";
+import { readServerAccounts, type ServerAccount } from "./navigation";
 export function isSummaryRequest(request: Request, server: StudioServer) {
   const url = new URL(request.url);
   return (
@@ -89,26 +89,7 @@ export async function fetchServerSummary(
     typeof value.agentsRunning !== "number"
   )
     throw new Error("Invalid server summary.");
-  const accounts: ServerAccount[] = [];
-  for (const account of value.accounts) {
-    if (
-      !account ||
-      (account.provider !== "codex" && account.provider !== "claude") ||
-      (account.email !== null && typeof account.email !== "string") ||
-      (account.plan !== null && typeof account.plan !== "string") ||
-      typeof account.status !== "string" ||
-      typeof account.label !== "string" ||
-      typeof account.isDefault !== "boolean"
-    )
-      throw new Error("Invalid server account summary.");
-    accounts.push({
-      provider: account.provider,
-      email: account.email,
-      plan: account.plan,
-      status: account.status,
-      label: account.label,
-      isDefault: account.isDefault,
-    });
-  }
+  const accounts = readServerAccounts(value.accounts);
+  if (!accounts) throw new Error("Invalid server account summary.");
   return { ...value, accounts, opened: null, error: "" };
 }

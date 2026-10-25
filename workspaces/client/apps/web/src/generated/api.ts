@@ -22764,6 +22764,8 @@ export interface components {
     };
     /** SummaryAccount */
     SummaryAccount: {
+      /** Account Key */
+      accountKey?: string;
       /**
        * Email
        * @default null

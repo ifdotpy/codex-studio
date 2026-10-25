@@ -34,6 +34,20 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+test("provider shutdown tails and status reader boundaries stay in both fast filters", () => {
+  const profiles = readFileSync(".config/nextest.toml", "utf8");
+  for (const name of [
+    "shutdown_delivers_frames_written_on_stdin_eof_before_the_kill",
+    "shutdown_keeps_the_stdout_tail_beyond_full_lanes_in_order",
+    "shutdown_tail_reply_resolves_its_request_instead_of_unknown",
+    "status_reads_only_team_monitors_and_keeps_its_response",
+    "rejected_status_arguments_never_enter_the_writer_lane",
+    "status_membership_change_after_snapshot_refuses_the_revision_write",
+  ]) {
+    assert.equal(profiles.split(name).length - 1, 2, name);
+  }
+});
+
 test("host_exec process scenarios have a named manual owner and fast boundary coverage", () => {
   const profiles = readFileSync(".config/nextest.toml", "utf8");
   assert.doesNotMatch(profiles, /test\(\/\^host_exec_service::\//);

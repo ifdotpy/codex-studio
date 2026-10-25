@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Snapshot } from "../types";
-import type { ServerNavigation } from "./navigation";
+import type { ServerNavigation, ServerAccount } from "./navigation";
+import { createScreenChannel, type ScreenChannel } from "./screenChannel";
 
 const hooks = vi.hoisted(() => ({
   effects: [] as (() => void | (() => void))[],
+  screen: null as ScreenChannel | null,
+}));
+vi.mock("./ScreenContext", async (original) => ({
+  ...(await original<typeof import("./ScreenContext")>()),
+  useScreenChannel: () => hooks.screen,
 }));
 vi.mock("react", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react")>()),
@@ -52,6 +58,7 @@ let records: Map<string, string>;
 let cleanup: (() => void)[];
 beforeEach(() => {
   hooks.effects = [];
+  hooks.screen = null;
   cleanup = [];
   records = new Map();
   surface = Object.assign(new EventTarget(), {
@@ -101,15 +108,45 @@ function mount(
       work: [],
     },
   },
+  accounts: ServerAccount[] = [],
 ) {
   const run = vi.fn();
-  useServerFrame(data, "lead", "", run, new Set(["lead"]), []);
+  useServerFrame(data, "lead", "", run, new Set(["lead"]), accounts);
   for (const effect of hooks.effects) {
     const stop = effect();
     if (stop) cleanup.push(stop);
   }
   return run;
 }
+
+it.each(["parent", "screen"])(
+  "preserves the exact account key in the %s public snapshot",
+  (mode) => {
+    const publish = vi.fn();
+    if (mode === "screen")
+      hooks.screen = createScreenChannel("remote", publish);
+    const account = {
+      accountKey: "exact-profile",
+      provider: "claude" as const,
+      email: "work@example.test",
+      plan: "Max",
+      status: "ready",
+      label: "Work",
+      isDefault: false,
+    };
+    const source = { ...account, privateField: "fixture-only" };
+    mount(undefined, [source]);
+    const calls =
+      mode === "screen"
+        ? publish.mock.calls
+        : surface.parent.postMessage.mock.calls;
+    const message = calls.find(
+      ([value]) => value.kind === "studio-server-accounts",
+    )?.[0];
+    expect(message?.serverId).toBe("remote");
+    expect(message?.accounts).toEqual([account]);
+  },
+);
 
 type NavigationMessage = {
   kind: string;

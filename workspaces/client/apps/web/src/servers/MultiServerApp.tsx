@@ -67,7 +67,7 @@ import type { ResourceConnectionState } from "../sync/resourceEvents";
 import ServerManager from "./ServerManager";
 import ServerAccountsPanel from "./ServerAccountsPanel";
 import { accountServers } from "./accountServers";
-import type { ServerAccount } from "./navigation";
+import { readServerAccounts, type ServerAccount } from "./navigation";
 import {
   studioPreferencesStorageKey,
   parseStudioPreferences,
@@ -695,28 +695,8 @@ function MultiServerShell({
       if (value.ready) readyScreens.current.add(id);
       applyNavigationRef.current(id, value);
     } else if (data.kind === "studio-server-accounts") {
-      if (!Array.isArray(data.accounts) || data.accounts.length > 500) return;
-      const accounts: ServerAccount[] = [];
-      for (const row of data.accounts) {
-        if (
-          !row ||
-          (row.provider !== "codex" && row.provider !== "claude") ||
-          (row.email !== null && typeof row.email !== "string") ||
-          (row.plan !== null && typeof row.plan !== "string") ||
-          typeof row.status !== "string" ||
-          typeof row.label !== "string" ||
-          typeof row.isDefault !== "boolean"
-        )
-          return;
-        accounts.push({
-          provider: row.provider,
-          email: row.email,
-          plan: row.plan,
-          status: row.status,
-          label: row.label,
-          isDefault: row.isDefault,
-        });
-      }
+      const accounts = readServerAccounts(data.accounts);
+      if (!accounts) return;
       setAccountsByServer((old) => ({ ...old, [id]: accounts }));
     } else if (
       data.kind === "studio-server-status" &&

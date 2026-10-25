@@ -16,6 +16,129 @@ function waitForPost(page, pathname, matches = () => true) {
   });
 }
 
+test("collapsed account sign-in keeps exact ownership at phone and desktop widths", async ({
+  page,
+}, testInfo) => {
+  const local = await fixture("Local", false, [
+    {
+      id: "decoy-claude-profile",
+      provider: "claude",
+      label: "Work",
+      email: "work@example.test",
+      plan: "Max",
+      status: "signedOut",
+      isDefault: false,
+    },
+    {
+      id: "exact-claude-profile",
+      provider: "claude",
+      label: "Work",
+      email: "work@example.test",
+      plan: "Max",
+      status: "signedOut",
+      isDefault: true,
+    },
+  ]);
+  const remote = await fixture("Remote", true, []);
+  local.discoverPeer(remote, "unreachable", "unreachable");
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let received;
+  const requestReceived = new Promise((resolve) => {
+    received = resolve;
+  });
+  const posts = [];
+  await page.route("**/api/accounts/claude/login", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const body = route.request().postDataJSON();
+    posts.push(body);
+    received();
+    await held;
+    await route.fulfill({
+      json: {
+        requestId: body.login_id,
+        accountKey: body.account_key,
+        status: "cancelled",
+      },
+    });
+  });
+  try {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(local.origin + "/?studio-navigation=combined");
+    await page.locator("#message").waitFor();
+    await page
+      .getByRole("button", { name: "Studio settings", exact: true })
+      .click();
+    const settings = page.getByRole("dialog", { name: "Studio settings" });
+    await settings.getByRole("tab", { name: "Accounts", exact: true }).click();
+    const row = settings.locator(
+      '[data-account-identity="claude:work@example.test"]',
+    );
+    const details = row.getByRole("button", { name: /^Limit details for/ });
+    const login = row.getByRole("button", {
+      name: "Sign in to Work on Local",
+      exact: true,
+    });
+    for (const width of [1440, 320]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await expect(details).toHaveAttribute("aria-expanded", "false");
+      await expect(login).toBeVisible();
+      await expect(login).toBeEnabled();
+      expect(
+        await row
+          .locator(".account-identity strong")
+          .evaluate((name) => name.scrollWidth <= name.clientWidth),
+      ).toBe(true);
+      await expect(row).toContainText("Local: Sign in needed");
+      await expect(row).not.toContainText("Remote: Offline");
+      await login.scrollIntoViewIfNeeded();
+      const box = await login.boundingBox();
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+      expect(box.height).toBeGreaterThanOrEqual(32);
+      await settings.screenshot({
+        path: testInfo.outputPath(`account-login-${width}.png`),
+      });
+    }
+    await details.click();
+    await expect(
+      row
+        .locator(".account-facts dt")
+        .filter({ hasText: /^Servers$/ })
+        .evaluate((term) => term.nextElementSibling.textContent),
+    ).resolves.toBe("Local");
+    await details.click();
+    expect(posts).toHaveLength(0);
+    await login.click();
+    const dialog = page.getByRole("dialog", { name: /Sign in to Claude/ });
+    await expect(dialog).toBeVisible();
+    expect(posts).toHaveLength(0);
+    await dialog
+      .getByRole("button", { name: "Start sign-in", exact: true })
+      .evaluate((button) => {
+        button.click();
+        button.click();
+      });
+    await requestReceived;
+    await expect(
+      dialog.getByRole("button", { name: "Retry sign-in", exact: true }),
+    ).toBeDisabled();
+    expect(posts).toHaveLength(1);
+    expect(posts[0].account_key).toBe("exact-claude-profile");
+    expect(new URL(page.url()).origin).toBe(local.origin);
+    release();
+    await expect(dialog).toContainText("Sign-in cancelled.");
+    expect(posts).toHaveLength(1);
+  } finally {
+    release();
+    await page.close();
+    await local.close();
+    await remote.close();
+  }
+});
+
 test("accounts settings show per-server state and provider choices", async ({
   page,
   context,

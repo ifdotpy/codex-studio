@@ -304,6 +304,7 @@ export async function fixture(
             ]
           : [],
         accounts: savedAccounts.map((account) => ({
+          accountKey: account.id,
           provider: account.provider || "codex",
           email: account.email || null,
           plan: account.plan || null,

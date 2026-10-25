@@ -13,6 +13,28 @@ const storage = {
 
 beforeEach(() => values.clear());
 
+it("resolves an exact account key without selecting a duplicate or a missing replacement", () => {
+  const accounts = ["first", "second"].map((id) => ({
+    id,
+    provider: "claude",
+    email: "same@example.test",
+    label: "Work",
+  }));
+  const identity = {
+    provider: "claude" as const,
+    email: "same@example.test",
+    label: "Work",
+    accountKey: "second",
+  };
+  expect(accountForExternalCommand(accounts, identity)?.id).toBe("second");
+  expect(
+    accountForExternalCommand(accounts, { ...identity, accountKey: "removed" }),
+  ).toBeUndefined();
+  expect(
+    accountForExternalCommand(accounts, { ...identity, provider: "codex" }),
+  ).toBeUndefined();
+});
+
 it("resolves an external account action to the account's stored delete identity", () => {
   const accounts = [
     {

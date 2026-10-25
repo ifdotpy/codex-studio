@@ -246,11 +246,14 @@ caller supplies an absolute Tokio deadline and raw frame/total-output bounds.
 The task concurrently reads stdout, drains stderr, and writes commands; the
 single deadline also interrupts stalled writes. Cleanup runs before completion
 or status-channel closure. This adapter requires Unix process groups.
-After observing the leader's exit, the task drains stdout into the journal to
-EOF, bounded by the earlier of the caller's deadline and the cleanup grace owned
-by [`provider_stdio.rs`](src/provider_stdio.rs). Shutdown still interrupts this
-drain. ACKs remain served so session settlement can release the bounded journal;
-new writes settle as `NotSent` without touching stdin or waiting for observation.
+After the leader exits or shutdown closes stdin, the task drains stdout into
+the journal until EOF. The earlier of the caller's deadline and the cleanup
+grace in [`provider_stdio.rs`](src/provider_stdio.rs) bounds this drain.
+Shutdown does not interrupt this drain. A requested shutdown still reports success.
+`shutdown_retaining_tail(limit)` receives this tail while the adapter stops.
+
+ACKs remain available so session settlement can release the bounded journal.
+New writes settle as `NotSent` without touching stdin or waiting for observation.
 A full journal or an inherited pipe cannot delay process-group cleanup beyond
 that bound.
 

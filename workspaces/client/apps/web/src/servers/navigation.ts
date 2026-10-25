@@ -14,6 +14,7 @@ import { chatIndicators } from "../components/chat-status/chatStatusModel";
 import type { ChatIndicator } from "../components/chat-status/chatStatusModel";
 import { sidebarSnapshot, type ServerSidebarSnapshot } from "./sidebarSnapshot";
 export type ServerAccount = {
+  accountKey?: string;
   provider: "codex" | "claude";
   email: string | null;
   plan: string | null;
@@ -21,6 +22,37 @@ export type ServerAccount = {
   label: string;
   isDefault: boolean;
 };
+
+/** Validate the public account snapshot before the server settings use it. */
+export function readServerAccounts(value: unknown): ServerAccount[] | null {
+  if (!Array.isArray(value) || value.length > 500) return null;
+  const accounts: ServerAccount[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const row = item as Record<string, unknown>;
+    if (
+      (row.provider !== "codex" && row.provider !== "claude") ||
+      (row.email !== null && typeof row.email !== "string") ||
+      (row.plan !== null && typeof row.plan !== "string") ||
+      typeof row.status !== "string" ||
+      typeof row.label !== "string" ||
+      typeof row.isDefault !== "boolean" ||
+      (row.accountKey !== undefined &&
+        (typeof row.accountKey !== "string" || !row.accountKey))
+    )
+      return null;
+    accounts.push({
+      ...(row.accountKey === undefined ? {} : { accountKey: row.accountKey }),
+      provider: row.provider,
+      email: row.email,
+      plan: row.plan,
+      status: row.status,
+      label: row.label,
+      isDefault: row.isDefault,
+    });
+  }
+  return accounts;
+}
 export type ServerNavigation = {
   sidebar?: ServerSidebarSnapshot;
   projects: (Omit<LocationProject, "id"> & { id?: string })[];
@@ -79,6 +111,7 @@ export type ServerCommand =
   | { action: "notifications"; agentId: string; itemId?: string }
   | {
       action: "account-sign-in";
+      accountKey?: string;
       provider: "codex" | "claude";
       email: string | null;
       label: string;
@@ -237,6 +270,9 @@ export function isServerCommand(value: unknown): value is ServerCommand {
       (command.email === null || typeof command.email === "string") &&
       typeof command.label === "string" &&
       typeof command.serverLabel === "string" &&
+      (command.accountKey === undefined ||
+        (typeof command.accountKey === "string" && !!command.accountKey)) &&
+      !(command.accountKey !== undefined && command.forceAdd === true) &&
       (command.forceAdd === undefined || typeof command.forceAdd === "boolean")
     );
   if (command.action === "account-action")

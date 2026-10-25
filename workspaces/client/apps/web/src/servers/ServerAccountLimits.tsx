@@ -20,40 +20,65 @@ export function useServerFullAccounts(
 ) {
   const [accounts, setAccounts] = useState<Accounts>({});
   const fallback = useServerApi();
-  const latest = useRef({ servicesFor, fallback });
-  latest.current = { servicesFor, fallback };
-  const key = serverIds.join("\n");
+  const current = serverIds.map((id) => ({
+    id,
+    api: servicesFor ? servicesFor(id)?.api : fallback,
+  }));
+  const readers = useRef(current);
+  if (
+    readers.current.length !== current.length ||
+    readers.current.some(
+      (reader, index) =>
+        reader.id !== current[index]?.id || reader.api !== current[index]?.api,
+    )
+  )
+    readers.current = current;
+  const sources = readers.current;
+  const settledOwners = useRef(new Map<string, typeof fallback>());
   useEffect(() => {
     let stopped = false;
-    for (const id of key ? key.split("\n") : []) {
-      const { servicesFor, fallback } = latest.current;
-      void (servicesFor?.(id)?.api ?? fallback)
+    for (const { id, api } of sources) {
+      if (!api) continue;
+      void api
         .get("/api/accounts")
         .then((result) => {
-          if (!stopped)
+          if (!stopped) {
+            settledOwners.current.set(id, api);
             setAccounts((old) => ({ ...old, [id]: result.accounts }));
+          }
         })
         .catch((failure: unknown) => console.warn(errorText(failure)));
     }
     return () => {
       stopped = true;
     };
-  }, [key]);
-  return [accounts, setAccounts] as const;
+  }, [sources]);
+  const visible: Accounts = Object.fromEntries(
+    sources.flatMap(({ id, api }) =>
+      api && settledOwners.current.get(id) === api && accounts[id]
+        ? [[id, accounts[id]]]
+        : [],
+    ),
+  );
+  return [visible, setAccounts] as const;
 }
 
 /** The server's own account that a panel row stands for. */
 export const matchServerAccount = (
   accounts: Account[] | undefined,
-  row: Pick<ServerAccount, "provider" | "email" | "label">,
-) =>
-  accounts?.find(
+  row: Pick<ServerAccount, "provider" | "email" | "label" | "accountKey">,
+) => {
+  const matches = accounts?.filter(
     (account) =>
       account.provider === row.provider &&
-      (row.email
-        ? account.email?.toLocaleLowerCase() === row.email.toLocaleLowerCase()
-        : account.label === row.label),
+      (row.accountKey !== undefined
+        ? account.id === row.accountKey
+        : row.email
+          ? account.email?.toLocaleLowerCase() === row.email.toLocaleLowerCase()
+          : account.label === row.label),
   );
+  return matches?.length === 1 ? matches[0] : undefined;
+};
 
 /** Requests in this subtree go to the given server, or to the default API. */
 function ServerScope({

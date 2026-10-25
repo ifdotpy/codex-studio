@@ -1,5 +1,37 @@
 import { expect, it } from "vitest";
-import { isServerCommand } from "./navigation";
+import { isServerCommand, readServerAccounts } from "./navigation";
+
+it("preserves exact account keys in the received public account snapshot", () => {
+  const account = {
+    provider: "claude",
+    email: "work@example.test",
+    plan: "Max",
+    status: "ready",
+    label: "Work",
+    isDefault: true,
+  };
+  expect(readServerAccounts([{ ...account, accountKey: "exact" }])).toEqual([
+    { ...account, accountKey: "exact" },
+  ]);
+  expect(readServerAccounts([account])).toEqual([account]);
+  expect(readServerAccounts([{ ...account, accountKey: 12 }])).toBeNull();
+  expect(readServerAccounts([{ ...account, accountKey: "" }])).toBeNull();
+});
+
+it("accepts an exact public account key and rejects malformed keys", () => {
+  const command = {
+    action: "account-sign-in",
+    provider: "claude",
+    email: null,
+    label: "Work",
+    serverLabel: "Remote",
+    accountKey: "profile-exact",
+  };
+  expect(isServerCommand(command)).toBe(true);
+  expect(isServerCommand({ ...command, accountKey: 12 })).toBe(false);
+  expect(isServerCommand({ ...command, accountKey: "" })).toBe(false);
+  expect(isServerCommand({ ...command, forceAdd: true })).toBe(false);
+});
 
 it("accepts account commands with only public account identity fields", () => {
   expect(
