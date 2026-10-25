@@ -1,18 +1,22 @@
 # Native Layr chats
 
 This guidance applies when `workspaceMode` is `layr-native`. The UI label is `Layr`.
+New chats default to this mode on macOS and Linux.
+
 Agents run as native host processes on macOS APFS or Linux btrfs.
 The project lives in a host layr store. The lead owns its main line.
 The original project folder is separate. Studio does not synchronize it with main.
 
 ## Store and roles
 
-| Value        | Runtime source                                                           |
-| ------------ | ------------------------------------------------------------------------ |
-| Store        | `<Studio state>/layr-native/store`                                       |
-| Binary       | `<Studio state>/layr-native/bin/layr`, version 0.2.0                     |
-| Environment  | `LAYR_ROOT` selects the store. `LAYR_DIRECT=1` selects direct execution. |
-| Command path | The managed binary folder comes first in `PATH`.                         |
+| Value           | Runtime source                                                           |
+| --------------- | ------------------------------------------------------------------------ |
+| Store           | `<Studio state>/layr-native/store`                                       |
+| Binary          | `<Studio state>/layr-native/bin/layr`, version 0.2.0                     |
+| Environment     | `LAYR_ROOT` selects the store. `LAYR_DIRECT=1` selects direct execution. |
+| Worker selector | `workspace: "layr-native"`. Reviewers inherit this mode.                 |
+| Ready mode      | `workspaceMode: "layr-native"`, `executionMode: "native"`.               |
+| Command path    | The managed binary folder comes first in `PATH`.                         |
 
 Use the assigned environment. Do not install over the user's layr binary or import the project again.
 
@@ -21,6 +25,8 @@ Use the assigned environment. Do not install over the user's layr binary or impo
 | Lead        | Main in the host store. The lead owns main.                                                          |
 | Implementer | Its own `agent-<sha256(agent ID)>` line, with warm caches from main.                                 |
 | Reviewer    | Main stays read-only. The private `layrScratch` folder permits writes. No worker line or turn saves. |
+
+A native Layr reviewer cannot select `shared` as its workspace.
 
 Read `layrReady: true` before you edit. The `cwd` field names the assigned line folder.
 The `layrProjectId`, `layrLine`, and `layrStateId` fields identify its project, line, and base state.
@@ -46,6 +52,7 @@ The project ID comes from the canonical original host folder.
 Use [the layr task recipes](../../layr/SKILL.md) for recovery, checks, queues, probes, overlays, and warm caches.
 Save overlay edits as named states before the turn ends. Automatic states omit private overlay files.
 An automatic state is separate from the named head. It does not replace a named task result.
+Studio blocks the next turn until the previous turn save completes.
 
 Acceptance refuses when the source line no longer matches the reviewed state.
 Resolve conflicts in an owned task line before acceptance when main requires checks.
@@ -58,15 +65,5 @@ Direct shell commands can need store writes that the reviewer's sandbox refuses.
 The try path uses a runtime sandbox wrapper inside the temporary state copy.
 It uses `sandbox-exec` on macOS and Bubblewrap on Linux.
 The command can write only to that copy and the private scratch folder. It has no network access.
-
-## Open implementation facts
-
-The `layr-native-mode` worker owns this integration.
-These facts still require confirmation from that worker:
-
-| Fact                                     | Status                               |
-| ---------------------------------------- | ------------------------------------ |
-| Worker workspace selection field         | Open. Read the current spawn schema. |
-| Mode defaults and platform refusal rules | Open. Read the chat's saved mode.    |
 
 Existing sessions retain their saved role and tool contracts.
