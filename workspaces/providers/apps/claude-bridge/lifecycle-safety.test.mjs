@@ -6,6 +6,7 @@ import { rollbackBoundary, forkAtTurn, rollbackSession } from "./controls.mjs";
 import { nativeInputIds } from "./input-messages.mjs";
 import { recordedInputIds, inputHistoryOutcome } from "./stall-watch.mjs";
 import { readNativeHistory } from "./native-history.mjs";
+import { waitForFile } from "./testing/file-signals.mjs";
 import { startBridge } from "./testing/bridge-harness.mjs";
 import { createSessionStore } from "./session-store.mjs";
 
@@ -363,6 +364,9 @@ test("rollback remaps every retained composite part and preserves checkpoint ide
   expect(session.turns[0].items[0].nativeIds).toEqual(["fork0", "fork1"]);
   expect(session.turns[0].items[0].nativeId).toBe("fork1");
   expect(session.turns[0].fileCheckpointMessageId).toBeUndefined();
+  expect(session.historyBranches[0].turns[0].fileCheckpointMessageId).toBe(
+    "u1",
+  );
 });
 
 test.each(["direct", "timer", "success"])(
@@ -550,4 +554,148 @@ test("fork accepts the authoritative boundary of a legacy remapped turn", async 
   );
   expect(target.turns[0].nativeMessageId).toBe("fork0");
   expect(target.turns[0].items[0].nativeId).toBe("fork0");
+});
+
+test("an unresolved middle parent keeps absent steer history unknown", () => {
+  const row = (type, uuid, parentUuid) => ({
+    type,
+    uuid,
+    parentUuid,
+    sessionId,
+    cwd: "/project",
+    isSidechain: false,
+  });
+  expect(
+    inputHistoryOutcome(
+      [row("user", inputId, null), row("assistant", replyId, steerId)],
+      { sessionId, cwd: "/project", anchorIds: [inputId], inputIds: [steerId] },
+    ),
+  ).toBe("unknown");
+});
+
+test("a legacy delivered steer without provenance fails before native fork submission", async () => {
+  const source = {
+    id: "legacy-fork",
+    cwd: "/project",
+    started: true,
+    turns: [
+      {
+        id: "original-turn",
+        status: "completed",
+        nativeMessageId: "remapped-initial",
+        items: [
+          { type: "userMessage", nativeId: "original-initial" },
+          {
+            type: "userMessage",
+            nativeId: "original-steer",
+            delivery: "steer",
+            deliveryStatus: "delivered",
+          },
+        ],
+      },
+    ],
+  };
+  const rows = [
+    message("user", "remapped-initial"),
+    message("assistant", "reply1"),
+    message("user", "remapped-steer"),
+    message("assistant", "reply2"),
+  ];
+  const forkSession = vi.fn(async () => ({ sessionId: "target" }));
+  await expect(
+    forkAtTurn(
+      source,
+      {},
+      {
+        persist: vi.fn(),
+        forkSession,
+        getSessionMessages: async (id) =>
+          id === "legacy-fork"
+            ? rows
+            : rows.map((row, i) => ({ ...row, uuid: `fork${i}` })),
+      },
+    ),
+  ).rejects.toThrow(/mapping.*unavailable|boundary/i);
+  expect(forkSession).not.toHaveBeenCalled();
+});
+
+test("Stop finalizes a stuck SDK whose close throws without redelivering unknown input", async () => {
+  const bridge = await startBridge(
+    String.raw`
+    import fs from "node:fs/promises";
+    export const tool = () => ({});
+    export const createSdkMcpServer = value => value;
+    export const forkSession = async () => { throw new Error("No fork expected"); };
+    export const getSessionMessages = async () => [];
+    export function query({ prompt, options }) {
+      let consumed = false, held;
+      return {
+        supportedModels: async () => [{ value: "default", displayName: "Default", resolvedModel: "claude-opus-5-5" }],
+        accountInfo: async () => ({ email: "test@example.test", subscriptionType: "Claude Max", apiProvider: "firstParty" }),
+        initializationResult: async () => ({ commands: [] }),
+        interrupt: async () => ({ cancelled: [], still_queued: held ? [held.uuid] : [] }),
+        close() { if (consumed) throw new Error("SDK close failed"); },
+        async *[Symbol.asyncIterator]() {
+          const first = await prompt.next();
+          if (first.done) return;
+          consumed = true;
+          yield { type: "user", isReplay: true, uuid: first.value.uuid };
+          yield { type: "system", subtype: "init" };
+          held = (await prompt.next()).value;
+          await fs.writeFile(options.cwd + "/steer-read", "read");
+          await new Promise(() => {});
+        },
+      };
+    }
+  `,
+    "claude-close-failure-",
+    {
+      clock: true,
+      env: {
+        STUDIO_CLAUDE_STALL_INTERRUPT_WAIT_MS: "3",
+        STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "3",
+      },
+    },
+  );
+  try {
+    const started = await bridge.call("turn/start", {
+      threadId: bridge.thread,
+      clientUserMessageId: "initial",
+      input: [{ type: "text", text: "initial" }],
+    });
+    await bridge.call("turn/steer", {
+      threadId: bridge.thread,
+      expectedTurnId: started.turn.id,
+      clientUserMessageId: "held",
+      input: [{ type: "text", text: "held" }],
+    });
+    await waitForFile(path.join(bridge.root, "steer-read"));
+    await bridge.call("turn/interrupt", {
+      threadId: bridge.thread,
+      turnId: started.turn.id,
+    });
+    const done = await bridge.advanceUntil(
+      (note) => note.method === "turn/completed",
+    );
+    expect(["failed", "interrupted"]).toContain(done.params.turn.status);
+    expect(done.params.turn.error.message).toMatch(
+      /close failed|did not end|did not stop/,
+    );
+    expect(done.params.turn.unappliedSteers).toBeUndefined();
+    expect(
+      bridge.notes.filter((note) => note.method === "turn/completed"),
+    ).toHaveLength(1);
+    expect((await bridge.call("thread/loaded/list", {})).data).toEqual([]);
+    const saved = (
+      await bridge.call("thread/read", {
+        threadId: bridge.thread,
+        includeTurns: true,
+      })
+    ).thread.turns[0];
+    expect(saved.items.find((item) => item.id === "held").deliveryStatus).toBe(
+      "submitted",
+    );
+  } finally {
+    await bridge.close();
+  }
 });

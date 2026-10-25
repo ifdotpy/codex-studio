@@ -235,6 +235,26 @@ export function inputHistoryOutcome(
     )
   )
     return "unknown";
+  // Syntax and a pinned file do not prove that no middle row was removed.
+  // Every covered parent must resolve, and the main conversation must be one
+  // continuous chain from the opening input through the final transcript row.
+  const seen = new Set([rows[anchors[0]].uuid]);
+  let previous = rows[anchors[0]].uuid;
+  for (const row of rows.slice(anchors[0] + 1)) {
+    if (row.isSidechain === true) continue;
+    if (row.parentUuid != null && !seen.has(row.parentUuid)) return "unknown";
+    if (["user", "assistant"].includes(row.type)) {
+      if (
+        !main(row) ||
+        typeof row.uuid !== "string" ||
+        seen.has(row.uuid) ||
+        row.parentUuid !== previous
+      )
+        return "unknown";
+      previous = row.uuid;
+    }
+    if (typeof row.uuid === "string") seen.add(row.uuid);
+  }
   const recorded = recordedInputIds(rows.map((row) => JSON.stringify(row)));
   if (!recorded) return "unknown";
   const positions = inputIds.map((id) => {

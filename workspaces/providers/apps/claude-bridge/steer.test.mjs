@@ -756,6 +756,7 @@ function historySdk(mode) {
  const abort=new AbortController(),cwd=options.cwd;
  const directory=process.env.CLAUDE_CONFIG_DIR+'/projects/'+cwd.replace(/[^a-zA-Z0-9]/g,'-');
  fs.mkdirSync(directory,{recursive:true});
+ let historyParent=null;
  const history=directory+'/'+(options.sessionId||options.resume)+'.jsonl';
  if(!fs.existsSync(history))fs.writeFileSync(history,'');
  fs.appendFileSync(cwd+'/.queries','q');
@@ -764,7 +765,7 @@ function historySdk(mode) {
     .replace(
       "fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\\n');",
       `fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\\n');
- if(input.value.message.content[0].text==='pulled'||'${mode}'==='all'||('${mode}'==='partial'&&input.value.shouldQuery===false))fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,sessionId:options.sessionId||options.resume,cwd,isSidechain:false})+'\\n');`,
+ if(input.value.message.content[0].text==='pulled'||'${mode}'==='all'||('${mode}'==='partial'&&input.value.shouldQuery===false)){fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:historyParent,sessionId:options.sessionId||options.resume,cwd,isSidechain:false})+'\\n');historyParent=input.value.uuid;}`,
     )
     .replace(
       "close(){abort.abort();}",
@@ -869,6 +870,7 @@ for (const mode of ["empty", "partial", "all"]) {
         JSON.stringify({
           type: "user",
           uuid: item.nativeId,
+          parentUuid: item.nativeIds[0],
           sessionId: bridge.thread,
           cwd: bridge.root,
           isSidechain: false,

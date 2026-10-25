@@ -110,6 +110,20 @@ function remapTurn(turn, source, forkMessages) {
   delete turn.fileCheckpointMessageId;
   delete turn.fileCheckpointSource;
 }
+// Validate every retained input against the authoritative SDK rows before
+// creating a native branch. Legacy steers without supported provenance cannot
+// be guessed from text or position; refuse the operation before any effect.
+function preflightRetained(turns, messages) {
+  try {
+    for (const turn of turns)
+      remapTurn(structuredClone(turn), messages, messages);
+  } catch (cause) {
+    throw new Error(
+      "The Claude input mapping is unavailable; no native history operation was submitted",
+      { cause },
+    );
+  }
+}
 function comparable(message) {
   return JSON.stringify({ type: message.type, message: message.message });
 }
@@ -164,6 +178,8 @@ export async function rollbackSession(session, request, deps) {
       dir: session.nativeHistoryCwd || session.cwd,
     });
     const boundary = rollbackBoundary(session.turns, messages, turnId);
+    const previousTurns = structuredClone(session.turns);
+    preflightRetained(previousTurns.slice(0, boundary.index), messages);
     const fileMessageId = session.turns[boundary.index].fileCheckpointMessageId;
     let filePlan;
     if (restoreFiles) {
@@ -204,7 +220,7 @@ export async function rollbackSession(session, request, deps) {
       createdAt: new Date().toISOString(),
       retainedCount: boundary.index,
       sourceMessages: messages.slice(0, boundary.end),
-      previousTurns: structuredClone(session.turns),
+      previousTurns,
       upToMessageId: boundary.upToMessageId,
     };
     Object.defineProperty(session.controlRequests, requestId, {
@@ -334,6 +350,7 @@ export async function forkAtTurn(source, params, deps) {
       throw new Error(
         "The exact Claude branch boundary is unavailable after compaction or history recovery",
       );
+    preflightRetained(retained, messages);
     const fork = await deps.forkSession(nativeId, {
       dir,
       ...(params.lastTurnId != null

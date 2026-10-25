@@ -22,7 +22,7 @@ with such input, the bridge closes the CLI and reconciles its final native
 history. A split input is delivered only if every part is recorded; no recorded
 parts proves it unapplied, while partial or unavailable evidence stays unknown.
 Malformed, torn, or changed native history and a bounded tail without the
-opening input anchor remain uncertain. The bridge shows an uncertainty notice
+opening input anchor or a continuous parent chain remain uncertain. The bridge shows an uncertainty notice
 and never authorizes redelivery from that evidence.
 The next start resumes a fresh CLI, and retries reuse recorded user-message
 identities even for auto-steered input. Query-closing controls refuse unsettled
@@ -42,7 +42,9 @@ The existing disk-full deferral remains available.
 Rollback and fork boundaries use every native part of a composite input in
 order, beginning at its earliest part. Forked history remaps every retained input
 UUID. File checkpoints keep their own final-message identity and are not carried
-across an unverified fork.
+across an unverified fork. Every retained input mapping is checked before a
+native fork is submitted. Legacy delivered inputs without supported provenance
+require recovery instead of creating an unvalidated native branch.
 
 ## Restart recovery
 

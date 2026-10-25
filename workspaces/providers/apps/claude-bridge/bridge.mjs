@@ -1040,6 +1040,14 @@ function lifecycleFailure(s, active, error) {
   process.stderr.write(
     "Claude turn finalization failed: " + error.message + "\n",
   );
+  // Watchdog failures must end a visible turn, even if the SDK never yields
+  // again. A finalizer already owns its completion and cannot be repeated.
+  if (!active.turn || finishingTurns.has(active.turn)) return;
+  return finishTurn(s, active, null, error).catch((failure) => {
+    process.stderr.write(
+      "Claude turn finalization failed: " + failure.message + "\n",
+    );
+  });
 }
 function deferResult(s, active, result) {
   active.deferredResult = result;
@@ -1112,7 +1120,8 @@ function finishTurn(s, active, result, error) {
 async function finalizeTurn(s, active, turn, result, error, state) {
   const stall = (state.stall =
     active.stall?.turnId === turn.id ? active.stall : null);
-  let closeError;
+  let closeError = stall?.closeError;
+  error ||= closeError;
   let closed = (state.closed = Boolean(stall?.closed));
   if (closed) await stall.closed;
   // A handed-off steer without an echo cannot coexist with a later turn on
@@ -1375,7 +1384,12 @@ async function recoverStall(s, active, found) {
     setTimeout(resolve, limits.exitWaitMs),
   );
   active.input.close();
-  active.q?.close();
+  stall.closeError = closeQuery(active);
+  if (stall.closeError)
+    turn.stallError = {
+      ...turn.stallError,
+      message: message + " " + stall.closeError.message,
+    };
   await stall.closed;
   // Closing normally ends the SDK stream, and its owner finishes the turn.
   // If the stream still has not ended, finish it here and drop the query.
@@ -1385,10 +1399,18 @@ async function recoverStall(s, active, found) {
     s,
     active,
     null,
-    new Error("Claude did not stop after Studio closed it"),
+    stall.closeError || new Error("Claude did not stop after Studio closed it"),
   ).catch((error) => lifecycleFailure(s, active, error));
 }
-const armStallWatch = watchStalls(queries, studioWaits, limits, recoverStall);
+const armStallWatch = watchStalls(
+  queries,
+  studioWaits,
+  limits,
+  (s, active, found) =>
+    recoverStall(s, active, found).catch((error) =>
+      lifecycleFailure(s, active, error),
+    ),
+);
 async function startSession(s, active, p) {
   const initial = active.turn;
   const startedAt = Date.now();
