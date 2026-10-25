@@ -49,6 +49,23 @@ fn ts_strings(lines: &mut String, constants: &[(&str, &str)]) {
     }
 }
 
+fn provider_method_policy_mjs() -> String {
+    let rules = crate::provider_method_policy::THREAD_SERIALIZATION_RULES
+        .iter()
+        .map(|rule| {
+            format!(
+                "  [{}, {}],\n",
+                json_string(rule.method),
+                rule.true_parameter
+                    .map_or_else(|| "null".into(), json_string)
+            )
+        })
+        .collect::<String>();
+    format!(
+        "// {HEADER}\nconst rules = [\n{rules}];\nexport function isThreadSerialized(method, params) {{\n  return rules.some(\n    ([name, parameter]) =>\n      name === method && (parameter === null || params[parameter] === true),\n  );\n}}\n"
+    )
+}
+
 fn shared_values_ts() -> String {
     let mut text = format!("// {HEADER}\n");
     ts_constants(
@@ -795,6 +812,11 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
         Rendered {
+            path: "workspaces/providers/apps/claude-bridge/provider-method-policy.generated.mjs"
+                .into(),
+            text: provider_method_policy_mjs(),
+        },
+        Rendered {
             path: web("subscriptionEntities.ts"),
             text: subscription_scopes_ts(&scopes),
         },
@@ -933,6 +955,54 @@ mod tests {
         assert!(!validator.is_valid(
             &serde_json::json!([{"nodes":[{"sentences":[{"text":"x","index":"bad"}]}],"length":1}])
         ));
+    }
+
+    #[test]
+    fn provider_method_policy_matches_generated_bridge_for_parameter_shapes() {
+        let root = repository_root();
+        let script = r#"import { isThreadSerialized } from './workspaces/providers/apps/claude-bridge/provider-method-policy.generated.mjs';
+let input = ''; for await (const chunk of process.stdin) input += chunk;
+process.stdout.write(JSON.stringify(JSON.parse(input).map(([method, params]) => isThreadSerialized(method, params))));"#;
+        let mut cases = Vec::new();
+        for method in crate::provider_method_policy::THREAD_SERIALIZATION_RULES
+            .iter()
+            .map(|rule| rule.method)
+            .chain(["turn/interrupt", "unknown/method"])
+        {
+            for params in [
+                serde_json::json!({}),
+                serde_json::json!({"includeTurns":false}),
+                serde_json::json!({"includeTurns":true}),
+                serde_json::json!({"includeTurns":"true"}),
+                serde_json::json!({"includeTurns":null}),
+            ] {
+                cases.push((method, params));
+            }
+        }
+        let expected = cases
+            .iter()
+            .map(|(method, params)| {
+                crate::provider_method_policy::is_thread_serialized(method, params)
+            })
+            .collect::<Vec<_>>();
+        let node = std::env::var(NODE_ENVIRONMENT).unwrap_or_else(|_| "node".into());
+        let mut child = Command::new(node)
+            .args(["--input-type=module", "-e", script])
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("Node policy witness");
+        child
+            .stdin
+            .take()
+            .expect("input pipe")
+            .write_all(&serde_json::to_vec(&cases).expect("cases serialize"))
+            .expect("write policy cases");
+        let output = child.wait_with_output().expect("policy witness exits");
+        assert!(output.status.success());
+        let actual: Vec<bool> = serde_json::from_slice(&output.stdout).expect("policy results");
+        assert_eq!(actual, expected);
     }
 
     #[test]

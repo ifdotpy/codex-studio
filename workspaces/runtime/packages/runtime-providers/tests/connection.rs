@@ -350,7 +350,7 @@ fn claude_cancel_removes_pending_and_orphan_and_duplicate_responses_are_ignored(
     let (active, _) = session
         .submit(
             Method::ThreadRead,
-            json!({"threadId":"t"}),
+            json!({"threadId":"t","includeTurns":true}),
             0,
             20,
             Some("t".into()),
@@ -672,6 +672,11 @@ fn every_claude_serialized_method_waits_behind_same_thread_operation() {
         Method::ThreadResume,
         Method::ThreadFork,
         Method::ThreadRead,
+        Method::ThreadRollback,
+        Method::ClaudeSettings,
+        Method::ClaudeState,
+        Method::ClaudeFileBackups,
+        Method::ThreadCompactStart,
     ] {
         let mut session = state(true);
         let (_, start) = session
@@ -686,7 +691,14 @@ fn every_claude_serialized_method_waits_behind_same_thread_operation() {
             .expect("scripted test operation");
         assert_eq!(outgoing(&start).len(), 1);
         let (_, queued) = session
-            .submit(method, json!({}), 0, 50, Some("same".into()), false)
+            .submit(
+                method,
+                json!({"includeTurns":true}),
+                0,
+                50,
+                Some("same".into()),
+                false,
+            )
             .expect("scripted test operation");
         assert!(queued.is_empty(), "{method:?} queues behind turn/start");
     }
@@ -702,10 +714,11 @@ fn provider_frames_are_passed_to_dispatch_in_order_without_method_filtering() {
     ];
     for value in messages {
         let line = serde_json::to_vec(&value).expect("scripted test operation");
-        let frame = studio_runtime_providers::LineDecoder::new()
-            .push(&[line, vec![b'\n']].concat())
-            .expect("scripted test operation")
-            .remove(0);
+        let studio_runtime_providers::DecodedJournalPayload::Frame(frame) =
+            studio_runtime_providers::decode_journal_entry(1, 1, line).payload
+        else {
+            panic!("fixture frame must decode");
+        };
         assert_eq!(
             session
                 .receive(frame.clone())
@@ -747,10 +760,11 @@ fn all_recorded_replay_fixture_frames_parse_through_the_session() {
         for expected_frame in expected {
             let mut bytes = serde_json::to_vec(&expected_frame).expect("scripted test operation");
             bytes.push(b'\n');
-            let frame = studio_runtime_providers::LineDecoder::new()
-                .push(&bytes)
-                .expect("scripted test operation")
-                .remove(0);
+            let studio_runtime_providers::DecodedJournalPayload::Frame(frame) =
+                studio_runtime_providers::decode_journal_entry(1, 1, bytes).payload
+            else {
+                panic!("fixture frame must decode");
+            };
             assert_eq!(
                 serde_json::from_slice::<Value>(
                     &studio_runtime_providers::encode_line(&frame).expect("frame encodes")
@@ -796,13 +810,11 @@ fn recorded_rpc_reply_templates_match_session_request_ids_and_methods() {
         let mut response = reply["message"].clone();
         response["id"] = json!(ticket.id);
         let line = serde_json::to_vec(&response).expect("scripted test operation");
-        let mut decoder = studio_runtime_providers::LineDecoder::new();
-        let mut bytes = line;
-        bytes.push(b'\n');
-        let frame = decoder
-            .push(&bytes)
-            .expect("scripted test operation")
-            .remove(0);
+        let studio_runtime_providers::DecodedJournalPayload::Frame(frame) =
+            studio_runtime_providers::decode_journal_entry(1, 1, line).payload
+        else {
+            panic!("reply must decode");
+        };
         assert!(session
             .receive(frame)
             .expect("scripted test operation")
@@ -1180,4 +1192,62 @@ fn deadline_index_expires_only_due_unanswered_requests_for_both_providers() {
         assert_eq!(session.next_deadline_ms(), None);
         assert!(session.expire(60).1.is_empty(), "{fresh:?}");
     }
+}
+
+#[test]
+fn claude_thread_read_serializes_only_when_include_turns_is_true() {
+    for include in [
+        None,
+        Some(json!(false)),
+        Some(json!(true)),
+        Some(json!("true")),
+    ] {
+        let mut session = state(true);
+        session
+            .submit(Method::TurnStart, json!({}), 0, 50, Some("t".into()), false)
+            .expect("scripted test operation");
+        let mut params = json!({"threadId":"t"});
+        if let Some(value) = include.clone() {
+            params["includeTurns"] = value;
+        }
+        session
+            .preflight_with_id(
+                RequestId::String("read".into()),
+                Method::ThreadRead,
+                &params,
+                Some("t"),
+                false,
+            )
+            .expect("scripted test operation");
+        let (_, actions) = session
+            .submit(Method::ThreadRead, params, 0, 50, Some("t".into()), false)
+            .expect("scripted test operation");
+        assert_eq!(
+            outgoing(&actions).len(),
+            usize::from(include != Some(json!(true)))
+        );
+    }
+}
+
+#[test]
+fn malformed_reply_does_not_consume_pending_request_before_real_reply() {
+    let mut session = state(false);
+    let (ticket, _) = session
+        .submit(Method::ModelList, json!({}), 0, 50, None, false)
+        .expect("scripted test operation");
+    for value in [
+        json!({"id":ticket.id}),
+        json!({"id":ticket.id,"result":{},"error":{}}),
+    ] {
+        let entry = studio_runtime_providers::decode_journal_value(1, 1, &value);
+        if let studio_runtime_providers::DecodedJournalPayload::Frame(frame) = entry.payload {
+            session.receive(frame).expect("scripted test operation");
+        }
+    }
+    let actions = session
+        .receive(reply_for_test(ticket.id.clone()))
+        .expect("scripted test operation");
+    assert!(actions.iter().any(
+        |action| matches!(action, Action::Resolve { ticket: resolved, .. } if resolved == &ticket)
+    ));
 }

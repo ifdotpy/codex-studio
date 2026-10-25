@@ -3,7 +3,7 @@
 ## Change Contract
 
 - **Responsibility:** Synchronous JSON-line framing and request lifecycle state for Codex app-server and the Claude bridge.
-- **Public interface:** Pure `SessionState` events/actions, `LineDecoder`, `encode_line`, typed `Frame`/`Method`/`RequestId`, `Inbound`, and `PendingBook` transitions.
+- **Public interface:** Pure `SessionState` events/actions, `encode_line`, typed `Frame`/`Method`/`RequestId`, `Inbound`, and `PendingBook` transitions.
 - **Boundaries:** The caller owns process I/O, account discovery, durable settlement, callback delivery, and backpressure. This crate does not spawn processes or access HTTP or SQLite.
 - **Invariants:** Initialization precedes ordinary requests; tickets include their connection generation; registered IDs correlate replies. Deadlines and transport loss preserve uncertainty without retries, and late matched replies remain evidence.
 - **Configuration owners:** [`codec.rs`](src/codec.rs) owns methods and frame limits; [`provider_kind.rs`](src/provider_kind.rs) owns provider identity and wire profiles; callers supply monotonic deadline values.
@@ -11,9 +11,10 @@
 
 ## Framing and request state
 
-`LineDecoder::push` accepts arbitrary byte chunks and returns complete frames in
-order. Call `finish` at EOF to detect a truncated final line. `encode_line`
-emits one JSON object and a trailing LF. Unknown methods and extension fields
+The journal decoders accept one complete stdout record and preserve its cursor,
+generation, and raw bytes on malformed input. `encode_line` emits one JSON object
+and a trailing LF. Replies require exactly one of `result` or `error`; an explicit
+`result: null` is valid. Unknown methods and extension fields
 survive a decode/encode round trip. Request parameters and response bodies
 remain `serde_json::Value`; the codec validates their envelopes.
 
@@ -27,8 +28,10 @@ receipt. The caller must confirm that write before reporting initialization as
 complete. `expire` marks only due requests unknown; transport loss enters
 `Lost`. `receive_at` uses the transport arrival timestamp to classify a reply,
 including one processed after its deadline. Neither path repeats the request.
-Claude's wire profile serializes selected operations within each thread while
-allowing independent threads to proceed. Cancellation and definitely unsent
+Claude's wire profile consumes the shared
+[method policy](../runtime-schema/src/provider_method_policy.rs) to serialize
+selected operations within each thread while allowing independent threads to
+proceed. `studio-contracts` generates the bridge's copy of the same policy. Cancellation and definitely unsent
 rejection release that thread's lane.
 
 ## Callers and checks
@@ -38,7 +41,7 @@ drives these actions. The [process adapters](../runtime-process/README.md) own
 stdio and supervisor transport. The [Claude bridge](../../../providers/apps/claude-bridge/README.md)
 owns SDK translation.
 
-[`tests/codec.rs`](tests/codec.rs) covers split frames, malformed envelopes,
+[`tests/codec.rs`](tests/codec.rs) covers journal records, malformed envelopes,
 frame limits, unknown fields, and exact encoding. [`tests/connection.rs`](tests/connection.rs)
 covers initialization receipts, deadlines, generation fencing, cancellation,
 restored requests, and per-thread ordering. Its replay witnesses consume

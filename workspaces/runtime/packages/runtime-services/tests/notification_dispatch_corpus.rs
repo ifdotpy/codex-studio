@@ -1,6 +1,5 @@
 //! Account limits belong to the durable account journal, not thread dispatch.
 use serde_json::{Value, json};
-use studio_runtime_providers::LineDecoder;
 use studio_runtime_services::notification_dispatch::{
     NotificationStreamBuffer, ProviderDeliveryIdentity, PublicationContext, dispatch_notification,
 };
@@ -26,7 +25,11 @@ async fn live_limits_thread_dispatch_records_only_the_ignored_receipt() {
     }});
     let mut bytes = serde_json::to_vec(&notification).expect("notification JSON");
     bytes.push(b'\n');
-    let frame = LineDecoder::new().push(&bytes).expect("frame").remove(0);
+    let frame = match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, &bytes).payload
+    {
+        studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame,
+        other => panic!("fixture must decode: {other:?}"),
+    };
     store
         .transaction_with_error(move |tx| {
             let before = AgentRepository::get(tx, &"agent".into())?

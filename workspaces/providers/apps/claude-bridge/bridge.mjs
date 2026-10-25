@@ -1,3 +1,4 @@
+import { isThreadSerialized } from "./provider-method-policy.generated.mjs";
 import {
   cacheReport,
   idleRefusal,
@@ -3175,21 +3176,7 @@ lines.on("line", (line) => {
   const params = message.params || {};
   // Serialize session mutations, but keep interrupt and permission replies independent.
   const key = params.threadId;
-  const ordered =
-    key &&
-    !(message.method === "thread/read" && params.includeTurns !== true) &&
-    [
-      "turn/start",
-      "turn/steer",
-      "thread/resume",
-      "thread/fork",
-      "thread/read",
-      "thread/rollback",
-      "claude/settings",
-      "claude/state",
-      "claude/fileBackups",
-      "thread/compact/start",
-    ].includes(message.method);
+  const ordered = key && isThreadSerialized(message.method, params);
   const before = ordered
     ? operations.get(key) || Promise.resolve()
     : Promise.resolve();

@@ -1354,6 +1354,53 @@ async fn full_command_and_event_lanes_do_not_block_cancellation_or_join() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn dropping_submission_waiting_for_full_lane_keeps_shared_session_alive() {
+    let (mut session, mut peer) = open().await;
+    ready(&mut session, &mut peer).await;
+    let control = session.control.clone();
+    let mut prepared = vec![];
+    for id in 2..LANE_CAPACITY as u64 + 3 {
+        prepared.push(control.prepare(spec(id, 100)).await.unwrap());
+    }
+    for cursor in 1..=(LANE_CAPACITY * 2 + 1) as u64 {
+        peer.events
+            .send(entry(cursor, 0, JournalPayload::Stderr(json!({}))))
+            .await
+            .unwrap();
+    }
+    pending(
+        peer.events
+            .send(entry(100, 0, JournalPayload::Stderr(json!({})))),
+    )
+    .await;
+    let mut submitted = vec![];
+    for request in prepared {
+        let mut submit = Box::pin(control.submit(request));
+        pending(submit.as_mut()).await;
+        submitted.push(submit);
+    }
+    // The last future is waiting for bounded channel capacity, so it has not
+    // admitted a command and may be abandoned without stopping other agents.
+    drop(submitted.pop().unwrap());
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        matches!(
+            peer.stopping.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ),
+        "an unsent submission stopped the shared session"
+    );
+    control.cancel();
+    session.checked_shutdown().await;
+    peer.gone.await.unwrap();
+    for submit in submitted {
+        assert!(submit.await.is_err());
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn cancelled_completion_wait_retains_adapter_stop_barrier() {
     let (release, barrier) = oneshot::channel();
     let (factory, mut peer) = fake_with_stop_barrier(Some(barrier));

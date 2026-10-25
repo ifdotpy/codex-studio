@@ -308,9 +308,11 @@ restarts it. The prepared record is intent, not evidence of a provider write.
 `AdmissionUnknown` means the admission
 receipt was lost; never resubmit. Other admission errors mean no write was admitted.
 Accepted requests report Written, NotSent, or Unknown via `SessionOutcome::Write`.
-Keep each admission future pinned/owned across unrelated select outcomes. Dropping
-its owner before observing the result fences the session, including a buffered
-result; ordinary polling by mutable reference does not fence it.
+Keep each admission future pinned/owned across unrelated select outcomes. Once
+its command enters the bounded lane, dropping its owner before observing the
+result fences the session, including a buffered result. Dropping a submission
+still waiting for lane capacity leaves the shared session running; ordinary
+polling by mutable reference does not fence it.
 
 Written request outcomes include `recovery: Some(RecoveredRequest)` containing
 `ticket`, `operation_id`, `thread_id`, `lightweight`, `deadline_ms`, `unknown`, and

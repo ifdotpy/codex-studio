@@ -67,3 +67,8 @@ An email-only pin can gain UUIDs once. The bridge saves this evidence in
 returns usage. A restart preserves the pin. A changed or missing UUID then
 blocks the request. The Rust registry uses the same one-way upgrade rule.
 Codex identity and the existing Claude `accountId` remain unchanged.
+
+Per-thread operation ordering consumes `provider-method-policy.generated.mjs`,
+rendered by `studio-contracts` from the Rust
+[method policy](../../../runtime/packages/runtime-schema/src/provider_method_policy.rs).
+Refresh it with `pnpm run contracts:generate`; `pnpm run contracts:check` rejects drift.

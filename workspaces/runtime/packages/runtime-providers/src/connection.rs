@@ -2,6 +2,9 @@
 
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use studio_runtime_schema::provider_method_policy::{
+    is_thread_serialized, thread_serialization_rule,
+};
 use thiserror::Error;
 
 use crate::{
@@ -221,8 +224,9 @@ impl SessionState {
         if ticket.generation != self.generation {
             return Err(SessionError::StaleGeneration);
         }
-        let serialized =
-            self.wire.per_thread_serialized && !lightweight && is_thread_serialized(ticket.method);
+        let serialized = self.wire.per_thread_serialized
+            && !lightweight
+            && thread_serialization_rule(ticket.method.as_str()).is_some();
         if serialized {
             let thread = thread_id.as_ref().ok_or(SessionError::MissingThreadId)?;
             if self.active_threads.contains_key(thread) {
@@ -370,8 +374,9 @@ impl SessionState {
         if self.lifecycle != Lifecycle::Ready {
             return Err(SessionError::NotReady);
         }
-        let serialized =
-            self.wire.per_thread_serialized && !lightweight_read && is_thread_serialized(method);
+        let serialized = self.wire.per_thread_serialized
+            && !lightweight_read
+            && is_thread_serialized(method.as_str(), params);
         if serialized && thread_id.is_none() {
             return Err(SessionError::MissingThreadId);
         }
@@ -392,8 +397,9 @@ impl SessionState {
         if self.lifecycle != Lifecycle::Ready {
             return Err(SessionError::NotReady);
         }
-        let serialized =
-            self.wire.per_thread_serialized && !lightweight_read && is_thread_serialized(method);
+        let serialized = self.wire.per_thread_serialized
+            && !lightweight_read
+            && is_thread_serialized(method.as_str(), &params);
         if serialized && thread_id.is_none() {
             return Err(SessionError::MissingThreadId);
         }
@@ -744,17 +750,6 @@ fn validate_request_encoding(
         fields: Map::new(),
     }))?;
     Ok(())
-}
-
-fn is_thread_serialized(method: Method) -> bool {
-    matches!(
-        method,
-        Method::TurnStart
-            | Method::TurnSteer
-            | Method::ThreadResume
-            | Method::ThreadFork
-            | Method::ThreadRead
-    )
 }
 
 #[cfg(test)]

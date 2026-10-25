@@ -1,9 +1,8 @@
 use serde_json::{Map, Value, json};
 use studio_runtime_providers::{
-    CodecError, DecodedJournalPayload, Frame, LineDecoder, MAX_FRAME_BYTES, Method,
-    NotificationFrame, PendingBook, RequestFrame, RequestId, RequestState, ResponseBody,
-    decode_journal_entry, decode_journal_entry_borrowed, decode_journal_value, encode_line,
-    encode_line_into,
+    CodecError, DecodedJournalPayload, Frame, Method, NotificationFrame, PendingBook, RequestFrame,
+    RequestId, RequestState, ResponseBody, decode_journal_entry, decode_journal_entry_borrowed,
+    decode_journal_value, encode_line, encode_line_into,
 };
 
 fn method(method: Method, id: Option<RequestId>, params: Option<Value>) -> Frame {
@@ -21,19 +20,6 @@ fn method(method: Method, id: Option<RequestId>, params: Option<Value>) -> Frame
             fields: Map::new(),
         })
     }
-}
-
-fn padded_unknown_method_frame(payload_bytes: usize, delimiter: &[u8]) -> Vec<u8> {
-    let prefix = br#"{"method":"unknown","padding":""#;
-    let suffix = b"\"}";
-    let fixed_bytes = prefix.len() + suffix.len();
-    assert!(payload_bytes >= fixed_bytes);
-    let mut frame = Vec::with_capacity(payload_bytes + delimiter.len());
-    frame.extend_from_slice(prefix);
-    frame.resize(payload_bytes - suffix.len(), b'x');
-    frame.extend_from_slice(suffix);
-    frame.extend_from_slice(delimiter);
-    frame
 }
 
 #[test]
@@ -79,54 +65,10 @@ fn one_off_catalog_and_terminal_methods_keep_their_wire_names() {
             Some(json!({})),
         );
         let encoded = encode_line(&frame).expect("known method encodes");
-        let mut decoder = LineDecoder::new();
         assert_eq!(
-            decoder.push(&encoded).expect("known method decodes"),
-            vec![frame]
+            decode_journal_entry_borrowed(1, 1, &encoded).payload,
+            DecodedJournalPayload::Frame(frame)
         );
-    }
-}
-
-#[test]
-fn line_decoder_handles_every_split_and_concatenation() {
-    let frames = [
-        method(
-            Method::Initialize,
-            Some(RequestId::Number(1)),
-            Some(json!({"capabilities": {}})),
-        ),
-        method(
-            Method::TurnStarted,
-            None,
-            Some(json!({"turn": {"id": "t"}})),
-        ),
-        Frame::Response {
-            id: RequestId::String("claude:uuid".to_owned()),
-            body: ResponseBody::Result(json!({"thread": {"id": "c"}})),
-            fields: Map::new(),
-        },
-    ];
-    let encoded = frames
-        .iter()
-        .map(|frame| encode_line(frame).expect("encode frame"))
-        .collect::<Vec<_>>();
-    let stream = encoded.concat();
-
-    for split in 0..=stream.len() {
-        let mut decoder = LineDecoder::new();
-        let mut decoded = decoder.push(&stream[..split]).expect("first partial read");
-        decoded.extend(decoder.push(&stream[split..]).expect("second partial read"));
-        decoder.finish().expect("complete stream");
-        assert_eq!(decoded, frames);
-    }
-    for width in 1..=stream.len().min(97) {
-        let mut decoder = LineDecoder::new();
-        let mut decoded = Vec::new();
-        for chunk in stream.chunks(width) {
-            decoded.extend(decoder.push(chunk).expect("chunked stream"));
-        }
-        decoder.finish().expect("complete stream");
-        assert_eq!(decoded, frames);
     }
 }
 
@@ -139,16 +81,14 @@ fn unknown_method_and_extension_fields_round_trip_structurally() {
         "futureField": {"opaque": "kept"}
     });
     let bytes = serde_json::to_vec(&original).expect("fixture json");
-    let mut decoder = LineDecoder::new();
-    let decoded = decoder
-        .push(&[bytes, b"\n".to_vec()].concat())
-        .expect("decode unknown");
-    decoder.finish().expect("complete line");
+    let DecodedJournalPayload::Frame(decoded) = decode_journal_entry(1, 1, bytes).payload else {
+        panic!("unknown method must decode");
+    };
     assert!(
-        matches!(&decoded[0], Frame::UnknownMethod(frame) if frame.method == "future/newNotification")
+        matches!(&decoded, Frame::UnknownMethod(frame) if frame.method == "future/newNotification")
     );
     let round_trip: Value =
-        serde_json::from_slice(&encode_line(&decoded[0]).expect("encode unknown")).expect("json");
+        serde_json::from_slice(&encode_line(&decoded).expect("encode unknown")).expect("json");
     assert_eq!(round_trip, original);
 }
 
@@ -180,111 +120,6 @@ fn borrowed_encoder_preserves_exact_bytes_and_reuses_output_storage() {
         encode_line(&frame).expect("compatibility encoder"),
         expected
     );
-}
-
-#[test]
-fn decoder_reports_malformed_oversized_and_truncated_frames() {
-    let mut malformed = LineDecoder::new();
-    assert!(matches!(
-        malformed.push(b"{nope}\n"),
-        Err(CodecError::MalformedJson(_))
-    ));
-
-    let mut oversized = LineDecoder::new();
-    assert!(matches!(
-        oversized.push(&vec![b'x'; MAX_FRAME_BYTES + 1]),
-        Err(CodecError::FrameTooLarge { .. })
-    ));
-
-    let mut truncated = LineDecoder::new();
-    truncated
-        .push(b"{\"method\":\"initialized\"")
-        .expect("partial frame");
-    assert!(matches!(
-        truncated.finish(),
-        Err(CodecError::TruncatedFrame { .. })
-    ));
-}
-
-#[test]
-fn line_decoder_limits_each_lf_or_crlf_frame_independently() {
-    let frame_limit = MAX_FRAME_BYTES;
-    let mut concatenated = padded_unknown_method_frame(frame_limit / 2, b"\n");
-    concatenated.extend_from_slice(&padded_unknown_method_frame(frame_limit / 2, b"\n"));
-    assert!(concatenated.len() > frame_limit);
-    let mut decoder = LineDecoder::new();
-    assert_eq!(
-        decoder
-            .push(&concatenated)
-            .expect("two bounded frames")
-            .len(),
-        2
-    );
-    decoder.finish().expect("both frames consumed");
-
-    let exact_lf = padded_unknown_method_frame(frame_limit, b"\n");
-    let mut decoder = LineDecoder::new();
-    assert_eq!(decoder.push(&exact_lf).expect("maximum LF frame").len(), 1);
-    decoder.finish().expect("LF frame consumed");
-
-    let exact_crlf = padded_unknown_method_frame(frame_limit, b"\r\n");
-    let split = exact_crlf.len() - 1;
-    let mut decoder = LineDecoder::new();
-    assert!(
-        decoder
-            .push(&exact_crlf[..split])
-            .expect("maximum CRLF frame before delimiter completion")
-            .is_empty()
-    );
-    let mut bare_cr_eof = LineDecoder::new();
-    bare_cr_eof
-        .push(&exact_crlf[..split])
-        .expect("pending CR is allowed until the delimiter resolves");
-    assert!(matches!(
-        bare_cr_eof.finish(),
-        Err(CodecError::FrameTooLarge { limit }) if limit == frame_limit
-    ));
-    assert_eq!(
-        decoder
-            .push(&exact_crlf[split..])
-            .expect("split CRLF completes maximum frame")
-            .len(),
-        1
-    );
-    decoder.finish().expect("CRLF frame consumed");
-
-    let oversized = padded_unknown_method_frame(frame_limit + 1, b"\n");
-    let mut decoder = LineDecoder::new();
-    assert!(matches!(
-        decoder.push(&oversized),
-        Err(CodecError::FrameTooLarge { limit }) if limit == frame_limit
-    ));
-
-    let oversized_crlf = padded_unknown_method_frame(frame_limit + 1, b"\r\n");
-    let mut decoder = LineDecoder::new();
-    assert!(matches!(
-        decoder.push(&oversized_crlf),
-        Err(CodecError::FrameTooLarge { limit }) if limit == frame_limit
-    ));
-}
-
-#[test]
-fn line_decoder_compacts_once_and_keeps_tail_after_frame_error() {
-    let following = encode_line(&method(Method::TurnStarted, None, Some(json!({"id":"t"}))))
-        .expect("following frame encodes");
-    let mut input = b"{nope}\r\n".to_vec();
-    input.extend_from_slice(&following);
-    let mut decoder = LineDecoder::new();
-
-    assert!(matches!(
-        decoder.push(&input),
-        Err(CodecError::MalformedJson(_))
-    ));
-    assert_eq!(
-        decoder.push(&[]).expect("tail remains decodable"),
-        vec![method(Method::TurnStarted, None, Some(json!({"id":"t"})))]
-    );
-    decoder.finish().expect("tail fully consumed");
 }
 
 #[test]
@@ -348,27 +183,29 @@ fn journal_value_decoder_matches_the_wire_decoder_for_valid_and_malformed_values
 }
 
 #[test]
-fn response_defaults_and_error_precedence_are_preserved() {
-    let mut decoder = LineDecoder::new();
-    let decoded = decoder
-        .push(b"{\"id\":1}\n{\"id\":2,\"result\":{},\"error\":{\"code\":9}}\n")
-        .expect("supported response forms");
-    assert_eq!(
-        decoded[0],
-        Frame::Response {
-            id: RequestId::Number(1),
-            body: ResponseBody::Result(json!({})),
-            fields: Map::new(),
-        }
-    );
-    assert_eq!(
-        decoded[1],
-        Frame::Response {
-            id: RequestId::Number(2),
-            body: ResponseBody::Error(json!({"code": 9})),
-            fields: Map::new(),
-        }
-    );
+fn response_requires_exactly_one_body_and_preserves_explicit_null() {
+    for value in [
+        json!({"id":1}),
+        json!({"id":2,"result":null,"error":{"code":9}}),
+    ] {
+        assert!(
+            matches!(
+                decode_journal_value(1, 1, &value).payload,
+                DecodedJournalPayload::RawStdout {
+                    error: CodecError::MalformedFrame(_),
+                    ..
+                }
+            ),
+            "{value}"
+        );
+    }
+    assert!(matches!(
+        decode_journal_value(1, 1, &json!({"id":1,"result":null})).payload,
+        DecodedJournalPayload::Frame(Frame::Response {
+            body: ResponseBody::Result(Value::Null),
+            ..
+        })
+    ));
 }
 
 #[test]
