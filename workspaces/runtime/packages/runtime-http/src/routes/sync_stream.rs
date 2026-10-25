@@ -599,10 +599,10 @@ fn parse_since(
         if !resources.contains(&resource) {
             return Err(invalid());
         }
-        if let Some(cursor) = addition.since {
-            if since.insert(resource.to_string(), cursor).is_some() {
-                return Err(invalid());
-            }
+        if let Some(cursor) = addition.since
+            && since.insert(resource.to_string(), cursor).is_some()
+        {
+            return Err(invalid());
         }
     }
     Ok(since)
