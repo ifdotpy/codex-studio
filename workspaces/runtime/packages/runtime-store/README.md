@@ -354,3 +354,14 @@ completed retention may replace an old large `tail` with a preview and
 `outputTruncated` / `outputPreviewOnly` flags. Rust preserves either record
 shape. `analytics_meta.fileMigrationV1` is accepted only when its JSON phase is
 `complete`; an absent marker is `NotStarted`.
+
+## Usage cost evidence
+
+The [cost aggregate](src/repositories/cost_aggregate.rs) prices response rows from
+the shared normalized token contract and excludes running totals and gaps. It
+retains request token tuples so context pricing tiers apply per request. Native
+journal receipts replace provisional legacy evidence and add missing responses;
+final live or recovered evidence takes precedence. The typed response reader
+provides a bounded variant for diagnostics. Old analytics rows remain readable
+through the [shared adapter](../runtime-schema/src/usage/persisted.rs); rebuilding
+the derived cost tables upgrades their counting rules without rewriting usage rows.

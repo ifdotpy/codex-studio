@@ -2,6 +2,7 @@
 //! token counters only; response bodies live only for the bounded input batch.
 use crate::analytics_capture::{CaptureError, first, number};
 use serde_json::{Value, json};
+use studio_runtime_schema::usage::{UsageProvider, parse_token_usage};
 use studio_runtime_store::truthy;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -96,10 +97,16 @@ impl RolloutContext {
                 }
                 let turn = first(&[&p["turn_id"], &self.value["turnId"]]);
                 let usage = tokens(&p["usage"])?;
-                self.value["pendingUsage"] =
-                    json!({"responseId":p["response_id"],"turnId":turn,"usage":usage});
-                self.value["requestUsageAvailable"] = json!(true);
-                actions.push(event("thread/tokenUsage/updated",json!({"threadId":self.value["threadId"],"turnId":turn,"responseId":p["response_id"],"tokenUsage":{"total":tokens(&p["thread_token_usage"])?,"last":usage,"modelContextWindow":self.value["window"]},"turnUsage":tokens(&p["turn_token_usage"])?,"requestUsage":usage,"rawTokenUsageRecord":p,"usageSource":"responseRecord","_analyticsUsageKind":"response"}),at));
+                actions.push(usage_event(
+                    json!({
+                        "threadId":self.value["threadId"], "turnId":turn,
+                        "responseId":p["response_id"], "usageSource":"responseRecord",
+                        "requestUsage":usage, "rawTokenUsageRecord":p,
+                        "tokenUsage":{"modelContextWindow":self.value["window"]}
+                    }),
+                    at,
+                    &self.value["model"],
+                )?);
             }
             "response_item" => {
                 let mut body = p.clone();
@@ -201,40 +208,15 @@ impl RolloutContext {
                         if info.is_object() {
                             let total = tokens(&info["total_token_usage"])?;
                             let last = tokens(&info["last_token_usage"])?;
-                            let pending = &self.value["pendingUsage"];
-                            let previous = &self.value["noticeAssociation"];
-                            let matches = truthy(Some(&pending["responseId"]))
-                                && pending["turnId"] == self.value["turnId"]
-                                && [
-                                    "inputTokens",
-                                    "cachedInputTokens",
-                                    "outputTokens",
-                                    "reasoningOutputTokens",
-                                    "totalTokens",
-                                ]
-                                .iter()
-                                .all(|k| {
-                                    last.get(*k).is_some() && last[*k] == pending["usage"][*k]
-                                });
-                            let response = if matches {
-                                pending["responseId"].clone()
-                            } else if previous["turnId"] == self.value["turnId"]
-                                && previous["total"] == total
-                                && previous["last"] == last
-                            {
-                                previous["responseId"].clone()
-                            } else {
-                                Value::Null
-                            };
-                            if matches {
-                                self.value["pendingUsage"] = Value::Null;
-                                self.value["noticeAssociation"] = json!({"responseId":response,"turnId":self.value["turnId"],"total":total,"last":last});
-                            }
                             let model_context_window = match info.get("model_context_window") {
                                 Some(window) => canonical_context_window(window)?,
                                 None => self.value["window"].clone(),
                             };
-                            actions.push(event("thread/tokenUsage/updated",json!({"threadId":self.value["threadId"],"turnId":self.value["turnId"],"responseId":response,"usageSource":"tokenCount","_analyticsUsageKind":"notice","requestUsageAvailable":self.value.get("requestUsageAvailable").cloned().unwrap_or(json!(false)),"tokenUsage":{"total":total,"last":last,"modelContextWindow":model_context_window}}),at));
+                            actions.push(usage_event(json!({
+                                "threadId":self.value["threadId"], "turnId":self.value["turnId"],
+                                "usageSource":"tokenCount",
+                                "tokenUsage":{"total":total,"last":last,"modelContextWindow":model_context_window}
+                            }),at,&self.value["model"])?);
                         }
                         if !p["rate_limits"].is_null() {
                             actions.push(event(
@@ -301,6 +283,15 @@ fn event(method: &str, params: Value, at: f64) -> RolloutAction {
         params,
         at,
     }
+}
+fn usage_event(mut params: Value, at: f64, model: &Value) -> Result<RolloutAction, CaptureError> {
+    params["model"] = model.clone();
+    let observation = parse_token_usage(UsageProvider::Codex, &params)?;
+    Ok(event(
+        "thread/tokenUsage/updated",
+        json!({"threadId":params["threadId"],"turnId":params["turnId"],"studioUsage":observation}),
+        at,
+    ))
 }
 pub fn timestamp(value: &Value) -> Option<f64> {
     number(value).filter(|v| *v >= 0.).or_else(|| {
@@ -493,8 +484,8 @@ mod tests {
                 &json!({
                     "type":"event_msg",
                     "payload":{"type":"token_count","info":{
-                        "total_token_usage":{"total_tokens":1},
-                        "last_token_usage":{"total_tokens":1},
+                        "total_token_usage":{"input_tokens":0,"output_tokens":1,"total_tokens":1},
+                        "last_token_usage":{"input_tokens":0,"output_tokens":1,"total_tokens":1},
                         "model_context_window":{"window_id":"fixture-window"}
                     }}
                 }),
@@ -504,7 +495,7 @@ mod tests {
             .expect("malformed token-count window is dropped");
         match &actions[0] {
             super::RolloutAction::Event { params, .. } => {
-                assert!(params["tokenUsage"]["modelContextWindow"].is_null());
+                assert!(params["studioUsage"]["modelContextWindow"].is_null());
             }
             _ => panic!("token count produces a usage event"),
         }

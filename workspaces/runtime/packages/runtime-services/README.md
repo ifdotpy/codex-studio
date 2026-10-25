@@ -588,3 +588,13 @@ complete store-boundary matrix. Its mutation manifest is
 [`tests/monitors/mutations.json`](tests/monitors/mutations.json), consumed by the
 shared `tests/turn_lifecycle/mutation_check.py` runner with `--manifest` and
 `--filter 'test(/^monitor_(corpus|recovery)::/)'`.
+
+## Usage analytics
+
+Analytics capture and rollout import consume the shared
+[`usage` contract](../runtime-schema/src/usage.rs). New usage rows retain the
+canonical observation in `studioUsage`; chart fields are presentation projections.
+Final response replays preserve the first token counts and report conflicts in
+analytics coverage. Native rollout responses carry recovered evidence, while
+running counters remain separate observations. Historical budget repair uses
+the parser-owned [persisted-row adapter](../runtime-schema/src/usage/persisted.rs).

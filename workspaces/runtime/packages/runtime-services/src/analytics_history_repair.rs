@@ -72,7 +72,9 @@ pub async fn migrate_budget(
                 for (seq, raw) in &records {
                     let record: Value = serde_json::from_str(raw).map_err(studio_runtime_store::StoreError::from)?;
                     CaptureTable::Usage.validate(&record)?;
-                    let params = json!({"threadId":record["threadId"],"turnId":record["turnId"],"responseId":record["responseId"],"rawTokenUsageRecord":record["rawTokenUsageRecord"],"requestUsage":record["requestUsage"],"tokenUsage":{"total":record["total"],"last":record["last"]},"_analyticsTimestampSource":record["timestampSource"]});
+                    let provider = if blocking_agent["provider"] == "claude" { studio_runtime_schema::usage::UsageProvider::Claude } else { studio_runtime_schema::usage::UsageProvider::Codex };
+                    let mut params = studio_runtime_schema::usage::persisted::analytics_usage_notification(provider, &record).map_err(CaptureError::from)?;
+                    params["_analyticsTimestampSource"] = record["timestampSource"].clone();
                     let at = number(&record["at"]).ok_or(CaptureError::Invalid("/analytics_usage/at"))?;
                     captures.push((Arc::clone(&blocking_agent), params, at));
                     state["cursor"] = json!(seq);
@@ -194,4 +196,53 @@ fn repaired_turn(mut record: Value, notice: &Value) -> Value {
         }
     }
     record
+}
+
+#[cfg(test)]
+mod usage_contract_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn legacy_total_only_claude_migration_preserves_budget_total() {
+        let temp = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        let agent = json!({"id":"agent","rootId":"agent","name":"Agent","status":"running","provider":"claude","threadId":"thread","turnId":"turn","accountKey":"default","accountHistory":[],"model":"claude-sonnet-4-5","epoch":0,"tokenBudget":1000,"tokensUsed":0});
+        let seed = agent.clone();
+        store
+            .transaction(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
+                    params!["agent", seed.to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("seed agent");
+        store.analytics_transaction::<_,studio_runtime_store::StoreError>(|tx,_| {
+            Repo::write(tx,CaptureTable::Usage,&json!({"id":"legacy","agentId":"agent","rootId":"agent","threadId":"thread","turnId":"turn","at":1,"last":{"totalTokens":23},"total":{"totalTokens":23}}))?;
+            Ok(())
+        }).await.expect("seed sparse legacy usage");
+        let sink = crate::analytics_history::StoreHistoryBudgetSink::new(&store);
+        assert!(
+            migrate_budget(&store, agent.clone(), &sink, 2.0)
+                .await
+                .expect("migrate legacy budget")
+        );
+        assert!(
+            !migrate_budget(&store, agent, &sink, 2.0)
+                .await
+                .expect("idempotent migration")
+        );
+        let tokens = store
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT sum(tokens) FROM runtime_budget_usage WHERE agent='agent'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .await
+            .expect("budget ledger");
+        assert_eq!(tokens, 23);
+    }
 }

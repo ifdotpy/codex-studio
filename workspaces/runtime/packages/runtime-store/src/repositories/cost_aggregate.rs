@@ -8,14 +8,15 @@
 //! and a cursor-0 rebuild of analytics rebuilds it.
 //!
 //! Counting rules, within one root:
-//! - a row without a response id is not counted when a row of the same
-//!   (agent, thread, turn) has one;
+//! - cumulative observations and gaps never contribute response costs;
+//! - each (agent, response) contributes once, preferring the first final evidence
+//!   over provisional legacy rows;
 //! - a row without a model takes the model of the latest (at, seq) eligible row
 //!   of the same (agent, turn), else of the same (agent, thread); a row is
 //!   eligible when it has a model and is not itself suppressed by the first rule.
 //!
-//! A model-bearing row depends only on its own (agent, thread, turn), so a
-//! write refreshes that turn scope; a model-less row depends on its whole
+//! A model-bearing row depends on its turn and duplicate response identities, so
+//! a write refreshes those scopes; a model-less row depends on its whole
 //! agent, so an agent with model-less rows is refreshed whole.
 //!
 //! Pricing is not stored: a reader prices the few groups with the current
@@ -39,7 +40,7 @@ CREATE TABLE analytics_cost_rows (
     id TEXT PRIMARY KEY, root TEXT NOT NULL, agent TEXT NOT NULL, thread TEXT, turn TEXT,
     seq INTEGER NOT NULL, at REAL NOT NULL, model TEXT, account_key TEXT, response TEXT,
     input REAL, cached REAL, cache_write REAL, output REAL, uncached INTEGER NOT NULL,
-    counted INTEGER NOT NULL, counted_model TEXT);
+    counted INTEGER NOT NULL, counted_model TEXT, eligible INTEGER NOT NULL, final_evidence INTEGER NOT NULL);
 CREATE TABLE analytics_cost_groups (
     root TEXT NOT NULL, model TEXT, account TEXT NOT NULL, input REAL, cached REAL,
     cache_write REAL, output REAL, uncached INTEGER NOT NULL, count INTEGER NOT NULL);
@@ -49,14 +50,14 @@ CREATE TABLE analytics_cost_groups (
 const INDEXES: &str = "
 CREATE INDEX analytics_cost_rows_scope ON analytics_cost_rows(root, agent, thread, turn);
 CREATE INDEX analytics_cost_rows_unmodeled ON analytics_cost_rows(root, agent) WHERE model IS NULL;
-CREATE INDEX analytics_cost_rows_response ON analytics_cost_rows(root, thread, response)
+CREATE INDEX analytics_cost_rows_response ON analytics_cost_rows(root, agent, response)
     WHERE response IS NOT NULL;
 CREATE INDEX analytics_cost_groups_key ON analytics_cost_groups(
     root, model, account, input, cached, cache_write, output, uncached);
 ";
 
 const ROW_COLUMNS: &str = "id,agent,thread,turn,seq,at,model,account_key,response,\
-    input,cached,cache_write,output,uncached,counted,counted_model";
+    input,cached,cache_write,output,uncached,counted,counted_model,eligible,final_evidence";
 
 /// The account key of a usage row or agent record without `accountKey`.
 pub const DEFAULT_ACCOUNT: &str = "default";
@@ -81,20 +82,27 @@ struct UsageCostFields<'a> {
     account_key: Option<Cow<'a, str>>,
     #[serde(borrow, default)]
     response_id: Option<Cow<'a, str>>,
-    #[serde(default)]
-    input_tokens_are_uncached: Option<bool>,
-    last: CostTokens,
-    #[serde(default)]
-    delta: Option<CostTokens>,
 }
 
-impl UsageCostFields<'_> {
-    /// The per-request delta when it reports input and output, else `last`.
-    fn tokens(&self) -> CostTokens {
-        match self.delta {
-            Some(delta) if delta.input_tokens.is_some() && delta.output_tokens.is_some() => delta,
-            _ => self.last,
+impl From<&UsageTokens> for CostTokens {
+    fn from(tokens: &UsageTokens) -> Self {
+        Self {
+            input_tokens: Some(tokens.uncached_input as f64),
+            cached_input_tokens: Some(tokens.cache_read_input as f64),
+            cache_write_input_tokens: Some(tokens.cache_write_input as f64),
+            output_tokens: Some(tokens.output as f64),
         }
+    }
+}
+
+fn cost_observation(record: &serde_json::Value) -> StoreResult<Option<UsageObservation>> {
+    match parse_analytics_usage_row(UsageProvider::Codex, record) {
+        Ok(observation) => Ok(Some(observation)),
+        Err(error) if record.get("studioUsage").is_some() => {
+            Err(StoreError::SchemaValidation(error.to_string()))
+        }
+        // Historical rows with absent counts remain readable and unpriced.
+        Err(_) => Ok(None),
     }
 }
 
@@ -296,6 +304,8 @@ struct CostRow {
     uncached: bool,
     /// The contribution currently added to `analytics_cost_groups`.
     counted: Option<Option<String>>,
+    eligible: bool,
+    final_evidence: bool,
 }
 
 impl CostRow {
@@ -306,6 +316,8 @@ impl CostRow {
     /// Decode [`ROW_COLUMNS`] starting at column `base`.
     fn from_sql_at(row: &Row<'_>, base: usize) -> rusqlite::Result<Self> {
         Ok(Self {
+            eligible: row.get(base + 16)?,
+            final_evidence: row.get(base + 17)?,
             id: row.get(base)?,
             agent: row.get(base + 1)?,
             thread: row.get(base + 2)?,
@@ -343,10 +355,6 @@ impl CostRow {
             uncached: self.uncached,
         }
     }
-
-    fn turn_scope(&self) -> (&str, Option<&str>, Option<&str>) {
-        (&self.agent, self.thread.as_deref(), self.turn.as_deref())
-    }
 }
 
 /// The contribution of every row of a closed scope that `included` keeps:
@@ -355,13 +363,27 @@ fn contributions(
     rows: &[CostRow],
     included: impl Fn(&CostRow) -> bool,
 ) -> Vec<Option<Option<String>>> {
-    let responded = rows
-        .iter()
-        .filter(|row| included(row) && row.response.is_some())
-        .map(CostRow::turn_scope)
-        .collect::<HashSet<_>>();
-    let suppressed =
-        |row: &CostRow| row.response.is_none() && responded.contains(&row.turn_scope());
+    // Identity is (agent, response), across turns/threads and legacy key versions.
+    let mut winners = HashMap::<(&str, &str), &CostRow>::new();
+    for row in rows.iter().filter(|row| included(row) && row.eligible) {
+        let Some(response) = row.response.as_deref() else {
+            continue;
+        };
+        let candidate = winners.entry((&row.agent, response)).or_insert(row);
+        if (row.final_evidence && !candidate.final_evidence)
+            || (row.final_evidence == candidate.final_evidence && row.seq < candidate.seq)
+        {
+            *candidate = row;
+        }
+    }
+    let suppressed = |row: &CostRow| {
+        !row.eligible
+            || row.response.as_deref().is_none_or(|response| {
+                winners
+                    .get(&(row.agent.as_str(), response))
+                    .is_none_or(|winner| winner.id != row.id)
+            })
+    };
     let mut turn_models = HashMap::<(&str, Option<&str>), (f64, i64, &str)>::new();
     let mut thread_models = HashMap::<(&str, Option<&str>), (f64, i64, &str)>::new();
     if rows.iter().any(|row| row.model.is_none()) {
@@ -432,6 +454,10 @@ fn migrate_2026_10_22_drop_python_cost_projection(db: &Transaction<'_>) -> Store
 /// Create the aggregate in `db` (an analytics database or a test copy of its
 /// schema) unless it exists, and fill it from the existing usage rows.
 pub fn install(db: &Connection) -> StoreResult<()> {
+    let old: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_cost_rows') AND NOT EXISTS(SELECT 1 FROM pragma_table_info('analytics_cost_rows') WHERE name='eligible')", [], |row| row.get(0))?;
+    if old {
+        db.execute_batch("DROP TABLE analytics_cost_groups; DROP TABLE analytics_cost_rows;")?;
+    }
     let exists: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_cost_rows')",
         [],
@@ -457,7 +483,9 @@ fn backfill(db: &Connection) -> StoreResult<()> {
             .get_ref(7)?
             .as_str()
             .map_err(rusqlite::Error::from)?;
-        let fields = serde_json::from_str::<UsageCostFields>(raw)?;
+        let record: serde_json::Value = serde_json::from_str(raw)?;
+        let fields = UsageCostFields::deserialize(&record)?;
+        let observation = cost_observation(&record)?;
         let root: String = source_row.get(1)?;
         let row = cost_row(
             source_row.get(0)?,
@@ -467,6 +495,7 @@ fn backfill(db: &Connection) -> StoreResult<()> {
             source_row.get(5)?,
             source_row.get(6)?,
             &fields,
+            observation.as_ref(),
         );
         insert_row(db, &root, &row)?;
     }
@@ -533,30 +562,49 @@ fn cost_row(
     seq: i64,
     at: f64,
     fields: &UsageCostFields<'_>,
+    observation: Option<&UsageObservation>,
 ) -> CostRow {
+    let response = match observation {
+        Some(UsageObservation::Response {
+            tokens, evidence, ..
+        }) => Some((tokens, evidence)),
+        _ => None,
+    };
     CostRow {
+        eligible: response.is_some() || observation.is_none() && fields.response_id.is_some(),
+        final_evidence: response.is_some_and(|(_, evidence)| *evidence != UsageEvidence::Legacy),
         id,
         agent,
         thread,
         turn,
         seq,
         at,
-        model: fields.model.as_deref().map(str::to_owned),
+        model: match observation {
+            Some(UsageObservation::Response { model, .. }) if !model.is_empty() => {
+                Some(model.clone())
+            }
+            _ => fields.model.as_deref().map(str::to_owned),
+        },
         account_key: fields.account_key.as_deref().map(str::to_owned),
-        response: fields
-            .response_id
-            .as_deref()
-            .filter(|id| !id.is_empty())
-            .map(str::to_owned),
-        tokens: fields.tokens(),
-        uncached: fields.input_tokens_are_uncached == Some(true),
+        response: match observation {
+            Some(UsageObservation::Response { response_id, .. }) => Some(response_id.clone()),
+            _ => fields
+                .response_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned),
+        },
+        tokens: response
+            .map(|(tokens, _)| CostTokens::from(tokens))
+            .unwrap_or_default(),
+        uncached: true,
         counted: None,
     }
 }
 
 fn insert_row(db: &Connection, root: &str, row: &CostRow) -> rusqlite::Result<usize> {
     db.execute_cached(
-        "INSERT INTO analytics_cost_rows VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO analytics_cost_rows VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         params![
             row.id,
             root,
@@ -574,7 +622,9 @@ fn insert_row(db: &Connection, root: &str, row: &CostRow) -> rusqlite::Result<us
             row.tokens.output_tokens,
             row.uncached,
             row.counted.is_some(),
-            row.counted.clone().flatten()
+            row.counted.clone().flatten(),
+            row.eligible,
+            row.final_evidence
         ],
     )
 }
@@ -612,22 +662,18 @@ fn add_to_group(db: &Connection, root: &str, key: &GroupKey, delta: i64) -> rusq
     Ok(())
 }
 
-/// The (thread, turn) scopes of one agent that a change touches.
-type TurnScopes = BTreeSet<(Option<String>, Option<String>)>;
+/// Changed turn and response identities; duplicate responses can span legacy turns.
+type TurnScopes = BTreeSet<(Option<String>, Option<String>, Option<String>)>;
 
 /// The rows whose contributions a change in `turns` of `agent` in `root` can
-/// affect: those turn scopes, or the whole agent when it has model-less rows.
+/// affect: changed turns and duplicate response identities, or the whole agent for model-less rows.
 fn scope_rows(
     db: &Connection,
     root: &str,
     agent: &str,
     turns: &TurnScopes,
 ) -> rusqlite::Result<Vec<CostRow>> {
-    let unmodeled: bool = db.query_row_cached(
-        "SELECT EXISTS(SELECT 1 FROM analytics_cost_rows WHERE root=?1 AND agent=?2 AND model IS NULL)",
-        params![root, agent],
-        |row| row.get(0),
-    )?;
+    let unmodeled: bool = db.query_row_cached("SELECT EXISTS(SELECT 1 FROM analytics_cost_rows WHERE root=?1 AND agent=?2 AND model IS NULL)",params![root,agent],|row|row.get(0))?;
     if unmodeled {
         return db
             .prepare_cached(&format!(
@@ -636,17 +682,18 @@ fn scope_rows(
             .query_map(params![root, agent], CostRow::from_sql)?
             .collect();
     }
-    let mut statement = db.prepare_cached(&format!(
-        "SELECT {ROW_COLUMNS} FROM analytics_cost_rows
-         WHERE root=?1 AND agent=?2 AND thread IS ?3 AND turn IS ?4"
-    ))?;
-    let mut rows = Vec::new();
-    for (thread, turn) in turns {
-        for row in statement.query_map(params![root, agent, thread, turn], CostRow::from_sql)? {
-            rows.push(row?);
+    let mut statement = db.prepare_cached(&format!("SELECT {ROW_COLUMNS} FROM analytics_cost_rows WHERE root=?1 AND agent=?2 AND ((thread IS ?3 AND turn IS ?4) OR (response IS NOT NULL AND response=?5))"))?;
+    let mut rows = BTreeMap::new();
+    for (thread, turn, response) in turns {
+        for row in statement.query_map(
+            params![root, agent, thread, turn, response],
+            CostRow::from_sql,
+        )? {
+            let row = row?;
+            rows.insert(row.id.clone(), row);
         }
     }
-    Ok(rows)
+    Ok(rows.into_values().collect())
 }
 
 /// Recompute the scopes of `turns` and move every changed contribution between groups.
@@ -687,6 +734,7 @@ pub(crate) fn apply_usage_write(
     record: &serde_json::Value,
 ) -> StoreResult<()> {
     let fields = UsageCostFields::deserialize(record)?;
+    let observation = cost_observation(record)?;
     let (root, agent, thread, turn, seq, at) = db.query_row_cached(
         "SELECT root,agent,thread,turn,seq,at FROM analytics_usage WHERE id=?1",
         [id],
@@ -715,17 +763,26 @@ pub(crate) fn apply_usage_write(
         db.execute_cached("DELETE FROM analytics_cost_rows WHERE id=?1", [id])?;
     }
     if let Some(root) = &root {
-        let row = cost_row(id.to_owned(), agent, thread, turn, seq, at, &fields);
+        let row = cost_row(
+            id.to_owned(),
+            agent,
+            thread,
+            turn,
+            seq,
+            at,
+            &fields,
+            observation.as_ref(),
+        );
         insert_row(db, root, &row)?;
         refresh_scope(
             db,
             root,
             &row.agent,
-            &TurnScopes::from([(row.thread, row.turn)]),
+            &TurnScopes::from([(row.thread, row.turn, row.response)]),
         )?;
     }
     if let Some((previous_root, previous)) = previous {
-        let turns = TurnScopes::from([(previous.thread, previous.turn)]);
+        let turns = TurnScopes::from([(previous.thread, previous.turn, previous.response)]);
         refresh_scope(db, &previous_root, &previous.agent, &turns)?;
     }
     Ok(())
@@ -761,7 +818,8 @@ pub fn cost_groups(
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let mut replaced = HashSet::new();
     let mut scopes = BTreeMap::<String, TurnScopes>::new();
-    for (account, thread, response) in receipts {
+    let accepted = partition_journal_receipts(db, receipts)?.accepted;
+    for (account, thread, response) in &accepted {
         let mut statement = db.prepare_cached(&format!(
             "SELECT {ROW_COLUMNS} FROM analytics_cost_rows
              WHERE root=?1 AND thread=?2 AND response=?3 AND account_key=?4"
@@ -773,7 +831,7 @@ pub fn cost_groups(
             scopes
                 .entry(row.agent)
                 .or_default()
-                .insert((row.thread, row.turn));
+                .insert((row.thread, row.turn, row.response));
             replaced.insert(row.id);
         }
     }
@@ -815,6 +873,23 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::json;
     use std::path::Path;
+
+    #[tokio::test]
+    async fn typed_usage_final_deduplicates_legacy_without_merging_request_tiers() {
+        let temp = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_,StoreError>(|tx,_| {
+            for (id,response,evidence,input) in [("old","r1","legacy",900),("final","r1","live",10),("large","r2","recovered",250001)] {
+                AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&json!({"id":id,"agentId":"agent","rootId":"root","threadId":"thread","turnId":id,"at":1,"last":{},"total":{},
+                    "studioUsage":{"kind":"response","responseId":response,"model":"m","evidence":evidence,"tokens":{"uncachedInput":input,"cacheReadInput":3,"cacheWriteInput":2,"output":1}}}))?;
+            }
+            let groups=super::cost_groups(tx,"root",&Default::default())?;
+            let mut inputs=groups.iter().map(|group| { assert_eq!(group.count,1); assert!(group.input_uncached); group.tokens.input_tokens.expect("normalized input") as u64 }).collect::<Vec<_>>();
+            inputs.sort();
+            assert_eq!(inputs,vec![10,250001],"keep separate request sizes for pricing thresholds, count each final response once");
+            Ok(())
+        }).await.expect("typed request costs");
+    }
 
     #[tokio::test]
     async fn typed_usage_evidence_queries_bound_rows_and_partition_journal() {
