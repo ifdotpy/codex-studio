@@ -16,6 +16,13 @@ pub struct SubscriptionEntityScope {
     pub collections: Vec<String>,
     pub id_field: Option<String>,
     pub agent_field: Option<String>,
+    /// Root-only DTOs do not depend on agentSummary team membership.
+    #[serde(default = "include_team_members_default")]
+    pub include_team_members: bool,
+}
+
+fn include_team_members_default() -> bool {
+    true
 }
 
 /// Parse the same generated scope metadata used by renderer snapshot replacement.
@@ -65,6 +72,43 @@ pub fn global_entity_collections_json() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn root_only_scope_matches_canonical_dto_predicates() {
+        let document: serde_json::Value =
+            serde_json::from_slice(crate::OPENAPI).expect("committed OpenAPI document");
+        let schemas = &document["components"]["schemas"];
+        for scope in super::subscription_entity_scopes()
+            .values()
+            .filter(|s| !s.include_team_members)
+        {
+            for collection in &scope.collections {
+                let payload_ref = schemas["SyncEntityPayload"]["discriminator"]["mapping"]
+                    [collection]
+                    .as_str()
+                    .expect("payload discriminator reference");
+                let payload = &schemas[payload_ref
+                    .rsplit('/')
+                    .next()
+                    .expect("payload schema reference name")];
+                let value_ref = payload["properties"]["value"]["$ref"]
+                    .as_str()
+                    .expect("canonical value schema reference");
+                let dto = &schemas[value_ref
+                    .rsplit('/')
+                    .next()
+                    .expect("canonical value schema name")];
+                assert!(
+                    dto["properties"].get("rootId").is_some(),
+                    "root-only DTO needs rootId: {collection}"
+                );
+                assert!(
+                    dto["properties"].get("agent").is_none(),
+                    "root-only DTO must not select team agents: {collection}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn version_text_matches_version() {
         assert_eq!(

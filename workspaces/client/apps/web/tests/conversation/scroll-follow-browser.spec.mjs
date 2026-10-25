@@ -16,7 +16,7 @@ import {
 // stream. The reader scrolls with wheel steps while the agent streams.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -315,12 +315,6 @@ async function scrollFollow(page, full) {
       order: live.items.map((item) => item.id),
       truncated: false,
       agent: live.agent,
-      itemRevisions: Object.fromEntries(
-        changed.map((item) => [
-          item.id,
-          createHash("sha256").update(current.get(item.id)).digest("hex"),
-        ]),
-      ),
     };
     publishedItems.set(id, current);
     for (const [response, resources] of syncStreams) {

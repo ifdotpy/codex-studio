@@ -26,6 +26,8 @@ export function watchResourceReads(
   failed: (error: unknown) => void,
   options: {
     waitForBaseline?: boolean;
+    /** Only adapters that apply the inline value may replay it without a read. */
+    reapplyInlineView?: boolean;
     events?: {
       watchResourceChanges: typeof defaultWatchResourceChanges;
       watchResourceConnection: typeof defaultWatchResourceConnection;
@@ -67,6 +69,8 @@ export function watchResourceReads(
     !!right &&
     left.epoch === right.epoch &&
     left.revision === right.revision;
+  const reapplyInlineView = (version?: ResourceVersion) =>
+    options.reapplyInlineView === true && version?.viewSnapshot !== undefined;
 
   const refresh = (version?: ResourceVersion, resourceKey?: string) => {
     const trigger =
@@ -74,14 +78,15 @@ export function watchResourceReads(
     if (version) {
       baselineSeen = true;
       if (
-        (trigger &&
+        !reapplyInlineView(version) &&
+        ((trigger &&
           sameVersion(
             version,
             lastSuccessfulVersions.get(trigger.resourceKey),
           )) ||
-        (trigger &&
-          readingTrigger?.resourceKey === trigger.resourceKey &&
-          sameVersion(version, readingTrigger.version))
+          (trigger &&
+            readingTrigger?.resourceKey === trigger.resourceKey &&
+            sameVersion(version, readingTrigger.version)))
       )
         return;
     }
@@ -111,6 +116,7 @@ export function watchResourceReads(
             dirtyTrigger = undefined;
             if (
               currentTrigger?.version &&
+              !reapplyInlineView(currentTrigger.version) &&
               sameVersion(
                 currentTrigger.version,
                 lastSuccessfulVersions.get(currentTrigger.resourceKey),

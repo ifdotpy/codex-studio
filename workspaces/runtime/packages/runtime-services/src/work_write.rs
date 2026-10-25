@@ -2871,6 +2871,12 @@ fn refuse_result(
     }
     let mut record = work.clone();
     record["submissionRefusal"] = refusal;
+    studio_runtime_store::entity_publication::mark_stale(
+        "work",
+        work["id"]
+            .as_str()
+            .ok_or(Error::InvalidRequest("Invalid task identity"))?,
+    );
     event_write::save_receipt(tx, request_id, signature, &record)?;
     Ok(WorkWriteResult {
         record,

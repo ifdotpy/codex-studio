@@ -1,4 +1,5 @@
 import { createSubscriptionStore, type SubscriptionTransport } from "./store";
+import type { ResourceVersion } from "../resourceEvents";
 import {
   subscriptionKey,
   type ResourceData,
@@ -8,7 +9,10 @@ import {
 
 export type ObserveSubscriptionData = <R extends ResourceRef>(
   ref: R,
-  accept: (data: ResourceData<R> | undefined) => void,
+  accept: (
+    data: ResourceData<R> | undefined,
+    appliedVersion?: ResourceVersion,
+  ) => void,
   failed: (error: unknown) => void,
 ) => () => void;
 
@@ -38,7 +42,7 @@ export function createSubscriptions<T extends SubscriptionTransport>(
         reader.stop =
           observeData?.(
             ref,
-            (data) => store.publish(ref, data),
+            (data, appliedVersion) => store.publish(ref, data, appliedVersion),
             (error) => store.fail(ref, error),
           ) ?? (() => {});
       }

@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { SYNC_PROTOCOL_VERSION } from "../src/generated/api.ts";
+import { SUBSCRIPTION_ENTITY_SCOPES } from "../src/generated/subscriptionEntities.ts";
 import {
   SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
   SYNC_STREAM_EVENT_MAX_BYTES,
@@ -75,6 +76,15 @@ process.once("exit", () => {
   for (const cacheDir of fixtureViteCaches)
     rmSync(cacheDir, { recursive: true, force: true });
 });
+const fixtureEntitySchemas = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../runtime/packages/runtime-http/openapi.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+).components.schemas;
 const generatedApiSchema = readFileSync(
   new URL("../src/generated/apiSchema.ts", import.meta.url),
   "utf8",
@@ -1055,7 +1065,7 @@ export { browserExecutablePath, waitForFixturePort };
 /** @typedef {Pick<TaskEntityDto, "id" | "turnId" | "agent" | "kind" | "status" | "created" | "finished" | "name" | "command" | "query" | "cwd" | "processId" | "durationMs" | "timeout_ms" | "interactive" | "stdinClosed" | "stdinCloseRequested" | "stdinError" | "cancelRequested" | "exitCode" | "bytes" | "log" | "outputTruncated">} TestTask */
 /** @typedef {Pick<ProjectEntityDto, "homeServerId" | "locations" | "locationsRevision" | "projectAliases" | "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams" | "workerBaseRef" | "workerBaseRevision" | "workerEnvironment" | "workerEnvironmentRevision">} TestProject */
 /** @typedef {Pick<ComplaintEntityDto, "id" | "leadId" | "author" | "authorName" | "leadName" | "title" | "status" | "needsUserResponse" | "created" | "readAt" | "recipient" | "version">} TestComplaint */
-/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], accountsSummary?: import("../src/generated/api").components["schemas"]["AccountsSummaryDto"], desktop?: import("../src/generated/api").components["schemas"]["DesktopEntityDto"], accountCostsByAccount?: Record<string, import("../src/generated/api").components["schemas"]["AccountCostEntityDto"]>, sessionCostsByAgent?: Record<string, import("../src/generated/api").components["schemas"]["SessionCostEntityDto"]>, terminals?: import("../src/generated/api").components["schemas"]["TerminalEntityDto"][], studioErrors?: import("../src/generated/api").components["schemas"]["StudioError"][], rateLimits: AccountRateLimitsDto | null, queuesByAgent?: Record<string, import("../src/generated/api").components["schemas"]["QueueView"]>, rateLimitsByAccount: Record<string, AccountRateLimitsDto>, stateDir?: string }} TestRuntimeView */
+/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], viewScopedAgents?: boolean, workDetails?: import("../src/generated/api").components["schemas"]["WorkItem"][], agentDetails?: import("../src/generated/api").components["schemas"]["AgentDetailEntityDto"][], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], accountsSummary?: import("../src/generated/api").components["schemas"]["AccountsSummaryDto"], desktop?: import("../src/generated/api").components["schemas"]["DesktopEntityDto"], accountCostsByAccount?: Record<string, import("../src/generated/api").components["schemas"]["AccountCostEntityDto"]>, sessionCostsByAgent?: Record<string, import("../src/generated/api").components["schemas"]["SessionCostEntityDto"]>, terminals?: import("../src/generated/api").components["schemas"]["TerminalEntityDto"][], studioErrors?: import("../src/generated/api").components["schemas"]["StudioError"][], rateLimits: AccountRateLimitsDto | null, queuesByAgent?: Record<string, import("../src/generated/api").components["schemas"]["QueueView"]>, rateLimitsByAccount: Record<string, AccountRateLimitsDto>, stateDir?: string }} TestRuntimeView */
 /** @typedef {{ token: string, stateDir?: string, chats: ChatEntityDto[], edges: EdgeEntityDto[], runtime: TestRuntimeView, threads: TestAgent[] }} TestStateView */
 /** @typedef {Omit<TestStateView, "token" | "threads">} EntityFixtureState */
 
@@ -1395,65 +1405,74 @@ function entityValuesFromSnapshot(snapshot) {
       "localMembers",
     ]),
   );
-  append("agent", runtime.agents, (row) => {
-    const entity = /** @type {Record<string, JsonValue>} */ ({ ...row });
-    for (const key of snapshotOnlyAgentKeys) delete entity[key];
-    const agentNestedAllowLists = {
-      activity: ["phase", "at", "tools"],
-      nativeStatus: ["phase", "error", "message", "turnId", "at"],
-      nativeSafetyBuffering: [
-        "turnId",
-        "threadId",
-        "accountKey",
-        "connectionId",
-        "at",
-        "dismissed",
-        "responseStarted",
-        "showBufferingUi",
-        "fasterModel",
-      ],
-      nativeSafetyRetry: [
-        "id",
-        "stage",
-        "model",
-        "turnId",
-        "created",
-        "updated",
-        "epoch",
-        "accountKey",
-        "error",
-        "newThreadId",
-        "acceptedTurnId",
-        "requestId",
-        "rpcMethod",
-      ],
-      nativeTurnError: ["turnId", "error"],
-      nativeThreadBlock: ["threadId", "error"],
-      connectionCheck: [
-        "epoch",
-        "accountKey",
-        "threadId",
-        "turnId",
-        "at",
-        "previousError",
-        "nativeState",
-        "restartTurnStatus",
-        "readError",
-      ],
-      readState: ["threadId", "turnId", "read", "revision"],
-      startAttempt: ["prepareError", "responseError", "retiredEvents"],
-    };
-    for (const [key, allowed] of Object.entries(agentNestedAllowLists)) {
-      if (isJsonObject(entity[key]))
-        entity[key] = pickJsonKeys(entity[key], allowed);
-    }
-    if (isJsonObject(entity.nativeRelease))
-      entity.nativeRelease = pickJsonKeys(entity.nativeRelease, [
-        "phase",
-        "resetPending",
-      ]);
-    return entity;
-  });
+  append(
+    runtime.viewScopedAgents ? "agentSummary" : "agent",
+    runtime.agents,
+    (row) => {
+      if (runtime.viewScopedAgents) {
+        const properties =
+          fixtureEntitySchemas.AgentSummaryEntityDto.properties;
+        return pickJsonKeys(row, Object.keys(properties));
+      }
+      const entity = /** @type {Record<string, JsonValue>} */ ({ ...row });
+      for (const key of snapshotOnlyAgentKeys) delete entity[key];
+      const agentNestedAllowLists = {
+        activity: ["phase", "at", "tools"],
+        nativeStatus: ["phase", "error", "message", "turnId", "at"],
+        nativeSafetyBuffering: [
+          "turnId",
+          "threadId",
+          "accountKey",
+          "connectionId",
+          "at",
+          "dismissed",
+          "responseStarted",
+          "showBufferingUi",
+          "fasterModel",
+        ],
+        nativeSafetyRetry: [
+          "id",
+          "stage",
+          "model",
+          "turnId",
+          "created",
+          "updated",
+          "epoch",
+          "accountKey",
+          "error",
+          "newThreadId",
+          "acceptedTurnId",
+          "requestId",
+          "rpcMethod",
+        ],
+        nativeTurnError: ["turnId", "error"],
+        nativeThreadBlock: ["threadId", "error"],
+        connectionCheck: [
+          "epoch",
+          "accountKey",
+          "threadId",
+          "turnId",
+          "at",
+          "previousError",
+          "nativeState",
+          "restartTurnStatus",
+          "readError",
+        ],
+        readState: ["threadId", "turnId", "read", "revision"],
+        startAttempt: ["prepareError", "responseError", "retiredEvents"],
+      };
+      for (const [key, allowed] of Object.entries(agentNestedAllowLists)) {
+        if (isJsonObject(entity[key]))
+          entity[key] = pickJsonKeys(entity[key], allowed);
+      }
+      if (isJsonObject(entity.nativeRelease))
+        entity.nativeRelease = pickJsonKeys(entity.nativeRelease, [
+          "phase",
+          "resetPending",
+        ]);
+      return entity;
+    },
+  );
   append("task", runtime.tasks);
   append("monitor", runtime.monitors);
   append("complaint", runtime.complaints, (row) => {
@@ -1464,6 +1483,36 @@ function entityValuesFromSnapshot(snapshot) {
   append("peerTeam", runtime.peerTeams);
   append("rule", runtime.rules);
   append("work", runtime.work);
+  append("workDetail", runtime.workDetails, (row) => ({
+    ...row,
+    results: [],
+    decisions: [],
+    releases: [],
+  }));
+  for (const task of runtime.workDetails ?? []) {
+    for (const [field, collection] of [
+      ["results", "workResult"],
+      ["decisions", "workDecision"],
+      ["releases", "workRelease"],
+    ]) {
+      const history = task[field];
+      if (!Array.isArray(history)) continue;
+      for (const [index, value] of history.entries()) {
+        const id = `${task.id}:${index}`;
+        values.push({
+          collection,
+          id,
+          value: { id, taskId: task.id, rootId: task.rootId, index, value },
+        });
+      }
+    }
+  }
+  append("agentDetail", runtime.agentDetails, (row) =>
+    pickJsonKeys(
+      row,
+      Object.keys(fixtureEntitySchemas.AgentDetailEntityDto.properties),
+    ),
+  );
   append("studioError", runtime.studioErrors);
   append("chat", snapshot.chats);
   append("edge", snapshot.edges);
@@ -1752,7 +1801,16 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       reconcileMutableEntityPullState(pullState, fixture.snapshot);
       pullOptions = {
         ...validation.params,
-        documents: [...pullState.documents.values()],
+        documents: [...pullState.documents.values()].filter(
+          (document) =>
+            ![
+              "workDetail",
+              "workResult",
+              "workDecision",
+              "workRelease",
+              "agentDetail",
+            ].includes(document.collection),
+        ),
         maxSeq: pullState.maxSeq,
       };
     }
@@ -1771,13 +1829,51 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     let revision = 0;
     let eventId = 0;
     const resourceRevisions = new Map();
-    const withResourceVersions = (resources, advance = false) =>
-      resources.map((resource) => {
+    const withResourceVersions = (resources, advance = false) => {
+      const changed = updateEntitySyncFixture(fixture.snapshot);
+      const current = nodeEntityPullStates.get(fixture.snapshot);
+      return resources.map((resource) => {
         const key = JSON.stringify(resource);
         const next = (resourceRevisions.get(key) || 0) + (advance ? 1 : 0);
         resourceRevisions.set(key, next || 1);
+        if (
+          resource.kind === "state" &&
+          fixture.snapshot.runtime.viewScopedAgents &&
+          current
+        ) {
+          return {
+            resource,
+            revision: current.maxSeq,
+            cursor: { workspaceId: identity.workspaceId, seq: current.maxSeq },
+            replyKind: "snapshot",
+            entityChanges: {
+              after: 0,
+              through: current.maxSeq,
+              documents: [...current.documents.values()].filter(
+                (document) =>
+                  document.op === "upsert" &&
+                  ![
+                    "workDetail",
+                    "workResult",
+                    "workDecision",
+                    "workRelease",
+                    "agentDetail",
+                  ].includes(document.collection),
+              ),
+            },
+          };
+        }
         if (resource.kind === "state") {
-          const documents = updateEntitySyncFixture(fixture.snapshot);
+          const documents = changed.filter(
+            (document) =>
+              ![
+                "workDetail",
+                "workResult",
+                "workDecision",
+                "workRelease",
+                "agentDetail",
+              ].includes(document.collection),
+          );
           if (documents.length)
             return {
               resource,
@@ -1789,8 +1885,34 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
               },
             };
         }
+        const scope =
+          /** @type {{ collections: readonly string[], idField?: string | null, agentField?: string | null } | undefined} */ (
+            SUBSCRIPTION_ENTITY_SCOPES[resource.kind]
+          );
+        const selector = /** @type {Record<string, unknown>} */ (resource);
+        if (resource.kind !== "state" && scope && current) {
+          const documents = [...current.documents.values()].filter(
+            (document) =>
+              document.op === "upsert" &&
+              scope.collections.includes(document.collection) &&
+              (!scope.idField || document.id === selector[scope.idField]) &&
+              (!scope.agentField ||
+                ("rootId" in document.value &&
+                  document.value.rootId === selector[scope.agentField]) ||
+                ("agent" in document.value &&
+                  document.value.agent === selector[scope.agentField])),
+          );
+          return {
+            resource,
+            revision: current.maxSeq,
+            cursor: { workspaceId: identity.workspaceId, seq: current.maxSeq },
+            replyKind: "snapshot",
+            entityChanges: { after: 0, through: current.maxSeq, documents },
+          };
+        }
         return { resource, revision: next || 1 };
       });
+    };
     response.writeHead(200, {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",

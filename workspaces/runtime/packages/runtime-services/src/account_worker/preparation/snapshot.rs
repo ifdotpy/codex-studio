@@ -1502,6 +1502,33 @@ mod resource_tests {
 
     use super::*;
 
+    #[test]
+    fn reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance() {
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("runtime resources");
+        for tools in [&resources.tools, &resources.legacy_tools] {
+            let spawn = tools
+                .iter()
+                .find(|tool| tool.name == "orchestration_spawn")
+                .expect("spawn tool");
+            assert!(
+                spawn.description.contains("review defaults"),
+                "{}",
+                spawn.description
+            );
+            assert!(!spawn.description.contains("Default: gpt-6-luna"));
+        }
+        for record in [
+            json!({"id":"new", "isLead":true}),
+            json!({"id":"native", "isLead":true, "threadId":"thread", "nativeTeleportTool":"orchestration_teleport"}),
+            json!({"id":"legacy", "isLead":true, "threadId":"thread"}),
+        ] {
+            let text = role_guidance(&resources, &record).expect("emitted role guidance");
+            assert!(text.contains("review defaults"), "{text}");
+            assert!(!text.contains("Use `gpt-6-luna`"), "{text}");
+        }
+    }
+
     /// igor-mbp rehearsal 2026-10-22: two moved Claude agents carried Python's
     /// `frozenNativeParams`; Rust refused them (`thread-preparation/FrozenImport`)
     /// and a child result turned the completed parent into a failed agent.

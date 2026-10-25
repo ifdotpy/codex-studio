@@ -110,7 +110,6 @@ fn is_view_resource(resource: &ResourceRef) -> bool {
     matches!(
         resource,
         ResourceRef::ProcessesResource(_)
-            | ResourceRef::WorkResource(_)
             | ResourceRef::ComplaintResource(_)
             | ResourceRef::RoomResource(_)
             | ResourceRef::TerminalOutputResource(_)
@@ -126,9 +125,6 @@ async fn view_value(
     match resource {
         ResourceRef::ProcessesResource(r) => {
             Ok(json!({"processes":super::process_controls::read_listing(state, r.agent_id).await?}))
-        }
-        ResourceRef::WorkResource(r) => {
-            Ok(json!({"work":super::work_items::work_for_agent(state, r.agent_id).await?}))
         }
         ResourceRef::ComplaintResource(r) => Ok(
             json!({"complaint":super::questions_reads::complaint_for_id(state, r.complaint_id).await?}),
@@ -235,6 +231,43 @@ async fn view_initial(
     serde_json::from_value(value).map_err(|_| ApiError::internal())
 }
 
+/// Each live stream owns only the last terminal offset it sent. Reuse the same
+/// reader and reset rules as reconnect; other view handlers keep their snapshots.
+pub(super) async fn attach_terminal_output_cursors(
+    state: Option<&HttpState>,
+    event: &mut crate::generated::ResourceChangeEvent,
+    cursors: &mut std::collections::BTreeMap<String, SubscriptionCursor>,
+) {
+    let Some(state) = state else { return };
+    for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
+        let ResourceRef::TerminalOutputResource(terminal) = resource else {
+            continue;
+        };
+        if entry.view_snapshot.is_none() {
+            match initial_snapshot(
+                state.clone(),
+                resource.clone(),
+                cursors.get(&terminal.terminal_id).cloned(),
+            )
+            .await
+            {
+                Ok(mut snapshot) => {
+                    snapshot.revision = entry.revision;
+                    *entry = snapshot;
+                }
+                Err(error) => {
+                    cursors.remove(&terminal.terminal_id);
+                    eprintln!("subscribed terminal interval unavailable: {error:?}");
+                    continue;
+                }
+            }
+        }
+        if let Some(cursor) = &entry.cursor {
+            cursors.insert(terminal.terminal_id.clone(), cursor.clone());
+        }
+    }
+}
+
 pub(super) async fn attach_view_snapshots(
     state: Option<&HttpState>,
     event: &mut crate::generated::ResourceChangeEvent,
@@ -258,7 +291,6 @@ pub(super) async fn attach_view_snapshots(
 // its complete set against the generated OpenAPI ResourceRef discriminator.
 resource_handlers! {
     ProcessesResourceHandler => ProcessesResource, view_initial;
-    WorkResourceHandler => WorkResource, view_initial;
     ComplaintResourceHandler => ComplaintResource, view_initial;
     TerminalOutputResourceHandler => TerminalOutputResource, view_initial;
     AgentDetailResourceHandler => AgentDetailResource, entity_initial;
@@ -286,6 +318,7 @@ resource_handlers! {
     VaultJobProgressResourceHandler => VaultJobProgressResource, passive_initial;
     VaultReadinessResourceHandler => VaultReadinessResource, passive_initial;
     VoiceResourceHandler => VoiceResource, passive_initial;
+    WorkResourceHandler => WorkResource, entity_initial;
     WorkspaceResourceHandler => WorkspaceResource, passive_initial;
 }
 
@@ -508,8 +541,12 @@ mod tests {
                 .await
                 .expect("store"),
         );
+        studio_runtime_services::entity_publication::install(&store)
+            .await
+            .expect("install production entity publisher");
         store.transaction_with(|tx| {
             AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"idle","name":"Lead","threadId":"thread"}))?)?;
+            tx.execute("INSERT INTO runtime_work(id,record) VALUES('assignment',?1)",[json!({"id":"assignment","rootId":"lead","title":"Published assignment","status":"running","created":1,"updated":1,"version":1,"results":[{"id":"evidence","agent":"lead","text":"Existing evidence","checks":"fixture","revision":"abc","files":[],"created":1}]}).to_string()])?;
             tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('message',?1)", [json!({"id":"message","leadId":"lead","recipient":"lead","status":"open","responses":[],"author":"lead","text":"Initial complaint","created":1,"version":1}).to_string()])?;
             tx.execute("INSERT INTO runtime_rooms(id,record) VALUES('broadcast:lead',?1)", [json!({"id":"broadcast:lead","kind":"broadcast","rootId":"lead","members":["lead"],"name":"Team"}).to_string()])?;
             tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES('first','broadcast:lead','lead','First message',1,'{}')", [])?;
@@ -530,7 +567,6 @@ mod tests {
         );
         for (resource, field) in [
             (json!({"kind":"processes","agentId":"lead"}), "processes"),
-            (json!({"kind":"work","agentId":"lead"}), "work"),
             (
                 json!({"kind":"complaint","complaintId":"message"}),
                 "complaint",
@@ -561,6 +597,77 @@ mod tests {
                 serde_json::to_vec(&live).expect("encoded").len() <= SYNC_STREAM_EVENT_MAX_BYTES
             );
         }
+        // Work shares the public resource registry, but its records are entity
+        // partitions rather than the full-view snapshots exercised above.
+        let work: ResourceRef =
+            serde_json::from_value(json!({"kind":"work","agentId":"lead"})).expect("work ref");
+        let baseline = initial_snapshot(state.clone(), work.clone(), None)
+            .await
+            .expect("work entities");
+        let baseline = serde_json::to_value(baseline).expect("work frame");
+        assert!(baseline.get("viewSnapshot").is_none());
+        assert_eq!(baseline["replyKind"], "snapshot");
+        let documents = baseline["entityChanges"]["documents"]
+            .as_array()
+            .expect("typed work records");
+        assert_eq!(
+            documents
+                .iter()
+                .map(|row| row["collection"]
+                    .as_str()
+                    .expect("work entity collection name"))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["workDetail", "workResult"])
+        );
+        let detail = documents
+            .iter()
+            .find(|row| row["collection"] == "workDetail")
+            .expect("metadata");
+        assert_eq!(detail["id"], "assignment");
+        assert_eq!(detail["value"]["results"], json!([]));
+        let result = documents
+            .iter()
+            .find(|row| row["collection"] == "workResult")
+            .expect("history");
+        assert_eq!(result["value"]["value"]["text"], "Existing evidence");
+        assert!(
+            serde_json::to_vec(&baseline)
+                .expect("encode work baseline for byte bound")
+                .len()
+                <= SYNC_STREAM_EVENT_MAX_BYTES
+        );
+        let cursor = serde_json::from_value(baseline["cursor"].clone()).expect("work cursor");
+        store.transaction_with(|tx| {
+            tx.execute("UPDATE runtime_work SET record=json_set(record,'$.status','review','$.updated',2,'$.version',2) WHERE id='assignment'",[])?;
+            Ok::<_,StoreError>(())
+        }).await.expect("work status commit");
+        let live = initial_snapshot(state.clone(), work.clone(), Some(cursor))
+            .await
+            .expect("work delta");
+        let live = serde_json::to_value(live).expect("work delta frame");
+        assert!(live.get("viewSnapshot").is_none());
+        assert_eq!(live["replyKind"], "delta");
+        let changed = live["entityChanges"]["documents"]
+            .as_array()
+            .expect("changed work records");
+        assert_eq!(changed.len(), 1, "ordinary status must not replay history");
+        assert_eq!(changed[0]["collection"], "workDetail");
+        assert_eq!(changed[0]["value"]["status"], "review");
+        assert!(
+            serde_json::to_vec(&live)
+                .expect("encode work delta for byte bound")
+                .len()
+                <= SYNC_STREAM_EVENT_MAX_BYTES
+        );
+        let mut event:crate::generated::ResourceChangeEvent=serde_json::from_value(json!({"protocol":studio_runtime_schema::SYNC_PROTOCOL_VERSION,"workspaceId":state.workspace_id,"epoch":"epoch","revision":2,"reason":"change","resources":[work],"resourceVersions":[{"revision":2}]})).expect("work notification");
+        attach_view_snapshots(Some(&state), &mut event).await;
+        assert!(
+            serde_json::to_value(event).expect("serialize work notification")["resourceVersions"]
+                [0]
+            .get("viewSnapshot")
+            .is_none(),
+            "legacy full-view helper must not reattach work history"
+        );
         let resource: ResourceRef =
             serde_json::from_value(json!({"kind":"terminal-output","terminalId":"shell"}))
                 .expect("terminal ref");

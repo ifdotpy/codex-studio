@@ -1,4 +1,5 @@
 import type { components } from "../../generated/api";
+import type { ResourceVersion } from "../resourceEvents";
 
 export type ResourceRef = components["schemas"]["ResourceRef"];
 /** The OpenAPI document owns this mapping; contracts:generate emits its types. */
@@ -16,6 +17,32 @@ export type SubscriptionOptions = { graceMs?: number };
 export const DEFAULT_SUBSCRIPTION_GRACE_MS = 20_000;
 /** Maximum inactive domain snapshots retained by one server module, in entries. */
 export const MAX_INACTIVE_SUBSCRIPTION_CACHE_ENTRIES = 128;
+
+/** Durable receipts or inline transient values prove this ref was applied.
+ * Revision-only hints never establish authoritative resource readiness. */
+export function hasAppliedResourceBaseline(
+  version?: ResourceVersion,
+  appliedView?: ResourceRef,
+): boolean {
+  // Cursorless views are authoritative only after the matching data adapter
+  // applies them. Durable room/terminal payloads still require their receipt.
+  const view = version?.viewSnapshot;
+  const inlineViewApplied =
+    (appliedView?.kind === "processes" && view?.processes !== undefined) ||
+    (appliedView?.kind === "complaint" && view?.complaint !== undefined) ||
+    (appliedView?.kind === "room" &&
+      appliedView.legacy === true &&
+      view?.legacyMessages !== undefined);
+  return (
+    !!version &&
+    ((!!version.cursor && !!version.replyKind) ||
+      !!version.progress ||
+      !!version.discoverySnapshot ||
+      !!version.voiceRecords ||
+      !!version.draftChanges ||
+      inlineViewApplied)
+  );
+}
 
 /** Stable identity for subscription ownership and durable cursor keys. Never decode it. */
 export function subscriptionKey(ref: ResourceRef): string {

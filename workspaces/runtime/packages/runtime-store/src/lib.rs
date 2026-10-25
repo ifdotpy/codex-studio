@@ -17,6 +17,8 @@ pub const AGENT_PROJECTIONS_SEED_MARKER: &str = "agent_projections_v1";
 pub const SUMMARY_ENTITIES_SEED_MARKER: &str = "summary_entities_v1";
 /// Durable marker for retained-folder and question-history projections. Unit: metadata key.
 pub const CONVERSATION_DETAILS_SEED_MARKER: &str = "conversation_details_v1";
+/// Durable marker proving scoped task review records and team defaults were seeded. Unit: metadata key.
+pub const WORK_DETAILS_SEED_MARKER: &str = "work_details_v1";
 mod multi_server_state_check;
 mod path;
 pub mod path_identity;

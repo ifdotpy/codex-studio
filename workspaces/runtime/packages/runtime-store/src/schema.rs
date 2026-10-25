@@ -176,6 +176,8 @@ inventory::submit! {
 inventory::submit! {
     ConnectionFunctionRegistration("sync_entity_payload")
 }
+inventory::submit! { ConnectionFunctionRegistration(crate::entity_publication::WORK_HISTORY_FUNCTION) }
+inventory::submit! { ConnectionFunctionRegistration(crate::entity_publication::WORK_IDENTITY_FUNCTION) }
 
 fn has_registered_connection_function(name: &str) -> bool {
     inventory::iter::<ConnectionFunctionRegistration>
@@ -184,6 +186,7 @@ fn has_registered_connection_function(name: &str) -> bool {
 }
 
 pub(crate) fn register_python_trigger_functions(connection: &Connection) -> StoreResult<()> {
+    crate::entity_publication::register_work_change_functions(connection)?;
     connection.create_scalar_function(
         "sync_entity_payload",
         4,

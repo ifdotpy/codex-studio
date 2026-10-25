@@ -1,5 +1,7 @@
 //! HTTP adapter for the versioned sync event stream.
 
+use super::entity_transfer;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
 use std::io::{self, Write};
@@ -336,6 +338,14 @@ async fn sync_stream(
     if let Err(error) = attach_initial_entries(&state, &mut initial_event, &since).await {
         return error.into_response();
     }
+    let mut scoped_sequences = BTreeMap::new();
+    let entity_transfers =
+        match entity_transfer::attach(&state, &mut initial_event, &since, &mut scoped_sequences)
+            .await
+        {
+            Ok(transfers) => transfers,
+            Err(error) => return error.into_response(),
+        };
     for (resource, entry) in initial_event
         .resources
         .iter()
@@ -351,6 +361,13 @@ async fn sync_stream(
             _ => {}
         }
     }
+    let mut terminal_cursors = BTreeMap::new();
+    super::subscriptions::attach_terminal_output_cursors(
+        Some(&state),
+        &mut initial_event,
+        &mut terminal_cursors,
+    )
+    .await;
     attach_transient_snapshots(Some(&state), &mut initial_event, &mut voice_sequences).await;
     let mut initial = VecDeque::new();
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -409,12 +426,15 @@ async fn sync_stream(
         vault_readiness,
         subscription: Some(subscription),
         initial,
+        entity_transfers: entity_transfers.into(),
+        scoped_sequences,
         workspace_id: state.workspace_id,
         epoch: subscription_snapshot.epoch,
         last_revision: subscription_snapshot.revision,
         resources,
         entity_sequence: initial_entity_sequence,
         transcript_sequences,
+        terminal_cursors,
         voice_sequences,
         draft_sequence: initial_draft_sequence,
         store: Some(store),
@@ -615,9 +635,16 @@ async fn attach_initial_entries(
 ) -> Result<(), ApiError> {
     for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
         let value = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
+        if entity_transfer::owns(resource) {
+            continue;
+        }
         let cursor = since.get(&value.to_string()).cloned();
-        let initial =
+        let mut initial =
             super::subscriptions::initial_snapshot(state.clone(), resource.clone(), cursor).await?;
+        if matches!(resource, ResourceRef::TerminalOutputResource(_)) {
+            // Notification revisions belong to the hub; output offsets belong to cursor.seq.
+            initial.revision = entry.revision;
+        }
         // Passive handlers leave transient and legacy inline fields with their
         // existing owner. A failed durable interval still supplies its revision.
         if initial.cursor.is_some() || initial.resource.is_some() {
@@ -709,6 +736,7 @@ async fn read_entity_changes(
                         ),
                         None,
                         None,
+                        true,
                         SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
                     )
                     .ok()
@@ -1049,12 +1077,15 @@ struct ResourceStream {
     http_state: Option<HttpState>,
     vault_readiness: Option<studio_runtime_services::vault::VaultReadinessWatcher>,
     initial: VecDeque<Event>,
+    entity_transfers: VecDeque<entity_transfer::TransferReader>,
+    scoped_sequences: BTreeMap<String, SubscriptionCursor>,
     workspace_id: String,
     epoch: String,
     last_revision: i64,
     resources: Vec<Value>,
     entity_sequence: i64,
     transcript_sequences: BTreeMap<String, i64>,
+    terminal_cursors: BTreeMap<String, SubscriptionCursor>,
     voice_sequences: BTreeMap<String, i64>,
     draft_sequence: i64,
     store: Option<Arc<RuntimeStore>>,
@@ -1082,6 +1113,14 @@ async fn next_subscription_change(
 
 async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChange) -> Option<()> {
     state.resources = update.resources;
+    let retained_scopes = state
+        .resources
+        .iter()
+        .map(Value::to_string)
+        .collect::<BTreeSet<_>>();
+    state
+        .scoped_sequences
+        .retain(|key, _| retained_scopes.contains(key));
     let readiness_interest = state
         .resources
         .iter()
@@ -1091,6 +1130,12 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
     {
         state.vault_readiness = readiness_source(http, &state.resources).await.ok()?;
     }
+    state.terminal_cursors.retain(|id, _| {
+        state
+            .resources
+            .iter()
+            .any(|resource| resource["kind"] == "terminal-output" && resource["terminalId"] == *id)
+    });
     state.voice_sequences.retain(|id, _| {
         state
             .resources
@@ -1159,15 +1204,31 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         )
         .ok()?;
         attach_transcript_changes(&mut event, updates);
+        attach_initial_entries(http_state, &mut event, &update.since)
+            .await
+            .ok()?;
+        super::subscriptions::attach_terminal_output_cursors(
+            state.http_state.as_ref(),
+            &mut event,
+            &mut state.terminal_cursors,
+        )
+        .await;
         attach_transient_snapshots(
             state.http_state.as_ref(),
             &mut event,
             &mut state.voice_sequences,
         )
         .await;
-        attach_initial_entries(http_state, &mut event, &update.since)
+        state.entity_transfers.extend(
+            entity_transfer::attach(
+                http_state,
+                &mut event,
+                &update.since,
+                &mut state.scoped_sequences,
+            )
             .await
-            .ok()?;
+            .ok()?,
+        );
         for (resource, entry) in event.resources.iter().zip(&event.resource_versions) {
             if matches!(resource, ResourceRef::StateResource(_)) && entry.cursor.is_some() {
                 state.entity_sequence = entry.revision;
@@ -1203,6 +1264,18 @@ async fn next_frame(
 ) -> Option<(Result<Event, Infallible>, ResourceStream)> {
     if let Some(event) = state.initial.pop_front() {
         return Some((Ok(event), state));
+    }
+    while let Some(transfer) = state.entity_transfers.front_mut() {
+        match transfer.next() {
+            Ok(Some(event)) => return Some((Ok(event), state)),
+            Ok(None) => {
+                state.entity_transfers.pop_front();
+            }
+            Err(error) => {
+                eprintln!("entity transfer read failed: {error:?}");
+                return None;
+            }
+        }
     }
 
     loop {
@@ -1266,17 +1339,22 @@ async fn next_frame(
         state.last_revision = view.cursor.revision;
         if !view.resources.is_empty() {
             state.consecutive_token_frames = 0;
-            let (sequence, batch) = match read_entity_changes(
-                state.store.clone(),
-                &view.resources,
-                (!view.overflow && !view.entity_reset).then_some(state.entity_sequence),
-            )
-            .await
-            {
-                Ok(update) => update,
-                Err(_) => {
-                    view.entity_reset = true;
-                    (state.entity_sequence, None)
+            let (sequence, batch) = if state.http_state.is_some() {
+                // Scoped delivery below owns the one source read, including state.
+                (state.entity_sequence, None)
+            } else {
+                match read_entity_changes(
+                    state.store.clone(),
+                    &view.resources,
+                    (!view.overflow && !view.entity_reset).then_some(state.entity_sequence),
+                )
+                .await
+                {
+                    Ok(update) => update,
+                    Err(_) => {
+                        view.entity_reset = true;
+                        (state.entity_sequence, None)
+                    }
                 }
             };
             state.entity_sequence = sequence;
@@ -1314,9 +1392,25 @@ async fn next_frame(
             )
             .ok()?;
             attach_transcript_changes(&mut event, transcript_updates);
-            super::subscription_entities::attach_scoped_entity_changes(
+            if let Some(http) = &state.http_state {
+                state.entity_transfers.extend(
+                    entity_transfer::attach(
+                        http,
+                        &mut event,
+                        &BTreeMap::new(),
+                        &mut state.scoped_sequences,
+                    )
+                    .await
+                    .ok()?,
+                );
+                if let Some(cursor) = state.scoped_sequences.get(r#"{"kind":"state"}"#) {
+                    state.entity_sequence = cursor.seq;
+                }
+            }
+            super::subscriptions::attach_terminal_output_cursors(
                 state.http_state.as_ref(),
                 &mut event,
+                &mut state.terminal_cursors,
             )
             .await;
             attach_transient_snapshots(
@@ -1325,14 +1419,19 @@ async fn next_frame(
                 &mut state.voice_sequences,
             )
             .await;
-            if event.resources.is_empty() {
+            if event.resources.is_empty() && state.entity_transfers.is_empty() {
                 continue;
             }
             state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
             if let Some(http) = &state.http_state {
                 append_progress_frames(http, &view, &mut state.initial).await;
             }
-            return Some((Ok(resource_sse_event(view.cursor.revision, event)), state));
+            state
+                .initial
+                .extend(initial_resource_sse_events(view.cursor.revision, event));
+            if let Some(event) = state.initial.pop_front() {
+                return Some((Ok(event), state));
+            }
         }
         if heartbeat {
             let event = json!({
@@ -1530,7 +1629,7 @@ fn resource_event(
     .expect("event serializes")
 }
 
-fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Event {
+pub(super) fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Event {
     // These stream DTOs contain only JSON-compatible fields and string map keys.
     let event = Event::default()
         .event(name)
@@ -1546,10 +1645,11 @@ fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Even
 /// crowded subscription set must not force normal windows into pull recovery.
 fn initial_resource_sse_events(revision: i64, payload: ResourceChangeEvent) -> Vec<Event> {
     if payload.resources.len() <= 1
-        || !payload
-            .resource_versions
-            .iter()
-            .any(|entry| entry.transcript_snapshot.is_some() || entry.view_snapshot.is_some())
+        || !payload.resource_versions.iter().any(|entry| {
+            entry.transcript_snapshot.is_some()
+                || entry.view_snapshot.is_some()
+                || entry.entity_changes.is_some()
+        })
     {
         return vec![resource_sse_event(revision, payload)];
     }
@@ -1760,6 +1860,180 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[tokio::test(start_paused = true)]
+    async fn state_stream_terminal_live_cursors_keep_independent_frame_budgets() {
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated terminal state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction_with(|tx| {
+            for id in ["one", "two"] {
+                tx.execute("INSERT INTO user_terminals(id,record,output,offset) VALUES(?1,?2,'a',0)", rusqlite::params![id,json!({"id":id,"agent":"lead","title":"Shell","cwd":"/","created":1,"status":"running"}).to_string()])?;
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("terminals");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(http.clone()).expect("router");
+        let query = form_urlencoded::Serializer::new(String::new())
+            .append_pair("protocol", SYNC_PROTOCOL_VERSION_TEXT)
+            .append_pair("tokenRates", "false")
+            .append_pair("resources", &json!([{"kind":"terminal-output","terminalId":"one"},{"kind":"terminal-output","terminalId":"two"}]).to_string()).finish();
+        let request = axum::http::Request::builder()
+            .uri(format!("/api/sync/stream?{query}"))
+            .header("host", "127.0.0.1:4321")
+            .header("x-canvas-token", "token")
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                12345,
+            ))))
+            .body(Body::empty())
+            .expect("request");
+        let mut body = app
+            .oneshot(request)
+            .await
+            .expect("SSE")
+            .into_body()
+            .into_data_stream();
+        for _ in 0..3 {
+            let _initial = body
+                .next()
+                .await
+                .expect("session and two initial snapshots")
+                .expect("bytes");
+        }
+        let count = studio_runtime_schema::shared_values::SYNC_TERMINAL_STREAM_MAX_CHARS;
+        store
+            .transaction_with(move |tx| {
+                tx.execute(
+                    "UPDATE user_terminals SET output=?1",
+                    [format!("a{}", "\u{0001}".repeat(count))],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("both outputs");
+        for _ in 0..2 {
+            let bytes = body
+                .next()
+                .await
+                .expect("independent live interval")
+                .expect("bytes");
+            assert!(bytes.len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+            let frame: Value = serde_json::from_str(
+                std::str::from_utf8(&bytes)
+                    .expect("UTF8")
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON");
+            assert_eq!(frame["resources"].as_array().expect("refs").len(), 1);
+            let entry = &frame["resourceVersions"][0];
+            assert_eq!(
+                entry["replyKind"], "delta",
+                "combined terminal data must not drop its cursor for recovery"
+            );
+            assert_eq!(entry["cursor"]["seq"], count + 1);
+            assert_eq!(
+                entry["viewSnapshot"]["terminalOutput"]["text"]
+                    .as_str()
+                    .expect("inline output")
+                    .chars()
+                    .count(),
+                count
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_stream_terminal_live_cursor_uses_intervals_and_resets_lost_buffers() {
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated terminal state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO user_terminals(id,record,output,offset) VALUES('shell',?1,'a🙂',0)", [json!({"id":"shell","agent":"lead","title":"Shell","cwd":"/","created":1,"status":"running"}).to_string()])?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("terminal baseline");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(http.clone()).expect("router");
+        let request = axum::http::Request::builder()
+            .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22terminal-output%22%2C%22terminalId%22%3A%22shell%22%7D%5D&tokenRates=false"))
+            .header("host", "127.0.0.1:4321").header("x-canvas-token", "token")
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],12345))))
+            .body(Body::empty()).expect("request");
+        let response = app.oneshot(request).await.expect("SSE response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let document = |bytes: &[u8]| -> Value {
+            let text = std::str::from_utf8(bytes).expect("UTF8 SSE");
+            serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON")
+        };
+        let _session = body.next().await.expect("session").expect("bytes");
+        let initial = document(&body.next().await.expect("snapshot").expect("bytes"));
+        assert_eq!(initial["resourceVersions"][0]["replyKind"], "snapshot");
+        assert_eq!(
+            initial["resourceVersions"][0]["revision"], initial["revision"],
+            "terminal notification revision must keep the hub revision domain"
+        );
+        assert_eq!(
+            initial["resourceVersions"][0]["viewSnapshot"]["terminalOutput"]["text"],
+            "a🙂"
+        );
+        for (text, offset, expected, kind, seq) in [
+            ("a🙂中", 0, "中", "delta", 3),
+            ("tail", 20, "tail", "snapshot", 24),
+            ("tail!", 20, "!", "delta", 25),
+            ("new", 0, "new", "snapshot", 3),
+        ] {
+            store
+                .transaction_with(move |tx| {
+                    tx.execute(
+                        "UPDATE user_terminals SET output=?1,offset=?2 WHERE id='shell'",
+                        rusqlite::params![text, offset],
+                    )?;
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .expect("output commit");
+            http.sync_changes.notify_one();
+            let frame = document(&body.next().await.expect("live frame").expect("bytes"));
+            let entry = &frame["resourceVersions"][0];
+            assert_eq!(
+                entry["viewSnapshot"]["terminalOutput"]["text"], expected,
+                "live append must not replay retained history"
+            );
+            assert_eq!(entry["replyKind"], kind);
+            assert_eq!(entry["cursor"]["seq"], seq);
+        }
+        drop(body);
+        assert!(
+            http.sync_sessions.0.lock().expect("sessions").is_empty(),
+            "closed stream releases cursor owner"
+        );
+    }
 
     #[tokio::test]
     async fn state_stream_rename_failure_carries_the_exact_receipt_without_entity_changes() {
@@ -2168,7 +2442,7 @@ mod tests {
         for entry in value["resourceVersions"].as_array_mut().expect("versions") {
             entry["transcriptChanges"] = json!({"after":1,"through":99999,"delta":{
                 "delta":true,"items":[{"id":"answer","role":"assistant","text":""}],
-                "removed":[],"itemRevisions":{},"truncated":false
+                "removed":[],"truncated":false
             }});
         }
         serde_json::from_value(value).expect("combined fixture")
@@ -3342,6 +3616,7 @@ mod tests {
             "stream carries the entire pull interval"
         );
         assert_eq!(batch["delta"]["items"][0]["text"], "before streamed text");
+        assert!(batch["delta"].get("itemRevisions").is_none());
         assert_eq!(batch["through"], event["resourceVersions"][0]["revision"]);
         state.next_resources_frame_at = None;
         http.resource_notifications.publish_once(&json!({"requestId":"preflush-empty","resources":[{"kind":"transcript","agentId":"open"}]})).expect("scoped preflush hint");
@@ -3516,7 +3791,7 @@ mod tests {
         let validator = studio_runtime_schema::compiled_validator("TranscriptStreamDelta")
             .expect("stream delta validator");
         let delta = json!({"delta":true,"items":[{"id":"answer","role":"assistant","text":"text"}],
-            "order":["answer"],"removed":[],"itemRevisions":{"answer":"0".repeat(64)},"truncated":false,
+            "order":["answer"],"removed":[],"truncated":false,
             "nextCursor":"answer","nextAfterCursor":"answer","historyVersion":"thread:checkpoint","tail":"","unavailable":null});
         assert!(validator.is_valid(&delta));
         for scenario in [
@@ -3524,8 +3799,7 @@ mod tests {
             "order_count",
             "removed_id",
             "order_id",
-            "revision_key",
-            "revision_value",
+            "retired_revisions",
             "cursor_empty",
             "cursor_long",
             "version_long",
@@ -3539,10 +3813,7 @@ mod tests {
                 }
                 "removed_id" => payload["removed"] = json!([""]),
                 "order_id" => payload["order"] = json!([""]),
-                "revision_key" => payload["itemRevisions"] = json!({"":"0".repeat(64)}),
-                "revision_value" => {
-                    payload["itemRevisions"]["answer"] = json!("not-a-sha256-digest")
-                }
+                "retired_revisions" => payload["itemRevisions"] = json!({"answer":"0".repeat(64)}),
                 "cursor_empty" => payload["nextCursor"] = json!(""),
                 "cursor_long" => payload["nextAfterCursor"] = json!("x".repeat(4097)),
                 "version_long" => payload["historyVersion"] = json!("x".repeat(8194)),
@@ -3564,7 +3835,7 @@ mod tests {
     #[test]
     fn state_stream_transcript_caps_and_incomplete_snapshots_stay_hint_only() {
         let delta = json!({"delta":true,"items":[{"id":"answer","role":"assistant","text":"after"}],
-            "removed":[],"itemRevisions":{"answer":studio_runtime_store::sha256_hex(b"after")},"truncated":false});
+            "removed":[],"truncated":false});
         for scenario in [
             "complete", "items", "snapshot", "deleted", "cursor", "unknown",
         ] {
@@ -3876,7 +4147,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_stream_falls_back_for_oversize_pruned_or_unreadable_intervals() {
-        for scenario in ["documents", "bytes", "pruned", "payload"] {
+        for scenario in ["documents", "bytes", "pruned", "payload", "envelope"] {
             let root = tempfile::tempdir().expect("isolated state");
             let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
             let hub = Arc::new(ChangeNotificationHub::new());
@@ -3895,11 +4166,32 @@ mod tests {
                 if scenario == "pruned" {
                     tx.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor','1')", [])?;
                 }
-                if scenario == "payload" {
-                    tx.execute("UPDATE sync_entities SET payload='broken'", [])?;
+                if scenario == "payload" || scenario == "envelope" {
+                    // Movement triggers reject a malformed agentSummary UPDATE.
+                    // Model an already corrupt/imported non-membership record
+                    // instead, with all production triggers still installed.
+                    tx.execute("UPDATE sync_generation SET value=value+1 WHERE id=1", [])?;
+                    let payload=if scenario=="payload" {"broken"} else {"{}"};
+                    tx.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) SELECT 'workspace','corrupt-import',value,'corrupt-fixture',?1,0 FROM sync_generation WHERE id=1", [payload])?;
                 }
                 Ok(())
             }).await.expect("interval");
+            if scenario == "payload" || scenario == "envelope" {
+                store.test_read_transaction(|tx| {
+                    let collections:Vec<String>=serde_json::from_str(studio_runtime_schema::sync_protocol::global_entity_collections_json()).expect("global collection owner");
+                    assert!(collections.iter().any(|collection|collection=="workspace"));
+                    let rows=SyncDocumentsRepository::entities_after(tx,0,SYNC_ENTITY_STREAM_MAX_DOCUMENTS)?;
+                    let corrupt=rows.iter().find(|row|row.collection=="workspace" && row.id=="corrupt-import").expect("stored corruption in the selected collection and sequence interval");
+                    assert!(corrupt.sequence>0 && corrupt.sequence<=SyncDocumentsRepository::entity_sequence(tx)?);
+                    assert_eq!(corrupt.payload.as_deref(),Some(if scenario=="payload" {"broken"} else {"{}"}));
+                    assert!(crate::routes::sync_documents::entity_document(corrupt).is_none(),"canonical decoder rejects the corrupt record");
+                    if scenario=="envelope" {
+                        let page=SyncDocumentsRepository::resume_entity_scope(tx,Some(0),Some(studio_runtime_schema::sync_protocol::global_entity_collections_json()),None,None,true,SYNC_ENTITY_STREAM_MAX_DOCUMENTS)?;
+                        assert!(page.rows.iter().any(|row|row.id=="corrupt-import"),"valid JSON reaches the decoder through the actual scoped reader");
+                    }
+                    Ok(())
+                }).expect("selected corruption witness");
+            }
             hub.notify_one();
             let (event, _) = next_frame(state).await.expect("revision fallback");
             let event = event_document(event).await;
@@ -4348,12 +4640,15 @@ mod tests {
             vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
+            entity_transfers: VecDeque::new(),
+            scoped_sequences: BTreeMap::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
             resources: vec![json!({"kind": "queue", "agentId": "agent-a"})],
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
@@ -4397,12 +4692,15 @@ mod tests {
             vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
+            entity_transfers: VecDeque::new(),
+            scoped_sequences: BTreeMap::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
             resources: vec![json!({"kind":"accounts"})],
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
@@ -4684,12 +4982,15 @@ mod tests {
             vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
+            entity_transfers: VecDeque::new(),
+            scoped_sequences: BTreeMap::new(),
             workspace_id: "workspace".into(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
             resources,
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
@@ -4902,12 +5203,15 @@ mod tests {
             vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
+            entity_transfers: VecDeque::new(),
+            scoped_sequences: BTreeMap::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
             resources: Vec::new(),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,

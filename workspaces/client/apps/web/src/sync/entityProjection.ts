@@ -38,6 +38,8 @@ export type EntityRow = Omit<
 > & {
   _deleted?: components["schemas"]["SyncDocument"]["_deleted"];
   entity?: SyncEntityPayload;
+  /** Local selection eviction; seq remains the last authoritative source version. */
+  evicted?: boolean;
 };
 
 type EntityCollection = SyncEntityPayload["collection"];
@@ -57,6 +59,10 @@ const ENTITY_COLLECTIONS = [
   "edge",
   "event",
   "work",
+  "workDetail",
+  "workResult",
+  "workDecision",
+  "workRelease",
   "workspace",
   "rateLimit",
   "model",
@@ -102,6 +108,7 @@ type EntityRowState = {
   collection?: EntityCollection;
   entityId?: string;
   deleted?: boolean;
+  evicted?: boolean;
 };
 
 export type EntityProjection = {
@@ -137,6 +144,10 @@ function emptyEntityValues(): EntityValues {
     edge: new Map<string, EdgeEntityDto>(),
     event: new Map<string, EventEntityDto>(),
     work: new Map<string, WorkEntityDto>(),
+    workDetail: new Map(),
+    workResult: new Map(),
+    workDecision: new Map(),
+    workRelease: new Map(),
     workspace: new Map<string, WorkspaceEntityDto>(),
     accounts: new Map<string, components["schemas"]["AccountsSummaryDto"]>(),
     accountCost: new Map<
@@ -394,7 +405,7 @@ function retainTombstone(
 export function applyEntityChanges(
   state: EntityProjection,
   rows: Iterable<
-    Readonly<Pick<EntityRow, "id" | "seq" | "_deleted">> & {
+    Readonly<Pick<EntityRow, "id" | "seq" | "_deleted" | "evicted">> & {
       readonly entity?: unknown;
     }
   >,
@@ -407,7 +418,10 @@ export function applyEntityChanges(
     if (
       previous &&
       (previous.seq > row.seq ||
-        (previous.seq === row.seq && (!row._deleted || previous.deleted)))
+        (previous.seq === row.seq &&
+          (row.evicted
+            ? previous.deleted
+            : !previous.evicted && (!row._deleted || previous.deleted))))
     )
       continue;
     const oldCollection = previous?.collection;
@@ -423,6 +437,7 @@ export function applyEntityChanges(
         ...(oldCollection ? { collection: oldCollection } : {}),
         ...(oldEntityId === undefined ? {} : { entityId: oldEntityId }),
         deleted: true,
+        ...(row.evicted ? { evicted: true } : {}),
       });
       continue;
     }
@@ -507,6 +522,18 @@ export function applyEntityChanges(
         break;
       case "work":
         state.values.work.set(payload.id, payload.value);
+        break;
+      case "workDetail":
+        state.values.workDetail.set(payload.id, payload.value);
+        break;
+      case "workResult":
+        state.values.workResult.set(payload.id, payload.value);
+        break;
+      case "workDecision":
+        state.values.workDecision.set(payload.id, payload.value);
+        break;
+      case "workRelease":
+        state.values.workRelease.set(payload.id, payload.value);
         break;
       case "uiPreferences":
         state.values.uiPreferences.set(payload.id, payload.value);

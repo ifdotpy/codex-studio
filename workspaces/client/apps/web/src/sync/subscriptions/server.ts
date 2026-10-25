@@ -28,6 +28,8 @@ export function createServerSubscriptions(options: ServerSubscriptionOptions) {
       persistResourceEntityChanges: (...args) =>
         sync().persistResourceEntityChanges(...args),
       readSubscriptionCursor: (ref) => sync().readSubscriptionCursor(ref),
+      persistStagedEntityTransfer: (...args) =>
+        sync().persistStagedEntityTransfer(...args),
     },
     openEvents: (url) =>
       new SignedEventSource(
@@ -47,8 +49,6 @@ export function createServerSubscriptions(options: ServerSubscriptionOptions) {
         switch (ref.kind) {
           case "processes":
             return api.get("/api/processes", { query: { agent: ref.agentId } });
-          case "work":
-            return api.get("/api/work", { query: { agent: ref.agentId } });
           case "complaint":
             return api.get("/api/complaint", {
               query: { id: ref.complaintId },

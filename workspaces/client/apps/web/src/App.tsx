@@ -2100,7 +2100,6 @@ export default function App({ active = true }: { active?: boolean }) {
               projectServices,
             );
             setModal(null);
-            await refresh();
           }}
         />
       ),

@@ -13,6 +13,7 @@ export default {
       "src/sync/subscriptions/viewData.test.ts",
       "src/sync/subscriptions/terminalOutput.test.ts",
       "src/sync/subscriptions/server.test.ts",
+      "src/sync/subscriptions/server.readiness.test.ts",
       "src/sync/subscriptions/entityData.test.ts",
       // Preserve newly landed safety witnesses, including the real Rust draft-route fixture.
       "src/sync/entityProjection.test.mjs",
@@ -29,6 +30,7 @@ export default {
       "src/sync/entityProjectionObserver.test.ts",
       "src/sync/client.draftServer.test.ts",
       "src/sync/client.entityServer.test.ts",
+      "src/sync/client.terminalServer.test.ts",
 
       // Token snapshots carry each agent once and derive team membership without entity projections.
       "src/usage/tokenRate.records.test.ts",
@@ -69,6 +71,7 @@ export default {
       "src/components/liveRequestConsumers.test.ts",
       "src/components/detailReads.noRefetch.test.ts",
       "src/components/streamConsumers.test.ts",
+      "src/components/shell/Tasks.test.ts",
       "src/components/readState.noRefetch.test.ts",
       "src/components/sidebarOrder.migration.test.ts",
       "src/components/ProjectServerCards.test.ts",
@@ -86,7 +89,10 @@ export default {
       // A complete state batch advances the durable projection with no new pull; storage failures, gaps, reconnects and epochs still reconcile.
       "src/sync/client.dispatchGate.test.ts",
       "src/sync/client.entityReset.test.ts",
+      "src/sync/client.resourceBootstrap.test.ts",
       "src/sync/resourceEntityDelivery.test.ts",
+      "src/sync/entityTransfer.test.ts",
+      "src/sync/entityTransfer.storage.test.ts",
       "src/sync/resourceEvents.test.ts",
       "src/servers/eventSource.test.ts",
       // Prevent duplicate entity pulls and preserve server storage and API ownership.

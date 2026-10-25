@@ -13,6 +13,36 @@ vi.mock("../usage/tokenRate", () => ({
 }));
 vi.mock("./resume", () => ({ onResume: () => () => {} }));
 
+vi.mock("./entityTransfer", async (original) => {
+  const module = await original<typeof import("./entityTransfer")>();
+  return {
+    ...module,
+    EntityTransferAssembler: class extends module.EntityTransferAssembler {
+      constructor() {
+        const rows = new Map<string, string>();
+        super({
+          async put(key, value) {
+            rows.set(key, value);
+          },
+          async putMany(values) {
+            for (const [key, value] of values) rows.set(key, value);
+          },
+          async get(key) {
+            return rows.get(key);
+          },
+          async remove(prefix) {
+            for (const key of rows.keys())
+              if (key.startsWith(prefix)) rows.delete(key);
+          },
+          async close() {
+            rows.clear();
+          },
+        });
+      }
+    },
+  };
+});
+
 class Source {
   listeners = new Map<string, (event: Event) => void>();
   onopen: (() => void) | null = null;
@@ -37,7 +67,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function fixture(follower = false, session = true) {
+async function fixture(follower = false, session = true, peerOwner = false) {
   vi.useFakeTimers();
   vi.stubGlobal("window", {
     addEventListener: vi.fn(),
@@ -48,31 +78,42 @@ async function fixture(follower = false, session = true) {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
   });
+  let acquire: ((lock: Lock | null) => Promise<void>) | undefined;
   vi.stubGlobal("navigator", {
     onLine: true,
-    ...(follower
+    ...(follower || peerOwner
       ? {
           locks: {
             request: (
               _name: string,
               _options: unknown,
-              callback: (lock: null) => Promise<void>,
-            ) => callback(null),
+              callback: (lock: Lock | null) => Promise<void>,
+            ) => {
+              acquire = callback;
+              return callback(
+                peerOwner
+                  ? ({ name: "fixture", mode: "exclusive" } as Lock)
+                  : null,
+              );
+            },
           },
         }
       : {}),
   });
   vi.stubGlobal("location", { origin: "http://studio.test" });
   let deliverPeer: ((event: MessageEvent) => void) | undefined;
+  const posted: any[] = [];
   vi.stubGlobal(
     "BroadcastChannel",
-    follower
+    follower || peerOwner
       ? class {
           onmessage: ((event: MessageEvent) => void) | null = null;
           constructor() {
             deliverPeer = (event) => this.onmessage?.(event);
           }
-          postMessage() {}
+          postMessage(message: unknown) {
+            posted.push(structuredClone(message));
+          }
           close() {}
         }
       : undefined,
@@ -87,12 +128,23 @@ async function fixture(follower = false, session = true) {
         event,
       },
     } as MessageEvent);
+  const control = (kind: string, fields: Record<string, unknown>) =>
+    deliverPeer?.({
+      data: {
+        workspaceId: "workspace",
+        tabId: "owner",
+        apiSchemaHash: API_SCHEMA_HASH,
+        kind,
+        ...fields,
+      },
+    } as MessageEvent);
   const sources: Source[] = [];
   const urls: string[] = [];
   const post = vi.fn().mockResolvedValue({ gen: 1 });
   const get = vi.fn().mockResolvedValue({});
   const readCursor = vi.fn().mockResolvedValue(undefined);
   const persist = vi.fn().mockResolvedValue(undefined);
+  const staged = vi.fn().mockResolvedValue(undefined);
   const transport = createResourceEvents({
     api: {
       get,
@@ -106,6 +158,7 @@ async function fixture(follower = false, session = true) {
     sync: {
       syncDatabase: vi.fn().mockResolvedValue({ workspaceId: "workspace" }),
       persistResourceEntityChanges: persist,
+      persistStagedEntityTransfer: staged,
       readSubscriptionCursor: readCursor,
     },
     tokenRates: {
@@ -146,9 +199,25 @@ async function fixture(follower = false, session = true) {
     urls,
     post,
     persist,
+    staged,
     stopState,
     get,
     readCursor,
+    posted,
+    peerMessage: (message: Record<string, unknown>) =>
+      deliverPeer?.({
+        data: {
+          ...message,
+          workspaceId: "workspace",
+          apiSchemaHash: API_SCHEMA_HASH,
+          tabId: "late-follower",
+        },
+      } as MessageEvent),
+    takeOwnership: () => {
+      void acquire?.({ name: "fixture", mode: "exclusive" } as Lock);
+    },
+    messages: posted,
+    control,
   };
 }
 
@@ -174,6 +243,165 @@ it("publishes each resource event without a listener flush timer", async () => {
       expect.objectContaining({ revision }),
     );
   }
+});
+
+it("confirms a late store from an already active applied baseline without another read", async () => {
+  const f = await fixture();
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "initial",
+    resources: [{ kind: "state" }],
+    resourceVersions: [
+      {
+        revision: 2,
+        cursor: { workspaceId: "workspace", seq: 2 },
+        replyKind: "snapshot",
+        entityChanges: { after: 0, through: 2, documents: [] },
+      },
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const store = createSubscriptionStore(f.transport);
+  disposals.push(store.dispose);
+  store.watchResourceChanges({ kind: "state" }, () => {});
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot({ kind: "state" }).status).toBe("live");
+  expect(f.get).not.toHaveBeenCalled();
+  expect(f.sources).toHaveLength(1);
+});
+
+it("fences an active baseline replay when its stream fails during registration", async () => {
+  const f = await fixture();
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "initial",
+    resources: [{ kind: "state" }],
+    resourceVersions: [
+      {
+        revision: 2,
+        cursor: { workspaceId: "workspace", seq: 2 },
+        replyKind: "snapshot",
+        entityChanges: { after: 0, through: 2, documents: [] },
+      },
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const store = createSubscriptionStore(f.transport);
+  disposals.push(store.dispose);
+  store.watchResourceChanges({ kind: "state" }, () => {});
+  f.source.onerror?.();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot({ kind: "state" }).status).toBe("stale");
+  expect(f.get.mock.calls.map(([path]) => path)).toEqual([
+    "/api/sync/identity",
+  ]);
+});
+
+it("promotes a same-revision recovery hint only after its applied receipt arrives", async () => {
+  const f = await fixture();
+  const store = createSubscriptionStore(f.transport);
+  disposals.push(store.dispose);
+  store.watchResourceChanges({ kind: "state" }, () => {});
+  expect(store.getSnapshot({ kind: "state" }).status).toBe("loading");
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 1,
+    reason: "reconnect",
+    resources: [{ kind: "state" }],
+    resourceVersions: [
+      {
+        revision: 1,
+        cursor: { workspaceId: "workspace", seq: 1 },
+        replyKind: "delta",
+      },
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot({ kind: "state" }).status).toBe("live");
+  expect(f.get).not.toHaveBeenCalled();
+});
+
+it("revokes historical same-revision proof when the current reconnect application fails", async () => {
+  const f = await fixture();
+  const baseline = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "initial",
+    resources: [{ kind: "state" }],
+    resourceVersions: [
+      {
+        revision: 2,
+        cursor: { workspaceId: "workspace", seq: 2 },
+        replyKind: "delta",
+      },
+    ],
+  };
+  f.source.emit("resources", baseline);
+  await vi.advanceTimersByTimeAsync(0);
+  const store = createSubscriptionStore(f.transport);
+  disposals.push(store.dispose);
+  store.watchResourceChanges({ kind: "state" }, () => {});
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot({ kind: "state" }).status).toBe("live");
+  f.source.onerror?.();
+  expect(store.getSnapshot({ kind: "state" }).status).toBe("stale");
+  await vi.advanceTimersByTimeAsync(1000);
+  const resumed = f.sources.at(-1)!;
+  resumed.emit("api-schema", { hash: API_SCHEMA_HASH });
+  f.persist.mockRejectedValueOnce(
+    new Error("the current local base is unavailable"),
+  );
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  resumed.emit("resources", { ...baseline, reason: "reconnect" });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot({ kind: "state" }).status).not.toBe("live");
+  error.mockRestore();
+});
+
+it("reports a deferred baseline listener failure through normal transport recovery", async () => {
+  const f = await fixture();
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "initial",
+    resources: [{ kind: "state" }],
+    resourceVersions: [
+      {
+        revision: 2,
+        cursor: { workspaceId: "workspace", seq: 2 },
+        replyKind: "snapshot",
+        entityChanges: { after: 0, through: 2, documents: [] },
+      },
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  const listener = vi
+    .fn()
+    .mockImplementationOnce(() => {})
+    .mockImplementation(() => {
+      throw new Error("listener unavailable");
+    });
+  f.transport.watchResourceChanges({ kind: "state" }, listener, {
+    waitForBaseline: true,
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(status).toHaveBeenCalledWith("degraded", expect.any(String));
+  error.mockRestore();
 });
 
 it("delivers subscribed auth progress without sending its URL to the entity persister", async () => {
@@ -709,4 +937,578 @@ it("T28 recently viewed chat switching sends no subscription changes within grac
     "T28 subscription POST measurements",
     JSON.stringify(measurements),
   );
+});
+
+it("new-epoch entity fragments publish only after complete persisted staging and survive the next fragment without resetting", async () => {
+  const f = await fixture();
+  const listener = vi.fn();
+  f.transport.watchResourceChanges({ kind: "state" }, listener);
+  listener.mockClear();
+  const encoded = JSON.stringify({
+    after: 0,
+    through: 2,
+    documents: [
+      {
+        op: "upsert",
+        collection: "workspace",
+        id: "current",
+        seq: 2,
+        value: { stateDir: "fixture" },
+      },
+    ],
+  });
+  const frame = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "new-epoch",
+    revision: 2,
+    reason: "initial",
+    resource: { kind: "state" },
+    cursor: { workspaceId: "workspace", seq: 2 },
+    replyKind: "snapshot",
+    transferId: "new-baseline",
+    pageIndex: 0,
+    partCount: 2,
+  };
+  f.source.emit("entity-transfer", {
+    ...frame,
+    partIndex: 0,
+    complete: false,
+    data: encoded.slice(0, 40),
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.staged).not.toHaveBeenCalled();
+  expect(listener).not.toHaveBeenCalled();
+  let finish!: () => void;
+  f.staged.mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  f.source.emit("entity-transfer", {
+    ...frame,
+    partIndex: 1,
+    complete: true,
+    data: encoded.slice(40),
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.staged).toHaveBeenCalledOnce();
+  expect(listener).not.toHaveBeenCalled();
+  finish();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(listener).toHaveBeenCalledOnce();
+  expect(listener).toHaveBeenCalledWith(
+    expect.objectContaining({ cursor: { workspaceId: "workspace", seq: 2 } }),
+  );
+  expect(f.get).not.toHaveBeenCalled();
+  expect(f.sources).toHaveLength(1);
+});
+it("a cancelled staging failure cannot close its replacement stream", async () => {
+  const f = await fixture();
+  let fail!: (error: Error) => void;
+  f.staged.mockImplementation(
+    () =>
+      new Promise<void>((_resolve, reject) => {
+        fail = reject;
+      }),
+  );
+  f.source.emit("entity-transfer", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "initial",
+    resource: { kind: "state" },
+    cursor: { workspaceId: "workspace", seq: 2 },
+    replyKind: "snapshot",
+    transferId: "cancelled",
+    pageIndex: 0,
+    partIndex: 0,
+    partCount: 1,
+    complete: true,
+    data: JSON.stringify({ after: 0, through: 2, documents: [] }),
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.staged).toHaveBeenCalledOnce();
+  f.source.onerror?.();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(f.sources).toHaveLength(2);
+  const replacement = f.sources[1]!;
+  fail(new Error("old staging failed after cancellation"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(replacement.closed).toBe(false);
+  expect(f.sources).toHaveLength(2);
+});
+
+it("reopens a terminal with a fresh snapshot after its reset base could not persist", async () => {
+  const f = await fixture();
+  const resource = { kind: "terminal-output", terminalId: "shell" } as const;
+  const cursor = { workspaceId: "workspace", seq: 40 };
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "terminal-output" ? cursor : undefined,
+  );
+  let stop = f.transport.watchResourceChanges(resource, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 1 });
+  const frame = (revision: number, text: string, offset: number) => ({
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision,
+    reason: "change",
+    resources: [resource],
+    resourceVersions: [
+      {
+        revision,
+        cursor: { workspaceId: "workspace", seq: offset },
+        replyKind: "snapshot",
+        viewSnapshot: {
+          terminalOutput: { text, offset, status: "running", truncated: false },
+        },
+      },
+    ],
+  });
+  f.source.emit("resources", {
+    ...frame(10, "o".repeat(40), 40),
+    reason: "initial",
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+  f.persist.mockRejectedValueOnce(new Error("disk full"));
+  f.source.emit("resources", frame(11, "new", 3));
+  await vi.advanceTimersByTimeAsync(0);
+  stop();
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 2 });
+  stop = f.transport.watchResourceChanges(resource, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  expect(f.post).toHaveBeenLastCalledWith(
+    "/api/sync/subscriptions",
+    expect.objectContaining({ add: [{ resource }] }),
+    expect.anything(),
+  );
+  f.source.emit("subscriptions", { gen: 3 });
+  f.source.onerror?.();
+  await vi.advanceTimersByTimeAsync(10000);
+  const url = new URL(f.urls.at(-1)!, "http://studio.test");
+  expect(
+    JSON.parse(url.searchParams.get("since") ?? "[]").some(
+      (entry: { resource: unknown }) =>
+        JSON.stringify(entry.resource) === JSON.stringify(resource),
+    ),
+  ).toBe(false);
+  const resumed = f.sources.at(-1)!;
+  resumed.emit("session", { sessionId: "session-two" });
+  resumed.emit("api-schema", { hash: API_SCHEMA_HASH });
+  resumed.emit("resources", { ...frame(12, "new", 3), reason: "reconnect" });
+  await vi.advanceTimersByTimeAsync(0);
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "terminal-output"
+      ? { workspaceId: "workspace", seq: 3 }
+      : undefined,
+  );
+  resumed.onerror?.();
+  await vi.advanceTimersByTimeAsync(10000);
+  const recovered = new URL(f.urls.at(-1)!, "http://studio.test");
+  expect(JSON.parse(recovered.searchParams.get("since")!)).toContainEqual({
+    resource,
+    since: { workspaceId: "workspace", seq: 3 },
+  });
+  stop();
+  quiet.mockRestore();
+});
+
+it("takes terminal ownership with a snapshot and resumes only its proven baseline", async () => {
+  const f = await fixture(true);
+  const resource = {
+    kind: "terminal-output",
+    terminalId: "taken-over",
+  } as const;
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "terminal-output"
+      ? { workspaceId: "workspace", seq: 40 }
+      : undefined,
+  );
+  f.transport.watchResourceChanges(resource, vi.fn());
+  const frame = (revision: number, text: string, offset: number) => ({
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision,
+    reason: "change",
+    resources: [resource],
+    resourceVersions: [
+      {
+        revision,
+        cursor: { workspaceId: "workspace", seq: offset },
+        replyKind: "snapshot",
+        viewSnapshot: {
+          terminalOutput: { text, offset, status: "running", truncated: false },
+        },
+      },
+    ],
+  });
+  f.source.emit("resources", {
+    ...frame(10, "o".repeat(40), 40),
+    reason: "initial",
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const reset = frame(11, "new", 3);
+  // This is what an owner's failed snapshot dispatch broadcasts to a follower.
+  const {
+    cursor: _cursor,
+    replyKind: _kind,
+    ...revoked
+  } = reset.resourceVersions[0];
+  f.source.emit("resources", { ...reset, resourceVersions: [revoked] });
+  await vi.advanceTimersByTimeAsync(0);
+  f.takeOwnership();
+  await vi.advanceTimersByTimeAsync(50);
+  const coldUrl = new URL(f.urls.at(-1)!, "http://studio.test");
+  expect(
+    JSON.parse(coldUrl.searchParams.get("since") ?? "[]").some(
+      (entry: { resource: unknown }) =>
+        JSON.stringify(entry.resource) === JSON.stringify(resource),
+    ),
+  ).toBe(false);
+  const owned = f.sources.at(-1)!;
+  owned.emit("session", { sessionId: "owned" });
+  owned.emit("api-schema", { hash: API_SCHEMA_HASH });
+  owned.emit("resources", { ...frame(12, "new", 3), reason: "initial" });
+  await vi.advanceTimersByTimeAsync(0);
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "terminal-output"
+      ? { workspaceId: "workspace", seq: 3 }
+      : undefined,
+  );
+  owned.onerror?.();
+  await vi.advanceTimersByTimeAsync(10000);
+  const resumed = new URL(f.urls.at(-1)!, "http://studio.test");
+  expect(JSON.parse(resumed.searchParams.get("since")!)).toContainEqual({
+    resource,
+    since: { workspaceId: "workspace", seq: 3 },
+  });
+});
+
+it("a late terminal follower consumes owner merged views without repeated recovery GETs", async () => {
+  const owner = await fixture(false, true, true);
+  const { mergeTerminalOutput } =
+    await import("./subscriptions/terminalOutput");
+  const { createDataObserver } = await import("./subscriptions/data");
+  const resource = {
+    kind: "terminal-output",
+    terminalId: "late-follower",
+  } as const;
+  owner.transport.watchResourceChanges(resource, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  owner.source.emit("subscriptions", { gen: 1 });
+  let merged: Parameters<typeof mergeTerminalOutput>[0];
+  owner.persist.mockImplementation(async (event, current) => {
+    if (!current()) return;
+    for (const entry of event.resourceVersions) {
+      if (!entry.viewSnapshot?.terminalOutput) continue;
+      merged = mergeTerminalOutput(
+        merged,
+        entry.viewSnapshot.terminalOutput,
+        entry.replyKind === "delta",
+      );
+      entry.viewSnapshot = { terminalOutput: merged };
+    }
+  });
+  const frame = (
+    revision: number,
+    text: string,
+    offset: number,
+    replyKind = "delta",
+  ) => ({
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision,
+    reason: "change",
+    resources: [resource],
+    resourceVersions: [
+      {
+        revision,
+        cursor: { workspaceId: "workspace", seq: offset },
+        replyKind,
+        viewSnapshot: {
+          terminalOutput: { text, offset, status: "running", truncated: false },
+        },
+      },
+    ],
+  });
+  owner.source.emit("resources", {
+    ...frame(10, "old", 3, "snapshot"),
+    reason: "initial",
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const follower = await fixture(true);
+  const recover = vi.fn(async () => merged);
+  const accept = vi.fn();
+  const stop = createDataObserver(
+    () => ({}) as any,
+    follower.transport,
+    undefined,
+    recover,
+  )(resource, accept, vi.fn());
+  const relay = () => {
+    const message = owner.posted
+      .filter((message) => message.kind === "resource-event")
+      .at(-1)!;
+    follower.source.emit("resources", message.event);
+    return message.event;
+  };
+  owner.peerMessage({
+    kind: "subscriptions",
+    resources: [resource],
+    reset: true,
+    tokenRates: false,
+  });
+  const replay = relay();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(replay.resourceVersions[0]).toMatchObject({
+    replyKind: "snapshot",
+    viewSnapshot: { terminalOutput: { text: "old" } },
+  });
+  expect(accept).toHaveBeenLastCalledWith(
+    merged,
+    expect.objectContaining({
+      epoch: "epoch",
+      revision: 10,
+      replyKind: "snapshot",
+      cursor: { workspaceId: "workspace", seq: 3 },
+    }),
+  );
+  for (const revision of [11, 12]) {
+    owner.source.emit("resources", frame(revision, "!", revision - 7));
+    await vi.advanceTimersByTimeAsync(0);
+    const broadcast = relay();
+    expect(broadcast.resourceVersions[0]).toMatchObject({
+      replyKind: "snapshot",
+      viewSnapshot: { terminalOutput: merged },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(accept).toHaveBeenLastCalledWith(
+      merged,
+      expect.objectContaining({
+        epoch: "epoch",
+        revision,
+        replyKind: "snapshot",
+        cursor: { workspaceId: "workspace", seq: revision - 7 },
+      }),
+    );
+  }
+  let finish!: () => void;
+  const apply = owner.persist.getMockImplementation()!;
+  owner.persist.mockImplementationOnce(async (event, current) => {
+    await new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    await apply(event, current);
+  });
+  const before = owner.posted.filter(
+    (message) => message.kind === "resource-event",
+  ).length;
+  owner.source.emit("resources", frame(13, "!", 6));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(
+    owner.posted.filter((message) => message.kind === "resource-event"),
+  ).toHaveLength(before);
+  finish();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(relay().resourceVersions[0]).toMatchObject({
+    replyKind: "snapshot",
+    viewSnapshot: { terminalOutput: { text: "old!!!" } },
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(recover).not.toHaveBeenCalled();
+  const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+  const beforeFailure = owner.posted.filter(
+    (message) => message.kind === "resource-event",
+  ).length;
+  owner.persist.mockRejectedValueOnce(new Error("disk full"));
+  owner.source.emit("resources", frame(14, "new", 3, "snapshot"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(
+    owner.posted.filter((message) => message.kind === "resource-event"),
+  ).toHaveLength(beforeFailure);
+  expect(owner.source.closed).toBe(true);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(owner.sources).toHaveLength(2);
+  const retry = new URL(owner.urls.at(-1)!, "http://studio.test");
+  expect(
+    JSON.parse(retry.searchParams.get("since") ?? "[]").some(
+      (entry: { resource: unknown }) =>
+        JSON.stringify(entry.resource) === JSON.stringify(resource),
+    ),
+  ).toBe(false);
+  quiet.mockRestore();
+  stop();
+});
+
+it.each([false, true])(
+  "a follower scoped application failure requests owner recovery only while subscribed (cancelled=%s)",
+  async (cancelled) => {
+    const f = await fixture(true);
+    const ref = { kind: "work", agentId: "lead" } as const;
+    const stop = f.transport.watchResourceChanges(ref, () => {});
+    let reject!: (error: Error) => void;
+    f.persist.mockReturnValueOnce(
+      new Promise((_resolve, failed) => {
+        reject = failed;
+      }),
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    f.source.emit("resources", {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision: 2,
+      reason: "initial",
+      resources: [ref],
+      resourceVersions: [
+        {
+          resource: ref,
+          revision: 2,
+          cursor: { workspaceId: "workspace", seq: 2 },
+          replyKind: "snapshot",
+          entityChanges: { after: 0, through: 2, documents: [] },
+        },
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    if (cancelled) stop();
+    reject(new Error("local follower write unavailable"));
+    await vi.advanceTimersByTimeAsync(0);
+    const requests = f.messages.filter(
+      (message) => (message as { kind: string }).kind === "resource-recovery",
+    );
+    expect(requests).toHaveLength(cancelled ? 0 : 1);
+    if (!cancelled) expect(requests[0]).toMatchObject({ resources: [ref] });
+    expect(f.get).not.toHaveBeenCalled();
+    error.mockRestore();
+  },
+);
+
+it("the owner coalesces a subscribed peer recovery request into its bounded cursor reconnect", async () => {
+  const f = await fixture(false, true, true);
+  const ref = { kind: "state" };
+  f.control("subscriptions", {
+    resources: [ref],
+    tokenRates: false,
+    reset: false,
+  });
+  f.control("resource-recovery", { resources: [ref] });
+  expect(f.source.closed).toBe(true);
+  f.control("resource-recovery", { resources: [ref] });
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(f.sources).toHaveLength(2);
+  expect(f.get).not.toHaveBeenCalled();
+});
+
+it("a failed Work write fences its queued terminal reset before reconnect cursors are read", async () => {
+  const f = await fixture();
+  const terminal = {
+    kind: "terminal-output",
+    terminalId: "queued-reset",
+  } as const;
+  const work = { kind: "work", agentId: "lead" } as const;
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "terminal-output"
+      ? { workspaceId: "workspace", seq: 40 }
+      : undefined,
+  );
+  f.transport.watchResourceChanges(terminal, vi.fn());
+  f.transport.watchResourceChanges(work, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 1 });
+  const snapshot = (revision: number, text: string, offset: number) => ({
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision,
+    reason: "change",
+    resources: [terminal],
+    resourceVersions: [
+      {
+        revision,
+        cursor: { workspaceId: "workspace", seq: offset },
+        replyKind: "snapshot",
+        viewSnapshot: {
+          terminalOutput: { text, offset, status: "running", truncated: false },
+        },
+      },
+    ],
+  });
+  f.source.emit("resources", {
+    ...snapshot(10, "o".repeat(40), 40),
+    reason: "initial",
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  let reject!: (error: Error) => void;
+  f.persist.mockReturnValueOnce(
+    new Promise<void>((_resolve, failed) => {
+      reject = failed;
+    }),
+  );
+  const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 11,
+    reason: "change",
+    resources: [work],
+    resourceVersions: [
+      {
+        revision: 11,
+        resource: work,
+        cursor: { workspaceId: "workspace", seq: 5 },
+        replyKind: "snapshot",
+        entityChanges: { after: 0, through: 5, documents: [] },
+      },
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  f.source.emit("resources", snapshot(12, "new", 3));
+  reject(new Error("Work storage unavailable"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.source.closed).toBe(true);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(f.sources).toHaveLength(2);
+  const resumed = new URL(f.urls.at(-1)!, "http://studio.test");
+  expect(
+    JSON.parse(resumed.searchParams.get("since") ?? "[]").some(
+      (entry: { resource: unknown }) =>
+        JSON.stringify(entry.resource) === JSON.stringify(terminal),
+    ),
+  ).toBe(false);
+  quiet.mockRestore();
+});
+
+it("relays legacy revision-only hints from an owner to a follower", async () => {
+  const owner = await fixture(false, true, true);
+  const follower = await fixture(true);
+  const accept = vi.fn();
+  follower.transport.watchResourceChanges({ kind: "state" }, accept);
+  accept.mockClear();
+  owner.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 20,
+    reason: "change",
+    resources: [{ kind: "state" }],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const message = owner.posted
+    .filter((message) => message.kind === "resource-event")
+    .at(-1)!;
+  expect(message.event.revision).toBe(20);
+  expect(message.event.resourceVersions).toBeUndefined();
+  follower.source.emit("resources", message.event);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(accept).toHaveBeenCalledOnce();
 });

@@ -301,6 +301,11 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
         projected["tail"] = json!(suffix.chars().rev().collect::<String>());
         projected["outputTruncated"] = json!(true);
     }
+    if matches!(collection, "agent" | "agentDetail")
+        && let Some(gate) = record.get("taskDefaultGate")
+    {
+        projected["taskDefaultGate"] = gate.clone();
+    }
     Some(projected)
 }
 

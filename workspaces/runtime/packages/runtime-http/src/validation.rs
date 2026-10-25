@@ -149,6 +149,8 @@ impl Registry {
             "ResourceRef",
             "SubscriptionAdd",
             "ResourceProgressEvent",
+            "ResourceEntityTransferEvent",
+            "EntityChangeBatch",
             "RoomEntityDto",
             "RuleEntityDto",
             "RuleRecordResponse",

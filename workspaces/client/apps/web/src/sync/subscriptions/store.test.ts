@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSubscriptionStore } from "./store";
-import type { ResourceVersion } from "../resourceEvents";
+import type {
+  ResourceVersion,
+  ResourceConnectionState,
+} from "../resourceEvents";
 
 function fixture() {
   const removed = vi.fn();
   let deliver: (version?: ResourceVersion) => void = () => {};
+  let connection: (status: ResourceConnectionState) => void = () => {};
   const add = vi.fn((_ref, accept) => {
     deliver = accept;
     return removed;
@@ -12,6 +16,7 @@ function fixture() {
   const store = createSubscriptionStore({
     watchResourceChanges: add,
     watchResourceConnection: (accept) => {
+      connection = (status) => accept(status, "open");
       accept("live", "open");
       return () => {};
     },
@@ -21,6 +26,7 @@ function fixture() {
     add,
     removed,
     deliver: (version: ResourceVersion) => deliver(version),
+    connection: (status: ResourceConnectionState) => connection(status),
   };
 }
 const resource = { kind: "transcript", agentId: "visible-chat" } as const;
@@ -96,6 +102,62 @@ describe("screen subscription ownership", () => {
     });
     expect(store.getSnapshot(resource).status).toBe("live");
     stop();
+    store.dispose();
+  });
+
+  it("requests unchanged applied baselines again so reconnect can restore readiness", () => {
+    const { store, add, deliver, connection } = fixture();
+    const stop = store.watchResourceChanges(resource, () => {});
+    expect(add).toHaveBeenCalledWith(resource, expect.any(Function), {
+      waitForBaseline: true,
+    });
+    deliver({
+      epoch: "epoch",
+      revision: 1,
+      cursor: { workspaceId: "workspace", seq: 1 },
+      replyKind: "snapshot",
+    });
+    expect(store.getSnapshot(resource).status).toBe("live");
+    connection("degraded");
+    expect(store.getSnapshot(resource).status).toBe("stale");
+    connection("live");
+    expect(store.getSnapshot(resource).status).toBe("loading");
+    deliver({
+      epoch: "epoch",
+      revision: 1,
+      cursor: { workspaceId: "workspace", seq: 1 },
+      replyKind: "delta",
+    });
+    expect(store.getSnapshot(resource).status).toBe("live");
+    stop();
+    store.dispose();
+  });
+
+  it("confirms only the resource whose applied baseline arrived", () => {
+    const receivers = new Map<string, (version?: ResourceVersion) => void>();
+    const store = createSubscriptionStore({
+      watchResourceChanges: (ref, accept) => {
+        receivers.set(ref.kind, accept);
+        return () => {};
+      },
+      watchResourceConnection: (accept) => {
+        accept("live", "open");
+        return () => {};
+      },
+    });
+    const state = { kind: "state" } as const;
+    store.watchResourceChanges(state, () => {});
+    store.watchResourceChanges(resource, () => {});
+    receivers.get("transcript")?.({
+      epoch: "epoch",
+      revision: 1,
+      cursor: { workspaceId: "workspace", seq: 1 },
+      replyKind: "snapshot",
+    });
+    expect(store.getSnapshot(resource).status).toBe("live");
+    expect(store.getSnapshot(state).status).toBe("loading");
+    receivers.get("transcript")?.({ epoch: "epoch", revision: 2 });
+    expect(store.getSnapshot(resource).status).toBe("loading");
     store.dispose();
   });
 

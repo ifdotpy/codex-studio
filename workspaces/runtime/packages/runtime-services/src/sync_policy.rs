@@ -48,6 +48,7 @@ const AGENT_ORGANIZATION_FIELDS_MARKER: &str = "agent_organization_fields";
 const AGENT_ORGANIZATION_FIELDS_VERSION: i64 = 3;
 use studio_runtime_store::{
     AGENT_PROJECTIONS_SEED_MARKER, CONVERSATION_DETAILS_SEED_MARKER, SUMMARY_ENTITIES_SEED_MARKER,
+    WORK_DETAILS_SEED_MARKER,
 };
 
 /// Whether Python's durable seed and entity-view upgrade markers prove the
@@ -87,6 +88,11 @@ pub fn has_complete_entity_seed(connection: &Connection) -> StoreResult<bool> {
     complete &= connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
         [AGENT_PROJECTIONS_SEED_MARKER],
+        |row| row.get::<_, bool>(0),
+    )?;
+    complete &= connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
+        [WORK_DETAILS_SEED_MARKER],
         |row| row.get::<_, bool>(0),
     )?;
     let table_exists = |name: &str| {
@@ -479,6 +485,10 @@ pub fn maintain_entity_projections_with_server_id(
         "INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES(?1,'1')",
         [CONVERSATION_DETAILS_SEED_MARKER],
     )?;
+    transaction.execute(
+        "INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES(?1,'1')",
+        [WORK_DETAILS_SEED_MARKER],
+    )?;
     crate::diagnostics::measure_runtime_stage("projection.canvas_chat_entities", || {
         maintain_canvas_chat_entities(transaction, &validate_projection)
     })?;
@@ -550,6 +560,10 @@ pub struct EntityChanges {
     pub agents: BTreeSet<String>,
     pub requests: BTreeSet<String>,
     pub work: BTreeSet<String>,
+    /// None is a conservative explicit rebuild. Some is the SQLite OLD/NEW journal.
+    pub source_work_changes:
+        Option<BTreeMap<String, studio_runtime_store::entity_publication::WorkSourceChanges>>,
+    pub work_refusal_owners: BTreeSet<String>,
     /// Final merged agent values already checked by this transaction.
     pub checked_agents: Vec<CheckedAgentRow>,
 }
@@ -644,6 +658,25 @@ pub fn publish_entity_changes(
         project_server_id,
         validate,
     )?;
+    // Identity changes can reset refusal counters; routine name/status writes
+    // never read or decode task histories a second time.
+    for owner in &changes.work_refusal_owners {
+        let mut statement = transaction.prepare_cached("SELECT id,json_remove(record,'$.results','$.decisions','$.releases') FROM runtime_work WHERE json_extract(record,'$.owner')=?1")?;
+        for row in statement.query_map([owner], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (id, raw) = row?;
+            if !changes.work.contains(&id) {
+                publish_work_metadata(
+                    transaction,
+                    &id,
+                    &serde_json::from_str(&raw)?,
+                    true,
+                    validate,
+                )?;
+            }
+        }
+    }
     if !liveness_changed.is_empty() {
         publish_rooms_of(transaction, &liveness_changed, &changed_roots, validate)?;
     }
@@ -651,7 +684,36 @@ pub fn publish_entity_changes(
         publish_direct(transaction, "request", &id, &raw, validate)?;
     }
     for (id, raw) in &work {
-        publish_direct(transaction, "work", id, raw, validate)?;
+        if let Some(source) = &changes.source_work_changes {
+            let record = serde_json::from_str(raw)?;
+            let empty = Default::default();
+            let source = source.get(id).unwrap_or(&empty);
+            publish_work_history(transaction, id, &record, Some(source), validate)?;
+            let owner_changed = record
+                .get("owner")
+                .and_then(Value::as_str)
+                .is_some_and(|owner| changes.work_refusal_owners.contains(owner));
+            publish_work_metadata(
+                transaction,
+                id,
+                &record,
+                source.refusal_changed() || owner_changed,
+                validate,
+            )?;
+            if let Some(summary) = project_persisted_record("work", &record) {
+                put_projection(transaction, "work", id, summary, false, validate)?;
+            }
+        } else {
+            publish_direct(transaction, "work", id, raw, validate)?;
+        }
+    }
+    let present_work: BTreeSet<_> = work.iter().map(|(id, _)| id).collect();
+    for id in &changes.work {
+        if !present_work.contains(id) {
+            retire_if_live(transaction, "work", id, validate)?;
+            retire_if_live(transaction, "workDetail", id, validate)?;
+            retire_work_history(transaction, id, validate)?;
+        }
     }
     if !liveness_changed.is_empty() {
         maintain_task_window(transaction, validate)?;
@@ -955,6 +1017,9 @@ fn publish_direct(
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
     let record = serde_json::from_str::<Value>(raw)?;
+    if collection == "work" {
+        publish_work_detail(transaction, id, &record, validate)?;
+    }
     if collection == "request" {
         let question = crate::questions_reads::question_history_entity(raw)
             .map_err(|_| StoreError::RecordContract("invalid question history entity"))?;
@@ -971,6 +1036,205 @@ fn publish_direct(
     match project_persisted_record(collection, &record) {
         Some(projected) => put_projection(transaction, collection, id, projected, false, validate),
         None => Ok(()),
+    }
+}
+
+fn publish_work_detail(
+    transaction: &Transaction<'_>,
+    id: &str,
+    record: &Value,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    publish_work_history(transaction, id, record, None, validate)?;
+    publish_work_metadata(transaction, id, record, true, validate)
+}
+
+fn publish_work_metadata(
+    transaction: &Transaction<'_>,
+    id: &str,
+    record: &Value,
+    recompute_refusal: bool,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    #[cfg(test)]
+    work_publication_probe::metadata(id);
+    let mut detail = Value::Object(
+        record
+            .as_object()
+            .ok_or(StoreError::RecordContract(
+                "work detail source is not an object",
+            ))?
+            .iter()
+            .filter(|(field, _)| !matches!(field.as_str(), "results" | "decisions" | "releases"))
+            .map(|(field, value)| (field.clone(), value.clone()))
+            .collect(),
+    );
+    for field in ["results", "decisions", "releases"] {
+        detail[field] = json!([]);
+    }
+    let prior = if recompute_refusal {
+        None
+    } else {
+        transaction.query_row("SELECT json_extract(payload,'$.value.submissionRefusal') FROM sync_entities WHERE collection='workDetail' AND id=?1 AND deleted=0", [id], |row| row.get::<_, Option<String>>(0)).optional()?.flatten()
+    };
+    detail["submissionRefusal"] =
+        match prior {
+            Some(raw) => serde_json::from_str(&raw)?,
+            None => crate::work_write::current_submission_refusal(transaction, record).map_err(
+                |error| match error {
+                    crate::work_write::WorkWriteError::Store(error) => error,
+                    other => StoreError::SchemaValidation(other.to_string()),
+                },
+            )?,
+        };
+    put_projection(transaction, "workDetail", id, detail, false, validate)
+}
+
+fn retire_work_history(
+    transaction: &Transaction<'_>,
+    id: &str,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    for kind in studio_runtime_store::entity_publication::WorkHistoryKind::ALL {
+        let mut statement = transaction.prepare_cached("SELECT id FROM sync_entities WHERE collection=?1 AND deleted=0 AND json_extract(payload,'$.value.taskId')=?2")?;
+        let ids = statement
+            .query_map([kind.collection(), id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for entry_id in ids {
+            retire_if_live(transaction, kind.collection(), &entry_id, validate)?;
+        }
+    }
+    Ok(())
+}
+
+fn publish_work_history(
+    transaction: &Transaction<'_>,
+    id: &str,
+    record: &Value,
+    changes: Option<&studio_runtime_store::entity_publication::WorkSourceChanges>,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    use studio_runtime_store::entity_publication::WorkHistoryKind;
+    for kind in WorkHistoryKind::ALL {
+        // An authoritative empty delta must not even enumerate source history.
+        let indices: Vec<usize> = match changes {
+            Some(changes) => changes
+                .histories()
+                .get(&kind)
+                .map(|indices| indices.iter().copied().collect())
+                .unwrap_or_default(),
+            None => (0..record[kind.field()].as_array().map_or(0, Vec::len)).collect(),
+        };
+        for index in indices {
+            let entry_id = format!("{id}:{index}");
+            match record[kind.field()]
+                .as_array()
+                .and_then(|items| items.get(index))
+            {
+                Some(value) => {
+                    let entry = json!({"id":entry_id,"taskId":id,"rootId":record["rootId"],"index":index,"value":value});
+                    #[cfg(test)]
+                    work_publication_probe::history(id, serde_json::to_vec(&entry)?.len());
+                    put_projection(
+                        transaction,
+                        kind.collection(),
+                        &entry_id,
+                        entry,
+                        false,
+                        validate,
+                    )?;
+                }
+                None => retire_if_live(transaction, kind.collection(), &entry_id, validate)?,
+            }
+        }
+        if changes.is_none() {
+            let length = record[kind.field()].as_array().map_or(0, Vec::len);
+            let mut statement = transaction.prepare_cached("SELECT id FROM sync_entities WHERE collection=?1 AND deleted=0 AND json_extract(payload,'$.value.taskId')=?2 AND json_extract(payload,'$.value.index')>=?3")?;
+            let stale = statement
+                .query_map(
+                    rusqlite::params![
+                        kind.collection(),
+                        id,
+                        i64::try_from(length).map_err(|_| StoreError::RecordContract(
+                            "work history length exceeds SQLite range"
+                        ))?
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            for entry_id in stale {
+                retire_if_live(transaction, kind.collection(), &entry_id, validate)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Seed the newly introduced scoped work views once, before the first SSE or runtime write.
+pub(crate) fn seed_work_details(transaction: &Transaction<'_>) -> StoreResult<()> {
+    if transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
+        [WORK_DETAILS_SEED_MARKER],
+        |row| row.get::<_, bool>(0),
+    )? {
+        return Ok(());
+    }
+    let work = transaction
+        .prepare_cached("SELECT id FROM runtime_work")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let agents = transaction.prepare_cached("SELECT id FROM runtime_agents WHERE deleted_at IS NULL AND json_extract(record,'$.rootId')=id")?.query_map([], |row| row.get::<_,String>(0))?.collect::<Result<BTreeSet<_>,_>>()?;
+    let server = RuntimeStore::transaction_local_server_id(transaction)?;
+    publish_entity_changes(
+        transaction,
+        &EntityChanges {
+            agents,
+            work,
+            ..Default::default()
+        },
+        server.as_deref(),
+        &|_, _, _, _| true,
+    )?;
+    transaction.execute("INSERT INTO sync_entity_meta(key,value) VALUES(?1,'1') ON CONFLICT(key) DO UPDATE SET value='1'", [WORK_DETAILS_SEED_MARKER])?;
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) mod work_publication_probe {
+    use std::{
+        collections::BTreeMap,
+        sync::{Mutex, OnceLock},
+    };
+    #[derive(Default, Debug, Clone, Copy)]
+    pub(crate) struct Counts {
+        pub metadata: usize,
+        pub history_entries: usize,
+        pub history_bytes: usize,
+    }
+    fn counts() -> &'static Mutex<BTreeMap<String, Counts>> {
+        static COUNTS: OnceLock<Mutex<BTreeMap<String, Counts>>> = OnceLock::new();
+        COUNTS.get_or_init(Mutex::default)
+    }
+    pub(super) fn metadata(id: &str) {
+        counts()
+            .lock()
+            .expect("probe mutex")
+            .entry(id.into())
+            .or_default()
+            .metadata += 1;
+    }
+    pub(super) fn history(id: &str, bytes: usize) {
+        let mut counts = counts().lock().expect("probe mutex");
+        let count = counts.entry(id.into()).or_default();
+        count.history_entries += 1;
+        count.history_bytes += bytes;
+    }
+    pub(crate) fn take(id: &str) -> Counts {
+        counts()
+            .lock()
+            .expect("probe mutex")
+            .remove(id)
+            .unwrap_or_default()
     }
 }
 
