@@ -1,6 +1,6 @@
 import {
   hasTouchCapability,
-  touchPointerQuery,
+  touchPointerMedia,
 } from "../../hooks/touchCapability";
 import { useEffect, useState } from "react";
 import { layoutValues } from "../../layout/layout-contract.generated";
@@ -53,7 +53,7 @@ export function useEdgeRail(
     }
     const root = document.getElementById("root");
     if (!root) return;
-    const coarse = window.matchMedia(touchPointerQuery);
+    const coarse = touchPointerMedia();
     let frame = 0;
     const update = () => {
       frame = 0;

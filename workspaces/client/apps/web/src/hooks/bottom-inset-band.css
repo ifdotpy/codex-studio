@@ -1,0 +1,45 @@
+/* The viewport owner supplies the physical band and keyboard compensation. */
+.viewport-bottom-band {
+  position: fixed;
+  top: calc(var(--viewport-surface-top) + var(--viewport-surface-height));
+  left: 0;
+  width: 100%;
+  height: var(--viewport-safe-bottom);
+  z-index: var(--layout-layers-app);
+  background-color: var(--studio-page);
+  background-image:
+    linear-gradient(var(--sidebar), var(--sidebar)),
+    linear-gradient(var(--surface), var(--surface));
+  background-size:
+    var(--band-sidebar-width, 0px) 100%,
+    var(--band-workspace-width, 0px) 100%;
+  background-position:
+    var(--band-sidebar-left, 0px) 0,
+    var(--band-workspace-left, 0px) 0;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+.usage-passive-anchor {
+  display: contents;
+}
+.usage-passive-band {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-start;
+  box-sizing: border-box;
+  padding-top: 2px;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  overflow: hidden;
+}
+.usage-passive-band .session-cost-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usage-passive-band .session-cost-compact-label {
+  display: none;
+}

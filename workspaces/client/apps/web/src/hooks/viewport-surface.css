@@ -81,3 +81,12 @@ html[data-viewport-surface] .usage-footer {
 .mantine-Drawer-content :is(#sidebar, #team) {
   padding-block: 16px;
 }
+
+/* Touch hardware can exist without any coarse media match. The viewport
+   owner applies this attribute through the shared capability rule. */
+html[data-viewport-surface] body :is(input, textarea, select) {
+  font-size: max(
+    var(--studio-touch-input-min-font-size),
+    var(--input-fz, var(--studio-text-body))
+  ) !important;
+}

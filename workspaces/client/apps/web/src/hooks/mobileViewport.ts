@@ -1,4 +1,4 @@
-import { hasTouchCapability, touchPointerQuery } from "./touchCapability";
+import { hasTouchCapability, touchPointerMedia } from "./touchCapability";
 import { useEffect } from "react";
 import { layoutValues } from "../layout/layout-contract.generated";
 
@@ -8,7 +8,7 @@ export function useMobileViewport(active: boolean, compact = false) {
     if (!active) return;
     const viewport = window.visualViewport;
     const root = document.documentElement;
-    const coarsePointer = window.matchMedia(touchPointerQuery);
+    const coarsePointer = touchPointerMedia();
     let frame = 0;
     const clear = () => {
       root.removeAttribute("data-viewport-surface");

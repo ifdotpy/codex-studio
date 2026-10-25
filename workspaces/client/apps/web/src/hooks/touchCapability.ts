@@ -1,5 +1,7 @@
 /** Owner of touch capability for viewport and safe-strip controls. */
-export const touchPointerQuery = "(any-pointer: coarse)";
+export function touchPointerMedia() {
+  return window.matchMedia("(any-pointer: coarse)");
+}
 
 export function hasTouchCapability(
   anyCoarsePointer: boolean,

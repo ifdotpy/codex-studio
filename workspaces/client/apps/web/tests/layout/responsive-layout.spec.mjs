@@ -58,6 +58,24 @@ for (const paired of [false, true]) {
           expect(bounds.x).toBe(867);
           expect(bounds.y).toBeGreaterThanOrEqual(112);
           expect(bounds.y + bounds.height).toBeLessThanOrEqual(635);
+          const band = page.locator(".viewport-bottom-band");
+          await expect(band).toHaveCSS("height", "34px");
+          await expect(page.locator(".usage-passive-band")).toBeVisible();
+          const bandBounds = await band.boundingBox();
+          expect(bandBounds.y).toBe(635);
+          expect(bandBounds.y + bandBounds.height).toBe(669);
+          for (const target of await page
+            .locator("#usage-footer button")
+            .all()) {
+            const box = await target.boundingBox();
+            if (box) expect(box.y + box.height).toBeLessThanOrEqual(635);
+          }
+          console.log("Duo bottom band", {
+            paired,
+            oldEmptyBand: 34,
+            newEmptyBand: 0,
+            passive: await page.locator(".usage-passive-band").boundingBox(),
+          });
           const composer = await page.locator("#composer").boundingBox();
           expect(composer.y + composer.height).toBeLessThanOrEqual(635);
           await page.screenshot({
