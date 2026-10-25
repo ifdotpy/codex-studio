@@ -194,5 +194,43 @@ mod tests {
             assert_eq!(value["totals"]["recordedCostUsd"], json!(0.00027));
             assert_eq!(value["totals"]["evidenceCostUsd"], json!(0.00027));
         }
+        // A malformed or oversized native state file is a file-local coverage
+        // failure; the direct journal remains useful and the route stays 200.
+        let sessions = root.path().join("account-servers/claude/sessions");
+        std::fs::create_dir_all(&sessions).expect("native states");
+        let state_path = sessions.join("thread.json");
+        for size in [
+            4,
+            studio_runtime_services::costs::MAX_RECONCILIATION_NATIVE_BYTES + 1,
+        ] {
+            let file = std::fs::File::create(&state_path).expect("state file");
+            file.set_len(size).expect("sparse state boundary");
+            let request = Request::builder()
+                .uri("/api/diagnostics/usage-reconciliation?agent=archived")
+                .header("host", "127.0.0.1:49172")
+                .header("x-canvas-token", "token")
+                .extension(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 12345))))
+                .body(Body::empty())
+                .expect("request");
+            let response = app.clone().oneshot(request).await.expect("comparison");
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .expect("bounded body");
+            let value: Value = serde_json::from_slice(&bytes).expect("JSON");
+            let report = value["files"]
+                .as_array()
+                .expect("files")
+                .iter()
+                .find(|file| file["kind"] == "claudeState")
+                .expect("state report");
+            assert_eq!(report["incomplete"], true);
+            assert_eq!(
+                report["truncated"],
+                size > studio_runtime_services::costs::MAX_RECONCILIATION_NATIVE_BYTES
+            );
+            assert_eq!(value["counts"]["responses"], 3);
+            assert_eq!(value["responses"][0]["evidenceTokens"]["output"], 10);
+        }
     }
 }

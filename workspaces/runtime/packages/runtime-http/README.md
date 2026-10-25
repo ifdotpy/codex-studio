@@ -385,3 +385,9 @@ and the latest recorded Claude cumulative provider cost per model. Provider cost
 are informational and are never used as catalog pricing. Null tokens or costs
 remain unknown; `incomplete` and `truncated` describe evidence coverage. This route
 performs no repairs, provider requests, or background refreshes.
+
+The reconciliation `files` array reports each examined native file's kind and
+incomplete/truncated flags. Native file failures remain local to that report;
+they do not turn the comparison into an HTTP error. Native reads use shared
+importer confinement and session-header checks, cached parsing, and one request
+budget owned by [`costs.rs`](../runtime-services/src/costs.rs).

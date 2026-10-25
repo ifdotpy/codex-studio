@@ -717,6 +717,100 @@ pub fn discover(
     DiscoveryRound::default().resolve(profile, thread, cancel)
 }
 
+/// One native file opened through the importer's confinement and identity checks.
+pub(crate) struct OpenedNativeFile {
+    pub file: File,
+    pub metadata: fs::Metadata,
+    pub path: PathBuf,
+}
+
+pub(crate) enum NativeFileRejection {
+    OutsideProfile,
+    IdentityChanged,
+    Unreadable,
+}
+impl NativeFileRejection {
+    fn status(&self) -> &'static str {
+        match self {
+            Self::OutsideProfile => "outsideProfile",
+            Self::IdentityChanged => "identityChanged",
+            Self::Unreadable => "unreadable",
+        }
+    }
+    fn message(&self) -> &'static str {
+        match self {
+            Self::OutsideProfile => "Native rollout outsideProfile",
+            Self::IdentityChanged => "Native rollout changed while opening",
+            Self::Unreadable => "Native rollout unreadable",
+        }
+    }
+}
+pub(crate) enum NativeFileOpenError {
+    Read(HistoryError),
+    Refused(NativeFileRejection),
+}
+
+/// Shared by the importer and read-only diagnostics; never opens a non-regular
+/// file or a canonical target outside the expected native profile/session root.
+pub(crate) fn open_confined_native_file(
+    root: &Path,
+    path: &Path,
+) -> Result<OpenedNativeFile, NativeFileOpenError> {
+    let resolved = CanonicalPath::existing(path)
+        .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?;
+    let root = CanonicalPath::existing(root)
+        .map_err(|error| NativeFileOpenError::Read(HistoryError::io(PROFILE_DIRECTORY)(error)))?;
+    if !resolved.starts_with(root) {
+        return Err(NativeFileOpenError::Refused(
+            NativeFileRejection::OutsideProfile,
+        ));
+    }
+    let before = fs::metadata(&resolved)
+        .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?;
+    if !before.is_file() {
+        return Err(NativeFileOpenError::Refused(
+            NativeFileRejection::Unreadable,
+        ));
+    }
+    let file = File::open(&resolved)
+        .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?;
+    if filesystem_identity(&before) != filesystem_identity(&metadata)
+        || CanonicalPath::existing(path)
+            .map_err(|error| NativeFileOpenError::Read(HistoryError::io(ROLLOUT_FILE)(error)))?
+            != resolved
+    {
+        return Err(NativeFileOpenError::Refused(
+            NativeFileRejection::IdentityChanged,
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(NativeFileOpenError::Refused(
+            NativeFileRejection::Unreadable,
+        ));
+    }
+    Ok(OpenedNativeFile {
+        file,
+        metadata,
+        path: resolved.into_path_buf(),
+    })
+}
+
+/// Native session header identity; the first supported alias is authoritative.
+pub(crate) fn native_rollout_header_matches(header: &[u8], thread: &str) -> bool {
+    serde_json::from_slice::<Value>(header)
+        .ok()
+        .is_some_and(|value| {
+            value["type"] == "session_meta"
+                && crate::analytics_capture::first(&[
+                    &value["payload"]["id"],
+                    &value["payload"]["session_id"],
+                ]) == thread
+        })
+}
+
 pub fn prepare(
     mut snapshot: HistorySnapshot,
     profile: &Path,
@@ -768,34 +862,17 @@ pub fn prepare(
             ));
         }
     };
-    let resolved = CanonicalPath::existing(&path).map_err(HistoryError::io(ROLLOUT_FILE))?;
-    let root = CanonicalPath::existing(profile).map_err(HistoryError::io(PROFILE_DIRECTORY))?;
-    if !resolved.starts_with(root) {
-        return Ok(refused(
-            snapshot,
-            "outsideProfile",
-            Some("Native rollout outsideProfile"),
-        ));
-    }
-    let before = fs::metadata(&resolved).map_err(HistoryError::io(ROLLOUT_FILE))?;
-    let file = File::open(&resolved).map_err(HistoryError::io(ROLLOUT_FILE))?;
-    let info = file.metadata().map_err(HistoryError::io(ROLLOUT_FILE))?;
-    if filesystem_identity(&before) != filesystem_identity(&info)
-        || CanonicalPath::existing(&path).map_err(HistoryError::io(ROLLOUT_FILE))? != resolved
-    {
-        return Ok(refused(
-            snapshot,
-            "identityChanged",
-            Some("Native rollout changed while opening"),
-        ));
-    }
-    if !info.is_file() {
-        return Ok(refused(
-            snapshot,
-            "unreadable",
-            Some("Native rollout unreadable"),
-        ));
-    }
+    let OpenedNativeFile {
+        file,
+        metadata: info,
+        ..
+    } = match open_confined_native_file(profile, &path) {
+        Ok(file) => file,
+        Err(NativeFileOpenError::Read(error)) => return Err(error),
+        Err(NativeFileOpenError::Refused(reason)) => {
+            return Ok(refused(snapshot, reason.status(), Some(reason.message())));
+        }
+    };
     let identity = filesystem_identity(&info);
     let offset = snapshot.state["offset"]
         .as_u64()
@@ -829,15 +906,7 @@ pub fn prepare(
     let mut reader = BufReader::new(file);
     if remap || snapshot.state["validated"] != true {
         let header = bounded_line(&mut reader)?;
-        let valid = serde_json::from_slice::<Value>(&header)
-            .ok()
-            .is_some_and(|v| {
-                v["type"] == "session_meta"
-                    && crate::analytics_capture::first(&[
-                        &v["payload"]["id"],
-                        &v["payload"]["session_id"],
-                    ]) == snapshot.agent["threadId"]
-            });
+        let valid = native_rollout_header_matches(&header, text(&snapshot.agent["threadId"]));
         if !valid {
             return Ok(refused(
                 snapshot,

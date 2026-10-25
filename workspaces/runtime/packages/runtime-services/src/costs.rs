@@ -381,13 +381,13 @@ pub fn usage_reconciliation(
     Ok(
         json!({"agentId":agent_id,"counts":{"responses":responses.len(),"missingRecorded":missing_recorded,
         "missingEvidence":missing_evidence,"mismatched":mismatched},"responses":responses,
-        "gaps":gaps.into_values().collect::<Vec<_>>(),"providerCosts":provider_costs.into_iter().map(|(model,cost)|json!({"model":model,"providerCostUsd":cost})).collect::<Vec<_>>(),
+        "files":budget.files,"gaps":gaps.into_values().collect::<Vec<_>>(),"providerCosts":provider_costs.into_iter().map(|(model,cost)|json!({"model":model,"providerCostUsd":cost})).collect::<Vec<_>>(),
         "totals":{"recordedCostUsd":recorded_total,"evidenceCostUsd":evidence_total,"recordedTokens":recorded_token_total,"evidenceTokens":evidence_token_total},
         "incomplete":budget.incomplete || budget.truncated || missing_evidence > 0 || unresolved_gaps,"truncated":budget.truncated}),
     )
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct NativeResponse {
     model: Option<String>,
     tokens: Option<studio_runtime_schema::usage::UsageTokens>,
@@ -500,9 +500,7 @@ fn read_codex_evidence(
     rows: &mut BTreeMap<String, NativeResponse>,
     budget: &mut EvidenceBudget,
 ) -> Result<(), CostsError> {
-    use crate::analytics_history::{RolloutPath, discover};
-    use crate::analytics_rollout::{RolloutAction, RolloutContext};
-    use studio_runtime_schema::usage::{UsageObservation, UsageProvider, parse_token_usage};
+    use crate::analytics_history::RolloutPath;
     let mut sessions = BTreeSet::new();
     if let Some(thread) = &member.thread_id {
         sessions.insert((
@@ -530,50 +528,65 @@ fn read_codex_evidence(
         else {
             continue;
         };
-        let path = match discover(
-            &expand_home(PathBuf::from(profile)),
+        let profile = expand_home(PathBuf::from(profile));
+        let path = match budget.discovery.resolve(
+            &profile,
             &thread,
             &std::sync::atomic::AtomicBool::new(false),
         ) {
             Ok(RolloutPath::Found(path)) => path,
             _ => {
-                budget.incomplete = true;
+                budget.report(&profile, EvidenceFileKind::CodexRollout, true, false);
                 continue;
             }
         };
-        let Some(bytes) = budget.read(&path) else {
-            budget.incomplete = true;
+        let Some(cached) = budget.load(
+            &profile,
+            &path,
+            EvidenceFileKind::CodexRollout,
+            Some(&thread),
+        ) else {
             continue;
         };
-        let mut context = RolloutContext::from_record(json!({"threadId":thread}))
-            .map_err(|_| CostsError::InvalidSessionState)?;
-        for (index, line) in bytes
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-            .enumerate()
-        {
-            let Ok(record) = serde_json::from_slice::<Value>(line) else {
-                budget.incomplete = true;
+        let Some(NativeFileData::Codex(evidence)) = &cached.data else {
+            continue;
+        };
+        for (id, response) in evidence {
+            merge_native(rows, id.clone(), response.clone());
+        }
+    }
+    Ok(())
+}
+
+fn parse_codex_evidence(bytes: &[u8], thread: &str) -> (Vec<(String, NativeResponse)>, bool) {
+    use crate::analytics_rollout::{RolloutAction, RolloutContext};
+    use studio_runtime_schema::usage::{UsageObservation, UsageProvider, parse_token_usage};
+    let Ok(mut context) = RolloutContext::from_record(json!({"threadId":thread})) else {
+        return (Vec::new(), true);
+    };
+    let mut rows = BTreeMap::new();
+    let mut incomplete = false;
+    for (index, line) in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .enumerate()
+    {
+        let Ok(record) = serde_json::from_slice::<Value>(line) else {
+            incomplete = true;
+            continue;
+        };
+        let actions = match context.actions(&record, &format!("diagnostic:{index}"), 0.0) {
+            Ok(actions) => actions,
+            Err(_) => {
+                incomplete = true;
                 continue;
-            };
-            let actions = match context.actions(&record, &format!("diagnostic:{index}"), 0.0) {
-                Ok(actions) => actions,
-                Err(_) => {
-                    budget.incomplete = true;
-                    continue;
-                }
-            };
-            for action in actions {
-                if let RolloutAction::Event {
-                    method, mut params, ..
-                } = action
+            }
+        };
+        for action in actions {
+            match action {
+                RolloutAction::Event { method, params, .. }
+                    if method == "thread/tokenUsage/updated" =>
                 {
-                    if method != "thread/tokenUsage/updated" {
-                        continue;
-                    }
-                    if params.get("model").is_none() {
-                        params["model"] = context.record()["model"].clone();
-                    }
                     match parse_token_usage(UsageProvider::Codex, &params) {
                         Ok(UsageObservation::Response {
                             response_id,
@@ -581,14 +594,8 @@ fn read_codex_evidence(
                             tokens,
                             ..
                         }) => {
-                            if rows.len() >= MAX_RECONCILIATION_RESPONSES
-                                && !rows.contains_key(&response_id)
-                            {
-                                budget.truncated = true;
-                                continue;
-                            }
                             merge_native(
-                                rows,
+                                &mut rows,
                                 response_id,
                                 NativeResponse {
                                     model: Some(model),
@@ -598,13 +605,15 @@ fn read_codex_evidence(
                             );
                         }
                         Ok(_) => {}
-                        Err(_) => budget.incomplete = true,
+                        Err(_) => incomplete = true,
                     }
                 }
+                RolloutAction::WrongThread => incomplete = true,
+                _ => {}
             }
         }
     }
-    Ok(())
+    (rows.into_iter().collect(), incomplete)
 }
 
 // Session identifier and state-file byte caps for local cost scans.
@@ -636,71 +645,208 @@ static SESSION_NATIVE_IDS: LazyLock<FileDerived<Result<Vec<String>, ()>>> =
 
 /// Maximum distinct responses in one diagnostic comparison (unit: responses).
 const MAX_RECONCILIATION_RESPONSES: usize = 10_000;
-/// Maximum native bytes read from one file (unit: bytes).
-const MAX_NATIVE_EVIDENCE_BYTES: u64 = 64 * 1024 * 1024;
-/// Maximum native filesystem entries and files examined in one comparison (unit: entries).
+/// Maximum native bytes read across one comparison, including session state (unit: bytes).
+pub const MAX_RECONCILIATION_NATIVE_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum filesystem entries/files examined across one comparison (unit: entries).
 const MAX_EVIDENCE_ENTRIES: usize = 10_000;
-/// Maximum native bytes read across a comparison (unit: bytes).
-const MAX_COMPARISON_NATIVE_BYTES: u64 = 128 * 1024 * 1024;
+/// Retained bounded native derivations per process (unit: file/context entries).
+const EVIDENCE_CACHE_ENTRIES: usize = 32;
+
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum EvidenceFileKind {
+    ClaudeState,
+    ClaudeJournal,
+    CodexRollout,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EvidenceFileReport {
+    file: String,
+    kind: EvidenceFileKind,
+    incomplete: bool,
+    truncated: bool,
+}
+
+enum NativeFileData {
+    State(Vec<String>),
+    Claude(Vec<LogUsage>),
+    Codex(Vec<(String, NativeResponse)>),
+}
+struct CachedNativeFile {
+    data: Option<NativeFileData>,
+    bytes: u64,
+    incomplete: bool,
+    truncated: bool,
+}
+static NATIVE_EVIDENCE: LazyLock<FileDerived<CachedNativeFile>> =
+    LazyLock::new(|| FileDerived::with_capacity(EVIDENCE_CACHE_ENTRIES));
 
 #[derive(Default)]
 struct EvidenceBudget {
     entries: usize,
     bytes: u64,
+    responses: usize,
     incomplete: bool,
     truncated: bool,
+    files: Vec<EvidenceFileReport>,
+    discovery: crate::analytics_history::DiscoveryRound,
 }
+#[cfg(test)]
+thread_local! { static EVIDENCE_FILE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 impl EvidenceBudget {
     fn visit(&mut self) -> bool {
-        self.entries += 1;
-        if self.entries > MAX_EVIDENCE_ENTRIES {
+        if self.entries >= MAX_EVIDENCE_ENTRIES {
             self.truncated = true;
             return false;
         }
+        self.entries += 1;
         true
     }
-
-    fn read(&mut self, path: &Path) -> Option<Vec<u8>> {
+    fn report(&mut self, path: &Path, kind: EvidenceFileKind, incomplete: bool, truncated: bool) {
+        self.incomplete |= incomplete;
+        self.truncated |= truncated;
+        self.files.push(EvidenceFileReport {
+            file: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            kind,
+            incomplete,
+            truncated,
+        });
+    }
+    fn load(
+        &mut self,
+        root: &Path,
+        path: &Path,
+        kind: EvidenceFileKind,
+        thread: Option<&str>,
+    ) -> Option<std::sync::Arc<CachedNativeFile>> {
         if !self.visit() {
             return None;
         }
-        if path.metadata().is_ok_and(|metadata| !metadata.is_file()) {
-            self.incomplete = true;
+        // Missing optional aliases/session files are not failed evidence reads.
+        if path.try_exists().is_ok_and(|exists| !exists) {
             return None;
         }
-        let file = match File::open(path) {
-            Ok(file) => file,
-            Err(error) => {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    self.incomplete = true;
-                }
+        let limit = MAX_RECONCILIATION_NATIVE_BYTES.saturating_sub(self.bytes);
+        let remaining = MAX_RECONCILIATION_RESPONSES.saturating_sub(self.responses);
+        if limit == 0 || (remaining == 0 && !matches!(kind, EvidenceFileKind::ClaudeState)) {
+            self.report(path, kind, true, true);
+            return None;
+        }
+        // The importer owns confinement/open/regular-file validation. It runs on
+        // every lookup, including hits, so a changed symlink cannot bypass it.
+        let opened = match crate::analytics_history::open_confined_native_file(root, path) {
+            Ok(opened) => opened,
+            Err(_) => {
+                self.report(path, kind, true, false);
                 return None;
             }
         };
-        let mut bytes = Vec::new();
-        let limit =
-            MAX_NATIVE_EVIDENCE_BYTES.min(MAX_COMPARISON_NATIVE_BYTES.saturating_sub(self.bytes));
-        if limit == 0 {
-            self.truncated = true;
-            return None;
-        }
-        if file.take(limit + 1).read_to_end(&mut bytes).is_err() {
-            self.incomplete = true;
-            return None;
-        }
-        self.bytes += bytes.len() as u64;
-        if bytes.len() as u64 > limit {
-            self.truncated = true;
-            bytes.truncate(limit as usize);
-            // A partial last line cannot be evidence of a final response.
-            if let Some(end) = bytes.iter().rposition(|byte| *byte == b'\n') {
-                bytes.truncate(end + 1);
-            } else {
-                bytes.clear();
-            }
-        }
-        Some(bytes)
+        let context = format!("{kind:?}:{thread:?}:{limit}:{remaining}");
+        let cached =
+            NATIVE_EVIDENCE.get_or_load_opened(&opened.path, &opened.metadata, context, || {
+                if matches!(kind, EvidenceFileKind::ClaudeState) && opened.metadata.len() > limit {
+                    return CachedNativeFile {
+                        data: None,
+                        bytes: 0,
+                        incomplete: true,
+                        truncated: true,
+                    };
+                }
+                #[cfg(test)]
+                EVIDENCE_FILE_READS.with(|reads| reads.set(reads.get() + 1));
+                let mut bytes = Vec::new();
+                let size = opened.metadata.len().min(limit);
+                let read_error = opened.file.take(size).read_to_end(&mut bytes).is_err();
+                let charged = bytes.len() as u64;
+                let mut incomplete = read_error || charged != size;
+                let mut truncated = opened.metadata.len() > limit;
+                // Journals/rollouts can retain complete lines from a bounded prefix.
+                // A partial state JSON cannot authorize additional native aliases.
+                if truncated && !matches!(kind, EvidenceFileKind::ClaudeState) {
+                    if let Some(end) = bytes.iter().rposition(|byte| *byte == b'\n') {
+                        bytes.truncate(end + 1);
+                    } else {
+                        bytes.clear();
+                    }
+                }
+                let data = match kind {
+                    EvidenceFileKind::ClaudeState => {
+                        if truncated {
+                            incomplete = true;
+                            None
+                        } else {
+                            match parse_session_native_ids(bytes.as_slice()) {
+                                Ok(mut ids) => {
+                                    truncated |= ids.len() > MAX_EVIDENCE_ENTRIES;
+                                    ids.truncate(MAX_EVIDENCE_ENTRIES);
+                                    Some(NativeFileData::State(ids))
+                                }
+                                Err(()) => {
+                                    incomplete = true;
+                                    None
+                                }
+                            }
+                        }
+                    }
+                    EvidenceFileKind::ClaudeJournal => {
+                        let (mut rows, bad_lines) =
+                            parse_claude_log_reader(std::io::Cursor::new(bytes));
+                        incomplete |= bad_lines;
+                        truncated |= rows.len() > remaining;
+                        rows.truncate(remaining);
+                        Some(NativeFileData::Claude(rows))
+                    }
+                    EvidenceFileKind::CodexRollout => {
+                        let header = bytes
+                            .split(|byte| *byte == b'\n')
+                            .next()
+                            .unwrap_or_default();
+                        if !crate::analytics_history::native_rollout_header_matches(
+                            header,
+                            thread.unwrap_or_default(),
+                        ) {
+                            incomplete = true;
+                            None
+                        } else {
+                            let (mut rows, bad_lines) =
+                                parse_codex_evidence(&bytes, thread.unwrap_or_default());
+                            incomplete |= bad_lines;
+                            truncated |= rows.len() > remaining;
+                            rows.truncate(remaining);
+                            Some(NativeFileData::Codex(rows))
+                        }
+                    }
+                };
+                CachedNativeFile {
+                    data,
+                    bytes: charged,
+                    incomplete: incomplete || truncated,
+                    truncated,
+                }
+            });
+        // Cached prefixes consume exactly the same request allowance as a cold
+        // read. A hit can never make a request exceed its coverage bound.
+        self.bytes += cached.bytes;
+        self.responses += match &cached.data {
+            Some(NativeFileData::Claude(rows)) => rows.len(),
+            Some(NativeFileData::Codex(rows)) => rows.len(),
+            _ => 0,
+        };
+        self.report(path, kind, cached.incomplete, cached.truncated);
+        Some(cached)
+    }
+    #[cfg(test)]
+    fn read(&mut self, path: &Path) -> Option<Vec<u8>> {
+        let cached = self.load(path.parent()?, path, EvidenceFileKind::ClaudeJournal, None)?;
+        cached.data.as_ref()?;
+        Some(Vec::new())
     }
 }
 
@@ -758,14 +904,19 @@ fn read_local_claude_usage_inner(
         let state_path = server_root
             .join("sessions")
             .join(format!("{thread_id}.json"));
-        let native = if let Some(budget) = budget.as_deref_mut() {
-            budget
-                .read(&state_path)
-                .map(|bytes| std::sync::Arc::new(parse_session_native_ids(bytes.as_slice())))
-        } else {
+        if let Some(budget) = budget.as_deref_mut() {
+            if let Some(cached) = budget.load(
+                &server_root.join("sessions"),
+                &state_path,
+                EvidenceFileKind::ClaudeState,
+                None,
+            ) && let Some(NativeFileData::State(native)) = &cached.data
+            {
+                ids.extend(native.iter().cloned());
+            }
+        } else if let Some(native) =
             SESSION_NATIVE_IDS.get_or_load(&state_path, read_session_native_ids)
-        };
-        if let Some(native) = native {
+        {
             let native = native
                 .as_ref()
                 .as_ref()
@@ -773,31 +924,53 @@ fn read_local_claude_usage_inner(
             ids.extend(native.iter().cloned());
         }
         let projects = config.join("projects");
-        let Ok(project_entries) = fs::read_dir(projects) else {
-            continue;
+        let project_entries = match fs::read_dir(&projects) {
+            Ok(entries) => entries,
+            Err(_) => {
+                if let Some(budget) = budget.as_deref_mut() {
+                    budget.report(&projects, EvidenceFileKind::ClaudeJournal, true, false);
+                }
+                continue;
+            }
         };
-        for project in project_entries.flatten() {
+        for entry in project_entries {
             if let Some(budget) = budget.as_deref_mut()
                 && !budget.visit()
             {
                 break;
             }
+            let project = match entry {
+                Ok(project) => project,
+                Err(_) => {
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.report(&projects, EvidenceFileKind::ClaudeJournal, true, false);
+                    }
+                    continue;
+                }
+            };
             let project_path = project.path();
-            if !project.file_type().is_ok_and(|kind| kind.is_dir()) {
-                continue;
+            match project.file_type() {
+                Ok(kind) if kind.is_dir() => {}
+                Ok(_) => continue,
+                Err(_) => {
+                    if let Some(budget) = budget.as_deref_mut() {
+                        budget.report(&project_path, EvidenceFileKind::ClaudeJournal, true, false);
+                    }
+                    continue;
+                }
             }
             for id in &ids {
                 let path = project_path.join(format!("{id}.jsonl"));
                 let log = if let Some(budget) = budget.as_deref_mut() {
-                    let Some(bytes) = budget.read(&path) else {
+                    let Some(cached) =
+                        budget.load(&project_path, &path, EvidenceFileKind::ClaudeJournal, None)
+                    else {
                         continue;
                     };
-                    {
-                        let (rows, incomplete) =
-                            parse_claude_log_reader(std::io::Cursor::new(bytes));
-                        budget.incomplete |= incomplete;
-                        std::sync::Arc::new(rows)
-                    }
+                    let Some(NativeFileData::Claude(rows)) = &cached.data else {
+                        continue;
+                    };
+                    std::sync::Arc::new(rows.clone())
                 } else {
                     let Some(log) = CLAUDE_LOGS.get_or_load(&path, parse_claude_log) else {
                         continue;
@@ -1171,6 +1344,153 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn reconciliation_journal_fixture(
+        root: &std::path::Path,
+    ) -> (Vec<(String, CostMember)>, BTreeMap<String, Value>) {
+        let profile = root.join("profile");
+        fs::create_dir_all(profile.join("projects/project")).expect("project");
+        fs::write(profile.join("projects/project/thread.jsonl"),
+            json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z","message":{"id":"response","model":"claude-sonnet-4-5","usage":{"input_tokens":10,"output_tokens":2}}}).to_string()).expect("journal");
+        (
+            vec![(
+                "agent".into(),
+                member(json!({"accountKey":"claude","provider":"claude","threadId":"thread"})),
+            )],
+            BTreeMap::from([(
+                "claude".into(),
+                json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+            )]),
+        )
+    }
+
+    #[test]
+    fn usage_reconciliation_partial_state_is_incomplete_instead_of_a_request_error() {
+        let root = tempfile::tempdir().expect("state");
+        let (members, accounts) = reconciliation_journal_fixture(root.path());
+        let sessions = root.path().join("account-servers/claude/sessions");
+        fs::create_dir_all(&sessions).expect("sessions");
+        fs::write(sessions.join("thread.json"), b"{broken state").expect("state");
+        let mut budget = super::EvidenceBudget::default();
+        let rows = super::read_local_claude_usage_inner(
+            root.path(),
+            &members,
+            &accounts,
+            Some(&mut budget),
+        )
+        .expect("one broken native file cannot fail the request");
+        assert_eq!(rows.len(), 1);
+        assert!(budget.incomplete);
+        fs::write(sessions.join("thread.json"), b"{a truncated state document").expect("state");
+        let mut budget = super::EvidenceBudget {
+            bytes: super::MAX_RECONCILIATION_NATIVE_BYTES - 4,
+            ..Default::default()
+        };
+        assert!(
+            super::read_local_claude_usage_inner(
+                root.path(),
+                &members,
+                &accounts,
+                Some(&mut budget)
+            )
+            .is_ok()
+        );
+        assert!(budget.truncated);
+    }
+
+    #[test]
+    fn usage_reconciliation_total_byte_budget_is_shared_without_overshoot() {
+        let root = tempfile::tempdir().expect("evidence");
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        fs::write(&first, b"{}\n").expect("first");
+        fs::write(&second, b"{}\n").expect("second");
+        let mut budget = super::EvidenceBudget {
+            bytes: super::MAX_RECONCILIATION_NATIVE_BYTES - 4,
+            ..Default::default()
+        };
+        budget.read(&first).expect("first read");
+        assert!(budget.read(&second).is_some());
+        assert!(budget.bytes <= super::MAX_RECONCILIATION_NATIVE_BYTES);
+        assert!(budget.truncated);
+    }
+
+    #[test]
+    fn usage_reconciliation_unchanged_journal_is_parsed_once() {
+        let root = tempfile::tempdir().expect("state");
+        let (members, accounts) = reconciliation_journal_fixture(root.path());
+        super::EVIDENCE_FILE_READS.with(|reads| reads.set(0));
+        for _ in 0..2 {
+            let mut budget = super::EvidenceBudget::default();
+            assert_eq!(
+                super::read_local_claude_usage_inner(
+                    root.path(),
+                    &members,
+                    &accounts,
+                    Some(&mut budget)
+                )
+                .expect("journal")
+                .len(),
+                1
+            );
+        }
+        assert_eq!(
+            super::EVIDENCE_FILE_READS.with(std::cell::Cell::get),
+            1,
+            "unchanged native evidence must be reused"
+        );
+    }
+
+    #[test]
+    fn usage_reconciliation_codex_rejects_foreign_session_header() {
+        let root = tempfile::tempdir().expect("profile");
+        fs::create_dir(root.path().join("sessions")).expect("sessions");
+        let header = json!({"type":"session_meta","payload":{"id":"another-thread"}});
+        let usage = json!({"type":"token_usage_record","payload":{"response_id":"response","usage":{"input_tokens":10,"output_tokens":2}}});
+        fs::write(
+            root.path().join("sessions/rollout-test-thread.jsonl"),
+            format!("{header}\n{usage}\n"),
+        )
+        .expect("rollout");
+        let member = member(json!({"accountKey":"codex","threadId":"thread"}));
+        let accounts = BTreeMap::from([(
+            "codex".into(),
+            json!({"provider":"codex","home":root.path()}),
+        )]);
+        let mut rows = BTreeMap::new();
+        let mut budget = super::EvidenceBudget::default();
+        super::read_codex_evidence(&member, &accounts, &mut rows, &mut budget).expect("comparison");
+        assert!(
+            rows.is_empty(),
+            "foreign rollout header cannot authorize evidence"
+        );
+        assert!(budget.incomplete);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn usage_reconciliation_journal_symlink_cannot_escape_its_project() {
+        let root = tempfile::tempdir().expect("state");
+        let external = tempfile::tempdir().expect("external");
+        let (members, accounts) = reconciliation_journal_fixture(root.path());
+        let journal = root.path().join("profile/projects/project/thread.jsonl");
+        fs::rename(&journal, external.path().join("foreign.jsonl")).expect("move");
+        std::os::unix::fs::symlink(external.path().join("foreign.jsonl"), &journal)
+            .expect("symlink");
+        let mut budget = super::EvidenceBudget::default();
+        let rows = super::read_local_claude_usage_inner(
+            root.path(),
+            &members,
+            &accounts,
+            Some(&mut budget),
+        )
+        .expect("comparison");
+        assert!(
+            rows.is_empty(),
+            "foreign journal file cannot authorize evidence"
+        );
+        assert!(budget.incomplete);
+    }
+
     #[tokio::test]
     async fn usage_reconciliation_prefers_final_recorded_response_to_later_legacy_rows() {
         let directory = tempfile::tempdir().expect("temporary analytics");
@@ -1205,7 +1525,10 @@ mod tests {
             "usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20,"reasoning_output_tokens":7}}});
         fs::write(
             directory.path().join("sessions/rollout-test-thread.jsonl"),
-            format!("{context}\n{usage}\n"),
+            format!(
+                "{}\n{context}\n{usage}\n",
+                json!({"type":"session_meta","payload":{"id":"thread"}})
+            ),
         )
         .expect("rollout");
         let member = member(json!({"provider":"codex","accountKey":"codex","threadId":"thread"}));
@@ -1279,7 +1602,7 @@ mod tests {
         assert!(budget.truncated);
         assert_eq!(budget.bytes, 0);
         let mut budget = super::EvidenceBudget {
-            bytes: super::MAX_COMPARISON_NATIVE_BYTES,
+            bytes: super::MAX_RECONCILIATION_NATIVE_BYTES,
             ..Default::default()
         };
         assert!(budget.read(&path).is_none());

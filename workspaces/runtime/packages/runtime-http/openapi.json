@@ -56734,6 +56734,36 @@
         ],
         "type": "string"
       },
+      "UsageEvidenceFile": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "description": "Native evidence file name; never file contents.",
+            "type": "string"
+          },
+          "incomplete": {
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "claudeState",
+              "claudeJournal",
+              "codexRollout"
+            ],
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "file",
+          "kind",
+          "incomplete",
+          "truncated"
+        ],
+        "type": "object"
+      },
       "UsageGapReason": {
         "description": "Why final response accounting is unavailable.",
         "enum": [
@@ -57132,6 +57162,12 @@
             ],
             "type": "object"
           },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/UsageEvidenceFile"
+            },
+            "type": "array"
+          },
           "gaps": {
             "items": {
               "$ref": "#/components/schemas/UsageObservation"
@@ -57233,7 +57269,8 @@
           "totals",
           "counts",
           "incomplete",
-          "truncated"
+          "truncated",
+          "files"
         ],
         "type": "object"
       },

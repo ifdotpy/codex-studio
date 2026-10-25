@@ -24751,6 +24751,14 @@ export interface components {
      * @enum {string}
      */
     UsageEvidence: "live" | "recovered" | "legacy";
+    UsageEvidenceFile: {
+      /** @description Native evidence file name; never file contents. */
+      file: string;
+      incomplete: boolean;
+      /** @enum {string} */
+      kind: "claudeState" | "claudeJournal" | "codexRollout";
+      truncated: boolean;
+    };
     /**
      * @description Why final response accounting is unavailable.
      * @enum {string}
@@ -24897,6 +24905,7 @@ export interface components {
         missingRecorded: number;
         responses: number;
       };
+      files: components["schemas"]["UsageEvidenceFile"][];
       gaps: components["schemas"]["UsageObservation"][];
       incomplete: boolean;
       providerCosts: {

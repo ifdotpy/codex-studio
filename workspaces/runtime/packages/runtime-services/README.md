@@ -612,3 +612,10 @@ missing or legacy responses through the store's journal partition.
 Costs use the existing catalog's request-level context tiers. Missing token counts
 or prices remain null. Native scan and response bounds are owned by `costs.rs`;
 truncation and incomplete evidence are visible in the diagnostic result.
+
+Reconciliation and history import share `analytics_history::open_confined_native_file`
+and the native rollout header validator. Diagnostic reads reuse bounded parsed
+evidence by the validated open file's identity and parser inputs. One request
+shares the byte, entry and response allowances in `costs.rs` across every state,
+journal and rollout file. A damaged, unreadable or truncated file contributes a
+`files` coverage report; other valid evidence stays available.
