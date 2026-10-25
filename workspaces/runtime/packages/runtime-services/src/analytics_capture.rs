@@ -1237,132 +1237,6 @@ fn hash(v: &Value) -> String {
     sha256_hex(python_json_compact(v).as_bytes())
 }
 
-#[cfg(test)]
-mod usage_contract_tests {
-    use super::*;
-
-    #[test]
-    fn typed_usage_legacy_claude_totals_are_preserved_without_invented_categories() {
-        let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread"});
-        let prepared=PreparedCapture::event(&agent,"thread/tokenUsage/updated",&json!({"threadId":"thread","tokenUsage":{"total":{"totalTokens":23},"last":{"totalTokens":7}}}),1.0,2.0,CaptureSource::Live).expect("supported pre-contract notification");
-        let decision = decide(
-            CaptureSnapshot::from_records(Arc::new(prepared), CaptureRows::default())
-                .expect("snapshot"),
-        )
-        .expect("legacy capture");
-        let row = &decision
-            .rows
-            .iter()
-            .find(|(table, _)| *table == CaptureTable::Usage)
-            .expect("legacy usage row")
-            .1;
-        assert_eq!(row["total"]["totalTokens"], 23);
-        assert_eq!(row["last"]["totalTokens"], 7);
-        assert!(row.get("studioUsage").is_none());
-        assert!(row["last"].get("inputTokens").is_none());
-        assert!(row["last"].get("outputTokens").is_none());
-    }
-
-    #[test]
-    fn typed_usage_final_replay_is_immutable_and_legacy_is_recoverable() {
-        let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread","model":"claude"});
-        let observation = json!({"kind":"response","responseId":"response","model":"claude","evidence":"live","tokens":{"uncachedInput":10,"cacheReadInput":3,"cacheWriteInput":2,"output":7}});
-        let prepare = |observation| {
-            Arc::new(
-                PreparedCapture::event(
-                    &agent,
-                    "thread/tokenUsage/updated",
-                    &json!({"threadId":"thread","studioUsage":observation}),
-                    1.0,
-                    2.0,
-                    CaptureSource::Live,
-                )
-                .expect("input"),
-            )
-        };
-        let first = decide(
-            CaptureSnapshot::from_records(prepare(observation.clone()), CaptureRows::default())
-                .expect("snapshot"),
-        )
-        .expect("first");
-        let row = first
-            .rows
-            .into_iter()
-            .find(|(table, _)| *table == CaptureTable::Usage)
-            .expect("response")
-            .1;
-        let replay = |old: Value, new: Value| {
-            decide(
-                CaptureSnapshot::from_records(
-                    prepare(new),
-                    CaptureRows {
-                        exact_response: Some(old),
-                        ..Default::default()
-                    },
-                )
-                .expect("replay snapshot"),
-            )
-            .expect("replay")
-        };
-        let identical = replay(row.clone(), observation.clone());
-        assert!(!identical.response_replay_conflict);
-        assert!(
-            identical
-                .rows
-                .iter()
-                .all(|(table, _)| *table != CaptureTable::Usage)
-        );
-        let mut changed = observation.clone();
-        changed["tokens"]["output"] = json!(99);
-        let conflict = replay(row.clone(), changed.clone());
-        assert!(conflict.response_replay_conflict);
-        assert!(
-            conflict
-                .rows
-                .iter()
-                .all(|(table, _)| *table != CaptureTable::Usage)
-        );
-        let mut provisional = row;
-        provisional["studioUsage"]["evidence"] = json!("legacy");
-        changed["evidence"] = json!("recovered");
-        let recovered = replay(provisional, changed.clone());
-        assert_eq!(
-            recovered
-                .rows
-                .iter()
-                .find(|(table, _)| *table == CaptureTable::Usage)
-                .expect("replacement")
-                .1["studioUsage"],
-            changed
-        );
-    }
-
-    #[test]
-    fn typed_usage_capture_persists_normalized_response() {
-        let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread","model":"claude-sonnet-4-5"});
-        let observation = json!({"kind":"response","responseId":"response","model":"claude-sonnet-4-5","evidence":"live","tokens":{"uncachedInput":10,"cacheReadInput":3,"cacheWriteInput":2,"output":7}});
-        let prepared = PreparedCapture::event(
-            &agent,
-            "thread/tokenUsage/updated",
-            &json!({"threadId":"thread","turnId":"turn","studioUsage":observation}),
-            1.0,
-            2.0,
-            CaptureSource::Live,
-        )
-        .expect("capture input");
-        let snapshot = CaptureSnapshot::from_records(Arc::new(prepared), CaptureRows::default())
-            .expect("snapshot");
-        let decision = decide(snapshot).expect("capture decision");
-        let row = &decision
-            .rows
-            .iter()
-            .find(|(table, _)| *table == CaptureTable::Usage)
-            .expect("usage row")
-            .1;
-        assert_eq!(row["studioUsage"], observation);
-        assert_eq!(row["responseId"], "response");
-    }
-}
 fn usage_provider(agent: &Value) -> UsageProvider {
     if agent["provider"] == "claude" {
         UsageProvider::Claude
@@ -1642,4 +1516,131 @@ pub async fn capture_limit(
             Ok(())
         })
         .await
+}
+
+#[cfg(test)]
+mod usage_contract_tests {
+    use super::*;
+
+    #[test]
+    fn typed_usage_legacy_claude_totals_are_preserved_without_invented_categories() {
+        let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread"});
+        let prepared=PreparedCapture::event(&agent,"thread/tokenUsage/updated",&json!({"threadId":"thread","tokenUsage":{"total":{"totalTokens":23},"last":{"totalTokens":7}}}),1.0,2.0,CaptureSource::Live).expect("supported pre-contract notification");
+        let decision = decide(
+            CaptureSnapshot::from_records(Arc::new(prepared), CaptureRows::default())
+                .expect("snapshot"),
+        )
+        .expect("legacy capture");
+        let row = &decision
+            .rows
+            .iter()
+            .find(|(table, _)| *table == CaptureTable::Usage)
+            .expect("legacy usage row")
+            .1;
+        assert_eq!(row["total"]["totalTokens"], 23);
+        assert_eq!(row["last"]["totalTokens"], 7);
+        assert!(row.get("studioUsage").is_none());
+        assert!(row["last"].get("inputTokens").is_none());
+        assert!(row["last"].get("outputTokens").is_none());
+    }
+
+    #[test]
+    fn typed_usage_final_replay_is_immutable_and_legacy_is_recoverable() {
+        let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread","model":"claude"});
+        let observation = json!({"kind":"response","responseId":"response","model":"claude","evidence":"live","tokens":{"uncachedInput":10,"cacheReadInput":3,"cacheWriteInput":2,"output":7}});
+        let prepare = |observation| {
+            Arc::new(
+                PreparedCapture::event(
+                    &agent,
+                    "thread/tokenUsage/updated",
+                    &json!({"threadId":"thread","studioUsage":observation}),
+                    1.0,
+                    2.0,
+                    CaptureSource::Live,
+                )
+                .expect("input"),
+            )
+        };
+        let first = decide(
+            CaptureSnapshot::from_records(prepare(observation.clone()), CaptureRows::default())
+                .expect("snapshot"),
+        )
+        .expect("first");
+        let row = first
+            .rows
+            .into_iter()
+            .find(|(table, _)| *table == CaptureTable::Usage)
+            .expect("response")
+            .1;
+        let replay = |old: Value, new: Value| {
+            decide(
+                CaptureSnapshot::from_records(
+                    prepare(new),
+                    CaptureRows {
+                        exact_response: Some(old),
+                        ..Default::default()
+                    },
+                )
+                .expect("replay snapshot"),
+            )
+            .expect("replay")
+        };
+        let identical = replay(row.clone(), observation.clone());
+        assert!(!identical.response_replay_conflict);
+        assert!(
+            identical
+                .rows
+                .iter()
+                .all(|(table, _)| *table != CaptureTable::Usage)
+        );
+        let mut changed = observation.clone();
+        changed["tokens"]["output"] = json!(99);
+        let conflict = replay(row.clone(), changed.clone());
+        assert!(conflict.response_replay_conflict);
+        assert!(
+            conflict
+                .rows
+                .iter()
+                .all(|(table, _)| *table != CaptureTable::Usage)
+        );
+        let mut provisional = row;
+        provisional["studioUsage"]["evidence"] = json!("legacy");
+        changed["evidence"] = json!("recovered");
+        let recovered = replay(provisional, changed.clone());
+        assert_eq!(
+            recovered
+                .rows
+                .iter()
+                .find(|(table, _)| *table == CaptureTable::Usage)
+                .expect("replacement")
+                .1["studioUsage"],
+            changed
+        );
+    }
+
+    #[test]
+    fn typed_usage_capture_persists_normalized_response() {
+        let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread","model":"claude-sonnet-4-5"});
+        let observation = json!({"kind":"response","responseId":"response","model":"claude-sonnet-4-5","evidence":"live","tokens":{"uncachedInput":10,"cacheReadInput":3,"cacheWriteInput":2,"output":7}});
+        let prepared = PreparedCapture::event(
+            &agent,
+            "thread/tokenUsage/updated",
+            &json!({"threadId":"thread","turnId":"turn","studioUsage":observation}),
+            1.0,
+            2.0,
+            CaptureSource::Live,
+        )
+        .expect("capture input");
+        let snapshot = CaptureSnapshot::from_records(Arc::new(prepared), CaptureRows::default())
+            .expect("snapshot");
+        let decision = decide(snapshot).expect("capture decision");
+        let row = &decision
+            .rows
+            .iter()
+            .find(|(table, _)| *table == CaptureTable::Usage)
+            .expect("usage row")
+            .1;
+        assert_eq!(row["studioUsage"], observation);
+        assert_eq!(row["responseId"], "response");
+    }
 }

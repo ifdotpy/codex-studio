@@ -64,6 +64,7 @@ inherits = "ci"
 # Typed usage legacy compatibility, budget replay, gap, reset and dispatch witnesses.
 # Transport safety: unsent cancellation, strict replies, and shared per-thread ordering.
 default-filter = '''
+    (package(=studio-runtime-services) & ((kind(lib) & test(analytics_projection::tests::projection_equals_the_direct_capture_of_a_turn)) | (kind(test) & binary(=integration) & test(session_cost_golden::session_cost_matches_the_row_scanning_golden_answers)))) |
     (package(=studio-runtime-store) & kind(lib) & test(repositories::analytics_capture::cost_hint_tests::)) |
     (package(=studio-runtime-services) & kind(test) & binary(integration) & (test(legacy_notice_association_clears_reset_ambiguity_without_response_charge) | test(pre_and_post_upgrade_rollout_notices_produce_identical_budget_state))) |
     (package(=studio-runtime-services) & kind(lib) & (test(budget::typed_usage_tests::) | test(agent_move::usage_tests::) | test(typed_usage_conflict_keeps_first_charge_and_dispatches_context) | test(typed_usage_bridge_golden_frames_reach_budget_and_context))) |
@@ -149,6 +150,7 @@ platform = 'cfg(target_os = "linux")'
 # Typed accounting mappings, strict ingress and native SDK schema parity.
 # Transport safety: unsent cancellation, strict replies, and shared per-thread ordering.
 default-filter = '''
+    (package(=studio-runtime-services) & ((kind(lib) & test(analytics_projection::tests::projection_equals_the_direct_capture_of_a_turn)) | (kind(test) & binary(=integration) & test(session_cost_golden::session_cost_matches_the_row_scanning_golden_answers)))) |
     (package(=studio-runtime-store) & kind(lib) & test(repositories::analytics_capture::cost_hint_tests::)) |
     (package(=studio-runtime-services) & kind(test) & binary(integration) & (test(legacy_notice_association_clears_reset_ambiguity_without_response_charge) | test(pre_and_post_upgrade_rollout_notices_produce_identical_budget_state))) |
     (package(=studio-runtime-services) & kind(lib) & (test(budget::typed_usage_tests::) | test(agent_move::usage_tests::) | test(typed_usage_conflict_keeps_first_charge_and_dispatches_context) | test(typed_usage_bridge_golden_frames_reach_budget_and_context))) |
