@@ -230,51 +230,74 @@ impl AnalyticsCaptureRepository {
 // Bound per-transaction scheduling hints; overflow keeps full reconciliation.
 const COST_ROOT_HINT_LIMIT: usize = 1024;
 
-struct CostRootHints(std::sync::Arc<std::sync::Mutex<Option<std::collections::BTreeSet<i64>>>>);
+struct CostRootHintState {
+    rows: Option<std::collections::BTreeSet<i64>>,
+    cost_rows_written: bool,
+}
+
+impl CostRootHintState {
+    fn write(&mut self, table: &str, deleted: bool, rowid: Option<i64>) {
+        match table {
+            // These projections never contribute to a session cost estimate.
+            "analytics_items"
+            | "analytics_turns"
+            | "analytics_history"
+            | "analytics_notifications"
+            | "analytics_limits"
+            | "analytics_meta"
+            | "sqlite_sequence" => {}
+            "analytics_usage_roots" if !deleted => {
+                if let (Some(rows), Some(rowid)) = (&mut self.rows, rowid) {
+                    rows.insert(rowid);
+                    if rows.len() > COST_ROOT_HINT_LIMIT {
+                        self.rows = None;
+                    }
+                }
+            }
+            // Usage and its aggregate are scoped by generation writes in the
+            // same transaction. Without those writes their scope is unknown.
+            "analytics_usage" | "analytics_cost_rows" | "analytics_cost_groups" => {
+                self.cost_rows_written = true;
+            }
+            // Agent account/thread/provider changes and unrecognized tables
+            // have no proven roots. Deleting a root loses its old identity too.
+            _ => self.rows = None,
+        }
+    }
+}
+
+struct CostRootHints(std::sync::Arc<std::sync::Mutex<CostRootHintState>>);
 impl CostRootHints {
     fn install(db: &Connection) -> StoreResult<Self> {
-        let hints = std::sync::Arc::new(std::sync::Mutex::new(Some(
-            std::collections::BTreeSet::new(),
-        )));
+        let hints = std::sync::Arc::new(std::sync::Mutex::new(CostRootHintState {
+            rows: Some(std::collections::BTreeSet::new()),
+            cost_rows_written: false,
+        }));
         let written = hints.clone();
         db.update_hook(Some(
             move |action: rusqlite::hooks::Action, database: &str, table: &str, rowid: i64| {
-                if database != "main"
-                    || !matches!(table, "analytics_usage_roots" | "analytics_agents")
-                {
-                    return;
-                }
-                let mut hints = written
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                // Account history, thread and provider metadata also affect costs.
-                // Their old root is unavailable after mutation, so retain Full.
-                if table == "analytics_agents" || action == rusqlite::hooks::Action::SQLITE_DELETE {
-                    *hints = None;
-                }
-                if let Some(rows) = hints.as_mut() {
-                    rows.insert(rowid);
-                    if rows.len() > COST_ROOT_HINT_LIMIT {
-                        *hints = None;
-                    }
+                if database == "main" {
+                    written
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .write(
+                            table,
+                            action == rusqlite::hooks::Action::SQLITE_DELETE,
+                            Some(rowid),
+                        );
                 }
             },
         ))?;
         let deleted = hints.clone();
         db.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
             if context.database_name == Some("main")
-                && matches!(
-                    context.action,
-                    rusqlite::hooks::AuthAction::Delete {
-                        table_name: "analytics_agents" | "analytics_usage_roots"
-                    }
-                )
+                && let rusqlite::hooks::AuthAction::Delete { table_name } = context.action
             {
-                // DELETE without WHERE may skip update_hook through SQLite's
-                // truncate optimization. Its scope is still explicitly unknown.
-                *deleted
+                // SQLite's truncate optimization may skip update_hook.
+                deleted
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .write(table_name, true, None);
             }
             rusqlite::hooks::Authorization::Allow
         }))?;
@@ -286,7 +309,11 @@ impl CostRootHints {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(rows) = hints.as_ref().filter(|rows| !rows.is_empty()) else {
+        let Some(rows) = hints
+            .rows
+            .as_ref()
+            .filter(|rows| !rows.is_empty() || !hints.cost_rows_written)
+        else {
             return crate::ChangedRoots::Full;
         };
         let mut roots = std::collections::BTreeSet::new();
@@ -637,4 +664,92 @@ fn finish_analytics_report(
             count,
         })
         .collect();
+}
+
+#[cfg(test)]
+mod cost_hint_tests {
+    use super::*;
+    use crate::ChangedRoots;
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn neutral_commits_enqueue_no_cost_roots() {
+        let root = tempfile::tempdir().expect("isolated store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let changes = Arc::new(Mutex::new(Vec::new()));
+        let recorded = changes.clone();
+        store.add_analytics_root_change_observer(move |scope| {
+            recorded.lock().expect("events").push(scope);
+        });
+        store.analytics_transaction(|tx, _| {
+            AnalyticsCaptureRepository::set_projection_cursor(tx, 1)?;
+            tx.execute("INSERT INTO analytics_items VALUES ('item','agent','root',NULL,NULL,1,'text',NULL,0,'{}')", [])?;
+            Ok::<_, StoreError>(())
+        }).await.expect("metadata commit");
+        store
+            .analytics_projection_transaction(|tx| {
+                AnalyticsCaptureRepository::set_projection_cursor(tx, 2)
+            })
+            .await
+            .expect("cursor commit");
+        assert_eq!(
+            *changes.lock().expect("events"),
+            vec![ChangedRoots::Roots(BTreeSet::new()); 2]
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_roots_are_exact_and_unknown_or_overflow_is_full() {
+        let root = tempfile::tempdir().expect("isolated store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let changes = Arc::new(Mutex::new(Vec::new()));
+        let recorded = changes.clone();
+        store.add_analytics_root_change_observer(move |scope| {
+            recorded.lock().expect("events").push(scope);
+        });
+        store
+            .analytics_projection_transaction(|tx| {
+                tx.execute("INSERT INTO analytics_usage(id,agent,root,at,record) VALUES ('scoped','agent','a',1,'{}')", [])?;
+                AnalyticsCaptureRepository::generation(tx, &["a".into(), "b".into()])
+            })
+            .await
+            .expect("usage roots commit");
+        store
+            .analytics_projection_transaction(|tx| {
+                tx.execute("INSERT INTO analytics_agents VALUES ('unknown','{}')", [])?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("unknown root commit");
+        store.analytics_projection_transaction(|tx| {
+            tx.execute("INSERT INTO analytics_usage(id,agent,root,at,record) VALUES ('unscoped','agent','c',1,'{}')", [])?;
+            Ok::<_, StoreError>(())
+        }).await.expect("usage without generation is unknown");
+        store.analytics_projection_transaction(|tx| {
+            tx.execute_batch("CREATE TABLE unknown_cost_source (value TEXT); INSERT INTO unknown_cost_source VALUES ('unknown');")?;
+            AnalyticsCaptureRepository::generation(tx, &["a".into()])
+        }).await.expect("unknown source cannot be hidden by known roots");
+        store
+            .analytics_projection_transaction(|tx| {
+                AnalyticsCaptureRepository::generation(
+                    tx,
+                    &(0..=COST_ROOT_HINT_LIMIT)
+                        .map(|i| format!("overflow-{i}"))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .await
+            .expect("overflow commit");
+        assert_eq!(
+            *changes.lock().expect("events"),
+            vec![
+                ChangedRoots::Roots(BTreeSet::from(["a".into(), "b".into()])),
+                ChangedRoots::Full,
+                ChangedRoots::Full,
+                ChangedRoots::Full,
+                ChangedRoots::Full,
+            ]
+        );
+    }
 }
