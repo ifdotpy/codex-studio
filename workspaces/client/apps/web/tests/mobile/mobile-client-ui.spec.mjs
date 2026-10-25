@@ -494,6 +494,9 @@ async function setupMobile320Composer(testBrowser) {
       ALL_PROXY: "http://127.0.0.1:9",
       HTTPS_PROXY: "http://127.0.0.1:9",
       https_proxy: "http://127.0.0.1:9",
+      // Inherited exclusions (for example "*") would bypass that proxy.
+      NO_PROXY: "127.0.0.1,localhost",
+      no_proxy: "127.0.0.1,localhost",
       FIXTURE_AGENT_STEPS: JSON.stringify({
         "Release lead": [
           {
