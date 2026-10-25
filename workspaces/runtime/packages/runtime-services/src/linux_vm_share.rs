@@ -263,7 +263,7 @@ pub(crate) fn typed_mount(
 impl ShareMountTool for MacShareMountTool {
     fn entries(&self) -> Result<Vec<MountEntry>, String> {
         let output = run("/sbin/mount", &[])
-            .map_err(|error| format!("The Mac mount table is unavailable: {error}"))?;
+            .map_err(|error| format!("The host mount table is unavailable: {error}"))?;
         Ok(parse_entries(&String::from_utf8_lossy(&output)))
     }
 

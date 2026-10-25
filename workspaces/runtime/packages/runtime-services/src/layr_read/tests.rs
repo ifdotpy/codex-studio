@@ -271,7 +271,7 @@ async fn a_lost_guest_answer_stays_unknown() {
     let args = json!({"args": ["log"]});
     let first = fixture.call(REVIEWER, "read-3", args.clone()).await;
     assert!(
-        text(&first).contains("Linux guest layr.exec failed"),
+        text(&first).contains("VM guest layr.exec failed"),
         "{first}"
     );
     let retry = fixture.call(REVIEWER, "read-3", args).await;

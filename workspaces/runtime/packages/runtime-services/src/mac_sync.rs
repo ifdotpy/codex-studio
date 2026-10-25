@@ -29,7 +29,7 @@ const ABSENT: &str = "absent";
 
 #[derive(Debug, Error)]
 pub enum MacSyncError {
-    #[error("The project has no Mac folder to sync")]
+    #[error("The project has no host folder to sync")]
     NoProject,
     #[error("Invalid project or path")]
     Invalid,
@@ -39,11 +39,11 @@ pub enum MacSyncError {
     NoConflict(String),
     #[error("The VM guest operation failed")]
     Guest(#[source] GuestError),
-    #[error("The Mac sync handoff outcome is unknown and will not be resent")]
+    #[error("The folder sync handoff outcome is unknown and will not be resent")]
     HandoffUnknown,
-    #[error("Mac sync state could not be read or written")]
+    #[error("Folder sync state could not be read or written")]
     Io(#[source] std::io::Error),
-    #[error("Mac sync state is invalid")]
+    #[error("Folder sync state is invalid")]
     Json(#[source] serde_json::Error),
 }
 
@@ -419,12 +419,12 @@ fn status_view(status: &Value, source: &str, enabled: bool) -> Value {
 
 fn handoff_message(rel: &str, state: &str, line: &str, kind: &str) -> String {
     let mac = if kind == ABSENT {
-        "The Mac deleted this file.".to_owned()
+        "The host folder no longer has this file.".to_owned()
     } else {
-        format!("Read the Mac version with `layr show {state}:{rel}`.")
+        format!("Read the host version with `layr show {state}:{rel}`.")
     };
     format!(
-        "[Studio Mac sync] The user's Mac folder and main changed {rel} in different ways. The user asked you to combine the two versions. The Mac version is layr state {state} in the line {line}. {mac} Put one version that keeps both changes in main and commit it. Studio then writes main's file to the Mac folder."
+        "[Studio folder sync] The user's host folder and main changed {rel} in different ways. The user asked you to combine the two versions. The host version is layr state {state} in the line {line}. {mac} Put one version that keeps both changes in main and commit it. Studio then writes main's file to the host folder."
     )
 }
 
@@ -734,6 +734,18 @@ mod tests {
                 _ => json!({"ok":true}),
             })
         }
+    }
+
+    #[test]
+    fn platform_neutral_handoff_preserves_the_guest_state_and_host_file_meaning() {
+        let message = handoff_message("file.txt", "state-1", "mac-conflict", "file");
+        assert_eq!(
+            message,
+            "[Studio folder sync] The user's host folder and main changed file.txt in different ways. The user asked you to combine the two versions. The host version is layr state state-1 in the line mac-conflict. Read the host version with `layr show state-1:file.txt`. Put one version that keeps both changes in main and commit it. Studio then writes main's file to the host folder."
+        );
+        let deleted = handoff_message("file.txt", "state-1", "mac-conflict", ABSENT);
+        assert!(deleted.contains("The host folder no longer has this file."));
+        assert!(!deleted.contains("Read the host version"));
     }
 
     fn setup() -> (tempfile::TempDir, PathBuf) {

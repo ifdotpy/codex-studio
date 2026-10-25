@@ -1,6 +1,6 @@
 //! Image workspace lifecycle ported from `codex_workspace_images.py`.
 //!
-//! Non-macOS callers get Python's exact ASIF platform refusal before reading or
+//! Unsupported hosts get the capability refusal before reading or
 //! writing workspace state. The lifecycle depends on `WorkspaceBackend`; tests
 //! use a fake and production selects the cfg-gated ASIF backend.
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use studio_runtime_store::path_identity::CanonicalPath;
 
 pub const PLATFORM_REFUSAL: &str =
-    "Image workspaces require macOS ASIF. Use a Git worktree on this server";
+    "Image workspaces are unavailable on this server. Use a Git worktree.";
 
 /// Whether this host runs the turns of image-workspace agents. On macOS, as in
 /// Python (`codex_workspace_macos.py` `exec_prefix` is empty), a turn attaches
@@ -62,6 +62,20 @@ pub fn restart_follow_up_allowed(record: &Value, image_execution_supported: bool
 mod image_execution_tests {
     use super::{is_image_workspace_agent, restart_follow_up_allowed};
     use serde_json::json;
+
+    #[test]
+    fn platform_neutral_image_refusal_preserves_the_worktree_alternative() {
+        let expected = "Image workspaces are unavailable on this server. Use a Git worktree.";
+        assert_eq!(
+            super::ImageWorkspaceError::UnsupportedPlatform.to_string(),
+            expected
+        );
+        assert_eq!(
+            crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported.to_string(),
+            expected
+        );
+        assert_eq!(super::PLATFORM_REFUSAL, expected);
+    }
 
     #[test]
     fn an_image_agent_gets_a_restart_follow_up_only_where_image_turns_run() {
@@ -265,7 +279,7 @@ pub trait WorkspaceBackend: Send + Sync {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ImageWorkspaceError {
-    #[error("Image workspaces require macOS ASIF. Use a Git worktree on this server")]
+    #[error("{PLATFORM_REFUSAL}")]
     UnsupportedPlatform,
     #[error("Invalid workspace identifier")]
     InvalidId,

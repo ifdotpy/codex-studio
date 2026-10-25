@@ -43,26 +43,26 @@ impl GuestSpaceProbe for HostGuestSpaceProbe {
 /// Error from connecting to the guest or exchanging one RPC.
 #[derive(Debug, Error)]
 pub enum GuestError {
-    #[error("invalid Linux VM guest request")]
+    #[error("invalid VM guest request")]
     InvalidRequest,
-    #[error("could not create Linux VM guest request identity")]
+    #[error("could not create VM guest request identity")]
     Identity,
     #[error("{message}")]
     SpacePreflight { message: String },
-    #[error("Linux VM guest transport failed: {message}")]
+    #[error("VM guest transport failed: {message}")]
     Transport { message: String, uncertain: bool },
-    #[error("Linux VM guest protocol failed: {message}")]
+    #[error("VM guest protocol failed: {message}")]
     Protocol {
         message: &'static str,
         uncertain: bool,
     },
-    #[error("Linux VM guest rejected the request")]
+    #[error("VM guest rejected the request")]
     Rejected {
         code: Option<String>,
         detail: Option<String>,
         uncertain: bool,
     },
-    #[error("Linux VM guest frame callback failed")]
+    #[error("VM guest frame callback failed")]
     FrameCallback { uncertain: bool },
 }
 
@@ -235,12 +235,12 @@ pub(crate) fn require_agent_free_space(
     let free = space_probe
         .free_bytes(vm_state_dir)
         .map_err(|_| GuestError::SpacePreflight {
-            message: "Could not check free disk space for the Linux VM.".to_owned(),
+            message: "Could not check free disk space for the VM.".to_owned(),
         })?;
     if free < required {
         return Err(GuestError::SpacePreflight {
             message: format!(
-                "Not enough free disk space for the Linux VM: {free} free, {required} required (bytes)."
+                "Not enough free disk space for the VM: {free} free, {required} required (bytes)."
             ),
         });
     }

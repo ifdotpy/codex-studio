@@ -102,21 +102,21 @@ pub type Result<T> = std::result::Result<T, GuestProviderError>;
 
 #[derive(Debug, Error)]
 pub enum GuestProviderError {
-    #[error("invalid Linux VM provider identity or launch options")]
+    #[error("invalid VM provider identity or launch options")]
     Invalid,
-    #[error("Linux VM provider outcome is unknown and must be reconciled")]
+    #[error("VM provider outcome is unknown and must be reconciled")]
     Unknown,
-    #[error("Linux VM provider refused the operation")]
+    #[error("VM provider refused the operation")]
     Refused,
-    #[error("Linux VM provider response is invalid")]
+    #[error("VM provider response is invalid")]
     InvalidResponse,
-    #[error("Linux VM provider persistence failed")]
+    #[error("VM provider persistence failed")]
     Persistence(#[from] StoreError),
-    #[error("Linux VM guest request failed")]
+    #[error("VM guest request failed")]
     Guest(#[from] GuestError),
-    #[error("Linux VM provider JSON is invalid")]
+    #[error("VM provider JSON is invalid")]
     Json(#[from] serde_json::Error),
-    #[error("Linux VM provider worker task failed")]
+    #[error("VM provider worker task failed")]
     Task,
 }
 
