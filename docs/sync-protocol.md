@@ -141,7 +141,7 @@ replay the durable receipt after reconnect. Terminal receipts release the select
 Saved server names consume each owner's discovery snapshot through its existing
 stream. Startup credentials and workspace initialization share the finite
 [read-recovery budget](../workspaces/client/apps/web/src/sync/readRetry.ts);
-exhaustion stays visible until reconnect or an explicit retry. Transcript prefetch
+exhaustion stays visible until reconnect or an explicit retry. The visible transcript
 uses inline stream snapshots and intervals; a revision-only oversized interval
 retains its scoped recovery read.
 

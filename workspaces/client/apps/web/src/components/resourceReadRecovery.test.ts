@@ -132,6 +132,9 @@ vi.mock("../sync/localDraft", async (importOriginal) => ({
 }));
 vi.mock("../sync/send", () => ({ reconcileOutboxReceipts: reconcile }));
 vi.mock("../sync/resume", () => ({ onResume: () => () => {} }));
+vi.mock("../sync/subscriptions", () => ({
+  useSubscription: () => ({ data: undefined, status: "loading", error: null }),
+}));
 vi.mock("../sync/subscriptions/events", () => ({
   watchResourceChanges: (
     resource: unknown,

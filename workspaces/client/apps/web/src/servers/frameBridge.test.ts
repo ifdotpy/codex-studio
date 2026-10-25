@@ -28,6 +28,7 @@ vi.mock("./transport", async (importOriginal) => ({
 const stopConnection = vi.hoisted(() => vi.fn());
 vi.mock("../sync/subscriptions/events", () => ({
   watchResourceConnection: () => stopConnection,
+  defaultSubscriptions: { watchResourceConnection: () => stopConnection },
 }));
 
 import { useServerFrame } from "./frameBridge";
