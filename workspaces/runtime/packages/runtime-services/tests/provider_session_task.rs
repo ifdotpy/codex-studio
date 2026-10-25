@@ -259,14 +259,14 @@ fn assert_exited_stdio_session_tail(partial_write: bool) {
     const BLOCKED_REQUEST_BYTES: usize = 512 * 1024;
     let root = tempfile::tempdir().unwrap();
     let release = root.path().join("release");
-    rustix::fs::mknodat(
-        rustix::fs::CWD,
-        &release,
-        rustix::fs::FileType::Fifo,
-        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-        0,
-    )
-    .unwrap();
+    // Short-lived fixture setup also works on macOS, where rustix omits mknodat.
+    #[allow(clippy::disallowed_methods)]
+    let fifo = std::process::Command::new("mkfifo")
+        .args(["-m", "600"])
+        .arg(&release)
+        .status()
+        .expect("create provider release FIFO");
+    assert!(fifo.success());
     let read_one_byte = if partial_write {
         r#"dd bs=1 count=1 of=/dev/null 2>/dev/null
 printf '{"method":"fixture/write-progress"}\n'"#

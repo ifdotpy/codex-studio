@@ -783,8 +783,7 @@ mod diagnostics_http_tests {
         let typed: crate::generated::ExecutionLedger =
             serde_json::from_value(executions.clone()).expect("typed execution ledger");
         assert_eq!(
-            serde_json::to_value(typed).expect("ledger serializes")["runs"][0]["restartRecovery"]
-                ["supervisor"],
+            serde_json::to_value(typed).expect("ledger serializes")["runs"][0]["restartRecovery"]["supervisor"],
             json!({"generation": 96})
         );
 
