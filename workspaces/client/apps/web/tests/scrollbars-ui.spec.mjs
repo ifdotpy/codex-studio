@@ -43,7 +43,7 @@ test("native panes and Mantine share scrollbar styling in both themes", async ({
     },
     bundle: true,
     write: false,
-    outdir: "/tmp/studio-scrollbar-bundle",
+    outdir: testInfo.outputPath("scrollbar-bundle"),
     define: { "process.env.NODE_ENV": '"production"' },
   });
   await page.setContent(
