@@ -147,6 +147,28 @@ Existing worker lines keep their own folders.
 Layr decides whether a folder contains versioned files and can become a cache.
 Studio does not choose build commands or automatically publish caches.
 
+## Git tools in native lines
+
+The managed `git` executable uses Layr for compatible read requests in native lines.
+The `read_route` function in `layr_native/git-guard.sh` owns the command table.
+It converts Git `HEAD` revisions to Layr `head` revisions before the path separator.
+Arguments after `--` keep their original bytes.
+The wrapper preserves the command's output and exit status. It does not retry failed reads.
+
+Layr 0.2.1 returns state IDs for commit identities and supports porcelain v1 only.
+These formats use the real Git executable against the Layr-managed `.git` directory.
+This fallback also serves read commands that Layr does not implement, including `describe` and `cat-file`.
+Git commit IDs therefore match the exported head, including `git rev-parse HEAD` and build stamps.
+The fallback disables optional Git index refreshes.
+
+Git writes remain refused with a Layr command hint.
+Read commands with `--output` also fail because that option writes a file.
+Outside native lines, the wrapper passes the original arguments to real Git.
+Explicit Git configuration and repository selectors use the real Git read path.
+
+Tools that use libgit2 or gix read `.git` directly and do not call this wrapper.
+They require the Layr-managed `.git` directory and its Git object store.
+
 ## Reviewers
 
 A native reviewer uses its private scratch folder as its working directory.
@@ -258,3 +280,11 @@ STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.1 \
 
 These four checks cover named saves, automatic saves, Git sync, and Git push.
 They also verify that the managed Git entry still refuses agent writes.
+
+Check the proxy with real Layr, Git, Cargo, and pnpm callers:
+
+```sh
+STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.1 \
+  CARGO_INCREMENTAL=0 cargo test -j 4 -p studio-runtime-services --lib \
+  layr_native::git_guard::tests::real_managed_git_proxy_ -- --ignored
+```
