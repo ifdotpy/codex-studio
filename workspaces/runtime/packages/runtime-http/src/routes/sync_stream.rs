@@ -2399,6 +2399,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn state_stream_resume_query_accepts_valid_typed_cursors_and_rejects_invalid_ones() {
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router(state).expect("router");
+        let resources = json!([{"kind":"state"},{"kind":"agentDetail","agentId":"agent"}]);
+        for (seq, expected) in [(0, StatusCode::OK), (-1, StatusCode::BAD_REQUEST)] {
+            let since = json!([
+                {"resource":{"kind":"state"},"since":{"workspaceId":"workspace","seq":seq}},
+                {"resource":{"kind":"agentDetail","agentId":"agent"},"since":{"workspaceId":"workspace","seq":seq}}
+            ]);
+            let query = form_urlencoded::Serializer::new(String::new())
+                .append_pair("protocol", SYNC_PROTOCOL_VERSION_TEXT)
+                .append_pair("resources", &resources.to_string())
+                .append_pair("since", &since.to_string())
+                .finish();
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/sync/stream?{query}"))
+                        .header("host", "127.0.0.1:4321")
+                        .header("x-canvas-token", "token")
+                        .extension(ConnectInfo(std::net::SocketAddr::from((
+                            [127, 0, 0, 1],
+                            12345,
+                        ))))
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("stream response");
+            assert_eq!(response.status(), expected, "typed since cursor {seq}");
+        }
+    }
+
+    #[tokio::test]
     async fn state_stream_live_subscriptions_ack_before_initial_and_expire_on_drop() {
         use axum::body::{Body, to_bytes};
         use axum::extract::ConnectInfo;

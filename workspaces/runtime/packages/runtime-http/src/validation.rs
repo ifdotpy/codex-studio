@@ -147,6 +147,7 @@ impl Registry {
             "RequestRecordResponse",
             "RequestEntityDto",
             "ResourceRef",
+            "SubscriptionAdd",
             "ResourceProgressEvent",
             "RoomEntityDto",
             "RuleEntityDto",
