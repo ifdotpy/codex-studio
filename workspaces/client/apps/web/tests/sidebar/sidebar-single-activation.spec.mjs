@@ -37,6 +37,9 @@ import {createRoot} from 'react-dom/client';
 import {MantineProvider} from '@mantine/core';
 import '@mantine/core/styles.css';
 import Sidebar from '/src/components/Sidebar.tsx';
+import CombinedServerSidebar from '/src/servers/CombinedServerSidebar.tsx';
+import {mergeSidebar} from '/src/servers/mergedSidebar.ts';
+import {localSidebarBackend} from '/src/components/sidebar/services.tsx';
 import {theme} from '/src/theme.ts';
 import '/src/style.css';
 import '/src/appearance.css';
@@ -50,16 +53,46 @@ const data = {stateDir: 'sidebar-single-activation', token:'fixture-token', thre
   agents:[], rooms:[], requests:[], complaints:[], peerTeams:[],
   sidebarOrder: {revision:0, groups:{}}
 }};
+const scenario = new URLSearchParams(location.search).get('groups');
+const groupChat = (id, cwd, archived = false) => ({
+  id, name:id, cwd, archived, source:'managed', isLead:true,
+  status:'completed', created:1, updated:1,
+});
+const groupData = {...data, threads:[
+  ...Array.from({length:5}, (_, directory) =>
+    Array.from({length:2}, (_, chat) => groupChat('archived-' + directory + '-' + chat, '/archive-only-' + directory, true))).flat(),
+  groupChat('active-chat', '/active'),
+  groupChat('mixed-active', '/mixed'), groupChat('mixed-archived', '/mixed', true),
+  groupChat('compact-old-0', '/compact'), groupChat('compact-old-1', '/compact'),
+  groupChat('registered-archived', '/registered-archive', true),
+], runtime:{...data.runtime, projects:[
+  {id:'empty', name:'Registered empty', path:'/empty', folders:[]},
+  {id:'registered-archive', name:'Registered archive', path:'/registered-archive', folders:[]},
+], rooms:[{id:'shared', name:'Shared room', projectPath:'/shared-only', members:[],
+  radio:{direct:true, status:'idle', next:[], revision:0}}]}};
+const source = {id:'local', online:true, sidebar:{
+  stateDir:groupData.stateDir, threads:groupData.threads, projects:groupData.runtime.projects,
+  rooms:groupData.runtime.rooms, peerTeams:[], sidebarOrder:groupData.runtime.sidebarOrder,
+  savedOrder:{}, compact:{}, collapsed:{}, indicators:[], unread:[],
+}};
+const model = mergeSidebar([source], 0, true);
+const backends = new Map([['local', localSidebarBackend]]);
+const online = () => true;
 function Fixture() {
   const [opened, setOpened] = useState(null);
   const [opens, setOpens] = useState([]);
   return <MantineProvider theme={theme} defaultColorScheme="dark">
-    <Sidebar data={data} opened={opened} open={id => {setOpened(id); setOpens(old => [...old,id]);}}
+    {scenario === 'combined' ? <CombinedServerSidebar model={model} backends={backends}
+      online={online} refreshOwner={async()=>({})} executeCommand={async()=>{}}
+      aliases={{local:'Fixture'}} current="local" navigation={{local:{opened:null}}}
+      send={noop} applyNavigation={noop} mobile={true} hidden={false} close={noop}
+      settings={noop} search={noop} notify={noop} notice="" hideOldChatsThreshold={2} /> :
+    <Sidebar data={scenario ? groupData : data} opened={opened} open={id => {setOpened(id); setOpens(old => [...old,id]);}}
       prepareChat={id => {window.prepared = id;}} newChat={noop} addProject={noop}
-      changeProject={noop} projectAccount={noop} creating={false} rename={async()=>{}}
+      changeProject={noop} projectAccount={noop} deleteProject={noop} creating={false} rename={async()=>{}}
       remove={noop} mobile={true} onSearch={noop} close={noop}
       indicators={new Map()} markingRead={new Set()} markUnread={noop}
-      hideOldChatsThreshold={100} />
+      hideOldChatsThreshold={scenario ? 2 : 100} />}
     <output aria-label="Opened chats">{JSON.stringify(opens)}</output>
   </MantineProvider>;
 }
@@ -232,3 +265,80 @@ test("desktop drag reorders without opening a chat and wheel scrolling stays nat
     .toBeGreaterThan(0);
   await expect(page.getByLabel("Opened chats")).toHaveText("[]");
 });
+
+for (const mode of ["direct", "combined"]) {
+  test(`sidebar project groups follow the current view without losing discovery (${mode})`, async ({
+    page,
+  }) => {
+    await page.goto(`${url}?groups=${mode}`);
+    const group = (path) =>
+      page.locator(".sidebar-project").filter({
+        has: page.locator(`.project-tree-toggle[title="${path}"]`),
+      });
+    const filter = page.getByRole("searchbox", {
+      name: "Filter projects and chats",
+    });
+    const switchView = async (label) => {
+      await page.getByRole("button", { name: "Project list options" }).click();
+      await page.getByRole("menuitem", { name: label, exact: true }).click();
+    };
+    await expect(group("/empty")).toBeVisible();
+    await expect(group("/registered-archive")).toBeVisible();
+    await expect(group("/active")).toBeVisible();
+    await expect(group("/mixed")).toBeVisible();
+    await expect(group("/shared-only")).toBeVisible();
+    await expect(page.getByText("Shared room", { exact: true })).toBeVisible();
+    await expect(group("/compact")).toBeVisible();
+    await expect(page.getByText("compact-old-0", { exact: true })).toBeHidden();
+    for (let directory = 0; directory < 5; directory++)
+      await expect(group(`/archive-only-${directory}`)).toHaveCount(0);
+
+    await group("/empty").hover();
+    await group("/empty")
+      .getByRole("button", { name: "Options for project Registered empty" })
+      .click();
+    await expect(
+      page.getByRole("menuitem", { name: "Delete project…", exact: true }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await group("/active").hover();
+    await group("/active")
+      .getByRole("button", { name: /Options for project/ })
+      .click();
+    await expect(page.getByRole("menu")).toBeVisible();
+    await expect(
+      page.getByRole("menuitem", { name: "Delete project…", exact: true }),
+    ).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    await filter.fill("archive-only");
+    await expect(page.locator(".sidebar-project")).toHaveCount(0);
+    await filter.fill("compact-old-0");
+    await expect(group("/compact")).toBeVisible();
+    await expect(
+      page.getByText("compact-old-0", { exact: true }),
+    ).toBeVisible();
+    await filter.fill("");
+    await switchView("Show archived chats");
+    for (let directory = 0; directory < 5; directory++) {
+      await expect(group(`/archive-only-${directory}`)).toBeVisible();
+    }
+    await expect(group("/active")).toHaveCount(0);
+    await expect(group("/shared-only")).toHaveCount(0);
+    await expect(group("/compact")).toHaveCount(0);
+    await expect(group("/mixed")).toBeVisible();
+    await expect(
+      page.getByText("mixed-archived", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("mixed-active", { exact: true })).toBeHidden();
+    await expect(group("/empty")).toBeVisible();
+    await filter.fill("archived-3-1");
+    await expect(page.locator(".sidebar-project")).toHaveCount(1);
+    await expect(page.getByText("archived-3-1", { exact: true })).toBeVisible();
+    await filter.fill("");
+    await switchView("Show active chats");
+    await expect(group("/archive-only-3")).toHaveCount(0);
+    await expect(group("/active")).toBeVisible();
+    await expect(group("/shared-only")).toBeVisible();
+  });
+}
