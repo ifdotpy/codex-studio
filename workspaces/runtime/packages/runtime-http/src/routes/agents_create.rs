@@ -193,34 +193,7 @@ pub(super) fn prepare_parent_workspace(
             line: line.to_owned(),
         }));
     }
-    if mode == "image" {
-        let repo = actor
-                .extra
-                .get("imageWorkspaceRepo")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .ok_or(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
-                    "The image workspace is not ready",
-                ))?;
-        if actor.extra.get("imageWorkspace").and_then(Value::as_bool) != Some(true)
-            || actor
-                .extra
-                .get("imageWorkspaceReady")
-                .and_then(Value::as_bool)
-                != Some(true)
-        {
-            return Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
-                    "The image workspace is not ready",
-                ));
-        }
-        return Ok(Box::new(ImageManagedWorkspace {
-            id,
-            epoch,
-            cwd: cwd.to_owned(),
-            repo: repo.to_owned(),
-        }));
-    }
-    if !matches!(mode, "shared" | "worktree") {
+    if !matches!(mode, "shared" | "worktree" | "layr-native") {
         return Err(
             studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
                 "Unknown workspace mode",
@@ -250,25 +223,13 @@ mod workspace_admission_tests {
     use super::*;
 
     #[test]
-    fn child_image_request_does_not_require_parent_image_repository() {
+    fn native_parent_admits_native_layr_without_image_metadata() {
         let native = studio_runtime_store::AgentRecord::from_value(serde_json::json!({
             "id":"native-parent","rootId":"native-parent","epoch":1,"status":"queued",
-            "workspaceMode":"worktree","cwd":"/fake/project"
+            "workspaceMode":"layr-native","cwd":"/fake/project"
         }))
         .expect("native parent");
         assert!(prepare_parent_workspace(&native).is_ok());
-
-        let image_lead = studio_runtime_store::AgentRecord::from_value(serde_json::json!({
-            "id":"image-parent","rootId":"image-parent","epoch":2,"status":"queued",
-            "workspaceMode":"image","imageWorkspace":true,
-            "imageWorkspaceReady":true,"imageWorkspaceRepo":"/fake/project",
-            "cwd":"/fake/mount/repo"
-        }))
-        .expect("image lead");
-        assert!(prepare_parent_workspace(&image_lead).is_ok());
-        let mut unready = image_lead;
-        unready.extra.remove("imageWorkspaceRepo");
-        assert!(prepare_parent_workspace(&unready).is_err());
     }
 
     /// Live 128-worker run: a second spawn batch was refused while the first
@@ -443,37 +404,6 @@ struct VmManagedWorkspace {
     cwd: String,
     project_id: String,
     line: String,
-}
-
-struct ImageManagedWorkspace {
-    id: String,
-    epoch: i64,
-    cwd: String,
-    repo: String,
-}
-
-impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for ImageManagedWorkspace {
-    fn check(
-        &self,
-        _tx: &studio_runtime_store::Transaction<'_>,
-        actor: &studio_runtime_store::AgentRecord,
-    ) -> Result<(), studio_runtime_services::monitor_policy::MonitorError> {
-        let extra = &actor.extra;
-        if actor.id.0 != self.id
-            || actor.epoch != self.epoch
-            || extra.get("cwd").and_then(Value::as_str) != Some(self.cwd.as_str())
-            || extra.get("imageWorkspace").and_then(Value::as_bool) != Some(true)
-            || extra.get("imageWorkspaceReady").and_then(Value::as_bool) != Some(true)
-            || extra.get("imageWorkspaceRepo").and_then(Value::as_str) != Some(self.repo.as_str())
-        {
-            return Err(
-                studio_runtime_services::monitor_policy::MonitorError::Refused(
-                    "Image workspace changed during preparation",
-                ),
-            );
-        }
-        Ok(())
-    }
 }
 
 impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for VmManagedWorkspace {

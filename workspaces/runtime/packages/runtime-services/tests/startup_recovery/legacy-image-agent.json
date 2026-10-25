@@ -1,0 +1,17 @@
+{
+  "id": "legacy-agent",
+  "rootId": "legacy-agent",
+  "epoch": 3,
+  "status": "interrupted",
+  "autoWake": true,
+  "inFlight": true,
+  "workspaceMode": "image",
+  "imageWorkspace": true,
+  "imageWorkspaceReady": true,
+  "imageWorkspaceRepo": "/legacy/source",
+  "imageWorkspaceMount": "/legacy/mount",
+  "cwd": "/legacy/mount/repo",
+  "threadId": "legacy-thread",
+  "nativeRoleGuidance": "Preserve this saved prompt snapshot.",
+  "restartRecovery": { "stage": "pending", "turnId": "old-turn" }
+}

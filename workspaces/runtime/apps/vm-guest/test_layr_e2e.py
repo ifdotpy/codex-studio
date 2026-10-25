@@ -75,7 +75,7 @@ class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
         rules = await self.projects.layr(["--project", self.project, "protect"])
         self.assertIn("direct true", rules)
         denied = await self.projects.layr(["--project", self.project, "access"])
-        self.assertIn("@studio-agents\tdeny access sync remote records backup", denied)
+        self.assertIn("@studio-agents\tdeny access sync remote records", denied)
 
         # The operator's command runs as the owner of main, in main, never as root; the owner
         # may change the project's caches.
@@ -97,7 +97,7 @@ class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
 
         # The worker changes its own line and saves its turn.
         await self.agents.command(worker["cwd"], ["sh", "-c", "echo four >> app.txt"], user=worker)
-        await self.agents.layr(worker, "commit", "-qam", "worker change")
+        await self.agents.layr(worker, "save", "-qam", "worker change")
         saved = await self.call(self.agents, "line.save", {"agentId": worker_id, "turnId": "turn-1"})
         self.assertTrue(saved["stateId"])
         head = (await self.call(self.agents, "line.status", {"agentId": worker_id}))["stateId"]
@@ -105,7 +105,7 @@ class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
         # The worker cannot write main, nor change roles.
         with self.assertRaises(Exception):
             await self.agents.command(worker["cwd"], ["env", "LAYR_PROJECT=" + self.project, "LAYR_LINE=main",
-                                                      "layr", "commit", "--allow-empty", "-qm", "intrude"], user=worker)
+                                                      "layr", "save", "--allow-empty", "-qm", "intrude"], user=worker)
         with self.assertRaises(Exception):
             await self.agents.command(worker["cwd"], ["layr", "access", "grant", worker["owner"], "admin"], user=worker)
 
@@ -116,7 +116,7 @@ class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((Path(lead["path"]) / "app.txt").read_text(), "one\ntwo\nthree\nfour\n")
         await self.agents.command(lead["path"], ["sh", "-c", "echo lead > lead.txt"], user=lead)
         await self.agents.layr(lead, "add", "lead.txt")
-        await self.agents.layr(lead, "commit", "-qm", "lead change")
+        await self.agents.layr(lead, "save", "-qm", "lead change")
 
         # A host_exec slot: the line goes out, a Mac edit comes back with a three-way merge.
         slot = {"agentId": worker_id, "slotId": "1", "generation": "a" * 32, "operationId": "op-1"}
@@ -167,7 +167,7 @@ class MacSyncEndToEnd(LayrEndToEnd):
 
         # An agent changes the first line of app.txt in main.
         (main / "app.txt").write_text("ONE\ntwo\nthree\n")
-        await sync.layr(["commit", "-qam", "agent change"], cwd=main, owner=owner)
+        await sync.layr(["save", "-qam", "agent change"], cwd=main, owner=owner)
 
         # The Mac changes the last line of app.txt and adds a file, both based on the import.
         upload = await self.make_upload({"app.txt": "one\ntwo\nTHREE\n", "notes.md": "mac notes\n"})
@@ -192,7 +192,7 @@ class MacSyncEndToEnd(LayrEndToEnd):
         # The same line changed on both sides: a conflict, no markers anywhere, main unchanged.
         agreed = first["mainStateId"]
         (main / "app.txt").write_text("ONE\ntwo\nagent three\n")
-        await sync.layr(["commit", "-qam", "agent again"], cwd=main, owner=owner)
+        await sync.layr(["save", "-qam", "agent again"], cwd=main, owner=owner)
         upload = await self.make_upload({"app.txt": "one\ntwo\nmac three\n"})
         upload_root = Path(upload)
         (upload_root / "app.txt").write_text("ONE\ntwo\nmac three\n")

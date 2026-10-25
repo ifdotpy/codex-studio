@@ -3963,26 +3963,6 @@ export interface components {
       hostProjectPath?: null | string;
       /** Id */
       id: string;
-      /** Imageworkspace */
-      imageWorkspace?: boolean | null;
-      /** Imageworkspacebaseref */
-      imageWorkspaceBaseRef?: null | string;
-      /** Imageworkspacebaserepo */
-      imageWorkspaceBaseRepo?: null | string;
-      /** Imageworkspacecreatedat */
-      imageWorkspaceCreatedAt?: null | number;
-      /** Imageworkspaceerror */
-      imageWorkspaceError?: null | string;
-      /** Imageworkspacehasgit */
-      imageWorkspaceHasGit?: boolean | null;
-      /** Imageworkspacephase */
-      imageWorkspacePhase?: null | string;
-      /** Imageworkspaceready */
-      imageWorkspaceReady?: boolean | null;
-      /** Imageworkspacerepo */
-      imageWorkspaceRepo?: null | string;
-      /** Imageworkspacesubpath */
-      imageWorkspaceSubpath?: null | string;
       /** Lastanswer */
       lastAnswer?: null | string;
       /** Lastevent */
@@ -4060,7 +4040,7 @@ export interface components {
         | components["schemas"]["WorkspaceCleanupSummaryDto"]
         | null;
       /** Workspacemode */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      workspaceMode?: string | null;
       /** Workspaceoperation */
       workspaceOperation?: null | string;
       /** Worktree */
@@ -4234,26 +4214,6 @@ export interface components {
       hostProjectPath?: null | string;
       /** Id */
       id: string;
-      /** Imageworkspace */
-      imageWorkspace?: boolean | null;
-      /** Imageworkspacebaseref */
-      imageWorkspaceBaseRef?: null | string;
-      /** Imageworkspacebaserepo */
-      imageWorkspaceBaseRepo?: null | string;
-      /** Imageworkspacecreatedat */
-      imageWorkspaceCreatedAt?: null | number;
-      /** Imageworkspaceerror */
-      imageWorkspaceError?: null | string;
-      /** Imageworkspacehasgit */
-      imageWorkspaceHasGit?: boolean | null;
-      /** Imageworkspacephase */
-      imageWorkspacePhase?: null | string;
-      /** Imageworkspaceready */
-      imageWorkspaceReady?: boolean | null;
-      /** Imageworkspacerepo */
-      imageWorkspaceRepo?: null | string;
-      /** Imageworkspacesubpath */
-      imageWorkspaceSubpath?: null | string;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -4392,7 +4352,7 @@ export interface components {
         | components["schemas"]["WorkspaceCleanupSummaryDto"]
         | null;
       /** Workspacemode */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      workspaceMode?: string | null;
       /** Workspaceoperation */
       workspaceOperation?: null | string;
       /** Worktree */
@@ -4727,8 +4687,6 @@ export interface components {
       /** @default null */
       claudePreInputRetry?: components["schemas"]["ClaudePreInputRetryRecordResponse"];
       /** @default null */
-      cleanedImageWorkspace?: components["schemas"]["CleanedImageWorkspaceRecordResponse"];
-      /** @default null */
       cleanedWorktree?: components["schemas"]["WorktreeCleanupRecordResponse"];
       /**
        * Compactions
@@ -4879,111 +4837,6 @@ export interface components {
       hostProjectPath?: string;
       /** Id */
       id: string;
-      /**
-       * Imageworkspace
-       * @default null
-       */
-      imageWorkspace?: boolean;
-      /**
-       * Imageworkspacebaseerror
-       * @default null
-       */
-      imageWorkspaceBaseError?: string;
-      /**
-       * Imageworkspacebaseref
-       * @default null
-       */
-      imageWorkspaceBaseRef?: null | string;
-      /**
-       * Imageworkspacebaserepo
-       * @default null
-       */
-      imageWorkspaceBaseRepo?: null | string;
-      /** @default null */
-      imageWorkspaceCleanupResult?: components["schemas"]["ImageWorkspaceCleanupResultRecordResponse"];
-      /** @default null */
-      imageWorkspaceCleanupRetry?: components["schemas"]["ImageWorkspaceCleanupRetryRecordResponse"];
-      /** @default null */
-      imageWorkspaceCollect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
-      /**
-       * Imageworkspacecreatedat
-       * @default null
-       */
-      imageWorkspaceCreatedAt?: null | number;
-      /**
-       * Imageworkspaceerror
-       * @default null
-       */
-      imageWorkspaceError?: null | string;
-      /**
-       * Imageworkspacehandofftext
-       * @default null
-       */
-      imageWorkspaceHandoffText?: null | string;
-      /**
-       * Imageworkspacehasgit
-       * @default null
-       */
-      imageWorkspaceHasGit?: boolean;
-      /**
-       * Imageworkspacemount
-       * @default null
-       */
-      imageWorkspaceMount?: null | string;
-      /**
-       * Imageworkspacenoticeerror
-       * @default null
-       */
-      imageWorkspaceNoticeError?: null | string;
-      /**
-       * Imageworkspacenoticeid
-       * @default null
-       */
-      imageWorkspaceNoticeId?: null | string;
-      /**
-       * Imageworkspacenoticesent
-       * @default null
-       */
-      imageWorkspaceNoticeSent?: null | string;
-      /**
-       * Imageworkspacenoticetext
-       * @default null
-       */
-      imageWorkspaceNoticeText?: null | string;
-      /**
-       * Imageworkspacephase
-       * @default null
-       */
-      imageWorkspacePhase?:
-        | (
-            | "read_only"
-            | "ready"
-            | "fallback"
-            | "archiving"
-            | "archived"
-            | "removed"
-          )
-        | null;
-      /**
-       * Imageworkspaceready
-       * @default null
-       */
-      imageWorkspaceReady?: boolean;
-      /**
-       * Imageworkspacerepo
-       * @default null
-       */
-      imageWorkspaceRepo?: null | string;
-      /**
-       * Imageworkspacesnapshotcommit
-       * @default null
-       */
-      imageWorkspaceSnapshotCommit?: null | string;
-      /**
-       * Imageworkspacesubpath
-       * @default null
-       */
-      imageWorkspaceSubpath?: null | string;
       /**
        * Importedfrom
        * @default null
@@ -5600,11 +5453,8 @@ export interface components {
        * @default null
        */
       workspaceInGit?: boolean;
-      /**
-       * Workspacemode
-       * @default null
-       */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      /** Workspacemode */
+      workspaceMode?: string | null;
       /**
        * Workspacemodeexplicit
        * @default null
@@ -5904,56 +5754,6 @@ export interface components {
       hostProjectPath?: null | string;
       /** Id */
       id: string;
-      /**
-       * Imageworkspace
-       * @default null
-       */
-      imageWorkspace?: boolean | null;
-      /**
-       * Imageworkspacebaseref
-       * @default null
-       */
-      imageWorkspaceBaseRef?: null | string;
-      /**
-       * Imageworkspacebaserepo
-       * @default null
-       */
-      imageWorkspaceBaseRepo?: null | string;
-      /**
-       * Imageworkspacecreatedat
-       * @default null
-       */
-      imageWorkspaceCreatedAt?: null | number;
-      /**
-       * Imageworkspaceerror
-       * @default null
-       */
-      imageWorkspaceError?: null | string;
-      /**
-       * Imageworkspacehasgit
-       * @default null
-       */
-      imageWorkspaceHasGit?: boolean | null;
-      /**
-       * Imageworkspacephase
-       * @default null
-       */
-      imageWorkspacePhase?: null | string;
-      /**
-       * Imageworkspaceready
-       * @default null
-       */
-      imageWorkspaceReady?: boolean | null;
-      /**
-       * Imageworkspacerepo
-       * @default null
-       */
-      imageWorkspaceRepo?: null | string;
-      /**
-       * Imageworkspacesubpath
-       * @default null
-       */
-      imageWorkspaceSubpath?: null | string;
       /**
        * Inflight
        * @default null
@@ -6260,11 +6060,8 @@ export interface components {
        * @default null
        */
       workspaceBackend?: ("asif" | "vm") | null;
-      /**
-       * Workspacemode
-       * @default null
-       */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      /** Workspacemode */
+      workspaceMode?: string | null;
       /**
        * Workspaceoperation
        * @default null
@@ -8600,56 +8397,6 @@ export interface components {
       /** Id */
       id: string;
       /**
-       * Imageworkspace
-       * @default null
-       */
-      imageWorkspace?: boolean | null;
-      /**
-       * Imageworkspacebaseref
-       * @default null
-       */
-      imageWorkspaceBaseRef?: null | string;
-      /**
-       * Imageworkspacebaserepo
-       * @default null
-       */
-      imageWorkspaceBaseRepo?: null | string;
-      /**
-       * Imageworkspacecreatedat
-       * @default null
-       */
-      imageWorkspaceCreatedAt?: null | number;
-      /**
-       * Imageworkspaceerror
-       * @default null
-       */
-      imageWorkspaceError?: null | string;
-      /**
-       * Imageworkspacehasgit
-       * @default null
-       */
-      imageWorkspaceHasGit?: boolean | null;
-      /**
-       * Imageworkspacephase
-       * @default null
-       */
-      imageWorkspacePhase?: null | string;
-      /**
-       * Imageworkspaceready
-       * @default null
-       */
-      imageWorkspaceReady?: boolean | null;
-      /**
-       * Imageworkspacerepo
-       * @default null
-       */
-      imageWorkspaceRepo?: null | string;
-      /**
-       * Imageworkspacesubpath
-       * @default null
-       */
-      imageWorkspaceSubpath?: null | string;
-      /**
        * Inflight
        * @default null
        */
@@ -8955,11 +8702,8 @@ export interface components {
        * @default null
        */
       workspaceBackend?: ("asif" | "vm") | null;
-      /**
-       * Workspacemode
-       * @default null
-       */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      /** Workspacemode */
+      workspaceMode?: string | null;
       /**
        * Workspaceoperation
        * @default null
@@ -10362,75 +10106,6 @@ export interface components {
       /** Text */
       text: string;
     };
-    /** CleanedImageWorkspaceRecordResponse */
-    CleanedImageWorkspaceRecordResponse: {
-      /**
-       * Branch
-       * @default null
-       */
-      branch?: string;
-      /**
-       * Bytes
-       * @default null
-       */
-      bytes?: number | null;
-      /** @default null */
-      collect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
-      /**
-       * Createdat
-       * @default null
-       */
-      createdAt?: null | number;
-      /**
-       * Freedbytes
-       * @default null
-       */
-      freedBytes?: number;
-      /**
-       * Head
-       * @default null
-       */
-      head?: string;
-      /**
-       * Mount
-       * @default null
-       */
-      mount?: null | string;
-      /**
-       * Path
-       * @default null
-       */
-      path?: null | string;
-      /**
-       * Phase
-       * @default null
-       */
-      phase?: string;
-      /**
-       * Relative
-       * @default null
-       */
-      relative?: string;
-      /**
-       * Repo
-       * @default null
-       */
-      repo?: string;
-      /**
-       * Restoreheads
-       * @default null
-       */
-      restoreHeads?: {
-        [key: string]: string;
-      };
-      /**
-       * Source
-       * @default null
-       */
-      source?: null | string;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"];
-    };
     /**
      * CodexLoginReceipt
      * @description Known fields; AccountStore.login_receipts() passes persisted receipts through.
@@ -11560,10 +11235,10 @@ export interface components {
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
       /**
        * Workspacemode
-       * @default worktree
+       * @default layr-native
        * @enum {string}
        */
-      workspaceMode?: "layr" | "image" | "worktree" | "shared";
+      workspaceMode?: "layr-native" | "layr" | "worktree" | "shared";
       /**
        * Yolo Mode
        * @default true
@@ -11679,10 +11354,10 @@ export interface components {
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
       /**
        * Workspacemode
-       * @default worktree
+       * @default layr-native
        * @enum {string}
        */
-      workspaceMode?: "layr" | "image" | "worktree";
+      workspaceMode?: "layr-native" | "layr" | "worktree";
       /**
        * Yolo Mode
        * @default true
@@ -11944,8 +11619,6 @@ export interface components {
       executions: components["schemas"]["ExecutionLedger"];
       hostResources: components["schemas"]["HostResources"];
       httpRequestMetrics: components["schemas"]["HttpRequestMetrics"];
-      /** @default null */
-      imageMounts?: components["schemas"]["ImageMountDiagnostics"] | null;
       migrations: components["schemas"]["MigrationStatus"];
       /** Nativeaccounts */
       nativeAccounts: {
@@ -13321,162 +12994,6 @@ export interface components {
     IdRequest: {
       /** Id */
       id: string;
-    };
-    /**
-     * ImageMountDiagnostics
-     * @description Startup image workspace mount check. Paths and details stay in `mounts check`.
-     */
-    ImageMountDiagnostics: {
-      /** Checkedat */
-      checkedAt: null | number;
-      /** Problems */
-      problems: components["schemas"]["ImageMountProblem"][];
-      /**
-       * State
-       * @enum {string}
-       */
-      state: "pending" | "checked" | "failed" | "unsupported";
-      /** Strayattachments */
-      strayAttachments: number;
-    };
-    /** ImageMountProblem */
-    ImageMountProblem: {
-      /** Agentid */
-      agentId: string;
-      /**
-       * Status
-       * @enum {string}
-       */
-      status:
-        | "plain-folder"
-        | "foreign-volume"
-        | "image-replaced"
-        | "attached-elsewhere"
-        | "image-missing";
-    };
-    /** ImageWorkspaceCleanupResultRecordResponse */
-    ImageWorkspaceCleanupResultRecordResponse: {
-      /**
-       * Bytes
-       * @default null
-       */
-      bytes?: number;
-      /** @default null */
-      collect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
-      /**
-       * Freedbytes
-       * @default null
-       */
-      freedBytes?: number;
-      /**
-       * Reason
-       * @default null
-       */
-      reason?: string;
-      /**
-       * Restoreheads
-       * @default null
-       */
-      restoreHeads?: {
-        [key: string]: string;
-      };
-      /**
-       * State
-       * @default null
-       */
-      state?: string;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"];
-    };
-    /** ImageWorkspaceCleanupRetryRecordResponse */
-    ImageWorkspaceCleanupRetryRecordResponse: {
-      /** At */
-      at: number;
-      /** Attempts */
-      attempts: number;
-      /** Error */
-      error: string;
-      /** Nextat */
-      nextAt: number;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"];
-    };
-    /** ImageWorkspaceCollectRepositoryRecordResponse */
-    ImageWorkspaceCollectRepositoryRecordResponse: {
-      /**
-       * Branch
-       * @default null
-       */
-      branch?: string;
-      /**
-       * Commit
-       * @default null
-       */
-      commit?: string;
-      /**
-       * Head
-       * @default null
-       */
-      head?: string;
-      /** Path */
-      path: string;
-      /**
-       * Rawref
-       * @default null
-       */
-      rawRef?: string;
-      /**
-       * State
-       * @default null
-       */
-      state?: string;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"];
-    };
-    /** ImageWorkspaceCollectResultRecordResponse */
-    ImageWorkspaceCollectResultRecordResponse: {
-      /**
-       * Branch
-       * @default null
-       */
-      branch?: string;
-      /**
-       * Commit
-       * @default null
-       */
-      commit?: string;
-      /**
-       * Conflict
-       * @default null
-       */
-      conflict?: string;
-      /**
-       * Conflicts
-       * @default null
-       */
-      conflicts?: components["schemas"]["JsonValue"][];
-      /**
-       * Path
-       * @default null
-       */
-      path?: string;
-      /**
-       * Rawref
-       * @default null
-       */
-      rawRef?: string;
-      /**
-       * Repositories
-       * @default null
-       */
-      repositories?: components["schemas"]["ImageWorkspaceCollectRepositoryRecordResponse"][];
-      /**
-       * State
-       * @default null
-       */
-      state?: string;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ImportListResponse */
     ImportListResponse: {
@@ -24767,6 +24284,11 @@ export interface components {
       busy: boolean;
       /** Chats */
       chats: components["schemas"]["SummaryChat"][];
+      /**
+       * @description The server has a created Studio Linux VM.
+       * @default false
+       */
+      hasStudioVm?: boolean;
       /** Projects */
       projects: components["schemas"]["SummaryProject"][];
       /** Ready */

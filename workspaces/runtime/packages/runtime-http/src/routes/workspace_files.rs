@@ -155,9 +155,6 @@ fn read_info(target: FileTarget) -> Result<workspace_files::FileInfo, ApiError> 
             info.mime = mime;
             Ok(info)
         }
-        FileTarget::Workspace { context, path } if context.image_workspace_ready => {
-            workspace_files::image_file_info(&path, &context.cwd).map_err(file_error)
-        }
         FileTarget::Workspace { context, path } => {
             workspace_files::file_info(&path, Some(&context.cwd)).map_err(file_error)
         }
@@ -170,9 +167,6 @@ fn read_content(target: FileTarget) -> Result<workspace_files::FileContent, ApiE
             let mut content = workspace_files::file_content(&path, None).map_err(file_error)?;
             content.mime = mime;
             Ok(content)
-        }
-        FileTarget::Workspace { context, path } if context.image_workspace_ready => {
-            workspace_files::image_file_content(&path, &context.cwd).map_err(file_error)
         }
         FileTarget::Workspace { context, path } => {
             workspace_files::file_content(&path, Some(&context.cwd)).map_err(file_error)

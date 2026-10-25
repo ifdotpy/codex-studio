@@ -44,10 +44,6 @@ const UNSAFE_RUST_ALLOWLIST = [
     "Read-only macOS libproc and sysctl process identity queries.",
   ],
   [
-    "workspaces/runtime/packages/runtime-services/src/image_workspace_macos/fsevents_ffi.rs",
-    "FSEvents (lead's W9 decision).",
-  ],
-  [
     "workspaces/runtime/packages/runtime-services/src/host_exec_service/clone_ffi.rs",
     "APFS clonefile(2) for host_exec slot clones.",
   ],

@@ -806,7 +806,9 @@ fn accepted_archive_preflight(
         ));
     }
 
-    if owner_value.get("executionMode").and_then(Value::as_str) == Some("vm") {
+    if owner_value.get("executionMode").and_then(Value::as_str) == Some("vm")
+        || crate::layr_native::is_native(&owner_value)
+    {
         if !vm_merge_confirmed(
             connection,
             task_id,
@@ -1089,7 +1091,7 @@ pub async fn prepare_vm_submission(
         let owner_id = work["owner"].as_str().unwrap_or(&agent.id.0);
         let owner = event_write::checked_agent(tx, owner_id)?;
         validate_submission_files(&owner, &input.files, input.prepared_files.as_ref())?;
-        if owner.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+        if owner.extra.get("executionMode").and_then(Value::as_str) != Some("vm") && owner.extra.get("workspaceMode").and_then(Value::as_str) != Some("layr-native") {
             return Ok(VmSubmissionPreparation::NotVm);
         }
         let rpc_id = format!("layr-evidence:{owner_id}:{revision}");
@@ -1210,7 +1212,8 @@ pub enum VmAcceptPreparation {
 /// (codex_vm_agents.result_needs_merge).
 fn vm_result_needs_merge(lead_id: &str, owner: &AgentRecord) -> bool {
     owner.id.0 != lead_id
-        && owner.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+        && (owner.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+            || owner.extra.get("workspaceMode").and_then(Value::as_str) == Some("layr-native"))
         && owner.extra.get("role").and_then(Value::as_str) != Some("reviewer")
 }
 
@@ -1231,7 +1234,9 @@ pub async fn prepare_vm_accept(
     store
         .transaction_with_error(move |tx| {
             let lead = event_write::checked_agent(tx, &agent_id)?;
-            if lead.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+            if lead.extra.get("executionMode").and_then(Value::as_str) != Some("vm")
+                && lead.extra.get("workspaceMode").and_then(Value::as_str) != Some("layr-native")
+            {
                 return Ok(VmAcceptPreparation::NotVm);
             }
             if lead.extra.get("isLead") != Some(&Value::Bool(true)) || lead.root_id.0 != agent_id {
@@ -2644,7 +2649,9 @@ fn submit(
         );
     }
     validate_submission_files(&submitter, &input.files, input.prepared_files.as_ref())?;
-    if submitter.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
+    if submitter.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+        || submitter.extra.get("workspaceMode").and_then(Value::as_str) == Some("layr-native")
+    {
         let Some(request_id) = input.vm_evidence_request_id.as_deref() else {
             return Err(Error::Conflict(
                 "Layr submission evidence must be checked before saving the result",
@@ -4458,11 +4465,23 @@ mod actor_tests {
 
     #[test]
     fn vm_reviewer_result_is_accepted_without_a_layr_merge() {
+        assert_reviewer_result_is_accepted_without_a_layr_merge("vm", "layr");
+    }
+
+    #[test]
+    fn native_layr_reviewer_result_is_accepted_without_a_merge_and_implementer_requires_merge() {
+        assert_reviewer_result_is_accepted_without_a_layr_merge("native", "layr-native");
+    }
+
+    fn assert_reviewer_result_is_accepted_without_a_layr_merge(
+        execution_mode: &str,
+        workspace_mode: &str,
+    ) {
         let mut connection = database();
         for (id, role) in [("lead", "lead"), ("worker", "reviewer")] {
             let record = json!({
                 "id":id,"rootId":"lead","epoch":2,"status":"running","autoWake":true,
-                "inFlight":true,"agentMode":"multi","concurrency":8,"executionMode":"vm",
+                "inFlight":true,"agentMode":"multi","concurrency":8,"executionMode":execution_mode,"workspaceMode":workspace_mode,
                 "isLead":(id == "lead"),"role":role,"layrProjectId":"project","layrLine":id
             });
             connection

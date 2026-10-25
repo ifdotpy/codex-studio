@@ -18,7 +18,7 @@
 //!
 //! Write order of an operation: snapshots first, then one database transaction with the record
 //! and its derived rows. After a crash only a snapshot without a record can exist; `layr fsck`
-//! deletes it. Records leave the database as JSONL lines (replication, backups, export).
+//! deletes it. Records leave the database as JSONL lines (replication, remote copies, export).
 
 use crate::db::Db;
 use crate::ids;
@@ -140,16 +140,7 @@ pub fn db_file(project_dir: &Path) -> PathBuf {
 }
 
 pub fn check_name(kind: &str, name: &str) -> Result<()> {
-    let ok = !name.is_empty()
-        && name.len() <= 200
-        && name.chars().next().map(|c| c.is_ascii_alphanumeric()).unwrap_or(false)
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-        && !name.ends_with(".lock")
-        && !name.contains("..");
-    if !ok {
-        bail!("invalid {kind} name '{name}': use letters, digits, '-', '_' and '.'; start with a letter or digit");
-    }
-    Ok(())
+    layr_model::validation::check_name(kind, name)
 }
 
 /// Which machines an import takes records from: this machine, machines this project trusts,
@@ -197,6 +188,33 @@ impl<'a> Project<'a> {
         } else {
             self.states_dir().join(".invalid-id")
         }
+    }
+    /// The thin layer of a state: the entries that differ from its base state (APFS).
+    pub fn delta_path(&self, id: &str) -> PathBuf {
+        if crate::model::is_uuid(id) {
+            self.dir.join("deltas").join(id)
+        } else {
+            self.dir.join("deltas").join(".invalid-id")
+        }
+    }
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn deltas_dir(&self) -> PathBuf {
+        self.dir.join("deltas")
+    }
+    /// Delete the trees of a state. On APFS a state that another thin state uses as its base
+    /// stays until that state goes (`thin::delete_state`); this returns false then.
+    pub fn delete_state(&self, id: &str) -> Result<bool> {
+        #[cfg(target_os = "macos")]
+        return crate::thin::delete_state(self, id);
+        #[cfg(not(target_os = "macos"))]
+        {
+            crate::storage::delete_tree(&self.state_path(id))?;
+            Ok(true)
+        }
+    }
+    /// True when the content of a state is on this machine: a complete tree or a thin layer.
+    pub fn has_state(&self, id: &str) -> bool {
+        self.state_path(id).exists() || self.delta_path(id).exists()
     }
     pub fn line_path(&self, name: &str) -> PathBuf {
         if check_name("line", name).is_ok() || (name.starts_with(".try-") && name[5..].chars().all(|c| c.is_ascii_hexdigit())) {
@@ -253,12 +271,13 @@ impl<'a> Project<'a> {
             #[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
             bail!("{} is not on btrfs", store.projects_dir().display());
             #[cfg(target_os = "macos")]
-            bail!("{} is not on case-sensitive APFS", store.projects_dir().display());
+            bail!("{} is not on APFS", store.projects_dir().display());
             #[cfg(feature = "overlayfs")]
             bail!("OverlayFS requires a local store and mount permission");
         }
         mkdir_mode(&dir, 0o755)?;
         mkdir_mode(&dir.join("states"), 0o700)?;
+        mkdir_mode(&dir.join("deltas"), 0o700)?;
         mkdir_mode(&dir.join("lines"), 0o711)?;
         mkdir_mode(&dir.join("meta"), 0o700)?;
         for d in ["stage", "scan", "work"] {
@@ -280,6 +299,17 @@ impl<'a> Project<'a> {
     /// Folders of a project without records (for a restore or a replica).
     pub fn create_empty(store: &'a Store, name: &str) -> Result<Project<'a>> {
         check_name("project", name)?;
+        Self::create_empty_in(store, name)
+    }
+
+    pub fn create_empty_overlay(store: &'a Store, name: &str) -> Result<Project<'a>> {
+        if !name.contains('%') {
+            bail!("not an overlay name: {name}");
+        }
+        Self::create_empty_in(store, name)
+    }
+
+    fn create_empty_in(store: &'a Store, name: &str) -> Result<Project<'a>> {
         let dir = store.project_dir(name)?;
         if db_file(&dir).exists() {
             bail!("project '{name}' already exists");
@@ -288,7 +318,7 @@ impl<'a> Project<'a> {
             #[cfg(all(target_os = "linux", not(feature = "overlayfs")))]
             bail!("{} is not on btrfs", store.projects_dir().display());
             #[cfg(target_os = "macos")]
-            bail!("{} is not on case-sensitive APFS", store.projects_dir().display());
+            bail!("{} is not on APFS", store.projects_dir().display());
             #[cfg(feature = "overlayfs")]
             bail!("OverlayFS requires a local store and mount permission");
         }
@@ -330,6 +360,11 @@ impl<'a> Project<'a> {
             p.db.mark_current()?;
         }
         p.id = p.project_id()?;
+        #[cfg(target_os = "macos")]
+        if crate::apfs_commit::pending(&p)? {
+            // Wait for a live commit, or recover the index after an interrupted one.
+            let _lock = p.lock()?;
+        }
         Ok(p)
     }
 
@@ -353,12 +388,13 @@ impl<'a> Project<'a> {
     pub fn lock(&self) -> Result<Lock> {
         let f = fs::OpenOptions::new().create(true).write(true).truncate(false).open(self.meta_dir().join("lock"))?;
         rustix::fs::flock(&f, rustix::fs::FlockOperation::LockExclusive)?;
+        #[cfg(target_os = "macos")]
+        crate::apfs_commit::recover(self)?;
         Ok(Lock { _f: f })
     }
 
     fn state_present(&self) -> impl Fn(&str) -> bool + '_ {
-        let sd = self.states_dir();
-        move |id: &str| sd.join(id).exists()
+        move |id: &str| self.has_state(id)
     }
 
     /// Rebuild the derived tables from the records.
@@ -373,7 +409,7 @@ impl<'a> Project<'a> {
             Ok(())
         })?;
         for (id, deleted) in self.db.present_states()? {
-            if deleted || !self.state_path(&id).exists() {
+            if deleted || !self.has_state(&id) {
                 self.db.set_present(&id, false)?;
             }
         }
@@ -413,6 +449,11 @@ impl<'a> Project<'a> {
             rec.time = ids::now_ms();
             rec.project = project.clone();
             rec.actor = actor.clone();
+            if let Some(a) = rec.data.get_mut("attestation").and_then(|v| v.as_object_mut()) {
+                a.insert("attestation_id".into(), serde_json::json!(rec.id));
+                a.insert("signer".into(), serde_json::json!(m.id));
+                a.insert("time".into(), serde_json::json!(rec.time));
+            }
             crate::model::validate(&rec)?;
             let line = oplog::sign_line(&rec, &m.key)?;
             self.db.insert_record(&rec, &line)?;
@@ -428,6 +469,7 @@ impl<'a> Project<'a> {
     ///
     /// Only records of trusted machines are taken (see `Trust`).
     pub fn import_lines(&self, lines: &[String], trust: Trust) -> Result<usize> {
+        crate::overlay_managers::validate_import(self, lines)?;
         use std::collections::{BTreeMap, BTreeSet};
         let mut parsed: Vec<oplog::Signed> = Vec::new();
         for l in lines {
@@ -579,7 +621,7 @@ impl<'a> Project<'a> {
         v
     }
 
-    /// All records as JSONL (by machine and sequence number): the exchange and backup format.
+    /// All records as JSONL (by machine and sequence number): the exchange and remote copy format.
     pub fn export_jsonl(&self) -> Result<String> {
         let mut out = String::new();
         for m in self.db.record_machines()? {

@@ -50,16 +50,18 @@ class ReviewerLines(unittest.IsolatedAsyncioTestCase):
 
         async def layr(context, *arguments, **options):
             self.calls.append(tuple(arguments))
-            if arguments[:2] == ("branch", "-D"):
+            if arguments[:3] == ("line", "delete", "-D"):
                 if self.failure == "rollback":
                     raise GuestError("operation_failed", "forced rollback failure")
                 self.lines.remove(self.agent_id)
                 shutil.rmtree(self.target)
-            elif arguments[0] == "branch":
+            elif arguments[:2] == ("line", "new"):
                 self.target.mkdir()
                 self.lines.add(self.agent_id)
             elif context["agentId"] == self.agent_id and self.failure == "head":
                 raise GuestError("operation_failed", "forced head failure after association publication")
+            if arguments[0] == "rev-parse":
+                self.assertEqual(arguments[1], "head")
             return "state-0"
 
         self.handlers.command, self.handlers.layr = command, layr
@@ -99,13 +101,13 @@ class ReviewerLines(unittest.IsolatedAsyncioTestCase):
             await self.branch()
         self.assertFalse(self.target.exists())
         self.assertFalse(self.record.exists())
-        self.assertFalse(any(call[0] == "branch" for call in self.calls))
+        self.assertFalse(any(call[:2] == ("line", "new") for call in self.calls))
 
     async def test_acl_failure_after_creation_removes_line_and_association(self):
         self.failure = "acl"
         with self.assertRaisesRegex(GuestError, "forced ACL failure"):
             await self.branch()
-        self.assertIn(("branch", "-D", self.agent_id), self.calls)
+        self.assertIn(("line", "delete", "-D", self.agent_id), self.calls)
         self.assertFalse(self.target.exists())
         self.assertFalse(self.record.exists())
         self.assertNotIn(self.agent_id, self.lines)

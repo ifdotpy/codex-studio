@@ -993,8 +993,7 @@ pub async fn repair_idle(
     store.transaction_with(move |db| {
         let mut agent = ContextRepairRepository::agent(db, &id)?.ok_or(RepairError::MissingAgent)?;
         assert_available(&agent)?;
-        if agent["environment"] == "linux"
-            && studio_runtime_store::truthy(agent.get("imageWorkspaceReady"))
+        if agent["executionMode"] == "vm"
         {
             const NOTE: &str = "Automatic context repair is skipped for Linux workers. The rollout stays in the guest. The next turn can proceed.";
             if agent.get("contextRepairNote").and_then(Value::as_str) != Some(NOTE) {
@@ -1124,8 +1123,7 @@ async fn repair_idle_with_broker_inner(
         && initial["threadId"]
             .as_str()
             .is_some_and(|thread| !thread.is_empty())
-        && !(initial["environment"] == "linux"
-            && studio_runtime_store::truthy(initial.get("imageWorkspaceReady")))
+        && initial["executionMode"] != "vm"
     {
         broker.current_scope(&initial_account)
     } else {
@@ -1135,8 +1133,7 @@ async fn repair_idle_with_broker_inner(
         && initial["threadId"]
             .as_str()
             .is_some_and(|thread| !thread.is_empty())
-        && !(initial["environment"] == "linux"
-            && studio_runtime_store::truthy(initial.get("imageWorkspaceReady")))
+        && initial["executionMode"] != "vm"
     {
         let receipt_id = id.to_owned();
         let rows = store
@@ -1182,8 +1179,7 @@ async fn repair_idle_with_broker_inner(
             return Err(RepairError::ReceiptHold);
         }
         assert_available(&agent)?;
-        if agent["environment"] == "linux"
-            && studio_runtime_store::truthy(agent.get("imageWorkspaceReady"))
+        if agent["executionMode"] == "vm"
         {
             const NOTE: &str = "Automatic context repair is skipped for Linux workers. The rollout stays in the guest. The next turn can proceed.";
             agent["contextRepairNote"] = json!(NOTE);

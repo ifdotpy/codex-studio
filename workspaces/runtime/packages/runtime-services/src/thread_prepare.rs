@@ -1318,7 +1318,7 @@ mod vm_catalog_tests {
         let fields = &host.input_schema["properties"]["agents"]["items"]["properties"];
         assert_eq!(
             fields["workspace"]["enum"],
-            json!(["image", "worktree", "shared"])
+            json!(["layr-native", "layr", "worktree", "shared"])
         );
         assert!(fields.get("server").is_some());
     }

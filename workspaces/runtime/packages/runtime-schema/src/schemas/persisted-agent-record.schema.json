@@ -329,28 +329,6 @@
       "title": "Id",
       "type": "string"
     },
-    "imageWorkspace": {
-      "anyOf": [
-        {
-          "type": "boolean"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Imageworkspace"
-    },
-    "imageWorkspaceReady": {
-      "anyOf": [
-        {
-          "type": "boolean"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Imageworkspaceready"
-    },
     "inFlight": {
       "anyOf": [
         {

@@ -1486,3 +1486,5 @@ mod tests {
 pub mod task_gate;
 
 pub mod claude_permissions;
+
+pub mod workspace_modes;

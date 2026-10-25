@@ -20,7 +20,14 @@ describe("new chat actions", () => {
               { serverId: "local", path: "/folder", projectId: "/folder" },
             ],
           },
-          servers: [{ id: "local", label: "This computer", system: "Darwin" }],
+          servers: [
+            {
+              id: "local",
+              label: "This computer",
+              system: "Darwin",
+              hasStudioVm: true,
+            },
+          ],
           onChoose: () => {},
           onAdd: () => {},
           onCancel: () => {},
@@ -28,9 +35,9 @@ describe("new chat actions", () => {
       ),
     );
     expect(markup).toContain("Workspace");
-    expect(markup).toContain("layr");
-    expect(markup).toContain("ASIF");
-    expect(markup).toContain("worktree");
+    expect(markup).toContain("Layr");
+    expect(markup).toContain("Layr VM");
+    expect(markup).toContain("WT");
     expect(markup).toContain('aria-label="Agent role" role="radiogroup"');
     expect(markup).toMatch(/<input[^>]*type="radio"[^>]*value="worker"/);
     expect(markup).toMatch(/<input[^>]*type="radio"[^>]*value="review"/);

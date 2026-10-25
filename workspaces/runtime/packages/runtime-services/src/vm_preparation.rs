@@ -44,6 +44,15 @@ impl From<crate::linux_vm_guest::GuestError> for VmProjectUploadError {
 }
 
 pub fn vm_project_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
+    code_archive(source, false)
+}
+
+/// Native migration takes worktree files with the VM code rules, without its external Git pointer.
+pub(crate) fn native_worktree_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
+    code_archive(source, true)
+}
+
+fn code_archive(source: &Path, worktree: bool) -> std::io::Result<VmProjectArchive> {
     let source = CanonicalPath::existing(source)?;
     if !source.is_dir() {
         return Err(std::io::Error::new(
@@ -51,7 +60,10 @@ pub fn vm_project_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
             "VM project source is not a directory",
         ));
     }
-    let exclusions = vm_archive_exclusions(&source)?;
+    let mut exclusions = archive_exclusions(&source, worktree)?;
+    if worktree {
+        exclusions.ignored.insert(".git".into());
+    }
     let identities = std::cell::RefCell::new(HashMap::new());
     let mut archive = tempfile::NamedTempFile::new()?;
     {
@@ -90,6 +102,31 @@ pub fn vm_project_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
         bytes,
         sha256: data_encoding::HEXLOWER.encode(&digest.finalize()),
     })
+}
+
+/// Repositories admitted by the same code rules as the project archive.
+pub(crate) fn import_repository_roots(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let exclusions = vm_archive_exclusions(root)?;
+    let mut repositories = Vec::new();
+    let mut pending = vec![root.to_owned()];
+    while let Some(folder) = pending.pop() {
+        if folder.join(".git").exists() {
+            repositories.push(folder.clone());
+        }
+        for entry in fs::read_dir(&folder)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_name() == ".git" || !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let relative = path.strip_prefix(root).map_err(std::io::Error::other)?;
+            if !vm_archive_skip(root, relative, &path, &exclusions) {
+                pending.push(path);
+            }
+        }
+    }
+    repositories.sort();
+    Ok(repositories)
 }
 
 fn add_vm_tar_directory<W: Write>(
@@ -162,6 +199,10 @@ struct VmArchiveExclusions {
     reason = "archive creation runs on the labeled vm-project-archive blocking worker"
 )]
 fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
+    archive_exclusions(root, false)
+}
+
+fn archive_exclusions(root: &Path, root_worktree: bool) -> std::io::Result<VmArchiveExclusions> {
     let mut repositories = HashSet::new();
     let mut worktrees = HashSet::new();
     let mut ignored = HashSet::new();
@@ -289,6 +330,9 @@ fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
                     .to_string_lossy()
                     .replace('\\', "/"),
             );
+        } else if marker.is_file() && directory == root && root_worktree {
+            repositories.insert(".".into());
+            collect_vm_ignored_directories(root, &directory, ".", &mut ignored)?;
         } else if marker.is_file() {
             if directory == root {
                 return Err(std::io::Error::new(
@@ -402,7 +446,9 @@ fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
             }
             continue;
         }
-        validate_vm_repository_objects(root, &directory)?;
+        if !(root_worktree && directory == root) {
+            validate_vm_repository_objects(root, &directory)?;
+        }
     }
     Ok(exclusions)
 }
