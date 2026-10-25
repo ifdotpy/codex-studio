@@ -57,8 +57,8 @@ inherits = "ci"
 # Vault readiness witness: OS metadata notifications replace renderer polls without reading keys.
 # Limit failures refresh the account and stream rateLimit entities without a renderer GET.
 # Actor timing uses a deterministic clock; registry durability observes completed SQLite checkpoints.
+# Typed accounting mappings, strict ingress and native SDK schema parity.
 default-filter = '''
-    # Typed accounting mappings, strict ingress and native SDK schema parity.
     (package(=studio-runtime-schema) & kind(lib) & test(usage::tests::)) |
     ((package(=studio-runtime-server)) & ((kind(lib) | kind(bin) | kind(test))) & (test(operator_cli::)))
     | (package(=studio-runtime-server) & kind(bin) & test(web_assets::tests::))
