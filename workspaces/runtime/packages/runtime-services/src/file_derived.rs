@@ -33,9 +33,11 @@ impl Stamp {
     }
 }
 
+type DerivedEntries<T> = HashMap<(PathBuf, String), (Stamp, Arc<T>)>;
+
 /// Derived values per file path. `load` runs again only when a file's stamp changed.
 pub struct FileDerived<T> {
-    entries: Mutex<HashMap<(PathBuf, String), (Stamp, Arc<T>)>>,
+    entries: Mutex<DerivedEntries<T>>,
     capacity: usize,
 }
 
