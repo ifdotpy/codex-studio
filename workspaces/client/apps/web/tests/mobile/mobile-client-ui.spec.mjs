@@ -482,6 +482,9 @@ test("Mobile client ui", async ({
   }
 });
 
+/** A session estimate with a priced total, e.g. "Session estimate: $2.00". */
+const pricedEstimate = /\$\d+\.\d{2}/;
+
 async function setupMobile320Composer(testBrowser) {
   const state = await mkdtemp(join(tmpdir(), "codex-mobile-composer-"));
   const fixture = spawn(process.execPath, [rustUiFixture, state], {
@@ -620,8 +623,11 @@ async function setupMobile320Composer(testBrowser) {
       await usage
         .getByRole("button", { name: "Account limits", exact: true })
         .waitFor({ state: "visible" });
+      // The startup pricing refresh may replace the fixture rates with the
+      // models.dev catalog, so assert a priced SSE estimate, not its amount.
+      // Session-cost arithmetic is owned by the Rust session cost witnesses.
       await expect(usage.locator(".session-cost-summary")).toContainText(
-        "$2.00",
+        pricedEstimate,
       );
       const interest = page.waitForResponse(
         (response) =>
@@ -633,7 +639,7 @@ async function setupMobile320Composer(testBrowser) {
         .click();
       assert.equal((await interest).ok(), true);
       await expect(usage.locator(".session-cost-summary")).toContainText(
-        "$2.00",
+        pricedEstimate,
       );
       await usage
         .getByRole("button", { name: "Account limits", exact: true })
