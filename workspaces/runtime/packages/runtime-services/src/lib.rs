@@ -84,6 +84,7 @@ pub mod host_worker_create;
 pub mod idle_compaction;
 pub mod image_workspace;
 pub mod image_workspace_agents;
+pub mod layr_native;
 pub(crate) mod layr_read;
 pub mod lifecycle_effects;
 pub mod limit_reset;
