@@ -435,6 +435,153 @@ mod usage_contract_tests {
     }
 
     #[tokio::test]
+    async fn typed_usage_ledger_delta_known_counter_metadata_does_not_create_new_debit() {
+        let (_temp, store, agent) = ledger_store("codex").await;
+        let native = rollout_counter("thread");
+        let observation = studio_runtime_schema::usage::parse_token_usage(
+            studio_runtime_schema::usage::UsageProvider::Codex,
+            &native,
+        )
+        .expect("complete canonical counter");
+        let first = json!({"threadId":"thread","studioUsage":observation});
+        ledger_capture(
+            &store,
+            &agent,
+            first.clone(),
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        let mut enriched = first;
+        enriched["studioUsage"]["modelContextWindow"] = json!(200000);
+        studio_runtime_schema::usage::parse_token_usage(
+            studio_runtime_schema::usage::UsageProvider::Codex,
+            &enriched,
+        )
+        .expect("enriched supported counter");
+        ledger_capture(
+            &store,
+            &agent,
+            enriched,
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        assert_eq!(
+            ledger_tokens(&store).await,
+            10,
+            "a known counter's informational metadata cannot create a debit either"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_delta_proven_scalar_metadata_cannot_recharge() {
+        let (_temp, store, agent) = ledger_store("codex").await;
+        let original = counter_params();
+        ledger_capture(
+            &store,
+            &agent,
+            original.clone(),
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        let old = studio_runtime_schema::usage::ledger::receipt_hash(&json!([
+            "agent",
+            "default",
+            "notice",
+            "turn",
+            original["tokenUsage"]["total"],
+            original["tokenUsage"]["last"]
+        ]));
+        store
+            .transaction(move |tx| {
+                tx.execute("UPDATE runtime_budget_usage SET id=?1,details=NULL", [old])?;
+                Ok(())
+            })
+            .await
+            .expect("old scalar");
+        store
+            .analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+                let raw: String =
+                    tx.query_row("SELECT record FROM analytics_usage", [], |row| row.get(0))?;
+                let mut row: Value = serde_json::from_str(&raw)?;
+                row.as_object_mut().expect("row").remove("usageIdentity");
+                row.as_object_mut().expect("row").remove("receiptKey");
+                tx.execute("UPDATE analytics_usage SET record=?1", [row.to_string()])?;
+                Ok(())
+            })
+            .await
+            .expect("old source");
+        let sink = crate::analytics_history::StoreHistoryBudgetSink::new(&store);
+        migrate_budget(&store, agent.clone(), &sink, 2.)
+            .await
+            .expect("prove old scalar ownership");
+        let mut enriched = original;
+        enriched["tokenUsage"]["modelContextWindow"] = json!(200000);
+        ledger_capture(
+            &store,
+            &agent,
+            enriched,
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        assert_eq!(
+            ledger_tokens(&store).await,
+            10,
+            "proven legacy notices cannot debit metadata again"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_delta_partial_old_gap_inventory_never_proves_complete() {
+        let (temp, store, agent) = ledger_store("claude").await;
+        for id in ["retained-old", "erased-old"] {
+            ledger_capture(&store,&agent,json!({"threadId":"thread","studioUsage":{"kind":"gap","responseId":id,"reason":"queryClosed"}}),crate::budget::CaptureSource::Live,1.).await;
+        }
+        store
+            .transaction(|tx| {
+                tx.execute("DELETE FROM runtime_budget_usage", [])?;
+                let raw: String =
+                    tx.query_row("SELECT record FROM runtime_budget", [], |row| row.get(0))?;
+                let mut state: Value = serde_json::from_str(&raw)?;
+                state
+                    .as_object_mut()
+                    .expect("state")
+                    .remove("unresolvedGaps");
+                state.as_object_mut().expect("state").remove("gapCoverage");
+                tx.execute("UPDATE runtime_budget SET record=?1", [state.to_string()])?;
+                Ok(())
+            })
+            .await
+            .expect("real v4 gap state without usage receipts");
+        store.analytics_transaction::<_,studio_runtime_store::StoreError>(|tx,_|{
+            tx.execute("DELETE FROM analytics_usage WHERE json_extract(record,'$.studioUsage.responseId')='erased-old'",[])?;
+            let raw:String=tx.query_row("SELECT record FROM analytics_usage",[],|row|row.get(0))?;let mut row:Value=serde_json::from_str(&raw)?;row.as_object_mut().expect("row").remove("usageIdentity");row.as_object_mut().expect("row").remove("receiptKey");tx.execute("UPDATE analytics_usage SET record=?1",[row.to_string()])?;Ok(())
+        }).await.expect("partial pre-ledger inventory");
+        let mut final_retained = ledger_response("live", 1);
+        final_retained["studioUsage"]["responseId"] = json!("retained-old");
+        ledger_capture(
+            &store,
+            &agent,
+            final_retained,
+            crate::budget::CaptureSource::Live,
+            2.,
+        )
+        .await;
+        drop(store);
+        let store = RuntimeStore::open(Some(temp.path()))
+            .await
+            .expect("restart");
+        let accounting=store.transaction(|tx|Ok(studio_runtime_store::budget::BudgetRepository::agent(tx,"agent")?["tokenUsageAccounting"].clone())).await.expect("accounting");
+        assert_eq!(
+            accounting, "provisional",
+            "one retained old gap never proves that erased gaps did not exist"
+        );
+    }
+
+    #[tokio::test]
     async fn typed_usage_ledger_delta_scalar_alias_requires_thread_ownership() {
         let (_temp, store, mut agent) = ledger_store("codex").await;
         agent.as_object_mut().expect("agent").remove("turnId");
@@ -911,8 +1058,8 @@ mod usage_contract_tests {
         .await;
         let accounting=store.transaction(|tx|Ok(studio_runtime_store::budget::BudgetRepository::agent(tx,"agent")?["tokenUsageAccounting"].clone())).await.expect("accounting");
         assert_eq!(
-            accounting, "responseRecords",
-            "established and resolved old gaps clear the fault"
+            accounting, "provisional",
+            "a known resolved subset cannot prove that no other old gap was erased"
         );
     }
 

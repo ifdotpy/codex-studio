@@ -136,21 +136,18 @@ pub(crate) fn needs_legacy_gap_coverage(value: &Value) -> Result<bool, BudgetErr
     )
 }
 
-pub(crate) fn establish_gap_coverage(
+pub(crate) fn record_legacy_gap_identities(
     value: &Value,
     unresolved: Vec<String>,
 ) -> Result<BudgetState, BudgetError> {
     let mut state: BudgetState = decode(value, "runtime_budget")?;
-    state.gap_coverage = studio_runtime_schema::usage::ledger::GapCoverage::Complete;
+    // Available rows cannot prove how many old gaps were erased. Keep this
+    // uncertainty until an authoritative complete old-era source supplies proof.
+    state.gap_coverage = studio_runtime_schema::usage::ledger::GapCoverage::LegacyUnknown;
     for key in unresolved {
         if !state.unresolved_gaps.contains(&key) {
             state.unresolved_gaps.push(key);
         }
-    }
-    if state.unresolved_gaps.is_empty() {
-        state
-            .faults
-            .retain(|fault| fault != studio_runtime_schema::usage::ledger::MISSING_FINAL_USAGE);
     }
     Ok(state)
 }
@@ -508,16 +505,7 @@ impl UsageObservation {
             .or_else(|| a.thread_id.clone());
         let restoring = supplied.is_some();
         let ledger = supplied.or_else(|| {
-            typed.map(|observation| {
-                UsageLedgerRow::capture(
-                    &a.id,
-                    &a.account_key,
-                    thread.as_deref(),
-                    identity_turn.as_deref(),
-                    params,
-                    observation,
-                )
-            })
+            typed.map(|observation| UsageLedgerRow::capture(&a.id, thread.as_deref(), observation))
         });
         let unresolved_receipt = ledger.as_ref().is_some_and(|row| row.receipt_key.is_none());
         let key = match &ledger {
@@ -533,7 +521,8 @@ impl UsageObservation {
                         &row.studio_usage,
                     )
                 } else {
-                    studio_runtime_schema::usage::ledger::legacy_receipt_keys(
+                    studio_runtime_schema::usage::ledger::receipt_aliases(
+                        &row.usage_identity,
                         &a.id,
                         &a.account_key,
                         identity_turn.as_deref(),

@@ -1435,22 +1435,9 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
             .map(|row| text(&row["id"]).to_owned())
             .unwrap_or_else(|| usage_key(meta, &observation))
     };
-    let turn = match &observation {
-        UsageObservation::Response { turn_id, .. }
-        | UsageObservation::Cumulative { turn_id, .. }
-        | UsageObservation::Gap { turn_id, .. } => turn_id.as_deref(),
-    }
-    .or_else(|| {
-        (q.source == CaptureSource::Live)
-            .then(|| q.agent["turnId"].as_str())
-            .flatten()
-    });
     let mut ledger = UsageLedgerRow::capture(
         text(&meta["agentId"]),
-        text(&meta["accountKey"]),
         meta["threadId"].as_str(),
-        turn,
-        &q.params,
         observation.clone(),
     );
     if let Some(old) =

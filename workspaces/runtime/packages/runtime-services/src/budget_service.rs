@@ -262,8 +262,8 @@ fn capture_into(
         .map(|tokens| (tokens, acceptance))
 }
 
-/// Establish old gap identities only from a complete bounded analytics window.
-/// A truncated or empty gap inventory leaves coverage explicitly unknown.
+/// Record known old gap identities from a bounded analytics window.
+/// Even an untruncated inventory cannot prove that no old gap was erased.
 async fn prepare_legacy_gap_coverage(
     store: &studio_runtime_store::RuntimeStore,
     agents: Vec<String>,
@@ -313,7 +313,7 @@ async fn prepare_legacy_gap_coverage(
             for (id, expected, pending) in proofs {
                 let actual = Table::<BudgetRecord>::new(tx).get(&AgentId::from(id.as_str()))?;
                 if actual.as_ref().map(|record| &record.0) == Some(&expected) {
-                    let state = budget::establish_gap_coverage(&expected, pending)?;
+                    let state = budget::record_legacy_gap_identities(&expected, pending)?;
                     save_state(tx, &id, &state, true)?;
                 }
             }
@@ -368,7 +368,15 @@ async fn prepare_legacy_counter_ownership(
                         Parsed::Cumulative { turn_id, .. } => turn_id.as_deref(),
                         _ => None,
                     };
-                    studio_runtime_schema::usage::ledger::legacy_receipt_keys(
+                    let identity = studio_runtime_schema::usage::ledger::UsageIdentity::new(
+                        id,
+                        params["threadId"]
+                            .as_str()
+                            .or_else(|| agent["threadId"].as_str()),
+                        &observation,
+                    );
+                    studio_runtime_schema::usage::ledger::receipt_aliases(
+                        &identity,
                         id,
                         agent["accountKey"].as_str().unwrap_or("default"),
                         turn,
@@ -491,12 +499,9 @@ pub async fn prepare_legacy_corrections(
                 };
                 let incoming = UsageLedgerRow::capture(
                     id,
-                    agent["accountKey"].as_str().unwrap_or("default"),
                     params["threadId"]
                         .as_str()
                         .or_else(|| agent["threadId"].as_str()),
-                    None,
-                    &params,
                     observation.clone(),
                 );
                 let Some(old) = BudgetRepository::usage(

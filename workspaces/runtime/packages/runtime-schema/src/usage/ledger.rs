@@ -75,29 +75,20 @@ pub struct UsageLedgerRow {
     pub studio_usage: UsageObservation,
 }
 impl UsageLedgerRow {
-    /// Capture compatibility is confined here: old counter receipts hashed exact wire
-    /// objects. The immutable logical identity always comes from the typed observation.
-    pub fn capture(
-        agent: &str,
-        account: &str,
-        thread: Option<&str>,
-        turn: Option<&str>,
-        params: &Value,
-        observation: UsageObservation,
-    ) -> Self {
+    /// New receipts derive only from typed accounting facts; legacy spellings
+    /// remain aliases and never alter response identity.
+    pub fn capture(agent: &str, thread: Option<&str>, observation: UsageObservation) -> Self {
         let usage_identity = UsageIdentity::new(agent, thread, &observation);
-        let receipt = match &usage_identity {
-            UsageIdentity::Response { response_id, .. } => json!([agent, "response", response_id]),
-            UsageIdentity::Cumulative { .. } => json!([
-                usage_identity,
-                legacy_counter_preimage(agent, account, turn, params, &observation)
-            ]),
-        };
-        Self {
+        let mut row = Self {
             usage_identity,
-            receipt_key: Some(receipt_hash(&receipt)),
+            receipt_key: None,
             studio_usage: observation,
-        }
+        };
+        row.receipt_key = Some(match &row.usage_identity {
+            UsageIdentity::Response { response_id, .. } => response_receipt_key(agent, response_id),
+            UsageIdentity::Cumulative { .. } => row.observation_key(),
+        });
+        row
     }
 
     /// Identity of the typed counter evidence, independent of erased legacy wire fields.
@@ -183,6 +174,25 @@ pub fn legacy_receipt_keys(
     ))]
 }
 
+/// Recognize pre-v5 keys and the first scoped-v5 spelling without creating a new debit.
+pub fn receipt_aliases(
+    identity: &UsageIdentity,
+    agent: &str,
+    account: &str,
+    turn: Option<&str>,
+    params: &Value,
+    observation: &UsageObservation,
+) -> Vec<String> {
+    let mut keys = legacy_receipt_keys(agent, account, turn, params, observation);
+    if matches!(observation, UsageObservation::Cumulative { .. }) {
+        keys.push(receipt_hash(&json!([
+            identity,
+            legacy_counter_preimage(agent, account, turn, params, observation)
+        ])));
+    }
+    keys
+}
+
 /// Recover supported old counter spellings from persisted typed facts, never by
 /// reparsing a fabricated notification. Unknown wire extensions remain unknown.
 pub fn legacy_analytics_receipt_keys(row: &Value, observation: &UsageObservation) -> Vec<String> {
@@ -212,9 +222,14 @@ pub fn legacy_analytics_receipt_keys(row: &Value, observation: &UsageObservation
             ]),
             json!([agent, account, "notice", turn, observation]),
         ] {
-            let key = receipt_hash(&preimage);
-            if !keys.contains(&key) {
-                keys.push(key);
+            let identity = UsageIdentity::new(agent, row["threadId"].as_str(), observation);
+            for key in [
+                receipt_hash(&preimage),
+                receipt_hash(&json!([identity, preimage])),
+            ] {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
             }
         }
     }
@@ -272,6 +287,28 @@ pub enum UsageCorrection {
 /// be resolved by final evidence; later gaps cannot erase a recorded response.
 pub fn correction(previous: &UsageObservation, incoming: &UsageObservation) -> UsageCorrection {
     match (previous, incoming) {
+        (
+            UsageObservation::Cumulative {
+                scope: old_scope,
+                turn_id: old_turn,
+                total: old_total,
+                last: old_last,
+                ..
+            },
+            UsageObservation::Cumulative {
+                scope,
+                turn_id,
+                total,
+                last,
+                ..
+            },
+        ) if old_scope == scope
+            && old_turn == turn_id
+            && old_total == total
+            && old_last == last =>
+        {
+            UsageCorrection::Replay
+        }
         (
             UsageObservation::Response {
                 tokens: old,

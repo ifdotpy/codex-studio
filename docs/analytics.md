@@ -131,9 +131,11 @@ ownership of an old scalar alias without an explicit first-receipt link.
 Restoring an old counter without a recoverable key adds no debit and marks
 accounting unknown. That guard uses accounting scope, turn, total and last
 counts; context capacity, model lists and provider cost estimates cannot change it.
-Old gap coverage also remains explicitly unknown until a complete bounded
-inventory establishes the pre-ledger response identities. Post-upgrade gaps do
-not prove that old inventory complete; an unrelated final cannot clear it.
+Old gap coverage remains explicitly unknown when no authoritative complete
+old-era inventory exists. A bounded search can establish known pre-ledger gap
+identities, but available rows alone cannot prove that no other gap was erased.
+Resolving a known subset or resolving post-upgrade gaps never discharges that
+legacy uncertainty. New v5 gaps with complete identity coverage resolve normally.
 
 ## Checks
 
