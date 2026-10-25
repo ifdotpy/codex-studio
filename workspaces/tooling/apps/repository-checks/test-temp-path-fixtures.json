@@ -76,6 +76,14 @@
     "cwd: \"/tmp/work\",",
     "cwd: \"/tmp/title\","
   ],
+  "workspaces/runtime/apps/layr/crates/layr-model/src/operations.rs": [
+    "(\"file:///tmp/store\", \"file:///tmp/store\"),",
+    "(\"/tmp/repo.git\", \"/tmp/repo.git\"),"
+  ],
+  "workspaces/runtime/apps/layr/src/cmd/remote.rs": [
+    "assert_eq!(kind(\"file:///tmp/store\").unwrap(), Kind::Store);",
+    "\"/tmp/repo.git\","
+  ],
   "workspaces/runtime/apps/layr-desk/crates/layr-desk/src/service.rs": [
     "\"<dict>\\n  <key>Label</key>\\n  <string>{LABEL}</string>\\n  <key>ProgramArguments</key>\\n  <array>\\n{rows}  </array>\\n  <key>StandardOutPath</key>\\n  <string>/tmp/log</string>\\n</dict>\""
   ],
