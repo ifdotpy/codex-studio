@@ -82,7 +82,7 @@ test.describe("legacy schema mismatch", () => {
     let newPage;
     let allowPendingChangeEventResolve;
     let allowPendingChangeEventPromise;
-    let allowPendingChangeEvent = false;
+    const pendingChangeStreamOpened = Promise.withResolvers();
     let firstPullFails = false;
     let pullFailureCount = 0;
     const resetPullResponseHeld = Promise.withResolvers();
@@ -119,6 +119,20 @@ test.describe("legacy schema mismatch", () => {
       response.write(frame.body);
       openStreams.add(response);
       response.on("close", () => openStreams.delete(response));
+      if (frame.pendingChange) {
+        const { body, sequence, page, release } = frame.pendingChange;
+        pendingChangeStreamOpened.resolve(frame.pendingChange.cursor);
+        void release.then(() => {
+          if (
+            !response.destroyed &&
+            !response.writableEnded &&
+            pendingEntitySequence === sequence
+          ) {
+            response.write(body);
+            entityChangePages.add(page);
+          }
+        });
+      }
     });
     await new Promise((resolve) =>
       streamServer.listen(0, "127.0.0.1", resolve),
@@ -177,10 +191,10 @@ test.describe("legacy schema mismatch", () => {
           // Detail can be cancelled when selection changes before its first
           // frame is persisted; every reconnect must replay that view's baseline.
           if (resource.kind === "agentDetail") return true;
-          // An unchanged build reconnects with an applied state baseline. A
-          // revision-only hint explicitly requests recovery and cannot model
-          // a cached reload with zero additional entity reads.
-          if (resource.kind === "state" && streamHash === oldHash) return true;
+          // Every connection needs a state baseline. A cached cursor proves
+          // an empty applied delta for either build; only a new-hash tab
+          // without a cursor intentionally receives a recovery hint.
+          if (resource.kind === "state") return true;
           const key = `${streamHash}:${JSON.stringify(resource)}`;
           if (confirmedResources.has(key)) return false;
           confirmedResources.add(key);
@@ -189,8 +203,7 @@ test.describe("legacy schema mismatch", () => {
         let body = "";
         let workspaceId;
         if (initialResources.length > 0) {
-          if (streamHash === oldHash && stateCursor)
-            workspaceId = stateCursor.workspaceId;
+          if (stateCursor) workspaceId = stateCursor.workspaceId;
           else {
             const identity = await fetch(
               new URL("/api/sync/identity", backendOrigin),
@@ -213,9 +226,7 @@ test.describe("legacy schema mismatch", () => {
               // This phase models an unchanged source across a same-build
               // reload. Echo its durable cursor as an empty applied delta;
               // later phases explicitly inject source changes and recovery.
-              (resource.kind === "state" &&
-              streamHash === oldHash &&
-              stateCursor
+              (resource.kind === "state" && stateCursor
                 ? {
                     resource,
                     revision: stateCursor.seq,
@@ -249,6 +260,7 @@ test.describe("legacy schema mismatch", () => {
             resourceVersions,
           });
         }
+        let pendingChange;
         if (
           streamHash === nextHash &&
           newPage &&
@@ -259,38 +271,36 @@ test.describe("legacy schema mismatch", () => {
         ) {
           const entityChanges = pendingEntityChanges;
           const entitySequence = pendingEntitySequence;
-          if (!allowPendingChangeEvent) await allowPendingChangeEventPromise;
-          if (pendingEntitySequence === entitySequence) {
-            if (!workspaceId) {
-              const identity = await fetch(
-                new URL("/api/sync/identity", backendOrigin),
-              );
-              ({ workspaceId } = await identity.json());
-            }
-            body += protocol3SseEvent("resources", {
-              protocol: 4,
-              workspaceId,
-              epoch: "schema-cache-test",
-              revision: 2,
-              reason: "change",
-              resources: [{ kind: "state" }],
-              resourceVersions: [
-                {
-                  resource: { kind: "state" },
-                  revision: entityChanges.through,
-                  cursor: { workspaceId, seq: entityChanges.through },
-                  replyKind: "delta",
-                  entityChanges,
-                },
-              ],
-            });
-            entityChangePages.add(newPage);
-          }
+          const changeBody = protocol3SseEvent("resources", {
+            protocol: 4,
+            workspaceId,
+            epoch: "schema-cache-test",
+            revision: 2,
+            reason: "change",
+            resources: [{ kind: "state" }],
+            resourceVersions: [
+              {
+                resource: { kind: "state" },
+                revision: entityChanges.through,
+                cursor: { workspaceId, seq: entityChanges.through },
+                replyKind: "delta",
+                entityChanges,
+              },
+            ],
+          });
+          pendingChange = {
+            body: changeBody,
+            sequence: entitySequence,
+            page: newPage,
+            cursor: stateCursor,
+            release: allowPendingChangeEventPromise,
+          };
         }
         const streamPath = `/stream/${randomUUID()}`;
         streamFrames.set(streamPath, {
           hash: activeHash,
           body: apiSchemaHandshakeSse(body, { hash: activeHash }),
+          pendingChange,
         });
         return route.continue({ url: `${streamOrigin}${streamPath}` });
       }
@@ -702,6 +712,7 @@ test.describe("legacy schema mismatch", () => {
         .poll(readNewPageStateCheckpoint)
         .toMatchObject({ ready: "ready", complete: true });
       const newPageStateCheckpoint = await readNewPageStateCheckpoint();
+      const beforeMutationPullCount = statePullCount();
       assert.ok(
         Number.isSafeInteger(newPageStateCheckpoint.checkpoint) &&
           newPageStateCheckpoint.checkpoint > 0,
@@ -760,23 +771,33 @@ test.describe("legacy schema mismatch", () => {
         through: pendingEntitySequence,
         documents: orderedEntityChangeDocuments,
       };
-      allowPendingChangeEvent = false;
       allowPendingChangeEventPromise = new Promise((resolve) => {
         allowPendingChangeEventResolve = resolve;
       });
       await newPage.reload();
+      const mutationReconnectCursor = await pendingChangeStreamOpened.promise;
+      assert.deepEqual(mutationReconnectCursor, {
+        workspaceId,
+        seq: newPageStateCheckpoint.checkpoint,
+      });
       await expect(leadChat(newPage)).toBeVisible();
       await expect(newPage.locator("#message")).toBeVisible();
       await expect
         .poll(readNewPageStateCheckpoint)
         .toMatchObject({ ready: "ready", complete: true });
-      // Prove the reload kept the checkpoint while its entity-change stream
-      // response is still held. Once released, the client may apply it before
-      // the next Playwright poll runs.
+      // The handshake and applied baseline are live; hold only the mutation
+      // payload so no alternate recovery pull can stand in for its delivery.
       await expect
         .poll(readNewPageStateCheckpoint)
         .toMatchObject(newPageStateCheckpoint);
-      allowPendingChangeEvent = true;
+      assert.equal(
+        statePullCount(),
+        beforeMutationPullCount,
+        "the cached reconnect receives its applied baseline without an entity pull while the mutation is held",
+      );
+      await expect(newPage.locator(`[data-chat="${createdId}"]`)).toHaveCount(
+        0,
+      );
       allowPendingChangeEventResolve?.();
       allowPendingChangeEventResolve = undefined;
       // Other source owners may publish summaries after the mutation's agent
@@ -798,6 +819,11 @@ test.describe("legacy schema mismatch", () => {
       await expect(newPage.locator(`[data-chat="${createdId}"]`)).toBeVisible({
         timeout: 30_000,
       });
+      assert.equal(
+        statePullCount(),
+        beforeMutationPullCount,
+        "the released SSE mutation advances the cache without an entity pull",
+      );
 
       const resetBootstrapPull = statePulls.find(
         (pull) => pull.page === newPage && pull.query.reset === "1",
@@ -806,6 +832,9 @@ test.describe("legacy schema mismatch", () => {
         sameHashCachedReloadMs: Math.round(cachedReloadMs),
         rendererHashes: [...new Set(rendererHashes)],
         resetBootstrapQuery: resetBootstrapPull?.query,
+        mutationReconnectCursor,
+        mutationSequence: Number(mutationEntity.seq),
+        mutationPhasePulls: statePullCount() - beforeMutationPullCount,
         distAssetsSha256: distAssetsDigest(),
       });
       assert.ok(resetBootstrapPull, "the new schema starts a reset bootstrap");
@@ -823,8 +852,9 @@ test.describe("legacy schema mismatch", () => {
     } finally {
       allowResetPullResponse.resolve();
       allowPendingChangeEventResolve?.();
-      fixture.kill();
+      await context.unrouteAll({ behavior: "wait" });
       await context.close();
+      fixture.kill();
       streamServer.closeAllConnections();
       await new Promise((resolve) => streamServer.close(resolve));
       const distAssetsAfter = await hashAssets();
