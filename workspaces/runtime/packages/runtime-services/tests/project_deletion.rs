@@ -343,6 +343,24 @@ async fn project_deletion_location_reservation_rechecks_the_checked_lifetime() {
             .is_err(),
         "deletion between preparation and reservation must refuse"
     );
+    let enqueue_payload = payload.clone();
+    let enqueue = store
+        .transaction_with(move |tx| {
+            studio_runtime_services::multi_server_transport::enqueue_in_transaction(
+                tx,
+                "peer",
+                "add_location",
+                &enqueue_payload,
+                "marked-enqueue",
+                3,
+            )
+        })
+        .await;
+    assert!(
+        enqueue.is_err(),
+        "a marked stale enqueue also rechecks the project lifetime"
+    );
+
     assert_eq!(
         peer.0.load(std::sync::atomic::Ordering::SeqCst),
         0,
@@ -483,4 +501,110 @@ async fn project_deletion_orders_archive_restore_with_its_writer() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn project_deletion_refuses_fresh_markerless_location_reservations_but_replays_legacy() {
+    use studio_runtime_services::multi_server_transport::{
+        AccessError, OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
+        enqueue_in_transaction,
+    };
+    struct Peer(std::sync::atomic::AtomicUsize);
+    impl PairedTransport for Peer {
+        fn exchange<'a>(
+            &'a self,
+            _: &'a str,
+            envelope: &'a Value,
+            _: std::time::Duration,
+        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(
+                async move { Ok(json!({"requestId":envelope["requestId"],"outcome":"unknown"})) },
+            )
+        }
+    }
+    let (_root, store, project) = setup().await;
+    let id = project["id"].as_str().expect("id").to_owned();
+    store.transaction(|tx|{tx.execute("INSERT INTO runtime_access_clients(id,record) VALUES('peer',?1)",[json!({"id":"peer","clientId":"client","kind":"server","label":"Peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()])?;Ok(())}).await.expect("paired peer");
+    let payload = json!({"project":id,"name":"Project","path":"/remote","request":{"action":"add_location","project":id,"server":"peer","path":"/remote"},"signature":"signature"});
+    delete(store.clone(), id).await;
+    let peer = Arc::new(Peer(std::sync::atomic::AtomicUsize::new(0)));
+    let driver = OrchestrationDriver::new(
+        store.clone(),
+        peer.clone(),
+        Arc::new(RuntimeOrchestrationEffects::new(store.clone())),
+    );
+    assert!(
+        driver
+            .exchange("peer", "add_location", &payload, "fresh", 3)
+            .await
+            .is_err(),
+        "fresh exchange requires admission"
+    );
+    assert_eq!(peer.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let fresh = payload.clone();
+    let enqueue = store
+        .transaction_with(move |tx| {
+            enqueue_in_transaction(tx, "peer", "add_location", &fresh, "fresh-enqueue", 3)
+        })
+        .await;
+    assert!(
+        enqueue.is_err(),
+        "the transaction enqueue writer also requires admission"
+    );
+    // A saved exact marker-less reservation represents a previous server version.
+    let envelope = json!({"requestId":"legacy","action":"add_location","payload":payload});
+    let encoded = studio_runtime_services::remote_transport::canonical_json(&envelope)
+        .expect("canonical envelope");
+    store.transaction(move|tx|{tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,next_at,attempts) VALUES('legacy','peer',?1,'queued',1,0,0)",[encoded])?;Ok(())}).await.expect("legacy reservation");
+    let replay = payload.clone();
+    store
+        .transaction_with(move |tx| {
+            enqueue_in_transaction(tx, "peer", "add_location", &replay, "legacy", 3)
+        })
+        .await
+        .expect("exact legacy enqueue replay");
+    let unknown = driver
+        .exchange("peer", "add_location", &payload, "legacy", 3)
+        .await
+        .expect("exact legacy reservation remains recoverable");
+    assert!(matches!(
+        unknown,
+        studio_runtime_services::multi_server_transport::ExchangeOutcome::Unknown
+    ));
+    assert_eq!(
+        peer.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "legacy uncertain writes retain their existing no-resend policy"
+    );
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_server_outbox SET state='complete',result=?1 WHERE id='legacy'",
+                [
+                    json!({"requestId":"legacy","outcome":"applied","value":{"retained":true}})
+                        .to_string(),
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("retained legacy receipt");
+    let replayed = driver
+        .exchange("peer", "add_location", &payload, "legacy", 4)
+        .await
+        .expect("legacy completed receipt replays without admission");
+    assert!(
+        matches!(replayed,studio_runtime_services::multi_server_transport::ExchangeOutcome::Applied(ref value) if value["retained"]==true)
+    );
+    let mut changed = payload;
+    changed["path"] = json!("/changed");
+    assert!(
+        driver
+            .exchange("peer", "add_location", &changed, "legacy", 30)
+            .await
+            .is_err(),
+        "legacy replay still binds exact content"
+    );
+    assert_eq!(peer.0.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

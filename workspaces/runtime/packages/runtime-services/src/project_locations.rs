@@ -501,11 +501,18 @@ pub fn location_admission(
 pub(crate) fn check_location_admission(
     tx: &Transaction<'_>,
     payload: &Value,
+    exact_legacy_reservation: bool,
 ) -> Result<(), LocationError> {
     let Some(saved) = payload.get(LOCATION_ADMISSION_FIELD) else {
-        // Existing reserved envelopes predate this fence. Their retained outbox
-        // already prevents project deletion while they remain unresolved.
-        return Ok(());
+        // Only a caller-proven exact pre-existing envelope may use the legacy
+        // format. Fresh reservations always require their checked lifetime.
+        return if exact_legacy_reservation {
+            Ok(())
+        } else {
+            Err(LocationError::Refused(
+                "A checked project location admission is required",
+            ))
+        };
     };
     let expected: LocationAdmission = serde_json::from_value(saved.clone())
         .map_err(|_| LocationError::Refused("Invalid project location admission"))?;

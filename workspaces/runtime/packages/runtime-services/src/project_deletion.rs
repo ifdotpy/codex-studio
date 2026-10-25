@@ -347,14 +347,13 @@ fn membership(
         let owned = match binding(agent) {
             Ok(Some((p, s))) => projects.contains(p) && s == server,
             Ok(None) => {
-                agent.get("parentId").is_none_or(|parent| {
-                    parent.is_null() || parent.as_str().is_some_and(|id| !agents.contains_key(id))
-                }) && agent
-                    .get("hostProjectPath")
-                    .filter(|v| !v.is_null())
-                    .or_else(|| agent.get("cwd"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|p| paths.contains(p))
+                agent.get("parentId").is_none_or(Value::is_null)
+                    && agent
+                        .get("hostProjectPath")
+                        .filter(|v| !v.is_null())
+                        .or_else(|| agent.get("cwd"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|p| paths.contains(p))
             }
             Err(_) => {
                 // Refuse malformed records that can belong to this project;
@@ -390,6 +389,30 @@ fn membership(
         }
         if count == selected.len() {
             break;
+        }
+    }
+    // Association is enough to block an ambiguous operation, never enough to
+    // select a chat. Otherwise its surviving folder/path could recreate the
+    // deleted navigation group. Only explicit binding or parent ancestry owns
+    // an orphan; exact-path legacy fallback applies to actual roots only.
+    for (id, agent) in agents {
+        let associated = selected.contains(id)
+            || agent
+                .get("rootId")
+                .and_then(Value::as_str)
+                .is_some_and(|root| selected.contains(root))
+            || ["hostProjectPath", "cwd"].iter().any(|field| {
+                agent
+                    .get(*field)
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| paths.contains(path))
+            })
+            || agent
+                .get("projectId")
+                .and_then(Value::as_str)
+                .is_some_and(|project| projects.contains(project));
+        if associated && !selected.contains(id) {
+            return Err(Error::Membership);
         }
     }
     for id in &selected {

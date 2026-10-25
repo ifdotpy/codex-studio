@@ -333,6 +333,7 @@ async fn project_deletion_remote_and_ambiguous_membership_fail_closed() {
     }
     for patch in [
         json!({"projectId":"/prefix","projectServerId":"owner"}),
+        json!({"parentId":"child"}),
         json!({"parentId":"child","projectId":"/p","projectServerId":"owner"}),
         json!({"remoteWorker":{"serverId":"remote"}}),
     ] {
@@ -759,7 +760,7 @@ async fn project_deletion_refuses_unresolved_move_before_any_agent_redirect() {
 }
 
 #[tokio::test]
-async fn project_deletion_does_not_select_an_unbound_orphan_by_root_id() {
+async fn project_deletion_refuses_an_unbound_orphan_associated_by_root_id() {
     let f = Fixture::new(
         vec![
             agent("lead", None, "/p"),
@@ -770,8 +771,9 @@ async fn project_deletion_does_not_select_an_unbound_orphan_by_root_id() {
     )
     .await;
     let (status, r) = f.call(f.body.clone()).await;
-    assert_eq!(status, 200, "{r}");
-    assert_eq!(r["deletedAgentIds"], json!(["lead"]));
+    assert_eq!(status, 409, "{r}");
+    assert_eq!(r["code"], "project_membership_conflict");
+    assert_eq!(f.agent("lead")["epoch"], 1);
     assert_eq!(f.agent("unbound-orphan")["epoch"], 1);
 }
 
@@ -926,4 +928,16 @@ async fn project_deletion_unknown_commit_without_receipt_retries_the_same_intent
     assert_eq!(abort.wakes.load(Ordering::SeqCst), 1);
     assert_eq!(f.call(f.body.clone()).await, (200, reply));
     assert_eq!(f.agent("lead")["epoch"], 2);
+}
+
+#[tokio::test]
+async fn project_deletion_refuses_an_unbound_orphan_associated_by_project_folder() {
+    let mut orphan = agent("orphan", Some("missing"), "/p");
+    orphan["rootId"] = json!("unknown-root");
+    let f = Fixture::new(vec![agent("lead", None, "/p"), orphan], vec![], false).await;
+    let (status, r) = f.call(f.body.clone()).await;
+    assert_eq!(status, 409, "{r}");
+    assert_eq!(r["code"], "project_membership_conflict");
+    assert_eq!(f.agent("lead")["epoch"], 1);
+    assert_eq!(f.agent("orphan")["epoch"], 1);
 }
