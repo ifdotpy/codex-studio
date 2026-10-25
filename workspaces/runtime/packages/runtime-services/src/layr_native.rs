@@ -6,7 +6,7 @@ pub use studio_runtime_store::NATIVE_LAYR_DIRECTORY;
 /// Store directory below the native installation directory, outside project checkouts.
 pub const STORE_DIRECTORY: &str = "store";
 /// Host Layr release required by Studio's command contract.
-pub const LAYR_VERSION: &str = "0.2.0";
+pub const LAYR_VERSION: &str = "0.2.1";
 
 pub fn store_path(state_dir: &Path) -> PathBuf {
     state_dir.join(NATIVE_LAYR_DIRECTORY).join(STORE_DIRECTORY)

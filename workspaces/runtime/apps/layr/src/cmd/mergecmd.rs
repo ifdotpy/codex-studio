@@ -323,10 +323,15 @@ fn check_approvals(
     Ok(())
 }
 
-/// The checks of a protected line, on the state the line would take. They run as the caller
-/// without the project lock; a passing check of the same state and command is reused. Then the
-/// lock is taken again and the line must still be at `head`. Returns the lock (held until the
-/// merge finishes) and the paths with local changes in the line's folder now.
+/// The authorization and reviewed source before the merge releases the project lock.
+struct MergeGuard<'a> {
+    expect: bool,
+    rule: Option<&'a crate::access::Rule>,
+    source: &'a str,
+}
+
+/// Run checks without the project lock. After taking it again, revalidate the target,
+/// permission, protection and check commands before the merge can install its result.
 #[allow(clippy::too_many_arguments)]
 fn run_line_checks(
     ctx: &Ctx,
@@ -335,9 +340,11 @@ fn run_line_checks(
     head: &str,
     candidate: &str,
     checks: &[String],
+    guard: &MergeGuard<'_>,
     quiet: bool,
     queue: Option<&QueuedMerge<'_>>,
 ) -> Result<(crate::store::Lock, std::collections::BTreeSet<String>)> {
+    let mut commands = Vec::new();
     for name in checks {
         let cmd =
             repo.p.config_value(&format!("check.{name}"))?.and_then(|v| v.as_str().map(|s| s.to_string())).ok_or_else(|| {
@@ -349,6 +356,7 @@ fn run_line_checks(
                     ),
                 )
             })?;
+        commands.push((name, cmd.clone()));
         let argv = layr_model::protection::check_argv(&cmd);
         let evidence = layr_model::protection::required_check(
             name,
@@ -391,6 +399,19 @@ fn run_line_checks(
     let now = repo.line(&line.id)?;
     if now.head != head {
         return Err(target_moved(&line.name));
+    }
+    let rule = repo.authorize_line(ctx, &now, crate::repo::LineOp::Merge { expect: guard.expect })?;
+    if rule.as_ref() != guard.rule {
+        return Err(exit(1, "merge protection changed during checks; run the merge again"));
+    }
+    for (name, command) in commands {
+        if repo.p.config_value(&format!("check.{name}"))?.and_then(|v| v.as_str().map(str::to_owned)).as_ref() != Some(&command) {
+            return Err(exit(1, format!("merge check '{name}' changed during checks; run the merge again")));
+        }
+    }
+    check_paths(ctx, repo, &now, rule.as_ref(), head, candidate)?;
+    if candidate != head {
+        check_approvals(ctx, repo, &now, rule.as_ref(), head, guard.source)?;
     }
     let (st, _scan, _it, _idx) = repo.status(&now)?;
     Ok((lock, local_paths(repo, &now, &st)?))
@@ -559,12 +580,28 @@ fn merge_rev_inner(
     a: &crate::args::Parsed,
     queue: Option<&QueuedMerge<'_>>,
 ) -> Result<i32> {
+    // Pin the expectation before waiting, but resolve the source only under the project lock.
+    let want = a
+        .get("--expect")
+        .map(|e| if queue.is_some() { Ok(e.to_string()) } else { revs::resolve(repo, Some(line), e) })
+        .transpose()?;
+    let expect = want.is_some();
+    repo.authorize_line(ctx, line, crate::repo::LineOp::Merge { expect })?;
+    let lock = repo.p.lock()?;
+    let line = repo.line(&line.id)?;
+    if let Some(q) = queue {
+        if line.head != q.expected_head {
+            return Err(target_moved(&line.name));
+        }
+        if repo.p.db.queue_entry(&q.entry.id)?.as_ref() != Some(q.entry) {
+            return Err(exit(1, "queue entry changed before the merge"));
+        }
+    }
     let (theirs, theirs_line) = match queue {
         Some(q) => (q.entry.state.clone(), None),
-        None => (revs::resolve(repo, Some(line), rev)?, repo.p.db.line_by_name(rev)?),
+        None => (revs::resolve(repo, Some(&line), rev)?, repo.p.db.line_by_name(rev)?),
     };
-    if let Some(e) = a.get("--expect") {
-        let want = if queue.is_some() { e.to_string() } else { revs::resolve(repo, Some(line), e)? };
+    if let Some(want) = want {
         if want != theirs {
             return Err(exit(
                 1,
@@ -576,24 +613,9 @@ fn merge_rev_inner(
             ));
         }
     }
-    let expect = a.get("--expect").is_some();
-    let (lock, w) = if let Some(q) = queue {
-        repo.authorize_line(ctx, line, crate::repo::LineOp::Merge { expect })?;
-        let lock = repo.p.lock()?;
-        let now = repo.line(&line.id)?;
-        if now.head != q.expected_head {
-            return Err(target_moved(&line.name));
-        }
-        if repo.p.db.queue_entry(&q.entry.id)?.as_ref() != Some(q.entry) {
-            return Err(exit(1, "queue entry changed before the merge"));
-        }
-        let working = repo.working_state(ctx, &now, "before a queued merge")?;
-        (lock, working)
-    } else {
-        work::begin(ctx, repo, line, crate::repo::LineOp::Merge { expect })?
-    };
-    let rule = repo.policy().rule_for(&line.name);
-    let line = repo.line(&line.id)?;
+    let rule = repo.authorize_line(ctx, &line, crate::repo::LineOp::Merge { expect })?;
+    let w = repo.working_state(ctx, &line, if queue.is_some() { "before a queued merge" } else { "before a layr command" })?;
+    let guard = MergeGuard { expect, rule: rule.as_ref(), source: &theirs };
     let head = line.head.clone();
     let label = theirs_line.as_ref().map(|l| l.name.clone()).unwrap_or_else(|| rev.to_string());
     let message = a.get("-m").map(|s| s.to_string()).unwrap_or_else(|| {
@@ -612,7 +634,7 @@ fn merge_rev_inner(
         if queue.is_some() {
             let _relock = if queue.is_some_and(|q| q.run_probes) {
                 drop(lock);
-                Some(run_line_checks(ctx, repo, &line, &head, &head, &[], true, queue)?.0)
+                Some(run_line_checks(ctx, repo, &line, &head, &head, &[], &guard, true, queue)?.0)
             } else {
                 None
             };
@@ -700,7 +722,7 @@ fn merge_rev_inner(
         check_approvals(ctx, repo, &line, rule.as_ref(), &head, &theirs)?;
         if !checks.is_empty() || run_probes {
             drop(lock);
-            let (l, paths) = run_line_checks(ctx, repo, &line, &head, &theirs, &checks, quiet, queue)?;
+            let (l, paths) = run_line_checks(ctx, repo, &line, &head, &theirs, &checks, &guard, quiet, queue)?;
             _relock = Some(l);
             local = paths;
         }
@@ -768,7 +790,7 @@ fn merge_rev_inner(
         rec.data = serde_json::json!({"line": line.id, "theirs": theirs});
         repo.commit_record(ctx, rec)?;
         drop(lock);
-        let (l, paths) = run_line_checks(ctx, repo, &line, &head, &sid, &checks, quiet, queue)?;
+        let (l, paths) = run_line_checks(ctx, repo, &line, &head, &sid, &checks, &guard, quiet, queue)?;
         _relock = Some(l);
         local = paths;
     }

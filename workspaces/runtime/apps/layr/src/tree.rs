@@ -69,14 +69,62 @@ impl Tree {
     }
 
     pub fn stat(&self, rel: &str) -> Option<Meta> {
+        self.stat_checked(rel).ok()
+    }
+
+    /// Read entry metadata without hiding a failed open or following a symbolic link.
+    pub fn stat_checked(&self, rel: &str) -> Result<Meta> {
         if rel.is_empty() {
-            let f = File::from(self.root.try_clone().ok()?);
-            return f.metadata().ok().map(|m| meta_of(&m));
+            let f = File::from(self.root.try_clone()?);
+            return Ok(meta_of(&f.metadata()?));
         }
-        let (d, n) = self.parent(rel).ok()?;
+        let (d, n) = self.parent(rel)?;
         // Open the entry itself (no follow) to get std metadata.
-        let fd = rustix::fs::openat(&d, n, entry_flags() | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()).ok()?;
-        File::from(fd).metadata().ok().map(|m| meta_of(&m))
+        let fd =
+            rustix::fs::openat(&d, n, entry_flags() | OFlags::CLOEXEC, Mode::empty()).with_context(|| format!("stat {rel}"))?;
+        Ok(meta_of(&File::from(fd).metadata()?))
+    }
+
+    /// Copy directory metadata through descriptors, after its children have been copied.
+    pub fn copy_directory_metadata(&self, from: &str, to: &str) -> Result<()> {
+        let source = File::from(self.dir(from)?);
+        let destination = File::from(self.dir(to)?);
+        crate::fsutil::copy_metadata(&source, &destination)
+    }
+
+    /// Create a new private directory before any cache content is copied into it.
+    pub fn mkdir_private(&self, rel: &str, own: Option<(u32, u32)>) -> Result<()> {
+        let (dir, name) = self.parent(rel)?;
+        rustix::fs::mkdirat(&dir, name, Mode::from_raw_mode(0o700))?;
+        if let Some((u, g)) = own {
+            self.chown(rel, u, g)?;
+        }
+        Ok(())
+    }
+
+    /// Copy attributes of the links themselves, without following either link or its parents.
+    pub fn copy_symlink_xattrs(&self, from: &str, to: &str) -> Result<()> {
+        let (source_dir, source_name) = self.parent(from)?;
+        let (destination_dir, destination_name) = self.parent(to)?;
+        #[cfg(target_os = "macos")]
+        {
+            // O_SYMLINK pins the link itself; descriptor xattr calls cannot follow its target.
+            let flags = OFlags::RDONLY | OFlags::SYMLINK | OFlags::NONBLOCK | OFlags::CLOEXEC;
+            let source = File::from(rustix::fs::openat(&source_dir, source_name, flags, Mode::empty())?);
+            let destination = File::from(rustix::fs::openat(&destination_dir, destination_name, flags, Mode::empty())?);
+            if !source.metadata()?.file_type().is_symlink() || !destination.metadata()?.file_type().is_symlink() {
+                bail!("cache symlink changed while copying attributes");
+            }
+            crate::fsutil::copy_xattrs(&source, &destination)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            // /proc pins each parent by its live descriptor. The l* calls do not follow the leaf.
+            let source = PathBuf::from(format!("/proc/self/fd/{}/{source_name}", source_dir.as_raw_fd()));
+            let destination = PathBuf::from(format!("/proc/self/fd/{}/{destination_name}", destination_dir.as_raw_fd()));
+            crate::fsutil::copy_symlink_xattrs(&source, &destination)
+        }
     }
 
     /// Create the folders of `rel_dir` (replacing a non-folder in the way).
@@ -273,6 +321,16 @@ impl Tree {
         Ok(())
     }
 
+    /// Link a copied entry within the tree. Neither parent path can follow a symbolic link.
+    pub fn hard_link(&self, from: &str, to: &str) -> Result<()> {
+        let (source, source_name) = self.parent(from)?;
+        self.mkdirs_for(to, None)?;
+        let (destination, destination_name) = self.parent(to)?;
+        rustix::fs::linkat(&source, source_name, &destination, destination_name, AtFlags::empty())
+            .with_context(|| format!("link {from} to {to}"))?;
+        Ok(())
+    }
+
     pub fn rename(&self, from: &str, to: &str) -> Result<()> {
         #[cfg(feature = "overlayfs")]
         if crate::storage::contains_managed_tree(&self.path.join(from)) {
@@ -441,10 +499,11 @@ fn path_flags() -> OFlags {
 fn entry_flags() -> OFlags {
     #[cfg(target_os = "linux")]
     {
-        OFlags::PATH
+        OFlags::PATH | OFlags::NOFOLLOW
     }
     #[cfg(target_os = "macos")]
     {
+        // O_SYMLINK opens the link itself. Combining it with O_NOFOLLOW returns ELOOP.
         OFlags::RDONLY | OFlags::SYMLINK | OFlags::NONBLOCK
     }
 }

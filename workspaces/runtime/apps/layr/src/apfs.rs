@@ -800,6 +800,30 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an APFS test volume"]
+    fn populated_cache_conversion_keeps_clone_identity() -> Result<()> {
+        let s = Sandbox::new();
+        let work = s.0.join("work");
+        fs::create_dir_all(work.join("target"))?;
+        let source = work.join("target/data");
+        fs::write(&source, vec![42; 1024 * 1024])?;
+        let reference = s.0.join("reference");
+        crate::sys::apfs_clone(&source, &reference)?;
+        let identity = crate::sys::apfs_data_identity(&reference)?.clone_id;
+        assert!(identity.is_some());
+        assert!(crate::repo::convert_cache(
+            &work,
+            "target",
+            rustix::process::getuid().as_raw(),
+            rustix::process::getgid().as_raw()
+        )?);
+        assert_eq!(crate::sys::apfs_data_identity(&source)?.clone_id, identity);
+        fs::write(&source, b"new cache output")?;
+        assert_eq!(fs::read(&reference)?, vec![42; 1024 * 1024]);
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "requires a case-sensitive APFS test volume"]
     fn snapshot_preserves_files_and_excludes_layers() -> Result<()> {
         check_snapshot_files(true, true)

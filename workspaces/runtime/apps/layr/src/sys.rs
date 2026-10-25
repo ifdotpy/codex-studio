@@ -555,8 +555,8 @@ pub fn apfs_clone(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()
     let destination = open_parent(dst)?;
     let name = CString::new(dst.file_name().ok_or_else(|| io::Error::other("missing clone destination name"))?.as_bytes())?;
     // SAFETY: the descriptors stay live. Each path component was opened without following
-    // links. The destination is a single name. fclonefileat also supports macOS 14.
-    if unsafe { libc::fclonefileat(source.as_raw_fd(), destination.as_raw_fd(), name.as_ptr(), 0x0002) } != 0 {
+    // links. The destination is a single name. CLONE_NOOWNERCOPY | CLONE_ACL retains the ACL.
+    if unsafe { libc::fclonefileat(source.as_raw_fd(), destination.as_raw_fd(), name.as_ptr(), 0x0002 | 0x0004) } != 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -880,11 +880,22 @@ pub fn apfs_copy_metadata_fd(src: std::os::fd::BorrowedFd<'_>, dst: std::os::fd:
 }
 
 #[cfg(target_os = "macos")]
+pub fn apfs_copy_acl_fd(src: std::os::fd::BorrowedFd<'_>, dst: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: both descriptors remain open. Copy ACLs without replacing the layer marker.
+    if unsafe { libc::fcopyfile(src.as_raw_fd(), dst.as_raw_fd(), std::ptr::null_mut(), libc::COPYFILE_ACL) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 pub fn apfs_clone_at(src: std::os::fd::BorrowedFd<'_>, dir: std::os::fd::BorrowedFd<'_>, name: &str) -> io::Result<()> {
     use std::os::fd::AsRawFd;
     let name = CString::new(name)?;
     // SAFETY: both descriptors are live; name is one NUL-terminated component.
-    if unsafe { libc::fclonefileat(src.as_raw_fd(), dir.as_raw_fd(), name.as_ptr(), 0x0002) } != 0 {
+    // CLONE_NOOWNERCOPY | CLONE_ACL retains the source ACL with the caller's ownership.
+    if unsafe { libc::fclonefileat(src.as_raw_fd(), dir.as_raw_fd(), name.as_ptr(), 0x0002 | 0x0004) } != 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())

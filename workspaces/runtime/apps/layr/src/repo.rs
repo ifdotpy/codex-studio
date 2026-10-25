@@ -1925,19 +1925,22 @@ pub fn make_cache(w: &Path, path: &str, uid: u32, gid: u32) -> Result<()> {
 }
 
 /// Copy a folder within one tree (both sides may change under us: all through descriptors).
-fn copy_tree(t: &Tree, from: &str, to: &str, own: Option<(u32, u32)>) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+fn copy_tree(
+    t: &Tree,
+    from: &str,
+    to: &str,
+    own: Option<(u32, u32)>,
+    linked: &mut std::collections::HashMap<(u64, u64), String>,
+) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
     for name in t.list(from)? {
         let (s, d) = (format!("{from}/{name}"), format!("{to}/{name}"));
-        let m = match t.stat(&s) {
-            Some(m) => m,
-            None => continue,
-        };
+        let m = t.stat_checked(&s)?;
         match m.ftype {
             fsutil::FType::Dir => {
-                t.mkdirs(&d, own)?;
-                t.chmod(&d, m.mode)?;
-                copy_tree(t, &s, &d, own)?;
+                t.mkdir_private(&d, own)?;
+                copy_tree(t, &s, &d, own, linked)?;
+                t.copy_directory_metadata(&s, &d)?;
             }
             fsutil::FType::Symlink => {
                 let target = t.read_link(&s)?;
@@ -1945,20 +1948,36 @@ fn copy_tree(t: &Tree, from: &str, to: &str, own: Option<(u32, u32)>) -> Result<
                 if let Some((u, g)) = own {
                     t.chown(&d, u, g)?;
                 }
+                t.copy_symlink_xattrs(&s, &d)?;
             }
             fsutil::FType::File => {
                 let src = t.open_read(&s)?;
-                let dst = t.create(&d, m.mode)?;
-                if btrfs::clone_file(&src, &dst).is_err() {
+                let meta = src.metadata()?;
+                let inode = (meta.dev(), meta.ino());
+                if let Some(first) = linked.get(&inode) {
+                    t.hard_link(first, &d)?;
+                    continue;
+                }
+                #[cfg(target_os = "macos")]
+                let cloned = t.clone_new_file(&src, &d)?;
+                #[cfg(not(target_os = "macos"))]
+                let cloned: Option<std::fs::File> = None;
+                let (dst, cloned) = match cloned {
+                    Some(dst) => (dst, true),
+                    None => (t.create(&d, m.mode)?, false),
+                };
+                if !cloned && btrfs::clone_file(&src, &dst).is_err() {
                     std::io::copy(&mut &src, &mut &dst)?;
                 }
-                dst.set_permissions(std::fs::Permissions::from_mode(m.mode))?;
-                fsutil::set_mtime(&dst, m.mtime, 0)?;
+                fsutil::copy_metadata(&src, &dst)?;
                 if let Some((u, g)) = own {
                     t.chown(&d, u, g)?;
                 }
+                if meta.nlink() > 1 {
+                    linked.insert(inode, d);
+                }
             }
-            fsutil::FType::Special => {}
+            fsutil::FType::Special => anyhow::bail!("cannot copy special cache entry {s}"),
         }
     }
     Ok(())
@@ -1996,20 +2015,26 @@ pub fn uncache(w: &Path, path: &str, uid: u32, gid: u32) -> Result<bool> {
 
 /// Replace the folder at `path` with a copy of its files in a new subvolume or plain folder.
 fn replace_folder(t: &Tree, path: &str, subvolume: bool, uid: u32, gid: u32) -> Result<()> {
-    let mode = t.stat(path).map(|m| m.mode).unwrap_or(0o755);
     let (tmp, old) = (format!("{path}.layr-new"), format!("{path}.layr-old"));
     for x in [&tmp, &old] {
         if t.stat(x).is_some() {
             t.remove(x)?;
         }
     }
-    if subvolume {
-        t.create_subvolume(&tmp)?;
-    } else {
-        t.mkdirs(&tmp, None)?;
-        t.chmod(&tmp, mode)?;
+    let copy = (|| {
+        if subvolume {
+            t.create_subvolume(&tmp)?;
+            t.chmod(&tmp, 0o700)?;
+        } else {
+            t.mkdir_private(&tmp, None)?;
+        }
+        copy_tree(t, path, &tmp, Some((uid, gid)), &mut std::collections::HashMap::new())?;
+        t.copy_directory_metadata(path, &tmp)
+    })();
+    if let Err(error) = copy {
+        t.remove(&tmp).with_context(|| format!("remove incomplete cache {tmp} after {error:#}"))?;
+        return Err(error);
     }
-    copy_tree(t, path, &tmp, Some((uid, gid)))?;
     t.rename(path, &old)?;
     t.rename(&tmp, path)?;
     t.chown(path, uid, gid)?;
@@ -2045,6 +2070,31 @@ pub fn holds_files(root: &Path, path: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod cache_copy_tests {
+    use super::*;
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+
+    #[test]
+    fn incomplete_cache_directories_are_private() -> Result<()> {
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = Scratch(std::env::temp_dir().join(format!("layr-copy-{}", crate::ids::short(&crate::ids::new_id()))));
+        std::fs::create_dir_all(root.0.join("source/private"))?;
+        std::fs::set_permissions(root.0.join("source/private"), std::fs::Permissions::from_mode(0o700))?;
+        std::fs::create_dir(root.0.join("destination"))?;
+        let _socket = UnixListener::bind(root.0.join("source/private/socket"))?;
+        let tree = Tree::open(&root.0)?;
+        assert!(copy_tree(&tree, "source", "destination", None, &mut std::collections::HashMap::new()).is_err());
+        assert_eq!(std::fs::metadata(root.0.join("destination/private"))?.permissions().mode() & 0o777, 0o700);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

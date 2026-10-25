@@ -70,6 +70,12 @@ fn hostname() -> String {
 
 impl Store {
     pub fn open(root: &Path) -> Result<Store> {
+        if !root.exists() {
+            mkdir_mode(root, 0o755)?;
+        }
+        // Resolve aliases once at the store boundary. Paths inside a line still refuse links.
+        let canonical_root = root.canonicalize().context("resolve store root")?;
+        let root = canonical_root.as_path();
         #[cfg(not(feature = "overlayfs"))]
         if root.join(".layr-overlayfs").exists() {
             bail!("this store requires a layr build with the overlayfs feature");
@@ -78,9 +84,6 @@ impl Store {
         crate::storage::recover(root)?;
         let mdir = root.join("machine");
         if !mdir.join("key").exists() {
-            if !root.exists() {
-                mkdir_mode(root, 0o755)?;
-            }
             mkdir_mode(&mdir, 0o700)?;
             let id = ids::new_id();
             let key = SigningKey::generate(&mut rand::rngs::OsRng);

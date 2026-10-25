@@ -720,6 +720,53 @@ fn copy_entry_impl(
     finish(&d)
 }
 
+/// Copy metadata of a cache entry through its open descriptors. The destination keeps its
+/// layer identity, which is storage metadata rather than an attribute of the source folder.
+pub fn copy_metadata(src: &File, dst: &File) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsFd;
+        crate::sys::apfs_copy_acl_fd(src.as_fd(), dst.as_fd())?;
+    }
+    copy_xattrs(src, dst)?;
+    let meta = src.metadata()?;
+    dst.set_permissions(fs::Permissions::from_mode(meta.mode() & 0o7777))?;
+    set_mtime(dst, meta.mtime(), meta.mtime_nsec())
+}
+
+/// Copy extended attributes through descriptors without replacing a layer identity.
+pub fn copy_xattrs(src: &File, dst: &File) -> Result<()> {
+    let directory = src.metadata()?.is_dir();
+    let size = rustix::fs::flistxattr(src, &mut [] as &mut [u8])?;
+    let mut names = vec![0; size];
+    let size = rustix::fs::flistxattr(src, names.as_mut_slice())?;
+    for name in names[..size].split(|b| *b == 0).filter(|name| !name.is_empty()) {
+        if directory && name == b"com.layr.subvolume" {
+            continue;
+        }
+        let size = rustix::fs::fgetxattr(src, name, &mut [] as &mut [u8])?;
+        let mut value = vec![0; size];
+        let size = rustix::fs::fgetxattr(src, name, value.as_mut_slice())?;
+        rustix::fs::fsetxattr(dst, name, &value[..size], rustix::fs::XattrFlags::empty())?;
+    }
+    Ok(())
+}
+
+/// Linux symlink descriptors do not support fgetxattr. The caller pins both parent folders.
+#[cfg(target_os = "linux")]
+pub fn copy_symlink_xattrs(src: &Path, dst: &Path) -> Result<()> {
+    let size = rustix::fs::llistxattr(src, &mut [] as &mut [u8])?;
+    let mut names = vec![0; size];
+    let size = rustix::fs::llistxattr(src, names.as_mut_slice())?;
+    for name in names[..size].split(|b| *b == 0).filter(|name| !name.is_empty()) {
+        let size = rustix::fs::lgetxattr(src, name, &mut [] as &mut [u8])?;
+        let mut value = vec![0; size];
+        let size = rustix::fs::lgetxattr(src, name, value.as_mut_slice())?;
+        rustix::fs::lsetxattr(dst, name, &value[..size], rustix::fs::XattrFlags::empty())?;
+    }
+    Ok(())
+}
+
 pub fn set_mtime(f: &File, sec: i64, nsec: i64) -> Result<()> {
     let ts = rustix::fs::Timestamps {
         last_access: rustix::fs::Timespec { tv_sec: 0, tv_nsec: rustix::fs::UTIME_OMIT },

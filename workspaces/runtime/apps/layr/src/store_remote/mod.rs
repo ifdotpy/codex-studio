@@ -359,8 +359,9 @@ impl Store {
     }
 
     pub fn push(&mut self, ctx: &Ctx, repo: &mut Repo, opts: &Options) -> Result<Report> {
-        self.connect(ctx)?;
         repo.require(ctx, "sync")?;
+        repo.require(ctx, "records")?;
+        self.connect(ctx)?;
         if repo.p.is_overlay() {
             bail!("private overlay projects cannot be pushed to a store");
         }
@@ -373,10 +374,11 @@ impl Store {
     }
 
     pub fn fetch(&mut self, ctx: &Ctx, repo: &mut Repo, opts: &Options) -> Result<Report> {
-        self.connect(ctx)?;
         if !repo.p.id.is_empty() {
             repo.require(ctx, "sync")?;
+            repo.require(ctx, "records")?;
         }
+        self.connect(ctx)?;
         if self.backend.get("vault.json")?.is_some() && self.backend.get("store.json")?.is_none() {
             bail!("Desk v1 is read only; use layr clone with LAYR_PAPER_KEY_FILE");
         }

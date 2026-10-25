@@ -88,7 +88,7 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 }
             }
             for p in &caches {
-                let _ = crate::repo::convert_cache(&repo.working(&l), p, u, g);
+                crate::repo::convert_cache(&repo.working(&l), p, u, g)?;
             }
             Some(repo.caches_state(ctx, &l, &msg, a.has("--running"), &caches)?)
         } else {

@@ -721,6 +721,9 @@ fn exchange(ctx: &Ctx, args: &[String], op: &str) -> Result<i32> {
     h.repo.require(ctx, if op == "push" { "push" } else { "sync" })?;
     match remote_kind {
         Kind::Peer { host, project } => {
+            // Peer exchange transfers signed records as well as states.
+            h.repo.require(ctx, "sync")?;
+            h.repo.require(ctx, "records")?;
             let command = if a.has("--command") {
                 if a.paths.is_empty() {
                     bail!("--command needs -- <command> [<args>]");
@@ -747,6 +750,8 @@ fn exchange(ctx: &Ctx, args: &[String], op: &str) -> Result<i32> {
             }
         }
         Kind::Store => {
+            h.repo.require(ctx, "sync")?;
+            h.repo.require(ctx, "records")?;
             if a.has("--command") {
                 bail!("--command is available only for peer remotes");
             }
