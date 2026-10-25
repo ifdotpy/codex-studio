@@ -523,6 +523,7 @@ export function useMessages(
   enabled = true,
 ) {
   const { syncGet } = useServerApi();
+  const { watchResourceConnection } = useServerResources();
   const { peekTranscript } = useServerTranscripts();
   const transcript = useSubscription(
     enabled && kind === "agent" && id
@@ -611,6 +612,7 @@ export function useMessages(
     ),
     [connection, setConnection] = useState(""),
     [syncId, setSyncId] = useState<string | null>(null);
+  const connectionRef = useRef({ source: watchResourceConnection, value: "" });
   const latest = useRef<{ scope: string; data: TranscriptPageData } | null>(
     null,
   );
@@ -921,7 +923,6 @@ export function useMessages(
     setPageLoading(false);
     syncActive.current = null;
     setLiveAgent(null);
-    setConnection("");
     setNotice(retained?.notice || "");
     setBefore(page?.before || roomPage?.before || null);
     expanded.current = false;
@@ -956,7 +957,6 @@ export function useMessages(
       setSyncId(scope);
       accept(transcript.data, peekTranscript(syncWorkspaceId, id)?.seq);
     }
-    setConnection(transcript.status === "live" ? "live" : "reconnecting");
     if (transcript.error) setNotice(errorText(transcript.error));
   }, [
     id,
@@ -967,7 +967,6 @@ export function useMessages(
     scope,
     accept,
     transcript.data,
-    transcript.status,
     transcript.error,
   ]);
   useEffect(() => {
@@ -1031,6 +1030,39 @@ export function useMessages(
     roomSubscription.status,
     roomSubscription.error,
   ]);
+  useEffect(() => {
+    const updateConnection = (next: string) => {
+      if (
+        connectionRef.current.source === watchResourceConnection &&
+        connectionRef.current.value === next
+      )
+        return;
+      connectionRef.current = { source: watchResourceConnection, value: next };
+      setConnection(next);
+    };
+    if (kind !== "agent") return;
+    if (!id || !enabled || !managed) {
+      updateConnection("");
+      return;
+    }
+    // Subscription freshness also covers loading, errors and hidden screens.
+    // Only transport loss means that the chat is reconnecting.
+    return watchResourceConnection((status) => {
+      const previous =
+        connectionRef.current.source === watchResourceConnection
+          ? connectionRef.current.value
+          : "";
+      updateConnection(
+        status === "live"
+          ? "live"
+          : status === "degraded" ||
+              status === "offline" ||
+              (status === "connecting" && previous !== "")
+            ? "reconnecting"
+            : "",
+      );
+    });
+  }, [id, enabled, managed, kind, watchResourceConnection]);
   const fetchPage = async (query: {
     before?: string;
     after?: string;
@@ -1312,6 +1344,13 @@ export function useMessages(
     ensureMessage,
     reload: load,
     liveAgent: loadedId === scope ? liveAgent : null,
-    connection: loadedId === scope ? connection : "",
+    connection:
+      id &&
+      enabled &&
+      managed &&
+      kind === "agent" &&
+      connectionRef.current.source === watchResourceConnection
+        ? connection
+        : "",
   };
 }

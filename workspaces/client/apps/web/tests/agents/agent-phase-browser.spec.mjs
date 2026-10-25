@@ -4,7 +4,141 @@ import { createRequire } from "node:module";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect } from "../playwright.mjs";
+import { test, expect, createFixtureViteServer } from "../playwright.mjs";
+
+test("chat reconnect follows transport across hidden conversations", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  const root = join(import.meta.dirname, "../../");
+  const entry = join(root, "chat-connection-fixture.tsx");
+  const server = await createFixtureViteServer({
+    configFile: false,
+    root,
+    server: { host: "127.0.0.1", port: 0 },
+    plugins: [
+      {
+        name: "chat-connection-fixture",
+        configureServer(server) {
+          server.middlewares.use("/check", (_request, response) => {
+            response.setHeader("Content-Type", "text/html");
+            response.end(
+              '<div id="root"></div><script type="module" src="/chat-connection-fixture.tsx"></script>',
+            );
+          });
+        },
+        resolveId(id) {
+          if (id === "/chat-connection-fixture.tsx") return entry;
+        },
+        load(id) {
+          if (id !== entry) return;
+          return `
+import React, {useState} from 'react';
+import {createRoot} from 'react-dom/client';
+import {useMessages} from '/src/hooks.ts';
+import AgentPhase from '/src/components/agents/AgentPhase.tsx';
+import {ServerServicesProvider} from '/src/servers/ServerServicesContext.tsx';
+import {createSubscriptions} from '/src/sync/subscriptions/module.ts';
+import {SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS} from '/src/generated/sharedValues.ts';
+const connections = new Set();
+let transport = 'live';
+const refs = Object.fromEntries(['first','second'].map(agentId => [agentId, {kind:'transcript',agentId,tail:SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS}]));
+const payloads = Object.fromEntries(['first','second'].map(id => [id, {items:[],agent:{id,status:'running',activity:{phase:'writing'}}}]));
+const resources = createSubscriptions({
+  watchResourceChanges: () => () => {},
+  watchResourceConnection: accept => { connections.add(accept); accept(transport, 'open'); return () => connections.delete(accept); },
+}, (ref,accept) => { accept(payloads[ref.agentId]); return () => {}; });
+window.setConnection = value => { transport = value; for (const accept of connections) accept(value, 'open'); };
+window.phase = (id,phase) => { payloads[id] = {...payloads[id],agent:{...payloads[id].agent,activity:{phase}}}; resources.publish(refs[id],payloads[id]); };
+window.reads = [];
+window.renders = {first:0,second:0};
+window.connectionListeners = () => connections.size;
+const services = {owner:{id:'fixture',origin:location.origin},resources,api:{syncGet: (...args) => {window.reads.push(args); throw new Error('Unexpected read');}},transcripts:{peekTranscript:()=>undefined}};
+const otherConnections = new Set();
+const otherResources = createSubscriptions({
+  watchResourceChanges: () => () => {},
+  watchResourceConnection: accept => { otherConnections.add(accept); accept('connecting', 'opening'); return () => otherConnections.delete(accept); },
+}, (ref,accept) => { accept(payloads[ref.agentId]); return () => {}; });
+const otherServices = {...services,owner:{id:'other-server',origin:location.origin},resources:otherResources};
+function Chat({id,visible}) {
+  window.renders[id]++;
+  const messages = useMessages(id,'agent',true,'fixture','fixture',visible);
+  const agent = {id,source:'managed',status:'running',nativeStatus:{phase:'retrying',message:'Provider is reconnecting'},...messages.liveAgent};
+  return <section hidden={!visible} data-chat={id} data-connection={messages.connection} data-loaded={messages.loaded}><AgentPhase agent={agent} connection={messages.connection}/></section>;
+}
+function Harness() { const [selected,select] = useState('first'); const [other,selectServer] = useState(false); window.selectChat=select; window.selectServer=selectServer; return <ServerServicesProvider services={other ? otherServices : services}>{['first','second'].map(id=><Chat key={id} id={id} visible={id===selected}/>)}</ServerServicesProvider>; }
+createRoot(document.getElementById('root')).render(<Harness/>);`;
+        },
+      },
+    ],
+  });
+  const requests = [],
+    errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/api/**", (route) => {
+    requests.push(route.request().url());
+    return route.abort();
+  });
+  try {
+    await server.listen();
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/check`,
+    );
+    const first = page.locator('[data-chat="first"]');
+    const second = page.locator('[data-chat="second"]');
+    await expect(first).toHaveAttribute("data-loaded", "true");
+    await expect(first).toHaveAttribute("data-connection", "live");
+    await expect(first).toContainText("Writing");
+    await expect(second).toHaveAttribute("data-connection", "");
+    await page.evaluate(() => window.setConnection("offline"));
+    await expect(first).toContainText("Connection lost. Reconnecting…");
+    await page.evaluate(() => window.selectChat("second"));
+    await expect(second).toContainText("Connection lost. Reconnecting…");
+    await expect(first).toHaveAttribute("data-connection", "");
+    await page.evaluate(() => window.setConnection("connecting"));
+    await expect(second).toContainText("Connection lost. Reconnecting…");
+    await page.evaluate(() => window.setConnection("live"));
+    await expect(second).toHaveAttribute("data-connection", "live");
+    await expect(second).toContainText("Writing");
+    await page.evaluate(() => window.selectChat("first"));
+    await expect(first).toHaveAttribute("data-connection", "live");
+    await expect(first).toContainText("Writing");
+    await page.evaluate(() => window.phase("first", "retrying"));
+    await expect(first).toContainText("Provider is reconnecting");
+    await expect(first).not.toContainText("Connection lost.");
+    await page.evaluate(() => window.phase("first", "writing"));
+    await expect(first).toContainText("Writing");
+    await expect(first).not.toContainText("Provider is reconnecting");
+    expect(await page.evaluate(() => window.connectionListeners())).toBe(2);
+    const beforeRepeatedStatus = await page.evaluate(() => window.renders);
+    await page.evaluate(async () => {
+      for (let repeated = 0; repeated < 20; repeated++)
+        window.setConnection("live");
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      );
+    });
+    expect(await page.evaluate(() => window.renders)).toEqual(
+      beforeRepeatedStatus,
+    );
+    expect(await page.evaluate(() => window.connectionListeners())).toBe(2);
+    await page.evaluate(() => window.setConnection("offline"));
+    await expect(first).toContainText("Connection lost. Reconnecting…");
+    await page.evaluate(() => window.selectServer(true));
+    await expect(first).toHaveAttribute("data-connection", "");
+    await expect(first).not.toContainText("Connection lost.");
+    await page.evaluate(() => window.selectServer(false));
+    await expect(first).toContainText("Connection lost. Reconnecting…");
+    await page.evaluate(() => window.setConnection("live"));
+    await expect(first).toHaveAttribute("data-connection", "live");
+    expect(await page.evaluate(() => window.connectionListeners())).toBe(2);
+    expect(await page.evaluate(() => window.reads)).toEqual([]);
+    expect(requests).toEqual([]);
+    expect(errors).toEqual([]);
+  } finally {
+    await server.close();
+  }
+});
 
 test("agent phase browser", async ({ page: runnerPage }) => {
   const root = join(import.meta.dirname, "../../");

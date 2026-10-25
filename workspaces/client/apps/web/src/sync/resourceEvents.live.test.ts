@@ -609,6 +609,51 @@ it("sends applied ref cursors on re-add and reconnect with zero pulls", async ()
   ).toBe(false);
 });
 
+it.each([false, true])(
+  "recovers an unchanged transcript baseline after transport loss (hidden=%s)",
+  async (hidden) => {
+    const f = await fixture();
+    const store = createSubscriptionStore(f.transport);
+    disposals.push(store.dispose);
+    const resource = { kind: "transcript", agentId: "recovered-chat" } as const;
+    const cursor = { workspaceId: "workspace", seq: 41 };
+    f.readCursor.mockResolvedValue(cursor);
+    let stop = store.watchResourceChanges(resource, vi.fn());
+    await vi.advanceTimersByTimeAsync(50);
+    f.source.emit("subscriptions", { gen: 1 });
+    const baseline = {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision: 41,
+      reason: "initial",
+      resources: [resource],
+      resourceVersions: [{ revision: 41, cursor, replyKind: "delta" }],
+    };
+    f.source.emit("resources", baseline);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getSnapshot(resource).status).toBe("live");
+    f.source.onerror?.();
+    expect(store.getSnapshot(resource).status).toBe("stale");
+    if (hidden) stop();
+    await vi.advanceTimersByTimeAsync(1000);
+    const resumed = f.sources.at(-1)!;
+    expect(resumed).not.toBe(f.source);
+    resumed.emit("api-schema", { hash: API_SCHEMA_HASH });
+    resumed.emit("resources", { ...baseline, reason: "reconnect" });
+    await vi.advanceTimersByTimeAsync(0);
+    if (hidden) {
+      expect(store.getSnapshot(resource).status).toBe("stale");
+      stop = store.watchResourceChanges(resource, vi.fn());
+    }
+    expect(store.getSnapshot(resource).status).toBe("live");
+    expect(f.get.mock.calls.map(([path]) => path)).toEqual([
+      "/api/sync/identity",
+    ]);
+    stop();
+  },
+);
+
 it("T28 recently viewed chat switching sends no subscription changes within grace", async () => {
   const measurements: {
     mode: string;

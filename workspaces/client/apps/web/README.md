@@ -198,6 +198,12 @@ Mutating HTTP requests with a hash mismatch receive the marked reload-required
 response.
 These UI updates do not call the model.
 
+The conversation's Reconnecting banner follows its server's transport state.
+An inactive transcript subscription, initial loading, or a projection error does
+not mean the connection was lost. Hidden conversations drop their connection
+listener and read the current transport state when shown again. Provider retry
+messages remain part of the agent's runtime phase, independently of transport.
+
 Draft recovery journal and local record writes happen synchronously on each
 edit. RxDB coalesces upstream draft pushes according to the wait policy in
 [`src/sync/client.ts`](src/sync/client.ts), while resume and the journal rescan
