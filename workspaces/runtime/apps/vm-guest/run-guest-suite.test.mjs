@@ -14,7 +14,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { stopSuiteProcesses, suiteProcesses } from "./run-guest-suite.mjs";
+import {
+  stopSuiteProcesses,
+  suiteProcesses,
+  suiteTemporaryBase,
+} from "./run-guest-suite.mjs";
 
 function runnerFixture({ probeFails = false, suiteFails = false } = {}) {
   const folder = mkdtempSync(path.join(os.tmpdir(), "guest-runner-boundary-"));
@@ -59,10 +63,7 @@ if (${probeFails === true || probeFails === name} || (${JSON.stringify(name)}===
     for (const call of calls()) {
       if (call.name !== "suite") continue;
       assert.match(path.basename(call.temporary), /^g[^/]+$/);
-      assert.equal(
-        path.dirname(call.temporary),
-        process.platform === "darwin" ? "/private/tmp" : os.tmpdir(),
-      );
+      assert.equal(path.dirname(call.temporary), suiteTemporaryBase());
       rmSync(call.temporary, { recursive: true, force: true });
     }
     rmSync(folder, { recursive: true, force: true });

@@ -303,6 +303,40 @@ test("native platform filter keeps every common clause identical", () => {
   assert.match(source, /inherits = "ci"/);
 });
 
+test("only the two exact Git process fixtures reserve all fast runner slots", () => {
+  const source = readFileSync(".config/nextest.toml", "utf8");
+  const expectedFilter =
+    "package(=studio-runtime-services) & kind(lib) & (test(=agent_management_store::archive_finished_tests::archive_finished_removes_accepted_worktree_and_target_and_keeps_dirty_work) | test(=task_gate::tests::acceptance_gate_command_checks_revision_source_changes_and_exit_code))";
+  const reservations = [
+    ...source.matchAll(
+      /\[\[profile\.([^\].]+)\.overrides\]\]\n([\s\S]*?)(?=\n\[|$)/g,
+    ),
+  ]
+    .filter((match) => /^threads-required\s*=/m.test(match[2]))
+    .map((match) => ({
+      profile: match[1],
+      filter: match[2].match(/^filter = '([^']+)'$/m)?.[1],
+      slots: match[2].match(/^threads-required = "([^"]+)"$/m)?.[1],
+      settings: [...match[2].matchAll(/^([a-z-]+)\s*=/gm)].map(
+        (setting) => setting[1],
+      ),
+    }));
+  assert.deepEqual(reservations, [
+    {
+      profile: "fast",
+      filter: expectedFilter,
+      slots: "num-test-threads",
+      settings: ["filter", "threads-required"],
+    },
+  ]);
+  assert.equal(
+    [...source.matchAll(/^threads-required\s*=/gm)].length,
+    1,
+    "the reservation must not become a profile-wide default",
+  );
+  assert.doesNotMatch(source, /^test-threads\s*=\s*1\s*$/m);
+});
+
 test("non-Cargo output may quote nextest installation guidance without failing the gate", async () => {
   const { execute } = await import("../facade.mjs");
   const output =

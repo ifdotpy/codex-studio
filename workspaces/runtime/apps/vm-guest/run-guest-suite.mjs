@@ -42,6 +42,11 @@ const POLL_MS = 100;
 const guest = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(guest, "../../../..");
 
+/** Base directory for owned suite folders; Mac socket paths require a short base. */
+export function suiteTemporaryBase() {
+  return process.platform === "darwin" ? "/private/tmp" : os.tmpdir();
+}
+
 function fail(message) {
   console.error(`run-guest-suite: ${message}`);
   process.exit(1);
@@ -243,8 +248,7 @@ function main() {
       `${supervisor} is missing; run cargo build -p studio-process-supervisor --locked first`,
     );
 
-  const base = process.platform === "darwin" ? "/private/tmp" : os.tmpdir();
-  const temporary = mkdtempSync(path.join(base, "g"));
+  const temporary = mkdtempSync(path.join(suiteTemporaryBase(), "g"));
   let run;
   let leaked = [];
   try {
