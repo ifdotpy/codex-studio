@@ -3151,8 +3151,11 @@ function shutdown() {
   if (closing) return closing;
   closing = (async () => {
     const activeQueries = [...queries.entries()];
-    // The existing CLI-exit limit bounds teardown, including a stuck consumer.
-    const deadline = Date.now() + limits.exitWaitMs;
+    // Maximum graceful shutdown drain, in milliseconds; never wait for the
+    // CLI process-exit budget when its SDK consumer cannot finish.
+    const SHUTDOWN_DRAIN_LIMIT_MS = 2_000;
+    const deadline =
+      Date.now() + Math.min(limits.exitWaitMs, SHUTDOWN_DRAIN_LIMIT_MS);
     const bounded = async (operation) => {
       let timer;
       try {

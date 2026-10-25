@@ -86,7 +86,7 @@ Exact model keys take precedence over pricing aliases; aliases with conflicting
 window candidates remain unknown. A persisted query-wide window has unknown model provenance and is not used to
 seed response accounting after a restart. Background responses retain the
 turn that created their parent tool, even after that turn completes. Shutdown
-waits for the SDK consumer within the CLI-exit deadline, reports remaining gaps,
+waits for the SDK consumer within the short shutdown drain deadline, reports remaining gaps,
 and flushes queued notifications before exiting. The bridge integration tests
 and inline scripted SDK remain outside the strict TypeScript program because
 the shared bridge harness is untyped; SDK data fixtures and normalizer unit tests

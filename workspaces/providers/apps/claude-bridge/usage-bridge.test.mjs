@@ -2,6 +2,7 @@
 import { afterEach, expect, test } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { waitForFile } from "./testing/file-signals.mjs";
 import { startBridge } from "./testing/bridge-harness.mjs";
 import {
   events,
@@ -20,10 +21,11 @@ export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222
 export const getSessionMessages=async()=>[];
 const events=${JSON.stringify(events)}, modelUsage=${JSON.stringify(modelUsage)},sdkResult=${JSON.stringify(sdkResult)},zeroResult=${JSON.stringify(zeroResult)};
 export function query({prompt,options}){
- const abort=new AbortController();let delayedClose=false,stuckClose=false;
+ const abort=new AbortController();let delayedClose=false,stuckClose=false,reportCloseTiming=false,closeAt;
+ process.once('exit',()=>{if(reportCloseTiming)process.stdout.write(JSON.stringify({method:'fixture/shutdownTiming',params:{durationMs:Date.now()-closeAt}})+'\\n');});
  const result=(zero=false)=>zero?zeroResult:{...sdkResult,modelUsage:{'claude-opus-5-5':modelUsage}};
  const stream=(event,parent=null)=>({type:'stream_event',event,parent_tool_use_id:parent});
- return {mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),initializationResult:async()=>({commands:[]}),setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},setMcpServers:async()=>({added:[],removed:[],errors:{}}),close(){if(stuckClose)return;if(delayedClose)setTimeout(()=>abort.abort(),20);else abort.abort();},interrupt:async()=>abort.abort(),
+ return {mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),initializationResult:async()=>({commands:[]}),setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},setMcpServers:async()=>({added:[],removed:[],errors:{}}),close(){closeAt??=Date.now();if(stuckClose)return;if(delayedClose)setTimeout(()=>abort.abort(),20);else abort.abort();},interrupt:async()=>abort.abort(),
  async *[Symbol.asyncIterator](){
   while(!abort.signal.aborted){
    const input=await prompt.next();if(input.done)return;
@@ -37,8 +39,8 @@ export function query({prompt,options}){
     yield {type:'assistant',parent_tool_use_id:'stuck-parent',uuid:'child-started',message:{id:'child-started',content:[{type:'text',text:'child-started'}]}};
     await new Promise(()=>{});
    }
-   if(text==='shutdown'||text==='shutdown-stuck'||text==='interrupt'){
-    delayedClose=text==='shutdown';stuckClose=text==='shutdown-stuck';
+   if(text==='shutdown'||text==='shutdown-stuck'||text==='shutdown-timing'||text==='interrupt'){
+    delayedClose=text==='shutdown';stuckClose=text==='shutdown-stuck'||text==='shutdown-timing';reportCloseTiming=text==='shutdown-timing';
     yield stream(events[0]);
     await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));
     if(text==='interrupt')yield zeroResult;
@@ -419,5 +421,41 @@ test("an exact model window wins over a later pricing alias with a larger contex
   expect(observations(b).find((o) => o.kind === "response")).toHaveProperty(
     "modelContextWindow",
     200000,
+  );
+});
+
+test("shutdown never spends the full CLI exit timeout on a stuck consumer", async () => {
+  const b = await startBridge(sdk, "claude-usage-shutdown-budget-", {
+    clock: true,
+    env: { STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "10000" },
+  });
+  bridges.push(b);
+  await start(b, "shutdown-timing");
+  await b.note((n) => n.method === "provider/generationStarted");
+  await b.close();
+  const timing = await b.note((n) => n.method === "fixture/shutdownTiming");
+  expect(timing.params.durationMs).toBeLessThanOrEqual(2000);
+});
+
+test("scripted Rust SDK close ends an aborted wait without inventing a successful response", async () => {
+  const fixture = await fs.readFile(
+    new URL(
+      "../../../runtime/apps/runtime-server/tests/fixtures/claude-sdk.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const b = await startBridge(fixture, "claude-usage-rust-close-");
+  bridges.push(b);
+  await start(b, "wait");
+  await waitForFile(path.join(b.root, ".sdk-inputs"));
+  await b.close();
+  expect(
+    b.notes
+      .filter((n) => n.method === "turn/completed")
+      .some((n) => n.params.turn.status === "completed"),
+  ).toBe(false);
+  expect(b.notes.some((n) => n.params?.item?.text === "Visible answer")).toBe(
+    false,
   );
 });
