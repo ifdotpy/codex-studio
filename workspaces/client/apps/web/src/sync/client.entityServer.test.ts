@@ -787,6 +787,9 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
       SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
     );
     queryProjection.mockClear();
+    expect(
+      mocks.syncGet.mock.calls.filter(([path]) => path === "/api/sync/pull"),
+    ).toEqual([]);
     const reads = mocks.syncGet.mock.calls.length;
     const worker = {
       id: "worker",

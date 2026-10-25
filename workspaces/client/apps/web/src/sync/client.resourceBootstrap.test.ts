@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   >(),
   watch: vi.fn(),
   watchConnection: vi.fn(),
+  stagingWrite: vi.fn(),
 }));
 vi.mock("rxdb", async (original) => {
   const actual = await original<typeof import("rxdb")>();
@@ -70,6 +71,36 @@ vi.mock("../usage/tokenRate", () => ({
   getWorkspaceTokenRates: vi.fn(() => ({ records: [] })),
 }));
 vi.mock("./resume", () => ({ onResume: () => () => {} }));
+vi.mock("./entityTransfer", async (original) => {
+  const actual = await original<typeof import("./entityTransfer")>();
+  return {
+    ...actual,
+    EntityTransferAssembler: class extends actual.EntityTransferAssembler {
+      constructor() {
+        const rows = new Map<string, string>();
+        super({
+          async put(key, value) {
+            rows.set(key, value);
+            mocks.stagingWrite();
+          },
+          async putMany(values) {
+            for (const [key, value] of values) rows.set(key, value);
+          },
+          async get(key) {
+            return rows.get(key);
+          },
+          async remove(prefix) {
+            for (const key of rows.keys())
+              if (key.startsWith(prefix)) rows.delete(key);
+          },
+          async close() {
+            rows.clear();
+          },
+        });
+      }
+    },
+  };
+});
 vi.mock("./entityCacheStorage", async (original) => ({
   ...(await original<typeof import("./entityCacheStorage")>()),
   holdEntityProjectionDatabaseLock: async () => true,
@@ -83,6 +114,7 @@ afterEach(async () => {
   mocks.syncGet.mockReset();
   mocks.watch.mockReset();
   mocks.watchConnection.mockReset();
+  mocks.stagingWrite.mockReset();
   mocks.changes.clear();
   mocks.connections.clear();
   vi.restoreAllMocks();
@@ -357,9 +389,13 @@ it("does not use HTTP recovery to bypass a schema-mismatched stream", async () =
   expect(f.snapshots).toEqual([]);
 });
 
-it.each([false, true])(
-  "transport follower=%s publishes readiness only after the actual RxDB receipt",
-  async (follower) => {
+it.each([
+  { follower: false, staged: false },
+  { follower: true, staged: false },
+  { follower: false, staged: true },
+])(
+  "transport follower=$follower staged=$staged publishes readiness only after the actual RxDB receipt",
+  async ({ follower, staged }) => {
     const f = await setup();
     vi.stubGlobal("location", { origin: "http://studio.test" });
     let peer!: (value: unknown) => void;
@@ -415,6 +451,14 @@ it.each([false, true])(
         await f.client.persistResourceEntityChanges(...args);
       },
     );
+    const persistStaged = vi.fn(
+      async (
+        ...args: Parameters<typeof f.client.persistStagedEntityTransfer>
+      ) => {
+        await gate;
+        await f.client.persistStagedEntityTransfer(...args);
+      },
+    );
     const { createResourceEvents } = await import("./resourceEvents");
     const transport = createResourceEvents({
       api: {
@@ -430,6 +474,7 @@ it.each([false, true])(
         syncDatabase: f.client.syncDatabase,
         persistResourceEntityChanges: persist,
         readSubscriptionCursor: f.client.readSubscriptionCursor,
+        persistStagedEntityTransfer: persistStaged,
       },
       tokenRates: {
         configureTokenRateStream: vi.fn(),
@@ -459,12 +504,53 @@ it.each([false, true])(
         expect(source.listeners.has("resources")).toBe(true),
       );
       source.emit("api-schema", { hash: API_SCHEMA_HASH });
-      source.emit("resources", f.frame(5));
+      if (staged) {
+        const frame = f.frame(5);
+        const encoded = JSON.stringify(frame.resourceVersions[0].entityChanges);
+        const split = Math.floor(encoded.length / 2);
+        const metadata = {
+          protocol: frame.protocol,
+          workspaceId: f.workspaceId,
+          epoch: frame.epoch,
+          revision: frame.revision,
+          reason: frame.reason,
+          resource: frame.resources[0],
+          cursor: { workspaceId: f.workspaceId, seq: 5 },
+          replyKind: "snapshot",
+          transferId: "cold-resource",
+          pageIndex: 0,
+          partCount: 2,
+        };
+        source.emit("entity-transfer", {
+          ...metadata,
+          partIndex: 0,
+          complete: false,
+          data: encoded.slice(0, split),
+        });
+        await vi.waitFor(() =>
+          expect(mocks.stagingWrite).toHaveBeenCalledOnce(),
+        );
+        expect(persistStaged).not.toHaveBeenCalled();
+        expect(
+          await f.client.readSubscriptionCursor({ kind: "state" }),
+        ).toBeUndefined();
+        expect(f.snapshots).toEqual([]);
+        expect(f.pulls()).toEqual([]);
+        source.emit("entity-transfer", {
+          ...metadata,
+          partIndex: 1,
+          complete: true,
+          data: encoded.slice(split),
+        });
+      } else source.emit("resources", f.frame(5));
     }
-    await vi.waitFor(() => expect(persist).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(staged ? persistStaged : persist).toHaveBeenCalledOnce(),
+    );
     expect(store.getSnapshot({ kind: "state" }).status).not.toBe("live");
     expect(f.snapshots).toEqual([]);
     expect(f.pulls()).toEqual([]);
+    if (staged) expect(persist).not.toHaveBeenCalled();
     finish();
     await vi.waitFor(() =>
       expect(store.getSnapshot({ kind: "state" }).status).toBe("live"),
