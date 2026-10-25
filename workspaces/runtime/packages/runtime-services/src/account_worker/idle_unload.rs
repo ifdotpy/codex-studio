@@ -1103,8 +1103,10 @@ mod tests {
     #[test]
     fn sleep_compaction_uses_the_actual_unload_clock_and_immediate_worker_policy() {
         let start = Instant::now();
-        let mut clocks = IdleClocks::default();
-        clocks.wall_clock = Some((start, 1000.0));
+        let mut clocks = IdleClocks {
+            wall_clock: Some((start, 1000.0)),
+            ..Default::default()
+        };
         clocks.thread_due("lead", true, start, DELAY);
         clocks.set_immediate("worker", true);
         assert!(clocks.thread_due("worker", true, start, DELAY));
