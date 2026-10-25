@@ -16,7 +16,12 @@ import {
   rewindSessionFiles,
 } from "./file-checkpoints.mjs";
 import { createAccountCheck } from "./account-identity.mjs";
-import { inputGroups, sdkInputMessages } from "./input-messages.mjs";
+import { readNativeHistory } from "./native-history.mjs";
+import {
+  inputGroups,
+  sdkInputMessages,
+  nativeInputIds,
+} from "./input-messages.mjs";
 // Claude Agent SDK adapter for Studio's existing local session protocol.
 import { interruptInputQueue } from "./stop-inputs.mjs";
 import { browserEnvironment } from "./browser-environment.mjs";
@@ -66,7 +71,7 @@ import {
   declaredTimeoutMs,
   durationText,
   watchStalls,
-  recordedInputIds,
+  inputHistoryOutcome,
   stallLimits,
   stallMessage,
 } from "./stall-watch.mjs";
@@ -1036,7 +1041,14 @@ function lifecycleFailure(s, active, error) {
   process.stderr.write(
     "Claude turn finalization failed: " + error.message + "\n",
   );
-  discardQuery(s, active);
+  // Watchdog failures must end a visible turn, even if the SDK never yields
+  // again. A finalizer already owns its completion and cannot be repeated.
+  if (!active.turn || finishingTurns.has(active.turn)) return;
+  return finishTurn(s, active, null, error).catch((failure) => {
+    process.stderr.write(
+      "Claude turn finalization failed: " + failure.message + "\n",
+    );
+  });
 }
 function deferResult(s, active, result) {
   active.deferredResult = result;
@@ -1050,19 +1062,68 @@ function deferResult(s, active, result) {
   }, limits.steerEchoGraceMs);
   active.resultTimer.unref();
 }
-async function finishTurn(s, active, result, error) {
+function finishTurn(s, active, result, error) {
   const turn = active.turn;
-  if (!turn) return;
+  if (!turn) return active.finalization || Promise.resolve();
   const finishing = finishingTurns.get(turn);
-  if (finishing) {
-    await finishing;
-    return;
-  }
-  let finished;
-  finishingTurns.set(turn, new Promise((resolve) => (finished = resolve)));
-  const stall = active.stall?.turnId === turn.id ? active.stall : null;
-  let closeError;
-  let closed = Boolean(stall?.closed);
+  if (finishing) return finishing;
+  const state = { closed: false, stall: null, unappliedSteers: [] };
+  // Install the shared outcome before finalization can await or throw.
+  const operation = Promise.resolve().then(async () => {
+    try {
+      await finalizeTurn(s, active, turn, result, error, state);
+    } catch (failure) {
+      active.persistFailure = failure;
+      turn.status = "failed";
+      turn.error = {
+        message: "Claude turn finalization failed: " + failure.message,
+      };
+      state.closed = true;
+      throw failure;
+    } finally {
+      clearTurnTimers(active);
+      active.toolClocks.clear();
+      if (active.turn === turn) active.turn = null;
+      if (state.stall) {
+        active.stall = null;
+        state.stall.ended();
+      }
+      catalogCache.activityChanged();
+      active.pendingSteers.clear();
+      active.assistantBlocks.clear();
+      if (state.closed) discardQuery(s, active);
+      emit("turn/completed", {
+        threadId: s.id,
+        turn: {
+          id: turn.id,
+          status: turn.status,
+          error: turn.error,
+          ...(state.unappliedSteers.length
+            ? { unappliedSteers: state.unappliedSteers }
+            : {}),
+          ...(turn.startOutcome === "not_applied"
+            ? {
+                startOutcome: "not_applied",
+                clientUserMessageId: turn.clientUserMessageId,
+              }
+            : {}),
+        },
+      });
+    }
+  });
+  finishingTurns.set(turn, operation);
+  active.finalization = operation;
+  // Every caller still receives this rejection, including callers joining
+  // after cleanup. Avoid an unobserved promise while a closed SDK unwinds.
+  operation.catch(() => {});
+  return operation;
+}
+async function finalizeTurn(s, active, turn, result, error, state) {
+  const stall = (state.stall =
+    active.stall?.turnId === turn.id ? active.stall : null);
+  let closeError = stall?.closeError;
+  error ||= closeError;
+  let closed = (state.closed = Boolean(stall?.closed));
   if (closed) await stall.closed;
   // A handed-off steer without an echo cannot coexist with a later turn on
   // this CLI. Stop it before finishing; only its final native history can
@@ -1076,7 +1137,7 @@ async function finishTurn(s, active, result, error) {
       ),
   );
   if (unknown && !closed) {
-    closed = true;
+    closed = state.closed = true;
     active.input.close();
     closeError = closeQuery(active);
     error ||= closeError;
@@ -1165,7 +1226,7 @@ async function finishTurn(s, active, result, error) {
   // Steer input still queued here was never read by Claude. Withdraw it so a
   // later turn cannot consume it, and report it; Studio queues it again once.
   // Input already handed to Claude without an echo has an unknown outcome.
-  const unappliedSteers = [];
+  const unappliedSteers = state.unappliedSteers;
   for (const item of turn.items) {
     if (item.delivery === "steer" && item.deliveryStatus === "cancelled") {
       unappliedSteers.push(item.id);
@@ -1194,38 +1255,9 @@ async function finishTurn(s, active, result, error) {
       studioUsage,
     });
   s.updatedAt = Math.floor(Date.now() / 1000);
-  try {
-    await persistLive(s, turn);
-    // This save diffed from the last saved state, so it also covers an
-    // earlier background save of this turn that failed.
-    active.persistFailure = null;
-  } finally {
-    finished();
-  }
-  active.turn = null;
-  if (stall) {
-    active.stall = null;
-    stall.ended();
-  }
-  catalogCache.activityChanged();
-  active.pendingSteers.clear();
-  active.assistantBlocks.clear();
-  if (closed) discardQuery(s, active);
-  emit("turn/completed", {
-    threadId: s.id,
-    turn: {
-      id: turn.id,
-      status: turn.status,
-      error: turn.error,
-      ...(unappliedSteers.length ? { unappliedSteers } : {}),
-      ...(turn.startOutcome === "not_applied"
-        ? {
-            startOutcome: "not_applied",
-            clientUserMessageId: turn.clientUserMessageId,
-          }
-        : {}),
-    },
-  });
+  await persistLive(s, turn);
+  // This save also covers any earlier background save of this turn.
+  active.persistFailure = null;
 }
 // Steer input handed to a CLI that the watchdog closed. The dead process can no
 // longer apply it, and Claude Code records a queued message without its text,
@@ -1239,26 +1271,35 @@ async function reconcileClosedSteers(s, turn, unapplied) {
       item.deliveryStatus === "submitted",
   );
   if (!open.length) return;
-  let recorded;
-  try {
-    const file = await nativeFile(s.nativeId || s.id, undefined, s.cwd);
-    recorded = recordedInputIds((await fs.readFile(file, "utf8")).split("\n"));
-  } catch (error) {
-    // Without history the outcome stays unknown; it is never sent again.
-    process.stderr.write(
-      "Claude stall: steer outcome unknown: " + error.message + "\n",
-    );
-    return;
-  }
+  const records = await readNativeHistory(s);
+  const initial = turn.items.find((item) => item.type === "userMessage");
   for (const item of open) {
-    const ids = item.nativeIds || [item.nativeId];
-    if (ids.every((id) => recorded.has(id))) {
+    const outcome = inputHistoryOutcome(
+      records?.map(({ row }) => row),
+      {
+        sessionId: s.nativeId || s.id,
+        cwd: s.nativeHistoryCwd || s.cwd,
+        anchorIds: nativeInputIds(initial),
+        inputIds: nativeInputIds(item),
+      },
+    );
+    if (outcome === "delivered") {
       item.deliveryStatus = "delivered";
       turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
-    } else if (ids.every((id) => !recorded.has(id))) {
+    } else if (outcome === "not_applied") {
       item.deliveryStatus = "not_applied";
       item.error = "Claude stopped before reading this steer";
       unapplied.push(item.id);
+    } else {
+      item.error =
+        "Claude steer outcome unknown: native history is incomplete or uncertain";
+      finishItem(s, turn, {
+        id: "uncertain-input:" + item.id,
+        type: "agentMessage",
+        phase: "commentary",
+        studioNotice: true,
+        text: item.error,
+      });
     }
   }
 }
@@ -1344,21 +1385,33 @@ async function recoverStall(s, active, found) {
     setTimeout(resolve, limits.exitWaitMs),
   );
   active.input.close();
-  active.q?.close();
+  stall.closeError = closeQuery(active);
+  if (stall.closeError)
+    turn.stallError = {
+      ...turn.stallError,
+      message: message + " " + stall.closeError.message,
+    };
   await stall.closed;
   // Closing normally ends the SDK stream, and its owner finishes the turn.
   // If the stream still has not ended, finish it here and drop the query.
   await new Promise((resolve) => setImmediate(resolve));
   if (active.turn !== turn || finishingTurns.has(turn)) return;
-  discardQuery(s, active);
   await finishTurn(
     s,
     active,
     null,
-    new Error("Claude did not stop after Studio closed it"),
-  );
+    stall.closeError || new Error("Claude did not stop after Studio closed it"),
+  ).catch((error) => lifecycleFailure(s, active, error));
 }
-const armStallWatch = watchStalls(queries, studioWaits, limits, recoverStall);
+const armStallWatch = watchStalls(
+  queries,
+  studioWaits,
+  limits,
+  (s, active, found) =>
+    recoverStall(s, active, found).catch((error) =>
+      lifecycleFailure(s, active, error),
+    ),
+);
 async function startSession(s, active, p) {
   const initial = active.turn;
   const startedAt = Date.now();
@@ -1569,7 +1622,7 @@ async function startSession(s, active, p) {
             item === active.turn.items[0] &&
             !process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING
           ) {
-            active.turn.nativeMessageId = m.uuid;
+            active.turn.nativeMessageId = item.nativeIds?.[0] || m.uuid;
             active.turn.fileCheckpointMessageId = m.uuid;
             active.turn.fileCheckpointSource = {
               nativeId: s.nativeId || s.id,
@@ -2041,7 +2094,14 @@ async function startSession(s, active, p) {
   } catch (error) {
     active.readyReject(error);
     drainUsage(s.id, active);
-    if (active.turn && !closing) await finishTurn(s, active, null, error);
+    if (active.turn && !closing) {
+      try {
+        await finishTurn(s, active, null, error);
+      } catch (failure) {
+        lifecycleFailure(s, active, failure);
+      }
+    } else if (active.persistFailure)
+      lifecycleFailure(s, active, active.persistFailure);
   } finally {
     clearTurnTimers(active);
     allowed = false;
@@ -2123,6 +2183,7 @@ function userMessage(s, turn, groups, id) {
   );
   const message = messages.at(-1);
   const item = turn.items.find((item) => item.id === id) || turn.items[0];
+  if (item === turn.items[0]) turn.nativeMessageId = messages[0].uuid;
   if (messages.length > 1) {
     item.nativeIds = messages.map((part) => part.uuid);
     // The queue removes this whole submission before yielding its first part.
@@ -2789,6 +2850,7 @@ async function handle(method, p) {
           "Claude background work started a turn; wait or steer that turn",
         );
       active.turn = turn;
+      active.finalization = null;
       active.idleRequestStartedAt = Date.now();
       active.reservingInput = true;
     }
