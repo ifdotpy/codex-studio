@@ -68,6 +68,7 @@ export default {
       "src/components/liveRequestConsumers.test.ts",
       "src/components/detailReads.noRefetch.test.ts",
       "src/components/streamConsumers.test.ts",
+      "src/components/shell/Tasks.test.ts",
       "src/components/readState.noRefetch.test.ts",
       "src/components/sidebarOrder.migration.test.ts",
       "src/components/ProjectServerCards.test.ts",

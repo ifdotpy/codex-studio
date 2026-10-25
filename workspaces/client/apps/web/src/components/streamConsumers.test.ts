@@ -322,12 +322,23 @@ it("process owner/task events consume process records without GET /api/processes
   );
   expect(h.get).not.toHaveBeenCalled();
 });
-it("work revision changes consume the stream without GET /api/work", () => {
+it("work changes consume the stream without GET /api/work", () => {
   h.nullRefs = 100;
-  h.data.set("work", { items: [], rootId: "lead" });
-  render(() => Tasks({ agentId: "lead", revision: 1 }));
-  h.data.set("work", { items: [], rootId: "lead" });
-  render(() => Tasks({ agentId: "lead", revision: 2 }));
+  h.data.set("agentDetail", { id: "lead", taskDefaultGate: null });
+  const task = {
+    id: "work",
+    rootId: "lead",
+    title: "Before",
+    status: "running",
+  };
+  h.data.set("work", { items: [task], tasks: [] });
+  const titles = () =>
+    elements(render(() => Tasks({ agentId: "lead" })))
+      .filter((node) => node.type === "strong")
+      .map((node) => node.props.children);
+  expect(titles()).toContain("Before");
+  h.data.set("work", { items: [{ ...task, title: "After" }], tasks: [] });
+  expect(titles()).toContain("After");
   expect(h.get).not.toHaveBeenCalled();
 });
 it("complaint version changes consume streamed detail without GET /api/complaint", () => {
