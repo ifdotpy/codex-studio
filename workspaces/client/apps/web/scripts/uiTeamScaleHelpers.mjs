@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { auditSummaryLines } from "./uiTeamScaleAudit.mjs";
 
-// Pure helpers of verify-ui-team-scale.mjs. Every value below has one owner:
+// Helpers of verify-ui-team-scale.mjs. Every value below has one owner:
 // this module for the verifier's own pacing and limits, the runtime for the
 // spawn batch size (`orchestration_spawn`, docs/orchestration.md).
 
@@ -45,6 +45,262 @@ export const WORKER_PROFILE_NAMES = Object.freeze([
   "codex-luna",
   "claude-haiku",
 ]);
+
+// Consume current resources and multipart entity-transfer frames. The server's
+// sync protocol and renderer resourceEvents.ts own these wire envelopes.
+export function createEntityFrameReader(accept) {
+  const parts = new Map();
+  return (name, frame) => {
+    if (name === "resources") {
+      for (const version of frame.resourceVersions) {
+        if (version.entityChanges) accept(version.entityChanges.documents);
+      }
+    } else if (name === "entity-transfer") {
+      const key = `${frame.transferId}:${frame.pageIndex}`;
+      const page = parts.get(key) || [];
+      assert.equal(
+        frame.partIndex,
+        page.length,
+        "Entity transfer parts arrived out of order.",
+      );
+      page.push(frame.data);
+      if (page.length === frame.partCount) {
+        parts.delete(key);
+        accept(JSON.parse(page.join("")).documents);
+      } else parts.set(key, page);
+    } else if (name === "api-schema" && frame.mismatch) {
+      throw new Error("Sync API schema mismatch.");
+    }
+  };
+}
+
+// A bounded connection attempt, then an explicitly owned SSE reader. Closing
+// aborts its fetch and waits for the reader before browser teardown returns.
+export async function openEntityStream({
+  origin,
+  token,
+  protocol,
+  resource,
+  timeoutMs,
+  receive,
+  failed,
+}) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error("Sync connection timed out.")),
+    timeoutMs,
+  );
+  const url = new URL(protocol.streamEndpoint, origin);
+  url.searchParams.set("protocol", String(protocol.protocolVersion));
+  url.searchParams.set("resources", JSON.stringify([resource]));
+  url.searchParams.set("tokenRates", "false");
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: { origin, "x-canvas-token": token },
+      signal: controller.signal,
+    });
+    assert.ok(
+      response.ok && response.body,
+      `Sync stream returned HTTP ${response.status}.`,
+    );
+  } catch (error) {
+    controller.abort();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  const done = (async () => {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for await (const chunk of response.body) {
+      buffer += decoder
+        .decode(chunk, { stream: true })
+        .replaceAll("\r\n", "\n");
+      let end;
+      while ((end = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, end);
+        buffer = buffer.slice(end + 2);
+        const lines = block.split("\n");
+        const name = lines
+          .find((line) => line.startsWith("event:"))
+          ?.slice(6)
+          .trim();
+        const data = lines
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n");
+        if (name && data) receive(name, JSON.parse(data));
+      }
+    }
+    if (!controller.signal.aborted)
+      throw new Error("Sync stream ended before teardown.");
+  })().catch((error) => {
+    if (!controller.signal.aborted) failed(error);
+  });
+  return {
+    close: async () => {
+      controller.abort();
+      await done;
+    },
+  };
+}
+
+// Global state publishes agentSummary; open-chat fields come from each owned
+// agentDetail subscription. Merge them like entityProjection.ts, with summary
+// identity/status fields authoritative. No server data is polled.
+export function createEntityReader(subscribe, onAgent, onEvent = () => {}) {
+  const summaries = new Map();
+  const details = new Map();
+  const streams = new Map();
+  const pending = new Set();
+  let rootId = null;
+  let failure = null;
+  let closed = false;
+  const owned = (value) =>
+    rootId !== null && (value.id === rootId || value.rootId === rootId);
+  const emit = (id) => {
+    const summary = summaries.get(id);
+    if (summary && owned(summary))
+      onAgent({ ...details.get(id), ...summary, deleted: false });
+  };
+  const start = (resource) => {
+    const key = JSON.stringify(resource);
+    if (closed || streams.has(key)) return;
+    const receive = createEntityFrameReader((documents) => {
+      for (const entity of documents) {
+        if (entity.collection === "event") {
+          onEvent(
+            entity.op === "delete"
+              ? { id: entity.id, deleted: true }
+              : entity.value,
+          );
+        } else if (entity.collection === "agentSummary") {
+          if (entity.op === "delete") {
+            const previous = summaries.get(entity.id);
+            summaries.delete(entity.id);
+            if (previous && owned(previous))
+              onAgent({ ...previous, deletedAt: true, deleted: true });
+          } else {
+            assert.equal(entity.op, "upsert");
+            summaries.set(entity.id, entity.value);
+            if (rootId && owned(entity.value))
+              start({ kind: "agentDetail", agentId: entity.id });
+            emit(entity.id);
+          }
+        } else if (entity.collection === "agentDetail") {
+          if (entity.op === "delete") details.delete(entity.id);
+          else {
+            assert.equal(entity.op, "upsert");
+            details.set(entity.id, entity.value);
+          }
+          emit(entity.id);
+        }
+      }
+    });
+    const opening = Promise.resolve().then(() =>
+      subscribe(resource, receive, (error) => {
+        failure ??= error;
+      }),
+    );
+    streams.set(key, opening);
+    pending.add(opening);
+    void opening
+      .catch((error) => {
+        failure ??= error;
+      })
+      .finally(() => pending.delete(opening));
+  };
+  const pull = async () => {
+    start({ kind: "state" });
+    await Promise.allSettled(pending);
+    if (failure) throw failure;
+  };
+  pull.watch = (id) => {
+    rootId = id;
+    start({ kind: "agentDetail", agentId: id });
+    for (const summary of summaries.values())
+      if (owned(summary)) {
+        start({ kind: "agentDetail", agentId: summary.id });
+        emit(summary.id);
+      }
+  };
+  pull.close = async () => {
+    closed = true;
+    await Promise.all(
+      [...streams.values()].map(async (opening) => {
+        const stream = await opening.catch(() => null);
+        await stream?.close();
+      }),
+    );
+  };
+  return pull;
+}
+
+// Global provider counts cannot identify a leak on a shared backend.
+export function cleanupVerified({
+  remaining,
+  leakedProviderPids,
+  leakedProcesses,
+}) {
+  return (
+    remaining === 0 &&
+    leakedProviderPids.length === 0 &&
+    leakedProcesses.length === 0
+  );
+}
+
+// The New chat draft is an inline role picker. Keep every action inside its
+// dialog: Escape would close the whole draft, and settings popovers belong to
+// existing chats. Radio labels are clicked because native inputs are styled.
+async function chooseSegment(dialog, label, name) {
+  const group = dialog.getByRole("radiogroup", { name: label, exact: true });
+  const radio = group.getByRole("radio", { name, exact: true });
+  const id = await radio.getAttribute("id");
+  await group.locator(`label[for="${id}"]`).click();
+  await group
+    .getByRole("radio", { name, exact: true, checked: true })
+    .waitFor({ state: "attached" });
+}
+
+export async function configureNewChat(dialog, lead, worker) {
+  for (const [role, prefix, accountLabel, settings] of [
+    ["Lead", "Main agent", "Main agent account", lead],
+    ["Workers", "Default subagent", "Subagent account", worker],
+  ]) {
+    await chooseSegment(dialog, "Agent role", role);
+    await chooseSegment(
+      dialog,
+      `${accountLabel} provider`,
+      settings.profile.provider === "claude" ? "Claude" : "Codex",
+    );
+    const accounts = dialog.getByRole("group", {
+      name: accountLabel,
+      exact: true,
+    });
+    // A sole selected lead account is rendered as read-only status, not a button.
+    if ((await accounts.getAttribute("data-value")) !== settings.accountKey) {
+      await accounts
+        .getByRole("button", { name: /^Select account / })
+        .and(dialog.locator(`[data-account-key="${settings.accountKey}"]`))
+        .click();
+    }
+    const models = dialog.getByRole("listbox", {
+      name: `${prefix} model`,
+      exact: true,
+    });
+    const model = dialog.locator(`[data-value="${settings.uiModel}"]`);
+    await models.getByRole("option").and(model).click();
+    await models.getByRole("option", { selected: true }).and(model).waitFor();
+    await chooseSegment(
+      dialog,
+      `${prefix} reasoning`,
+      settings.effort[0].toUpperCase() + settings.effort.slice(1),
+    );
+    const fast = dialog.getByRole("switch", { name: "Fast mode", exact: true });
+    if (await fast.count()) await fast.setChecked(settings.profile.fastMode);
+  }
+}
 
 export function stageDeadlineMs(workers, accounts = 1) {
   const waves = Math.ceil(workers / (ACCOUNT_CONCURRENT_REQUESTS * accounts));

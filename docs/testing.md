@@ -335,7 +335,11 @@ composite actions. Heavy and load checks remain outside hosted CI.
 backend through headless Chromium: it creates a lead chat in the dialog, types one
 prompt, and measures agent visibility, UI responsiveness, API latency, SQLite lock
 counters and process load while the team runs. It deletes the chat and its agents
-afterward and checks that no provider or tool process leaked (`--keep` skips this).
+afterward and checks that no agent or identifiable provider/tool process owned by
+the run remains (`--keep` skips this). Loaded-thread totals remain evidence only:
+the diagnostics API exposes counts, not the identities needed to attribute a
+loaded thread to this run on a shared server. Agent summaries and scoped details
+arrive through the current SSE resource contract.
 It is a manual, announced live run, outside every test tier. A small run:
 `PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright node
 workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs --workers 3`; `--help`
@@ -359,7 +363,12 @@ with more than one turn or an error, a `child_result` delivered twice or never,
 any input delivered twice, a tool call or request without a result, a tool request
 applied while the model was told it failed, a lead final report made before the
 last worker reply, a backend restart, an `ERROR` or panic journal line, a growing
-error counter or a non-empty input queue. Everything else suspicious (failed lead
+error counter, pending durable inputs on the run's own lead or workers, or a
+shared-server input/recovery gauge that grows beyond its baseline plus the run's
+pending inputs (which must themselves be zero). The scoped input audit reads
+existing event entities and uses the status projection owned by
+[`scaleVerifierHelpers.mjs`](../workspaces/client/apps/web/scripts/scaleVerifierHelpers.mjs).
+Baseline and final global gauges remain in the evidence. Everything else suspicious (failed lead
 tool calls, placeholder answers, repeated final reports, long lead input waits,
 start-order inversions, provider retries, other journal warnings) is listed under
 `anomalies` in `summary.txt` and `evidence.json`.

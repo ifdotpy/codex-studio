@@ -3,6 +3,7 @@ import {
   LEAD_INPUT_WAIT_ANOMALY_MS,
   START_ORDER_TOLERANCE_MS,
   auditDiagnostics,
+  pendingTeamInputs,
   auditJournal,
   auditLead,
   auditLeadReport,
@@ -293,8 +294,12 @@ describe("journal audit", () => {
 describe("diagnostics audit", () => {
   it("fails a growing counter or a pending queue and records missing paths", () => {
     const before = diagnosticsCounters({
-      queues: { claudeLogLinesSkipped: 0 },
       sqliteContention: { lockError: { lockErrors: 1 } },
+      queues: {
+        claudeLogLinesSkipped: 0,
+        durableInputPending: 0,
+        recoveryPending: 0,
+      },
     });
     const after = diagnosticsCounters({
       queues: {
@@ -313,9 +318,10 @@ describe("diagnostics audit", () => {
         to: 2,
       },
       {
-        kind: "diagnosticsGaugeNotZero",
+        kind: "diagnosticsGaugeGrew",
         path: "/queues/durableInputPending",
-        value: 1,
+        from: 0,
+        to: 1,
       },
     ]);
     expect(
@@ -385,4 +391,43 @@ describe("helpers", () => {
       '  - backendLog {"message":"m","count":9}',
     ]);
   });
+});
+
+it("allows baseline queues from other chats but rejects global growth and retained team inputs", () => {
+  const before = diagnosticsCounters({
+    queues: { durableInputPending: 13, recoveryPending: 2 },
+  });
+  const after = diagnosticsCounters({
+    queues: { durableInputPending: 12, recoveryPending: 1 },
+  });
+  expect(auditDiagnostics(before, after).failures).toEqual([]);
+  const pending = pendingTeamInputs(
+    [
+      { id: "foreign", agent: "other", status: "pending" },
+      { id: "done", agent: "lead", status: "completed" },
+      { id: "own", agent: "worker", status: "dispatching" },
+    ],
+    ["lead", "worker"],
+  );
+  expect(pending).toEqual([
+    { id: "own", agent: "worker", status: "dispatching" },
+  ]);
+  // A team input fails even if another chat drains and masks its global growth.
+  expect(auditDiagnostics(before, after, pending).failures).toEqual([
+    { kind: "teamInputsPending", count: 1, inputs: pending },
+  ]);
+  const grown = diagnosticsCounters({
+    queues: { durableInputPending: 14, recoveryPending: 2 },
+  });
+  expect(auditDiagnostics(before, grown).failures).toEqual([
+    {
+      kind: "diagnosticsGaugeGrew",
+      path: "/queues/durableInputPending",
+      from: 13,
+      to: 14,
+    },
+  ]);
+  expect(
+    auditDiagnostics(before, grown, pending).failures.map(({ kind }) => kind),
+  ).toContain("teamInputsPending");
 });

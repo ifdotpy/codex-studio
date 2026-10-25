@@ -1,3 +1,5 @@
+import { RETAINED_INPUT_STATUSES } from "./scaleVerifierHelpers.mjs";
+
 // Strict post-run audit of verify-ui-team-scale.mjs: pure functions over the
 // lead and worker transcripts, the lead's tool requests, the backend journal,
 // diagnostics snapshots and the observed worker timeline. Each check returns
@@ -52,8 +54,8 @@ export const DIAGNOSTICS_ZERO_DELTA_PATHS = Object.freeze([
   "/sqliteContention/slowTransactions/activeTracking/untrackedStarts",
   "/httpRequestMetrics/untrackedRoutes",
 ]);
-// Diagnostics gauges that must be zero once the team has finished.
-export const DIAGNOSTICS_ZERO_END_PATHS = Object.freeze([
+// Shared-server queue gauges: existing work may remain, but queues must not grow.
+export const DIAGNOSTICS_QUEUE_GAUGE_PATHS = Object.freeze([
   "/queues/durableInputPending",
   "/queues/recoveryPending",
 ]);
@@ -69,15 +71,28 @@ export function pointer(value, path) {
 
 export function diagnosticsCounters(diagnostics) {
   return Object.fromEntries(
-    [...DIAGNOSTICS_ZERO_DELTA_PATHS, ...DIAGNOSTICS_ZERO_END_PATHS].map(
+    [...DIAGNOSTICS_ZERO_DELTA_PATHS, ...DIAGNOSTICS_QUEUE_GAUGE_PATHS].map(
       (path) => [path, pointer(diagnostics, path)],
     ),
   );
 }
 
-// Counter deltas and end gauges: a growing counter or a non-zero end gauge
-// fails the run; a counter missing from either snapshot is an anomaly.
-export function auditDiagnostics(before, after) {
+// The event entity publishes the same durable input status as diagnostics.
+// Keep only identities and status; never retain another chat's input content.
+export function pendingTeamInputs(events, agentIds) {
+  const owned = new Set(agentIds);
+  return events
+    .filter(
+      (event) =>
+        owned.has(event.agent) &&
+        RETAINED_INPUT_STATUSES.includes(event.status),
+    )
+    .map(({ id, agent, status }) => ({ id, agent, status }));
+}
+
+// Global growth remains a failure; owned pending inputs fail independently,
+// even when another chat draining its queue masks the team's global growth.
+export function auditDiagnostics(before, after, pendingInputs = []) {
   const failures = [];
   const anomalies = [];
   for (const path of DIAGNOSTICS_ZERO_DELTA_PATHS) {
@@ -88,13 +103,20 @@ export function auditDiagnostics(before, after) {
     else if (to > from)
       failures.push({ kind: "diagnosticsCounterGrew", path, from, to });
   }
-  for (const path of DIAGNOSTICS_ZERO_END_PATHS) {
-    const value = after?.[path] ?? null;
-    if (value === null)
+  for (const path of DIAGNOSTICS_QUEUE_GAUGE_PATHS) {
+    const from = before?.[path] ?? null;
+    const to = after?.[path] ?? null;
+    if (from === null || to === null)
       anomalies.push({ kind: "diagnosticsCounterMissing", path });
-    else if (value !== 0)
-      failures.push({ kind: "diagnosticsGaugeNotZero", path, value });
+    else if (to > from + pendingInputs.length)
+      failures.push({ kind: "diagnosticsGaugeGrew", path, from, to });
   }
+  if (pendingInputs.length)
+    failures.push({
+      kind: "teamInputsPending",
+      count: pendingInputs.length,
+      inputs: pendingInputs,
+    });
   return { failures, anomalies };
 }
 
