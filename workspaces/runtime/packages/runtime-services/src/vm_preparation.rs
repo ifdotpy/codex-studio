@@ -44,6 +44,15 @@ impl From<crate::linux_vm_guest::GuestError> for VmProjectUploadError {
 }
 
 pub fn vm_project_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
+    code_archive(source, false)
+}
+
+/// Native migration takes worktree files with the VM code rules, without its external Git pointer.
+pub(crate) fn native_worktree_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
+    code_archive(source, true)
+}
+
+fn code_archive(source: &Path, worktree: bool) -> std::io::Result<VmProjectArchive> {
     let source = CanonicalPath::existing(source)?;
     if !source.is_dir() {
         return Err(std::io::Error::new(
@@ -51,7 +60,10 @@ pub fn vm_project_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
             "VM project source is not a directory",
         ));
     }
-    let exclusions = vm_archive_exclusions(&source)?;
+    let mut exclusions = archive_exclusions(&source, worktree)?;
+    if worktree {
+        exclusions.ignored.insert(".git".into());
+    }
     let identities = std::cell::RefCell::new(HashMap::new());
     let mut archive = tempfile::NamedTempFile::new()?;
     {
@@ -162,6 +174,10 @@ struct VmArchiveExclusions {
     reason = "archive creation runs on the labeled vm-project-archive blocking worker"
 )]
 fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
+    archive_exclusions(root, false)
+}
+
+fn archive_exclusions(root: &Path, root_worktree: bool) -> std::io::Result<VmArchiveExclusions> {
     let mut repositories = HashSet::new();
     let mut worktrees = HashSet::new();
     let mut ignored = HashSet::new();
@@ -289,6 +305,9 @@ fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
                     .to_string_lossy()
                     .replace('\\', "/"),
             );
+        } else if marker.is_file() && directory == root && root_worktree {
+            repositories.insert(".".into());
+            collect_vm_ignored_directories(root, &directory, ".", &mut ignored)?;
         } else if marker.is_file() {
             if directory == root {
                 return Err(std::io::Error::new(
@@ -402,7 +421,9 @@ fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
             }
             continue;
         }
-        validate_vm_repository_objects(root, &directory)?;
+        if !(root_worktree && directory == root) {
+            validate_vm_repository_objects(root, &directory)?;
+        }
     }
     Ok(exclusions)
 }

@@ -331,9 +331,27 @@ async fn prepare_vm_accept(
             let operation_id = call.request_id.clone();
             let task_id = input.task_id.clone();
             let runtime_state = std::path::PathBuf::from(state.state_dir.clone());
+            let native_lead =
+                studio_runtime_services::layr_native::agent_value(&store, &call.lead_id)
+                    .await
+                    .map_err(|_| ApiError::internal())?;
+            let native_owner =
+                studio_runtime_services::layr_native::agent_value(&store, &call.owner_id)
+                    .await
+                    .map_err(|_| ApiError::internal())?;
             let response = studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-http/routes/work_write",
                 move || {
+                    if studio_runtime_services::layr_native::is_native(&native_lead) {
+                        return studio_runtime_services::layr_native::merge(
+                            &runtime_state,
+                            &native_lead,
+                            &native_owner,
+                            params["expectedStateId"].as_str().unwrap_or_default(),
+                            &operation_id,
+                        )
+                        .map_err(native_layr_error);
+                    }
                     UnixGuestRpc::for_runtime_state(&runtime_state).call(
                         "line.merge",
                         &params,
@@ -415,9 +433,21 @@ async fn prepare_vm_submission(
             input.vm_evidence_request_id = Some(request_id.clone());
             let expected_revision = call.revision.clone();
             let runtime_state = std::path::PathBuf::from(state.state_dir.clone());
+            let native_owner =
+                studio_runtime_services::layr_native::agent_value(&store, &call.owner_id)
+                    .await
+                    .map_err(|_| ApiError::internal())?;
             let response = studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-http/routes/work_write",
                 move || {
+                    if studio_runtime_services::layr_native::is_native(&native_owner) {
+                        return studio_runtime_services::layr_native::evidence(
+                            &runtime_state,
+                            &native_owner,
+                            params["stateId"].as_str().unwrap_or_default(),
+                        )
+                        .map_err(native_layr_error);
+                    }
                     UnixGuestRpc::for_runtime_state(&runtime_state).call(
                         "line.evidence",
                         &params,
@@ -1763,5 +1793,20 @@ inventory::submit! {
             "workspace-state/agent-archive",
             "workspace-state/submission-files",
         ],
+    }
+}
+
+// Both Layr modes use the same durable exact-state task receipt contract.
+#[cfg(unix)]
+fn native_layr_error(
+    error: studio_runtime_services::layr_native::NativeLayrError,
+) -> studio_runtime_services::linux_vm_guest::GuestError {
+    let uncertain = matches!(
+        error,
+        studio_runtime_services::layr_native::NativeLayrError::Unknown(_)
+    );
+    studio_runtime_services::linux_vm_guest::GuestError::Transport {
+        message: error.to_string(),
+        uncertain,
     }
 }
