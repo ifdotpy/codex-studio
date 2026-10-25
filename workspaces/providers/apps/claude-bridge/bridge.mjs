@@ -2903,6 +2903,10 @@ async function handle(method, p) {
       }
       s.turns = s.turns.filter((t) => t !== turn);
       pendingTurnReceipts.delete(turn.id);
+      // No SDK admission occurred; retire only this reservation's guard and
+      // save the cleanup (or defer it on a full disk) before reporting refusal.
+      if (cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0])))
+        await persistLive(s);
       throw isDiskFull(error) ? diskFullInputError(error) : error;
     }
     if (active) {
@@ -2912,6 +2916,7 @@ async function handle(method, p) {
         turn.status = "failed";
         turn.startOutcome = "not_applied";
         turn.error = { message: error.message };
+        cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0]));
         pendingTurnReceipts.delete(turn.id);
         await persistLive(s);
         throw Object.assign(error, {

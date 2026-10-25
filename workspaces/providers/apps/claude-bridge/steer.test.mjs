@@ -1213,3 +1213,44 @@ test.concurrent("an old withdrawn clear receipt cannot retire its consumed redel
     /native session.*unknown/i,
   );
 });
+
+test("a rejected initial clear save permits its exact logical retry", async ({
+  startBridge,
+}) => {
+  const sdk = FAKE_SDK.replace(
+    "import fs from 'node:fs';",
+    String.raw`import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+const append=fsp.appendFile;
+fsp.appendFile=async(file,data,...args)=>{
+ const marker=process.cwd()+'/.reject-start';
+ if(fs.existsSync(marker)&&String(file).includes('/sessions/')&&String(data).includes('rejected-clear')){fs.rmSync(marker);throw new Error('initial clear save denied');}
+ return append(file,data,...args);
+};`,
+  );
+  const bridge = await startBridge({}, sdk);
+  const warm = await running(bridge, "hold");
+  await end(bridge);
+  await completed(bridge, warm);
+  await bridge.note(
+    (n) =>
+      n.method === "fixture/signal" &&
+      n.params.name === path.join(bridge.root, ".result-sent"),
+  );
+  await fs.writeFile(path.join(bridge.root, ".reject-start"), "");
+  const params = {
+    threadId: bridge.thread,
+    clientUserMessageId: "rejected-clear",
+    input: text("/clear"),
+  };
+  await assert.rejects(
+    bridge.call("turn/start", params),
+    /initial clear save denied/,
+  );
+  assert.deepEqual(await inputs(bridge), ["hold"]);
+  const retried = await bridge.call("turn/start", params);
+  await bridge.note(
+    (n) => n.method === "fixture/input" && n.params.text === "/clear",
+  );
+  assert.equal(retried.turn.status, "inProgress");
+});

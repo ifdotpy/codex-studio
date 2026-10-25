@@ -21,6 +21,7 @@ export default {
       "session-identity.test.mjs",
       // Proven unread/cancelled transition inputs must release their guards.
       "steer.test.mjs",
+      "stop-receipts.test.mjs",
       // Final stream accounting, deferred result totals and explicit unfinished-response gaps.
       "usage.test.mjs",
       "usage-bridge.test.mjs",
