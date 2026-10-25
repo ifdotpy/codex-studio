@@ -5,7 +5,7 @@
 //! `studio-runtime-server host-exec-service` process, its start and its
 //! replacement, and the unchanged guest broker against it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -35,6 +35,7 @@ struct State {
     owner: Option<UnixListener>,
     channels: RefCell<Vec<UnixStream>>,
     launches: RefCell<Vec<PathBuf>>,
+    command_possible: Cell<bool>,
 }
 
 impl State {
@@ -57,6 +58,7 @@ impl State {
             owner: Some(owner),
             channels: RefCell::default(),
             launches: RefCell::default(),
+            command_possible: Cell::new(false),
         }
     }
 
@@ -100,6 +102,10 @@ impl State {
     }
 
     fn call(&self, method: &str, params: Option<&Value>) -> Value {
+        // A lost run reply does not prove that the command never started.
+        if method == "run" {
+            self.command_possible.set(true);
+        }
         service_call(&self.path, &self.token(), method, params)
             .unwrap_or_else(|error| panic!("{method}: {error:?}"))
     }
@@ -154,6 +160,7 @@ impl State {
     /// Reap owned children directly; detached replacements can be zombies until
     /// their OS parent reaps them. A live service at the watchdog is a failure.
     fn retire(&self) {
+        assert!(self.cancel_command(), "fixture command cleanup is unproved");
         let token = self.token();
         if let Ok(health) = service_call(&self.path, &token, "health", None) {
             let params = json!({"buildId": health["buildId"], "pid": health["pid"]});
@@ -174,6 +181,42 @@ impl State {
         }
     }
 
+    fn cancel_command(&self) -> bool {
+        if !self.command_possible.get() {
+            return true;
+        }
+        let Ok(token) = std::fs::read_to_string(self.path.join("host-exec-token")) else {
+            return false;
+        };
+        let params = json!({"operationId":"upgrade-operation","agentId":"agent"});
+        if service_call(&self.path, &token, "cancel", Some(&params)).is_err() {
+            return false;
+        }
+        let deadline = Instant::now() + HANG_GUARD;
+        loop {
+            let Ok(status) = service_call(&self.path, &token, "status", Some(&params)) else {
+                return false;
+            };
+            let Ok(health) = service_call(&self.path, &token, "health", None) else {
+                return false;
+            };
+            if matches!(
+                status["state"].as_str(),
+                Some("leased" | "released" | "exited")
+            ) && health["activeCommands"] == 0
+                && health["activeRequests"] == 0
+                && health["busy"] == false
+            {
+                self.command_possible.set(false);
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn acquire(&self) -> Value {
         self.call(
             "acquire",
@@ -188,7 +231,9 @@ impl State {
 impl Drop for State {
     fn drop(&mut self) {
         // Cleanup must also run while an earlier assertion unwinds.
-        if let Ok(token) = std::fs::read_to_string(self.path.join("host-exec-token"))
+        let command_stopped = self.cancel_command();
+        if command_stopped
+            && let Ok(token) = std::fs::read_to_string(self.path.join("host-exec-token"))
             && let Ok(health) = service_call(&self.path, &token, "health", None)
         {
             let params = json!({"buildId":health["buildId"],"pid":health["pid"]});
@@ -197,9 +242,15 @@ impl Drop for State {
         self.collect_channels();
         let owners = self.channels.get_mut().len();
         drop(self.owner.take());
+        let mut cleanup_unproved = !command_stopped;
+        if command_stopped {
+            for channel in self.channels.get_mut().iter_mut() {
+                // An already retired child can close first. Its receipt proves exit.
+                let _result = channel.write_all(b"C");
+            }
+        }
         self.channels.get_mut().clear();
         let deadline = Instant::now() + HANG_GUARD;
-        let mut cleanup_unproved = false;
         loop {
             let records = self
                 .launches
@@ -245,8 +296,13 @@ impl Drop for State {
                 String::from_utf8_lossy(&log)
             );
         }
+        if !command_stopped {
+            eprintln!(
+                "host_exec fixture cleanup_unknown: upgrade-operation/agent cancellation or idle proof is missing; the service is not stopped"
+            );
+        }
         for child in self.children.get_mut() {
-            if !matches!(child.try_wait(), Ok(Some(_))) {
+            if command_stopped && !matches!(child.try_wait(), Ok(Some(_))) {
                 let killed = child.kill();
                 let waited = child.wait();
                 cleanup_unproved |= killed.is_err() || waited.is_err();

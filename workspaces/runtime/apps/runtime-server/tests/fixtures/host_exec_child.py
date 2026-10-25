@@ -56,6 +56,7 @@ def run():
     proof = {"pid": child.pid, "uid": os.getuid(), "argv": argv,
              "executable": str(Path(program).resolve())}
     code = 1
+    cleanup_allowed = False
     try:
         publish(receipt, {"phase": "running", "identity": proof})
         try:
@@ -66,10 +67,13 @@ def run():
         while child.poll() is None:
             if select.select([owner], [], [], 0.05)[0]:
                 try:
-                    closed = not owner.recv(1)
+                    message = owner.recv(1)
                 except ConnectionResetError:
-                    closed = True
-                if closed:
+                    message = b""
+                # The parent permits service cleanup only after exact command cancellation.
+                if message == b"C":
+                    cleanup_allowed = True
+                if cleanup_allowed or not message:
                     break
     except Exception as error:
         print("owned host_exec cleanup unproved: " + str(error), file=sys.stderr)
@@ -77,6 +81,8 @@ def run():
         owner.close()
         try:
             if child.poll() is None:
+                if not cleanup_allowed:
+                    raise RuntimeError("the parent has not proved fixture command cleanup")
                 # Only Popen signals its own unreaped child. Audit queries grant no authority.
                 child.terminate()
                 try:
