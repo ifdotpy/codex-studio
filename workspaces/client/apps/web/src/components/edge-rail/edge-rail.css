@@ -23,6 +23,9 @@
   height: var(--edge-rail-target);
   min-width: var(--edge-rail-target);
   min-height: var(--edge-rail-target);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--raised) 75%, transparent);
+  backdrop-filter: blur(12px);
 }
 
 .edge-rail .edge-rail-button:focus-visible {
@@ -43,4 +46,15 @@
   line-height: 1.2;
   padding: 1px 3px;
   pointer-events: none;
+}
+
+/* Paint the pane under the system strip; root padding still bounds its content. */
+html:has(.workspace[data-edge-rail="true"]) body #root,
+html:has(.workspace[data-edge-rail="true"]) .viewport-bottom-band {
+  background-color: var(--surface);
+}
+
+/* Keep the shared sidebar focus target visible outside the header. */
+.edge-rail #sidebar-toggle {
+  display: inline-flex;
 }

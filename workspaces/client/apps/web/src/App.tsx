@@ -1,3 +1,7 @@
+import {
+  createConversationMenuTools,
+  ConversationMenuTools,
+} from "./components/conversation/ConversationMenuTools";
 import { EdgeRail } from "./components/edge-rail/EdgeRail";
 import { useEdgeRail } from "./components/edge-rail/useEdgeRail";
 import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
@@ -100,6 +104,7 @@ import { useMediaQuery } from "@mantine/hooks";
 import {
   Activity,
   ArrowLeft,
+  Terminal,
   BookOpen,
   Clock3,
   FileDiff,
@@ -888,6 +893,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const agent = catalog.byId.get(opened || "");
   const room = data?.runtime?.rooms?.find((r) => r.id === opened);
   const railGeometry = useEdgeRail(undefined, active && !!data && !room?.radio);
+  const [railTools] = useState(createConversationMenuTools);
   const legacy = data?.chats.find((c) => c.id === opened);
   const roomRoots = room ? roomLeadIds(room, agents) : [];
   const lead = room?.radio
@@ -2554,8 +2560,68 @@ export default function App({ active = true }: { active?: boolean }) {
       save("codex-team-open", !wideTeamOpen);
     }
   };
+  const conversationTitle = (
+    <ConversationTitle
+      passive={!!railGeometry}
+      projectName={railGeometry ? projectName : undefined}
+      title={title}
+      agent={agent}
+      serverAlias={
+        agent
+          ? sidebarServices.alias?.({ kind: "chat", id: agent.id }) ||
+            serverAliases[
+              (agent as Agent & { serverId?: string }).serverId ||
+                serverViewId ||
+                "local"
+            ] ||
+            serverAliases[sidebarServices.serverForChat(agent.id)] ||
+            DEFAULT_LOCAL_SERVER_ALIAS
+          : undefined
+      }
+      serverOffline={
+        agent
+          ? !(
+              sidebarServices.available?.({
+                kind: "chat",
+                id: agent.id,
+              }) ?? true
+            )
+          : false
+      }
+      onBack={
+        // Only a worker chat links back; the lead and team rooms do not.
+        !railGeometry && lead && agent && !agent.isLead && agent.id !== lead.id
+          ? () => open(lead.id)
+          : undefined
+      }
+    />
+  );
+  const toggleTerminal = () => {
+    if (screen)
+      void screen
+        .execute({ action: "terminal", operation: "toggle" })
+        .catch((error) => notify(String(error)));
+    else
+      window.dispatchEvent(
+        new CustomEvent("studio-terminal-command", { detail: "toggle" }),
+      );
+  };
   const chatActionsMenu = (
     <>
+      {railGeometry && <ConversationMenuTools source={railTools} />}
+      {railGeometry &&
+        lead &&
+        agent &&
+        !agent.isLead &&
+        agent.id !== lead.id && (
+          <Menu.Item
+            aria-label="Back to main agent"
+            leftSection={<ArrowLeft size={14} />}
+            onClick={() => open(lead.id)}
+          >
+            Back to main agent
+          </Menu.Item>
+        )}
       <Menu.Label>Views</Menu.Label>
       {(
         [
@@ -2598,6 +2664,15 @@ export default function App({ active = true }: { active?: boolean }) {
       >
         Background activity {taskCount || ""}
       </Menu.Item>
+      {railGeometry && !mobileClient && (
+        <Menu.Item
+          aria-label="Terminals"
+          leftSection={<Terminal size={14} />}
+          onClick={toggleTerminal}
+        >
+          Terminals
+        </Menu.Item>
+      )}
       <Menu.Divider />
       <Menu.Label>Chat</Menu.Label>
       <Menu.Item
@@ -2767,17 +2842,12 @@ export default function App({ active = true }: { active?: boolean }) {
       )}
       <EdgeRail
         geometry={railGeometry}
-        team={
-          hasTeam
-            ? {
-                busy: workers.filter((worker) => busy.has(worker.status ?? ""))
-                  .length,
-                total: workers.length,
-                expanded: narrowTeam ? teamOpen : wideTeamOpen,
-                onClick: toggleTeam,
-              }
-            : undefined
-        }
+        sidebar={{
+          id: "sidebar-toggle",
+          label: sidebarCompact ? "Back to chats" : "Toggle conversations",
+          expanded: sidebarCompact ? sidebar : !sidebarCollapsed,
+          onClick: toggleSidebar,
+        }}
         messages={{
           count: attentionCount,
           disabled: !lead,
@@ -2787,33 +2857,6 @@ export default function App({ active = true }: { active?: boolean }) {
             setWorkspaceOpen(true);
           },
         }}
-        onChanges={() => {
-          setWorkspaceSection("changes");
-          setWorkspaceOpen(true);
-        }}
-        onTasks={() => {
-          setTaskFocus(undefined);
-          setTasksOpen(true);
-        }}
-        onSettings={() => setSettingsOpen(true)}
-        terminal={
-          !mobileClient
-            ? {
-                onClick: () => {
-                  if (screen)
-                    void screen
-                      .execute({ action: "terminal", operation: "toggle" })
-                      .catch((error) => notify(String(error)));
-                  else
-                    window.dispatchEvent(
-                      new CustomEvent("studio-terminal-command", {
-                        detail: "toggle",
-                      }),
-                    );
-                },
-              }
-            : undefined
-        }
         menu={chatActionsMenu}
         menuButtonRef={chatActionsButton}
       />
@@ -2823,134 +2866,107 @@ export default function App({ active = true }: { active?: boolean }) {
       >
         <main
           className="workspace"
+          data-edge-rail={railGeometry ? "true" : undefined}
           data-show-message-avatars={studioPreferences.showMessageAvatars}
         >
           <SupervisorRecoveryNotice />
-          <header className="workspace-header simple-workspace-header">
-            {sidebarCompact ? (
-              <Button
-                id="sidebar-toggle"
-                variant="subtle"
-                size="compact-xs"
-                aria-label="Back to chats"
-                aria-expanded={sidebar}
-                onClick={toggleSidebar}
-                leftSection={<ArrowLeft size={18} />}
-              >
-                Chats
-              </Button>
-            ) : (
-              <ActionIcon
-                id="sidebar-toggle"
-                aria-label="Toggle conversations"
-                aria-expanded={sidebarCompact ? sidebar : !sidebarCollapsed}
-                onClick={toggleSidebar}
-              >
-                <PanelLeft size={18} />
-              </ActionIcon>
-            )}
-            <ConversationTitle
-              title={title}
-              agent={agent}
-              serverAlias={
-                agent
-                  ? sidebarServices.alias?.({ kind: "chat", id: agent.id }) ||
-                    serverAliases[
-                      (agent as Agent & { serverId?: string }).serverId ||
-                        serverViewId ||
-                        "local"
-                    ] ||
-                    serverAliases[sidebarServices.serverForChat(agent.id)] ||
-                    DEFAULT_LOCAL_SERVER_ALIAS
-                  : undefined
-              }
-              serverOffline={
-                agent
-                  ? !(
-                      sidebarServices.available?.({
-                        kind: "chat",
-                        id: agent.id,
-                      }) ?? true
-                    )
-                  : false
-              }
-              onBack={
-                // Only a worker chat links back; the lead and team rooms do not.
-                lead && agent && !agent.isLead && agent.id !== lead.id
-                  ? () => open(lead.id)
-                  : undefined
-              }
-            />
-            <div id="conversation-header-tools" />
-            {!railGeometry && !room?.radio && (
-              <ActionIcon
-                id="chat-settings-toggle"
-                aria-label="Chat settings"
-                title="Chat settings"
-                onClick={() => setSettingsOpen(true)}
-              >
-                <Settings2 size={18} />
-              </ActionIcon>
-            )}
-            {!railGeometry && hasTeam && (
-              <Button
-                leftSection={<Users size={16} />}
-                id="team-toggle"
-                aria-label="Team"
-                title={`Team: ${workers.filter((worker) => busy.has(worker.status ?? "")).length} working of ${workers.length}`}
-                aria-expanded={narrowTeam ? teamOpen : wideTeamOpen}
-                onClick={toggleTeam}
-              >
-                Team
-                {workers.length > 0 && (
-                  <span className="team-button-count">
-                    {
-                      workers.filter((worker) => busy.has(worker.status ?? ""))
-                        .length
-                    }
-                    /{workers.length}
-                  </span>
-                )}
-              </Button>
-            )}
-            {!railGeometry && !room?.radio && (
-              <Button
-                id="messages-toggle"
-                aria-label="Messages"
-                title={
-                  attentionCount > 0
-                    ? `Messages, ${attentionCount} need you`
-                    : "Messages"
-                }
-                leftSection={<MessageSquare size={16} />}
-                disabled={!lead}
-                onClick={() => {
-                  setWorkspaceSection("messages");
-                  setWorkspaceFocus(undefined);
-                  setWorkspaceOpen(true);
-                }}
-              >
-                <span className="messages-toggle-label">Messages</span>{" "}
-                {attentionCount > 0 && (
-                  <span className="attention-count">{attentionCount}</span>
-                )}
-              </Button>
-            )}
-            {!railGeometry && !room?.radio && (
-              <Menu position="bottom-end" withinPortal>
-                <Menu.Target>
-                  <ActionIcon
-                    ref={chatActionsButton}
-                    aria-label="Chat actions"
-                    title="Chat actions"
-                  >
-                    <MoreHorizontal size={18} />
-                  </ActionIcon>
-                </Menu.Target>
-                <Menu.Dropdown>{chatActionsMenu}</Menu.Dropdown>
-              </Menu>
-            )}
-          </header>
+          {!railGeometry && (
+            <header className="workspace-header simple-workspace-header">
+              {sidebarCompact ? (
+                <Button
+                  id="sidebar-toggle"
+                  variant="subtle"
+                  size="compact-xs"
+                  aria-label="Back to chats"
+                  aria-expanded={sidebar}
+                  onClick={toggleSidebar}
+                  leftSection={<ArrowLeft size={18} />}
+                >
+                  Chats
+                </Button>
+              ) : (
+                <ActionIcon
+                  id="sidebar-toggle"
+                  aria-label="Toggle conversations"
+                  aria-expanded={sidebarCompact ? sidebar : !sidebarCollapsed}
+                  onClick={toggleSidebar}
+                >
+                  <PanelLeft size={18} />
+                </ActionIcon>
+              )}
+              {conversationTitle}
+              <div id="conversation-header-tools" />
+              {!railGeometry && !room?.radio && (
+                <ActionIcon
+                  id="chat-settings-toggle"
+                  aria-label="Chat settings"
+                  title="Chat settings"
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  <Settings2 size={18} />
+                </ActionIcon>
+              )}
+              {!railGeometry && hasTeam && (
+                <Button
+                  leftSection={<Users size={16} />}
+                  id="team-toggle"
+                  aria-label="Team"
+                  title={`Team: ${workers.filter((worker) => busy.has(worker.status ?? "")).length} working of ${workers.length}`}
+                  aria-expanded={narrowTeam ? teamOpen : wideTeamOpen}
+                  onClick={toggleTeam}
+                >
+                  Team
+                  {workers.length > 0 && (
+                    <span className="team-button-count">
+                      {
+                        workers.filter((worker) =>
+                          busy.has(worker.status ?? ""),
+                        ).length
+                      }
+                      /{workers.length}
+                    </span>
+                  )}
+                </Button>
+              )}
+              {!railGeometry && !room?.radio && (
+                <Button
+                  id="messages-toggle"
+                  aria-label="Messages"
+                  title={
+                    attentionCount > 0
+                      ? `Messages, ${attentionCount} need you`
+                      : "Messages"
+                  }
+                  leftSection={<MessageSquare size={16} />}
+                  disabled={!lead}
+                  onClick={() => {
+                    setWorkspaceSection("messages");
+                    setWorkspaceFocus(undefined);
+                    setWorkspaceOpen(true);
+                  }}
+                >
+                  <span className="messages-toggle-label">Messages</span>{" "}
+                  {attentionCount > 0 && (
+                    <span className="attention-count">{attentionCount}</span>
+                  )}
+                </Button>
+              )}
+              {!railGeometry && !room?.radio && (
+                <Menu position="bottom-end" withinPortal>
+                  <Menu.Target>
+                    <ActionIcon
+                      ref={chatActionsButton}
+                      aria-label="Chat actions"
+                      title="Chat actions"
+                    >
+                      <MoreHorizontal size={18} />
+                    </ActionIcon>
+                  </Menu.Target>
+                  <Menu.Dropdown>{chatActionsMenu}</Menu.Dropdown>
+                </Menu>
+              )}
+            </header>
+          )}
           {agent && nativeActions.pending(agent.id) && (
             <div
               role="status"
@@ -3153,6 +3169,9 @@ export default function App({ active = true }: { active?: boolean }) {
               />
             ) : (
               <SelectedConversation
+                railMode={!!railGeometry}
+                onRailToolsChange={railTools.publish}
+                transcriptHeading={railGeometry ? conversationTitle : undefined}
                 projectName={projectName}
                 recentChats={
                   agent?.empty

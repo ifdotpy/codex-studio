@@ -393,3 +393,26 @@
     }
   }
 }
+
+.transcript-heading {
+  margin-bottom: var(--mantine-spacing-lg);
+  color: var(--text);
+}
+.transcript-heading .conversation-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.transcript-heading .conversation-title-text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.transcript-heading .conversation-meta {
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+.rail-outline-slot .prompt-navigation {
+  display: block;
+  margin: 0;
+}

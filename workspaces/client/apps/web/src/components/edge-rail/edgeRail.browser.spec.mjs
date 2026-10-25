@@ -51,10 +51,8 @@ for (const capability of [
             return e(MantineProvider,{theme},
               e('main',null,e('h1',null,'Conversation title'),e('output',{id:'last-action'},last)),
               e(EdgeRail,{geometry,
-                team:{busy:2,total:5,expanded:false,onClick:()=>setLast('Team')},
+                sidebar:{expanded:true,onClick:()=>setLast('Toggle conversations')},
                 messages:{count:3,onClick:()=>setLast('Messages')},
-                onChanges:()=>setLast('Changes'),onTasks:()=>setLast('Tasks'),onSettings:()=>setLast('Chat settings'),
-                terminal:{expanded:false,onClick:()=>setLast('Terminal')},
                 menu:e(Menu.Item,{onClick:()=>setLast('Existing action')},'Existing action')}));
           }
           createRoot(document.querySelector('#root')).render(e(Fixture));
@@ -115,14 +113,7 @@ for (const capability of [
         path: test.info().outputPath("edge-rail-right.png"),
         animations: "disabled",
       });
-      for (const label of [
-        "Team, 2 busy of 5",
-        "Messages, 3 need you",
-        "Changes",
-        "Tasks",
-        "Chat settings",
-        "Show terminals",
-      ]) {
+      for (const label of ["Toggle conversations", "Messages, 3 need you"]) {
         const button = rail.getByRole("button", { name: label, exact: true });
         const rect = await button.boundingBox();
         expect(rect.width).toBeGreaterThanOrEqual(44);
@@ -130,13 +121,7 @@ for (const capability of [
         expect(rect.y + rect.height).toBeLessThanOrEqual(635);
         await button.click();
         await expect(page.locator("#last-action")).toHaveText(
-          label.startsWith("Team")
-            ? "Team"
-            : label.startsWith("Messages")
-              ? "Messages"
-              : label === "Show terminals"
-                ? "Terminal"
-                : label,
+          label.startsWith("Messages") ? "Messages" : label,
         );
       }
       await rail

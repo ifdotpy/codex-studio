@@ -68,7 +68,13 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
   };
 }
 
-export default function WorkspaceBadge({ agent }: { agent?: Agent }) {
+export default function WorkspaceBadge({
+  agent,
+  passive = false,
+}: {
+  agent?: Agent;
+  passive?: boolean;
+}) {
   const info = workspaceBadgeInfo(agent);
   if (!info) return null;
   return (
@@ -76,7 +82,7 @@ export default function WorkspaceBadge({ agent }: { agent?: Agent }) {
       className="workspace-mode-badge"
       title={info.title}
       aria-label={info.title}
-      tabIndex={0}
+      tabIndex={passive ? undefined : 0}
     >
       {info.label}
     </span>

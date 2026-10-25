@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { IdleCompactionNotice } from "./IdleCompactionNotice";
 import {
   isCompactTools,
@@ -220,6 +221,9 @@ function useCompactHeaderTools() {
 export default function Conversation(p: {
   id: string | null;
   projectName?: string;
+  railMode?: boolean;
+  onRailToolsChange?: (tools: ReactNode) => void;
+  transcriptHeading?: ReactNode;
   recentChats?: RecentProjectChat[];
   syncWorkspaceId?: string;
   agent?: Agent;
@@ -285,8 +289,10 @@ export default function Conversation(p: {
     width: number;
   } | null>(null);
   useLayoutEffect(() => {
-    setHeaderTools(document.getElementById("conversation-header-tools"));
-  }, []);
+    setHeaderTools(
+      p.railMode ? null : document.getElementById("conversation-header-tools"),
+    );
+  }, [p.railMode]);
   useEffect(() => {
     if (!compactHeaderTools) setToolsExpanded(false);
   }, [compactHeaderTools]);
@@ -1471,6 +1477,54 @@ export default function Conversation(p: {
       quote,
     ],
   );
+  const promptNavigation = useMemo(
+    () =>
+      !p.room && p.id ? (
+        <PromptNavigator
+          compact
+          inMenu={p.railMode}
+          key={p.id}
+          messages={items}
+          loadOlder={
+            before
+              ? () => {
+                  setFollow(false);
+                  setPageAnchor(getAnchorId());
+                  void older().catch((e) => p.notify(errorText(e)));
+                }
+              : undefined
+          }
+          loadingOlder={pageLoading}
+          agentId={managed ? p.id || undefined : undefined}
+          container={scroll}
+          storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
+          jump={jumpToPrompt}
+        />
+      ) : null,
+    [
+      p.room,
+      p.id,
+      p.railMode,
+      items,
+      before,
+      pageLoading,
+      managed,
+      scroll,
+      p.data.stateDir,
+      jumpToPrompt,
+      older,
+      setFollow,
+      getAnchorId,
+      p.notify,
+    ],
+  );
+  useLayoutEffect(() => {
+    p.onRailToolsChange?.(p.railMode ? promptNavigation : null);
+  }, [p.railMode, p.onRailToolsChange, promptNavigation]);
+  useLayoutEffect(
+    () => () => p.onRailToolsChange?.(null),
+    [p.onRailToolsChange],
+  );
   return (
     <section
       id="conversation"
@@ -1543,7 +1597,8 @@ export default function Conversation(p: {
           chooseChat={p.onChooseChat}
         />
       )}
-      {headerTools &&
+      {!p.railMode &&
+        headerTools &&
         !p.room &&
         (p.id || managed) &&
         createPortal(
@@ -1580,25 +1635,7 @@ export default function Conversation(p: {
             >
               {!p.room && p.id && (
                 <div className="conversation-prompt-navigation-slot">
-                  <PromptNavigator
-                    compact
-                    key={p.id}
-                    messages={items}
-                    loadOlder={
-                      before
-                        ? () => {
-                            setFollow(false);
-                            setPageAnchor(getAnchorId());
-                            void older().catch((e) => p.notify(errorText(e)));
-                          }
-                        : undefined
-                    }
-                    loadingOlder={pageLoading}
-                    agentId={managed ? p.id || undefined : undefined}
-                    container={scroll}
-                    storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
-                    jump={jumpToPrompt}
-                  />
+                  {promptNavigation}
                 </div>
               )}
             </div>
@@ -1614,6 +1651,9 @@ export default function Conversation(p: {
         }}
       >
         <div ref={content} className="message-content">
+          {p.transcriptHeading && (
+            <div className="transcript-heading">{p.transcriptHeading}</div>
+          )}
           {removed.hasRemoved && (
             <Button size="compact-xs" onClick={() => removed.restore()}>
               Restore removed messages

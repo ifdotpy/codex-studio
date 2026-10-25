@@ -1,32 +1,21 @@
 import type { CSSProperties, ReactNode, Ref } from "react";
 import { useLayoutEffect, useRef } from "react";
 import { ActionIcon, Menu, Tooltip } from "@mantine/core";
-import {
-  Activity,
-  FileDiff,
-  MessageSquare,
-  MoreHorizontal,
-  Settings2,
-  Terminal,
-  Users,
-} from "lucide-react";
+import { MessageSquare, MoreHorizontal, PanelLeft } from "lucide-react";
 import type { EdgeRailGeometry } from "./edgeRailPolicy";
 import "./edge-rail.css";
 
 interface RailAction {
   onClick: () => void;
+  id?: string;
   disabled?: boolean;
   expanded?: boolean;
 }
 
 export interface EdgeRailProps {
   geometry: EdgeRailGeometry | null;
-  team?: RailAction & { busy: number; total: number };
+  sidebar: RailAction & { label?: string };
   messages?: RailAction & { count: number };
-  onChanges?: () => void;
-  onTasks?: () => void;
-  onSettings?: () => void;
-  terminal?: RailAction;
   /** Existing Menu.Item children retain their handlers and permissions. */
   menu?: ReactNode;
   menuButtonRef?: Ref<HTMLButtonElement>;
@@ -34,12 +23,8 @@ export interface EdgeRailProps {
 
 export function EdgeRail({
   geometry,
-  team,
+  sidebar,
   messages,
-  onChanges,
-  onTasks,
-  onSettings,
-  terminal,
   menu,
   menuButtonRef,
 }: EdgeRailProps) {
@@ -61,6 +46,7 @@ export function EdgeRail({
     return (
       <Tooltip label={label} position={position} withinPortal>
         <ActionIcon
+          id={action.id}
           className="edge-rail-button"
           aria-label={label}
           title={label}
@@ -94,14 +80,13 @@ export function EdgeRail({
         } as CSSProperties
       }
     >
-      {team &&
-        button(
-          `Team, ${team.busy} busy of ${team.total}`,
-          <Users size={20} />,
-          team,
-          `${team.busy}/${team.total}`,
-        )}
+      {button(
+        sidebar.label || "Toggle conversations",
+        <PanelLeft size={20} />,
+        sidebar,
+      )}
       {messages &&
+        messages.count > 0 &&
         button(
           messages.count > 0
             ? `Messages, ${messages.count} need you`
@@ -110,25 +95,24 @@ export function EdgeRail({
           messages,
           messages.count > 0 ? messages.count : undefined,
         )}
-      {onChanges &&
-        button("Changes", <FileDiff size={20} />, { onClick: onChanges })}
-      {onTasks && button("Tasks", <Activity size={20} />, { onClick: onTasks })}
-      {onSettings &&
-        button("Chat settings", <Settings2 size={20} />, {
-          onClick: onSettings,
-        })}
-      {terminal &&
-        button(
-          terminal.expanded == null
-            ? "Terminals"
-            : terminal.expanded
-              ? "Hide terminals"
-              : "Show terminals",
-          <Terminal size={20} />,
-          terminal,
-        )}
       {menu != null && (
-        <Menu position={`${position}-start`} withinPortal>
+        <Menu
+          withInitialFocusPlaceholder={false}
+          position={`${position}-start`}
+          withinPortal
+          offset={(geometry.width - geometry.targetSize) / 2}
+          middlewares={{
+            flip: false,
+            shift: {
+              padding: {
+                top: geometry.top,
+                bottom: geometry.bottom,
+                left: geometry.side === "left" ? geometry.width : 0,
+                right: geometry.side === "right" ? geometry.width : 0,
+              },
+            },
+          }}
+        >
           <Menu.Target>
             <ActionIcon
               ref={menuButtonRef}
@@ -139,7 +123,11 @@ export function EdgeRail({
               <MoreHorizontal size={20} />
             </ActionIcon>
           </Menu.Target>
-          <Menu.Dropdown>{menu}</Menu.Dropdown>
+          <Menu.Dropdown
+            style={{ maxHeight: geometry.height, overflowY: "auto" }}
+          >
+            {menu}
+          </Menu.Dropdown>
         </Menu>
       )}
     </nav>

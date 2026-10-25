@@ -1,7 +1,7 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { useSyncedVisualState } from "../sync/useSyncedVisualState";
-import { ActionIcon, Button, Popover, TextInput } from "@mantine/core";
+import { ActionIcon, Button, Menu, Popover, TextInput } from "@mantine/core";
 import { Bookmark, ListTree, Search } from "lucide-react";
 import { useEffect, useMemo, useState, type RefObject } from "react";
 import { errorText, type GetResult } from "../api";
@@ -17,11 +17,13 @@ export default function PromptNavigator({
   storageKey,
   jump,
   compact = false,
+  inMenu = false,
   agentId,
   loadOlder,
   loadingOlder = false,
 }: {
   compact?: boolean;
+  inMenu?: boolean;
   agentId?: string;
   loadOlder?: () => void;
   loadingOlder?: boolean;
@@ -122,7 +124,7 @@ export default function PromptNavigator({
     0,
     prompts.findIndex((prompt) => prompt.id === activeId),
   );
-  if (!messages.length) return null;
+  if (!messages.length && !inMenu) return null;
   const current = prompts[index];
   const searching = !!searchQuery && !onlySaved;
   const searchPending =
@@ -166,24 +168,38 @@ export default function PromptNavigator({
         width={380}
         withinPortal
         shadow="md"
+        trapFocus={inMenu}
+        returnFocus={inMenu}
       >
         <Popover.Target>
-          <Button
-            size="compact-xs"
-            variant="subtle"
-            className="prompt-history-toggle"
-            aria-label="Browse prompts"
-            title="Browse prompts."
-            aria-expanded={opened}
-            onClick={() => setOpened(!opened)}
-            leftSection={<ListTree size={14} />}
-          >
-            <span className="prompt-history-toggle-label">
-              {prompts.length
-                ? `${index + 1} / ${prompts.length}`
-                : "Search chat"}
-            </span>
-          </Button>
+          {inMenu ? (
+            <Menu.Item
+              closeMenuOnClick={false}
+              aria-label="Browse prompts"
+              aria-expanded={opened}
+              leftSection={<ListTree size={14} />}
+              onClick={() => setOpened(!opened)}
+            >
+              Outline
+            </Menu.Item>
+          ) : (
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              className="prompt-history-toggle"
+              aria-label="Browse prompts"
+              title="Browse prompts."
+              aria-expanded={opened}
+              onClick={() => setOpened(!opened)}
+              leftSection={<ListTree size={14} />}
+            >
+              <span className="prompt-history-toggle-label">
+                {prompts.length
+                  ? `${index + 1} / ${prompts.length}`
+                  : "Search chat"}
+              </span>
+            </Button>
+          )}
         </Popover.Target>
         <Popover.Dropdown
           className="prompt-history"
