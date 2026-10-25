@@ -80,7 +80,7 @@ type BoxedTransactionOperation<T, E> =
 
 use sqlite_actor::{ActorResponseDisposition, SqliteActor};
 
-pub use path::resolve_state_dir;
+pub use path::{NATIVE_LAYR_DIRECTORY, resolve_state_dir};
 pub use records::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, AnnotationRecord, ChatMessage,
     ChatMessageId, CheckpointRecord, ComplaintRecord, EventMetadataRecord, ExecutionRunRecord,

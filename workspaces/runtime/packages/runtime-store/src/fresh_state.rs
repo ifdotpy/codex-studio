@@ -70,6 +70,10 @@ pub(crate) fn validate(root: &Path) -> StoreResult<()> {
             // registry/identity files before it opens the SQLite databases.
             Some("accounts") => accepted_python_directory(&path, "registry.json"),
             Some("multi-server") => accepted_python_directory(&path, "identity.json"),
+            // The host installer and migration command can run before the first backend.
+            Some(crate::NATIVE_LAYR_DIRECTORY) => {
+                fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_dir())
+            }
             // launchd (macOS) and systemd (Linux) can start the process
             // supervisor before the first backend. Python and Rust supervisors
             // create their lease, journal and socket, and the launch agent
@@ -453,5 +457,36 @@ fn publish(staging: &Path, root: &Path) -> StoreResult<()> {
             published.retain(|path| fs::remove_file(path).is_err());
             Err(StoreError::StateDirectory(error))
         }
+    }
+}
+
+#[cfg(test)]
+mod native_layr_tests {
+    use super::*;
+
+    #[test]
+    fn native_layr_install_can_precede_the_first_backend_start() {
+        let root = tempfile::tempdir().unwrap();
+        let native = root.path().join(crate::NATIVE_LAYR_DIRECTORY);
+        fs::create_dir_all(native.join("bin")).unwrap();
+        fs::write(native.join("bin/layr"), "installed host binary").unwrap();
+        validate(root.path()).unwrap();
+        assert!(!root.path().join("canvas.sqlite3").exists());
+    }
+
+    #[test]
+    fn native_layr_installation_directory_cannot_be_a_file() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(crate::NATIVE_LAYR_DIRECTORY), "wrong type").unwrap();
+        assert!(validate(root.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_layr_installation_directory_cannot_be_a_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join(crate::NATIVE_LAYR_DIRECTORY)).unwrap();
+        assert!(validate(root.path()).is_err());
     }
 }

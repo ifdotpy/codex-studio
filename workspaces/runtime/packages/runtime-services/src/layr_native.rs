@@ -2,8 +2,7 @@
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-/// Directory below the Studio state root for all native Layr installation data.
-pub const NATIVE_LAYR_DIRECTORY: &str = "layr-native";
+pub use studio_runtime_store::NATIVE_LAYR_DIRECTORY;
 /// Store directory below the native installation directory, outside project checkouts.
 pub const STORE_DIRECTORY: &str = "store";
 /// Host Layr release required by Studio's command contract.
