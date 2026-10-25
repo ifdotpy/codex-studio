@@ -49,10 +49,11 @@ pub fn run(state_dir: &Path, cwd: &Path, args: &[&str]) -> Result<String> {
         "-u",
         "LAYR_SESSION",
     ];
-    let variables: Vec<String> = super::transport_environment(&state_dir, cfg!(target_os = "linux"))
-        .into_iter()
-        .map(|(name, value)| format!("{name}={}", value.as_str().unwrap_or_default()))
-        .collect();
+    let variables: Vec<String> =
+        super::transport_environment(&state_dir, cfg!(target_os = "linux"))
+            .into_iter()
+            .map(|(name, value)| format!("{name}={}", value.as_str().unwrap_or_default()))
+            .collect();
     argv.extend(variables.iter().map(String::as_str));
     argv.extend([
         binary
@@ -126,16 +127,21 @@ pub fn operation(
                 "Request ID has different content".into(),
             ));
         }
-        return match receipt["status"].as_str() {
-            Some("completed") => Ok(receipt["result"].clone()),
-            Some("failed") => Err(NativeLayrError::Refused(
-                receipt["error"]
-                    .as_str()
-                    .unwrap_or("operation failed")
-                    .into(),
-            )),
-            _ => Err(NativeLayrError::Unknown(path.display().to_string())),
-        };
+        match receipt["status"].as_str() {
+            Some("completed") => return Ok(receipt["result"].clone()),
+            // A save is an idempotent quiet-point snapshot. An explicit failure can retry;
+            // pending or unknown effects still never run again.
+            Some("failed") if intent["kind"] == "save" => {}
+            Some("failed") => {
+                return Err(NativeLayrError::Refused(
+                    receipt["error"]
+                        .as_str()
+                        .unwrap_or("operation failed")
+                        .into(),
+                ));
+            }
+            _ => return Err(NativeLayrError::Unknown(path.display().to_string())),
+        }
     }
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
@@ -144,11 +150,15 @@ pub fn operation(
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(&path)?;
     let pending = json!({"id":id,"intent":intent,"status":"pending"});
-    file.write_all(pending.to_string().as_bytes())?;
-    file.sync_all()?;
-    File::open(&folder)?.sync_all()?;
+    if path.exists() {
+        crate::atomic_file::replace(&path, pending.to_string().as_bytes(), Some(0o600), true)?;
+    } else {
+        let mut file = options.open(&path)?;
+        file.write_all(pending.to_string().as_bytes())?;
+        file.sync_all()?;
+        File::open(&folder)?.sync_all()?;
+    }
     let outcome = effect();
     let receipt = match &outcome {
         Ok(result) => json!({"id":id,"intent":intent,"status":"completed","result":result}),
@@ -196,15 +206,15 @@ pub(super) fn prepare_files(state_dir: &Path, record: &Value) -> Result<Value> {
                 "The Studio state directory must be outside the project".into(),
             ));
         }
+        let archive = crate::vm_preparation::vm_project_archive(&source)?;
+        let staging = tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?;
+        super::import::validate(archive.file.path(), staging.path())?;
         operation(
             state_dir,
             &format!("import:{project}"),
             &json!({"project":project,"source":source}),
             || {
-                let archive = crate::vm_preparation::vm_project_archive(&source)?;
-                let staging = tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?;
-                let decoder = flate2::read::GzDecoder::new(File::open(archive.file.path())?);
-                tar::Archive::new(decoder).unpack(staging.path())?;
+                super::import::unpack(archive.file.path(), staging.path())?;
                 run(
                     state_dir,
                     state_dir,
@@ -278,6 +288,8 @@ pub(super) fn prepare_files(state_dir: &Path, record: &Value) -> Result<Value> {
             ));
         }
         result["layrScratch"] = json!(canonical);
+        result["layrReadCwd"] = result["cwd"].clone();
+        result["cwd"] = result["layrScratch"].clone();
     }
     Ok(result)
 }
@@ -339,7 +351,7 @@ pub async fn prepare(store: Arc<RuntimeStore>, mut record: Value) -> Result<Valu
 }
 
 /// Confirm the stored association against the owned project path before any effect.
-fn associated_cwd(state_dir: &Path, record: &Value) -> Result<PathBuf> {
+pub(super) fn associated_cwd(state_dir: &Path, record: &Value) -> Result<PathBuf> {
     if record["layrReady"] != true {
         return Err(NativeLayrError::Refused(
             "The native Layr workspace is not ready".into(),
@@ -363,13 +375,39 @@ fn associated_cwd(state_dir: &Path, record: &Value) -> Result<PathBuf> {
         .parent()
         .ok_or_else(|| NativeLayrError::Refused("Invalid main path".into()))?
         .join(expected_line);
-    let actual = fs::canonicalize(text(record, "cwd")?)?;
+    let reviewer = record["role"] == "reviewer";
+    if reviewer {
+        let scratch = fs::canonicalize(state_dir)?
+            .join(NATIVE_LAYR_DIRECTORY)
+            .join("scratch")
+            .join(studio_runtime_store::sha256_hex(
+                text(record, "id")?.as_bytes(),
+            ));
+        if fs::canonicalize(text(record, "cwd")?)? != scratch
+            || fs::canonicalize(text(record, "layrScratch")?)? != scratch
+        {
+            return Err(NativeLayrError::Refused(
+                "The reviewer scratch association changed".into(),
+            ));
+        }
+    }
+    let actual = fs::canonicalize(text(record, if reviewer { "layrReadCwd" } else { "cwd" })?)?;
     if actual != fs::canonicalize(expected)? {
         return Err(NativeLayrError::Refused(
             "The native Layr cwd association changed".into(),
         ));
     }
     Ok(actual)
+}
+
+fn working_state(state_dir: &Path, cwd: &Path) -> Result<String> {
+    match run(state_dir, cwd, &["rev-parse", "head@{0}"]) {
+        Ok(state) => Ok(state),
+        Err(NativeLayrError::Refused(detail)) if detail.contains("has only 0 automatic states") => {
+            run(state_dir, cwd, &["rev-parse", "head"])
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn save(state_dir: &Path, record: &Value, request_id: &str) -> Result<Value> {
@@ -383,9 +421,12 @@ pub fn save(state_dir: &Path, record: &Value, request_id: &str) -> Result<Value>
                 run(state_dir, &cwd, &["cache", "repair"])?;
                 run(state_dir, &cwd, &["save"])?;
             }
-            Ok(
-                json!({"stateId":run(state_dir,&cwd,&["rev-parse",if record["role"] == "reviewer" { "head" } else { "head@{0}" }])?}),
-            )
+            let state = if record["role"] == "reviewer" {
+                run(state_dir, &cwd, &["rev-parse", "head"])?
+            } else {
+                working_state(state_dir, &cwd)?
+            };
+            Ok(json!({"stateId":state}))
         },
     )
 }
@@ -401,15 +442,27 @@ pub fn remove(state_dir: &Path, record: &Value, request_id: &str) -> Result<Valu
                 && record["layrReady"] == true
             {
                 let project = project_id(record)?;
+                let cwd = associated_cwd(state_dir, record)?;
                 let line = text(record, "layrLine")?;
                 if line == "main" {
                     return Err(NativeLayrError::Refused("Cannot delete main".into()));
                 }
+                let state = working_state(state_dir, &cwd)?;
+                let archive_ref = format!(
+                    "pins/studio/archive/{}",
+                    studio_runtime_store::sha256_hex(text(record, "id")?.as_bytes())
+                );
+                run(
+                    state_dir,
+                    &main_path(state_dir, &project),
+                    &["ref", "set", &archive_ref, &state],
+                )?;
                 run(
                     state_dir,
                     &main_path(state_dir, &project),
                     &["line", "delete", "-D", line],
                 )?;
+                return Ok(json!({"state":"removed","archiveRef":archive_ref,"stateId":state}));
             }
             Ok(json!({"state":"removed"}))
         },

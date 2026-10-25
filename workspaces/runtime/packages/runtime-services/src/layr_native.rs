@@ -83,8 +83,8 @@ mod tests {
     }
 }
 
-pub mod install;
 mod capability;
+pub mod install;
 pub use capability::{NativeLayrCapability, capability};
 mod runtime;
 pub use runtime::{
@@ -108,13 +108,17 @@ pub fn thread_environment(state_root: &Path) -> serde_json::Map<String, Value> {
 fn transport_environment(state_root: &Path, uses_service: bool) -> serde_json::Map<String, Value> {
     let mut environment = serde_json::Map::from_iter([
         ("LAYR_ROOT".into(), json!(store_path(state_root))),
-        ("LAYR_DIRECT".into(), json!(if uses_service { "0" } else { "1" })),
+        (
+            "LAYR_DIRECT".into(),
+            json!(if uses_service { "0" } else { "1" }),
+        ),
     ]);
     if uses_service {
         environment.insert("LAYR_SOCKET".into(), json!(socket_path(state_root)));
     }
     environment
 }
+mod import;
 pub mod migration;
 
 #[cfg(test)]
@@ -199,7 +203,10 @@ mod receipt_tests {
     fn native_environment_selects_the_managed_binary() {
         let env = thread_environment(Path::new("/studio"));
         assert_eq!(env["LAYR_ROOT"], "/studio/layr-native/store");
-        assert_eq!(env["LAYR_DIRECT"], if cfg!(target_os = "linux") { "0" } else { "1" });
+        assert_eq!(
+            env["LAYR_DIRECT"],
+            if cfg!(target_os = "linux") { "0" } else { "1" }
+        );
         assert!(
             env["PATH"]
                 .as_str()
@@ -301,6 +308,8 @@ mod receipt_tests {
         for (key, value) in ready.as_object().unwrap() {
             reviewer[key] = value.clone();
         }
+        assert_eq!(reviewer["cwd"], reviewer["layrScratch"]);
+        assert_eq!(Path::new(reviewer["layrReadCwd"].as_str().unwrap()), main);
         let args = vec!["try".into(),state_id.clone(),"--".into(),"/bin/sh".into(),"-c".into(),
             "printf local > review-check; printf note > \"$TMPDIR/note\"; if printf forbidden > \"$1/code.txt\"; then exit 7; fi".into(),
             "review-check".into(),main.to_string_lossy().into_owned()];
@@ -370,22 +379,22 @@ pub fn reviewer_try(
             "Use try <state> -- <command> for a reviewer check".into(),
         ));
     }
-    let cwd = Path::new(
-        record["cwd"]
-            .as_str()
-            .ok_or_else(|| NativeLayrError::Refused("Missing reviewer cwd".into()))?,
-    );
+    let cwd = reviewer_read_cwd(state_dir, record)?;
     let scratch = record["layrScratch"]
         .as_str()
         .ok_or_else(|| NativeLayrError::Refused("Missing reviewer scratch folder".into()))?;
     #[cfg(target_os = "macos")]
-    let wrapper = r#"scratch=$1; shift; profile=$1; shift; export TMPDIR="$scratch"; exec /usr/bin/sandbox-exec -D "WORKSPACE=$PWD" -D "SCRATCH=$scratch" -p "$profile" "$@""#;
+    let wrapper = r#"scratch=$1; profile=$2; shift 3; export TMPDIR="$scratch"; exec /usr/bin/sandbox-exec -D "WORKSPACE=$PWD" -D "SCRATCH=$scratch" -p "$profile" "$@""#;
     #[cfg(target_os = "macos")]
     let profile = r#"(version 1)(deny default)(allow process*)(allow sysctl-read)(allow mach-lookup)(allow file-read*)(allow file-write* (subpath (param "WORKSPACE")) (subpath (param "SCRATCH")))"#;
     #[cfg(not(target_os = "macos"))]
-    let wrapper = r#"scratch=$1; shift; shift; exec bwrap --unshare-all --die-with-parent --ro-bind / / --bind "$PWD" "$PWD" --bind "$scratch" "$scratch" --proc /proc --dev /dev --chdir "$PWD" --setenv TMPDIR "$scratch" -- "$@""#;
+    let wrapper = linux_reviewer_wrapper();
     #[cfg(not(target_os = "macos"))]
     let profile = "";
+    let state = std::fs::canonicalize(state_dir)?;
+    let state = state
+        .to_str()
+        .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 state path".into()))?;
     let mut args = vec![
         "try",
         argv[1].as_str(),
@@ -396,9 +405,47 @@ pub fn reviewer_try(
         "studio-review-try",
         scratch,
         profile,
+        state,
     ];
     args.extend(argv[3..].iter().map(String::as_str));
-    run(state_dir, cwd, &args)
+    run(state_dir, &cwd, &args)
+}
+
+pub(crate) fn reviewer_read_cwd(
+    state_dir: &Path,
+    record: &Value,
+) -> Result<PathBuf, NativeLayrError> {
+    if record["role"] != "reviewer" {
+        return Err(NativeLayrError::Refused(
+            "Read access requires a reviewer".into(),
+        ));
+    }
+    runtime::associated_cwd(state_dir, record)
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn linux_reviewer_wrapper() -> &'static str {
+    r#"scratch=$1; state=$3; shift 3
+set -- --tmpfs "$state" --bind "$PWD" /workspace --bind "$scratch" /scratch --proc /proc --dev /dev --chdir /workspace --setenv TMPDIR /scratch --setenv HOME /scratch --setenv PATH /usr/local/bin:/usr/bin:/bin --unsetenv LAYR_SOCKET --unsetenv LAYR_ROOT --unsetenv LAYR_PROJECT --unsetenv LAYR_LINE --unsetenv LAYR_SESSION --unsetenv LAYR_DIRECT --remount-ro / -- "$@"
+for root in /usr /bin /sbin /lib /lib64 /opt; do
+  if [ -e "$root" ]; then set -- --ro-bind "$root" "$root" "$@"; fi
+done
+for file in /etc/ld.so.cache /etc/ld.so.conf /etc/passwd /etc/group /etc/nsswitch.conf /etc/localtime; do
+  if [ -f "$file" ]; then set -- --ro-bind "$file" "$file" "$@"; fi
+done
+exec bwrap --unshare-all --die-with-parent --new-session --tmpfs / "$@""#
+}
+
+#[cfg(test)]
+mod reviewer_isolation_tests {
+    #[test]
+    fn native_layr_linux_try_does_not_expose_the_host_or_daemon_socket() {
+        let wrapper = super::linux_reviewer_wrapper();
+        assert!(!wrapper.contains("--ro-bind / /"));
+        assert!(wrapper.contains("--tmpfs /"));
+        assert!(wrapper.contains("--unsetenv LAYR_SOCKET"));
+        assert!(wrapper.contains("--chdir /workspace"));
+    }
 }
 
 pub(crate) use runtime::stage_turn_save;
@@ -426,5 +473,200 @@ mod turn_save_tests {
             assert_eq!(AgentRepository::get(tx,&id)?.unwrap().value()["layrTurnSaves"]["turn-1"]["stateId"],"exact-state");
             Ok(())
         }).await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    use std::{fs, path::PathBuf};
+
+    #[cfg(unix)]
+    fn fast_fixture() -> (tempfile::TempDir, Value) {
+        use std::os::unix::fs::PermissionsExt;
+        let state = tempfile::tempdir().unwrap();
+        fs::create_dir_all(binary_path(state.path()).parent().unwrap()).unwrap();
+        fs::write(binary_path(state.path()),r#"#!/bin/sh
+printf '%s\n' "$*" >> "$LAYR_ROOT/commands"
+case "$3 $4" in
+  'rev-parse head@{0}')
+    if [ -f "$LAYR_ROOT/automatic" ]; then cat "$LAYR_ROOT/automatic"; else printf "head@{0}: line has only 0 automatic states\n" >&2; exit 128; fi ;;
+  'rev-parse head') printf 'full-named-state\n' ;;
+esac
+"#).unwrap();
+        fs::set_permissions(binary_path(state.path()), fs::Permissions::from_mode(0o755)).unwrap();
+        let project = studio_runtime_store::sha256_hex(b"/fast-source");
+        let line = format!("agent-{}", studio_runtime_store::sha256_hex(b"fast-worker"));
+        let cwd = main_path(state.path(), &project)
+            .parent()
+            .unwrap()
+            .join(&line);
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(main_path(state.path(), &project)).unwrap();
+        let worker = json!({"id":"fast-worker","workspaceMode":"layr-native","role":"implementer","isLead":false,"layrReady":true,"layrProjectId":project,"layrLine":line,"cwd":cwd});
+        (state, worker)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_layr_unchanged_save_replays_only_explicit_failures() {
+        let (state, worker) = fast_fixture();
+        let cwd = fs::canonicalize(worker["cwd"].as_str().unwrap()).unwrap();
+        let intent = json!({"agent":worker["id"],"cwd":cwd,"kind":"save"});
+        assert!(
+            operation(state.path(), "failed-save", &intent, || Err(
+                NativeLayrError::Refused("old missing automatic state".into())
+            ))
+            .is_err()
+        );
+        assert_eq!(
+            save(state.path(), &worker, "failed-save").unwrap()["stateId"],
+            "full-named-state"
+        );
+        assert!(
+            operation(state.path(), "unknown-save", &intent, || Err(
+                NativeLayrError::Unknown("lost".into())
+            ))
+            .is_err()
+        );
+        assert!(matches!(
+            save(state.path(), &worker, "unknown-save"),
+            Err(NativeLayrError::Unknown(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_layr_archive_sets_the_nonexpiring_pin_before_deleting_the_line() {
+        let (state, worker) = fast_fixture();
+        fs::write(
+            store_path(state.path()).join("automatic"),
+            "full-automatic-state\n",
+        )
+        .unwrap();
+        let receipt = remove(state.path(), &worker, "archive-with-pin").unwrap();
+        assert_eq!(receipt["stateId"], "full-automatic-state");
+        assert!(
+            receipt["archiveRef"]
+                .as_str()
+                .unwrap()
+                .starts_with("pins/studio/archive/")
+        );
+        let commands = fs::read_to_string(store_path(state.path()).join("commands")).unwrap();
+        let commands: Vec<_> = commands.lines().collect();
+        let pin = commands
+            .iter()
+            .position(|line| line.contains(" ref set "))
+            .unwrap();
+        let deletion = commands
+            .iter()
+            .position(|line| line.contains(" line delete "))
+            .unwrap();
+        assert!(pin < deletion);
+        assert!(!commands[pin].contains("--ttl"));
+        assert!(commands[pin].ends_with("full-automatic-state"));
+    }
+
+    fn fixture() -> (tempfile::TempDir, tempfile::TempDir, Value, Value) {
+        let state = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        fs::write(source.path().join("code.txt"), "base\n").unwrap();
+        fs::create_dir_all(binary_path(state.path()).parent().unwrap()).unwrap();
+        fs::copy(
+            std::env::var_os("STUDIO_LAYR_NATIVE_TEST_BINARY")
+                .expect("Set STUDIO_LAYR_NATIVE_TEST_BINARY"),
+            binary_path(state.path()),
+        )
+        .unwrap();
+        let mut lead =
+            json!({"id":"regression-lead","isLead":true,"autoWake":true,"cwd":source.path()});
+        configure_new_chat(&mut lead, source.path().to_str().unwrap());
+        let fields = runtime::prepare_files(state.path(), &lead).unwrap();
+        for (key, value) in fields.as_object().unwrap() {
+            lead[key] = value.clone();
+        }
+        let mut worker =
+            json!({"id":"regression-worker","role":"implementer","isLead":false,"autoWake":true});
+        configure_child(&mut worker, &lead, &lead);
+        let fields = runtime::prepare_files(state.path(), &worker).unwrap();
+        for (key, value) in fields.as_object().unwrap() {
+            worker[key] = value.clone();
+        }
+        (state, source, lead, worker)
+    }
+
+    #[test]
+    #[ignore = "requires real Layr 0.2.0 on APFS or root on btrfs"]
+    fn native_layr_unchanged_turn_save_and_previously_failed_save_can_finish() {
+        let (state, _source, _lead, worker) = fixture();
+        let expected = run(
+            state.path(),
+            Path::new(worker["cwd"].as_str().unwrap()),
+            &["rev-parse", "head"],
+        )
+        .unwrap();
+        assert_eq!(
+            save(state.path(), &worker, "unchanged-turn").unwrap()["stateId"],
+            expected
+        );
+        let cwd = fs::canonicalize(worker["cwd"].as_str().unwrap()).unwrap();
+        let intent = json!({"agent":worker["id"],"cwd":cwd,"kind":"save"});
+        assert!(
+            operation(state.path(), "previously-failed-save", &intent, || Err(
+                NativeLayrError::Refused("head@{0}: line has only 0 automatic states".into())
+            ))
+            .is_err()
+        );
+        assert_eq!(
+            save(state.path(), &worker, "previously-failed-save").unwrap()["stateId"],
+            expected
+        );
+    }
+
+    #[test]
+    #[ignore = "requires real Layr 0.2.0 on APFS or root on btrfs"]
+    fn native_layr_archive_pins_an_unmerged_automatic_state_without_expiry() {
+        let (state, _source, lead, worker) = fixture();
+        fs::write(
+            PathBuf::from(worker["cwd"].as_str().unwrap()).join("code.txt"),
+            "unmerged work\n",
+        )
+        .unwrap();
+        let saved = save(state.path(), &worker, "archive-turn-save").unwrap();
+        let receipt = remove(state.path(), &worker, "archive-worker-with-retention").unwrap();
+        let reference = receipt["archiveRef"]
+            .as_str()
+            .expect("archive must keep a durable ref");
+        let main = Path::new(lead["cwd"].as_str().unwrap());
+        let pins: Value = serde_json::from_str(
+            &run(
+                state.path(),
+                main,
+                &["ref", "list", "pins/studio/archive/", "--json"],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let pin = pins
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|pin| pin["name"] == reference)
+            .unwrap();
+        assert!(pin.get("expires_at").is_none_or(Value::is_null));
+        assert_eq!(
+            run(state.path(), main, &["rev-parse", reference]).unwrap(),
+            saved["stateId"].as_str().unwrap()
+        );
+        assert!(
+            run(
+                state.path(),
+                main,
+                &["show", &format!("{reference}:code.txt")]
+            )
+            .unwrap()
+            .contains("unmerged work")
+        );
+        assert!(!Path::new(worker["cwd"].as_str().unwrap()).exists());
     }
 }

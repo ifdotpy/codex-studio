@@ -233,14 +233,12 @@ pub(crate) async fn run_native(
                 &request_id,
                 &json!({"agent":record["id"],"args":argv}),
                 || {
-                    let cwd = record["cwd"].as_str().ok_or_else(|| {
-                        crate::layr_native::NativeLayrError::Refused("Missing reviewer cwd".into())
-                    })?;
+                    let cwd = crate::layr_native::reviewer_read_cwd(&state_dir,&record)?;
                     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
                     let output = if argv.first().map(String::as_str) == Some("try") {
                         crate::layr_native::reviewer_try(&state_dir, &record, &argv)?
                     } else {
-                        crate::layr_native::run(&state_dir, std::path::Path::new(cwd), &refs)?
+                        crate::layr_native::run(&state_dir, &cwd, &refs)?
                     };
                     Ok(json!({"exitCode":0,"stdout":output,"stderr":""}))
                 },

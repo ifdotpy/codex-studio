@@ -1373,6 +1373,9 @@ fn validate_monitor_actor(record: &Value, epoch: u64) -> Result<(), WorkerError>
 }
 
 fn execution_cwd(record: &Value, validated_workspace_cwd: &Path) -> Option<String> {
+    if crate::layr_native::is_native(record) && record["role"] == "reviewer" {
+        return record["layrScratch"].as_str().map(str::to_owned);
+    }
     if record.get("executionMode").and_then(Value::as_str) == Some("vm") {
         record.get("cwd").and_then(Value::as_str).map(str::to_owned)
     } else {
@@ -2418,6 +2421,14 @@ mod daybreak_tests {
             vm_reviewer_permissions(&json!({"executionMode":"vm","role":"implementer"})),
             None
         );
+    }
+
+    #[test]
+    fn native_layr_reviewer_model_cwd_is_scratch_for_codex_and_claude() {
+        for provider in ["codex", "claude"] {
+            let record = json!({"workspaceMode":"layr-native","executionMode":"native", "role":"reviewer", "provider":provider,"cwd":"/store/main","layrScratch":"/private/review-scratch"});
+            assert_eq!(execution_cwd(&record, Path::new("/store/main")), Some("/private/review-scratch".into()));
+        }
     }
 
     #[test]

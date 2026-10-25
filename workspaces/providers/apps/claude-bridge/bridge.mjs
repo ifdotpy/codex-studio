@@ -395,6 +395,7 @@ async function session(id) {
 const settings = (s) =>
   fileCheckpointOptions({
     cwd: s.cwd,
+    ...(s.claude?.sandbox ? { sandbox: s.claude.sandbox } : {}),
     pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
     settingSources: s.moveProof ? [] : ["user", "project", "local"],
     ...(s.moveProof
@@ -405,13 +406,34 @@ const settings = (s) =>
     includePartialMessages: true,
     env: {
       ...process.env,
+      ...(typeof s.claude?.env?.LAYR_ROOT === "string"
+        ? {
+            LAYR_PROJECT: undefined,
+            LAYR_LINE: undefined,
+            LAYR_SESSION: undefined,
+            LAYR_SOCKET: undefined,
+          }
+        : {}),
       // Per-thread host declarations must reach the CLI process, not settings.json.
       ...Object.fromEntries(
-        ["CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE"]
+        [
+          "CLAUDE_CODE_HOST_WORKTREE",
+          "CLAUDE_CODE_HOST_WORKTREE_FENCE",
+          "PATH",
+          "LAYR_ROOT",
+          "LAYR_DIRECT",
+          "LAYR_SOCKET",
+          "TMPDIR",
+        ]
           .filter((key) => typeof s.claude?.env?.[key] === "string")
           .map((key) => [key, s.claude.env[key]]),
       ),
-      ...browserEnvironment(root, s.id),
+      ...browserEnvironment(root, s.id, {
+        ...process.env,
+        ...(typeof s.claude?.env?.PATH === "string"
+          ? { PATH: s.claude.env.PATH }
+          : {}),
+      }),
       ...(s.moveProof
         ? {
             ENABLE_CLAUDEAI_MCP_SERVERS: s.moveProof.externalCatalog?.some(

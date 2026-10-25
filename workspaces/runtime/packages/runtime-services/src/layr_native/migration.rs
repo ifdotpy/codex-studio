@@ -156,6 +156,7 @@ pub fn migrate(state_dir: &Path, project: &Path, dry_run: bool) -> Result<Value>
             &json!({"source":source,"repository":relative,"line":name}),
             || {
                 let archive = crate::vm_preparation::native_worktree_archive(&source)?;
+                super::import::validate(archive.file.path(),&main)?;
                 run(state_dir, &main, &["line", "new", &name, "main"])?;
                 let cwd = main
                     .parent()
@@ -185,10 +186,7 @@ pub fn migrate(state_dir: &Path, project: &Path, dry_run: bool) -> Result<Value>
                     fs::remove_dir_all(&destination)?;
                 }
                 fs::create_dir_all(&destination)?;
-                tar::Archive::new(flate2::read::GzDecoder::new(File::open(
-                    archive.file.path(),
-                )?))
-                .unpack(&destination)?;
+                super::import::unpack(archive.file.path(),&destination)?;
                 if let Some(saved) = &saved_git {
                     fs::rename(saved.path().join("git"), &git_marker)?;
                 }

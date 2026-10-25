@@ -1061,6 +1061,17 @@ fn frozen_params(record: &Value) -> Result<Option<thread::FrozenParams>, WorkerE
     }))
 }
 
+fn native_claude_options(record:&Value,state_root:&Path)->Result<serde_json::Map<String,Value>,WorkerError> {
+    let mut options:serde_json::Map<String,Value>=optional(record,"claudeOptions")?.unwrap_or_default();
+    if crate::layr_native::is_native(record) && record["role"]=="reviewer" {
+        let scratch=record["layrScratch"].as_str().ok_or_else(||invalid("native-reviewer/scratch"))?;
+        options.insert("sandbox".into(),json!({"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,
+            "filesystem":{"allowWrite":[scratch],"denyWrite":[crate::layr_native::store_path(state_root)]},
+            "network":{"allowedDomains":[],"strictAllowlist":true,"allowUnixSockets":[],"allowAllUnixSockets":false}}));
+    }
+    Ok(options)
+}
+
 pub(super) fn thread_snapshot(
     tx: &Transaction<'_>,
     resources: &PreparationResources,
@@ -1148,7 +1159,7 @@ pub(super) fn thread_snapshot(
             role,
             is_lead: lead,
             needs_title: flag(record, "needsTitle")?,
-            claude_options: optional(record, "claudeOptions")?.unwrap_or_default(),
+            claude_options: native_claude_options(record,state_root)?,
             daybreak_enabled: stored(record, "daybreakEnabled")?,
             cyber_access_program: stored(record, "cyberAccessProgram")?,
         },
@@ -2149,6 +2160,7 @@ mod workspace_fence_tests {
                     "cwd":"/worker copy:quoted\"path","hostProjectPath":"/parent copy",
                     "workspaceMode":mode,"worktree":mode == "worktree","worktreeReady":ready,
                     "layrReady":mode == "layr-native" && ready,
+                    "layrScratch":"/private/reviewer-scratch",
                     "yoloMode":true,"claudeOptions":{"permissionMode":"bypassPermissions"}});
                     for resumed in [false, true] {
                         let mut record = record.clone();
@@ -2235,6 +2247,12 @@ mod workspace_fence_tests {
                             if mode == "layr-native" && provider == "claude" {
                                 assert_eq!(options["env"]["LAYR_DIRECT"], if cfg!(target_os = "linux") { "0" } else { "1" });
                                 assert!(options["env"]["LAYR_ROOT"].is_string());
+                                if role == "reviewer" {
+                                    assert_eq!(options["sandbox"]["enabled"],true);
+                                    assert_eq!(options["sandbox"]["failIfUnavailable"],true);
+                                    assert_eq!(options["sandbox"]["filesystem"]["allowWrite"],json!(["/private/reviewer-scratch"]));
+                                    assert_eq!(options["sandbox"]["filesystem"]["denyWrite"],json!([crate::layr_native::store_path(Path::new("/state"))]));
+                                }
                             }
                         }
                         assert_eq!(attempt.params["sandbox"], expected_sandbox);

@@ -104,15 +104,22 @@ A changed worker head prevents acceptance.
 Lead and reviewer results do not cause a merge.
 
 At turn end, Studio runs `layr cache repair` and `layr save`.
+An unchanged line without automatic states resolves to its current named head.
 This automatic state preserves unfinished work separately from the named head.
-Archive saves remaining work and calls `layr line delete -D <line>`.
-Layr retains the states.
+Archive saves remaining work and creates `pins/studio/archive/<SHA-256 of agent ID>` at that exact state.
+It then calls `layr line delete -D <line>`.
+The archive receipt records `archiveRef` and `stateId`.
+The pin has no expiry and keeps unmerged automatic states through garbage collection.
+Studio never removes archive pins automatically.
+After review or explicit discard, an operator can remove a pin with `layr ref delete <archiveRef>`.
+Later garbage collection can then apply the normal retention rules.
 Archive of a lead retains main.
 
 Each filesystem effect has a durable receipt below `layr-native/receipts`.
 A repeated request returns its saved result.
 A request with an unknown outcome stays held for inspection.
 Studio does not repeat an uncertain merge, import, save, or deletion.
+An explicitly failed quiet-point save can retry with the same request ID.
 
 ## Warm caches
 
@@ -135,9 +142,11 @@ Studio does not choose build commands or automatically publish caches.
 
 ## Reviewers
 
-A native reviewer uses main as its read-only working directory.
+A native reviewer uses its private scratch folder as its working directory.
+Its `layrReadCwd` points to main for trusted state reads.
 It owns no Layr line.
 Codex permits writes only in the private reviewer scratch folder.
+Claude uses the same scratch working directory and a sandbox that denies writes to the store.
 The `layr_read` tool reads states outside that sandbox through a command allowlist.
 It permits `show`, `diff`, `log`, and the existing history read commands.
 It does not permit changes to main or worker lines.
@@ -148,7 +157,9 @@ Native mode does not create separate Unix users as the VM mode does.
 The native `layr_read` tool also accepts `try <state> -- <command>`.
 Studio runs the command in a temporary Layr copy.
 On macOS, `sandbox-exec` permits writes only in that copy and the private scratch folder.
-On Linux, Bubblewrap provides the same restriction and must be installed.
+On Linux, Bubblewrap starts with an empty root and must be installed.
+It mounts only read-only toolchains, the temporary copy, and private scratch.
+The Studio state directory and daemon socket stay hidden.
 The check has no network access.
 The check cannot change main or the worker lines.
 
