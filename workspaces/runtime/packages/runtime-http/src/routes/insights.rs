@@ -237,10 +237,12 @@ mod tests {
             json!({"id":id,"agentId":"typed","rootId":"typed","threadId":"thread",
             "turnId":"turn","accountKey":"claude","accountHistory":[],"at":at,"recordedAt":at,"source":"live",
             "timestampSource":"observed","provider":"claude","model":"claude-haiku-5-5","fingerprint":id,
-            "modelContextWindow":null,"last":{},"total":{},"delta":{}})
+            "last":{},"total":{},"delta":{}})
         };
+        // Capture sets modelContextWindow for responses and cumulatives only.
         let mut response = base("typed-response", 1.0);
         response["counterDomain"] = json!("response");
+        response["modelContextWindow"] = Value::Null;
         response["responseId"] = json!("msg-1");
         response["last"] = tokens.clone();
         response["delta"] = tokens.clone();
