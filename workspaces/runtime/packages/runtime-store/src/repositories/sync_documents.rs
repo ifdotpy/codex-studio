@@ -16,6 +16,13 @@ pub const ENTITY_TOMBSTONE_LIMIT: i64 = 10_000;
 /// Tombstones removed by one short writer transaction. Unit: rows.
 pub const ENTITY_TOMBSTONE_PRUNE_BATCH: i64 = 500;
 
+/// Selection and initial list ordering shared by the page reader.
+#[derive(Clone, Copy)]
+struct EntityPageScope<'a> {
+    collections: Option<&'a str>,
+    priority_id: Option<&'a str>,
+}
+
 const BOOTSTRAP_TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "sync_identity",
@@ -178,8 +185,10 @@ impl SyncDocumentsRepository {
             fresh,
             initial_high,
             reset_support,
-            priority_id,
-            None,
+            EntityPageScope {
+                collections: None,
+                priority_id,
+            },
         )
     }
 
@@ -200,8 +209,12 @@ impl SyncDocumentsRepository {
             fresh,
             initial_high,
             reset_support,
-            priority_id,
-            Some(studio_runtime_schema::sync_protocol::global_entity_collections_json()),
+            EntityPageScope {
+                collections: Some(
+                    studio_runtime_schema::sync_protocol::global_entity_collections_json(),
+                ),
+                priority_id,
+            },
         )
     }
 
@@ -212,8 +225,7 @@ impl SyncDocumentsRepository {
         fresh: bool,
         initial_high: i64,
         reset_support: bool,
-        priority_id: Option<&str>,
-        collections: Option<&str>,
+        scope: EntityPageScope<'_>,
     ) -> StoreResult<EntityPage> {
         let tombstone_floor = Self::entity_tombstone_floor(transaction)?;
         let stored_max = transaction.query_row_cached(
@@ -245,16 +257,18 @@ impl SyncDocumentsRepository {
         }
 
         let limit = limit.clamp(1, SYNC_ENTITY_PAGE_LIMIT);
-        let priority_id = (after == 0 && fresh).then_some(priority_id).flatten();
+        let scope = EntityPageScope {
+            priority_id: (after == 0 && fresh).then_some(scope.priority_id).flatten(),
+            ..scope
+        };
         let rows = read_entity_page(
             transaction,
             after,
             tombstone_floor,
             fresh,
             initial_high,
-            priority_id,
             limit,
-            collections,
+            scope,
         )?;
         let checkpoint = if rows.len() as i64 == limit {
             rows.last().map_or(after, |row| row.sequence)
@@ -701,9 +715,8 @@ fn read_entity_page(
     tombstone_floor: i64,
     fresh: bool,
     initial_high: i64,
-    priority_id: Option<&str>,
     limit: i64,
-    collections: Option<&str>,
+    scope: EntityPageScope<'_>,
 ) -> StoreResult<Vec<EntityRow>> {
     let mut statement = transaction.prepare_cached(
         "SELECT collection,id,seq,payload,deleted FROM sync_entities \
@@ -718,9 +731,9 @@ fn read_entity_page(
                 tombstone_floor,
                 i64::from(fresh),
                 initial_high,
-                priority_id,
+                scope.priority_id,
                 limit,
-                collections
+                scope.collections
             ],
             entity_row,
         )?
