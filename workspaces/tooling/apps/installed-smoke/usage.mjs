@@ -493,11 +493,14 @@ export function scenarioEvidence(items, provider, root) {
   const shellWrapper = /^\/bin\/(?:ba|z)?sh -(?:lc|c) (.+)$/.exec(
     tool?.command ?? "",
   );
+  // Codex quotes the wrapped script as one argument: -lc 'cat /path'.
+  const wrapped =
+    /^'([^']*)'$/.exec(shellWrapper?.[1] ?? "")?.[1] ?? shellWrapper?.[1];
   const codexCat =
     provider === "codex" &&
     tool?.type === "commandExecution" &&
     tool.cwd === root &&
-    (plainCat || (bareCat && shellWrapper?.[1] === bareCat)) &&
+    (plainCat || (bareCat && wrapped === bareCat)) &&
     tool.exitCode === 0 &&
     tool.aggregatedOutput?.trim() === NOTES_MARKER;
   const claudeRead =

@@ -119,13 +119,18 @@ test.each([
   "absent anchor",
   "outside tail",
   "replaced",
+  "symlink transcript",
+  "symlink directory",
   "partial composite",
   "reversed composite",
   "foreign steer",
   "valid absent",
   "valid delivered",
 ])("closed steer history: %s", async (kind) => {
-  root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-lifecycle-"));
+  // The native reader requires a canonical path, including macOS's temp parent.
+  root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "claude-lifecycle-")),
+  );
   const session = { id: sessionId, cwd: root };
   const initial = { id: "initial", type: "userMessage", nativeId: inputId };
   const steer = {
@@ -178,6 +183,14 @@ test.each([
   );
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, raw);
+  if (kind === "symlink transcript") {
+    await fs.rename(file, file + ".target");
+    await fs.symlink(path.basename(file) + ".target", file);
+  }
+  if (kind === "symlink directory") {
+    await fs.rename(configDir, configDir + ".target");
+    await fs.symlink(path.basename(configDir) + ".target", configDir, "dir");
+  }
   const records = await readNativeHistory(session, {
     configDir,
     ...(kind === "replaced"
@@ -193,6 +206,17 @@ test.each([
         }
       : {}),
   });
+  if (
+    [
+      "malformed",
+      "torn",
+      "replaced",
+      "symlink transcript",
+      "symlink directory",
+    ].includes(kind)
+  )
+    expect(records).toBeNull();
+  else expect(records).not.toBeNull();
   expect(
     inputHistoryOutcome(
       records?.map(({ row }) => row),
@@ -215,7 +239,9 @@ test.each([
 test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
   "restart promotes chain-proven receipts: %s",
   async (kind) => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-receipts-"));
+    root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "claude-receipts-")),
+    );
     const session = {
       id: sessionId,
       cwd: root,
@@ -890,7 +916,9 @@ test.each(["total_tokens_reminder", "prompt_snapshot"])(
 test.each([false, true])(
   "a complete large native tool result preserves steer evidence: delivered=%s",
   async (delivered) => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-large-history-"));
+    root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "claude-large-history-")),
+    );
     const rootId = "66666666-6666-4666-8666-666666666666";
     const resultId = "55555555-5555-4555-8555-555555555555";
     const row = (type, uuid, parentUuid, content) => ({

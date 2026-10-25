@@ -7697,13 +7697,18 @@ export interface components {
       /** At */
       at: number;
       /** Baselinemissing */
-      baselineMissing: boolean;
+      baselineMissing?: boolean;
       /**
        * Counterdomain
        * @enum {string}
        */
-      counterDomain: "response" | "nativeNotice";
-      cumulativeDelta: components["schemas"]["AnalyticsProviderTokens"];
+      counterDomain:
+        | "response"
+        | "nativeNotice"
+        | "codexThread"
+        | "claudeQuery"
+        | "gap";
+      cumulativeDelta?: components["schemas"]["AnalyticsProviderTokens"];
       /**
        * Cyberaccessprogram
        * @default null
@@ -7768,7 +7773,7 @@ export interface components {
       /** @default null */
       requestUsage?: components["schemas"]["AnalyticsProviderTokens"] | null;
       /** Reset */
-      reset: boolean | null;
+      reset?: boolean | null;
       /**
        * Responseid
        * @default null
