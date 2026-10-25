@@ -24,6 +24,7 @@ import {
 } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { fixtureStateDirectory as rustFixtureStateDirectory } from "./fixtures/rust-ui-fixture.mjs";
+import { readResourceBaselines } from "./fixtures/resource-baselines.mjs";
 import { choosePlaywrightScratchRoot } from "./scratch-root.mjs";
 import { browserExecutablePath } from "./browser-executable.mjs";
 import { waitForFixturePort } from "./fixture-readiness.mjs";
@@ -1085,9 +1086,10 @@ function isJsonObject(value) {
  * Read the session token and current entity rows used by browser specs.
  * The returned API is deliberately collection based; it is not a snapshot copy.
  * @param {string} origin
+ * @param {{ agentDetails?: boolean }} [options]
  * @returns {Promise<TestStateView>}
  */
-export async function readTestState(origin) {
+export async function readTestState(origin, options = {}) {
   const sessionUrl = new URL("/api/session", origin);
   const firstPullUrl = new URL("/api/sync/pull", origin);
   firstPullUrl.searchParams.set("scope", "state:entities:v1");
@@ -1161,7 +1163,26 @@ export async function readTestState(origin) {
 
   // Materialize only the collections used by browser specs. Keeping these as
   // ordinary arrays also lets fixture specs adjust the data they serve.
-  const agents = /** @type {TestAgent[]} */ (list("agentSummary"));
+  if (options.agentDetails) {
+    const baselines = await readResourceBaselines(
+      origin,
+      list("agentSummary").map((agent) => ({
+        kind: "agentDetail",
+        agentId: String(agent.id),
+      })),
+    );
+    const details = new Map();
+    for (const entry of baselines)
+      for (const document of entry.entityChanges?.documents || [])
+        if (document.op === "upsert") details.set(document.id, document.value);
+    entities.set("agentDetail", details);
+  }
+  const agents = /** @type {TestAgent[]} */ (
+    list("agentSummary").map((summary) => ({
+      ...get("agentDetail", String(summary.id)),
+      ...summary,
+    }))
+  );
   const rooms = /** @type {TestRoom[]} */ (list("room"));
   const tasks = /** @type {TestTask[]} */ (list("task"));
   const monitors = /** @type {MonitorEntityDto[]} */ (list("monitor"));

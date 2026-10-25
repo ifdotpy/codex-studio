@@ -1,7 +1,40 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { readEntities } from "../tests/fixtures/rust-ui-fixture.mjs";
+import { readResourceBaselines } from "../tests/fixtures/resource-baselines.mjs";
 
 afterEach(() => vi.unstubAllGlobals());
+it("reads scoped fixture baselines from fragmented SSE and closes the stream", async () => {
+  const resource = { kind: "agentDetail", agentId: "lead" };
+  const entry = {
+    resource: { agentId: "lead", kind: "agentDetail" },
+    revision: 3,
+    cursor: { workspaceId: "fixture", seq: 3 },
+    replyKind: "snapshot",
+    entityChanges: { after: 0, through: 3, documents: [] },
+  };
+  const cancel = vi.fn();
+  const frame = `event: resources\ndata: ${JSON.stringify({ resources: [resource], resourceVersions: [entry] })}\n\n`;
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const chunk of [
+        "event: session\ndata: {}\n\n",
+        frame.slice(0, 50),
+        frame.slice(50),
+      ])
+        controller.enqueue(new TextEncoder().encode(chunk));
+    },
+    cancel,
+  });
+  const fetch = vi.fn().mockResolvedValue(new Response(stream));
+  vi.stubGlobal("fetch", fetch);
+  expect(
+    await readResourceBaselines("http://fixture.test", [resource]),
+  ).toEqual([entry]);
+  expect(
+    JSON.parse(new URL(fetch.mock.calls[0][0]).searchParams.get("resources")),
+  ).toEqual([resource]);
+  expect(cancel).toHaveBeenCalledOnce();
+});
 it("fixture recovery retries a projection race and consumes an explicit reset", async () => {
   const fetch = vi
     .fn()
