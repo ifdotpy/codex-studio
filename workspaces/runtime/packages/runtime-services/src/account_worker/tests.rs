@@ -318,8 +318,8 @@ fn test_root() -> PathBuf {
 const FIXTURE_AGENT_ID: &str = "fixture-agent";
 const FIXTURE_AGENT_EPOCH: i64 = 0;
 
-/// Create a fresh store at `root` holding the fixture agent, then close it.
-async fn seed_fixture_root(root: &std::path::Path) {
+/// Create a fresh store at `root` holding the fixture agent.
+async fn seed_fixture_root(root: &std::path::Path) -> RuntimeStore {
     std::fs::create_dir_all(root).unwrap();
     let store = RuntimeStore::open(Some(root)).await.unwrap();
     let mut record = json!({
@@ -354,6 +354,7 @@ async fn seed_fixture_root(root: &std::path::Path) {
         })
         .await
         .unwrap();
+    store
 }
 
 struct Factory(std::sync::Mutex<Option<ProviderAttachment>>);
@@ -765,23 +766,14 @@ impl State {
     }
     /// The fixture state in a new folder under `base`.
     async fn new_at(base: PathBuf) -> Self {
-        let root = base.join(format!(
-            "worker-{}",
-            uuid::Uuid::new_v5(
-                &uuid::Uuid::NAMESPACE_OID,
-                format!(
-                    "{}-{:?}-{:?}",
-                    std::process::id(),
-                    SystemTime::now(),
-                    std::thread::current().id()
-                )
-                .as_bytes()
-            )
-        ));
-        seed_fixture_root(&root).await;
+        let root = tempfile::Builder::new()
+            .prefix("worker-")
+            .tempdir_in(base)
+            .unwrap()
+            .keep();
         let agent = FIXTURE_AGENT_ID.to_owned();
         let epoch = FIXTURE_AGENT_EPOCH;
-        let store = Arc::new(RuntimeStore::open(Some(&root)).await.unwrap());
+        let store = Arc::new(seed_fixture_root(&root).await);
         let mut bridge = test_bridge(store).await;
         let retained = MATRIX
             .try_with(|context| {

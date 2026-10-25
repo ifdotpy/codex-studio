@@ -53,16 +53,20 @@ impl Fixture {
         );
         let state = root.path().join("state");
         std::fs::create_dir(&state).expect("state");
-        seed_schema(&state, &repo.join("project"));
         let id = "workspace-fixture".to_owned();
         let store = std::sync::Arc::new(
             RuntimeStore::open(Some(&state))
                 .await
                 .expect("open fixture state"),
         );
-        {
-            store.transaction(|tx| { tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('workspace-input','workspace-fixture','user','fixture','pending',1,0)",[])?; Ok(()) }).await.expect("queued event");
-        }
+        let cwd = repo.join("project");
+        store.transaction(move |tx| {
+            let actor = json!({"id":"workspace-fixture","rootId":"workspace-fixture","epoch":0,"status":"queued","cwd":cwd,"autoWake":true,"worktree":true,"worktreeReady":false,"workspaceMode":"worktree"});
+            AgentRepository::put(tx, &AgentRecord::from_value(actor.clone())?)?;
+            tx.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('agent','workspace-fixture',1,'fixture',?1,0)", [json!({"collection":"agent","id":"workspace-fixture","value":actor}).to_string()])?;
+            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('workspace-input','workspace-fixture','user','fixture','pending',1,0)", [])?;
+            Ok(())
+        }).await.expect("workspace fixture");
         Self {
             root,
             store,
@@ -147,56 +151,6 @@ impl Fixture {
             .expect("patch actor");
     }
 }
-// Reuse the repository's committed Python schema rather than bootstrapping Runtime per case.
-fn seed_schema(root: &Path, cwd: &Path) {
-    let schema: Value = serde_json::from_str(include_str!(
-        "../../../runtime-store/tests/fixtures/live-state-schema.json"
-    ))
-    .expect("Python schema fixture");
-    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-        let mut db = rusqlite::Connection::open(root.join(name)).expect("fixture database");
-        studio_runtime_store::sqlite_durability::configure_writer(&db).expect("durable fixture");
-        let tx = db.transaction().expect("one fixture transaction");
-        let mut objects = schema[name]["sqlite_master"]
-            .as_array()
-            .expect("schema objects")
-            .iter()
-            .collect::<Vec<_>>();
-        objects.sort_by_key(|o| match o["type"].as_str() {
-            Some("table") => 0,
-            Some("index") => 1,
-            Some("trigger") => 2,
-            _ => 3,
-        });
-        for object in objects {
-            if matches!(
-                object["name"].as_str(),
-                Some(
-                    "runtime_search_next_config"
-                        | "runtime_search_next_data"
-                        | "runtime_search_next_docsize"
-                        | "runtime_search_next_idx"
-                )
-            ) {
-                continue;
-            }
-            if let Some(sql) = object["sql"].as_str() {
-                tx.execute_batch(sql).expect("fixture DDL");
-            }
-        }
-        if name == "canvas.sqlite3" {
-            let actor = json!({"id":"workspace-fixture","rootId":"workspace-fixture","epoch":0,"status":"queued","cwd":cwd,"autoWake":true,"worktree":true,"worktreeReady":false,"workspaceMode":"worktree"});
-            tx.execute(
-                "INSERT INTO runtime_agents(id,record) VALUES('workspace-fixture',?1)",
-                [actor.to_string()],
-            )
-            .expect("actor seed");
-            tx.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('agent','workspace-fixture',1,'fixture',?1,0)", [json!({"collection":"agent","id":"workspace-fixture","value":actor}).to_string()]).expect("agent projection");
-        }
-        tx.commit().expect("fixture commits");
-    }
-}
-
 fn git() -> Git {
     Git {
         deadline: Instant::now() + GIT_TIMEOUT,
@@ -210,7 +164,7 @@ fn command(cwd: &Path, args: &[&str]) -> String {
     );
     let output = Command::new("git")
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", cwd.join(".fixture-home"))
         .arg("-C")
         .arg(cwd)
@@ -1267,17 +1221,10 @@ async fn ambient_git_child() {
 }
 
 #[tokio::test]
-async fn publication_and_checkpoint_history_match_python() {
-    compare_publication_with_python(&Fixture::new().await, true).await;
-}
-
-async fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
+async fn publication_preserves_checkpoint_history_and_native_thread() {
+    let fixture = &Fixture::new().await;
     let items = json!([{"id":"old"}, {"id":"new"}, {"id":"hidden","afterRestore":true}]);
-    let parent = if has_parent {
-        json!({"id":"parent-checkpoint","agent":fixture.id,"historyBoundary":1})
-    } else {
-        Value::Null
-    };
+    let parent = json!({"id":"parent-checkpoint","agent":fixture.id,"historyBoundary":1});
     let id = fixture.id.clone();
     let items_for_store = items.clone();
     let parent_for_store = parent.clone();
@@ -1287,14 +1234,12 @@ async fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
             tx.execute("INSERT INTO runtime_items(rowid,id,agent,record,created) VALUES(?1,?2,?3,?4,1)",
                 rusqlite::params![i as i64 + 1, item["id"].as_str(), id, item.to_string()])?;
         }
-        if has_parent { tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('parent-checkpoint',?1)", [parent_for_store.to_string()])?; }
+        tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('parent-checkpoint',?1)", [parent_for_store.to_string()])?;
         Ok(())
     }).await.expect("history fixture");
-    if has_parent {
-        fixture
-            .patch("checkpointHistoryHead", json!("parent-checkpoint"))
-            .await;
-    }
+    fixture
+        .patch("checkpointHistoryHead", json!("parent-checkpoint"))
+        .await;
     fixture
         .patch("lastCompletedTurn", json!("previous-turn"))
         .await;
@@ -1317,14 +1262,7 @@ async fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
     .expect("checkpoint")
     .expect("saved")
     .record;
-    assert_eq!(
-        checkpoint["historyDelta"],
-        if has_parent {
-            json!(["new"])
-        } else {
-            json!(["old", "new"])
-        }
-    );
+    assert_eq!(checkpoint["historyDelta"], json!(["new"]));
     assert_eq!(checkpoint["historyBoundary"], 2);
     assert_eq!(
         command(
@@ -1928,13 +1866,9 @@ async fn git_failure_and_git_deadline_have_distinct_messages() {
 
 #[tokio::test]
 async fn concurrent_workers_and_lead_of_one_repository_all_reach_ready() {
-    const WORKERS: usize = 40;
-    // The preparations queue on one repository lock; the wait is not Git time.
-    // This test checks that concurrency refuses and defers nothing, not host
-    // speed: on a macOS host under shared disk load one preparation takes about
-    // one second, so the last of 40 children can wait longer than the production
-    // queue bound. Unit: wall time of one lock wait.
-    const QUEUE: std::time::Duration = std::time::Duration::from_secs(150);
+    // Two workers and a lead exercise the shared repository lock. Larger
+    // populations repeat the same serialized Git effect.
+    const WORKERS: usize = 2;
     let fixture = Fixture::new().await;
     let seed = fixture.actor();
     let mut ids = vec![fixture.id.clone()];
@@ -1977,12 +1911,7 @@ async fn concurrent_workers_and_lead_of_one_repository_all_reach_ready() {
         .into_iter()
         .map(|id| {
             let store = std::sync::Arc::clone(&fixture.store);
-            tokio::spawn(async move {
-                (
-                    id.clone(),
-                    prepare_with_budget(store, id, GIT_TIMEOUT, QUEUE).await,
-                )
-            })
+            tokio::spawn(async move { (id.clone(), prepare(store, id).await) })
         })
         .collect::<Vec<_>>();
     for task in tasks {

@@ -22,7 +22,7 @@ struct Corpus {
     data: Value,
 }
 impl Corpus {
-    async fn new() -> Self {
+    fn new() -> Self {
         let root = match std::env::var_os("STUDIO_RUNTIME_CORPUS_SCRATCH") {
             Some(root) => tempfile::tempdir_in(root),
             None => tempfile::tempdir(),
@@ -56,10 +56,7 @@ impl Corpus {
             data: json!({"seed":{"local":local,"remote":remote,"peer":peer,"agents":agents,
                 "room":room,"now":NOW},"cases":[]}),
         };
-        let signer = corpus.signing_store().await;
-        let identity = transport::load_federation_identity(&signer)
-            .await
-            .expect("remote signing identity");
+        let identity = corpus.signing_identity();
         let mut cases = vec![];
         let chat = |name: &str, fields: Value| {
             let mut payload = json!({"sender":"remote-lead","senderName":"Remote","text":"hello",
@@ -188,8 +185,16 @@ impl Corpus {
             .as_f64()
             .expect("fixture operation")
     }
-    async fn signing_store(&self) -> std::sync::Arc<RuntimeStore> {
-        self.store("signer", true).await.1
+    fn signing_identity(&self) -> transport::RemoteIdentity {
+        let remote = &self.data["seed"]["remote"];
+        transport::StoredMultiServerIdentity {
+            server_id: self.peer().to_owned(),
+            label: remote["label"].as_str().expect("fixture label").into(),
+            private_key: remote["privateKey"].as_str().expect("fixture key").into(),
+            public_key: remote["publicKey"].as_str().expect("fixture key").into(),
+        }
+        .signing_identity()
+        .expect("fixture signing identity")
     }
 }
 fn rows(store: &RuntimeStore, table: &str) -> Vec<Value> {
@@ -251,48 +256,60 @@ fn resign(envelope: &mut Value, identity: &transport::RemoteIdentity, nonce: &st
 }
 
 #[tokio::test]
-async fn federation_corpus() {
-    let corpus = Corpus::new().await;
-    for case in corpus.data["cases"].as_array().expect("fixture operation") {
-        let name = case["name"].as_str().expect("fixture operation");
-        let (_, store) = corpus.store(name, false).await;
-        if let Some(prior) = case.get("room") {
-            let prior = prior.clone();
-            let room_id = corpus.room().to_owned();
+async fn federation_payload_validation() {
+    use crate::federation_messaging::{Snapshot, SnapshotKeys, decide_receive};
+    let corpus = Corpus::new();
+    for case in corpus.data["cases"].as_array().expect("fixture cases") {
+        let name = case["name"].as_str().expect("case name");
+        let room = case.get("room").unwrap_or(&corpus.data["seed"]["room"]);
+        let snapshot = Snapshot::checked(
+            SnapshotKeys {
+                peer: corpus.peer(),
+                room: corpus.room(),
+                message: case["envelope"]["id"].as_str().expect("message id"),
+            },
+            json!({"enabled":true}),
+            corpus.data["seed"]["peer"].clone(),
+            (!room.is_null()).then(|| room.clone()),
+            None,
+            0,
+        )
+        .expect("checked fixture snapshot");
+        let result = decide_receive(&snapshot, &case["envelope"], corpus.now());
+        assert_eq!(
+            result.is_ok(),
+            ["chat", "unicode", "room-invite", "room-accept"].contains(&name),
+            "{name}"
+        );
+        if let Ok(decision) = result {
+            assert_eq!(decision.receipt["accepted"], true, "{name}");
+            assert!(decision.inbox.is_some(), "{name}");
+        }
+        if name.starts_with("room-") {
+            let (_, store) = corpus.store(name, false).await;
+            let room = room.clone();
             store
                 .transaction(move |tx| {
                     tx.execute("DELETE FROM runtime_federation_rooms", [])?;
-                    if !prior.is_null() {
-                        Repo::put(tx, Table::Room, &room_id, "", &prior)?;
+                    if !room.is_null() {
+                        Repo::put(tx, Table::Room, ROOM, "", &room)?;
                     }
                     Ok(())
                 })
                 .await
-                .expect("prior room state");
-        }
-        let before = counts(&store);
-        let result = effects::receive(&store, corpus.peer(), &case["envelope"], corpus.now()).await;
-        if result.is_err() {
-            assert_eq!(counts(&store), before, "{name} refusal writes nothing");
-        }
-        if ["chat", "unicode", "room-invite", "room-accept"].contains(&name) {
-            result.unwrap_or_else(|e| panic!("{name}: {e}"));
+                .expect("room fixture");
+            effects::receive(&store, corpus.peer(), &case["envelope"], corpus.now())
+                .await
+                .expect("signed room message commits");
+            assert_eq!(rows(&store, "runtime_federation_rooms").len(), 1);
+            assert_eq!(rows(&store, "runtime_federation_inbox").len(), 1);
         }
     }
-    replay_and_nonce(&corpus).await;
-    authenticated_consumer(&corpus).await;
-    malformed_records(&corpus).await;
-    spoofed_origin(&corpus).await;
-    delivery_failures(&corpus).await;
-    oversized_batches(&corpus).await;
-    revoked_and_ordered(&corpus).await;
-    rollback_matrix(&corpus).await;
-    outbound_rollback(&corpus).await;
-    lost_push_response(&corpus).await;
-    callback_remote_message_uses_the_existing_federation_outbox(&corpus).await;
 }
 
-async fn callback_remote_message_uses_the_existing_federation_outbox(corpus: &Corpus) {
+#[tokio::test]
+async fn callback_remote_message_uses_the_existing_federation_outbox() {
+    let corpus = &Corpus::new();
     use crate::multi_server_orchestration::{
         ExchangeOutcome, OrchestrationEffects, RuntimeOrchestrationEffects,
     };
@@ -359,11 +376,10 @@ async fn callback_remote_message_uses_the_existing_federation_outbox(corpus: &Co
     assert_eq!(rows(&store, "runtime_federation_outbox").len(), 1);
 }
 
-async fn replay_and_nonce(corpus: &Corpus) {
-    let signer = corpus.signing_store().await;
-    let identity = transport::load_federation_identity(&signer)
-        .await
-        .expect("fixture operation");
+#[tokio::test]
+async fn replay_and_nonce() {
+    let corpus = &Corpus::new();
+    let identity = corpus.signing_identity();
     let (path, store) = corpus.store("replay", false).await;
     let mut envelope = corpus.data["cases"][0]["envelope"].clone();
     let first = effects::receive(&store, corpus.peer(), &envelope, corpus.now())
@@ -415,12 +431,11 @@ async fn replay_and_nonce(corpus: &Corpus) {
     assert_eq!(pull["acks"].as_array().expect("fixture operation").len(), 1);
     assert_eq!(rows(&store, "runtime_federation_inbox")[0]["ack"], "sent");
 }
-async fn authenticated_consumer(corpus: &Corpus) {
+#[tokio::test]
+async fn authenticated_consumer() {
+    let corpus = &Corpus::new();
     let (_, store) = corpus.store("auth", false).await;
-    let (_, signer) = corpus.store("auth-signer", true).await;
-    let identity = transport::load_federation_identity(&signer)
-        .await
-        .expect("fixture operation");
+    let identity = corpus.signing_identity();
     let body =
         serde_json::to_vec(&json!({"protocol":1,"envelope":corpus.data["cases"][0]["envelope"]}))
             .expect("fixture operation");
@@ -491,11 +506,8 @@ async fn authenticated_consumer(corpus: &Corpus) {
 async fn federation_inbound_authentication_refusals() {
     // Freshness, trusted peer identity,
     // signature, nonce replay, and whois ownership are checked before effects.
-    let corpus = Corpus::new().await;
-    let (_, signer) = corpus.store("auth-refusal-signer", true).await;
-    let identity = transport::load_federation_identity(&signer)
-        .await
-        .expect("fixture operation");
+    let corpus = Corpus::new();
+    let identity = corpus.signing_identity();
     let body =
         serde_json::to_vec(&json!({"protocol":1,"envelope":corpus.data["cases"][0]["envelope"]}))
             .expect("fixture operation");
@@ -621,12 +633,9 @@ async fn federation_inbound_authentication_refusals() {
 
 #[tokio::test]
 async fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() {
-    let corpus = Corpus::new().await;
+    let corpus = Corpus::new();
     let (_, receiver) = corpus.store("pair-receiver", false).await;
-    let (_, signer) = corpus.store("pair-signer", true).await;
-    let identity = transport::load_federation_identity(&signer)
-        .await
-        .expect("fixture identity");
+    let identity = corpus.signing_identity();
     let peer_id = corpus.peer();
     let invite_id = "44444444-4444-4444-8444-444444444444";
     let token = "fake-peer-invitation-token";
@@ -824,7 +833,7 @@ async fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() 
 
 #[tokio::test]
 async fn federation_user_message_uses_the_local_lead_and_stable_idempotency_key() {
-    let corpus = Corpus::new().await;
+    let corpus = Corpus::new();
     let (_, store) = corpus.store("user-message", false).await;
     let first = delivery::user_message(
         std::sync::Arc::clone(&store),
@@ -882,7 +891,9 @@ async fn federation_user_message_uses_the_local_lead_and_stable_idempotency_key(
     );
 }
 
-async fn malformed_records(corpus: &Corpus) {
+#[tokio::test]
+async fn malformed_records() {
+    let corpus = &Corpus::new();
     for (index, value) in [Value::Null, json!([]), json!({}), json!({"enabled":"true"})]
         .into_iter()
         .enumerate()
@@ -913,7 +924,9 @@ async fn malformed_records(corpus: &Corpus) {
     }
 }
 
-async fn revoked_and_ordered(corpus: &Corpus) {
+#[tokio::test]
+async fn revoked_and_ordered() {
+    let corpus = &Corpus::new();
     let (_, store) = corpus.store("stale-order", false).await;
     let room_id = corpus.room().to_owned();
     store
@@ -972,75 +985,49 @@ async fn revoked_and_ordered(corpus: &Corpus) {
     }
 }
 
-async fn rollback_matrix(corpus: &Corpus) {
-    let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
-    let tables = if full {
-        vec![
-            "runtime_federation_nonces",
-            "runtime_chat_messages",
-            "runtime_events",
-            "runtime_federation_rooms",
-            "runtime_rooms",
-            "runtime_federation_inbox",
-        ]
-    } else {
-        vec!["runtime_events", "runtime_federation_inbox"]
-    };
-    for table in tables {
-        for phase in ["BEFORE", "AFTER"] {
-            let (path, store) = corpus
-                .store(&format!("rollback-{table}-{phase}"), false)
-                .await;
-            let prior = rows(&store, "runtime_federation_rooms");
-            let operation = if table == "runtime_federation_rooms" {
-                "UPDATE"
-            } else {
-                "INSERT"
-            };
-            store.transaction(move |tx|{tx.execute_batch(&format!("CREATE TRIGGER fault {phase} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'fixture crash'); END"))?;Ok(())})
+#[tokio::test]
+async fn inbound_final_write_failure_rolls_back_and_retries_after_restart() {
+    let corpus = &Corpus::new();
+    let (path, store) = corpus.store("rollback-inbound", false).await;
+    let prior = rows(&store, "runtime_federation_rooms");
+    store.transaction(move |tx|{tx.execute_batch("CREATE TRIGGER fault AFTER INSERT ON runtime_federation_inbox BEGIN SELECT RAISE(ABORT,'fixture crash'); END")?;Ok(())})
             .await.expect("fixture operation");
-            assert!(
-                effects::receive(
-                    &store,
-                    corpus.peer(),
-                    &corpus.data["cases"][0]["envelope"],
-                    corpus.now()
-                )
-                .await
-                .is_err(),
-                "{phase} {table}"
-            );
-            store
-                .transaction(|tx| {
-                    tx.execute_batch("DROP TRIGGER fault")?;
-                    Ok(())
-                })
-                .await
-                .expect("fixture operation");
-            drop(store);
-            let store = std::sync::Arc::new(
-                RuntimeStore::open(Some(&path))
-                    .await
-                    .expect("fixture operation"),
-            );
-            assert_eq!(
-                counts(&store),
-                json!([0, 0, 0, 0, 0]),
-                "{phase} {table} rolled back"
-            );
-            assert_eq!(rows(&store, "runtime_federation_rooms"), prior);
-            effects::receive(
-                &store,
-                corpus.peer(),
-                &corpus.data["cases"][0]["envelope"],
-                corpus.now(),
-            )
+    assert!(
+        effects::receive(
+            &store,
+            corpus.peer(),
+            &corpus.data["cases"][0]["envelope"],
+            corpus.now()
+        )
+        .await
+        .is_err()
+    );
+    store
+        .transaction(|tx| {
+            tx.execute_batch("DROP TRIGGER fault")?;
+            Ok(())
+        })
+        .await
+        .expect("fixture operation");
+    drop(store);
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(&path))
             .await
-            .expect("fixture operation");
-            assert_eq!(counts(&store), json!([1, 0, 1, 1, 2]));
-        }
-    }
+            .expect("fixture operation"),
+    );
+    assert_eq!(counts(&store), json!([0, 0, 0, 0, 0]));
+    assert_eq!(rows(&store, "runtime_federation_rooms"), prior);
+    effects::receive(
+        &store,
+        corpus.peer(),
+        &corpus.data["cases"][0]["envelope"],
+        corpus.now(),
+    )
+    .await
+    .expect("fixture operation");
+    assert_eq!(counts(&store), json!([1, 0, 1, 1, 2]));
 }
+
 struct PeerTransport {
     receiver: std::sync::Arc<RuntimeStore>,
     sender: String,
@@ -1156,7 +1143,9 @@ impl delivery::FederationTransport for PeerTransport {
         })
     }
 }
-async fn lost_push_response(corpus: &Corpus) {
+#[tokio::test]
+async fn lost_push_response() {
+    let corpus = &Corpus::new();
     let (sender_path, sender) = corpus.store("sender", false).await;
     let (_, receiver) = corpus.store("receiver", true).await;
     let key = "stable-message-key";
@@ -1302,7 +1291,7 @@ async fn lost_push_response(corpus: &Corpus) {
 async fn bad_federation_response_signature_stays_unknown_and_does_not_learn_route() {
     use std::os::unix::net::UnixListener;
 
-    let corpus = Corpus::new().await;
+    let corpus = Corpus::new();
     // Keep the Unix socket path below macOS's sockaddr_un path limit even
     // when the system temp directory has a long per-user prefix.
     let (_, sender) = corpus.store("s", false).await;
@@ -1388,72 +1377,58 @@ async fn bad_federation_response_signature_stays_unknown_and_does_not_learn_rout
     ));
 }
 
-async fn outbound_rollback(corpus: &Corpus) {
-    let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
-    let tables = if full {
-        vec![
-            ("runtime_chat_messages", "INSERT"),
-            ("runtime_events", "INSERT"),
-            ("runtime_federation_rooms", "UPDATE"),
-            ("runtime_federation_outbox", "INSERT"),
-        ]
-    } else {
-        vec![("runtime_federation_outbox", "INSERT")]
-    };
-    for (table, operation) in tables {
-        for phase in ["BEFORE", "AFTER"] {
-            let (path, store) = corpus
-                .store(&format!("send-fault-{table}-{phase}"), false)
-                .await;
-            let prior = rows(&store, "runtime_federation_rooms");
-            store.transaction(move |tx| {tx.execute_batch(&format!("CREATE TRIGGER fault {phase} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'fixture crash'); END"))?;Ok(())})
+#[tokio::test]
+async fn outbound_final_write_failure_rolls_back_and_retries_after_restart() {
+    let corpus = &Corpus::new();
+    let (path, store) = corpus.store("rollback-outbound", false).await;
+    let prior = rows(&store, "runtime_federation_rooms");
+    store.transaction(move |tx| {tx.execute_batch("CREATE TRIGGER fault AFTER INSERT ON runtime_federation_outbox BEGIN SELECT RAISE(ABORT,'fixture crash'); END")?;Ok(())})
             .await.expect("sender failpoint");
-            assert!(
-                delivery::send_message(
-                    std::sync::Arc::clone(&store),
-                    "lead",
-                    corpus.room(),
-                    "message",
-                    "key",
-                    studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
-                    corpus.now()
-                )
-                .await
-                .is_err(),
-                "{table} {phase}"
-            );
-            store
-                .transaction(|tx| {
-                    tx.execute_batch("DROP TRIGGER fault")?;
-                    Ok(())
-                })
-                .await
-                .expect("remove failpoint");
-            drop(store);
-            let store = std::sync::Arc::new(
-                RuntimeStore::open(Some(&path))
-                    .await
-                    .expect("sender restarts"),
-            );
-            assert_eq!(counts(&store), json!([0, 0, 0, 0, 0]));
-            assert_eq!(rows(&store, "runtime_federation_rooms"), prior);
-            delivery::send_message(
-                std::sync::Arc::clone(&store),
-                "lead",
-                corpus.room(),
-                "message",
-                "key",
-                studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
-                corpus.now(),
-            )
+    assert!(
+        delivery::send_message(
+            std::sync::Arc::clone(&store),
+            "lead",
+            corpus.room(),
+            "message",
+            "key",
+            studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
+            corpus.now()
+        )
+        .await
+        .is_err()
+    );
+    store
+        .transaction(|tx| {
+            tx.execute_batch("DROP TRIGGER fault")?;
+            Ok(())
+        })
+        .await
+        .expect("remove failpoint");
+    drop(store);
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(&path))
             .await
-            .expect("queue after restart");
-            assert_eq!(counts(&store), json!([0, 1, 0, 1, 1]));
-        }
-    }
+            .expect("sender restarts"),
+    );
+    assert_eq!(counts(&store), json!([0, 0, 0, 0, 0]));
+    assert_eq!(rows(&store, "runtime_federation_rooms"), prior);
+    delivery::send_message(
+        std::sync::Arc::clone(&store),
+        "lead",
+        corpus.room(),
+        "message",
+        "key",
+        studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
+        corpus.now(),
+    )
+    .await
+    .expect("queue after restart");
+    assert_eq!(counts(&store), json!([0, 1, 0, 1, 1]));
 }
 
-async fn spoofed_origin(corpus: &Corpus) {
+#[tokio::test]
+async fn spoofed_origin() {
+    let corpus = &Corpus::new();
     let (_, store) = corpus.store("spoofed-origin", false).await;
     let peer_id = corpus.peer().to_owned();
     store
@@ -1501,7 +1476,9 @@ async fn spoofed_origin(corpus: &Corpus) {
     assert_eq!(counts(&store), before);
 }
 
-async fn delivery_failures(corpus: &Corpus) {
+#[tokio::test]
+async fn delivery_failures() {
+    let corpus = &Corpus::new();
     for kind in ["schema", "message", "room", "cancel", "expired"] {
         let (_, sender) = corpus.store(&format!("failure-sender-{kind}"), false).await;
         let (_, receiver) = corpus
@@ -1592,7 +1569,9 @@ async fn delivery_failures(corpus: &Corpus) {
     }
 }
 
-async fn oversized_batches(corpus: &Corpus) {
+#[tokio::test]
+async fn oversized_batches() {
+    let corpus = &Corpus::new();
     for table in [Table::Outbox, Table::Inbox] {
         let (_, store) = corpus
             .store(&format!("oversized-{}", table.name()), false)

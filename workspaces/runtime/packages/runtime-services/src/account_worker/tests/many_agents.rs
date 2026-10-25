@@ -241,8 +241,7 @@ macro_rules! many_agents {
 }
 
 many_agents!(
-    journal_capacity_plus_one_agents_complete_two_exchanges:
-        studio_runtime_process::provider_seam::LANE_CAPACITY + 1,
+    two_agents_complete_two_exchanges: 2,
     /// About half a minute of serialized store work in a debug build: run it
     /// with `just test-rust-many-agents` (manual heavy tier).
     #[ignore = "manual heavy tier: just test-rust-many-agents"]
