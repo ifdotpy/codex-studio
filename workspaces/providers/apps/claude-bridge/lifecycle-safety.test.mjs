@@ -2,18 +2,13 @@ import { afterEach, expect, test, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import vm from "node:vm";
 import { rollbackBoundary, forkAtTurn, rollbackSession } from "./controls.mjs";
 import { nativeInputIds } from "./input-messages.mjs";
-import { recordedInputIds } from "./stall-watch.mjs";
+import { recordedInputIds, inputHistoryOutcome } from "./stall-watch.mjs";
 import { readNativeHistory } from "./native-history.mjs";
 import { startBridge } from "./testing/bridge-harness.mjs";
 import { createSessionStore } from "./session-store.mjs";
 
-const bridgeSource = await fs.readFile(
-  new URL("./bridge.mjs", import.meta.url),
-  "utf8",
-);
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const inputId = "22222222-2222-4222-8222-222222222222";
 const replyId = "33333333-3333-4333-8333-333333333333";
@@ -117,109 +112,6 @@ test("fork stops before the next composite prefix and remaps retained parts", as
   expect(target.turns).toHaveLength(1);
 });
 
-// Execute the existing bridge lifecycle region with Vitest spies; no SDK,
-// transport, account or model process is involved.
-test.each([
-  [false, true],
-  [true, true],
-  [false, false],
-])(
-  "final save has one visible outcome (timer=%s, failure=%s)",
-  async (timer, fails) => {
-    vi.useFakeTimers();
-    const failure = Object.assign(new Error("final save denied"), {
-      code: "EACCES",
-    });
-    const persistLive = vi.fn(async () => {
-      if (fails) throw failure;
-    });
-    const emit = vi.fn();
-    const discardQuery = vi.fn();
-    const context = vm.createContext({
-      setTimeout,
-      clearTimeout,
-      process: { stderr: { write: vi.fn() } },
-      limits: { steerEchoGraceMs: 3 },
-      persistLive,
-      emit,
-      discardQuery,
-      closeQuery: vi.fn(),
-      armStallWatch: vi.fn(),
-      claudeErrorInfo: vi.fn(),
-      catalogCache: { activityChanged: vi.fn() },
-      finishItem: vi.fn(),
-      usageTokens: () => null,
-    });
-    vm.runInContext(
-      bridgeSource.slice(
-        bridgeSource.indexOf("const finishingTurns ="),
-        bridgeSource.indexOf("// Steer input handed to a CLI"),
-      ),
-      context,
-    );
-    const turn = { id: "turn", status: "inProgress", items: [] };
-    const active = {
-      turn,
-      input: { values: [] },
-      toolClocks: new Map(),
-      pendingSteers: new Set(),
-      assistantBlocks: new Map(),
-      responseUsages: new Map([
-        [
-          "response",
-          {
-            responseId: "response",
-            requestUsage: {
-              inputTokens: 1,
-              cachedInputTokens: 0,
-              cacheWriteInputTokens: 0,
-              outputTokens: 2,
-            },
-            usage: {},
-          },
-        ],
-      ]),
-    };
-    const session = { id: sessionId };
-    if (timer) {
-      context.deferResult(session, active, { subtype: "success" });
-      await vi.advanceTimersByTimeAsync(3);
-    } else {
-      const outcomes = await Promise.allSettled([
-        context.finishTurn(session, active, { subtype: "success" }),
-        context.finishTurn(session, active, { subtype: "success" }),
-      ]);
-      expect(outcomes.map((value) => value.status)).toEqual([
-        fails ? "rejected" : "fulfilled",
-        fails ? "rejected" : "fulfilled",
-      ]);
-      if (fails) {
-        expect(outcomes.every((value) => value.reason === failure)).toBe(true);
-        await expect(
-          context.finishTurn(session, active, { subtype: "success" }),
-        ).rejects.toBe(failure);
-      }
-    }
-    expect(persistLive).toHaveBeenCalledTimes(1);
-    expect(active.turn).toBeNull();
-    expect(discardQuery).toHaveBeenCalledTimes(fails ? 1 : 0);
-    expect(
-      emit.mock.calls.filter(
-        ([method]) => method === "thread/tokenUsage/updated",
-      ),
-    ).toHaveLength(1);
-    const completion = emit.mock.calls.filter(
-      ([method]) => method === "turn/completed",
-    );
-    expect(completion).toHaveLength(1);
-    expect(completion[0][1].turn.status).toBe(fails ? "failed" : "completed");
-    if (fails)
-      expect(completion[0][1].turn.error.message).toContain(
-        "final save denied",
-      );
-  },
-);
-
 test.each([
   "malformed",
   "torn",
@@ -242,7 +134,6 @@ test.each([
     delivery: "steer",
     deliveryStatus: "submitted",
   };
-  const turn = { id: "turn", items: [initial, steer] };
   const row = (uuid) => ({
     type: "user",
     uuid,
@@ -285,55 +176,38 @@ test.each([
   );
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, raw);
-  const context = vm.createContext({
-    fs,
-    nativeFile: async () => file,
-    recordedInputIds,
-    nativeInputIds,
-    readNativeHistory: (s, options, inspect) =>
-      readNativeHistory(
-        s,
-        {
-          ...options,
-          configDir,
-          ...(kind === "replaced"
-            ? {
-                filesystem: {
-                  ...fs,
-                  lstat: async (file) => {
-                    const stat = await fs.lstat(file);
-                    stat.ino++;
-                    return stat;
-                  },
-                },
-              }
-            : {}),
-        },
-        inspect,
-      ),
-    process: { stderr: { write: vi.fn() } },
-    turnEvent: vi.fn(),
-    finishItem: vi.fn(),
+  const records = await readNativeHistory(session, {
+    configDir,
+    ...(kind === "replaced"
+      ? {
+          filesystem: {
+            ...fs,
+            lstat: async (file) => {
+              const stat = await fs.lstat(file);
+              stat.ino++;
+              return stat;
+            },
+          },
+        }
+      : {}),
   });
-  vm.runInContext(
-    bridgeSource.slice(
-      bridgeSource.indexOf("async function reconcileClosedSteers("),
-      bridgeSource.indexOf("// Interrupt a turn whose tool call stalled"),
+  expect(
+    inputHistoryOutcome(
+      records?.map(({ row }) => row),
+      {
+        sessionId,
+        cwd: root,
+        anchorIds: nativeInputIds(initial),
+        inputIds: nativeInputIds(steer),
+      },
     ),
-    context,
+  ).toBe(
+    kind === "valid absent"
+      ? "not_applied"
+      : kind === "valid delivered"
+        ? "delivered"
+        : "unknown",
   );
-  const unapplied = [];
-  await context.reconcileClosedSteers(session, turn, unapplied);
-  if (kind === "valid absent") {
-    expect(steer.deliveryStatus).toBe("not_applied");
-    expect(unapplied).toEqual(["steer"]);
-  } else if (kind === "valid delivered") {
-    expect(steer.deliveryStatus).toBe("delivered");
-  } else {
-    expect(steer.deliveryStatus).toBe("submitted");
-    expect(steer.error).toMatch(/unknown|uncertain/i);
-    expect(unapplied).toEqual([]);
-  }
 });
 
 test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
@@ -491,14 +365,20 @@ test("rollback remaps every retained composite part and preserves checkpoint ide
   expect(session.turns[0].fileCheckpointMessageId).toBeUndefined();
 });
 
-test("final save failure reaches the bridge caller once and never reruns input", async () => {
-  const bridge = await startBridge(
-    String.raw`
+test.each(["direct", "timer", "success"])(
+  "real bridge finalization has one outcome: %s",
+  async (mode) => {
+    const bridge = await startBridge(
+      `const scenario = ${JSON.stringify(mode)};\n` +
+        String.raw`
     import fs from "node:fs/promises";
+    let cwd;
     const append = fs.appendFile;
     fs.appendFile = async (file, data, ...args) => {
-      if (String(file).includes("/sessions/") && String(data).includes('"value":"completed"'))
+      if (scenario !== "success" && String(file).includes("/sessions/") && String(data).includes('"value":"completed"')) {
+        await append(cwd + "/save-attempts", "x");
         throw Object.assign(new Error("final save denied"), { code: "EACCES" });
+      }
       return append(file, data, ...args);
     };
     export const tool = () => ({});
@@ -506,6 +386,7 @@ test("final save failure reaches the bridge caller once and never reruns input",
     export const forkSession = async () => { throw new Error("No fork expected"); };
     export const getSessionMessages = async () => [];
     export function query({ prompt, options }) {
+      cwd = options.cwd;
       let closed = false;
       return {
         supportedModels: async () => [{ value: "default", displayName: "Default", resolvedModel: "claude-opus-5-5" }],
@@ -518,37 +399,74 @@ test("final save failure reaches the bridge caller once and never reruns input",
           await fs.appendFile(options.cwd + "/inputs", "once\n");
           yield { type: "user", isReplay: true, uuid: first.value.uuid };
           yield { type: "system", subtype: "init" };
-          yield { type: "result", subtype: "success", result: "done" };
+          if (scenario === "timer") {
+            const steer = await prompt.next();
+            await fs.appendFile(cwd + "/inputs", steer.value.message.content[0].text + "\n");
+          }
+          yield { type: "result", subtype: "success", result: "done", usage: { input_tokens: 1, output_tokens: 1 }, modelUsage: { "claude-opus-5-5": { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, webSearchRequests: 0, costUSD: 0, contextWindow: 200000, maxOutputTokens: 64000 } } };
           if (!closed) await prompt.next();
         },
       };
     }
   `,
-    "claude-final-save-",
-  );
-  try {
-    const input = [{ type: "text", text: "run once" }];
-    const started = await bridge.call("turn/start", {
-      threadId: bridge.thread,
-      clientUserMessageId: "once",
-      input,
-    });
-    const done = await bridge.note((note) => note.method === "turn/completed");
-    expect(done.params.turn.status).toBe("failed");
-    expect(done.params.turn.error.message).toContain("final save denied");
-    const retry = await bridge.call("turn/start", {
-      threadId: bridge.thread,
-      clientUserMessageId: "once",
-      input,
-    });
-    expect(retry.turn.id).toBe(started.turn.id);
-    expect(await fs.readFile(path.join(bridge.root, "inputs"), "utf8")).toBe(
-      "once\n",
+      "claude-final-save-",
+      {
+        clock: true,
+        env: {
+          STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "3",
+          STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "3",
+        },
+      },
     );
-    expect(
-      bridge.notes.filter((note) => note.method === "turn/completed"),
-    ).toHaveLength(1);
-  } finally {
-    await bridge.close();
-  }
-});
+    try {
+      const input = [{ type: "text", text: "run once" }];
+      const started = await bridge.call("turn/start", {
+        threadId: bridge.thread,
+        clientUserMessageId: "once",
+        input,
+      });
+      if (mode === "timer")
+        await bridge.call("turn/steer", {
+          threadId: bridge.thread,
+          expectedTurnId: started.turn.id,
+          clientUserMessageId: "steer-once",
+          input: [{ type: "text", text: "steer once" }],
+        });
+      const done = await bridge.advanceUntil(
+        (note) => note.method === "turn/completed",
+      );
+      expect(done.params.turn.status).toBe(
+        mode === "success" ? "completed" : "failed",
+      );
+      if (mode !== "success") {
+        expect(done.params.turn.error.message).toContain("final save denied");
+        expect(
+          await fs.readFile(path.join(bridge.root, "save-attempts"), "utf8"),
+        ).toBe("x");
+        expect((await bridge.call("thread/loaded/list", {})).data).toEqual([]);
+      }
+      const retry = await bridge.call("turn/start", {
+        threadId: bridge.thread,
+        clientUserMessageId: "once",
+        input,
+      });
+      expect(retry.turn.id).toBe(started.turn.id);
+      expect(await fs.readFile(path.join(bridge.root, "inputs"), "utf8")).toBe(
+        mode === "timer" ? "once\nsteer once\n" : "once\n",
+      );
+      expect(
+        bridge.notes.filter(
+          (note) => note.method === "thread/tokenUsage/updated",
+        ),
+      ).toHaveLength(1);
+      expect(
+        bridge.notes.filter((note) => note.method === "turn/started"),
+      ).toHaveLength(1);
+      expect(
+        bridge.notes.filter((note) => note.method === "turn/completed"),
+      ).toHaveLength(1);
+    } finally {
+      await bridge.close();
+    }
+  },
+);

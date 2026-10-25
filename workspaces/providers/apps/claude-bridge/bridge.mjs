@@ -70,7 +70,7 @@ import {
   declaredTimeoutMs,
   durationText,
   watchStalls,
-  recordedInputIds,
+  inputHistoryOutcome,
   stallLimits,
   stallMessage,
 } from "./stall-watch.mjs";
@@ -1329,70 +1329,20 @@ async function reconcileClosedSteers(s, turn, unapplied) {
   if (!open.length) return;
   const records = await readNativeHistory(s);
   const initial = turn.items.find((item) => item.type === "userMessage");
-  const initialIds = nativeInputIds(initial);
-  const anchorPositions = initialIds?.map((id) => {
-    const matches = records?.flatMap(({ row }, i) =>
-      row.uuid === id ? [i] : [],
-    );
-    if (matches?.length !== 1) return -1;
-    const row = records[matches[0]].row;
-    return row.type === "user" &&
-      row.sessionId === (s.nativeId || s.id) &&
-      row.cwd === (s.nativeHistoryCwd || s.cwd) &&
-      row.isSidechain === false &&
-      !row.isMeta &&
-      !row.isCompactSummary
-      ? matches[0]
-      : -1;
-  });
-  // The bounded tail must cover every part of the turn's opening input.
-  // Absence from a tail that lost its anchor is not absence from history.
-  const covered =
-    anchorPositions?.length &&
-    anchorPositions.every(
-      (position, i) =>
-        position >= 0 && (i === 0 || position > anchorPositions[i - 1]),
-    ) &&
-    !records.some(
-      ({ row }) =>
-        row.isCompactSummary ||
-        row.type === "summary" ||
-        row.subtype === "compact_boundary",
-    );
-  const recorded = covered
-    ? recordedInputIds(records.map(({ row }) => JSON.stringify(row)))
-    : null;
   for (const item of open) {
-    const ids = nativeInputIds(item);
-    const positions = ids?.map((id) => {
-      const matches = records?.flatMap(({ row }, index) =>
-        row.uuid === id ||
-        (row.type === "attachment" &&
-          row.attachment?.type === "queued_command" &&
-          row.attachment.source_uuid === id)
-          ? [index]
-          : [],
-      );
-      if (matches?.length !== 1) return -1;
-      const row = records[matches[0]].row;
-      return row.sessionId === (s.nativeId || s.id) &&
-        row.cwd === (s.nativeHistoryCwd || s.cwd) &&
-        row.isSidechain === false
-        ? matches[0]
-        : -1;
-    });
-    if (
-      recorded &&
-      ids &&
-      ids.every((id) => recorded.has(id)) &&
-      positions.every(
-        (position, i) =>
-          position >= 0 && (i === 0 || position > positions[i - 1]),
-      )
-    ) {
+    const outcome = inputHistoryOutcome(
+      records?.map(({ row }) => row),
+      {
+        sessionId: s.nativeId || s.id,
+        cwd: s.nativeHistoryCwd || s.cwd,
+        anchorIds: nativeInputIds(initial),
+        inputIds: nativeInputIds(item),
+      },
+    );
+    if (outcome === "delivered") {
       item.deliveryStatus = "delivered";
       turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
-    } else if (recorded && ids && ids.every((id) => !recorded.has(id))) {
+    } else if (outcome === "not_applied") {
       item.deliveryStatus = "not_applied";
       item.error = "Claude stopped before reading this steer";
       unapplied.push(item.id);

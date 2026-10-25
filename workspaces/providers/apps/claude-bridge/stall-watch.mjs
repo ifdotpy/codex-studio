@@ -1,3 +1,5 @@
+import { nativeInputIds } from "./input-messages.mjs";
+
 // Studio's watchdog for a Claude tool call that never returns.
 //
 // Claude Code bounds the work inside a tool (Bash moves a command to the
@@ -191,4 +193,64 @@ export function recordedInputIds(lines) {
       ids.add(attachment.source_uuid);
   }
   return ids;
+}
+
+// Decide only from a strictly read native history and explicit input UUIDs.
+// Unknown evidence never grants permission to redeliver an instruction.
+export function inputHistoryOutcome(
+  rows,
+  { sessionId, cwd, anchorIds, inputIds },
+) {
+  anchorIds = nativeInputIds({ nativeIds: anchorIds });
+  inputIds = nativeInputIds({ nativeIds: inputIds });
+  if (!rows || !anchorIds || !inputIds) return "unknown";
+  const main = (row) =>
+    row.sessionId === sessionId && row.cwd === cwd && row.isSidechain === false;
+  const ordered = (positions) =>
+    positions.every(
+      (position, i) =>
+        position >= 0 && (i === 0 || position > positions[i - 1]),
+    );
+  const anchors = anchorIds.map((id) => {
+    const matches = rows.flatMap((row, index) =>
+      row.uuid === id ? [index] : [],
+    );
+    if (matches.length !== 1) return -1;
+    const row = rows[matches[0]];
+    return row.type === "user" &&
+      main(row) &&
+      !row.isMeta &&
+      !row.isCompactSummary
+      ? matches[0]
+      : -1;
+  });
+  // A bounded tail without the opening input cannot prove complete coverage.
+  if (
+    !ordered(anchors) ||
+    rows.some(
+      (row) =>
+        row.isCompactSummary ||
+        row.type === "summary" ||
+        row.subtype === "compact_boundary",
+    )
+  )
+    return "unknown";
+  const recorded = recordedInputIds(rows.map((row) => JSON.stringify(row)));
+  if (!recorded) return "unknown";
+  const positions = inputIds.map((id) => {
+    const matches = rows.flatMap((row, index) =>
+      row.uuid === id ||
+      (row.type === "attachment" &&
+        row.attachment?.type === "queued_command" &&
+        row.attachment.source_uuid === id)
+        ? [index]
+        : [],
+    );
+    if (matches.length !== 1) return -1;
+    return main(rows[matches[0]]) ? matches[0] : -1;
+  });
+  if (inputIds.every((id) => recorded.has(id)) && ordered(positions))
+    return "delivered";
+  if (inputIds.every((id) => !recorded.has(id))) return "not_applied";
+  return "unknown";
 }
