@@ -795,6 +795,7 @@ function MultiServerShell({
       <div className="studio-settings-panel" data-testid="studio-settings">
         <StudioSettingsLayout
           value={managerTab}
+          initialDetail={!!restoreAccountActionFocus.current}
           onChange={(tab) => {
             if (!isStudioSettingsTab(tab)) return;
             setManagerTab(tab);

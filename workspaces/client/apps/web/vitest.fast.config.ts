@@ -41,6 +41,7 @@ export default {
       "src/servers/summary.test.ts",
       "src/components/accountDeleteRequests.test.ts",
       "src/components/Accounts.identity.test.ts",
+      "src/components/StudioSettingsTabs.test.ts",
       "src/api.test.ts",
       "src/startWait.test.ts",
       "src/apiSchema.test.ts",
