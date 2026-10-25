@@ -190,10 +190,12 @@ pub fn recorded_responses_bounded(
     )?;
     let mut source = statement.query(params![ids, sql_limit])?;
     let mut rows = Vec::new();
+    let mut inspected = 0;
     while let Some(row) = source.next()? {
-        if rows.len() == limit {
+        if inspected == limit {
             return Ok((rows, true));
         }
+        inspected += 1;
         let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(2)?)?;
         let fields = UsageCostFields::deserialize(&value)?;
         let parsed = parse_analytics_usage_row(UsageProvider::Codex, &value);
@@ -210,15 +212,23 @@ pub fn recorded_responses_bounded(
                 Some(tokens),
                 evidence,
             ),
+            Ok(UsageObservation::Cumulative { .. } | UsageObservation::Gap { .. }) => continue,
             Err(error) if value.get("studioUsage").is_some() => {
                 return Err(StoreError::SchemaValidation(error.to_string()));
             }
-            _ => (
-                fields.response_id.as_deref().unwrap_or_default().to_owned(),
-                fields.model.as_deref().map(str::to_owned),
-                None,
-                UsageEvidence::Legacy,
-            ),
+            _ => {
+                let Some(response) =
+                    studio_runtime_schema::usage::persisted::legacy_response_id(&value)
+                else {
+                    continue;
+                };
+                (
+                    response.to_owned(),
+                    fields.model.as_deref().map(str::to_owned),
+                    None,
+                    UsageEvidence::Legacy,
+                )
+            }
         };
         rows.push(RecordedResponse {
             agent_id: row.get(0)?,
@@ -571,7 +581,7 @@ fn cost_row(
         _ => None,
     };
     CostRow {
-        eligible: response.is_some() || observation.is_none() && fields.response_id.is_some(),
+        eligible: response.is_some(),
         final_evidence: response.is_some_and(|(_, evidence)| *evidence != UsageEvidence::Legacy),
         id,
         agent,
@@ -932,8 +942,15 @@ mod tests {
                 }}
             });
             AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &row)?;
+            let mut legacy = row;
+            legacy.as_object_mut().expect("usage row").remove("studioUsage");
+            legacy["id"] = json!("legacy-notice");
+            legacy["responseId"] = json!("associated-response");
+            legacy["counterDomain"] = json!("nativeNotice");
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &legacy)?;
             let groups = super::cost_groups(tx, "root", &Default::default())?;
             assert!(groups.is_empty(), "running totals must never become response cost samples");
+            assert!(super::recorded_responses(tx, &["agent".to_owned()])?.is_empty());
             Ok(())
         }).await.expect("verify cumulative accounting");
     }
