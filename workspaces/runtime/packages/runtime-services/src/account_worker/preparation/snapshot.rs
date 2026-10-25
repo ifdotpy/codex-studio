@@ -2218,10 +2218,19 @@ mod workspace_fence_tests {
                                 thread::ReceiptOutcome::Stale(thread::StaleReason::Settings)
                             );
                         } else {
-                            assert!(
-                                options.get("env").is_none(),
-                                "{mode}/{provider}/{role}/{ready}: {options}"
-                            );
+                            for key in [
+                                "CLAUDE_CODE_HOST_WORKTREE",
+                                "CLAUDE_CODE_HOST_WORKTREE_FENCE",
+                            ] {
+                                assert!(
+                                    options.get("env").and_then(|env| env.get(key)).is_none(),
+                                    "{mode}/{provider}/{role}/{ready}: {options}"
+                                );
+                            }
+                            if mode == "layr-native" && provider == "claude" {
+                                assert_eq!(options["env"]["LAYR_DIRECT"], "1");
+                                assert!(options["env"]["LAYR_ROOT"].is_string());
+                            }
                         }
                         assert_eq!(attempt.params["sandbox"], expected_sandbox);
                     }

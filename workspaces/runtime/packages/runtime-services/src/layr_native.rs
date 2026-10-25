@@ -280,7 +280,6 @@ mod receipt_tests {
             .unwrap()
             .contains("worker result")
         );
-        // Layr states have immutable flags. Keep the isolated store for inspection.
-        println!("native host evidence store: {}", state.keep().display());
+        println!("native host evidence store: {}", state.path().display());
     }
 }

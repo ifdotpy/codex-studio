@@ -133,7 +133,10 @@ test("consolidated Rust targets register every integration test file once", () =
 
 test("unsafe Rust is limited to the purpose-listed modules", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-unsafe-rust-policy-"));
-  const exception = path.join(root);
+  const exception = path.join(
+    root,
+    "workspaces/runtime/packages/runtime-services/src/host_exec_service/clone_ffi.rs",
+  );
   const violation = path.join(root, "workspaces/runtime/src/unsafe_probe.rs");
   const quotedViolation = path.join(
     root,

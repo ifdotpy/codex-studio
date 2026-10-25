@@ -19,7 +19,7 @@ use std::sync::{
 };
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
 use studio_runtime_store::path_identity::CanonicalPath;
-use studio_runtime_store::{RuntimeStore, StoreError};
+use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
 
 const BASE_AGENT: &str = "{\"accountKey\": \"default\", \"executionSettingsAccountKey\": \"default\", \"provider\": \"codex\", \"yoloMode\": true, \"prompt\": \"fixture\", \"cwd\": \"@cwd\", \"role\": \"orchestrator\", \"needsTitle\": false, \"subagentConcurrencyVersion\": 2, \"maxAgentsExplicit\": false, \"model\": \"gpt-6-astra\", \"effort\": \"medium\", \"fastMode\": false, \"daybreakEnabled\": false, \"cyberAccessProgram\": \"standard\", \"concurrency\": 32, \"maxAgents\": 64, \"tokenBudget\": null, \"status\": \"running\", \"autoWake\": true, \"epoch\": 3, \"inFlight\": false, \"turnEpoch\": 3, \"usageResumeEnabled\": true, \"tokensUsed\": 0, \"compactions\": 0, \"compactionsObservedOnly\": false, \"contextUsage\": null, \"events\": 0, \"error\": null, \"profileId\": null, \"profileInstructions\": \"\", \"tail\": \"\", \"worktree\": false, \"workspaceMode\": \"worktree\", \"executionMode\": \"native\", \"hostProjectPath\": \"@cwd\", \"layrReady\": false, \"workspaceBackend\": null, \"workspaceModeExplicit\": false, \"workspaceInGit\": false, \"worktreeReady\": false, \"environment\": \"host\", \"worktreeWarning\": null, \"workerBaseRef\": null, \"workerBaseCommit\": null, \"workerBaseBehindMain\": null, \"workerBaseMainRef\": null, \"workerDefaults\": {\"model\": \"gpt-6-luna\", \"effort\": \"high\", \"fastMode\": false, \"daybreakEnabled\": false, \"delegationDepth\": 1}, \"reviewDefaults\": {\"model\": null, \"effort\": null}, \"agentMode\": \"multi\", \"agentModeRevision\": 0, \"agentModeSupported\": true}";
 const FIXTURE_MONITOR: &str = "{\"activityAt\": 19.0, \"activityGeneration\": 0, \"agent\": \"bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331\", \"bytes\": 0, \"command\": \"printf fixture\", \"created\": 19.0, \"cwd\": \"@cwd\", \"epoch\": 3, \"error\": \"Server restarted. Command outcome unknown; not rerun.\", \"exitCode\": null, \"id\": \"6a1cbd51-e035-54ce-af5c-7fd9850e3065\", \"interactive\": false, \"livenessCommand\": \"\", \"log\": \"@cwd/monitor-logs/6a1cbd51-e035-54ce-af5c-7fd9850e3065.log\", \"operation\": {\"accountKey\": \"default\", \"agent\": \"bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331\", \"connectionId\": \"connection\", \"epoch\": 3, \"requestId\": \"managed-monitor\"}, \"outputEventCount\": 0, \"outputEventIds\": [], \"outputEventSequence\": 0, \"outputPatterns\": [], \"reattachRecovery\": {\"accountKey\": \"default\", \"epoch\": 3, \"status\": \"not_reattachable\", \"startedAt\": 19.0}, \"requestId\": \"managed-monitor\", \"ruleId\": null, \"stallTimeoutSeconds\": 1800, \"stallWakeGeneration\": -1, \"status\": \"lost\", \"successExitCodes\": [0], \"tail\": \"\", \"timeout_ms\": 3600000, \"turnId\": \"turn-0\", \"wakeOn\": \"exit\"}";
@@ -3529,6 +3529,72 @@ async fn task_claim_submit_and_accept_run_through_the_work_action_owner_once() {
             .contains("Only the owner can submit this task"),
         "{value}"
     );
+}
+
+#[tokio::test]
+async fn legacy_worker_archives_through_current_tool_without_losing_its_row() {
+    let (_root, store, context) = fixture_arc().await;
+    let worker = template().value["agents"][1]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let saved_id = worker.clone();
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            let mut record = AgentRepository::get(tx, &AgentId::from(saved_id.as_str()))?
+                .unwrap()
+                .value();
+            record["workspaceMode"] = json!("image");
+            record["imageWorkspace"] = json!(true);
+            record["imageWorkspaceReady"] = json!(true);
+            record["worktree"] = json!(false);
+            record["worktreeReady"] = json!(false);
+            record["cwd"] = json!("/legacy-workspace-no-longer-mounted/repo");
+            record["threadId"] = json!("legacy-thread");
+            record["lastCompletedTurn"] = Value::Null;
+            AgentRepository::put(tx, &AgentRecord::from_value(record)?)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    crate::legacy_image_workspace::finish_stored_workspaces(&store)
+        .await
+        .unwrap();
+    let frame = call(
+        &context,
+        "legacy-archive",
+        "orchestration_agent_manage",
+        json!({
+            "action":"archive", "agent_id":worker, "reason":"Legacy workspace is finished", "unassign_work":true
+        }),
+    );
+    let ports = shared_ports(
+        crate::provider_callbacks::managed_tool_ports(
+            &store,
+            &context,
+            &frame,
+            Arc::new(tokio::sync::Notify::new()),
+        )
+        .await
+        .unwrap(),
+    );
+    let (success, archived) = tool_reply(
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 30.0, ports)
+            .await
+            .unwrap(),
+    );
+    assert!(success, "{archived}");
+    assert_eq!(archived["status"], "archived", "{archived}");
+    let saved = AgentRepository::get(
+        &store.test_reader().unwrap(),
+        &AgentId::from(worker.as_str()),
+    )
+    .unwrap()
+    .expect("legacy row stays in SQLite")
+    .value();
+    assert_eq!(saved["workspaceMode"], "image");
+    assert_eq!(saved["imageWorkspaceReady"], true);
+    assert_eq!(saved["agentArchive"]["cleanupPending"], false);
 }
 
 #[tokio::test]

@@ -60,7 +60,7 @@ inherits = "ci"
 default-filter = '''
     (package(=studio-runtime-services) & kind(lib) & test(/::(managed_reviewer_defaults_reach_public_spawn_tool|reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance)$/))
     | (package(=studio-runtime-schema) & kind(lib) & test(workspace_modes::tests::))
-    | (package(=studio-runtime-services) & kind(lib) & (test(legacy_image_workspace::tests::) | test(legacy_finished_worker_archives_without_a_native_executor) | test(native_child_requires_a_native_parent)))
+    | (package(=studio-runtime-services) & kind(lib) & (test(legacy_image_workspace::tests::) | test(legacy_finished_worker_archives_without_a_native_executor) | test(native_child_requires_a_native_parent) | test(legacy_worker_archives_through_current_tool_without_losing_its_row)))
     | (package(=studio-runtime-server) & kind(test) & binary(=integration) & test(legacy_image_rows_finish_without_provider_launch_or_row_loss))
     | ((package(=studio-runtime-server)) & ((kind(lib) | kind(bin) | kind(test))) & (test(operator_cli::)))
     | (package(=studio-runtime-server) & kind(bin) & test(web_assets::tests::))
@@ -127,7 +127,7 @@ platform = 'cfg(target_os = "linux")'
 default-filter = '''
     (package(=studio-runtime-services) & kind(lib) & test(/::(managed_reviewer_defaults_reach_public_spawn_tool|reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance)$/))
     | (package(=studio-runtime-schema) & kind(lib) & test(workspace_modes::tests::))
-    | (package(=studio-runtime-services) & kind(lib) & (test(legacy_image_workspace::tests::) | test(legacy_finished_worker_archives_without_a_native_executor) | test(native_child_requires_a_native_parent)))
+    | (package(=studio-runtime-services) & kind(lib) & (test(legacy_image_workspace::tests::) | test(legacy_finished_worker_archives_without_a_native_executor) | test(native_child_requires_a_native_parent) | test(legacy_worker_archives_through_current_tool_without_losing_its_row)))
     | (package(=studio-runtime-server) & kind(test) & binary(=integration) & test(legacy_image_rows_finish_without_provider_launch_or_row_loss))
     | ((package(=studio-runtime-server)) & ((kind(lib) | kind(bin) | kind(test))) & (test(operator_cli::)))
     | (package(=studio-runtime-server) & kind(bin) & test(web_assets::tests::))
