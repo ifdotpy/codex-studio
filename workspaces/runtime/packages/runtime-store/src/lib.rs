@@ -8,6 +8,8 @@ pub use cached_sql::{CachedSql, STATEMENT_CACHE_CAPACITY};
 pub use entity_publication::{EntityPublisher, PendingEntities};
 mod feature_schema;
 mod fresh_state;
+#[cfg(any(test, feature = "test-support"))]
+pub use fresh_state::test_canvas;
 
 /// Durable marker proving bounded summary entities have been seeded. Unit: metadata key.
 pub const SUMMARY_ENTITIES_SEED_MARKER: &str = "summary_entities_v1";

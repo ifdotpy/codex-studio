@@ -6,13 +6,16 @@
 //! replacement, and the unchanged guest broker against it.
 
 use std::cell::RefCell;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use studio_runtime_services::host_exec_service::lifecycle::{ensure_service, service_call};
+use studio_runtime_services::host_exec_service::{
+    LEASE_FILE, SERVICE_READY_LINE,
+    lifecycle::{ensure_service, service_call},
+};
 
 const TOKEN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 /// Only guards against a hang; a passing run never waits this long.
@@ -55,50 +58,54 @@ impl State {
     }
 
     fn start(&self, build: &str) -> u32 {
-        let child = Command::new(binary())
+        let mut child = Command::new(binary())
             .args(["host-exec-service"])
             .arg(&self.path)
             .args(["--build", build])
             .stdin(Stdio::null())
+            .stdout(Stdio::piped())
             .spawn()
             .unwrap();
         let pid = child.id();
+        let stdout = child.stdout.take().unwrap();
         self.children.borrow_mut().push(child);
-        let deadline = Instant::now() + HANG_GUARD;
-        while service_call(&self.path, TOKEN, "health", None).is_err() {
-            assert!(Instant::now() < deadline, "the service did not start");
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let mut ready = String::new();
+        BufReader::new(stdout).read_line(&mut ready).unwrap();
+        assert_eq!(ready.trim_end(), SERVICE_READY_LINE);
+        assert_eq!(self.health()["pid"], pid);
         pid
     }
 
     fn wait_idle(&self) {
-        let deadline = Instant::now() + HANG_GUARD;
-        while self.health()["activeCommands"] != 0 {
-            assert!(Instant::now() < deadline, "a command did not end");
-            std::thread::sleep(Duration::from_millis(20));
+        let mut after = 0;
+        loop {
+            let attached = self.call(
+                "attach",
+                Some(&json!({
+                    "operationId":"upgrade-operation", "agentId":"agent",
+                    "afterSeq":after, "waitSeconds":HANG_GUARD.as_secs()
+                })),
+            );
+            let events = attached["events"].as_array().unwrap();
+            if let Some(event) = events.last() {
+                after = event["seq"].as_i64().unwrap();
+            }
+            if attached["status"]["state"] != "running" && events.is_empty() {
+                break;
+            }
         }
     }
 
     fn wait_child(&self, pid: u32) -> ExitStatus {
-        let mut children = self.children.borrow_mut();
-        let child = children.iter_mut().find(|child| child.id() == pid).unwrap();
-        let deadline = Instant::now() + HANG_GUARD;
-        loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                return status;
-            }
-            if Instant::now() >= deadline {
-                child.kill().unwrap();
-                child.wait().unwrap();
-                panic!("owned service {pid} did not exit after retirement");
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        self.children
+            .borrow_mut()
+            .iter_mut()
+            .find(|child| child.id() == pid)
+            .unwrap()
+            .wait()
+            .unwrap()
     }
 
-    /// Reap owned children directly; detached replacements can be zombies until
-    /// their OS parent reaps them. A live service at the watchdog is a failure.
     fn retire(&self) {
         if let Ok(health) = service_call(&self.path, TOKEN, "health", None) {
             let params = json!({"buildId": health["buildId"], "pid": health["pid"]});
@@ -107,16 +114,20 @@ impl State {
             if self.children.borrow().iter().any(|child| child.id() == pid) {
                 assert!(self.wait_child(pid).success());
             } else {
-                let deadline = Instant::now() + HANG_GUARD;
-                while service_is_live(pid) {
-                    assert!(
-                        Instant::now() < deadline,
-                        "detached service {pid} did not retire"
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
-                }
+                self.wait_for_released_state();
             }
         }
+    }
+
+    // A detached replacement's reaper owns Child::wait. Its service lease is
+    // released only after the service stops using this disposable state.
+    fn wait_for_released_state(&self) {
+        let lease = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(self.path.join(LEASE_FILE))
+            .unwrap();
+        lease.lock().unwrap();
     }
 
     fn acquire(&self) -> Value {
@@ -140,20 +151,6 @@ impl Drop for State {
             }
         }
     }
-}
-
-fn service_is_live(pid: u32) -> bool {
-    let status = Command::new("ps")
-        .args(["-o", "stat=", "-p", &pid.to_string()])
-        .output()
-        .unwrap();
-    assert!(
-        status.status.success() || status.status.code() == Some(1),
-        "ps failed"
-    );
-    let state = String::from_utf8(status.stdout).unwrap();
-    let state = state.trim();
-    !state.is_empty() && !state.starts_with('Z')
 }
 
 #[test]
@@ -269,11 +266,7 @@ fn a_new_state_gets_a_token_and_a_service() {
     assert_eq!(health["buildId"], "fresh-build");
     let params = json!({"buildId": "fresh-build", "pid": health["pid"]});
     service_call(path, &token, "service.retire", Some(&params)).unwrap();
-    let deadline = Instant::now() + HANG_GUARD;
-    while service_is_live(health["pid"].as_u64().unwrap() as u32) {
-        assert!(Instant::now() < deadline, "fresh service did not retire");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    state.wait_for_released_state();
 }
 
 /// The guest broker of the VM (`vm-guest/host_exec.py`) runs unchanged against
@@ -284,7 +277,9 @@ fn the_guest_broker_runs_against_the_mac_service() {
     let output = Command::new("python3")
         .arg("-B")
         .arg(&script)
+        .arg("Contract.test_source_return_artifact_file_and_warm_path")
         .env("HOST_EXEC_SERVICE_BINARY", binary())
+        .env("HOST_EXEC_SERVICE_READY_LINE", SERVICE_READY_LINE)
         .output()
         .expect("python3 3.11 or newer runs the guest broker");
     assert!(

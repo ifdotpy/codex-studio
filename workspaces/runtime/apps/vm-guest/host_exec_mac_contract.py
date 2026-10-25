@@ -4,7 +4,7 @@
 The guest code (host_exec.py, host_exec_slot.py) runs unchanged; only the layr binary and the line
 merge are fixtures. Each request goes over host-exec.sock to `studio-runtime-server host-exec-service`.
 The Rust witness `host_exec_service::the_guest_broker_runs_against_the_mac_service` runs this file
-with HOST_EXEC_SERVICE_BINARY set to that executable.
+with HOST_EXEC_SERVICE_BINARY and HOST_EXEC_SERVICE_READY_LINE supplied by Rust.
 """
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ from host_exec_protocol import FRAME_LIMIT, HostExecError, key, scan  # noqa: E4
 from host_exec_slot import HostSlotHandlers  # noqa: E402
 
 BINARY = os.environ.get("HOST_EXEC_SERVICE_BINARY", "")
+# The Rust caller passes host_exec_service::SERVICE_READY_LINE, its single owner.
+READY_LINE = os.environ.get("HOST_EXEC_SERVICE_READY_LINE", "")
 TOKEN = "a" * 64
 # The fake guest layr: the saved line state and the git tree ID that `rev-parse <state>^{tree}` prints.
 FIXTURE_STATE = "0123456789abcdef0123456789abcdef"
@@ -106,24 +108,21 @@ class MacService:
         self.log_path = state.parent / "service.log"
         log = self.log_path.open("ab")
         self.process = subprocess.Popen([BINARY, "host-exec-service", str(state), "--build", "contract"],
-                                        stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=log)
         log.close()
-        deadline = time.monotonic() + HANG_GUARD_SECONDS
-        while True:
-            try:
-                if "result" in self.call_sync("health"):
-                    return
-            except OSError:
-                pass
-            if self.process.poll() is not None or time.monotonic() > deadline:
-                raise AssertionError("The Mac service did not start: " + self.log_path.read_text())
-            time.sleep(0.02)
+        ready = self.process.stdout.readline().decode().rstrip("\n")
+        self.process.stdout.close()
+        if not READY_LINE or ready != READY_LINE:
+            self.process.kill()
+            self.process.wait()
+            raise AssertionError("The Mac service did not confirm readiness: " + self.log_path.read_text())
+        assert "result" in self.call_sync("health")
 
     def call_sync(self, method, params=None):
         request = {"id": "fixture:" + method + ":" + str(time.monotonic_ns()), "method": method,
                    "params": params or {}, "token": TOKEN}
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
-            channel.settimeout(10)
+            channel.settimeout(HANG_GUARD_SECONDS)
             channel.connect(str(self.socket))
             channel.sendall(json.dumps(request).encode() + b"\n")
             with channel.makefile("rb") as stream:
@@ -157,11 +156,16 @@ class MacService:
         return found
 
     def wait_idle(self):
-        deadline = time.monotonic() + HANG_GUARD_SECONDS
-        while self.call_sync("health")["result"]["activeCommands"]:
-            if time.monotonic() > deadline:
-                raise AssertionError("A Mac command did not end")
-            time.sleep(0.02)
+        for op in self.operations():
+            after = 0
+            while True:
+                result = self.call_sync("attach", {"operationId": op["operationId"], "agentId": op["agentId"],
+                                                   "afterSeq": after, "waitSeconds": HANG_GUARD_SECONDS})["result"]
+                events = result["events"]
+                if events:
+                    after = events[-1]["seq"]
+                if result["status"]["state"] != "running" and not events:
+                    break
 
     def stop(self):
         try:
@@ -170,7 +174,7 @@ class MacService:
             self.wait_idle()
             health = self.call_sync("health")["result"]
             self.call_sync("service.retire", {"buildId": health["buildId"], "pid": health["pid"]})
-            self.process.wait(timeout=HANG_GUARD_SECONDS)
+            self.process.wait()
         finally:
             if self.process.poll() is None:
                 for op in self.operations():
@@ -180,12 +184,13 @@ class MacService:
                         except (ProcessLookupError, PermissionError):
                             pass
                 self.process.kill()
-                self.process.wait(timeout=HANG_GUARD_SECONDS)
+                self.process.wait()
 
 
 class Contract(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.assertTrue(BINARY, "Set HOST_EXEC_SERVICE_BINARY to the studio-runtime-server executable")
+        self.assertTrue(READY_LINE, "The Rust fixture must supply SERVICE_READY_LINE")
         self.temp = tempfile.TemporaryDirectory(prefix="host-exec-mac-")
         self.root = Path(self.temp.name).resolve()
         self.state = self.root / "state"
@@ -232,9 +237,12 @@ class Contract(unittest.IsolatedAsyncioTestCase):
             return await self.slots.dispatch(key(params["operationId"] + phase), method, params)
         self.guest.broker = broker
         self.events = []
+        self.command_ready = asyncio.Event()
 
         async def emit(event, value):
             self.events.append(value)
+            if "cancel-ready" in value.get("text", ""):
+                self.command_ready.set()
         self.emit = emit
 
     async def asyncTearDown(self):
@@ -322,7 +330,7 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((Path(result["slotPath"]) / "ran").exists())
 
     async def test_lost_run_response_keeps_lease(self):
-        await self.run_then_lose_guest("run-lost", 'import time;time.sleep(0.5)')
+        await self.run_then_lose_guest("run-lost", "pass")
         old = self.host.status("run-lost")
         self.assertIn(old["state"], ("running", "exited"))
         self.assertTrue((Path(old["slotPath"]).parent / "lease.json").exists())
@@ -372,18 +380,12 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(new["exitCode"], 0)
         self.assertNotEqual(new["generation"], released["generation"])
 
-    async def test_timeout_and_cancel_keep_completed_edits(self):
-        result = await self.execute("timeout", 'import time,pathlib;pathlib.Path("edit").write_text("before timeout");time.sleep(20)', timeout=2)
-        self.assertEqual(result["reason"], "timeout")
-        self.assertTrue(result["collected"])
-        self.assertEqual((self.line / "edit").read_text(), "before timeout")
-        started = self.root / "edit-started"
+    async def test_cancel_keeps_completed_edits(self):
+        # The service's paused-clock witness covers timeout; this composition
+        # path cancels only after output proves that the real child wrote its edit.
         task = asyncio.create_task(self.execute("cancel", 'import pathlib,threading;pathlib.Path("edit").write_text("before cancel");'
-                                                f'pathlib.Path({str(started)!r}).write_text("ready");threading.Event().wait()'))
-        deadline = time.monotonic() + HANG_GUARD_SECONDS
-        while not started.exists():
-            self.assertLess(time.monotonic(), deadline)
-            await asyncio.sleep(0.02)
+                                                'print("cancel-ready" + "x" * 1024, flush=True);threading.Event().wait()'))
+        await self.command_ready.wait()
         await self.guest.handle("cancel-request", {"action": "cancel", "agentId": "agent", "operationId": "cancel"}, self.emit)
         result = await task
         self.assertEqual(result["reason"], "cancelled")
@@ -407,16 +409,16 @@ class Contract(unittest.IsolatedAsyncioTestCase):
             (self.line / ("file-%03d" % index)).write_text("x")
         # Several manifest pages on the guest side.
         with patch.object(host_exec_protocol, "PAGE_ENTRIES", 100):
-            result = await self.execute("paged", 'import os,pathlib,time;value=str(pathlib.Path("main.swift").resolve());'
+            result = await self.execute("paged", 'import os,pathlib;value=str(pathlib.Path("main.swift").resolve());'
                 'value=value.replace("/private/var/","/var/");data=value.encode();'
-                'os.write(1,data[:len(data)//2]);time.sleep(0.05);os.write(1,data[len(data)//2:])')
+                'os.write(1,data[:len(data)//2]);os.write(1,data[len(data)//2:])')
         self.assertEqual(self.output(), str(self.line / "main.swift"))
         self.assertTrue(result["collected"])
 
     async def test_disk_budget_stops_cache_growth(self):
         self.project_settings({"slots": 2, "diskBudgetGiB": 64 / (1024 * 1024)})
-        result = await self.execute("budget", 'import os,pathlib,time;'
-            'pathlib.Path(os.environ["HOST_EXEC_DERIVED_DATA"],"large").write_bytes(b"x"*128*1024);time.sleep(20)')
+        result = await self.execute("budget", 'import os,pathlib,threading;'
+            'pathlib.Path(os.environ["HOST_EXEC_DERIVED_DATA"],"large").write_bytes(b"x"*128*1024);threading.Event().wait()')
         self.assertEqual(result["reason"], "disk_budget")
         self.assertTrue(result["collected"])
 

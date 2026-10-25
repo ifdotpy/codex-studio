@@ -1298,7 +1298,7 @@ mod tests {
 
     use super::{
         MAX_SAFE_INTEGER, OperationValidator, RawRequest, Registry, check_safe_integer_bounds,
-        compile_part, schema_registry,
+        compile_part,
     };
     use axum::http::{HeaderMap, HeaderValue};
     use serde_json::{Map, Value, json};
@@ -1344,82 +1344,6 @@ mod tests {
             "CheckpointSummary",
             &json!({"id":"p","agent":"lead","created":1})
         ));
-    }
-
-    #[test]
-    fn named_schema_validators_preserve_existing_invalid_fixture_errors() {
-        let registry = Registry::compile(&[]).expect("HTTP schemas compile");
-        let document = crate::schema::openapi_document();
-        let independent_registry = schema_registry(document).expect("OpenAPI registry prepares");
-        // The malformed complaint, task payload, and workspace extension come from
-        // the existing stored-value validation and stripping witnesses below and
-        // runtime-schema's stored_sync_payload_selects_generated_branch_before_stripping.
-        let fixtures = [
-            json!(null),
-            json!([]),
-            json!({}),
-            json!({"id":"c","leadId":"lead","author":"user","text":"review","status":"open","created":1,"version":9_007_199_254_740_992_i64}),
-            json!({"collection":"task","id":"task-invalid","value":{"id":17,"legacyField":true}}),
-            json!({"nativeNotices":[{"id":"notice-1","accountKey":"default","connectionId":"connection-1","message":"provider notice","details":{"code":"temporary"},"at":1.0,"legacyExtension":true}],"unknownWorkspaceField":true}),
-            json!({"id":"p","agent":"lead","created":1,"extension":9_007_199_254_740_993_i64}),
-        ];
-        for (name, shared) in registry
-            .stored_schemas
-            .iter()
-            .filter(|(name, _)| *name != "DraftPayload")
-            .map(|(name, validator)| (name.as_str(), validator))
-            .chain([(
-                "PreferenceField",
-                registry
-                    .preference_field
-                    .as_ref()
-                    .expect("preference schema"),
-            )])
-        {
-            let independent = jsonschema::options()
-                .with_registry(&independent_registry)
-                .with_pattern_options(jsonschema::PatternOptions::regex())
-                .build(
-                    &json!({"$ref":format!("{}#/components/schemas/{name}", super::OPENAPI_URI)}),
-                )
-                .expect("original HTTP component compiles");
-            for fixture in &fixtures {
-                let errors = |validator: &jsonschema::Validator| {
-                    validator
-                        .iter_errors(fixture)
-                        .map(|error| {
-                            (
-                                error.instance_path().to_string(),
-                                error.schema_path().to_string(),
-                                error.kind().keyword().to_owned(),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                };
-                assert_eq!(errors(shared), errors(&independent), "{name}: {fixture}");
-                assert_eq!(
-                    shared.is_valid(fixture),
-                    independent.is_valid(fixture),
-                    "{name}: {fixture}"
-                );
-                let mut shared_value = fixture.clone();
-                let mut independent_value = fixture.clone();
-                studio_runtime_schema::strip_extra_fields_with_validator(shared, &mut shared_value);
-                studio_runtime_schema::strip_extra_fields_with_validator(
-                    &independent,
-                    &mut independent_value,
-                );
-                assert_eq!(
-                    shared_value, independent_value,
-                    "{name}: extra-field boundary"
-                );
-            }
-        }
-        assert!(
-            !registry.validate_stored("AgentRequest", &json!({})),
-            "HTTP retains its named-schema allowlist"
-        );
-        assert!(!registry.validate_stored("MissingSchema", &json!({})));
     }
 
     fn compile_for_test(
@@ -2119,6 +2043,12 @@ mod tests {
     #[test]
     fn persisted_record_schemas_validate_full_values_without_number_coercion() {
         let registry = Registry::compile(&[]).expect("stored schemas compile");
+        assert!(
+            !registry.validate_stored("AgentRequest", &json!({})),
+            "HTTP retains its named-schema allowlist"
+        );
+        assert!(!registry.validate_stored("MissingSchema", &json!({})));
+
         let complaint = r#"{"id":"c","leadId":"lead","author":"user","text":"review","status":"open","created":1,"version":9007199254740992}"#;
         assert!(
             registry

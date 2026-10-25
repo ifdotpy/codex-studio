@@ -352,8 +352,8 @@ fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreRes
 }
 
 /// Repository witnesses use the production catalog without files, fsyncs or writer actors.
-#[cfg(test)]
-pub(crate) fn test_canvas() -> Connection {
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_canvas() -> Connection {
     let snapshot = serde_json::from_str(SNAPSHOT).expect("fresh schema snapshot");
     let mut connection = create_database(Path::new(":memory:"), &snapshot, "canvas.sqlite3")
         .expect("in-memory canvas");
