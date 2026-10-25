@@ -1,3 +1,7 @@
+import {
+  hasTouchCapability,
+  touchPointerQuery,
+} from "../../hooks/touchCapability";
 import { useEffect, useState } from "react";
 import { layoutValues } from "../../layout/layout-contract.generated";
 import {
@@ -49,12 +53,15 @@ export function useEdgeRail(
     }
     const root = document.getElementById("root");
     if (!root) return;
-    const coarse = window.matchMedia("(pointer: coarse)");
+    const coarse = window.matchMedia(touchPointerQuery);
     let frame = 0;
     const update = () => {
       frame = 0;
       const next = edgeRailGeometry(
-        readEdgeRailViewport(getComputedStyle(root), coarse.matches),
+        readEdgeRailViewport(
+          getComputedStyle(root),
+          hasTouchCapability(coarse.matches, navigator.maxTouchPoints),
+        ),
         { minimumInset, statusReserve, targetSize },
       );
       setGeometry((current) =>
