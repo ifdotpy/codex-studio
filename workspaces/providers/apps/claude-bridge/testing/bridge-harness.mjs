@@ -34,7 +34,8 @@ export async function startBridge(
   }
   await fs.writeFile(
     path.join(root, "fake.mjs"),
-    `import { waitForFile } from ${JSON.stringify(path.join(BRIDGE, "testing/file-signals.mjs"))};\n` +
+    `import { waitForFile as waitForFileSignal } from ${JSON.stringify(path.join(BRIDGE, "testing/file-signals.mjs"))};\n` +
+      `const waitForFile=(file,options)=>waitForFileSignal(file,{...options,childIpc:true});\n` +
       (fakeSdk.includes("export const resolveSettings") ||
       fakeSdk.includes("export function resolveSettings")
         ? fakeSdk
