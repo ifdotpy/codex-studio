@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { open, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { open, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -76,7 +76,8 @@ try {
   }
   assert.ok(
     backend,
-    "The packaged host did not start its backend before the deadline",
+    "The packaged host did not start its backend before the deadline\n" +
+      (await readFile(path.join(fixture, "host.log"), "utf8")).slice(-4000),
   );
   assert.equal(backend.backendKind, "rust");
   const command = execFileSync(
