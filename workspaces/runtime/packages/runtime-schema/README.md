@@ -90,3 +90,10 @@ A lead update or a new provider attempt permits another set of submissions.
 
 The runtime applies the tool contract to both native and legacy tool catalogs.
 OpenAPI parity checks use this owner, and `studio-contracts` generates the web types.
+
+`src/usage.rs` owns provider-neutral token observations and the single notification
+parser. Response evidence, cumulative counter scope, and missing final usage remain
+explicit. `studio-contracts` generates the observation JSON schema, named OpenAPI
+components, and the Claude bridge's `usage-contract.generated.d.mts`. The committed
+Codex notification schema under `src/schemas/codex` comes from Codex CLI 0.164.0
+`app-server generate-json-schema`; a short-tier parity witness checks the Rust mirror.
