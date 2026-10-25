@@ -35,6 +35,7 @@ pub(super) fn claim(
     epoch: i64,
     steer_id: &str,
     created: f64,
+    claude_steer_receipts: bool,
 ) -> Result<Option<(TurnIntent, String)>, WorkerError> {
     let owned = AgentRepository::get(tx, &AgentId::from(agent_id))?.is_some_and(|agent| {
         agent
@@ -43,6 +44,8 @@ pub(super) fn claim(
             .and_then(Value::as_str)
             .unwrap_or("default")
             == account
+            && (agent.extra.get("provider").and_then(Value::as_str) != Some("claude")
+                || claude_steer_receipts)
     });
     if !owned {
         return Ok(None);
@@ -387,6 +390,7 @@ pub(super) async fn claim_for_wake(
     account: &str,
     agent: &str,
     epoch: i64,
+    claude_steer_receipts: bool,
 ) -> Result<WakeClaim, WorkerError> {
     let read_store = Arc::clone(&store);
     let read_agent = agent.to_owned();
@@ -411,6 +415,11 @@ pub(super) async fn claim_for_wake(
             else {
                 return Ok(None);
             };
+            if record.extra.get("provider").and_then(Value::as_str) == Some("claude")
+                && !claude_steer_receipts
+            {
+                return Ok(Some(false));
+            }
             Ok::<_, WorkerError>(Some(SchedulerRepository::steer_claimable(
                 connection, &record, epoch,
             )?))
@@ -427,7 +436,15 @@ pub(super) async fn claim_for_wake(
     let steer_id = format!("steer-{}", studio_runtime_store::sha256_hex(&bytes));
     let (account, agent) = (account.to_owned(), agent.to_owned());
     let claimed = scheduler::lifecycle_transaction_with(&store, move |tx| {
-        claim(tx, &account, &agent, epoch, &steer_id, now())
+        claim(
+            tx,
+            &account,
+            &agent,
+            epoch,
+            &steer_id,
+            now(),
+            claude_steer_receipts,
+        )
     })
     .await?;
     Ok(claimed.map_or(WakeClaim::Busy, |(intent, turn)| {

@@ -402,25 +402,50 @@ impl Peer {
         gate: Option<oneshot::Receiver<()>>,
         cleanup_error: Option<String>,
     ) -> Self {
-        Self::identity_with_options(account, generation, gate, cleanup_error, false, false)
+        Self::identity_with_initialize_result(
+            account,
+            generation,
+            gate,
+            cleanup_error,
+            false,
+            false,
+            json!({"capabilities":{"steerCompletionReceipts":true}}),
+        )
     }
     /// A supervised provider: its process outlives the worker's attachment,
     /// and only `stop` ends it.
     fn supervised() -> Self {
-        Self::identity_with_options("default", 1, None, None, false, true)
+        Self::identity_with_initialize_result(
+            "default",
+            1,
+            None,
+            None,
+            false,
+            true,
+            json!({"capabilities":{"steerCompletionReceipts":true}}),
+        )
     }
     /// A peer whose `initialize` reaches the test as an ordinary write, so its
     /// reply arrives as a journal frame behind any earlier provider frames.
     fn initialized_by_journal(account: &str, generation: u64) -> Self {
-        Self::identity_with_options(account, generation, None, None, true, false)
+        Self::identity_with_initialize_result(
+            account,
+            generation,
+            None,
+            None,
+            true,
+            false,
+            json!({}),
+        )
     }
-    fn identity_with_options(
+    fn identity_with_initialize_result(
         account: &str,
         generation: u64,
         mut gate: Option<oneshot::Receiver<()>>,
         cleanup_error: Option<String>,
         journal_initialize: bool,
         supervised: bool,
+        initialize_result: Value,
     ) -> Self {
         let generation = Generation(generation);
         MATRIX
@@ -488,7 +513,7 @@ impl Peer {
                                 if let Some(gate) = gate.take() {
                                     gate.await.unwrap();
                                 }
-                                CommandReceipt::CachedInitialize(json!({}))
+                                CommandReceipt::CachedInitialize(initialize_result.clone())
                             }
                             Some("initialized") => CommandReceipt::Written {
                                 remote_id: None,
@@ -510,6 +535,9 @@ impl Peer {
                         let _ignored = reply.send(result);
                         tokio::select! {biased; _=Shutdown::cancelled(&mut stopped)=>break, _=observed=>{}}
                         if initialized {
+                            _status.send_modify(|status| {
+                                status.initialization = InitializationStatus::Ready
+                            });
                             ready_tx.send_replace(true);
                         }
                     }

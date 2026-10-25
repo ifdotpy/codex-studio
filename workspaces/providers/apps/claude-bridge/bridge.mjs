@@ -15,6 +15,7 @@ import {
 } from "./file-checkpoints.mjs";
 import { createAccountCheck } from "./account-identity.mjs";
 import { inputGroups, sdkInputMessages } from "./input-messages.mjs";
+import { CLAUDE_STEER_COMPLETION_RECEIPTS } from "./lifecycle-capabilities.generated.mjs";
 // Claude Agent SDK adapter for Studio's existing local session protocol.
 import { interruptInputQueue } from "./stop-inputs.mjs";
 import { browserEnvironment } from "./browser-environment.mjs";
@@ -2269,6 +2270,7 @@ async function handle(method, p) {
         claudeVersion: 23,
         passiveAccountRead: true,
         activityRead: true,
+        [CLAUDE_STEER_COMPLETION_RECEIPTS]: true,
       },
     };
   if (method === "initialized") return {};

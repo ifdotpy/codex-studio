@@ -136,6 +136,12 @@ const acks = (bridge, id) =>
 
 const ack = (bridge, id) => acks(bridge, id)[0];
 
+test("the loaded bridge advertises exact steer completion receipts", async () => {
+  const bridge = await startBridge();
+  const initialized = await bridge.call("initialize", {});
+  assert.equal(initialized.capabilities.steerCompletionReceipts, true);
+});
+
 async function running(bridge, scenario) {
   const turn = (
     await bridge.call("turn/start", {

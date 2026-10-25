@@ -1899,6 +1899,11 @@ impl Worker {
             account: self.account.clone(),
             agent_id: agent,
             epoch,
+            claude_steer_receipts: self.session.status.borrow().has_capability(
+                &ProviderHandle::for_account(&self.account),
+                self.generation,
+                studio_runtime_schema::provider_lifecycle::CLAUDE_STEER_COMPLETION_RECEIPTS,
+            ),
             effect: self.effect_in_hand.take(),
             resources: self.resources.clone(),
         };
@@ -2391,6 +2396,28 @@ impl Worker {
         turn: String,
         compiled: preparation::PreparedSteer,
     ) -> Result<(), WorkerError> {
+        if intent.provider == studio_runtime_providers::ProviderKind::Claude
+            && !self.session.status.borrow().has_capability(
+                &ProviderHandle::for_account(&self.account),
+                self.generation,
+                studio_runtime_schema::provider_lifecycle::CLAUDE_STEER_COMPLETION_RECEIPTS,
+            )
+        {
+            // Preparation can outlive its connection proof. No write happened;
+            // preserve the original input for the ordinary next-turn claim.
+            self.db("legacy_claude_steer_not_sent", move |store| async move {
+                scheduler::lifecycle_transaction_with(&store, move |tx| {
+                    Ok::<_, WorkerError>(SchedulerRepository::steer_not_sent(
+                        tx,
+                        &intent.agent_id,
+                        &intent.attempt_id,
+                    )?)
+                })
+                .await
+            })
+            .await?;
+            return Ok(());
+        }
         let operation = steer::operation(&self.account, &intent.attempt_id);
         let id = RequestId::String(operation.clone());
         let params = steer::params(&intent, &turn, &compiled.compiled);

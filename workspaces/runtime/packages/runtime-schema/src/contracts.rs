@@ -736,6 +736,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             ),
         },
         Rendered {
+            path: "workspaces/providers/apps/claude-bridge/lifecycle-capabilities.generated.mjs"
+                .into(),
+            text: format!(
+                "// {HEADER}\nexport const CLAUDE_STEER_COMPLETION_RECEIPTS = {};\n",
+                json_string(crate::provider_lifecycle::CLAUDE_STEER_COMPLETION_RECEIPTS),
+            ),
+        },
+        Rendered {
             path: OPENAPI_PATH.into(),
             text: serde_json::to_string_pretty(&openapi).map_err(|error| error.to_string())? + "\n",
         },

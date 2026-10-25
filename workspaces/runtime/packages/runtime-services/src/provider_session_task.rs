@@ -168,6 +168,34 @@ pub struct SessionStatus {
     pub generation: Generation,
     pub initialization: InitializationStatus,
     pub attachment: AttachmentStatus,
+    /// Reply from this generation's exact initialize request, including a
+    /// supervisor-cached reply from the retained process, not installed source.
+    pub initialize_result: Option<Arc<Value>>,
+}
+
+impl SessionStatus {
+    /// A capability belongs to the ready, exact account handle and generation.
+    /// Missing metadata, an old reply, and non-boolean values grant nothing.
+    pub(crate) fn has_capability(
+        &self,
+        handle: &ProviderHandle,
+        generation: Generation,
+        capability: &str,
+    ) -> bool {
+        self.generation == generation
+            && self.initialization == InitializationStatus::Ready
+            && self.attachment.initialization == InitializationStatus::Ready
+            && self.attachment.handle == *handle
+            && self.attachment.info.as_ref().is_some_and(|info| {
+                info.handle == *handle && info.generation == generation && info.pid > 0
+            })
+            && self.initialize_result.as_ref().is_some_and(|result| {
+                result
+                    .get("capabilities")
+                    .and_then(|value| value.get(capability))
+                    == Some(&Value::Bool(true))
+            })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -330,6 +358,7 @@ impl SessionHandle {
         let (status, observed) = watch::channel(SessionStatus {
             generation: config.generation,
             initialization: InitializationStatus::AwaitingReply,
+            initialize_result: None,
             attachment: AttachmentStatus {
                 handle: handle.clone(),
                 open_attempted: false,
@@ -1192,6 +1221,19 @@ impl SessionTask {
                 Action::Resolve { ticket, outcome } => {
                     let ticket = ticket.clone();
                     let outcome = outcome.clone();
+                    if ticket.method == Method::Initialize
+                        && ticket.generation == self.state.generation()
+                    {
+                        self.status.send_modify(|status| {
+                            status.initialize_result = match &outcome {
+                                RequestOutcome::Reply {
+                                    body: ResponseBody::Result(value),
+                                    ..
+                                } => Some(Arc::new(value.clone())),
+                                _ => None,
+                            };
+                        });
+                    }
                     if self.retain_resolution(
                         ticket.clone(),
                         outcome,
