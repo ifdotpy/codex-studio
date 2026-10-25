@@ -78,7 +78,7 @@ export class ResponseUsage {
   /** @type {Set<string>} */
   started = new Set();
   /** @type {Set<string>} */
-  noStream = new Set();
+  gapped = new Set();
   closed = false;
 
   /** @param {string | null | undefined} parent @param {string | undefined} turnId */
@@ -128,7 +128,8 @@ export class ResponseUsage {
     const observations = [];
     if (event.type === "message_start") {
       const previous = this.pending.get(parent);
-      if (previous) observations.push(this.gap(previous, "streamInterrupted"));
+      if (previous)
+        observations.push(...this.gap(previous, "streamInterrupted"));
       if (parent !== null) this.registerTool(parent, turnId);
       this.started.add(event.message.id);
       this.pending.set(parent, {
@@ -148,7 +149,7 @@ export class ResponseUsage {
       if (event.type === "message_stop") {
         this.pending.delete(parent);
         if (current.stopReason == null) {
-          observations.push(this.gap(current, "unconfirmedStop"));
+          observations.push(...this.gap(current, "unconfirmedStop"));
           return observations;
         }
         const modelContextWindow = this.contextWindowFor(current.message.model);
@@ -174,32 +175,30 @@ export class ResponseUsage {
    */
   observeAssistant(frame, turnId) {
     const { id, model } = frame.message;
-    if (this.closed || this.started.has(id) || this.noStream.has(id)) return [];
-    this.noStream.add(id);
+    if (this.closed || this.started.has(id)) return [];
     const ownerTurn = this.turnFor(frame.parent_tool_use_id, turnId);
+    return this.gap({ message: { id, model }, turnId: ownerTurn }, "noStream");
+  }
+
+  /** @param {{message:Pick<Message, 'id' | 'model'>,turnId:string | undefined}} current
+   * @param {GapReason} reason
+   * @returns {UsageObservation[]}
+   */
+  gap(current, reason) {
+    const { id, model } = current.message;
+    // All gap paths share identity: keep the first diagnostic even if a later
+    // stream for this response also ends unfinished. Final responses remain allowed.
+    if (this.gapped.has(id)) return [];
+    this.gapped.add(id);
     return [
       {
         kind: "gap",
         responseId: id,
         model,
-        reason: "noStream",
-        ...(ownerTurn === undefined ? {} : { turnId: ownerTurn }),
+        reason,
+        ...(current.turnId === undefined ? {} : { turnId: current.turnId }),
       },
     ];
-  }
-
-  /** @param {{message:Message,turnId:string | undefined}} current
-   * @param {GapReason} reason
-   * @returns {UsageObservation}
-   */
-  gap(current, reason) {
-    return {
-      kind: "gap",
-      responseId: current.message.id,
-      model: current.message.model,
-      reason,
-      ...(current.turnId === undefined ? {} : { turnId: current.turnId }),
-    };
   }
 
   /** @param {GapReason} reason
@@ -214,7 +213,7 @@ export class ResponseUsage {
       // Background subagents may continue beyond the main Studio turn.
       if (reason === "streamInterrupted" && parent !== null) continue;
       if (turnId !== undefined && current.turnId !== turnId) continue;
-      observations.push(this.gap(current, reason));
+      observations.push(...this.gap(current, reason));
       this.pending.delete(parent);
     }
     return observations;

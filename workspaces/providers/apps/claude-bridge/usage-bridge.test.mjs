@@ -129,6 +129,11 @@ export function query({prompt,options}){
     yield {type:'assistant',parent_tool_use_id:'background-tool',uuid:'child-done',message:{id:'response-1',content:[{type:'text',text:'background-finished'}]}};
     continue;
    }
+   if(text==='no-stream-then-result'||text==='no-stream-then-close'){
+    yield assistant;yield stream(events[0]);
+    if(text==='no-stream-then-close')return;
+    yield result();continue;
+   }
    if(text==='no-stream'||text==='no-stream-then-stream'){
     yield assistant;yield assistant;
     if(text==='no-stream-then-stream')for(const event of events)yield stream(event);
@@ -758,3 +763,36 @@ for (const scenario of [
       );
     },
   );
+
+for (const scenario of ["no-stream-then-result", "no-stream-then-close"])
+  test(
+    scenario +
+      " preserves the first gap reason when its later stream never completes",
+    async () => {
+      const b = await setup();
+      await done(b, await start(b, scenario));
+      expect(
+        observations(b).filter((o) => o.responseId === "response-1"),
+      ).toMatchObject([
+        { kind: "gap", responseId: "response-1", reason: "noStream" },
+      ]);
+      expect(
+        observations(b).filter((o) => o.responseId === "response-1"),
+      ).toHaveLength(1);
+    },
+  );
+
+test("a deduplicated unfinished stream still permits a later final response for its identity", async () => {
+  const b = await setup();
+  await done(b, await start(b, "no-stream-then-result"));
+  await done(b, await start(b, "normal"));
+  expect(
+    observations(b).filter((o) => o.responseId === "response-1"),
+  ).toMatchObject([
+    { kind: "gap", responseId: "response-1", reason: "noStream" },
+    { kind: "response", responseId: "response-1", tokens: { output: 720 } },
+  ]);
+  expect(
+    observations(b).filter((o) => o.responseId === "response-1"),
+  ).toHaveLength(2);
+});

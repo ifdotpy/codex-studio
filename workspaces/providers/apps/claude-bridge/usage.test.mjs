@@ -176,8 +176,14 @@ test("tool identity keeps its original turn across responses and nested tool own
   usage.registerTool("parent", "original");
   const start = events.find((e) => e.type === "message_start");
   if (!start) throw new Error("missing SDK fixture");
+  const delta = events.find((e) => e.type === "message_delta");
+  if (!delta) throw new Error("missing SDK fixture");
   for (const turn of ["later", "even-later"]) {
-    usage.observe(frame(start, "parent"), turn);
+    usage.observe(
+      frame({ ...start, message: { ...start.message, id: turn } }, "parent"),
+      turn,
+    );
+    usage.observe(frame(delta, "parent"), turn);
     expect(
       usage.observe(frame({ type: "message_stop" }, "parent"), turn),
     ).toMatchObject([{ turnId: "original" }]);

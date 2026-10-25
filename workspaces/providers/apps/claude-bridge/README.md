@@ -136,7 +136,9 @@ The bridge emits `thread/tokenUsage/updated` observations using the
 at `message_stop` only after a non-null `message_delta.delta.stop_reason` proves
 completion. Stops without that evidence produce an `unconfirmedStop` gap.
 Assistant messages without a preceding stream produce one `noStream` gap per
-response identity; a later complete stream may still supply the final response.
+response identity. All gap paths share that identity and preserve the first
+reason, including when a later stream ends unfinished. A later complete stream
+may still supply the final response.
 The normalizer publishes cumulative model totals immediately on each SDK result
 and reports unfinished responses as gaps. Assistant message usage is provisional
 and serves only the idle-compaction cache report.
