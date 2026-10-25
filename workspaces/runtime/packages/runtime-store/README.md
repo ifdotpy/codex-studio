@@ -386,3 +386,9 @@ all historical costs.
 Journal partitioning batches receipts through current and historical agent scopes
 and the existing usage response index. Capture checks canonical response IDs before
 the existing thread-scoped legacy lookup. Neither path adds a startup index.
+
+Reconciliation uses `cost_aggregate::reconciliation_usage_window`: a single recent
+source window read through the existing agent/sequence index, before usage-kind
+filtering. Responses, gaps and cumulative observations share its examination
+budget, including one lookahead row for truncation. The response decoder is shared
+with the existing recorded-response readers; aggregate interpretation is unchanged.

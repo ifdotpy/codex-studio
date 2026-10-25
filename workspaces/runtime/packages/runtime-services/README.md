@@ -634,3 +634,38 @@ work. Reservation identity includes the workspace state directory; a concurrent
 interest joins the existing refresh. Cache ages in `usage.rs` decide whether an
 explicit interest needs work and bound failed attempts; they do not schedule a
 timer. Saved scan results continue to notify the bounded entity publisher.
+
+## Usage reconciliation
+
+[`costs::usage_reconciliation`](src/costs.rs) compares one agent's recorded
+responses with native Claude journals or Codex rollout records, including archived
+agents retained in analytics. It never imports or repairs records. The native
+reader uses the existing journal and rollout parsers, retains first journal usage,
+and reports later differing usage as a conflict. Final live or recovered database
+responses remain authoritative in session cost estimates; journals fill only
+missing or legacy responses through the store's journal partition.
+
+Costs use the existing catalog's request-level context tiers. Missing token counts
+or prices remain null. Native scan and response bounds are owned by `costs.rs`;
+truncation and incomplete evidence are visible in the diagnostic result.
+
+Reconciliation and history import share `analytics_history::open_confined_native_file`
+and the native rollout header validator. Diagnostic reads reuse bounded parsed
+evidence by the validated open file's identity and parser inputs. One request
+shares the byte, entry and response allowances in `costs.rs` across every state,
+journal and rollout file. A damaged, unreadable or truncated file contributes a
+`files` coverage report; other valid evidence stays available.
+
+Configured native roots and their ancestors may be symlinks; validation rejects
+symlinks only on traversed descendant paths. Discovery charges examined entries
+to the same diagnostic request allowance, and response parsers retain at most the
+remaining response allowance while still detecting conflicting retained replays.
+The diagnostic counts unknown recorded responses separately: absent/null categories
+remain unknown, contribute no known totals, and do not create token mismatches.
+
+Diagnostic Codex discovery validates session roots and candidate paths before
+traversal and ambiguity resolution, returning counted rejection reasons while
+continuing through valid siblings. Its opt-in validation leaves ordinary importer
+discovery unchanged. Recorded usage is classified from one indexed recent source
+window; the source-row examination bound applies before JSON-kind filtering and
+is shared by responses, gaps and cumulative observations.

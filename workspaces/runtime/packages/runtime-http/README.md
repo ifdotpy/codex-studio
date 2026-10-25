@@ -390,3 +390,25 @@ Session-cost publication coalesces committed analytics root hints and agent row
 changes per team. Targeted updates upsert the changed teams and explicitly delete
 removed teams; they do not replace other teams. Startup and unknown change scopes
 retain full reconciliation.
+
+## Usage evidence diagnostics
+
+`GET /api/diagnostics/usage-reconciliation?agent=<id>` is an explicit read of
+one agent's usage, including archived agents. Its response contract is owned by
+[`openapi.json`](openapi.json). It returns recorded and native tokens, evidence
+kind, request-level catalog costs, missing/mismatched counts, unresolved gaps,
+and the latest recorded Claude cumulative provider cost per model. Provider costs
+are informational and are never used as catalog pricing. Null tokens or costs
+remain unknown; `incomplete` and `truncated` describe evidence coverage. This route
+performs no repairs, provider requests, or background refreshes.
+
+The reconciliation `files` array reports each examined native file's kind and
+incomplete/truncated flags. Native file failures remain local to that report;
+they do not turn the comparison into an HTTP error. Native reads use shared
+importer confinement and session-header checks, cached parsing, and one request
+budget owned by [`costs.rs`](../runtime-services/src/costs.rs).
+
+`counts.unknownRecorded` reports recorded responses whose legacy categories are
+absent or null. Such rows retain null tokens/costs, are excluded from known totals,
+and are not token mismatches. `counts.rejectedEntries` and each file's `reason`
+explain native path validation refusals without aborting other evidence reads.
