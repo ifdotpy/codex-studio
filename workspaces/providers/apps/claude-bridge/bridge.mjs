@@ -3158,7 +3158,8 @@ lines.on("line", (line) => {
   }
   operation.then(
     (result) => {
-      if (message.id !== undefined) send({ id: message.id, result });
+      if (message.id !== undefined)
+        send({ id: message.id, result: result ?? null });
     },
     (error) => {
       if (message.id !== undefined)
