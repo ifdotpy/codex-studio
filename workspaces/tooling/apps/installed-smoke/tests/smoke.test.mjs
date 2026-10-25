@@ -176,3 +176,213 @@ test("only the exact marked run folder below the temporary root is removed", () 
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 });
+
+test("Linux release layout and macOS bundle layout stay distinct", async () => {
+  const { installationPaths } = await import("../smoke.mjs");
+  assert.deepEqual(installationPaths("/home/test/server/current", "linux"), {
+    workspace: "/home/test/server/current",
+    server: "/home/test/server/current/bin/studio-runtime-server",
+    renderer:
+      "/home/test/server/current/workspaces/client/apps/web/dist/studio-renderer.json",
+  });
+  assert.equal(
+    installationPaths("/Applications/Studio.app", "darwin").server,
+    "/Applications/Studio.app/Contents/Resources/workspace/bin/studio-runtime-server",
+  );
+});
+
+test("native truth keeps final Claude usage per message and excludes double-counted reasoning", async () => {
+  const { nativeResponses, sumTokens, totalTokens } =
+    await import("../usage.mjs");
+  const responses = nativeResponses(
+    [
+      {
+        type: "assistant",
+        message: {
+          id: "m",
+          model: "haiku",
+          usage: { input_tokens: 4, output_tokens: 1 },
+        },
+      },
+      {
+        type: "assistant",
+        message: {
+          id: "m",
+          model: "haiku",
+          usage: {
+            input_tokens: 4,
+            cache_read_input_tokens: 10,
+            cache_creation_input_tokens: 3,
+            output_tokens: 20,
+          },
+        },
+      },
+    ],
+    "claude",
+  );
+  assert.equal(responses.length, 1);
+  assert.equal(totalTokens(sumTokens(responses)), 37);
+  const codex = nativeResponses(
+    [
+      {
+        type: "token_usage_record",
+        payload: {
+          response_id: "r",
+          usage: {
+            input_tokens: 100,
+            cached_input_tokens: 80,
+            output_tokens: 30,
+            reasoning_output_tokens: 20,
+          },
+        },
+      },
+    ],
+    "codex",
+  );
+  assert.deepEqual(codex[0].tokens, {
+    uncachedInput: 20,
+    cacheReadInput: 80,
+    cacheWriteInput: 0,
+    output: 30,
+    reasoningOutput: 20,
+  });
+  assert.equal(totalTokens(sumTokens(codex)), 130);
+});
+
+test("truth cost uses every billed category and typed recorded usage wins", async () => {
+  const { priceResponses, recordedResponses } = await import("../usage.mjs");
+  const tokens = {
+    uncachedInput: 100,
+    cacheReadInput: 200,
+    cacheWriteInput: 300,
+    output: 400,
+    reasoningOutput: 100,
+  };
+  const pricing = {
+    catalog: {
+      providers: {
+        anthropic: {
+          models: {
+            haiku: {
+              cost: { input: 1, cache_read: 0.1, cache_write: 1.25, output: 5 },
+            },
+          },
+        },
+      },
+    },
+  };
+  assert.equal(
+    priceResponses(
+      [{ model: "haiku", responseId: "r", tokens }],
+      pricing,
+      "claude",
+    ).costUsd,
+    0.002495,
+  );
+  assert.deepEqual(
+    recordedResponses(
+      {
+        timeline: [
+          {
+            responseId: "r",
+            studioUsage: { kind: "response", tokens },
+            requestUsage: { inputTokens: 1 },
+          },
+        ],
+      },
+      "claude",
+    )[0].tokens,
+    tokens,
+  );
+});
+
+test("analytics collection uses a bounded API snapshot", async () => {
+  const { analyticsRoute } = await import("../smoke.mjs");
+  assert.equal(
+    analyticsRoute("agent-a"),
+    "/api/analytics?agent=agent-a&scope=agent&limit=500",
+  );
+});
+
+test("usage acceptance requires the tool result and Claude steer, not just final text", async () => {
+  const { scenarioEvidence } = await import("../usage.mjs");
+  const root = path.join(os.tmpdir(), "smoke-fixture");
+  const items = [
+    { role: "user", text: "This is turn 2 of a usage check." },
+    { role: "user", text: "usage-check steer", id: "steer", at: 2 },
+    { role: "assistant", text: "First part" },
+    {
+      role: "output",
+      text: JSON.stringify({
+        command: "pwd",
+        cwd: root,
+        exitCode: 0,
+        aggregatedOutput: root,
+      }),
+      turnId: "long",
+    },
+    { role: "assistant", text: "Second part" },
+    { role: "user", text: "Turn 3: reply with exactly FINAL" },
+  ];
+  assert.equal(scenarioEvidence(items, "claude", root).assistantResponses, 2);
+  assert.throws(
+    () =>
+      scenarioEvidence(
+        items.filter((item) => item.id !== "steer"),
+        "claude",
+        root,
+      ),
+    /steer/,
+  );
+  assert.throws(
+    () =>
+      scenarioEvidence(
+        items.filter((item) => item.role !== "output"),
+        "codex",
+        root,
+      ),
+    /pwd/,
+  );
+});
+
+test("base-rate price proof refuses a request crossing a published context tier", async () => {
+  const { priceResponses } = await import("../usage.mjs");
+  const pricing = {
+    catalog: {
+      providers: {
+        openai: {
+          models: {
+            small: {
+              cost: {
+                input: 1,
+                output: 2,
+                tiers: [
+                  { tier: { type: "context", size: 100 }, input: 3, output: 4 },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+  assert.throws(
+    () =>
+      priceResponses(
+        [
+          {
+            model: "small",
+            tokens: {
+              uncachedInput: 100,
+              cacheReadInput: 0,
+              cacheWriteInput: 0,
+              output: 1,
+            },
+          },
+        ],
+        pricing,
+        "codex",
+      ),
+    /base-rate/,
+  );
+});

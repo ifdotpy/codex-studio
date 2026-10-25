@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Scenario smoke of the Codex Studio app installed on this Mac.
+// Scenario smoke of the Codex Studio installed application.
 //
 // It checks the main user scenarios against the live backend: the app and
 // backend answer, a test chat gets a turn from each provider with a working
@@ -19,8 +19,36 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import {
+  compareEvidence,
+  usageTable,
+  nativeEvidence,
+  recordedResponses,
+  sumTokens,
+  priceResponses,
+  accountingEvidence,
+  scenarioEvidence,
+} from "./usage.mjs";
 
-const DEFAULT_APP = "/Applications/Codex Studio.app";
+const DEFAULT_APP =
+  process.platform === "linux"
+    ? path.join(os.homedir(), ".local/share/codex-studio/server/current")
+    : "/Applications/Codex Studio.app";
+
+export function installationPaths(app, platform = process.platform) {
+  const workspace =
+    platform === "linux" ? app : path.join(app, "Contents/Resources/workspace");
+  return {
+    workspace,
+    server: path.join(workspace, "bin/studio-runtime-server"),
+    renderer: path.join(
+      workspace,
+      platform === "linux"
+        ? "workspaces/client/apps/web/dist/studio-renderer.json"
+        : "web/dist/studio-renderer.json",
+    ),
+  };
+}
 const DEFAULT_URL = "http://127.0.0.1:4620";
 /** Prefix of the run folder below the platform temporary directory. */
 export const RUN_PREFIX = "studio-smoke-";
@@ -255,7 +283,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function until(label, ms, probe) {
+async function until(label, ms, probe, changed) {
   const deadline = Date.now() + ms;
   let last;
   while (Date.now() < deadline) {
@@ -263,7 +291,8 @@ async function until(label, ms, probe) {
     if (last?.done) {
       return last.value;
     }
-    await sleep(POLL_MS);
+    if (changed) await changed(deadline - Date.now());
+    else await sleep(POLL_MS);
   }
   throw new CheckFailed(
     `${label}: timed out after ${Math.round(ms / 1000)} s${last?.note ? ` (${last.note})` : ""}`,
@@ -288,7 +317,10 @@ function lockHolders(file) {
     return [];
   }
   try {
-    return command("/usr/sbin/lsof", ["-t", file])
+    return command(
+      process.platform === "linux" ? "/usr/bin/lsof" : "/usr/sbin/lsof",
+      ["-t", file],
+    )
       .split(/\s+/)
       .filter(Boolean)
       .map(Number);
@@ -328,8 +360,18 @@ class Backend {
     if (body !== undefined) {
       init.body = JSON.stringify(body);
     }
-    const response = await fetch(this.url + route, init);
-    const text = await response.text();
+    let response;
+    try {
+      response = await fetch(this.url + route, init);
+    } catch (error) {
+      throw new CheckFailed(`${method} ${route}: ${error}`);
+    }
+    let text;
+    try {
+      text = await response.text();
+    } catch (error) {
+      throw new CheckFailed(`${method} ${route} response: ${error}`);
+    }
     if (!response.ok) {
       throw new CheckFailed(
         `${method} ${route}: HTTP ${response.status} ${text.slice(0, 300)}`,
@@ -347,14 +389,118 @@ class Backend {
   }
 }
 
+/** SSE invalidations drive all usage-scenario reads; no interval fetches. */
+class LiveChanges {
+  constructor(backend, agent, protocol) {
+    this.controller = new AbortController();
+    this.version = 0;
+    this.consumed = 0;
+    this.waiters = new Set();
+    this.entities = new Map();
+    this.ready = this.read(backend, agent, protocol);
+  }
+
+  async read(backend, agent, protocol) {
+    const resources = [
+      { kind: "state" },
+      { kind: "transcript", agentId: agent },
+      { kind: "agentDetail", agentId: agent },
+      { kind: "session-cost", agentId: agent },
+      { kind: "monitors", agentId: agent },
+    ];
+    const response = await fetch(
+      `${backend.url}/api/sync/stream?protocol=${protocol}&resources=${encodeURIComponent(JSON.stringify(resources))}`,
+      {
+        signal: this.controller.signal,
+        headers: { accept: "text/event-stream" },
+      },
+    );
+    if (!response.ok) throw new CheckFailed(`SSE HTTP ${response.status}`);
+    this.reader = this.consume(response.body);
+  }
+
+  async consume(body) {
+    let buffer = "";
+    const decoder = new TextDecoder();
+    try {
+      for await (const chunk of body) {
+        buffer += decoder
+          .decode(chunk, { stream: true })
+          .replaceAll("\r\n", "\n");
+        let end;
+        while ((end = buffer.indexOf("\n\n")) >= 0) {
+          const frame = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          const data = frame
+            .split("\n")
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trim())
+            .join("\n");
+          if (!data || !frame.includes("event: resources")) continue;
+          const event = JSON.parse(data);
+          for (const entry of event.resourceVersions ?? []) {
+            for (const doc of entry.entityChanges?.documents ?? []) {
+              if (doc.op !== "delete")
+                this.entities.set(`${doc.collection}:${doc.id}`, doc.value);
+            }
+          }
+          this.version++;
+          for (const wake of this.waiters) wake();
+        }
+      }
+      if (!this.controller.signal.aborted)
+        throw new Error("Usage SSE closed unexpectedly");
+    } catch (error) {
+      if (!this.controller.signal.aborted) this.error = error;
+      for (const wake of this.waiters) wake();
+    }
+  }
+
+  async changed(ms) {
+    if (this.error) throw this.error;
+    if (this.version > this.consumed) {
+      this.consumed = this.version;
+      return;
+    }
+    await new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        this.waiters.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, Math.max(0, ms));
+      this.waiters.add(wake);
+    });
+    this.consumed = this.version;
+    if (this.error) throw this.error;
+  }
+
+  async close() {
+    this.controller.abort();
+    await this.reader;
+  }
+}
+
+export function analyticsRoute(id) {
+  return `/api/analytics?agent=${encodeURIComponent(id)}&scope=agent&limit=500`;
+}
+
 class Smoke {
   constructor(options) {
     this.app = options.app;
+    this.usage = options.usage;
+    this.usageEvidence = {
+      format: "studio-live-usage-v1",
+      runId: null,
+      startedAt: new Date().toISOString(),
+      providers: [],
+    };
     this.backend = new Backend(options.url);
     this.model = options.model;
     this.providers = options.providers;
     this.report = new Report();
     this.runId = randomBytes(4).toString("hex");
+    this.usageEvidence.runId = this.runId;
     this.temporaryRoot = fs.realpathSync(os.tmpdir());
     this.root = null;
     this.projectRegistered = false;
@@ -367,7 +513,7 @@ class Smoke {
   }
 
   workspace() {
-    return path.join(this.app, "Contents", "Resources", "workspace");
+    return installationPaths(this.app).workspace;
   }
 
   async preflight() {
@@ -393,6 +539,21 @@ class Smoke {
         `the backend started ${age} s ago; it may still be starting`,
       );
     }
+    if (process.platform === "linux") {
+      const servicePid = Number(
+        command("systemctl", [
+          "--user",
+          "show",
+          "codex-studio",
+          "--property=MainPID",
+          "--value",
+        ]).trim(),
+      );
+      if (servicePid !== desktop.pid)
+        throw new CheckFailed(
+          `systemd codex-studio pid ${servicePid} differs from backend ${desktop.pid}`,
+        );
+    }
     const state = desktop.stateDir;
     const holders = lockHolders(path.join(state, "runtime.lock"));
     if (holders.some((pid) => pid !== desktop.pid)) {
@@ -406,9 +567,12 @@ class Smoke {
       .filter(Boolean)
       .map(([, pid, line]) => ({ pid: Number(pid), line }));
     // A second backend of this bundle is starting, or waits for the runtime lock.
-    const server = path.join(this.workspace(), "bin", "studio-runtime-server");
+    const server = installationPaths(this.app).server;
     const others = processes.filter(
-      (row) => row.line.startsWith(server) && row.pid !== desktop.pid,
+      (row) =>
+        (row.line.startsWith(server) ||
+          row.line.startsWith(fs.realpathSync(server))) &&
+        row.pid !== desktop.pid,
     );
     if (others.length > 0) {
       throw new CheckFailed(
@@ -440,14 +604,17 @@ class Smoke {
   }
 
   async build() {
-    const server = path.join(this.workspace(), "bin", "studio-runtime-server");
-    const running = command("/bin/ps", [
-      "-p",
-      String(this.desktop.pid),
-      "-o",
-      "comm=",
-    ]).trim();
-    if (path.resolve(running) !== path.resolve(server)) {
+    const server = installationPaths(this.app).server;
+    const running =
+      process.platform === "linux"
+        ? fs.readlinkSync(`/proc/${this.desktop.pid}/exe`)
+        : command("/bin/ps", [
+            "-p",
+            String(this.desktop.pid),
+            "-o",
+            "comm=",
+          ]).trim();
+    if (fs.realpathSync(running) !== fs.realpathSync(server)) {
       throw new CheckFailed(`the backend runs ${running}, not ${server}`);
     }
     const digest = sha256File(server);
@@ -462,10 +629,7 @@ class Smoke {
   async renderer() {
     const served = await this.backend.get("/studio-renderer.json");
     const installed = JSON.parse(
-      fs.readFileSync(
-        path.join(this.workspace(), "web", "dist", "studio-renderer.json"),
-        "utf8",
-      ),
+      fs.readFileSync(installationPaths(this.app).renderer, "utf8"),
     );
     if (
       served?.build !== installed.build ||
@@ -498,6 +662,11 @@ class Smoke {
     if (chosen.size === 0) {
       throw new CheckFailed("no provider has a ready login");
     }
+    if (this.usage && (!chosen.has("codex") || !chosen.has("claude")))
+      throw new CheckFailed("--usage requires ready Claude and Codex accounts");
+    this.accountRecords = new Map(
+      ready.map((account) => [account.id, account]),
+    );
     this.accountsByProvider = chosen;
     return [...chosen]
       .map(([provider, account]) => `${provider}: ${account}`)
@@ -560,23 +729,28 @@ class Smoke {
 
   /** Wait until the chat's turn ends and an assistant item contains `token`. */
   async answered(agent, token, ms) {
-    return until(`answer ${token}`, ms, async () => {
-      const chat = await this.chatStatus(agent);
-      const items = await this.transcript(agent);
-      const answer = items.find(
-        (item) => item.role === "assistant" && item.text?.includes(token),
-      );
-      if (chat && !chat.inFlight && FAILED_STATUSES.has(chat.status)) {
-        throw new CheckFailed(`the chat is ${chat.status}`);
-      }
-      const settled =
-        chat && !chat.inFlight && TERMINAL_STATUSES.has(chat.status);
-      return {
-        done: Boolean(answer && settled),
-        value: items,
-        note: `status ${chat?.status}`,
-      };
-    });
+    return until(
+      `answer ${token}`,
+      ms,
+      async () => {
+        const chat = await this.chatStatus(agent);
+        const items = await this.transcript(agent);
+        const answer = items.find(
+          (item) => item.role === "assistant" && item.text?.includes(token),
+        );
+        if (chat && !chat.inFlight && FAILED_STATUSES.has(chat.status)) {
+          throw new CheckFailed(`the chat is ${chat.status}`);
+        }
+        const settled =
+          chat && !chat.inFlight && TERMINAL_STATUSES.has(chat.status);
+        return {
+          done: Boolean(answer && settled),
+          value: items,
+          note: `status ${chat?.status}`,
+        };
+      },
+      this.live ? (ms) => this.live.changed(ms) : undefined,
+    );
   }
 
   async turn(provider) {
@@ -586,7 +760,13 @@ class Smoke {
     const token = `SMOKE_${this.runId}_${provider.toUpperCase()}`;
     // Archive this chat even when the create response is lost.
     this.chats.push(id);
+    if (this.usage) this.saveUsage();
     const effort = lowestEffort(efforts);
+    if (this.usage) {
+      const protocol = await this.backend.get("/api/sync/protocol");
+      this.live = new LiveChanges(this.backend, id, protocol.protocolVersion);
+      await this.live.ready;
+    }
     await this.backend.post("/api/agents", {
       id,
       name: `Studio smoke ${this.runId} ${provider}`,
@@ -602,8 +782,242 @@ class Smoke {
     await this.answered(id, token, TURN_MS);
     return {
       id,
+      model,
+      account,
       detail: `${model}${effort ? ` ${effort}` : ""} answered on ${account}`,
     };
+  }
+
+  async usageScenario(chat, provider) {
+    const { id } = chat;
+    const token = `SMOKE_${this.runId}_${provider}_LONG`;
+    const inputId = randomUUID();
+    await this.backend.post("/api/messages", {
+      id: inputId,
+      room: id,
+      delivery: "next_turn",
+      text: `This is turn 2 of a usage check. Write about 150 words explaining why small deterministic tests are useful. Then use one harmless shell tool call to run pwd in ${this.root}. After that tool result write another 150 words about test cleanup. Do not read files, delegate, or create monitors. End with ${token}.`,
+    });
+    let steer = null;
+    if (provider === "claude") {
+      await until(
+        "Claude turn 2 starts",
+        TURN_MS,
+        async () => {
+          const status = await this.chatStatus(id);
+          return { done: status?.inFlight === true, note: status?.status };
+        },
+        (ms) => this.live.changed(ms),
+      );
+      steer = { id: randomUUID(), sentAt: new Date().toISOString() };
+      steer.receipt = await this.backend.post("/api/messages", {
+        id: steer.id,
+        room: id,
+        delivery: "current_turn",
+        text: "Keep going with the same requested 300-word answer and the single pwd tool call; mention reproducibility. This is the usage-check steer, not a new task.",
+      });
+    }
+    const longItems = await this.answered(id, token, TURN_MS);
+    const finalToken = `SMOKE_${this.runId}_${provider}_FINAL`;
+    await this.backend.post("/api/messages", {
+      id: randomUUID(),
+      room: id,
+      delivery: "next_turn",
+      text: `Turn 3: reply with exactly ${finalToken}. Do not use tools.`,
+    });
+    await this.answered(id, finalToken, TURN_MS);
+    return this.collectUsage(chat, provider, {
+      steer,
+      longTurn: { inputId, items: longItems },
+    });
+  }
+
+  async collectUsage(chat, provider, scenario = {}) {
+    const { id } = chat;
+    console.log(`Collecting ${provider} usage for ${id}`);
+    const analytics = await this.backend.get(analyticsRoute(id));
+    const entities = await this.ownEntities(id);
+    const stored = { agent: entities.agent, history: analytics.history ?? [] };
+    const truth = nativeEvidence(
+      this.state,
+      stored.agent,
+      this.accountRecords.get(chat.account),
+      stored.history,
+    );
+    Object.assign(
+      truth,
+      priceResponses(
+        truth.responses,
+        JSON.parse(
+          fs.readFileSync(path.join(this.state, PRICING_ARTIFACT), "utf8"),
+        ),
+        provider,
+      ),
+    );
+    const responses = recordedResponses(analytics, provider);
+    let reconciliation = null;
+    try {
+      reconciliation = await this.backend.get(
+        `/api/diagnostics/usage-reconciliation?agent=${id}`,
+      );
+    } catch (error) {
+      if (!error.message.includes("HTTP 404")) throw error;
+    }
+    const displayedCost =
+      this.live?.entities.get(`sessionCost:${id}`) ?? entities.sessionCost;
+    const bridgeProcesses = command("/bin/ps", ["-axww", "-o", "pid=,command="])
+      .split("\n")
+      .filter(
+        (line) =>
+          line.includes("/claude-bridge/bridge.mjs") &&
+          line.trim().endsWith(chat.account),
+      )
+      .map((line) => {
+        const match =
+          /^\s*(\d+)\s+.*?node\s+(\S+\/workspaces\/providers\/apps\/claude-bridge\/bridge.mjs)\s+/.exec(
+            line,
+          );
+        return match
+          ? {
+              pid: Number(match[1]),
+              bridge: match[2],
+              release: match[2].split("/workspaces/providers/")[0],
+              sha256: sha256File(match[2]),
+            }
+          : { command: line.trim() };
+      });
+    const transcript = await this.transcript(id);
+    const row = {
+      scenario: scenarioEvidence(transcript, provider, this.root),
+      provider,
+      agentId: id,
+      chatId: id,
+      threadId: stored.agent.threadId,
+      account: chat.account,
+      model: chat.model,
+      steer: scenario.steer ?? null,
+      longTurn: scenario.longTurn ?? null,
+      transcript,
+      truth,
+      recorded: { responses, tokens: sumTokens(responses) },
+      analytics,
+      budget: {
+        tokensUsed: stored.agent.tokensUsed,
+        tokenUsageAccounting:
+          stored.agent.tokenUsageAccounting ??
+          accountingEvidence(this.state, id),
+      },
+      displayedCost: displayedCost ?? null,
+      reconciliation,
+      bridgeProcesses,
+    };
+    this.usageEvidence.providers.push(row);
+    this.saveUsage();
+    if (!displayedCost)
+      throw new CheckFailed("No sessionCost sync entity was observed");
+    if (provider === "claude" && !bridgeProcesses.length)
+      throw new CheckFailed("No Claude bridge process identity found");
+    const longResponseIds = truth.responses.filter(
+      (response) =>
+        response.turnId && response.turnId === truth.responses.at(-2)?.turnId,
+    );
+    if (provider === "codex" && longResponseIds.length < 2)
+      throw new CheckFailed("Turn 2 has fewer than two native model responses");
+    return `${id}: ${truth.responses.length} native responses, ${responses.length} recorded responses`;
+  }
+
+  /** Read the same scoped entity snapshots as an open renderer chat. */
+  async ownEntities(id) {
+    const analytics = await this.backend.get(analyticsRoute(id));
+    const summary = (analytics.agents ?? []).find((row) => row.id === id);
+    if (!summary) throw new CheckFailed(`No analytics agent for ${id}`);
+    const protocol = await this.backend.get("/api/sync/protocol");
+    const stream =
+      this.live ?? new LiveChanges(this.backend, id, protocol.protocolVersion);
+    try {
+      await stream.ready;
+      return await until(
+        "scoped usage entities",
+        REQUEST_MS,
+        async () => {
+          const detail = stream.entities.get(`agentDetail:${id}`);
+          const sessionCost = stream.entities.get(`sessionCost:${id}`);
+          return {
+            done: Boolean(detail && sessionCost),
+            value: { agent: { ...summary, ...detail }, sessionCost },
+          };
+        },
+        (ms) => stream.changed(ms),
+      );
+    } finally {
+      if (stream !== this.live) await stream.close();
+    }
+  }
+
+  /** Recover evidence from an interrupted collector without submitting another model turn. */
+  async recover(file) {
+    const evidence = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (
+      evidence.format !== "studio-live-usage-v1" ||
+      !/^[a-f0-9]{8}$/.test(evidence.runId) ||
+      !Array.isArray(evidence.chatIds)
+    )
+      throw new CheckFailed("Invalid usage evidence file");
+    this.usageEvidence = evidence;
+    this.runId = evidence.runId;
+    this.chats = evidence.chatIds;
+    this.root = evidence.runFolder;
+    this.desktop = await this.backend.get("/api/desktop");
+    this.state = this.desktop.stateDir;
+    if (
+      this.desktop.backendBuild !== evidence.server.sha256 ||
+      this.state !== evidence.server.stateDir
+    )
+      throw new CheckFailed(
+        "Recovery requires the same backend build and state directory",
+      );
+    const accounts = await this.backend.get("/api/accounts");
+    this.accountRecords = new Map(
+      accounts.accounts.map((account) => [account.id, account]),
+    );
+    for (const id of this.chats) {
+      const { agent } = await this.ownEntities(id);
+      if (!agent.name?.startsWith(`Studio smoke ${this.runId} `))
+        throw new CheckFailed(`Chat ${id} is not owned by run ${this.runId}`);
+      if (this.usageEvidence.providers.some((row) => row.agentId === id))
+        continue;
+      await this.collectUsage(
+        { id, account: agent.accountKey, model: agent.model },
+        agent.provider,
+      );
+    }
+    this.usageEvidence.recoveredAt = new Date().toISOString();
+    this.usageEvidence.checks = evidence.checks;
+    this.saveUsage();
+    console.table(usageTable(this.usageEvidence, "OLD"));
+    console.log(`Usage evidence: ${this.evidencePath}`);
+  }
+
+  saveUsage() {
+    const directory = path.join(os.homedir(), ".cache/codex-studio/live-usage");
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    this.evidencePath = path.join(directory, `${this.runId}.json`);
+    this.usageEvidence.server = {
+      pid: this.desktop.pid,
+      stateDir: this.state,
+      binary: fs.realpathSync(installationPaths(this.app).server),
+      sha256: this.desktop.backendBuild,
+      release: fs.realpathSync(this.workspace()),
+    };
+    if (this.report.rows.length) this.usageEvidence.checks = this.report.rows;
+    this.usageEvidence.chatIds = this.chats;
+    this.usageEvidence.runFolder = this.root;
+    this.usageEvidence.updatedAt = new Date().toISOString();
+    fs.writeFileSync(
+      this.evidencePath,
+      JSON.stringify(this.usageEvidence, null, 2) + "\n",
+      { mode: 0o600 },
+    );
   }
 
   async messageOnce(agent) {
@@ -646,6 +1060,10 @@ class Smoke {
 
   /** Entity documents of `collection` changed after `after` whose value matches `accept`. */
   async changedEntities(after, collection, accept) {
+    if (collection === "monitor" && this.live)
+      return [...this.live.entities]
+        .filter(([key, value]) => key.startsWith("monitor:") && accept(value))
+        .map(([, value]) => value);
     const found = [];
     let cursor = after;
     for (;;) {
@@ -654,12 +1072,19 @@ class Smoke {
       );
       for (const document of page?.documents ?? []) {
         if (
-          !document.id?.startsWith(`entity:${collection}:`) ||
-          document._deleted
+          !(
+            document.collection === collection ||
+            document.id?.startsWith(`entity:${collection}:`)
+          ) ||
+          document._deleted ||
+          document.op === "delete"
         ) {
           continue;
         }
-        const payload = JSON.parse(document.payload);
+        const payload =
+          document.value !== undefined
+            ? { value: document.value }
+            : JSON.parse(document.payload);
         if (accept(payload.value)) {
           found.push(payload.value);
         }
@@ -932,8 +1357,10 @@ class Smoke {
     if (!(await report.run("preflight", () => this.preflight()))) {
       return report;
     }
-    await report.run("installed build", () => this.build());
-    await report.run("served renderer", () => this.renderer());
+    if (!(await report.run("installed build", () => this.build())))
+      return report;
+    if (!(await report.run("served renderer", () => this.renderer())))
+      return report;
     if (!(await report.run("ready logins", () => this.accounts()))) {
       return report;
     }
@@ -951,13 +1378,19 @@ class Smoke {
     process.once("SIGTERM", stop);
     try {
       this.makeRoot();
+      if (this.usage) this.saveUsage();
       let first = null;
       for (const provider of this.accountsByProvider.keys()) {
         let chat = null;
         const passed = await report.run(`${provider} turn`, async () => {
           chat = await this.turn(provider);
+          if (this.usage) return await this.usageScenario(chat, provider);
           return chat.detail;
         });
+        if (this.live) {
+          await this.live.close();
+          this.live = null;
+        }
         if (passed && !first) {
           first = chat.id;
         }
@@ -965,7 +1398,14 @@ class Smoke {
           break;
         }
       }
-      if (first && !this.interrupted) {
+      if (first && !this.interrupted && !this.usage) {
+        const protocol = await this.backend.get("/api/sync/protocol");
+        this.live = new LiveChanges(
+          this.backend,
+          first,
+          protocol.protocolVersion,
+        );
+        await this.live.ready;
         await report.run("message once", () => this.messageOnce(first));
         await report.run("monitor exit", () => this.monitor(first));
         await report.run("sign-in card", () => this.signInCard(first));
@@ -978,6 +1418,15 @@ class Smoke {
     } finally {
       await report.run("cleanup", () => this.cleanup());
       await report.run("owner chats", () => this.ownerChatsUnchanged());
+      if (this.live) {
+        await this.live.close();
+        this.live = null;
+      }
+      if (this.usage) {
+        this.saveUsage();
+        console.table(usageTable(this.usageEvidence, "RUN"));
+        console.log(`Usage evidence: ${this.evidencePath}`);
+      }
     }
     return report;
   }
@@ -992,6 +1441,9 @@ function options(argv) {
       provider: { type: "string", multiple: true },
       model: { type: "string", multiple: true },
       "no-model": { type: "boolean", default: false },
+      usage: { type: "boolean", default: false },
+      collect: { type: "string" },
+      compare: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
   });
@@ -1006,20 +1458,41 @@ function options(argv) {
   return { ...values, model, providers: values.provider };
 }
 
-const usage = `Usage: just smoke-installed [--provider codex|claude]... [--model provider=id]... [--no-model] [--app path] [--url url]
-Checks the installed app on this Mac with its own test chats; see docs/testing.md, "Installed scenario smoke".
+const usage = `Usage: just smoke-installed [--provider codex|claude]... [--model provider=id]... [--no-model] [--usage] [--app path] [--url url]
+       just smoke-installed --compare <old.json> <new.json>
+       just smoke-installed --collect <run.json>
+Checks the installed application on Linux or macOS with its own test chats; see docs/testing.md, "Installed scenario smoke".
 `;
 
 async function cli() {
+  if (process.argv[2] === "--compare") {
+    const files = process.argv.slice(3);
+    if (files.length !== 2)
+      throw new CheckFailed("--compare requires <old.json> <new.json>");
+    console.table(
+      compareEvidence(
+        ...files.map((file) => JSON.parse(fs.readFileSync(file, "utf8"))),
+      ),
+    );
+    return 0;
+  }
   const parsed = options(process.argv.slice(2));
   if (parsed.help) {
     process.stdout.write(usage);
     return 0;
   }
+  if (parsed.usage && (parsed.providers || Object.keys(parsed.model).length))
+    throw new CheckFailed(
+      "--usage always uses both providers and their cheapest offered models",
+    );
   const smoke = new Smoke(parsed);
   process.stdout.write(
     `Studio scenario smoke ${smoke.runId}: ${parsed.app} at ${parsed.url}\n`,
   );
+  if (parsed.collect) {
+    await smoke.recover(parsed.collect);
+    return 0;
+  }
   const report = await smoke.main(parsed["no-model"]);
   report.print();
   return report.failed().length === 0 ? 0 : 1;

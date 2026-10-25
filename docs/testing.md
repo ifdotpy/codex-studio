@@ -198,7 +198,9 @@ installed-build evidence.
 ## Installed scenario smoke
 
 `just smoke-installed` checks the main user scenarios on the app that is installed
-on this Mac, against its live backend. Run it after an install. The
+on this host, against its live backend. On Linux it checks the `codex-studio`
+user service and the delivered release under
+`~/.local/share/codex-studio/server/current`; macOS keeps the application bundle layout. Run it after an install. The
 [script](../workspaces/tooling/apps/installed-smoke/smoke.mjs) owns the steps and
 their time limits:
 
@@ -225,6 +227,31 @@ The smoke sends small real model requests and never changes the owner's chats.
 `--no-model` runs only the read-only steps; `--provider` and `--model
 provider=id` narrow the scenarios. A pending card raises an approval alert in a
 build without the 10 s alert grace.
+
+For usage accounting acceptance, announce and run `just smoke-installed --usage`.
+It uses both providers' cheapest offered models, with three turns each: short,
+about 300 words with a harmless `pwd` tool call, then short. Claude also receives a
+steer during the second turn. Usage waits follow SSE invalidations. The evidence
+contains final native Claude journal usage per message id, Codex rollout response
+usage, recorded response rows, budget tokens and accounting, the `sessionCost`
+entities sent to the renderer, independent base-rate price arithmetic from the
+installed pricing artifact, and server/Claude bridge binary and release identity.
+The optional usage reconciliation endpoint is included when available; only HTTP
+404 skips it. Python's standard-library SQLite reader opens the live database
+strictly read-only for the accounting label absent from the installed API.
+
+Evidence is written with private permissions below
+`~/.cache/codex-studio/live-usage/`. The run archives its chats and removes only its
+own project and marked folder; archived records remain available for comparison.
+After installing the new build, run the same usage scenario and compare with
+`just smoke-installed --compare <old.json> <new.json>`. The table reports token
+categories, recorded/truth ratio, budget, native-evidence price, displayed price,
+and reconciliation costs when present. Differences are evidence, not an automatic
+pass: inspect response identities and category differences as well as the totals.
+If collection fails after the model turns, `--collect <run.json>` recovers the
+same run's evidence without another paid request or mutation of its chats; it
+requires the original server build and state directory. It preserves the failed
+checks in the artifact rather than turning the original run into a passing run.
 
 ## Add or move a test
 
