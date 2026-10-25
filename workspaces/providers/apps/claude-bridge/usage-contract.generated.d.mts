@@ -102,6 +102,11 @@ export interface components {
       cacheWriteInput: number;
       /**
        * Format: uint64
+       * @description Subset of cache writes with a one-hour lifetime; tokens, absent for legacy pricing.
+       */
+      cacheWriteInput1h?: number | null;
+      /**
+       * Format: uint64
        * @description All generated output, including reasoning; tokens.
        */
       output: number;

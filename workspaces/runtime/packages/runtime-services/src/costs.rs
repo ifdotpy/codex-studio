@@ -178,6 +178,7 @@ fn session_cost_inner(
             input_tokens: tokens.input_tokens,
             cached_input_tokens: tokens.cached_input_tokens,
             cache_write_input_tokens: tokens.cache_write_input_tokens,
+            cache_write_input_1h_tokens: tokens.cache_write_input_1h_tokens,
             output_tokens: tokens.output_tokens,
         };
         let context = tokens.input_tokens.map(|input| {
@@ -357,10 +358,12 @@ pub fn usage_reconciliation(
     let mut unknown_recorded = 0;
     let mut known_recorded = 0;
     let mut recorded_token_total = Some(studio_runtime_schema::usage::UsageTokens {
+        cache_write_input_1h: Some(0),
         reasoning_output: Some(0),
         ..Default::default()
     });
     let mut evidence_token_total = Some(studio_runtime_schema::usage::UsageTokens {
+        cache_write_input_1h: Some(0),
         reasoning_output: Some(0),
         ..Default::default()
     });
@@ -427,6 +430,10 @@ fn add_tokens(
         cache_write_input: total
             .cache_write_input
             .checked_add(tokens.cache_write_input)?,
+        cache_write_input_1h: total
+            .cache_write_input_1h
+            .zip(tokens.cache_write_input_1h)
+            .and_then(|(a, b)| a.checked_add(b)),
         output: total.output.checked_add(tokens.output)?,
         reasoning_output: total
             .reasoning_output
@@ -444,6 +451,7 @@ fn same_billable_tokens(
             left.uncached_input == right.uncached_input
                 && left.cache_read_input == right.cache_read_input
                 && left.cache_write_input == right.cache_write_input
+                && left.cache_write_input_1h.unwrap_or(0) == right.cache_write_input_1h.unwrap_or(0)
                 && left.output == right.output
                 && left
                     .reasoning_output
@@ -479,6 +487,9 @@ fn log_tokens(tokens: CostTokens) -> Option<studio_runtime_schema::usage::UsageT
         uncached_input: count(tokens.input_tokens)?,
         cache_read_input: count(tokens.cached_input_tokens)?,
         cache_write_input: count(tokens.cache_write_input_tokens)?,
+        cache_write_input_1h: tokens
+            .cache_write_input_1h_tokens
+            .and_then(|n| count(Some(n))),
         output: count(tokens.output_tokens)?,
         reasoning_output: None,
     })
@@ -495,6 +506,7 @@ fn price_response(
         input_tokens: Some(tokens.uncached_input as f64),
         cached_input_tokens: Some(tokens.cache_read_input as f64),
         cache_write_input_tokens: Some(tokens.cache_write_input as f64),
+        cache_write_input_1h_tokens: tokens.cache_write_input_1h.map(|n| n as f64),
         output_tokens: Some(tokens.output as f64),
     };
     let context = tokens
@@ -1283,7 +1295,13 @@ struct LogTokens {
     input_tokens: Option<f64>,
     cache_read_input_tokens: Option<f64>,
     cache_creation_input_tokens: Option<f64>,
+    cache_creation: Option<LogCacheCreation>,
     output_tokens: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct LogCacheCreation {
+    ephemeral_1h_input_tokens: Option<f64>,
 }
 
 /// Session log lines that did not decode and were skipped, since process start. A line
@@ -1385,6 +1403,13 @@ fn parse_claude_log_reader_limited(
             input_tokens,
             cached_input_tokens: cached_tokens,
             cache_write_input_tokens: write_tokens,
+            cache_write_input_1h_tokens: write_tokens
+                .zip(count(
+                    usage
+                        .cache_creation
+                        .and_then(|split| split.ephemeral_1h_input_tokens),
+                ))
+                .map(|(write, hour)| hour.min(write)),
             output_tokens: usage.output_tokens,
         };
         if let Some(&index) = seen.get(&id) {
@@ -1470,6 +1495,67 @@ mod tests {
         SKIPPED_LINE_COUNTER
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[tokio::test]
+    async fn usage_reconciliation_cache_write_1h_saved_run_session_cost() {
+        let temp = tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        let runs: Value = serde_json::from_str(include_str!(
+            "../../runtime-schema/src/fixtures/claude-cache-write-1h.json"
+        ))
+        .expect("native counts");
+        fs::create_dir_all(temp.path().join("model-pricing")).expect("pricing directory");
+        fs::write(temp.path().join("model-pricing/models-dev-v1.json"),json!({"version":1,"catalog":{"providers":{
+            "openai":{"models":{"gpt":{"cost":{"input":1,"output":1}}}},
+            "anthropic":{"models":{"claude-haiku-5-5":{"cost":{"input":0.1,"output":0.5,"cache_read":0.01,"cache_write":0.125}}}}
+        }}}).to_string()).expect("pricing");
+        let run = runs[0].clone();
+        store.analytics_transaction::<_,StoreError>(move |tx,_| {
+            AnalyticsCaptureRepository::write(tx,CaptureTable::Agents,&json!({"id":"agent","rootId":"agent","accountKey":"claude","provider":"claude"}))?;
+            for response in run["responses"].as_array().expect("responses") {
+                let raw = &response["rawUsage"];
+                AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&json!({"id":response["responseId"],"agentId":"agent","rootId":"agent","at":1,"accountKey":"claude","last":{},"total":{},
+                    "studioUsage":{"kind":"response","responseId":response["responseId"],"model":response["model"],"evidence":"live","tokens":{
+                        "uncachedInput":raw["input_tokens"],"cacheReadInput":raw["cache_read_input_tokens"],"cacheWriteInput":raw["cache_creation_input_tokens"],"cacheWriteInput1h":raw["cache_creation"]["ephemeral_1h_input_tokens"],"output":raw["output_tokens"]}}}))?;
+            }
+            Ok(())
+        }).await.expect("persist native counts");
+        let cost = session_cost_with_account_profiles(&store, "agent", &Default::default())
+            .expect("session cost");
+        assert_eq!(cost["pricedSamples"], 4);
+        assert!((cost["totalUSD"].as_f64().expect("price") - 0.00515774).abs() < 1e-12);
+        let evidence = super::usage_reconciliation(&store, "agent", &Default::default())
+            .expect("reconciliation");
+        assert!(
+            (evidence["totals"]["recordedCostUsd"]
+                .as_f64()
+                .expect("price")
+                - 0.00515774)
+                .abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn usage_reconciliation_cache_write_1h_journal_and_price() {
+        let raw = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z","message":{"id":"r","model":"claude-test","usage":{"input_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":10,"cache_creation":{"ephemeral_1h_input_tokens":99},"output_tokens":4}}});
+        let (rows, incomplete) =
+            super::parse_claude_log_reader(std::io::Cursor::new(raw.to_string()));
+        assert!(!incomplete);
+        let tokens = super::log_tokens(rows[0].tokens).expect("journal tokens");
+        assert_eq!(
+            serde_json::to_value(&tokens).expect("tokens")["cacheWriteInput1h"],
+            10
+        );
+        let catalog = crate::pricing::PricingCatalog::from_value(&json!({"providers":{
+            "openai":{"models":{"gpt":{"cost":{"input":1,"output":1}}}},
+            "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2,"cache_read":0.5,"cache_write":1.25}}}}
+        }})).expect("catalog");
+        assert_eq!(
+            super::price_response(Some(&catalog), Some("claude-test"), Some(&tokens)),
+            Some(31.5 / 1_000_000.0)
+        );
     }
 
     fn reconciliation_journal_fixture(
@@ -1963,6 +2049,7 @@ mod tests {
             uncached_input: 70,
             cache_read_input: 20,
             cache_write_input: 10,
+            cache_write_input_1h: None,
             output: 5,
             reasoning_output: Some(2),
         };
@@ -2158,6 +2245,7 @@ mod tests {
                 input_tokens: Some(100.0),
                 cached_input_tokens: Some(20.0),
                 cache_write_input_tokens: Some(5.0),
+                cache_write_input_1h_tokens: Some(0.0),
                 output_tokens: Some(10.0),
             }
         );

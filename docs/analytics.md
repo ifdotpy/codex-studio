@@ -94,6 +94,15 @@ removes the retired Python JSON cost projection and usage triggers in the same
 transaction that prepares the Rust aggregate. Usage records are preserved;
 reopening an updated database leaves its schema unchanged.
 
+Claude response usage retains the one-hour subset of prompt-cache writes in
+[`UsageTokens`](../workspaces/runtime/packages/runtime-schema/src/usage.rs).
+Session estimates, reconciliation, and account journal scans price that subset
+using the selected tier's input rate and the
+[pricing multiplier owner](../workspaces/runtime/packages/runtime-services/src/pricing.rs).
+Remaining writes use the catalog's cache-write rate. Rows without the split keep
+their previous price. The aggregate upgrade appends nullable columns to its facts
+and groups without backfilling usage or rebuilding existing groups.
+
 ## Checks
 
 The former Python backend command has been removed. See [testing](testing.md)

@@ -74,14 +74,26 @@ mod tests {
 
     #[tokio::test]
     async fn usage_reconciliation_http_reads_archived_legacy_rows_and_native_conflicts() {
+        reconciliation_fixture(false).await;
+    }
+
+    #[tokio::test]
+    async fn usage_reconciliation_http_cache_write_1h_native_evidence() {
+        reconciliation_fixture(true).await;
+    }
+
+    async fn reconciliation_fixture(one_hour: bool) {
         let root = tempfile::tempdir().expect("temporary state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let profile = root.path().join("profile");
         let project = profile.join("projects/project");
         tokio::fs::create_dir_all(&project).await.expect("project");
-        let journal = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z",
+        let mut journal = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z",
             "message":{"id":"response-1","model":"claude-sonnet-4-5",
                 "usage":{"input_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":5,"output_tokens":10}}});
+        if one_hour {
+            journal["message"]["usage"]["cache_creation"] = json!({"ephemeral_1h_input_tokens":5});
+        }
         let mut conflict = journal.clone();
         conflict["message"]["usage"]["output_tokens"] = json!(99);
         let mut missing = journal.clone();
@@ -215,9 +227,15 @@ mod tests {
             assert_eq!(row["evidenceTokens"]["output"], 10);
             assert_eq!(row["journalConflict"], true);
             assert_eq!(row["recordedCostUsd"], json!(0.000135));
-            assert_eq!(row["evidenceCostUsd"], json!(0.000135));
+            assert_eq!(
+                row["evidenceCostUsd"],
+                json!(if one_hour { 0.00014 } else { 0.000135 })
+            );
             assert_eq!(value["totals"]["recordedCostUsd"], json!(0.00027));
-            assert_eq!(value["totals"]["evidenceCostUsd"], json!(0.00054));
+            assert_eq!(
+                value["totals"]["evidenceCostUsd"],
+                json!(if one_hour { 0.00056 } else { 0.00054 })
+            );
         }
         // A malformed or oversized native state file is a file-local coverage
         // failure; the direct journal remains useful and the route stays 200.

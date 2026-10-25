@@ -18,6 +18,10 @@ export function responseTokens(usage) {
     uncachedInput: usage.input_tokens,
     cacheReadInput: usage.cache_read_input_tokens ?? 0,
     cacheWriteInput: usage.cache_creation_input_tokens ?? 0,
+    cacheWriteInput1h: Math.min(
+      usage.cache_creation?.ephemeral_1h_input_tokens ?? 0,
+      usage.cache_creation_input_tokens ?? 0,
+    ),
     output: usage.output_tokens,
     ...(usage.output_tokens_details == null
       ? {}

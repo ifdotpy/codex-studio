@@ -68,6 +68,15 @@
           "minimum": 0,
           "type": "integer"
         },
+        "cacheWriteInput1h": {
+          "description": "Subset of cache writes with a one-hour lifetime; tokens, absent for legacy pricing.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "output": {
           "description": "All generated output, including reasoning; tokens.",
           "format": "uint64",

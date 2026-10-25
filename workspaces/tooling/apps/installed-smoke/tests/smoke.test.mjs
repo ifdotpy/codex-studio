@@ -1548,3 +1548,140 @@ test("comparison gaps make totals incomplete and prices use one explicit rate ba
     assert.equal(row["truth USD"], null);
   }
 });
+
+test("one-hour truth prices mixed lifetimes and keeps legacy prices", async () => {
+  const { nativeTokens, priceResponses } = await import("../usage.mjs");
+  const catalog = {
+    catalog: {
+      providers: {
+        anthropic: {
+          models: {
+            "claude-test": {
+              cost: { input: 1, output: 2, cache_read: 0.5, cache_write: 1.25 },
+            },
+          },
+        },
+      },
+    },
+  };
+  const raw = {
+    input_tokens: 2,
+    cache_read_input_tokens: 3,
+    cache_creation_input_tokens: 10,
+    cache_creation: { ephemeral_1h_input_tokens: 6 },
+    output_tokens: 4,
+  };
+  const tokens = nativeTokens(raw, "claude");
+  assert.equal(tokens.cacheWriteInput1h, 6);
+  assert.equal(
+    priceResponses(
+      [{ responseId: "r", model: "claude-test", tokens }],
+      catalog,
+      "claude",
+    ).costUsd,
+    28.5 / 1e6,
+  );
+  delete tokens.cacheWriteInput1h;
+  assert.equal(
+    priceResponses(
+      [{ responseId: "r", model: "claude-test", tokens }],
+      catalog,
+      "claude",
+    ).costUsd,
+    24 / 1e6,
+  );
+});
+
+test("one-hour multiplier consumes the named Rust pricing owner", async () => {
+  const { CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER } =
+    await import("../usage.mjs");
+  const rust = fs.readFileSync(
+    new URL(
+      "../../../../runtime/packages/runtime-services/src/pricing.rs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const owner = rust.match(
+    /pub const CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER: f64 = ([0-9.]+);/,
+  );
+  assert.ok(owner, "runtime-services pricing owns the ratio");
+  assert.equal(CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER, Number(owner[1]));
+});
+
+test("saved Claude runs reprice native one-hour truth and display the CLI estimate", async () => {
+  const { nativeTokens, priceResponses, compareEvidence } =
+    await import("../usage.mjs");
+  const runs = JSON.parse(
+    fs.readFileSync(
+      new URL(
+        "../../../../runtime/packages/runtime-schema/src/fixtures/claude-cache-write-1h.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  for (const run of runs) {
+    const rates = {
+      input: 0.1,
+      output: 0.5,
+      cache_read: 0.01,
+      cache_write: 0.125,
+    };
+    const catalog = {
+      catalog: {
+        providers: {
+          anthropic: { models: { "claude-haiku-5-5": { cost: rates } } },
+        },
+      },
+    };
+    const responses = run.responses.map((response) => ({
+      ...response,
+      tokens: nativeTokens(response.rawUsage, "claude"),
+    }));
+    assert.ok(
+      Math.abs(
+        priceResponses(responses, catalog, "claude").costUsd -
+          run.expectedCostUsd,
+      ) < 1e-12,
+    );
+    const snapshot = {
+      providers: [
+        {
+          provider: "claude",
+          agentId: "fixture",
+          truth: {
+            responses: run.responses.map((response) => ({
+              ...response,
+              tokens: {
+                ...nativeTokens(response.rawUsage, "claude"),
+                cacheWriteInput1h: undefined,
+              },
+            })),
+            tokens: {},
+            prices: run.responses.map((response) => ({
+              responseId: response.responseId,
+              rates,
+            })),
+          },
+          recorded: { tokens: {} },
+          budget: {},
+          reconciliation: {
+            providerCosts: [
+              {
+                model: "claude-haiku-5-5",
+                providerCostUsd: run.expectedCostUsd,
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const [row] = compareEvidence(snapshot, snapshot);
+    assert.ok(
+      Math.abs(row["truth USD"] - run.expectedCostUsd) < 1e-12,
+      "comparison reparses saved rawUsage",
+    );
+    assert.equal(row["CLI provider USD"], run.expectedCostUsd);
+  }
+});
