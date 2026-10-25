@@ -1363,6 +1363,85 @@ describe("entity pull reset wiring", () => {
       });
     },
   );
+  it("stops quietly when delivery revokes an empty state delta during its base read", async () => {
+    const workspaceId = "8".repeat(32);
+    const rows = new Map<string, Record<string, unknown>>([
+      [
+        "state:entities:checkpoint",
+        { id: "state:entities:checkpoint", seq: 5 },
+      ],
+      [
+        "state:entities:ready",
+        { id: "state:entities:ready", payload: "ready" },
+      ],
+      [
+        "state:entities:complete",
+        { id: "state:entities:complete", payload: "complete" },
+      ],
+    ]);
+    const { ResourceEntityDelivery } = await import("./resourceEntityDelivery");
+    let delivery: InstanceType<typeof ResourceEntityDelivery>;
+    const storageInstance = {
+      findDocumentsById: vi.fn(async (ids: string[]) => {
+        // A subscription change supersedes the frame during its base read.
+        if (ids.includes("state:entities:checkpoint")) delivery.invalidate();
+        return ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : []));
+      }),
+      bulkWrite: vi.fn(async () => ({ error: [] })),
+    };
+    const projections = {
+      database: { name: "revoked-projection" },
+      storageInstance,
+      $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
+    };
+    mocks.createRxDatabase
+      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+      .mockResolvedValueOnce({
+        addCollections: vi.fn(async () => ({ projections })),
+      });
+    mocks.syncGet.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (_key: string, callback: () => Promise<unknown>) => callback(),
+      },
+    });
+    const client = await import("./client");
+    let persisted: Promise<void> | undefined;
+    const dispatch = vi.fn();
+    delivery = new ResourceEntityDelivery((frame, isCurrent) => {
+      persisted = client.persistResourceEntityChanges(frame, isCurrent);
+      return persisted;
+    }, dispatch);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const event = {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId,
+      epoch: "epoch",
+      revision: 1,
+      reason: "reconnect",
+      resources: [{ kind: "state" }],
+      resourceVersions: [
+        {
+          resource: { kind: "state" },
+          revision: 5,
+          cursor: { workspaceId, seq: 5 },
+          replyKind: "delta",
+        },
+      ],
+    } as ResourceChangeEvent;
+    delivery.receive(event);
+    await expect(persisted).resolves.toBeUndefined();
+    await Promise.resolve();
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(storageInstance.bulkWrite).not.toHaveBeenCalled();
+    // The revoked frame reaches listeners only as a cursor-free hint.
+    expect(dispatch).toHaveBeenCalledWith(event);
+    expect(event.resourceVersions[0]?.cursor).toBeUndefined();
+  });
   it("persists terminal records and cursor atomically, replays without duplicate output, and leaves the old cursor on failure", async () => {
     const workspaceId = "8".repeat(32);
     const rows = new Map<string, Record<string, any>>();
