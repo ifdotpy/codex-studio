@@ -740,9 +740,7 @@
         "path": "/runtime_agents/0/record/disconnectRecovery/supervisor",
         "python": null,
         "pythonPresent": false,
-        "rust": {
-          "generation": null
-        },
+        "rust": null,
         "rustPresent": true,
         "deviation": "durable_reconciliation_hold"
       },
@@ -758,9 +756,7 @@
         "path": "/runtime_agents/0/record/restartRecovery/supervisor",
         "python": null,
         "pythonPresent": false,
-        "rust": {
-          "generation": null
-        },
+        "rust": null,
         "rustPresent": true,
         "deviation": "durable_reconciliation_hold"
       },
@@ -797,9 +793,7 @@
         "path": "/runtime_execution_runs/0/record/disconnectRecovery/supervisor",
         "python": null,
         "pythonPresent": false,
-        "rust": {
-          "generation": null
-        },
+        "rust": null,
         "rustPresent": true,
         "deviation": "durable_reconciliation_hold"
       },
@@ -815,9 +809,7 @@
         "path": "/runtime_execution_runs/0/record/restartRecovery/supervisor",
         "python": null,
         "pythonPresent": false,
-        "rust": {
-          "generation": null
-        },
+        "rust": null,
         "rustPresent": true,
         "deviation": "durable_reconciliation_hold"
       }
