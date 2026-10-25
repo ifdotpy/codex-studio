@@ -28,19 +28,26 @@ export function createUiPreferenceBridge(
   let ready = false;
   let sending = false;
   let sendAgain = false;
+  let retryGeneration = 0;
   const confirmed: Partial<Record<PreferenceScope, string>> = {};
 
-  const send = async () => {
+  const send = async (explicitRetry = false) => {
+    if (explicitRetry) retryGeneration++;
     if (!active || !ready) return;
     if (sending) {
       sendAgain = true;
       return;
     }
     sending = true;
-    // A failed scope waits for a later explicit edit, resume, or retry event.
-    // Successful acknowledgements may request another drain, but must not spin
-    // on a persistent rejection in the other scope.
-    const failedScopes = new Set<PreferenceScope>();
+    // Acknowledgements alone cannot repeat a rejected payload. New field
+    // versions or explicit retry intent can advance the same active drain.
+    const failedAttempts = new Map<
+      PreferenceScope,
+      {
+        serialized: string;
+        retryGeneration: number;
+      }
+    >();
     try {
       do {
         sendAgain = false;
@@ -51,7 +58,13 @@ export function createUiPreferenceBridge(
             setPreferenceWriteStatus(storage, scope, { state: "saved" });
             continue;
           }
-          if (failedScopes.has(scope)) continue;
+          const attemptGeneration = retryGeneration;
+          const failed = failedAttempts.get(scope);
+          if (
+            failed?.serialized === serialized &&
+            failed.retryGeneration === attemptGeneration
+          )
+            continue;
           try {
             setPreferenceWriteStatus(storage, scope, { state: "saving" });
             const body = { scope, fields };
@@ -85,7 +98,10 @@ export function createUiPreferenceBridge(
             if (pending) sendAgain = true;
           } catch (error) {
             if (!active) return;
-            failedScopes.add(scope);
+            failedAttempts.set(scope, {
+              serialized,
+              retryGeneration: attemptGeneration,
+            });
             setPreferenceWriteStatus(storage, scope, {
               state: "error",
               error:
@@ -116,7 +132,7 @@ export function createUiPreferenceBridge(
 
   return {
     receiveProjection,
-    retryPendingWrites: () => void send(),
+    retryPendingWrites: () => void send(true),
     start() {
       if (active) return () => {};
       active = true;
@@ -126,9 +142,9 @@ export function createUiPreferenceBridge(
         if (Object.keys(readPreferenceFields(scope, storage)).length)
           setPreferenceWriteStatus(storage, scope, { state: "saving" });
       }
-      const stopRetry = registerPreferenceRetry(storage, () => void send());
+      const stopRetry = registerPreferenceRetry(storage, () => void send(true));
       const stopWrites = watchPreferenceWrites(() => void send());
-      const stopResume = onResume(() => void send());
+      const stopResume = onResume(() => void send(true));
       return () => {
         active = false;
         stopResume();

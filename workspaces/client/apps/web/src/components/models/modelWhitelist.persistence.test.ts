@@ -220,3 +220,71 @@ it("saves the server whitelist when user preferences are rejected and retries on
     stop();
   }
 });
+
+it.each(["edit", "retry"] as const)(
+  "sends a whitelist %s queued after failure while the other scope is in flight",
+  async (action) => {
+    const storage = preferenceStorageForServer("local");
+    let rejectServer!: (error: Error) => void;
+    let finishUser!: () => void;
+    const post = vi
+      .fn<typeof syncPost<"/api/sync/preferences">>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectServer = reject;
+          }),
+      )
+      .mockImplementationOnce(
+        (_path, body) =>
+          new Promise((resolve) => {
+            finishUser = () => resolve({ fields: body.fields ?? {} });
+          }),
+      )
+      .mockImplementation(async (_path, body) => ({
+        fields: body.fields ?? {},
+      }));
+    const bridge = createUiPreferenceBridge(storage, post);
+    const stop = bridge.start();
+    try {
+      bridge.receiveProjection({});
+      writeModelWhitelist(["codex:astra"], storage);
+      await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+      expect(post.mock.calls[0][1].scope).toBe("server");
+      receivePreferenceFields(
+        "user",
+        {
+          '["codex-studio-preferences-v1","theme"]': {
+            value: "dark",
+            timestamp: 1,
+            writer: "other-client",
+          },
+        },
+        storage,
+      );
+      rejectServer(new Error("Server preference rejected"));
+      await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+      expect(post.mock.calls[1][1].scope).toBe("user");
+      if (action === "edit") writeModelWhitelist(["claude:opus"], storage);
+      else retryPreferenceWrites(storage);
+      finishUser();
+      await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(3));
+      await expectState(storage, "saved");
+      expect(post.mock.calls.map((call) => call[1].scope)).toEqual([
+        "server",
+        "user",
+        "server",
+      ]);
+      if (action === "retry")
+        expect(post.mock.calls[2]).toEqual(post.mock.calls[0]);
+      else {
+        expect(post.mock.calls[2][2]?.requestId).not.toBe(
+          post.mock.calls[0][2]?.requestId,
+        );
+        expect(readModelWhitelist(storage)).toEqual(["claude:opus"]);
+      }
+    } finally {
+      stop();
+    }
+  },
+);

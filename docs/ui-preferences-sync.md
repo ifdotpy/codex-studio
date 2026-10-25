@@ -187,9 +187,10 @@ reconnect, reload, or restart; no preference polling is added. Pending edits sho
 saving status; failed HTTP writes show an unsaved error and a retry control.
 A failed user-scope write does not block server-scope writes, or vice versa.
 Each failed scope keeps its own error and pending field versions. A drain attempts
-a failed scope once; successful writes in the other scope do not trigger an
-unbounded retry loop. A later explicit retry, edit, reconnect, or resume may retry
-the failed scope with the existing identity and versions.
+each rejected payload once per explicit retry generation; successful writes in
+the other scope do not trigger an unbounded retry loop. A new field value or an
+explicit retry, reconnect, or resume advances that guard even during an active
+drain. An unchanged retry keeps the existing identity and field versions.
 Reconnect/resume retries the existing outbox. Rapid toggles read the latest cache
 before changing one selection, avoiding a stale React-render overwrite.
 
