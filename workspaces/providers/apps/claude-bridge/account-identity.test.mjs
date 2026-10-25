@@ -78,7 +78,7 @@ test("checkAccount upgrades a legacy pin once and preserves it after restart", (
   const observed = check(account());
   assert.equal(
     observed._credentialIdentity,
-    credentialIdentity(email, "org-a", "account-a"),
+    'claude:v2:["a@example.test","org-a","account-a"]',
   );
   const restarted = createAccountCheck(options);
   refuses(() => restarted(account("org-b")));
@@ -166,7 +166,7 @@ test("the real bridge reports native UUIDs and refuses input after an organizati
   assert.equal(result.account.accountUuid, "account-a");
   assert.equal(
     result.account._credentialIdentity,
-    credentialIdentity("test@example.test", "org-a", "account-a"),
+    'claude:v2:["test@example.test","org-a","account-a"]',
   );
   profile("org-b");
   await bridge.call("turn/start", {

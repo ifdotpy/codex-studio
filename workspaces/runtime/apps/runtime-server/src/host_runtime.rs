@@ -1648,8 +1648,7 @@ mod vm_claude_keychain_tests {
     fn explicitly_selected_claude_config_uses_scoped_service() {
         assert_eq!(
             vm_claude_keychain_service(Some("/tmp/claude-profile/")),
-            "Claude Code-credentials-".to_owned()
-                + &data_encoding::HEXLOWER.encode(&Sha256::digest(b"/tmp/claude-profile"))[..8]
+            "Claude Code-credentials-7182514b"
         );
     }
 }

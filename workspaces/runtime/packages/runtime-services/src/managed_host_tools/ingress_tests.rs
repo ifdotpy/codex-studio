@@ -2315,6 +2315,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-astra",
             Some("high"),
             true,
+            "codex",
         ),
         (
             "same-caller-model",
@@ -2323,6 +2324,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6.1-sol",
             Some("medium"),
             true,
+            "codex",
         ),
         (
             "same-review-model",
@@ -2331,6 +2333,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-astra",
             None,
             true,
+            "codex",
         ),
         (
             "different-model",
@@ -2339,6 +2342,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-luna",
             None,
             true,
+            "codex",
         ),
         (
             "effort-only",
@@ -2347,6 +2351,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-astra",
             Some("low"),
             true,
+            "codex",
         ),
         (
             "model-and-effort",
@@ -2355,6 +2360,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6.1-sol",
             Some("high"),
             true,
+            "codex",
         ),
         (
             "null-effort",
@@ -2363,6 +2369,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-astra",
             None,
             false,
+            "codex",
         ),
         (
             "profile-model",
@@ -2371,6 +2378,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-luna",
             Some("high"),
             false,
+            "codex",
         ),
         (
             "profile-effort",
@@ -2379,6 +2387,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-luna",
             Some("low"),
             false,
+            "codex",
         ),
         (
             "profile-overridden",
@@ -2387,6 +2396,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-astra",
             Some("medium"),
             false,
+            "codex",
         ),
         (
             "profile-role",
@@ -2395,6 +2405,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-luna",
             Some("high"),
             false,
+            "codex",
         ),
         (
             "missing-default",
@@ -2403,6 +2414,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6.1-sol",
             Some("medium"),
             true,
+            "codex",
         ),
         (
             "null-default",
@@ -2411,6 +2423,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6.1-sol",
             Some("medium"),
             true,
+            "codex",
         ),
         (
             "null-default-effort",
@@ -2419,6 +2432,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-astra",
             None,
             true,
+            "codex",
         ),
         (
             "implementer",
@@ -2427,6 +2441,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-luna",
             Some("high"),
             false,
+            "codex",
         ),
         (
             "implementer-explicit",
@@ -2435,6 +2450,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6.1-sol",
             Some("high"),
             false,
+            "codex",
         ),
         (
             "nested-configured",
@@ -2443,6 +2459,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-astra",
             Some("high"),
             true,
+            "codex",
         ),
         (
             "nested-fallback",
@@ -2451,6 +2468,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "gpt-6-luna",
             Some("low"),
             true,
+            "codex",
         ),
         (
             "provider",
@@ -2459,9 +2477,10 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             "claude-opus-5-5",
             None,
             false,
+            "claude",
         ),
     ];
-    for (label, options, defaults, model, effort, native_parity) in cases {
+    for (label, options, defaults, model, effort, native_parity, expected_provider) in cases {
         let actor_id = context.agent.clone();
         let cwd = project.path().to_owned();
         store
@@ -2558,13 +2577,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
                 effort.unwrap_or("low"),
                 "{label}/{tool}"
             );
-            assert_eq!(
-                child["provider"],
-                crate::provider_adapter::model_provider(model)
-                    .unwrap()
-                    .key(),
-                "{label}/{tool}"
-            );
+            assert_eq!(child["provider"], expected_provider, "{label}/{tool}");
             assert_eq!(child["accountKey"], "default", "{label}/{tool}");
             if tool == "orchestration_spawn" {
                 assert_eq!(child["fastMode"], true, "{label}");
@@ -2609,7 +2622,8 @@ async fn managed_spawn_accepts_any_explicit_model_for_each_role() {
     .value();
     let actor = Actor::from_record(&parent, &context.agent, context.epoch).unwrap();
     for role in ["implementer", "reviewer"] {
-        for model in ["gpt-6-astra", "claude-opus-5-5"] {
+        for (model, expected_provider) in [("gpt-6-astra", "codex"), ("claude-opus-5-5", "claude")]
+        {
             let request_id = format!("explicit-model-{role}-{model}");
             let mut args = json!({"agents":[{"name":"Explicit model", "prompt":"Read the task",
                 "role":role, "model":model, "effort":null}]});
@@ -2636,12 +2650,7 @@ async fn managed_spawn_accepts_any_explicit_model_for_each_role() {
             .value();
             assert_eq!(child["role"], role);
             assert_eq!(child["model"], model);
-            assert_eq!(
-                child["provider"],
-                crate::provider_adapter::model_provider(model)
-                    .unwrap()
-                    .key()
-            );
+            assert_eq!(child["provider"], expected_provider);
             let replayed = crate::managed_child_create::spawn_agents(
                 &store,
                 &actor,

@@ -889,7 +889,7 @@ fn cancelled_book_ids_are_removed_but_never_reused() {
 
 #[test]
 fn arrival_timestamp_classification_is_independent_of_expiry_order() {
-    for received_at_ms in [10, 11, 12] {
+    for (received_at_ms, expected_late) in [(10, false), (11, true), (12, true)] {
         let mut replies = Vec::new();
         for expire_first in [false, true] {
             let mut session = state(false);
@@ -913,7 +913,7 @@ fn arrival_timestamp_classification_is_independent_of_expiry_order() {
                 .expect("timestamped response");
             assert!(matches!(&actions[0], Action::Resolve {
                 outcome: RequestOutcome::Reply { late, .. }, ..
-            } if *late == (received_at_ms >= 11)));
+            } if *late == expected_late));
             replies.push(actions);
             assert!(session.expire(30).1.is_empty());
         }
@@ -1030,7 +1030,7 @@ fn rejecting_unsent_validates_generation_and_supports_codex_unknown_tickets() {
 
 #[test]
 fn arrival_timestamp_still_uses_original_deadline_after_transport_loss() {
-    for arrived in [9, 10, 11] {
+    for (arrived, expected_late) in [(9, false), (10, true), (11, true)] {
         let mut session = state(false);
         let (ticket, _) = session
             .submit(Method::ModelList, json!({}), 0, 10, None, false)
@@ -1040,7 +1040,7 @@ fn arrival_timestamp_still_uses_original_deadline_after_transport_loss() {
             .receive_at(reply_for_test(ticket.id), arrived)
             .expect("late evidence");
         assert!(
-            matches!(&actions[0], Action::Resolve { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == (arrived >= 10))
+            matches!(&actions[0], Action::Resolve { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == expected_late)
         );
     }
 }

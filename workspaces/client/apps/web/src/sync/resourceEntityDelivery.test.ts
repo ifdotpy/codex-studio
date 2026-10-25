@@ -41,6 +41,38 @@ describe("bounded stream entity delivery", () => {
     vi.restoreAllMocks();
   });
 
+  it("keeps a pending state interval when an unrelated initial resource arrives", async () => {
+    let finish!: () => void;
+    const persist = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const dispatch = vi.fn();
+    const failed = vi.fn();
+    const delivery = new ResourceEntityDelivery(persist, dispatch, failed);
+    delivery.receive(frame(1));
+    delivery.receive({
+      ...frame(2, "initial"),
+      resources: [{ kind: "multi-server" }],
+      resourceVersions: [{ revision: 2 }],
+    });
+    expect(failed).not.toHaveBeenCalled();
+    expect(persist).toHaveBeenCalledOnce();
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(
+      dispatch.mock.calls.map(([event]) => [
+        event.reason,
+        event.resources[0].kind,
+      ]),
+    ).toEqual([
+      ["initial", "multi-server"],
+      ["change", "state"],
+    ]);
+  });
+
   it("requests source recovery after a current timeout and keeps blocked storage degraded", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const persist = vi.fn(() => new Promise<void>(() => {}));

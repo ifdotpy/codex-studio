@@ -352,7 +352,7 @@ async fn restart(context: &Context, label: &str) {
             (peer, worker)
         };
     let expected_inputs = context.inputs.lock().unwrap().clone();
-    let expected_items = expected_text(context);
+    let expected_items = completed_item_snapshots(context);
     let assert_label = label.to_owned();
     let terminal = {
         let acknowledged = context.acknowledged.lock().unwrap();
@@ -556,13 +556,14 @@ async fn health_turn_waits_for_pending_recovery_history() {
 }
 
 // Expectations come from the delivered protocol, never the store under test.
-fn expected_text(context: &Context) -> BTreeMap<String, String> {
+// Full completed item payloads are producer-supplied examples. Check their
+// preservation across restart without rebuilding the notification stream reducer.
+// Delta assembly, empty completions and replacement semantics have literal witnesses
+// in notification_dispatch and account_worker stream tests.
+fn completed_item_snapshots(context: &Context) -> BTreeMap<String, String> {
     let acknowledged = context.acknowledged.lock().unwrap();
     let frames = context.frames.lock().unwrap();
-    let mut text = BTreeMap::<String, String>::new();
-    // An item/started replaces the stored visible text only until the next
-    // delta, which rebuilds the stream from its durable base.
-    let mut replaced = BTreeMap::<String, String>::new();
+    let mut latest = BTreeMap::<String, &Value>::new();
     for ((generation, cursor), frame) in frames.iter() {
         if *cursor > acknowledged.get(generation).copied().unwrap_or(0) {
             continue;
@@ -573,34 +574,26 @@ fn expected_text(context: &Context) -> BTreeMap<String, String> {
         {
             continue;
         }
-        match frame["method"].as_str() {
-            Some("item/agentMessage/delta") => {
-                let id = params["itemId"].as_str().expect("delta item");
-                replaced.remove(id);
-                text.entry(id.into())
-                    .or_default()
-                    .push_str(params["delta"].as_str().expect("delta text"));
-            }
-            Some(method @ ("item/started" | "item/completed"))
-                if params["item"]["type"] == "agentMessage" =>
-            {
-                let item = &params["item"];
-                let value = item["text"].as_str().unwrap_or("");
-                if !value.is_empty() {
-                    let id: String = item["id"].as_str().unwrap().into();
-                    if method == "item/started" {
-                        replaced.insert(id, value.into());
-                    } else {
-                        replaced.remove(&id);
-                        text.insert(id, value.into());
-                    }
-                }
-            }
-            _ => {}
+        if let Some(id) = params["itemId"]
+            .as_str()
+            .or_else(|| params["item"]["id"].as_str())
+        {
+            latest.insert(id.to_owned(), frame);
         }
     }
-    text.extend(replaced);
-    text
+    latest
+        .into_iter()
+        .filter_map(|(id, frame)| {
+            let item = &frame["params"]["item"];
+            if frame["method"] != "item/completed" || item["type"] != "agentMessage" {
+                return None;
+            }
+            item["text"]
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .map(|text| (id, text.to_owned()))
+        })
+        .collect()
 }
 
 async fn scenario_matrix(index: usize) -> (usize, f64, f64) {

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent))
 from common import GuestError
 from host_exec_protocol import HostExecError
-from mac_sync import CHUNK, MacSync
+from mac_sync import MacSync
 
 
 class MacSyncRead(unittest.IsolatedAsyncioTestCase):
@@ -30,7 +30,7 @@ class MacSyncRead(unittest.IsolatedAsyncioTestCase):
         }, None)
 
     async def test_regular_file_reads_only_the_requested_chunk_under_lock(self) -> None:
-        content = b"a" * CHUNK + b"b" * CHUNK + b"tail"
+        content = b"aaaabbbbtail"
         path = self.root / "file"
         path.write_bytes(content)
         path.chmod(0o751)
@@ -52,16 +52,22 @@ class MacSyncRead(unittest.IsolatedAsyncioTestCase):
             wrapped.read.side_effect = counted_read
             return wrapped
 
-        for offset in (0, CHUNK, CHUNK * 2, len(content), len(content) + CHUNK, 1 << 100):
-            with self.subTest(offset=offset), patch.object(Path, "open", counted_open):
+        for offset, encoded, size, eof in [
+            (0, "YWFhYQ==", 4, False),
+            (4, "YmJiYg==", 4, False),
+            (8, "dGFpbA==", 4, True),
+            (12, "", 0, True),
+            (16, "", 0, True),
+            (1 << 100, "", 0, True),
+        ]:
+            with self.subTest(offset=offset), patch("mac_sync.CHUNK", 4), patch.object(Path, "open", counted_open):
                 reads.clear()
                 result = await self.read("file", offset)
-                expected = content[offset:offset + CHUNK]
-                self.assertEqual(reads, [(CHUNK, len(expected))])
+                self.assertEqual(reads, [(4, size)])
                 self.assertEqual(result, {
                     "kind": "file", "mode": 0o751, "size": len(content), "offset": offset,
-                    "data": base64.b64encode(expected).decode(),
-                    "eof": offset + len(expected) >= len(content),
+                    "data": encoded,
+                    "eof": eof,
                 })
 
     async def test_link_returns_target_bytes_without_following_it(self) -> None:

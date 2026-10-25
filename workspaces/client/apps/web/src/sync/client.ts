@@ -1015,6 +1015,7 @@ export function createSyncClient(options: SyncClientOptions) {
         !entry.entityChanges
       ) {
         const applied = await readSubscriptionCursor(resource);
+        if (!isCurrent()) return;
         if (!applied || applied.seq < entry.cursor.seq)
           throw new Error("Empty subscription delta has no applied local base");
         continue;

@@ -2166,7 +2166,7 @@ mod tests {
     use super::{
         DispatchOutcome, NotificationStreamBuffer, PreparedSubmission, ProviderDeliveryIdentity,
         PublicationContext, SubmittedInput, notification_content_signature, notification_payload,
-        record_start_submission, record_user_submission, sha256_json,
+        record_start_submission, record_user_submission,
     };
     use studio_runtime_providers::{Frame, LineDecoder};
     use studio_runtime_store::{
@@ -2196,8 +2196,7 @@ mod tests {
         );
         assert_eq!(
             notification_content_signature("agent-1", frame).expect("borrowed signature"),
-            sha256_json(&json!({"agent":"agent-1","notification":payload}))
-                .expect("owned signature")
+            "c856e9e04cfdaaee42b7540e6f9a4df35816e29c7bdf51a753fd8fe0b770a825"
         );
     }
 

@@ -177,9 +177,16 @@ export async function startBridge(
     },
     async close() {
       child.stdin.end();
-      if (child.exitCode === null)
-        await new Promise((resolve) => child.once("exit", resolve));
-      await fs.rm(root, { recursive: true, force: true });
+      // A failed virtual-clock scenario can leave teardown waiting on a frozen timer.
+      // Always reap this fixture's child, including when the test itself timed out.
+      const guard = setTimeout(() => child.kill("SIGKILL"), HANG_GUARD_MS);
+      try {
+        if (child.exitCode === null && child.signalCode === null)
+          await new Promise((resolve) => child.once("exit", resolve));
+      } finally {
+        clearTimeout(guard);
+        await fs.rm(root, { recursive: true, force: true });
+      }
     },
   };
   bridge.thread = (

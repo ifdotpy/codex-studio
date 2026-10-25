@@ -231,7 +231,7 @@ export class ResourceEntityDelivery {
       return;
     }
     if (
-      event.reason === "change" &&
+      (event.reason === "change" || event.reason === "initial") &&
       !hasState &&
       !hasChanges &&
       this.epoch === event.epoch

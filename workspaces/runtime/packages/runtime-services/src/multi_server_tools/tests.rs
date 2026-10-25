@@ -1643,10 +1643,7 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
         })
         .unwrap();
     let notice: Value = serde_json::from_str(&notice).unwrap();
-    assert_eq!(
-        notice["requestId"],
-        crate::projects::cross_server_identity(&["command-exit", "peer-exec-1", "completed"])
-    );
+    assert_eq!(notice["requestId"], "b75e85fe-064e-5373-9c79-ff2454f3c4e1");
     assert_eq!(notice["payload"]["actor"], "peer-lead");
     assert_eq!(notice["payload"]["handle"], "peer-exec-1");
     assert_eq!(notice["payload"]["record"]["exitCode"], 0);

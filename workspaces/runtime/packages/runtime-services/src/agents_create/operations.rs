@@ -3178,12 +3178,10 @@ mod tests {
     #[test]
     fn default_workspace_mode_follows_platform_defaults() {
         assert_eq!(default_workspace_mode(false), DEFAULT_WORKSPACE_MODE);
-        let lead = if cfg!(target_os = "macos") {
-            MACOS_LEAD_WORKSPACE_MODE
-        } else {
-            DEFAULT_WORKSPACE_MODE
-        };
-        assert_eq!(default_workspace_mode(true), lead);
+        #[cfg(target_os = "macos")]
+        assert_eq!(default_workspace_mode(true), MACOS_LEAD_WORKSPACE_MODE);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(default_workspace_mode(true), DEFAULT_WORKSPACE_MODE);
     }
 
     #[test]

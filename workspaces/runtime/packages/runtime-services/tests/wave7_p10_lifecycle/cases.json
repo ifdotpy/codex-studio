@@ -281,7 +281,8 @@
           "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -596,7 +597,8 @@
           "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -947,7 +949,8 @@
           "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -1277,7 +1280,8 @@
           "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -1647,7 +1651,8 @@
           "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -1998,7 +2003,8 @@
           "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -2378,7 +2384,8 @@
           "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -2733,7 +2740,8 @@
           "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -3115,7 +3123,8 @@
           "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -3472,7 +3481,8 @@
           "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -3674,7 +3684,8 @@
           "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -3946,19 +3957,19 @@
             {
               "id": "reserved",
               "agent": "lead",
-              "status": "reserved",
+              "status": "cancelled",
               "epoch": 3
             },
             {
               "id": "dispatching",
               "agent": "lead",
-              "status": "dispatching",
+              "status": "failed",
               "epoch": 3
             },
             {
               "id": "uncertain",
               "agent": "lead",
-              "status": "uncertain",
+              "status": "failed",
               "epoch": 3
             }
           ]
@@ -3976,7 +3987,7 @@
         [
           "event",
           "dispatching",
-          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"dispatching\"}}",
+          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":\"Agent deleted; delivery outcome unknown\",\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"failed\"}}",
           0
         ],
         [
@@ -3988,16 +3999,17 @@
         [
           "event",
           "reserved",
-          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"reserved\"}}",
+          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":\"Agent deleted\",\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"cancelled\"}}",
           0
         ],
         [
           "event",
           "uncertain",
-          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
+          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":\"Agent deleted; delivery outcome unknown\",\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"failed\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -4178,7 +4190,8 @@
       },
       "notifications": [],
       "notificationPayloads": [],
-      "syncEntities": []
+      "syncEntities": [],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -4328,7 +4341,8 @@
       },
       "notifications": [],
       "notificationPayloads": [],
-      "syncEntities": []
+      "syncEntities": [],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -4503,7 +4517,8 @@
           "{\"collection\":\"event\",\"id\":\"child-stop:worker:9:stop:stop\",\"value\":{\"agent\":\"lead\",\"created\":1234567.5,\"error\":null,\"id\":\"child-stop:worker:9:stop:stop\",\"kind\":\"child_result\",\"status\":\"pending\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -4639,7 +4654,8 @@
           "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -4831,7 +4847,8 @@
           "{\"collection\":\"event\",\"id\":\"child-stop:worker:9:stop:stop\",\"value\":{\"agent\":\"lead\",\"created\":1234567.5,\"error\":null,\"id\":\"child-stop:worker:9:stop:stop\",\"kind\":\"child_result\",\"status\":\"pending\"}}",
           0
         ]
-      ]
+      ],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -4990,7 +5007,8 @@
       },
       "notifications": [],
       "notificationPayloads": [],
-      "syncEntities": []
+      "syncEntities": [],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -5142,7 +5160,8 @@
       },
       "notifications": [],
       "notificationPayloads": [],
-      "syncEntities": []
+      "syncEntities": [],
+      "workDetails": []
     },
     "interrupted": [
       {
@@ -5318,6 +5337,29 @@
           "{\"collection\":\"work\",\"id\":\"unrelated-work\",\"value\":{\"id\":\"unrelated-work\",\"rootId\":\"outside\",\"status\":\"ready\",\"title\":\"Unrelated\"}}",
           0
         ]
+      ],
+      "workDetails": [
+        [
+          "workDetail",
+          "unrelated-work",
+          {
+            "id": "unrelated-work",
+            "owner": "outside",
+            "rootId": "outside",
+            "status": "ready",
+            "version": 1,
+            "title": "Unrelated",
+            "releases": [],
+            "results": [],
+            "decisions": [],
+            "submissionRefusal": {
+              "failedSubmits": 0,
+              "limit": 3,
+              "retryAllowed": true,
+              "errors": []
+            }
+          }
+        ]
       ]
     },
     "interrupted": [
@@ -5490,6 +5532,29 @@
           "worker-review",
           "{\"collection\":\"work\",\"id\":\"worker-review\",\"value\":{\"id\":\"worker-review\",\"rootId\":\"lead\",\"status\":\"review\",\"title\":\"Under review\"}}",
           0
+        ]
+      ],
+      "workDetails": [
+        [
+          "workDetail",
+          "worker-review",
+          {
+            "id": "worker-review",
+            "owner": "worker",
+            "rootId": "lead",
+            "status": "review",
+            "version": 1,
+            "title": "Under review",
+            "releases": [],
+            "results": [],
+            "decisions": [],
+            "submissionRefusal": {
+              "failedSubmits": 0,
+              "limit": 3,
+              "retryAllowed": true,
+              "errors": []
+            }
+          }
         ]
       ]
     },

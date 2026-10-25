@@ -3323,6 +3323,7 @@ mod commit_notification_tests {
         )
         .expect("install update and delete hooks");
 
+        let mut receipts = Vec::new();
         for (index, table) in OBSERVED_TABLES.into_iter().enumerate() {
             let insert = format!("INSERT INTO {}(id) VALUES (?1)", table.name());
             database
@@ -3332,16 +3333,40 @@ mod commit_notification_tests {
                 table_change_flags.swap(0, Ordering::AcqRel),
                 table.change_bit()
             );
-            assert_eq!(
-                receipt_update_count.swap(0, Ordering::AcqRel),
-                if table.suppressible_resource_receipt() {
-                    1
-                } else {
-                    0
-                },
-                "only named internal receipts count toward the resource filter"
-            );
+            receipts.push((table.name(), receipt_update_count.swap(0, Ordering::AcqRel)));
         }
+        assert_eq!(
+            receipts,
+            [
+                ("runtime_access_clients", 0),
+                ("runtime_usage_resumes", 0),
+                ("runtime_agents", 0),
+                ("runtime_events", 0),
+                ("runtime_event_meta", 0),
+                ("runtime_rooms", 0),
+                ("runtime_operation_receipts", 1),
+                ("runtime_work", 0),
+                ("runtime_monitors", 0),
+                ("runtime_rules", 0),
+                ("runtime_server_outbox", 0),
+                ("runtime_server_links", 0),
+                ("runtime_federation_settings", 0),
+                ("runtime_federation_identity", 0),
+                ("runtime_federation_peers", 0),
+                ("runtime_federation_invites", 0),
+                ("runtime_federation_rooms", 0),
+                ("runtime_federation_outbox", 0),
+                ("runtime_native_action_receipts", 1),
+                ("runtime_access_receipts", 1),
+                ("runtime_budget", 0),
+                ("runtime_budget_usage", 0),
+                ("runtime_account_transfers", 0),
+                ("runtime_orchestration_settings", 0),
+                ("runtime_requests", 0),
+                ("runtime_tool_requests", 0),
+                ("runtime_analytics_projection", 0),
+            ]
+        );
     }
 
     #[test]

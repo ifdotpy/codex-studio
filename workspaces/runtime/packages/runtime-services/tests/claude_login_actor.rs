@@ -460,26 +460,44 @@ fn seed_legacy_receipts(f: &Fixture, key: &str) {
 async fn add_label_and_email_admission_refusals_write_nothing() {
     let long = "x".repeat(33);
     let accented = "é".repeat(33);
-    let cases: Vec<(Option<&str>, Option<&str>, bool)> = vec![
-        (None, None, true),
-        (Some(""), None, false),
-        (Some(" "), None, false),
-        (Some("a"), None, true),
-        (Some(&long), None, false),
-        (Some(&accented), None, false),
-        (Some("  Team  "), Some("  fixture@example.test  "), true),
-        (None, Some(""), false),
-        (None, Some(" "), false),
-        (None, Some("x"), false),
-        (None, Some("a@b"), false),
-        (None, Some("a@@b.test"), false),
-        (None, Some("a b@c.test"), false),
-        (None, Some("a@b.c"), true),
-        (None, Some("é@example.test"), true),
-        (None, Some("a@b.test\nextra"), false),
-        (None, Some("a@b.test"), true),
+    let cases: Vec<(Option<&str>, Option<&str>, bool, &str, Option<&str>)> = vec![
+        (None, None, true, "Claude Code", None),
+        (Some(""), None, false, "", None),
+        (Some(" "), None, false, "", None),
+        (Some("a"), None, true, "a", None),
+        (Some(&long), None, false, "", None),
+        (Some(&accented), None, false, "", None),
+        (
+            Some("  Team  "),
+            Some("  fixture@example.test  "),
+            true,
+            "Team",
+            Some("fixture@example.test"),
+        ),
+        (None, Some(""), false, "", None),
+        (None, Some(" "), false, "", None),
+        (None, Some("x"), false, "", None),
+        (None, Some("a@b"), false, "", None),
+        (None, Some("a@@b.test"), false, "", None),
+        (None, Some("a b@c.test"), false, "", None),
+        (None, Some("a@b.c"), true, "Claude Code", Some("a@b.c")),
+        (
+            None,
+            Some("é@example.test"),
+            true,
+            "Claude Code",
+            Some("é@example.test"),
+        ),
+        (None, Some("a@b.test\nextra"), false, "", None),
+        (
+            None,
+            Some("a@b.test"),
+            true,
+            "Claude Code",
+            Some("a@b.test"),
+        ),
     ];
-    for (label, email, accepted) in cases {
+    for (label, email, accepted, expected_label, expected_email) in cases {
         let f = Fixture::new();
         let registry = std::fs::read(f.directory.join("registry.json")).expect("registry");
         let s = f.open().await;
@@ -498,13 +516,10 @@ async fn add_label_and_email_admission_refusals_write_nothing() {
         );
         if accepted {
             let saved = f.receipts.load().expect("receipt").pop().expect("saved");
-            assert_eq!(
-                saved.record()["metadata"]["label"],
-                label.map(str::trim).unwrap_or("Claude Code")
-            );
+            assert_eq!(saved.record()["metadata"]["label"], expected_label);
             assert_eq!(
                 saved.record()["metadata"]["emailHint"].as_str(),
-                email.map(str::trim)
+                expected_email
             );
             s.cancel(ID).await.expect("cancel");
         } else {

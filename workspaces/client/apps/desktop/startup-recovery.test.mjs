@@ -8,10 +8,16 @@ const require = createRequire(import.meta.url);
 const main = readFileSync(new URL("./main.cjs", import.meta.url), "utf8");
 
 test("startup uses the verified backend environment before configuring recovery", async () => {
-  for (const existing of [
-    null,
-    { restartEnvironment: { CODEX_CANVAS_CWD: "/existing-workspace" } },
-    { restartEnvironment: {}, supervisorFallback: true },
+  for (const [existing, expectedEnvironment] of [
+    [null, null],
+    [
+      { restartEnvironment: { CODEX_CANVAS_CWD: "/existing-workspace" } },
+      { CODEX_CANVAS_CWD: "/existing-workspace" },
+    ],
+    [
+      { restartEnvironment: {}, supervisorFallback: true },
+      { CODEX_AGENTS_SUPERVISOR_MODE: "1" },
+    ],
   ]) {
     const calls = [];
     let lookup, configured;
@@ -88,9 +94,7 @@ test("startup uses the verified backend environment before configuring recovery"
     });
     assert.deepEqual(
       JSON.parse(JSON.stringify(configured.restartEnvironment ?? null)),
-      existing?.supervisorFallback
-        ? { ...existing.restartEnvironment, CODEX_AGENTS_SUPERVISOR_MODE: "1" }
-        : (existing?.restartEnvironment ?? null),
+      expectedEnvironment,
     );
   }
 });

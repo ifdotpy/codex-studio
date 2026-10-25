@@ -667,7 +667,7 @@ async fn stalled_write_does_not_block_deadline_or_shutdown_barrier() {
 
 #[tokio::test(start_paused = true)]
 async fn predeadline_arrival_admitted_after_deadline_is_on_time_and_mirror_is_late() {
-    for arrived in [9, 11] {
+    for (arrived, expected_late) in [(9, false), (11, true)] {
         let (mut session, mut peer) = open().await;
         ready(&mut session, &mut peer).await;
         session
@@ -688,7 +688,7 @@ async fn predeadline_arrival_admitted_after_deadline_is_on_time_and_mirror_is_la
             .await
             .unwrap();
         let event = session.events.recv().await.unwrap();
-        assert!(event.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Resolved { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == (arrived >= 10))));
+        assert!(event.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Resolved { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == expected_late)));
         session.checked_shutdown().await;
     }
 }
@@ -951,7 +951,7 @@ async fn incomplete_initialization_shutdown_surfaces_recovery_after_adapter_join
 
 #[tokio::test(start_paused = true)]
 async fn before_at_and_after_deadline_arrivals_keep_classification_under_full_backlog() {
-    for arrived in [9, 10, 11] {
+    for (arrived, expected_late) in [(9, false), (10, true), (11, true)] {
         let (mut session, mut peer) = open().await;
         ready(&mut session, &mut peer).await;
         session
@@ -993,7 +993,7 @@ async fn before_at_and_after_deadline_arrivals_keep_classification_under_full_ba
                 break event;
             }
         };
-        assert!(response.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Resolved { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == (arrived >= 10))));
+        assert!(response.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Resolved { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == expected_late)));
         session.checked_shutdown().await;
     }
 }

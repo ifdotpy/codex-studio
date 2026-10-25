@@ -1702,14 +1702,14 @@ mod tests {
         assert_eq!(receipt.result, "complete");
         assert!(!receipt.result.contains("private-token"));
         assert!(!receipt.signature.contains("private-token"));
-        let expected_material = serde_json::to_vec(&json!({
-            "agentId": "agent-1",
-            "accountKey": "account-1",
-            "path": ".claude/studio-accounts/key/.credentials.json",
-            "digest": digest,
-        }))
-        .unwrap();
-        assert_eq!(receipt.signature, hex_digest(&expected_material));
+        assert_eq!(
+            digest,
+            "740707bd18f54cdc7ed7de3947165486e8cc3dcf7b4d1f6c300cd5c0d641d85d"
+        );
+        assert_eq!(
+            receipt.signature,
+            "ce9eaf46470ff0819976ff38033a4601097be67230e404dfb0dddf2672a8e90f"
+        );
     }
 
     #[tokio::test]
