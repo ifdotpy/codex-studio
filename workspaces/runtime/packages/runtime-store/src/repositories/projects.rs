@@ -51,6 +51,14 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 pub struct ProjectsRepository;
 
 impl ProjectsRepository {
+    /// Durable Unix timestamp in seconds marking permanent project-owned room retirement.
+    pub const ROOM_RETIRED_FIELD: &'static str = "projectDeletedAt";
+
+    pub fn room_retired(room: &Value) -> bool {
+        room.get(Self::ROOM_RETIRED_FIELD)
+            .is_some_and(|value| !value.is_null())
+    }
+
     pub fn list(connection: &Connection) -> StoreResult<Vec<(String, Value)>> {
         let mut statement = connection.prepare_cached(
             "SELECT id,record FROM runtime_projects ORDER BY json_extract(record,'$.created'),id",
@@ -228,6 +236,10 @@ impl ProjectsRepository {
                 object: "runtime_rooms",
                 id: id.to_owned(),
             })?;
+        if Self::room_retired(&room) {
+            SyncDocumentsRepository::put_entity(transaction, "room", id, json!({}), true)?;
+            return Ok(());
+        }
         let members = room
             .get("members")
             .and_then(Value::as_array)

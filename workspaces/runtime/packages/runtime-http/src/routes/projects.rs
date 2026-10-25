@@ -237,6 +237,11 @@ pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/projects", OperationStatus::Implemented, list_projects),
         post("/api/projects", OperationStatus::Implemented, write_project),
+        post(
+            "/api/projects/delete",
+            OperationStatus::Implemented,
+            delete_project,
+        ),
         get(
             "/api/project-locations",
             OperationStatus::Implemented,
@@ -244,6 +249,73 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post("/api/peer-teams", OperationStatus::Implemented, peer_teams),
     ])
+}
+
+async fn delete_project(
+    State(state): State<HttpState>,
+    ports: Option<
+        axum::Extension<Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts>>,
+    >,
+    ApiJson(body): ApiJson<crate::generated::ProjectDeleteRequest>,
+) -> Result<Response, ApiError> {
+    use crate::generated::ProjectDeleteFailureCode as Code;
+    use studio_runtime_services::project_deletion::{self, Error};
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let ports = ports
+        .map(|axum::Extension(ports)| ports)
+        .unwrap_or_else(|| {
+            Arc::new(studio_runtime_services::agent_lifecycle_runtime::UnavailableLifecyclePorts)
+        });
+    let now =
+        studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())?;
+    let result = project_deletion::execute(
+        store,
+        project_deletion::Request {
+            id: body.id,
+            request_id: body.request_id,
+            expected_workspace_id: body.expected_workspace_id,
+            expected_project_seq: body.expected_project_seq,
+        },
+        now,
+        ports,
+    )
+    .await;
+    let error = match result {
+        Ok(reply) => {
+            return super::generated_json::<crate::generated::ProjectDeleteResponse>(reply)
+                .map(|reply| Json(reply).into_response());
+        }
+        Err(error) => error,
+    };
+    let (status, code) = match &error {
+        Error::NotFound => (StatusCode::NOT_FOUND, Code::ProjectNotFound),
+        Error::Workspace => (StatusCode::CONFLICT, Code::ProjectWorkspaceConflict),
+        Error::Sequence => (StatusCode::CONFLICT, Code::ProjectSequenceConflict),
+        Error::RequestConflict => (StatusCode::CONFLICT, Code::ProjectRequestConflict),
+        Error::Remote => (StatusCode::CONFLICT, Code::ProjectRemoteScope),
+        Error::Membership => (StatusCode::CONFLICT, Code::ProjectMembershipConflict),
+        Error::Lifecycle(
+            studio_runtime_services::agent_management::ManagementError::Unavailable(_),
+        ) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Code::ProjectLifecycleUnavailable,
+        ),
+        Error::Lifecycle(studio_runtime_services::agent_management::ManagementError::Invalid(
+            _,
+        )) => (StatusCode::CONFLICT, Code::ProjectMembershipConflict),
+        Error::Store(error) => {
+            eprintln!("Project deletion store error: {error}");
+            return Err(ApiError::internal());
+        }
+        _ => {
+            eprintln!("Project deletion lifecycle error: {error}");
+            return Err(ApiError::internal());
+        }
+    };
+    let body = super::generated_json::<crate::generated::ProjectDeleteErrorResponse>(
+        json!({"error":error.to_string(),"code":code,"outcome":"not_applied"}),
+    )?;
+    Ok((status, Json(body)).into_response())
 }
 
 async fn list_projects(

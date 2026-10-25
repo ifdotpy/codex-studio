@@ -698,6 +698,13 @@ async fn create(
     } else {
         project_directory_default_async().await?
     };
+    let admission_path = cwd.clone();
+    let admission_version = context
+        .store
+        .read_async("runtime-services/project_deletion/admission", move |db| {
+            crate::project_deletion::admission_version(db, &admission_path)
+        })
+        .await?;
     let binding = if request.project_binding {
         Some(
             resolve_project_binding(
@@ -954,6 +961,11 @@ async fn create(
         };
         if let Some(existing) = replay(tx)? {
             return Ok(sync_projection(tx, &existing)?);
+        }
+        if crate::project_deletion::admission_version(tx, &cwd)? != admission_version
+            || admission_version.is_some_and(|(_, deleted)| deleted)
+        {
+            return Err(CreateError::IdentityChanged.into());
         }
         if let Some(prior) = previous_lead(tx, request.previous.as_deref(), &validate)?
             && request.reuse_empty.unwrap_or(true)
@@ -3028,8 +3040,15 @@ fn resolve_project_binding_from(
                 }
                 Some(_) => return Err(OperationError::Invalid("Select a project folder")),
             };
+            let version = crate::project_deletion::admission_version(
+                connection,
+                project
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or(OperationError::Internal)?,
+            )?;
             return Ok(
-                json!({"cwd":cwd,"projectId":project_id,"projectServerId":home_server,"localServerId":local,"projectFolder":folder_id}),
+                json!({"cwd":cwd,"projectId":project_id,"projectServerId":home_server,"localServerId":local,"projectFolder":folder_id,"projectVersion":version}),
             );
         }
     }
