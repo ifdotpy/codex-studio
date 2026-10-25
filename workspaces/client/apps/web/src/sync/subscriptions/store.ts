@@ -5,6 +5,7 @@ import type {
 } from "../resourceEvents";
 import {
   DEFAULT_SUBSCRIPTION_GRACE_MS,
+  hasAppliedResourceBaseline,
   MAX_INACTIVE_SUBSCRIPTION_CACHE_ENTRIES,
   subscriptionKey,
   type ResourceData,
@@ -147,18 +148,12 @@ export function createSubscriptionStore(transport: SubscriptionTransport) {
         (version) => {
           entry.version = version;
           if (!replayingCache)
-            entry.confirmed =
-              !!version &&
-              ((!!version.cursor && !!version.replyKind) ||
-                !!version.progress ||
-                !!version.discoverySnapshot ||
-                !!version.voiceRecords ||
-                !!version.draftChanges);
+            entry.confirmed = hasAppliedResourceBaseline(version);
           entry.state = { ...entry.state, error: null };
           status(entry);
           for (const callback of entry.consumers) callback(version);
         },
-        { waitForBaseline: options.waitForBaseline },
+        { waitForBaseline: options.waitForBaseline ?? true },
       );
       replayingCache = false;
     } else if (entry.version) listener(entry.version);

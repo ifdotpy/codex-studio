@@ -33,6 +33,7 @@ import {
   syncDatabase,
 } from "./client";
 import { subscriptionKey } from "./subscriptions/cursors";
+import { hasAppliedResourceBaseline } from "./subscriptions/contracts";
 
 import { ResourceEntityDelivery } from "./resourceEntityDelivery";
 import { EntityTransferAssembler } from "./entityTransfer";
@@ -1893,6 +1894,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     options: { waitForBaseline?: boolean } = {},
   ): () => void {
     const key = resourceKey(resource);
+    const alreadyActive = aggregateResources().some(
+      (active) => resourceKey(active) === key,
+    );
     if (coordinatorIdleStopTimer !== undefined)
       clearTimeout(coordinatorIdleStopTimer);
     coordinatorIdleStopTimer = undefined;
@@ -1924,6 +1928,30 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     // resource to the shared stream union. Ask the owner for its baseline even
     // when the resource is not new to this tab's aggregate subscription list.
     announceSubscriptions(!known);
+    if (
+      options.waitForBaseline &&
+      known &&
+      alreadyActive &&
+      hasAppliedResourceBaseline(known)
+    ) {
+      const generation = subscriptionGeneration;
+      // A live, already subscribed ref has an applied baseline. Confirm it
+      // after registration so cache display and authoritative readiness remain
+      // distinct. A reconnect/removal must fence this queued confirmation.
+      queueMicrotask(() => {
+        if (
+          generation === subscriptionGeneration &&
+          listeners.has(callback) &&
+          currentStatus === "live" &&
+          known.epoch === lastEpoch &&
+          !baselineReconciliations.has(key) &&
+          (progress
+            ? progressValues.get(key) === progress
+            : resourceValues.get(key) === known)
+        )
+          callback(known);
+      });
+    }
     let stopped = false;
     return () => {
       if (stopped) return;

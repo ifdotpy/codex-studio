@@ -1,4 +1,5 @@
 import type { components } from "../../generated/api";
+import type { ResourceVersion } from "../resourceEvents";
 
 export type ResourceRef = components["schemas"]["ResourceRef"];
 /** The OpenAPI document owns this mapping; contracts:generate emits its types. */
@@ -16,6 +17,19 @@ export type SubscriptionOptions = { graceMs?: number };
 export const DEFAULT_SUBSCRIPTION_GRACE_MS = 20_000;
 /** Maximum inactive domain snapshots retained by one server module, in entries. */
 export const MAX_INACTIVE_SUBSCRIPTION_CACHE_ENTRIES = 128;
+
+/** Durable receipts or inline transient values prove this ref was applied.
+ * Revision-only hints never establish authoritative resource readiness. */
+export function hasAppliedResourceBaseline(version?: ResourceVersion): boolean {
+  return (
+    !!version &&
+    ((!!version.cursor && !!version.replyKind) ||
+      !!version.progress ||
+      !!version.discoverySnapshot ||
+      !!version.voiceRecords ||
+      !!version.draftChanges)
+  );
+}
 
 /** Stable identity for subscription ownership and durable cursor keys. Never decode it. */
 export function subscriptionKey(ref: ResourceRef): string {

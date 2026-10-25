@@ -929,6 +929,7 @@ describe("entity pull reset wiring", () => {
           expect(mocks.watchResourceChanges).toHaveBeenCalledWith(
             { kind: "transcript", agentId: "agent", tail: 40 },
             expect.any(Function),
+            { waitForBaseline: true },
           );
           expect(pullCount).toBe(0);
         }

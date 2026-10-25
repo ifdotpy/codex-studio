@@ -85,6 +85,7 @@ export default {
       // A complete state batch advances the durable projection with no new pull; storage failures, gaps, reconnects and epochs still reconcile.
       "src/sync/client.dispatchGate.test.ts",
       "src/sync/client.entityReset.test.ts",
+      "src/sync/client.resourceBootstrap.test.ts",
       "src/sync/resourceEntityDelivery.test.ts",
       "src/sync/entityTransfer.test.ts",
       "src/sync/entityTransfer.storage.test.ts",

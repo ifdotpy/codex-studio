@@ -209,6 +209,64 @@ it("publishes each resource event without a listener flush timer", async () => {
   }
 });
 
+it("confirms a late store from an already active applied baseline without another read", async () => {
+  const f = await fixture();
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "initial",
+    resources: [{ kind: "state" }],
+    resourceVersions: [
+      {
+        revision: 2,
+        cursor: { workspaceId: "workspace", seq: 2 },
+        replyKind: "snapshot",
+        entityChanges: { after: 0, through: 2, documents: [] },
+      },
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const store = createSubscriptionStore(f.transport);
+  disposals.push(store.dispose);
+  store.watchResourceChanges({ kind: "state" }, () => {});
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot({ kind: "state" }).status).toBe("live");
+  expect(f.get).not.toHaveBeenCalled();
+  expect(f.sources).toHaveLength(1);
+});
+
+it("fences an active baseline replay when its stream fails during registration", async () => {
+  const f = await fixture();
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "initial",
+    resources: [{ kind: "state" }],
+    resourceVersions: [
+      {
+        revision: 2,
+        cursor: { workspaceId: "workspace", seq: 2 },
+        replyKind: "snapshot",
+        entityChanges: { after: 0, through: 2, documents: [] },
+      },
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const store = createSubscriptionStore(f.transport);
+  disposals.push(store.dispose);
+  store.watchResourceChanges({ kind: "state" }, () => {});
+  f.source.onerror?.();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot({ kind: "state" }).status).toBe("stale");
+  expect(f.get.mock.calls.map(([path]) => path)).toEqual([
+    "/api/sync/identity",
+  ]);
+});
+
 it("delivers subscribed auth progress without sending its URL to the entity persister", async () => {
   const f = await fixture();
   const resource = { kind: "auth-progress", requestId: "login-one" } as const;

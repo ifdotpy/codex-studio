@@ -1131,7 +1131,9 @@ export function createSyncClient(options: SyncClientOptions) {
     const scope = typeof first === "string" ? first : String(second);
     const resync = typeof first === "function" ? first : second;
     if (typeof resync !== "function") return () => {};
-    return watchResourceChanges(resourceForScope(scope), resync);
+    return watchResourceChanges(resourceForScope(scope), resync, {
+      waitForBaseline: true,
+    });
   }
 
   function watchTranscriptInvalidations(
@@ -1142,6 +1144,7 @@ export function createSyncClient(options: SyncClientOptions) {
     return watchResourceChanges(
       resource ?? { kind: "transcript", agentId: id },
       resync,
+      { waitForBaseline: true },
     );
   }
 
@@ -1653,6 +1656,8 @@ export function createSyncClient(options: SyncClientOptions) {
       let readFailed = false;
       let recovery = new ReadRecoveryBudget();
       let notifiedVersion: ResourceVersion | undefined;
+      let baselineSeen = false;
+      let coldRecoveryStarted = false;
       const resetReadRecovery = () => {
         recovery = new ReadRecoveryBudget();
       };
@@ -2134,6 +2139,7 @@ export function createSyncClient(options: SyncClientOptions) {
         // A stream hint cannot authorize another read after a permanent rejection.
         // Explicit refresh still uses the normal workspace and HTTP checks.
         if (invalidationBlocked) return;
+        baselineSeen = true;
         if (transcriptId && version) transcriptEpoch = version.epoch;
         if (transcriptId && version?.transcriptSequence !== undefined) {
           const through = version.transcriptSequence;
@@ -2157,6 +2163,42 @@ export function createSyncClient(options: SyncClientOptions) {
         }
         if (remoteScope === SYNC_ENTITY_SCOPE && version) {
           latestEntitySequence.observeEpoch(version.epoch);
+          if (version.cursor && version.replyKind) {
+            // Dispatch follows durable stream application. Its per-resource
+            // receipt proves this baseline across a process restart; a
+            // global sequence from another scoped cache cannot prove it.
+            const resetVersion = latestEntitySequence.resetVersion;
+            void readSubscriptionCursor({ kind: "state" })
+              .then((applied) => {
+                if (
+                  stopped ||
+                  !latestEntitySequence.isSameResetVersion(resetVersion)
+                )
+                  return;
+                if (
+                  applied?.workspaceId === version.cursor!.workspaceId &&
+                  applied.seq >= version.cursor!.seq
+                ) {
+                  latestEntitySequence.assignWithinEpoch(applied.seq);
+                  latestEntitySequence.markDurableCheckpointValid();
+                  report(null);
+                } else {
+                  invalidate({
+                    ...version,
+                    cursor: undefined,
+                    replyKind: undefined,
+                  });
+                }
+              })
+              .catch(() =>
+                invalidate({
+                  ...version,
+                  cursor: undefined,
+                  replyKind: undefined,
+                }),
+              );
+            return;
+          }
           if (version.entitySequenceReset) {
             latestEntitySequence.reset();
             requiredEntitySequence = undefined;
@@ -2205,9 +2247,23 @@ export function createSyncClient(options: SyncClientOptions) {
               notifyInvalidation,
               remoteScope === SYNC_ENTITY_SCOPE ? "entities" : "legacy",
             );
-        stopConnection = watchResourceConnection((status) => {
+        stopConnection = watchResourceConnection((status, stream) => {
           const reconnected = status === "live" && connectionStatus !== "live";
           connectionStatus = status;
+          // Transport failure is explicit recovery evidence. Merely opening
+          // a cold stream must not race its authoritative baseline with HTTP.
+          if (
+            !baselineSeen &&
+            !coldRecoveryStarted &&
+            !invalidationBlocked &&
+            status !== "schema-mismatch" &&
+            (status === "degraded" ||
+              status === "offline" ||
+              stream === "stopped")
+          ) {
+            coldRecoveryStarted = true;
+            void refresh().catch(() => {});
+          }
           if (
             reconnected &&
             (readFailed || recovery.exhaustedError) &&
@@ -2291,14 +2347,8 @@ export function createSyncClient(options: SyncClientOptions) {
         fail,
         acceptUiPreferences,
       );
-      // Start the first incomplete projection pull as soon as the stream has been
-      // subscribed, without waiting for its baseline frame. A completed local
-      // cache already supplies content and needs no speculative pull.
-      const [complete] = await db.projections.storageInstance.findDocumentsById(
-        ["state:entities:complete"],
-        true,
-      );
-      if (!complete || complete._deleted) void state.refresh().catch(() => {});
+      // The subscribed resource owns bootstrap. Applied SSE receipts publish
+      // ready data; revision-only hints and transport failure request recovery.
     } catch (error) {
       stopEntities?.();
       state.listeners.delete(fail);

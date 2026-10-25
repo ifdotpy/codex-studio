@@ -280,6 +280,21 @@ Its ready marker identifies a replacement baseline; ordinary deltas preserve
 that marker and unchanged agent objects. A delta may overlap already applied
 records, but a missing base or forward gap cannot advance the checkpoint.
 
+Subscribed resources own their initial delivery. A cold watcher waits for its
+applied SSE baseline instead of racing it with an unconditional HTTP read.
+Readiness belongs to the exact subscribed ref: a detail or transcript baseline
+does not complete the state resource. The state completion marker proves only
+the canonical state subscription scope, not every detail or historical entity.
+An applied reconnect baseline can restore readiness even when its revision has
+not changed. Identity, authentication, and schema checks retain their existing
+boundaries.
+
+Revision-only hints, gaps, overflow, failed local application, and a failed or
+stopped cold stream enter the existing bounded read recovery path. Connection
+startup alone does not request recovery. Schema mismatch pauses synchronization
+without using recovery reads to bypass it. Recovery errors remain visible and
+do not create a polling loop.
+
 ### Connection loss and recovery
 
 Named `heartbeat` events prove liveness and never trigger resource reads.
