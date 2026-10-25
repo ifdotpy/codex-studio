@@ -13,10 +13,12 @@ import type { components } from "../generated/api";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 import { SYNC_ENTITY_STREAM_MAX_DOCUMENTS } from "../generated/sharedValues";
 import type { ResourceChangeEvent } from "./subscriptions/events";
+import type { ResourceVersion } from "./subscriptions/events";
 
 const mocks = vi.hoisted(() => ({
   databases: [] as RxDatabase[],
   syncGet: vi.fn(),
+  invalidations: new Set<(version?: ResourceVersion) => void>(),
 }));
 vi.mock("rxdb", async (original) => {
   const rxdb = await original<typeof import("rxdb")>();
@@ -51,7 +53,13 @@ vi.mock("../api", () => ({
 vi.mock("./subscriptions/events", () => ({
   acknowledgeEntitySequences: vi.fn(),
   watchResourceConnection: () => () => {},
-  watchResourceChanges: () => () => {},
+  watchResourceChanges: (
+    resource: { kind: string },
+    accept: (version?: ResourceVersion) => void,
+  ) => {
+    if (resource.kind === "state") mocks.invalidations.add(accept);
+    return () => mocks.invalidations.delete(accept);
+  },
 }));
 vi.mock("./resume", () => ({ onResume: () => () => {} }));
 vi.mock("./entityCacheStorage", async (original) => ({
@@ -718,17 +726,6 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
   stopProjection = stop;
   const waitSnapshot = (accept: (snapshot: Snapshot) => boolean) =>
     firstValueFrom(snapshots.pipe(filter(accept), timeout(5000)));
-  const baseline = await waitSnapshot(
-    (value) => value.entitiesComplete === true,
-  ).catch((error) => {
-    throw new Error(
-      `Initial projection did not settle: ${JSON.stringify({ reads: mocks.syncGet.mock.calls, failures: failed.mock.calls.map(([value]) => String(value)), rows: latest?.threads.length, complete: latest?.entitiesComplete })}`,
-      { cause: error },
-    );
-  });
-  expect(baseline.threads.length).toBeGreaterThan(
-    SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
-  );
   const { db, workspaceId } = await client.syncDatabase();
   const queryProjection = vi.spyOn(db.projections, "find");
   const controller = new AbortController();
@@ -736,7 +733,22 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
   const dispatched = new ReplaySubject<ResourceChangeEvent>();
   const delivery = new ResourceEntityDelivery(
     client.persistResourceEntityChanges,
-    (event) => dispatched.next(event),
+    (event) => {
+      // The actual caller learns about the revision only after the durable
+      // delivery boundary settles, just as resourceEvents dispatches it.
+      const index = event.resources.findIndex((ref) => ref.kind === "state");
+      const entry = event.resourceVersions[index];
+      if (entry)
+        for (const accept of mocks.invalidations)
+          accept({
+            epoch: event.epoch,
+            revision: entry.revision,
+            entitySequence: entry.revision,
+            cursor: entry.cursor ?? undefined,
+            replyKind: entry.replyKind ?? undefined,
+          });
+      dispatched.next(event);
+    },
   );
   const query = new URLSearchParams({
     protocol: String(SYNC_PROTOCOL_VERSION),
@@ -763,6 +775,18 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
     firstValueFrom(frames.pipe(filter(accept), timeout(5000)));
   try {
     await firstValueFrom(dispatched.pipe(timeout(5000)));
+    const baseline = await waitSnapshot(
+      (value) => value.entitiesComplete === true,
+    ).catch((error) => {
+      throw new Error(
+        `Initial projection did not settle: ${JSON.stringify({ reads: mocks.syncGet.mock.calls, failures: failed.mock.calls.map(([value]) => String(value)), rows: latest?.threads.length, complete: latest?.entitiesComplete })}`,
+        { cause: error },
+      );
+    });
+    expect(baseline.threads.length).toBeGreaterThan(
+      SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+    );
+    queryProjection.mockClear();
     const reads = mocks.syncGet.mock.calls.length;
     const worker = {
       id: "worker",
