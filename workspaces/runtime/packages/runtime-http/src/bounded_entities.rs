@@ -728,7 +728,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cost_interest_http_joins_reserved_scan_and_failure_keeps_saved_result() {
+    async fn cost_interest_http_dispatches_concurrent_interests_and_streams_real_completion() {
         use axum::{
             body::Body,
             extract::ConnectInfo,
@@ -757,17 +757,13 @@ mod tests {
         )
         .await
         .expect("saved estimate");
-        let reservation = studio_runtime_services::usage::reserve_account_cost_refresh(
-            root.path(),
-            "default",
-            &account,
-        )
-        .expect("scan reserved before dispatch");
+        use futures_util::StreamExt;
+        publish_costs(&state).await.expect("saved baseline");
         let app = crate::router::router(state.clone()).expect("router");
-        for _ in 0..2 {
-            let request = Request::builder()
-                .method("POST")
-                .uri("/api/costs/interest")
+        let request = |method: &str, uri: &str, body: Body| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
                 .header("host", "127.0.0.1:4321")
                 .header("content-type", "application/json")
                 .header("x-canvas-token", "token")
@@ -780,21 +776,83 @@ mod tests {
                         .parse::<std::net::SocketAddr>()
                         .expect("peer"),
                 ))
-                .body(Body::from(r#"{"account_key":"default"}"#))
-                .expect("request");
-            let response = app
-                .clone()
-                .oneshot(request)
-                .await
-                .expect("interest response");
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(entity(&state, "accountCost", "default")["refreshing"], true);
+                .body(body)
+                .expect("request")
+        };
+        let response = app.clone().oneshot(request("GET", &format!("/api/sync/stream?protocol={}&resources=%5B%7B%22kind%22%3A%22costs%22%7D%5D&tokenRates=false", studio_runtime_schema::SYNC_PROTOCOL_VERSION_TEXT), Body::empty())).await.expect("cost stream");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut stream = response.into_body().into_data_stream();
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.expect("initial stream bytes");
+            if String::from_utf8_lossy(&bytes).contains("event: resources") {
+                break;
+            }
         }
-        drop(reservation);
-        settle_cost_worker_failure(&state, "default")
+        let interest = || {
+            request(
+                "POST",
+                "/api/costs/interest",
+                Body::from(r#"{"account_key":"default"}"#),
+            )
+        };
+        let (first, second) = tokio::join!(
+            app.clone().oneshot(interest()),
+            app.clone().oneshot(interest())
+        );
+        assert_eq!(first.expect("first interest").status(), StatusCode::OK);
+        assert_eq!(
+            second.expect("concurrent joining interest").status(),
+            StatusCode::OK
+        );
+        let saved = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(chunk) = stream.next().await {
+                let bytes = chunk.expect("live stream bytes");
+                let text = String::from_utf8_lossy(&bytes);
+                if !text.contains("event: resources") {
+                    continue;
+                }
+                let data = text
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("event data");
+                let event: Value = serde_json::from_str(data).expect("resource event");
+                for entry in event["resourceVersions"]
+                    .as_array()
+                    .expect("resource entries")
+                {
+                    if let Some(documents) = entry["entityChanges"]["documents"].as_array() {
+                        for document in documents {
+                            let value = &document["value"];
+                            if document["collection"] == "accountCost"
+                                && document["id"] == "default"
+                                && value["refreshing"] == false
+                                && value["checkedAt"].as_f64().is_some_and(|at| at > 1.0)
+                            {
+                                return value.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            panic!("cost stream closed before worker completion");
+        })
+        .await
+        .expect("first unreserved interest dispatches and publishes completion over SSE");
+        let cache_value: Value = serde_json::from_slice(
+            &tokio::fs::read(cache.join("claude-costs.json"))
+                .await
+                .expect("actual scanner saved cache"),
+        )
+        .expect("saved scanner result");
+        assert_eq!(saved["checkedAt"], cache_value["checked"]);
+        assert!(
+            saved["error"].as_str().is_some(),
+            "the actual missing-profile scan records its failure"
+        );
+        state
+            .shutdown_services()
             .await
-            .expect("failed scan settles");
-        let saved = entity(&state, "accountCost", "default");
+            .expect("all dispatched scans settle");
         assert_eq!(saved["data"]["last30DaysUSD"], 3);
         assert_eq!(saved["refreshing"], false);
         assert_eq!(saved["stale"], true);

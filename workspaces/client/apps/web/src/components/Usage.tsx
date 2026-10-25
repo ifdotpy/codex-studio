@@ -331,7 +331,14 @@ export default function Usage({
   const rootId = agent.rootId || agent.id;
   useSubscription(visible ? { kind: "session-cost", agentId: rootId } : null);
   useSubscription(visible && limitsOpened ? { kind: "costs" } : null);
-  const costInterest = useRef<string | null>(null);
+  const costObservation = useRef<{ scope: string; signature: string } | null>(
+    null,
+  );
+  const costInterest = useRef<{
+    scope: string;
+    baseline: string | null;
+    settled: boolean;
+  } | null>(null);
   const [costInterestError, setCostInterestError] = useState("");
   useEffect(() => {
     if (!visible || !limitsOpened) {
@@ -339,12 +346,20 @@ export default function Usage({
       return;
     }
     const scope = JSON.stringify([stateDir, accountKey]);
-    if (costInterest.current === scope) return;
-    costInterest.current = scope;
+    if (costInterest.current?.scope === scope) return;
+    const attempt = {
+      scope,
+      baseline:
+        costObservation.current?.scope === scope
+          ? costObservation.current.signature
+          : null,
+      settled: false,
+    };
+    costInterest.current = attempt;
     setCostInterestError("");
     void post("/api/costs/interest", { account_key: accountKey }).catch(
       (error) => {
-        if (costInterest.current === scope)
+        if (costInterest.current === attempt && !attempt.settled)
           setCostInterestError(errorText(error));
       },
     );
@@ -387,11 +402,20 @@ export default function Usage({
     return subscribeStateProjection(
       (snapshot) => {
         const value = snapshot?.runtime.accountCostsByAccount?.[accountKey];
-        if (value) setCosts(value);
+        if (!value) return;
+        const scope = JSON.stringify([stateDir, accountKey]);
+        const signature = JSON.stringify(value);
+        costObservation.current = { scope, signature };
+        const attempt = costInterest.current;
+        if (attempt?.scope === scope && signature !== attempt.baseline) {
+          attempt.settled = true;
+          setCostInterestError("");
+        }
+        setCosts(value);
       },
       () => {},
     );
-  }, [accountKey, subscribeStateProjection]);
+  }, [stateDir, accountKey, subscribeStateProjection]);
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now() / 1000), 30000);

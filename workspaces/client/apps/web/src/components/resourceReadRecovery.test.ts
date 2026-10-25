@@ -669,6 +669,100 @@ describe("resource read callers", () => {
     post.mockClear();
   });
 
+  it("settles a lost interest response with a newer authoritative cost result", async () => {
+    let reject!: (error: Error) => void;
+    post.mockReturnValue(
+      new Promise((_resolve, fail) => {
+        reject = fail;
+      }),
+    );
+    const render = (opened: boolean) =>
+      mount(() =>
+        Usage({
+          agent: { id: "lead", rootId: "lead", accountKey: "default" } as Agent,
+          stateDir: "private-fixture",
+          limits: null,
+          reload: vi.fn(),
+          opened,
+        }),
+      );
+    render(false);
+    const saved = {
+      accountKey: "default",
+      at: 100,
+      checkedAt: 100,
+      error: null,
+      stale: true,
+      refreshing: false,
+      data: { last30DaysUSD: 3 },
+    };
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { default: saved } } });
+    render(true);
+    reject(new Error("Response lost"));
+    await Promise.resolve();
+    expect(JSON.stringify(render(true))).toContain(
+      "Refresh failed · stale estimate",
+    );
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { default: { ...saved } } } });
+    expect(JSON.stringify(render(true))).toContain(
+      "Refresh failed · stale estimate",
+    );
+    const fresh = { ...saved, at: 200, checkedAt: 200, stale: false };
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { default: fresh } } });
+    const view = JSON.stringify(render(true));
+    expect(view).not.toContain("Refresh failed · stale estimate");
+    expect(view).toContain("$3.00");
+    post.mockClear();
+  });
+
+  it("ignores an obsolete opening rejection and a rejection after fresh SSE settlement", async () => {
+    const rejections: Array<(error: Error) => void> = [];
+    post.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejections.push(reject);
+        }),
+    );
+    const render = (opened: boolean) =>
+      mount(() =>
+        Usage({
+          agent: { id: "lead", rootId: "lead", accountKey: "default" } as Agent,
+          stateDir: "private-fixture",
+          limits: null,
+          reload: vi.fn(),
+          opened,
+        }),
+      );
+    render(true);
+    render(false);
+    render(true);
+    rejections[0]!(new Error("Old opening failed"));
+    await Promise.resolve();
+    expect(JSON.stringify(render(true))).not.toContain(
+      "Refresh failed · stale estimate",
+    );
+    const fresh = {
+      accountKey: "default",
+      at: 200,
+      checkedAt: 200,
+      error: null,
+      stale: false,
+      refreshing: false,
+      data: { last30DaysUSD: 4 },
+    };
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { default: fresh } } });
+    rejections[1]!(new Error("New response lost after SSE"));
+    await Promise.resolve();
+    const view = JSON.stringify(render(true));
+    expect(view).not.toContain("Refresh failed · stale estimate");
+    expect(view).toContain("$4.00");
+    post.mockClear();
+  });
+
   it("applies both cost display projections without GETs", async () => {
     const session = {
       rootId: "lead",
