@@ -110,7 +110,6 @@ fn is_view_resource(resource: &ResourceRef) -> bool {
     matches!(
         resource,
         ResourceRef::ProcessesResource(_)
-            | ResourceRef::WorkResource(_)
             | ResourceRef::ComplaintResource(_)
             | ResourceRef::RoomResource(_)
             | ResourceRef::TerminalOutputResource(_)
@@ -126,9 +125,6 @@ async fn view_value(
     match resource {
         ResourceRef::ProcessesResource(r) => {
             Ok(json!({"processes":super::process_controls::read_listing(state, r.agent_id).await?}))
-        }
-        ResourceRef::WorkResource(r) => {
-            Ok(json!({"work":super::work_items::work_for_agent(state, r.agent_id).await?}))
         }
         ResourceRef::ComplaintResource(r) => Ok(
             json!({"complaint":super::questions_reads::complaint_for_id(state, r.complaint_id).await?}),
@@ -258,7 +254,6 @@ pub(super) async fn attach_view_snapshots(
 // its complete set against the generated OpenAPI ResourceRef discriminator.
 resource_handlers! {
     ProcessesResourceHandler => ProcessesResource, view_initial;
-    WorkResourceHandler => WorkResource, view_initial;
     ComplaintResourceHandler => ComplaintResource, view_initial;
     TerminalOutputResourceHandler => TerminalOutputResource, view_initial;
     AgentDetailResourceHandler => AgentDetailResource, entity_initial;
