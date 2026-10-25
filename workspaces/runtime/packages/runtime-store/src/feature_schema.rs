@@ -102,7 +102,7 @@ const FEATURE_SCHEMA: &str = r#"
                 ON runtime_rules(json_extract(record,'$.status'))
                 WHERE NOT COALESCE(json_extract(record,'$.inFlight'),0);
             CREATE TABLE IF NOT EXISTS runtime_budget (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL, breakdown TEXT);
+            CREATE TABLE IF NOT EXISTS runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL, breakdown TEXT, details TEXT);
             CREATE INDEX IF NOT EXISTS runtime_budget_usage_agent ON runtime_budget_usage(agent,kind);
             CREATE TABLE IF NOT EXISTS runtime_execution_runs (id TEXT PRIMARY KEY, agent TEXT NOT NULL, account TEXT NOT NULL, epoch INTEGER NOT NULL, thread TEXT, turn TEXT, created REAL NOT NULL, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_execution_run_agent ON runtime_execution_runs(agent,created DESC);
@@ -290,6 +290,13 @@ pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
         // NULL preserves total-only replay comparison for every existing response.
         transaction.execute_batch("ALTER TABLE runtime_budget_usage ADD COLUMN breakdown TEXT")?;
     }
+    let has_details: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_budget_usage') WHERE name='details')", [], |row| row.get(0),
+    )?;
+    if !has_details {
+        // O(1): old receipts retain their existing interpretation, without a rebuild.
+        transaction.execute_batch("ALTER TABLE runtime_budget_usage ADD COLUMN details TEXT")?;
+    }
     transaction.execute_batch("CREATE INDEX IF NOT EXISTS runtime_receipt_transcript_item ON runtime_event_meta(json_extract(record,'$.transcriptItemId'))")?;
     // A deleted row is no longer readable by the writer journal. Its source
     // trigger owns the corresponding summary tombstone in the same transaction.
@@ -376,16 +383,16 @@ mod tests {
         let tx = db.transaction().expect("upgrade transaction");
         super::prepare(&tx).expect("additive upgrade");
         tx.commit().expect("commit upgrade");
-        let legacy: (i64, String, i64, Option<String>) = db
+        let legacy: (i64, String, i64, Option<String>, Option<String>) = db
             .query_row(
-                "SELECT rowid,kind,tokens,breakdown FROM runtime_budget_usage WHERE id='legacy'",
+                "SELECT rowid,kind,tokens,breakdown,details FROM runtime_budget_usage WHERE id='legacy'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .expect("new nullable column");
         assert_eq!(
             legacy,
-            (1, "response".into(), 12, None),
+            (1, "response".into(), 12, None, None),
             "no backfill or row rewrite"
         );
         assert_eq!(

@@ -837,6 +837,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     for (name, schema) in crate::usage::schemas() {
         openapi["components"]["schemas"][name] = schema;
     }
+    openapi["components"]["schemas"]["UsageReconciliationResponse"]["properties"]["replayConflicts"] = serde_json::json!({"type":"array","items":{"$ref":"#/components/schemas/UsageReplayConflict"}});
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
         (
@@ -951,6 +952,12 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .ok_or("usage definitions must be an object")?
         {
             schema["$defs"][name] = value.clone();
+        }
+        if name == "analytics-usage" {
+            for field in ["usageIdentity", "receiptKey"] {
+                schema["properties"][field] =
+                    usage_defs["UsageLedgerRow"]["properties"][field].clone();
+            }
         }
         rendered.push(Rendered {
             path,

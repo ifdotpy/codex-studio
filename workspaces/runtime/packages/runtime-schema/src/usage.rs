@@ -1,4 +1,5 @@
 //! Provider-neutral accounting observations. This module alone interprets usage wire keys.
+pub mod ledger;
 pub mod persisted;
 pub use persisted::parse_analytics_usage_row;
 
@@ -559,6 +560,8 @@ pub fn schemas() -> serde_json::Map<String, Value> {
         .with(|s| s.definitions_path = "/components/schemas".into())
         .into_generator();
     generator.subschema_for::<UsageObservation>();
+    generator.subschema_for::<ledger::UsageLedgerRow>();
+    generator.subschema_for::<ledger::UsageReplayConflict>();
     generator.take_definitions(true)
 }
 

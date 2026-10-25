@@ -87,7 +87,16 @@ pub fn capture(
     source: CaptureSource,
     now: f64,
 ) -> Result<u64, BudgetError> {
-    capture_into(tx, agent, params, at, source, now, true).map(|(tokens, _)| tokens)
+    capture_into(
+        tx,
+        agent,
+        params,
+        at,
+        source,
+        now,
+        CaptureMode::Notification,
+    )
+    .map(|(tokens, _)| tokens)
 }
 
 /// [`capture`] for a caller that persists the supplied agent copy in the same
@@ -101,7 +110,80 @@ pub fn capture_for_persisting_caller(
     source: CaptureSource,
     now: f64,
 ) -> Result<budget::UsageAcceptance, BudgetError> {
-    capture_into(tx, agent, params, at, source, now, false).map(|(_, acceptance)| acceptance)
+    capture_into(
+        tx,
+        agent,
+        params,
+        at,
+        source,
+        now,
+        CaptureMode::PersistingCaller,
+    )
+    .map(|(_, acceptance)| acceptance)
+}
+
+/// Replay a persisted typed analytics row using its first-capture receipt.
+pub fn capture_persisted(
+    tx: &Transaction<'_>,
+    agent: &mut Value,
+    row: &Value,
+    at: f64,
+    now: f64,
+) -> Result<u64, BudgetError> {
+    capture_into(
+        tx,
+        agent,
+        row,
+        at,
+        CaptureSource::History,
+        now,
+        CaptureMode::Persisted,
+    )
+    .map(|(tokens, _)| tokens)
+}
+
+pub(crate) fn capture_acceptance(
+    tx: &Transaction<'_>,
+    agent: &mut Value,
+    params: &Value,
+    at: f64,
+    source: CaptureSource,
+    now: f64,
+) -> Result<budget::UsageAcceptance, BudgetError> {
+    capture_into(
+        tx,
+        agent,
+        params,
+        at,
+        source,
+        now,
+        CaptureMode::Notification,
+    )
+    .map(|(_, acceptance)| acceptance)
+}
+pub(crate) fn capture_persisted_acceptance(
+    tx: &Transaction<'_>,
+    agent: &mut Value,
+    row: &Value,
+    at: f64,
+    now: f64,
+) -> Result<budget::UsageAcceptance, BudgetError> {
+    capture_into(
+        tx,
+        agent,
+        row,
+        at,
+        CaptureSource::History,
+        now,
+        CaptureMode::Persisted,
+    )
+    .map(|(_, acceptance)| acceptance)
+}
+
+enum CaptureMode {
+    Notification,
+    PersistingCaller,
+    Persisted,
 }
 
 fn capture_into(
@@ -111,7 +193,7 @@ fn capture_into(
     at: f64,
     source: CaptureSource,
     now: f64,
-    patch_agent: bool,
+    mode: CaptureMode,
 ) -> Result<(u64, budget::UsageAcceptance), BudgetError> {
     let (state, changed, acceptance) = atomic(tx, || {
         let identity = match source {
@@ -119,14 +201,23 @@ fn capture_into(
             CaptureSource::History => SnapshotIdentity::History,
         };
         let snapshot = snapshot(tx, agent, identity, now)?;
-        let observation = UsageObservation::from_record(&snapshot, params, at, source)?;
+        let observation = if matches!(mode, CaptureMode::Persisted) {
+            UsageObservation::from_persisted(&snapshot, params, at, source)?
+        } else {
+            UsageObservation::from_record(&snapshot, params, at, source)?
+        };
         let previous = BudgetRepository::usage(tx, observation.key())?;
         let decision = budget::capture(&snapshot, &observation, previous.as_ref())?;
         if let Some(row) = &decision.usage {
             BudgetRepository::insert_usage(tx, row)?;
         }
         if decision.changed {
-            save_state(tx, snapshot.agent_id(), &decision.state, patch_agent)?;
+            save_state(
+                tx,
+                snapshot.agent_id(),
+                &decision.state,
+                !matches!(mode, CaptureMode::PersistingCaller),
+            )?;
         }
         Ok((decision.state, decision.changed, decision.acceptance))
     })?;
@@ -143,6 +234,139 @@ fn capture_into(
         .as_u64()
         .ok_or_else(|| BudgetError::Invalid("runtime_budget/spent".into()))
         .map(|tokens| (tokens, acceptance))
+}
+
+/// Enrich only old scalar receipts before admitting the capture writer. All analytics
+/// IO occurs outside that writer; the metadata transaction compares the exact old row.
+/// It changes no amount, placement totals, agent state, or notification receipt.
+pub async fn prepare_legacy_corrections(
+    store: &studio_runtime_store::RuntimeStore,
+    captures: Vec<(Value, Value)>,
+) -> Result<(), BudgetError> {
+    use studio_runtime_schema::usage::ledger::UsageLedgerRow;
+    use studio_runtime_schema::usage::{
+        UsageEvidence, UsageObservation as ParsedUsage, UsageProvider, parse_token_usage,
+    };
+    let candidates = store
+        .read_async("budget/legacy-receipts", move |tx| {
+            let mut candidates = Vec::new();
+            for (agent, params) in captures {
+                let provider = if agent["provider"] == "claude" {
+                    UsageProvider::Claude
+                } else {
+                    UsageProvider::Codex
+                };
+                let Ok(observation) = parse_token_usage(provider, &params) else {
+                    continue;
+                };
+                let restore = params.get("agentId").is_some();
+                let ParsedUsage::Response {
+                    response_id,
+                    evidence,
+                    ..
+                } = &observation
+                else {
+                    continue;
+                };
+                if *evidence == UsageEvidence::Legacy && !restore {
+                    continue;
+                }
+                let Some(id) = agent["id"].as_str() else {
+                    continue;
+                };
+                let incoming = UsageLedgerRow::capture(
+                    id,
+                    agent["accountKey"].as_str().unwrap_or("default"),
+                    params["threadId"]
+                        .as_str()
+                        .or_else(|| agent["threadId"].as_str()),
+                    None,
+                    &params,
+                    observation.clone(),
+                );
+                let Some(old) = BudgetRepository::usage(tx, &incoming.receipt_key)? else {
+                    continue;
+                };
+                if old.agent != id || old.details.is_some() {
+                    continue;
+                }
+                let state = Table::<BudgetRecord>::new(tx).get(&AgentId::from(id))?;
+                let cutoff = state
+                    .as_ref()
+                    .and_then(|row| row.0["cutoff"].as_f64())
+                    .unwrap_or(old.at);
+                let restored = restore
+                    .then(|| {
+                        UsageLedgerRow::from_analytics(provider, &params)
+                            .ok()
+                            .map(|ledger| {
+                                (
+                                    ledger,
+                                    params["timestampSource"] == "fileModifiedEstimate"
+                                        || params["_analyticsTimestampSource"]
+                                            == "fileModifiedEstimate",
+                                )
+                            })
+                    })
+                    .flatten();
+                candidates.push((
+                    old,
+                    params["threadId"]
+                        .as_str()
+                        .or_else(|| agent["threadId"].as_str())
+                        .map(str::to_owned),
+                    response_id.clone(),
+                    cutoff,
+                    restored,
+                ));
+            }
+            Ok::<_, studio_runtime_store::StoreError>(candidates)
+        })
+        .await?;
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let root = store.root().to_owned();
+    let proven = studio_runtime_process::blocking_pool::spawn_blocking(
+        "budget/legacy-provenance",
+        move || {
+            let db = studio_runtime_store::AnalyticsRepository::new(&root).open_read_only()?;
+            let mut proven = Vec::new();
+            for (old, thread, response, cutoff, restored) in candidates {
+                let provenance = match restored {
+                    Some(ledger) => Some(ledger),
+                    None => studio_runtime_store::analytics_capture::AnalyticsCaptureRepository::usage_provenance(&db, &old.agent, thread.as_deref(), &response)?,
+                };
+                let Some((mut ledger,estimated)) = provenance else { continue };
+                let consistent=match &ledger.studio_usage {
+                    ParsedUsage::Response { tokens,.. } => old.kind=="response" && tokens.total()==Some(old.tokens) && old.breakdown.as_ref().is_none_or(|previous|previous==tokens),
+                    ParsedUsage::Gap {..} => old.kind=="notice" && old.tokens==0 && old.breakdown.is_none(),
+                    _=>false,
+                };
+                if !consistent || ledger.usage_identity != studio_runtime_schema::usage::ledger::UsageIdentity::new(&old.agent, thread.as_deref(), &ledger.studio_usage) { continue; }
+                ledger.receipt_key = old.id.clone();
+                let before_cutoff = estimated || old.at <= cutoff;
+                proven.push((old, studio_runtime_store::budget::BudgetUsageDetails { ledger, before_cutoff }));
+            }
+            Ok::<_, BudgetError>(proven)
+        },
+    ).await.map_err(|_| studio_runtime_store::StoreError::ReadTaskFailed)??;
+    if proven.is_empty() {
+        return Ok(());
+    }
+    store
+        .transaction(move |tx| {
+            for (old, details) in proven {
+                if BudgetRepository::usage(tx, &old.id)?.as_ref() == Some(&old) {
+                    let mut enriched = old;
+                    enriched.details = Some(details);
+                    BudgetRepository::insert_usage(tx, &enriched)?;
+                }
+            }
+            Ok(())
+        })
+        .await?;
+    Ok(())
 }
 
 /// Re-read all same-root members including deleted workers in the owning submit

@@ -103,6 +103,26 @@ Remaining writes use the catalog's cache-write rate. Rows without the split keep
 their previous price. The aggregate upgrade appends nullable columns to its facts
 and groups without backfilling usage or rebuilding existing groups.
 
+Budget and analytics share the identity and correction policy in the
+[usage ledger owner](../workspaces/runtime/packages/runtime-schema/src/usage/ledger.rs).
+Response and gap identity is the agent and provider response ID; cumulative
+identity is the agent, thread, and counter scope. Typed analytics rows retain
+their first budget receipt key and are restored directly, without recreating a
+provider notification. Legacy response estimates can be replaced by final live
+or recovered evidence. The first final token tuple wins, and a conflicting replay
+records a fault while retaining that tuple. Final evidence resolves its response's
+gap; accounting remains provisional while another gap is unresolved.
+
+The budget upgrade adds a nullable typed receipt column without backfilling old
+rows. An old budget receipt without provenance gets a bounded indexed analytics
+lookup before the capture writer. Only proven provisional evidence can be
+corrected. Missing or ambiguous provenance keeps the old receipt immutable;
+both consumers reject the new final and retain notification metrics. Reconciliation
+lists the response identity and both token totals in `replayConflicts`. When Studio
+never stored the original categories, analytics remains unknown rather than
+creating a typed response from a total alone. Existing cost groups retain their interpretation and price until new
+evidence updates their scope. No startup rebuild of analytics is required.
+
 ## Checks
 
 The former Python backend command has been removed. See [testing](testing.md)

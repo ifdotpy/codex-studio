@@ -253,6 +253,7 @@ mod tests {
                 provider_at: 10.0 + cursor as f64,
             },
             budget_capture_value: None,
+            usage_conflict: None,
         }
     }
 

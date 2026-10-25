@@ -5,7 +5,8 @@ use crate::provider_adapter::{self, ProviderKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use studio_runtime_schema::usage::UsageTokens;
+use studio_runtime_schema::usage::ledger::{UsageCorrection, UsageLedgerRow, correction};
+use studio_runtime_schema::usage::{UsageEvidence, UsageTokens};
 use studio_runtime_store::{python_json_with_separators, sha256_hex};
 use thiserror::Error;
 
@@ -15,6 +16,8 @@ const MAX_RECORD_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Error)]
 pub enum BudgetError {
+    #[error(transparent)]
+    Analytics(#[from] studio_runtime_store::AnalyticsStoreError),
     #[error("invalid budget input at {0}")]
     Invalid(String),
     #[error("budget-policy/token-overflow")]
@@ -76,6 +79,10 @@ pub struct BudgetState {
     last_amount: Option<u64>,
     ambiguous_notices: Vec<String>,
     faults: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    unresolved_gaps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    replay_conflicts: Vec<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -225,6 +232,8 @@ impl BudgetSnapshot {
                 last_amount: None,
                 ambiguous_notices: vec![],
                 faults: vec![],
+                unresolved_gaps: vec![],
+                replay_conflicts: vec![],
                 extra: BTreeMap::new(),
             },
         };
@@ -276,6 +285,8 @@ pub enum CaptureSource {
 
 #[derive(Clone, Debug)]
 pub struct UsageObservation {
+    ledger: Option<UsageLedgerRow>,
+    identity: studio_runtime_schema::usage::ledger::UsageIdentity,
     key: String,
     exact: bool,
     amount: Option<u64>,
@@ -297,6 +308,31 @@ impl UsageObservation {
         at: f64,
         source: CaptureSource,
     ) -> Result<Self, BudgetError> {
+        Self::from_input(snapshot, params, at, source, None)
+    }
+
+    /// Restore a typed analytics receipt without reconstructing or parsing a notification.
+    pub fn from_persisted(
+        snapshot: &BudgetSnapshot,
+        row: &Value,
+        at: f64,
+        source: CaptureSource,
+    ) -> Result<Self, BudgetError> {
+        if row["agentId"].as_str() != Some(&snapshot.agent.id) {
+            return Err(invalid("analytics_usage/agentId"));
+        }
+        let ledger = UsageLedgerRow::from_analytics(snapshot.provider, row)
+            .map_err(|_| invalid("analytics_usage/ledger"))?;
+        Self::from_input(snapshot, row, at, source, Some(ledger))
+    }
+
+    fn from_input(
+        snapshot: &BudgetSnapshot,
+        params: &Value,
+        at: f64,
+        source: CaptureSource,
+        supplied: Option<UsageLedgerRow>,
+    ) -> Result<Self, BudgetError> {
         use studio_runtime_schema::usage::{
             UsageObservation as ParsedUsage, parse_legacy_totals, parse_token_usage,
         };
@@ -304,7 +340,11 @@ impl UsageObservation {
             return Err(invalid("tokenUsage"));
         }
         validate("BudgetCapture", params, "tokenUsage")?;
-        let parsed = parse_token_usage(snapshot.provider, params);
+        let parsed = supplied
+            .as_ref()
+            .map(|row| Ok(row.studio_usage.clone()))
+            .unwrap_or_else(|| parse_token_usage(snapshot.provider, params));
+        let typed = parsed.as_ref().ok().cloned();
         let informational = matches!(
             &parsed,
             Ok(ParsedUsage::Cumulative {
@@ -420,8 +460,44 @@ impl UsageObservation {
             .map(|v| decode::<String>(v, "tokenUsage/threadId"))
             .transpose()?
             .or_else(|| a.thread_id.clone());
+        let ledger = supplied.or_else(|| {
+            typed.map(|observation| {
+                UsageLedgerRow::capture(
+                    &a.id,
+                    &a.account_key,
+                    thread.as_deref(),
+                    identity_turn.as_deref(),
+                    params,
+                    observation,
+                )
+            })
+        });
+        let key = ledger
+            .as_ref()
+            .map(|row| row.receipt_key.clone())
+            .unwrap_or_else(|| {
+                sha256_hex(python_json_with_separators(&identity, ",", ":").as_bytes())
+            });
+        let identity = ledger
+            .as_ref()
+            .map(|row| row.usage_identity.clone())
+            .unwrap_or_else(|| match &response {
+                Some(response_id) if exact => {
+                    studio_runtime_schema::usage::ledger::UsageIdentity::Response {
+                        agent: a.id.clone(),
+                        response_id: response_id.clone(),
+                    }
+                }
+                _ => studio_runtime_schema::usage::ledger::UsageIdentity::Cumulative {
+                    agent: a.id.clone(),
+                    thread_id: thread.clone(),
+                    scope: studio_runtime_schema::usage::UsageScope::ClaudeQuery,
+                },
+            });
         Ok(Self {
-            key: sha256_hex(python_json_with_separators(&identity, ",", ":").as_bytes()),
+            key,
+            ledger,
+            identity,
             exact,
             amount,
             counter,
@@ -444,19 +520,40 @@ impl UsageObservation {
     }
 }
 
+pub use studio_runtime_schema::usage::ledger::UsageAcceptance;
 pub use studio_runtime_store::budget::BudgetUsageRow as UsageRow;
-/// Whether downstream projections may use this observation's content.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub enum UsageAcceptance {
-    Accepted,
-    RejectedReplayConflict,
-}
 #[derive(Clone, Debug, Serialize)]
 pub struct CaptureDecision {
     pub acceptance: UsageAcceptance,
     pub state: BudgetState,
     pub usage: Option<UsageRow>,
     pub changed: bool,
+}
+
+fn rejected_replay(
+    mut state: BudgetState,
+    observation: &UsageObservation,
+    previous: &UsageRow,
+) -> Result<CaptureDecision, BudgetError> {
+    let conflict = studio_runtime_schema::usage::ledger::UsageReplayConflict {
+        identity: observation.identity.clone(),
+        retained_total_tokens: previous.tokens,
+        incoming_total_tokens: observation
+            .amount
+            .ok_or_else(|| invalid("tokenUsage/conflict"))?,
+        retained_tokens: previous.breakdown.clone(),
+        incoming_tokens: observation.tokens.clone(),
+    };
+    state.fault(studio_runtime_schema::usage::ledger::RESPONSE_REPLAY_CONFLICT);
+    if !state.replay_conflicts.contains(&conflict) {
+        state.replay_conflicts.push(conflict.clone());
+    }
+    Ok(CaptureDecision {
+        acceptance: UsageAcceptance::RejectedReplayConflict(conflict),
+        state,
+        usage: None,
+        changed: true,
+    })
 }
 
 pub fn capture(
@@ -474,9 +571,95 @@ pub fn capture(
             changed: false,
         });
     }
+    if let Some(row) = previous {
+        if row.id != p.key || row.agent != snapshot.agent.id {
+            return Err(invalid("runtime_budget_usage/identity"));
+        }
+        if p.gap && row.kind == "response" && row.details.is_none() {
+            return Ok(CaptureDecision {
+                acceptance: UsageAcceptance::Accepted,
+                state,
+                usage: None,
+                changed: false,
+            });
+        }
+    }
     let mut inserted = None;
+    let mut previous = previous;
+    let mut replacement_before = None;
+    if let (Some(incoming), Some(old)) = (&p.ledger, previous.and_then(|row| row.details.as_ref()))
+    {
+        if incoming.usage_identity != old.ledger.usage_identity {
+            return Err(invalid("runtime_budget_usage/identity"));
+        }
+        match correction(&old.ledger.studio_usage, &incoming.studio_usage) {
+            UsageCorrection::UnresolvedGap => {}
+            UsageCorrection::Replay if !p.exact && !p.gap => {}
+            UsageCorrection::Replay => {
+                return Ok(CaptureDecision {
+                    acceptance: UsageAcceptance::Accepted,
+                    state,
+                    usage: None,
+                    changed: false,
+                });
+            }
+            UsageCorrection::ResponseReplayConflict => {
+                return rejected_replay(
+                    state,
+                    p,
+                    previous.ok_or_else(|| invalid("runtime_budget_usage/conflict"))?,
+                );
+            }
+            UsageCorrection::Apply => {
+                if let Some(row) = previous.filter(|row| row.kind == "response") {
+                    let bucket = if old.before_cutoff {
+                        &mut state.before
+                    } else {
+                        &mut state.after
+                    };
+                    *bucket = bucket
+                        .checked_sub(row.tokens)
+                        .ok_or_else(|| invalid("runtime_budget_usage/placement"))?;
+                    state.spent = state.spent.saturating_sub(row.tokens);
+                    replacement_before = Some(old.before_cutoff);
+                }
+                previous = None;
+            }
+        }
+    }
+    let is_final = p.ledger.as_ref().is_some_and(|row| matches!(&row.studio_usage, studio_runtime_schema::usage::UsageObservation::Response { evidence, .. } if *evidence != UsageEvidence::Legacy));
+    if is_final {
+        state.unresolved_gaps.retain(|key| key != &p.key);
+        if state.unresolved_gaps.is_empty() {
+            state
+                .faults
+                .retain(|fault| fault != studio_runtime_schema::usage::ledger::MISSING_FINAL_USAGE);
+        }
+    }
+    let before_cutoff = replacement_before.unwrap_or(p.estimated || p.at <= state.cutoff);
+    let details = p
+        .ledger
+        .clone()
+        .map(|ledger| studio_runtime_store::budget::BudgetUsageDetails {
+            ledger,
+            before_cutoff,
+        });
     if p.gap {
-        state.fault("missingFinalUsage");
+        if !state.unresolved_gaps.contains(&p.key) {
+            state.unresolved_gaps.push(p.key.clone());
+        }
+        state.fault(studio_runtime_schema::usage::ledger::MISSING_FINAL_USAGE);
+        if previous.is_none() {
+            inserted = Some(UsageRow {
+                id: p.key.clone(),
+                agent: snapshot.agent.id.clone(),
+                kind: "notice".into(),
+                tokens: 0,
+                at: p.at,
+                breakdown: None,
+                details,
+            });
+        }
     } else if p.source == CaptureSource::Live || p.at >= state.created {
         if let Some(previous) = previous {
             if previous.id != p.key || previous.agent != snapshot.agent.id {
@@ -493,13 +676,7 @@ pub fn capture(
                         .as_ref()
                         .is_some_and(|old| p.tokens.as_ref() != Some(old))
                 {
-                    state.fault("responseReplayConflict");
-                    return Ok(CaptureDecision {
-                        acceptance: UsageAcceptance::RejectedReplayConflict,
-                        state,
-                        usage: None,
-                        changed: true,
-                    });
+                    return rejected_replay(state, p, previous);
                 }
                 return Ok(CaptureDecision {
                     acceptance: UsageAcceptance::Accepted,
@@ -516,15 +693,16 @@ pub fn capture(
                 tokens: amount,
                 at: p.at,
                 breakdown: p.exact.then(|| p.tokens.clone()).flatten(),
+                details,
             });
             if p.exact {
                 if p.estimated {
                     state.fault("estimatedResponseTime");
                     state.before = add(state.before, amount)?;
-                } else if p.at > state.cutoff {
-                    state.after = add(state.after, amount)?;
-                } else {
+                } else if before_cutoff {
                     state.before = add(state.before, amount)?;
+                } else {
+                    state.after = add(state.after, amount)?;
                 }
             } else if p.source != CaptureSource::Live {
                 if !p.response {
@@ -1011,7 +1189,20 @@ mod typed_usage_tests {
         .expect("gap");
         assert_eq!(gap.state.accounting(), "provisional");
         assert_eq!(gap.state.spent, 12);
-        assert!(gap.usage.is_none());
+        let receipt = gap.usage.as_ref().expect("persisted gap identity");
+        assert_eq!(
+            receipt.tokens, 0,
+            "a gap has no debit; its typed usage remains unknown"
+        );
+        assert!(matches!(
+            receipt
+                .details
+                .as_ref()
+                .expect("typed gap")
+                .ledger
+                .studio_usage,
+            studio_runtime_schema::usage::UsageObservation::Gap { .. }
+        ));
         snapshot.state = gap.state;
         for (at, total, spent) in [(104., 20, 20), (105., 5, 25)] {
             let usage = json!({"kind":"cumulative","scope":"codexThread","total":{"uncachedInput":total,"cacheReadInput":0,"cacheWriteInput":0,"output":0}});
@@ -1123,6 +1314,7 @@ mod typed_usage_tests {
         // Records predating the typed ledger keep their total-only comparison.
         let mut previous = previous;
         previous.breakdown = None;
+        previous.details = None;
         assert!(
             !capture(&snapshot, &conflict, Some(&previous))
                 .expect("legacy comparison")

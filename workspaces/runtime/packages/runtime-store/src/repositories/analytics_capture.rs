@@ -12,6 +12,9 @@ pub const CAPTURE_RECORD_BY_ID_SQL: &str = "SELECT record FROM {table} WHERE id=
 /// Indexed pre-contract response lookup within its original agent/thread scope.
 pub const USAGE_RESPONSE_SQL: &str = "SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND json_extract(record,'$.responseId')=? LIMIT 1";
 
+/// Exact indexed provenance lookup; two records prove ambiguity without scanning a scope.
+pub const USAGE_PROVENANCE_SQL: &str = "SELECT record FROM analytics_usage INDEXED BY analytics_usage_response WHERE agent=?1 AND thread IS ?2 AND json_extract(record,'$.responseId')=?3 LIMIT 2";
+
 /// One existing analytics table; identifiers are never supplied by a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureTable {
@@ -161,6 +164,34 @@ impl AnalyticsCaptureRepository {
             .optional()?;
         Self::usage_raw(raw)
     }
+    /// Bounded provenance lookup for pre-ledger budget receipts. More than one row
+    /// is ambiguous; no provenance is invented from a scalar budget total.
+    pub fn usage_provenance(
+        db: &Connection,
+        agent: &str,
+        thread: Option<&str>,
+        response: &str,
+    ) -> StoreResult<Option<(studio_runtime_schema::usage::ledger::UsageLedgerRow, bool)>> {
+        let mut query = db.prepare_cached(USAGE_PROVENANCE_SQL)?;
+        let rows = query
+            .query_map(rusqlite::params![agent, thread, response], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let [raw] = rows.as_slice() else {
+            return Ok(None);
+        };
+        let value: Value = serde_json::from_str(raw)?;
+        Ok(
+            studio_runtime_schema::usage::ledger::UsageLedgerRow::from_analytics(
+                studio_runtime_schema::usage::UsageProvider::Codex,
+                &value,
+            )
+            .ok()
+            .map(|ledger| (ledger, value["timestampSource"] == "fileModifiedEstimate")),
+        )
+    }
+
     pub fn usage_prior(
         db: &Connection,
         agent: &str,

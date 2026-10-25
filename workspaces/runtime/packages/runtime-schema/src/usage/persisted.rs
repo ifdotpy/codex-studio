@@ -4,12 +4,17 @@ use super::{
 };
 use serde_json::Value;
 
-/// Reconstruct history notifications without interpreting legacy columns in consumers.
+/// Compatibility reader for pre-contract analytics rows only. Typed rows use the ledger.
 /// Sparse Claude rows retain their known total for the legacy totals-only budget path.
 pub fn analytics_usage_notification(
     provider: UsageProvider,
     row: &Value,
 ) -> Result<Value, UsageParseError> {
+    if row.get("studioUsage").is_some() {
+        return Err(UsageParseError(
+            "typed usage rows require direct ledger ingestion".into(),
+        ));
+    }
     match parse_analytics_usage_row(provider, row) {
         Ok(observation) => {
             let mut notification = serde_json::json!({"threadId":row["threadId"],"turnId":row["turnId"],"studioUsage":observation});
@@ -113,6 +118,9 @@ pub fn parse_analytics_usage_row(
     row: &Value,
 ) -> Result<UsageObservation, UsageParseError> {
     if let Some(value) = row.get("studioUsage") {
+        if row.get("usageIdentity").is_some() || row.get("receiptKey").is_some() {
+            return Ok(super::ledger::UsageLedgerRow::from_analytics(provider, row)?.studio_usage);
+        }
         return Ok(serde_json::from_value(value.clone())?);
     }
     let text = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_owned);

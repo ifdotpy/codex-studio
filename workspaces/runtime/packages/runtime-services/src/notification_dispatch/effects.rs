@@ -153,6 +153,8 @@ pub enum NotificationPostCommit {
     Analytics {
         observation: NotificationObservation,
         budget_capture_value: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage_conflict: Option<Box<studio_runtime_schema::usage::ledger::UsageReplayConflict>>,
     },
     AnalyticsStream {
         observation: NotificationObservation,

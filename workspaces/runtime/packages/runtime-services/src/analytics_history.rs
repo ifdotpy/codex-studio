@@ -252,6 +252,26 @@ pub trait HistoryBudgetSink: Send + Sync {
         captures: Vec<(Arc<Value>, Value, f64)>,
         now: f64,
     ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>>;
+    fn capture_page_with_conflicts<'a>(
+        &'a self,
+        captures: Vec<(Arc<Value>, Value, f64)>,
+        now: f64,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Vec<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
+                        HistoryError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.capture_page(captures, now).await?;
+            Ok(Vec::new())
+        })
+    }
 }
 
 /// The production page sink. Identity and budget state are re-read through
@@ -273,29 +293,76 @@ impl HistoryBudgetSink for StoreHistoryBudgetSink<'_> {
         now: f64,
     ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>> {
         Box::pin(async move {
+            self.capture_page_with_conflicts(captures, now).await?;
+            Ok(())
+        })
+    }
+    fn capture_page_with_conflicts<'a>(
+        &'a self,
+        captures: Vec<(Arc<Value>, Value, f64)>,
+        now: f64,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Vec<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
+                        HistoryError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
             if captures.is_empty() {
-                return Ok(());
+                return Ok(Vec::new());
             }
-            self.store
+            crate::budget_service::prepare_legacy_corrections(
+                self.store,
+                captures
+                    .iter()
+                    .map(|(agent, params, _)| ((**agent).clone(), params.clone()))
+                    .collect(),
+            )
+            .await?;
+            let conflicts = self
+                .store
                 .transaction_with::<_, HistoryError>(move |tx| {
                     let mut page_agent = captures
                         .first()
                         .map(|(agent, _, _)| (**agent).clone())
                         .ok_or(HistoryError::BudgetUnavailable)?;
+                    let mut conflicts = Vec::new();
                     for (_, params, at) in captures {
-                        crate::budget_service::capture(
-                            tx,
-                            &mut page_agent,
-                            &params,
-                            at,
-                            crate::budget::CaptureSource::History,
-                            now,
-                        )?;
+                        let acceptance = if params.get("studioUsage").is_some()
+                            && params.get("agentId").is_some()
+                        {
+                            crate::budget_service::capture_persisted_acceptance(
+                                tx,
+                                &mut page_agent,
+                                &params,
+                                at,
+                                now,
+                            )?
+                        } else {
+                            crate::budget_service::capture_acceptance(
+                                tx,
+                                &mut page_agent,
+                                &params,
+                                at,
+                                crate::budget::CaptureSource::History,
+                                now,
+                            )?
+                        };
+                        if let crate::budget::UsageAcceptance::RejectedReplayConflict(conflict) =
+                            acceptance
+                        {
+                            conflicts.push(conflict);
+                        }
                     }
-                    Ok(())
+                    Ok(conflicts)
                 })
                 .await?;
-            Ok(())
+            Ok(conflicts)
         })
     }
 }
@@ -380,9 +447,12 @@ impl HistoryBatch {
             .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
         }
         if !self.budget.is_empty() {
-            budget
-                .capture_page(std::mem::take(&mut self.budget), now)
+            let conflicts = budget
+                .capture_page_with_conflicts(std::mem::take(&mut self.budget), now)
                 .await?;
+            for capture in &mut self.captures {
+                capture.apply_budget_conflicts(&conflicts);
+            }
         }
         store
             .analytics_transaction(move |tx, canvas| {

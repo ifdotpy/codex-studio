@@ -295,6 +295,25 @@ pub fn usage_reconciliation(
             _ => {}
         }
     }
+    let budget_record: Option<String> = tx
+        .query_row(
+            "SELECT record FROM canvas.runtime_budget WHERE id=?1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let replay_conflicts = budget_record
+        .map(|raw| serde_json::from_str::<Value>(&raw))
+        .transpose()
+        .map_err(StoreError::from)?
+        .and_then(|record| record.get("replayConflicts").cloned())
+        .unwrap_or(json!([]));
+    let mut replay_conflicts: Vec<studio_runtime_schema::usage::ledger::UsageReplayConflict> =
+        serde_json::from_value(replay_conflicts).map_err(|_| CostsError::InvalidSessionState)?;
+    if replay_conflicts.len() > MAX_RECONCILIATION_RESPONSES {
+        budget.truncated = true;
+        replay_conflicts.truncate(MAX_RECONCILIATION_RESPONSES);
+    }
     tx.commit()?;
 
     let mut native = BTreeMap::<String, NativeResponse>::new();
@@ -328,7 +347,9 @@ pub fn usage_reconciliation(
         ),
     >::new();
     for row in recorded {
-        gaps.remove(&row.response_id);
+        if row.evidence != studio_runtime_schema::usage::UsageEvidence::Legacy {
+            gaps.remove(&row.response_id);
+        }
         match rows.entry(row.response_id.clone()) {
             std::collections::btree_map::Entry::Vacant(entry) => {
                 entry.insert((Some(row), None));
@@ -337,9 +358,11 @@ pub fn usage_reconciliation(
                 // A provisional replay cannot replace final evidence. Within final
                 // observations retain the first, just like the response owner.
                 if entry.get().0.as_ref().is_some_and(|existing| {
-                    existing.evidence == studio_runtime_schema::usage::UsageEvidence::Legacy
-                }) && row.evidence != studio_runtime_schema::usage::UsageEvidence::Legacy
-                {
+                    studio_runtime_schema::usage::ledger::supersedes(
+                        existing.evidence,
+                        row.evidence,
+                    )
+                }) {
                     entry.get_mut().0 = Some(row);
                 }
             }
@@ -403,9 +426,9 @@ pub fn usage_reconciliation(
     Ok(
         json!({"agentId":agent_id,"counts":{"responses":responses.len(),"missingRecorded":missing_recorded,
         "missingEvidence":missing_evidence,"mismatched":mismatched,"unknownRecorded":unknown_recorded,"rejectedEntries":budget.rejected},"responses":responses,
-        "files":budget.files,"gaps":gaps.into_values().collect::<Vec<_>>(),"providerCosts":provider_costs.into_iter().map(|(model,cost)|json!({"model":model,"providerCostUsd":cost})).collect::<Vec<_>>(),
+        "files":budget.files,"replayConflicts":replay_conflicts,"gaps":gaps.into_values().collect::<Vec<_>>(),"providerCosts":provider_costs.into_iter().map(|(model,cost)|json!({"model":model,"providerCostUsd":cost})).collect::<Vec<_>>(),
         "totals":{"recordedCostUsd":recorded_total,"evidenceCostUsd":evidence_total,"recordedTokens":recorded_token_total,"evidenceTokens":evidence_token_total},
-        "incomplete":budget.incomplete || budget.truncated || missing_evidence > 0 || unresolved_gaps,"truncated":budget.truncated}),
+        "incomplete":budget.incomplete || budget.truncated || missing_evidence > 0 || unresolved_gaps || !replay_conflicts.is_empty(),"truncated":budget.truncated}),
     )
 }
 

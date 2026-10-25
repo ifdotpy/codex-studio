@@ -25,6 +25,9 @@ impl JsonRecord for BudgetRecord {
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct BudgetUsageRow {
+    /// Typed evidence and its original accounting placement; absent before ledger v5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<BudgetUsageDetails>,
     pub id: String,
     pub agent: String,
     pub kind: String,
@@ -33,6 +36,15 @@ pub struct BudgetUsageRow {
     /// Immutable response categories in tokens; absent on pre-contract rows and notices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub breakdown: Option<UsageTokens>,
+}
+
+/// Budget-specific placement of a shared persisted typed usage receipt.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BudgetUsageDetails {
+    pub ledger: studio_runtime_schema::usage::ledger::UsageLedgerRow,
+    /// Whether the response belongs to the pre-budget baseline.
+    pub before_cutoff: bool,
 }
 
 pub struct BudgetRepository;
@@ -51,12 +63,16 @@ impl BudgetRepository {
         ids.iter().map(|id| Self::agent(db, id)).collect()
     }
     pub fn usage(db: &Connection, id: &str) -> StoreResult<Option<BudgetUsageRow>> {
-        let row=db.query_row_cached("SELECT id,agent,kind,tokens,at,breakdown FROM runtime_budget_usage WHERE id=?1",[id],|row| Ok((json!({"id":row.get::<_,String>(0)?,"agent":row.get::<_,String>(1)?,"kind":row.get::<_,String>(2)?,"tokens":row.get::<_,i64>(3)?,"at":row.get::<_,f64>(4)?}),row.get::<_,Option<String>>(5)?))).optional()?;
-        row.map(|(mut row, raw)| {
+        let row=db.query_row_cached("SELECT id,agent,kind,tokens,at,breakdown,details FROM runtime_budget_usage WHERE id=?1",[id],|row| Ok((json!({"id":row.get::<_,String>(0)?,"agent":row.get::<_,String>(1)?,"kind":row.get::<_,String>(2)?,"tokens":row.get::<_,i64>(3)?,"at":row.get::<_,f64>(4)?}),row.get::<_,Option<String>>(5)?,row.get::<_,Option<String>>(6)?))).optional()?;
+        row.map(|(mut row, raw, details)| {
             let breakdown = raw
                 .map(|raw| serde_json::from_str::<UsageTokens>(&raw))
                 .transpose()?;
             row["breakdown"] = serde_json::to_value(breakdown)?;
+            row["details"] = details
+                .map(|raw| serde_json::from_str::<Value>(&raw))
+                .transpose()?
+                .unwrap_or(Value::Null);
             validate_usage(&row)?;
             Ok(serde_json::from_value(row)?)
         })
@@ -65,7 +81,7 @@ impl BudgetRepository {
     pub fn insert_usage(tx: &Transaction<'_>, row: &BudgetUsageRow) -> StoreResult<()> {
         validate_usage(&serde_json::to_value(row)?)?;
         tx.execute_cached(
-            "INSERT INTO runtime_budget_usage(id,agent,kind,tokens,at,breakdown) VALUES (?1,?2,?3,?4,?5,?6)",
+            "INSERT INTO runtime_budget_usage(id,agent,kind,tokens,at,breakdown,details) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,tokens=excluded.tokens,at=excluded.at,breakdown=excluded.breakdown,details=excluded.details",
             params![
                 row.id,
                 row.agent,
@@ -74,7 +90,8 @@ impl BudgetRepository {
                     "invalid runtime_budget_usage/tokens".into()
                 ))?,
                 row.at,
-                row.breakdown.as_ref().map(serde_json::to_string).transpose()?
+                row.breakdown.as_ref().map(serde_json::to_string).transpose()?,
+                row.details.as_ref().map(serde_json::to_string).transpose()?
             ],
         )?;
         Ok(())
@@ -159,9 +176,43 @@ fn validate_usage(value: &Value) -> StoreResult<()> {
             "invalid runtime_budget_usage{pointer}"
         )));
     }
-    serde_json::from_value::<BudgetUsageRow>(value.clone()).map_err(|error| {
+    let row = serde_json::from_value::<BudgetUsageRow>(value.clone()).map_err(|error| {
         StoreError::SchemaMismatch(format!("invalid runtime_budget_usage/breakdown: {error}"))
     })?;
+    if let Some(details) = &row.details {
+        use studio_runtime_schema::usage::{UsageObservation, ledger::UsageIdentity};
+        let ledger = &details.ledger;
+        let thread = match &ledger.usage_identity {
+            UsageIdentity::Cumulative { thread_id, .. } => thread_id.as_deref(),
+            _ => None,
+        };
+        let (kind, total) = match &ledger.studio_usage {
+            UsageObservation::Response { tokens, .. } => ("response", tokens.total()),
+            UsageObservation::Gap { .. } => ("notice", Some(0)),
+            UsageObservation::Cumulative { total, last, .. } => {
+                ("notice", last.as_ref().unwrap_or(total).total())
+            }
+        };
+        if ledger.receipt_key != row.id
+            || ledger.usage_identity != UsageIdentity::new(&row.agent, thread, &ledger.studio_usage)
+            || row.kind != kind
+            || total != Some(row.tokens)
+        {
+            return Err(StoreError::SchemaMismatch(
+                "invalid runtime_budget_usage/details identity or tokens".into(),
+            ));
+        }
+        if let UsageObservation::Response { tokens, .. } = &ledger.studio_usage
+            && row
+                .breakdown
+                .as_ref()
+                .is_some_and(|breakdown| breakdown != tokens)
+        {
+            return Err(StoreError::SchemaMismatch(
+                "invalid runtime_budget_usage/details breakdown".into(),
+            ));
+        }
+    }
     Ok(())
 }
 const TABLES: &[TableRequirement] = &[TableRequirement {
@@ -179,7 +230,15 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     connection_functions: &[],
     bootstrap_tables: &[TableRequirement {
         name: "runtime_budget_usage",
-        columns: &["id", "agent", "kind", "tokens", "at", "breakdown"],
+        columns: &[
+            "id",
+            "agent",
+            "kind",
+            "tokens",
+            "at",
+            "breakdown",
+            "details",
+        ],
     }],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
@@ -199,11 +258,13 @@ pub fn check_usage_readonly(db: &Connection) -> StoreResult<crate::StateCheckTab
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_budget_usage') WHERE name='breakdown')",
         [], |row| row.get(0),
     )?;
-    let mut statement = db.prepare_cached(if has_breakdown {
-        "SELECT id,agent,kind,tokens,at,breakdown FROM runtime_budget_usage"
-    } else {
-        "SELECT id,agent,kind,tokens,at,NULL FROM runtime_budget_usage"
-    })?;
+    let has_details:bool=db.query_row_cached("SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_budget_usage') WHERE name='details')",[],|row|row.get(0))?;
+    let sql = format!(
+        "SELECT id,agent,kind,tokens,at,{},{} FROM runtime_budget_usage",
+        if has_breakdown { "breakdown" } else { "NULL" },
+        if has_details { "details" } else { "NULL" }
+    );
+    let mut statement = db.prepare_cached(&sql)?;
     let mut rows = statement.query([])?;
     let mut failures = std::collections::BTreeMap::new();
     while let Some(row) = rows.next()? {
@@ -232,13 +293,25 @@ pub fn check_usage_readonly(db: &Connection) -> StoreResult<crate::StateCheckTab
             _ => json!("invalid usage breakdown"),
         };
         value.insert("breakdown".into(), breakdown);
+        let details = match row.get_ref(6)? {
+            rusqlite::types::ValueRef::Null => Value::Null,
+            rusqlite::types::ValueRef::Text(raw) => serde_json::from_slice::<Value>(raw)
+                .unwrap_or_else(|_| json!("invalid usage details")),
+            _ => json!("invalid usage details"),
+        };
+        value.insert("details".into(), details);
         let value = Value::Object(value);
         let problem = studio_runtime_schema::first_error("PersistedBudgetUsage", &value)
             .map_err(StoreError::SchemaMismatch)?
             .or_else(|| {
-                serde_json::from_value::<BudgetUsageRow>(value)
+                serde_json::from_value::<BudgetUsageRow>(value.clone())
                     .err()
                     .map(|_| ("/breakdown".into(), "usageTokens".into()))
+            })
+            .or_else(|| {
+                validate_usage(&value)
+                    .err()
+                    .map(|_| ("/details".into(), "usageLedger".into()))
             });
         if let Some(problem) = problem {
             report.rejected_count += 1;

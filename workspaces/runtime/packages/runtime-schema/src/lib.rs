@@ -9,6 +9,7 @@ pub mod delivery;
 pub mod desktop;
 pub mod federation_limits;
 pub mod idle_compaction;
+pub mod json_compat;
 pub mod multi_server_protocol;
 pub mod provider_input;
 pub mod provider_method_policy;

@@ -136,6 +136,7 @@ impl NotificationEffects for RuntimeNotificationEffects {
         result.push(NotificationPostCommit::Analytics {
             observation: observation(Some(&analytics_agent)),
             budget_capture_value: captured,
+            usage_conflict: None,
         });
         if matches!(
             method,

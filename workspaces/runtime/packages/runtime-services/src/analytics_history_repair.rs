@@ -73,7 +73,13 @@ pub async fn migrate_budget(
                     let record: Value = serde_json::from_str(raw).map_err(studio_runtime_store::StoreError::from)?;
                     CaptureTable::Usage.validate(&record)?;
                     let provider = if blocking_agent["provider"] == "claude" { studio_runtime_schema::usage::UsageProvider::Claude } else { studio_runtime_schema::usage::UsageProvider::Codex };
-                    let mut params = studio_runtime_schema::usage::persisted::analytics_usage_notification(provider, &record).map_err(CaptureError::from)?;
+                    let mut params = if record.get("studioUsage").is_some() {
+                        // Typed receipts retain the first capture key; never reconstruct a wire notification.
+                        studio_runtime_schema::usage::ledger::UsageLedgerRow::from_analytics(provider, &record).map_err(CaptureError::from)?;
+                        record.clone()
+                    } else {
+                        studio_runtime_schema::usage::persisted::analytics_usage_notification(provider, &record).map_err(CaptureError::from)?
+                    };
                     params["_analyticsTimestampSource"] = record["timestampSource"].clone();
                     let at = number(&record["at"]).ok_or(CaptureError::Invalid("/analytics_usage/at"))?;
                     captures.push((Arc::clone(&blocking_agent), params, at));
@@ -201,6 +207,460 @@ fn repaired_turn(mut record: Value, notice: &Value) -> Value {
 #[cfg(test)]
 mod usage_contract_tests {
     use super::*;
+
+    async fn ledger_store(provider: &str) -> (tempfile::TempDir, RuntimeStore, Value) {
+        let temp = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        let agent = json!({"id":"agent","rootId":"agent","name":"Agent","status":"running","provider":provider,"threadId":"thread","turnId":"turn","accountKey":"default","accountHistory":[],"model":"claude-test","epoch":0,"created":0,"tokenBudget":1000,"tokensUsed":0});
+        let seed = agent.clone();
+        store
+            .transaction(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES ('agent',?1)",
+                    [seed.to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("agent");
+        (temp, store, agent)
+    }
+
+    async fn ledger_capture(
+        store: &RuntimeStore,
+        agent: &Value,
+        params: Value,
+        source: crate::budget::CaptureSource,
+        at: f64,
+    ) {
+        crate::budget_service::prepare_legacy_corrections(
+            store,
+            vec![(agent.clone(), params.clone())],
+        )
+        .await
+        .expect("prepare legacy correction");
+        let mut supplied = agent.clone();
+        let budget_params = params.clone();
+        let acceptance = store
+            .transaction_with(move |tx| {
+                crate::budget_service::capture_acceptance(
+                    tx,
+                    &mut supplied,
+                    &budget_params,
+                    at,
+                    source,
+                    0.,
+                )
+            })
+            .await
+            .expect("budget caller");
+        let conflict = match acceptance {
+            crate::budget::UsageAcceptance::Accepted => None,
+            crate::budget::UsageAcceptance::RejectedReplayConflict(conflict) => Some(conflict),
+        };
+        if source == crate::budget::CaptureSource::Live {
+            use crate::notification_dispatch::{
+                NotificationObservation, NotificationPostCommit, ProviderDeliveryIdentity,
+                SharedJson,
+            };
+            let effect = NotificationPostCommit::Analytics {
+                observation: NotificationObservation {
+                    agent: Some(SharedJson::new(agent.clone())),
+                    method: "thread/tokenUsage/updated".into(),
+                    params: SharedJson::new(params),
+                    delivery: ProviderDeliveryIdentity {
+                        provider_handle: "account:default".into(),
+                        generation: 1,
+                        cursor: at as u64,
+                    },
+                    observed_at: at,
+                    provider_at: at,
+                },
+                budget_capture_value: None,
+                usage_conflict: conflict.map(Box::new),
+            };
+            store
+                .transaction(move |tx| {
+                    let _remaining = crate::analytics_projection::log_effect(tx, effect)?;
+                    Ok(())
+                })
+                .await
+                .expect("journal analytics effect");
+            let cursor = crate::analytics_projection::project_pending(store)
+                .await
+                .expect("project usage");
+            assert_eq!(
+                crate::analytics_projection::project_pending(store)
+                    .await
+                    .expect("replay projection"),
+                cursor
+            );
+        } else {
+            let mut prepared = crate::analytics_capture::PreparedCapture::event(
+                agent,
+                "thread/tokenUsage/updated",
+                &params,
+                at,
+                at,
+                crate::analytics_capture::CaptureSource::Rollout,
+            )
+            .expect("prepare");
+            prepared.apply_budget_conflicts(&conflict.into_iter().collect::<Vec<_>>());
+            crate::analytics_capture::capture(store, prepared)
+                .await
+                .expect("analytics history caller");
+        }
+    }
+
+    async fn ledger_tokens(store: &RuntimeStore) -> u64 {
+        store
+            .transaction(|tx| {
+                let agent = studio_runtime_store::budget::BudgetRepository::agent(tx, "agent")?;
+                Ok(agent["tokensUsed"].as_u64().expect("tokens"))
+            })
+            .await
+            .expect("budget total")
+    }
+
+    fn ledger_response(evidence: &str, output: u64) -> Value {
+        json!({"threadId":"thread","studioUsage":{"kind":"response","responseId":"response","model":"claude-test","evidence":evidence,"tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":output}}})
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_legacy_correction_replay_and_restart_match_costs() {
+        let (temp, store, agent) = ledger_store("claude").await;
+        ledger_capture(
+            &store,
+            &agent,
+            ledger_response("legacy", 1),
+            crate::budget::CaptureSource::Live,
+            1.,
+        )
+        .await;
+        ledger_capture(
+            &store,
+            &agent,
+            ledger_response("live", 100),
+            crate::budget::CaptureSource::Live,
+            2.,
+        )
+        .await;
+        assert_eq!(
+            ledger_tokens(&store).await,
+            110,
+            "legacy may be corrected by final evidence"
+        );
+        ledger_capture(
+            &store,
+            &agent,
+            ledger_response("recovered", 100),
+            crate::budget::CaptureSource::History,
+            3.,
+        )
+        .await;
+        ledger_capture(
+            &store,
+            &agent,
+            ledger_response("live", 200),
+            crate::budget::CaptureSource::Live,
+            4.,
+        )
+        .await;
+        assert_eq!(ledger_tokens(&store).await, 110, "first final wins");
+        let db = AnalyticsRepository::new(temp.path())
+            .open_read_only()
+            .expect("analytics");
+        let groups =
+            studio_runtime_store::cost_aggregate::cost_groups(&db, "agent", &Default::default())
+                .expect("groups");
+        assert_eq!(
+            groups
+                .iter()
+                .map(|g| (g.tokens.input_tokens.unwrap_or(0.)
+                    + g.tokens.output_tokens.unwrap_or(0.))
+                    * g.count as f64)
+                .sum::<f64>(),
+            110.
+        );
+        drop(db);
+        std::fs::create_dir_all(temp.path().join("model-pricing")).expect("pricing directory");
+        std::fs::write(temp.path().join("model-pricing/models-dev-v1.json"),json!({"version":1,"catalog":{"providers":{"openai":{"models":{"gpt-test":{"cost":{"input":1,"output":1}}}},"anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":1,"cache_read":1,"cache_write":1}}}}}}}).to_string()).expect("catalog");
+        let cost =
+            crate::costs::session_cost_with_account_profiles(&store, "agent", &Default::default())
+                .expect("session cost");
+        assert_eq!(cost["pricedSamples"], 1);
+        assert!((cost["totalUSD"].as_f64().expect("cost") - 110. / 1_000_000.).abs() < 1e-12);
+        drop(store);
+        let store = RuntimeStore::open(Some(temp.path()))
+            .await
+            .expect("restart");
+        ledger_capture(
+            &store,
+            &agent,
+            ledger_response("live", 100),
+            crate::budget::CaptureSource::Live,
+            5.,
+        )
+        .await;
+        assert_eq!(ledger_tokens(&store).await, 110);
+        let after =
+            crate::costs::session_cost_with_account_profiles(&store, "agent", &Default::default())
+                .expect("restarted session cost");
+        assert_eq!(after["totalUSD"], cost["totalUSD"]);
+        let sink = crate::analytics_history::StoreHistoryBudgetSink::new(&store);
+        migrate_budget(&store, agent, &sink, 6.)
+            .await
+            .expect("restore final receipt");
+        assert_eq!(ledger_tokens(&store).await, 110);
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_old_receipts_recover_provenance_before_correction() {
+        for evidence in [Some("legacy"), Some("live"), None] {
+            let (temp, store, agent) = ledger_store("claude").await;
+            let db = AnalyticsRepository::new(temp.path())
+                .open_read_only()
+                .expect("analytics");
+            let plan: String = db
+                .query_row(
+                    &format!(
+                        "EXPLAIN QUERY PLAN {}",
+                        studio_runtime_store::analytics_capture::USAGE_PROVENANCE_SQL
+                    ),
+                    params!["agent", "thread", "response"],
+                    |row| row.get(3),
+                )
+                .expect("indexed provenance plan");
+            assert!(
+                plan.contains("SEARCH")
+                    && plan.contains("analytics_usage_response")
+                    && !plan.contains("SCAN"),
+                "{plan}"
+            );
+            drop(db);
+            ledger_capture(
+                &store,
+                &agent,
+                ledger_response(evidence.unwrap_or("live"), 1),
+                crate::budget::CaptureSource::Live,
+                1.,
+            )
+            .await;
+            store
+                .transaction(|tx| {
+                    tx.execute("UPDATE runtime_budget_usage SET details=NULL", [])?;
+                    Ok(())
+                })
+                .await
+                .expect("pre-v5 receipt");
+            if evidence.is_none() {
+                store
+                    .transaction(|tx| {
+                        tx.execute("UPDATE runtime_budget_usage SET breakdown=NULL", [])?;
+                        Ok(())
+                    })
+                    .await
+                    .expect("old total-only receipt");
+                store
+                    .analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+                        tx.execute("DELETE FROM analytics_usage", [])?;
+                        Ok(())
+                    })
+                    .await
+                    .expect("missing analytics evidence");
+            }
+            ledger_capture(
+                &store,
+                &agent,
+                ledger_response("recovered", 100),
+                crate::budget::CaptureSource::History,
+                2.,
+            )
+            .await;
+            let expected = if evidence == Some("legacy") { 110 } else { 11 };
+            assert_eq!(
+                ledger_tokens(&store).await,
+                expected,
+                "old receipt provenance: {evidence:?}"
+            );
+            drop(store);
+            let store = RuntimeStore::open(Some(temp.path()))
+                .await
+                .expect("restart");
+            ledger_capture(
+                &store,
+                &agent,
+                ledger_response("live", 100),
+                crate::budget::CaptureSource::Live,
+                3.,
+            )
+            .await;
+            assert_eq!(ledger_tokens(&store).await, expected);
+            if evidence.is_none() {
+                let db = AnalyticsRepository::new(temp.path())
+                    .open_read_only()
+                    .expect("analytics");
+                assert_eq!(
+                    db.query_row("SELECT count(*) FROM analytics_usage", [], |row| row
+                        .get::<_, i64>(0))
+                        .expect("usage count"),
+                    0,
+                    "a rejected final cannot fabricate an analytics row"
+                );
+                let result =
+                    crate::costs::usage_reconciliation(&store, "agent", &Default::default())
+                        .expect("diagnostic conflicts");
+                assert_eq!(result["replayConflicts"][0]["retainedTotalTokens"], 11);
+                assert_eq!(result["replayConflicts"][0]["incomingTotalTokens"], 110);
+                assert_eq!(
+                    result["replayConflicts"]
+                        .as_array()
+                        .expect("conflicts")
+                        .len(),
+                    1,
+                    "replay deduplicates the conflict"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_final_can_correct_legacy_downward() {
+        let (_temp, store, agent) = ledger_store("claude").await;
+        ledger_capture(
+            &store,
+            &agent,
+            ledger_response("legacy", 100),
+            crate::budget::CaptureSource::Live,
+            1.,
+        )
+        .await;
+        ledger_capture(
+            &store,
+            &agent,
+            ledger_response("recovered", 1),
+            crate::budget::CaptureSource::History,
+            2.,
+        )
+        .await;
+        assert_eq!(ledger_tokens(&store).await, 11);
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_gap_after_legacy_stays_unresolved_until_final() {
+        let (_temp, store, agent) = ledger_store("claude").await;
+        ledger_capture(
+            &store,
+            &agent,
+            ledger_response("legacy", 1),
+            crate::budget::CaptureSource::Live,
+            1.,
+        )
+        .await;
+        ledger_capture(&store,&agent,json!({"threadId":"thread","studioUsage":{"kind":"gap","responseId":"response","reason":"queryClosed"}}),crate::budget::CaptureSource::Live,2.).await;
+        let accounting=store.transaction(|tx|Ok(studio_runtime_store::budget::BudgetRepository::agent(tx,"agent")?["tokenUsageAccounting"].clone())).await.expect("accounting");
+        assert_eq!(accounting, "provisional");
+        assert_eq!(
+            ledger_tokens(&store).await,
+            11,
+            "the gap preserves provisional known usage"
+        );
+        ledger_capture(
+            &store,
+            &agent,
+            ledger_response("live", 100),
+            crate::budget::CaptureSource::Live,
+            3.,
+        )
+        .await;
+        assert_eq!(ledger_tokens(&store).await, 110);
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_final_resolves_only_its_gap() {
+        let (_temp, store, agent) = ledger_store("claude").await;
+        for response in ["response", "other"] {
+            ledger_capture(&store,&agent,json!({"threadId":"thread","studioUsage":{"kind":"gap","responseId":response,"reason":"queryClosed"}}),crate::budget::CaptureSource::Live,1.).await;
+        }
+        ledger_capture(
+            &store,
+            &agent,
+            ledger_response("live", 100),
+            crate::budget::CaptureSource::Live,
+            2.,
+        )
+        .await;
+        let accounting = store.transaction(|tx| Ok(studio_runtime_store::budget::BudgetRepository::agent(tx,"agent")?["tokenUsageAccounting"].clone())).await.expect("one gap remains");
+        assert_eq!(accounting, "provisional");
+        let mut final_other = ledger_response("live", 100);
+        final_other["studioUsage"]["responseId"] = json!("other");
+        ledger_capture(
+            &store,
+            &agent,
+            final_other,
+            crate::budget::CaptureSource::Live,
+            3.,
+        )
+        .await;
+        store
+            .transaction(|tx| {
+                let agent = studio_runtime_store::budget::BudgetRepository::agent(tx, "agent")?;
+                assert_eq!(
+                    agent["tokenUsageAccounting"], "responseRecords",
+                    "all gaps are resolved"
+                );
+                Ok(())
+            })
+            .await
+            .expect("resolved gaps");
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_restore_reimport_keeps_first_counter_receipt() {
+        let (_temp, store, agent) = ledger_store("codex").await;
+        let params = json!({"threadId":"thread","turnId":"turn","tokenUsage":{"total":{"inputTokens":10,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":10},"last":{"inputTokens":10,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":10}}});
+        ledger_capture(
+            &store,
+            &agent,
+            params.clone(),
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        assert_eq!(ledger_tokens(&store).await, 10);
+        let sink = crate::analytics_history::StoreHistoryBudgetSink::new(&store);
+        migrate_budget(&store, agent.clone(), &sink, 2.)
+            .await
+            .expect("restore persisted row");
+        ledger_capture(
+            &store,
+            &agent,
+            params,
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        assert_eq!(
+            ledger_tokens(&store).await,
+            10,
+            "restore and re-import reuse the first receipt"
+        );
+        let mut response = ledger_response("recovered", 0);
+        response["studioUsage"]["model"] = json!("gpt-test");
+        ledger_capture(
+            &store,
+            &agent,
+            response,
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        assert_eq!(
+            ledger_tokens(&store).await,
+            10,
+            "an exact record settles the historical counter"
+        );
+    }
 
     #[tokio::test]
     async fn legacy_total_only_claude_migration_preserves_budget_total() {

@@ -24989,6 +24989,33 @@ export interface components {
      * @enum {string}
      */
     UsageGapReason: "streamInterrupted" | "queryClosed";
+    /** @description Logical owner of usage, independent of capture time, account, turn and provenance. */
+    UsageIdentity:
+      | {
+          agent: string;
+          /** @constant */
+          kind: "response";
+          responseId: string;
+        }
+      | {
+          agent: string;
+          /** @constant */
+          kind: "cumulative";
+          scope: components["schemas"]["UsageScope"];
+          threadId: string | null;
+        };
+    /**
+     * @description Durable typed receipt. Analytics stores these fields alongside presentation metadata;
+     *     budget stores the same value alongside its accounting placement.
+     */
+    UsageLedgerRow: {
+      /** @description First-capture deduplication key; retained across restore and re-import. */
+      receiptKey: string;
+      /** @description Provider-neutral evidence; token fields have units of tokens. */
+      studioUsage: components["schemas"]["UsageObservation"];
+      /** @description Immutable logical usage identity; dimensionless. */
+      usageIdentity: components["schemas"]["UsageIdentity"];
+    };
     /**
      * UsageLimitsData
      * @description Known usage projection plus account-service fields passed through unchanged.
@@ -25141,6 +25168,7 @@ export interface components {
         model: string;
         providerCostUsd: number;
       }[];
+      replayConflicts?: components["schemas"]["UsageReplayConflict"][];
       responses: components["schemas"]["UsageReconciliationRow"][];
       totals: {
         evidenceCostUsd: number | null;
@@ -25160,6 +25188,22 @@ export interface components {
       recordedEvidence: components["schemas"]["UsageEvidence"] | null;
       recordedTokens: components["schemas"]["UsageTokens"] | null;
       responseId: string;
+    };
+    /** @description A rejected replay, preserving both totals without inventing missing legacy categories. */
+    UsageReplayConflict: {
+      identity: components["schemas"]["UsageIdentity"];
+      incomingTokens?: components["schemas"]["UsageTokens"] | null;
+      /**
+       * Format: uint64
+       * @description Rejected billable total; tokens.
+       */
+      incomingTotalTokens: number;
+      retainedTokens?: components["schemas"]["UsageTokens"] | null;
+      /**
+       * Format: uint64
+       * @description Retained billable total; tokens.
+       */
+      retainedTotalTokens: number;
     };
     /**
      * UsageResumeCause

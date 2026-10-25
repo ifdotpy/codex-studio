@@ -64,6 +64,7 @@ fn analytics_effect_for(
             provider_at: 10.0 + cursor as f64,
         },
         budget_capture_value: None,
+        usage_conflict: None,
     }
 }
 
@@ -878,6 +879,7 @@ async fn analytics_receipts_preserve_entity_delivery_but_recovery_still_resets()
         NotificationPostCommit::Analytics {
             observation: observation.clone(),
             budget_capture_value: None,
+            usage_conflict: None,
         },
         NotificationPostCommit::AnalyticsCaptured(observation.clone()),
         NotificationPostCommit::AnalyticsStream {

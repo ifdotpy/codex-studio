@@ -1590,6 +1590,51 @@ pub(super) async fn journal_batch(
             Ok::<_, WorkerError>((publication, limits_observation))
         })
         .await?;
+    let usage_notices = entries
+        .iter()
+        .filter_map(|entry| match &entry.payload {
+            JournalPayload::Frame(Frame::Notification(frame))
+                if frame.method.as_str() == "thread/tokenUsage/updated" =>
+            {
+                frame
+                    .params
+                    .clone()
+                    .map(|params| (entry.generation.0, params))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !usage_notices.is_empty() {
+        let budget_account = account.to_owned();
+        let captures = store
+            .read_async("budget/journal-provenance-candidates", move |tx| {
+                let mut captures = Vec::new();
+                for (generation, params) in usage_notices {
+                    let Some(thread) = params["threadId"].as_str() else {
+                        continue;
+                    };
+                    let (_, attempt) = SchedulerRepository::find_attempt_for_thread(
+                        tx,
+                        &budget_account,
+                        generation,
+                        thread,
+                        params["turnId"].as_str(),
+                    )?;
+                    if let Some((identity, _)) = attempt {
+                        let agent = studio_runtime_store::budget::BudgetRepository::agent(
+                            tx,
+                            &identity.agent_id,
+                        )?;
+                        captures.push((agent, params));
+                    }
+                }
+                Ok::<_, StoreError>(captures)
+            })
+            .await?;
+        crate::budget_service::prepare_legacy_corrections(&store, captures)
+            .await
+            .map_err(crate::notification_dispatch::NotificationDispatchError::from)?;
+    }
     let account = account.to_owned();
     let journal_scope = journal_scope.to_owned();
     let claude_account_pin = claude_account_pin.clone();
