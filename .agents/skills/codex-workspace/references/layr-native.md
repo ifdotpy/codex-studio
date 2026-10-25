@@ -9,14 +9,14 @@ The original project folder is separate. Studio does not synchronize it with mai
 
 ## Store and roles
 
-| Value           | Runtime source                                                           |
-| --------------- | ------------------------------------------------------------------------ |
-| Store           | `<Studio state>/layr-native/store`                                       |
-| Binary          | `<Studio state>/layr-native/bin/layr`, version 0.2.0                     |
-| Environment     | `LAYR_ROOT` selects the store. `LAYR_DIRECT=1` selects direct execution. |
-| Worker selector | `workspace: "layr-native"`. Reviewers inherit this mode.                 |
-| Ready mode      | `workspaceMode: "layr-native"`, `executionMode: "native"`.               |
-| Command path    | The managed binary folder comes first in `PATH`.                         |
+| Value           | Runtime source                                                                               |
+| --------------- | -------------------------------------------------------------------------------------------- |
+| Store           | `<Studio state>/layr-native/store`                                                           |
+| Binary          | `<Studio state>/layr-native/bin/layr`, version 0.2.0                                         |
+| Environment     | `LAYR_ROOT` selects the store. macOS uses `LAYR_DIRECT=1`. Linux service setup remains open. |
+| Worker selector | `workspace: "layr-native"`. Reviewers inherit this mode.                                     |
+| Ready mode      | `workspaceMode: "layr-native"`, `executionMode: "native"`.                                   |
+| Command path    | The managed binary folder comes first in `PATH`.                                             |
 
 Use the assigned environment. Do not install over the user's layr binary or import the project again.
 
@@ -65,5 +65,11 @@ Direct shell commands can need store writes that the reviewer's sandbox refuses.
 The try path uses a runtime sandbox wrapper inside the temporary state copy.
 It uses `sandbox-exec` on macOS and Bubblewrap on Linux.
 The command can write only to that copy and the private scratch folder. It has no network access.
+
+## Open Linux service contract
+
+Upstream layr requires a root daemon for Linux btrfs operations.
+The `layr-native-mode` worker is revising the Linux runtime setup.
+Its final socket and startup rules remain unconfirmed. Do not treat the macOS direct mode as the Linux setup.
 
 Existing sessions retain their saved role and tool contracts.
