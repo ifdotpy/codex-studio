@@ -223,7 +223,6 @@ describe("entity pull reset wiring", () => {
               delta: true,
               items: items as never,
               removed: [],
-              itemRevisions: {},
               truncated: false,
             },
           },
@@ -450,6 +449,8 @@ describe("entity pull reset wiring", () => {
 
   it.each([
     "delta",
+    "legacy-cache",
+    "unsupported-cache",
     "retry",
     "gap",
     "epoch",
@@ -466,14 +467,21 @@ describe("entity pull reset wiring", () => {
         id: "transcript:agent",
         seq: 1,
         payload: JSON.stringify({
-          format: 2,
+          format:
+            scenario === "legacy-cache"
+              ? 2
+              : scenario === "unsupported-cache"
+                ? 4
+                : 3,
           epoch: scenario === "epoch" ? "old" : "epoch",
           metadata: {
             truncated: scenario.startsWith("window"),
             nextCursor: scenario.startsWith("window") ? "answer" : null,
           },
           order: ["answer"],
-          itemRevisions: {},
+          ...(scenario === "legacy-cache"
+            ? { itemRevisions: { answer: "0".repeat(64) } }
+            : {}),
         }),
       });
       rows.set("transcript:item:agent:answer", {
@@ -536,7 +544,6 @@ describe("entity pull reset wiring", () => {
                   },
                 ],
                 removed: [],
-                itemRevisions: { answer: "0".repeat(64) },
                 truncated: false,
               },
             },
@@ -565,7 +572,7 @@ describe("entity pull reset wiring", () => {
         storageInstance.bulkWrite.mockRejectedValueOnce(
           new Error("storage unavailable"),
         );
-      if (["gap", "epoch", "storage"].includes(scenario)) {
+      if (["gap", "epoch", "storage", "unsupported-cache"].includes(scenario)) {
         await expect(
           client.persistResourceEntityChanges(event, () => true),
         ).rejects.toThrow();
@@ -596,6 +603,12 @@ describe("entity pull reset wiring", () => {
         expect(storageInstance.bulkWrite).toHaveBeenCalledTimes(writes);
       }
       expect(rows.get("transcript:agent")?.seq).toBe(2);
+      const storedMeta = JSON.parse(
+        String(rows.get("transcript:agent")?.payload),
+      );
+      expect(storedMeta.format).toBe(3);
+      expect(storedMeta).not.toHaveProperty("itemRevisions");
+      expect(storedMeta.metadata).not.toHaveProperty("itemRevisions");
       expect(
         JSON.parse(String(rows.get("transcript:item:agent:answer")?.payload))
           .text,
@@ -683,7 +696,6 @@ describe("entity pull reset wiring", () => {
               delta: true,
               items: items as never,
               removed: [],
-              itemRevisions: {},
               truncated: false,
             },
           },

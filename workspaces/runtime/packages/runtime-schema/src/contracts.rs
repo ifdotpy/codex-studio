@@ -430,11 +430,6 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     }
     expect_number(
         openapi,
-        "/components/schemas/TranscriptStreamDelta/properties/itemRevisions/maxProperties",
-        values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
-    )?;
-    expect_number(
-        openapi,
         "/components/schemas/TranscriptResource/properties/tail/default",
         values::SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS as i64,
     )?;

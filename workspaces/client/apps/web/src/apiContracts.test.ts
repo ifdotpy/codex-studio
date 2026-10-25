@@ -50,6 +50,17 @@ const transcriptUnavailableIsNull: Assert<
 > = true;
 void transcriptUnavailableIsNull;
 
+const transcriptDeltaHasNoItemRevisions: Assert<
+  Equal<
+    Extract<
+      keyof components["schemas"]["TranscriptStreamDelta"],
+      "itemRevisions"
+    >,
+    never
+  >
+> = true;
+void transcriptDeltaHasNoItemRevisions;
+
 type NumericSuccess = ApiSuccessBodyFor<{
   responses: { 200: { content: { "application/json": { value: number } } } };
 }>;

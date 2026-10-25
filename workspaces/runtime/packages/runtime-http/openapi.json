@@ -54850,12 +54850,6 @@
         "title": "TranscriptItemResponse",
         "type": "object"
       },
-      "TranscriptItemRevision": {
-        "description": "Canonical SHA-256 item revision from runtime-store repositories/transcript.rs canonical_hash, encoded as 64 lowercase hexadecimal characters.",
-        "pattern": "^[0-9a-f]{64}$",
-        "title": "TranscriptItemRevision",
-        "type": "string"
-      },
       "TranscriptMessageRecord": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -55565,16 +55559,6 @@
             ],
             "default": null
           },
-          "itemRevisions": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/TranscriptItemRevision"
-            },
-            "maxProperties": 512,
-            "propertyNames": {
-              "$ref": "#/components/schemas/TranscriptStreamItemId"
-            },
-            "type": "object"
-          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/TranscriptMessageRecord"
@@ -55644,8 +55628,7 @@
           "delta",
           "items",
           "truncated",
-          "removed",
-          "itemRevisions"
+          "removed"
         ],
         "title": "TranscriptStreamDelta",
         "type": "object"

@@ -86,6 +86,14 @@ The renderer merges pages by item identity into the current conversation range,
 retaining the scroll anchor and both paging cursors. Live deltas preserve that
 boundary even when the shared transcript projection covers a larger range.
 
+Transcript item hashes stay in the server's private change-detection index; sparse
+deltas carry changed items, removals and optional order without an item revision
+map. The [renderer metadata format](../workspaces/client/apps/web/src/sync/client.ts)
+reads the previous persisted format and drops its unused map on the next write.
+The [API schema identity](../workspaces/runtime/packages/runtime-schema/src/api_schema.rs)
+changes with the wire contract and keys a separate projection cache; draft and
+outbox storage keep their workspace identity.
+
 ## Protocol 4: resource changes
 
 User actions, media transport, and recovery of an already accepted write retain

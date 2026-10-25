@@ -129,12 +129,16 @@ export type { ResourceRef } from "./subscriptions/events";
 
 type TranscriptSyncPayload = components["schemas"]["TranscriptSyncPayload"];
 
+/** Local transcript metadata format; item hashes remain server-owned. */
+const TRANSCRIPT_PROJECTION_FORMAT = 3;
+/** Read persisted metadata written before the unused item revision map was removed. */
+const LEGACY_TRANSCRIPT_PROJECTION_FORMAT = 2;
+
 type TranscriptProjectionMeta = {
-  format: 2;
+  format: typeof TRANSCRIPT_PROJECTION_FORMAT;
   epoch?: string;
   metadata: Omit<Partial<TranscriptPageData>, "items">;
   order: string[];
-  itemRevisions: Record<string, string>;
 };
 
 type ProjectionState = {
@@ -1162,7 +1166,6 @@ export function createSyncClient(options: SyncClientOptions) {
         delta: _delta,
         removed: _removed,
         order: _order,
-        itemRevisions: _itemRevisions,
         ...metadata
       } = value;
       return metadata;
@@ -1177,12 +1180,17 @@ export function createSyncClient(options: SyncClientOptions) {
     try {
       const value = JSON.parse(payload);
       if (
-        value?.format === 2 &&
+        (value?.format === TRANSCRIPT_PROJECTION_FORMAT ||
+          value?.format === LEGACY_TRANSCRIPT_PROJECTION_FORMAT) &&
         value.metadata &&
-        Array.isArray(value.order) &&
-        value.itemRevisions
+        Array.isArray(value.order)
       )
-        return value as TranscriptProjectionMeta;
+        return {
+          format: TRANSCRIPT_PROJECTION_FORMAT,
+          epoch: value.epoch,
+          metadata: value.metadata,
+          order: value.order,
+        };
     } catch {
       return null;
     }
@@ -1330,17 +1338,11 @@ export function createSyncClient(options: SyncClientOptions) {
             ? (base?.metadata.nextCursor ?? order[0] ?? null)
             : (order[0] ?? base?.metadata.nextCursor ?? null);
       }
-      const itemRevisions =
-        incoming === null
-          ? {}
-          : { ...base?.itemRevisions, ...delta?.itemRevisions };
-      for (const itemId of removed) delete itemRevisions[itemId];
       const nextMeta: TranscriptProjectionMeta = {
-        format: 2,
+        format: TRANSCRIPT_PROJECTION_FORMAT,
         epoch: epoch ?? base?.epoch,
         metadata,
         order,
-        itemRevisions,
       };
       const rows: SyncDocument[] = changedItems.map((item) => ({
         id: transcriptItemId(scope, item.id),

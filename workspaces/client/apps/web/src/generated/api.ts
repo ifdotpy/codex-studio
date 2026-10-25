@@ -23965,11 +23965,6 @@ export interface components {
       [key: string]: components["schemas"]["JsonValue"];
     };
     /**
-     * TranscriptItemRevision
-     * @description Canonical SHA-256 item revision from runtime-store repositories/transcript.rs canonical_hash, encoded as 64 lowercase hexadecimal characters.
-     */
-    TranscriptItemRevision: string;
-    /**
      * TranscriptMessageRecord
      * @description Transcript rows always carry their runtime role and display text.
      */
@@ -24277,9 +24272,6 @@ export interface components {
       delta: true;
       /** @default null */
       historyVersion?: components["schemas"]["TranscriptHistoryVersion"] | null;
-      itemRevisions: {
-        [key: string]: components["schemas"]["TranscriptItemRevision"];
-      };
       /** Items */
       items: components["schemas"]["TranscriptMessageRecord"][];
       /** @default null */

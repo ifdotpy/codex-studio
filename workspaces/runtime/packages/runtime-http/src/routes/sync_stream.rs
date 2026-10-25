@@ -2168,7 +2168,7 @@ mod tests {
         for entry in value["resourceVersions"].as_array_mut().expect("versions") {
             entry["transcriptChanges"] = json!({"after":1,"through":99999,"delta":{
                 "delta":true,"items":[{"id":"answer","role":"assistant","text":""}],
-                "removed":[],"itemRevisions":{},"truncated":false
+                "removed":[],"truncated":false
             }});
         }
         serde_json::from_value(value).expect("combined fixture")
@@ -3342,6 +3342,7 @@ mod tests {
             "stream carries the entire pull interval"
         );
         assert_eq!(batch["delta"]["items"][0]["text"], "before streamed text");
+        assert!(batch["delta"].get("itemRevisions").is_none());
         assert_eq!(batch["through"], event["resourceVersions"][0]["revision"]);
         state.next_resources_frame_at = None;
         http.resource_notifications.publish_once(&json!({"requestId":"preflush-empty","resources":[{"kind":"transcript","agentId":"open"}]})).expect("scoped preflush hint");
@@ -3516,7 +3517,7 @@ mod tests {
         let validator = studio_runtime_schema::compiled_validator("TranscriptStreamDelta")
             .expect("stream delta validator");
         let delta = json!({"delta":true,"items":[{"id":"answer","role":"assistant","text":"text"}],
-            "order":["answer"],"removed":[],"itemRevisions":{"answer":"0".repeat(64)},"truncated":false,
+            "order":["answer"],"removed":[],"truncated":false,
             "nextCursor":"answer","nextAfterCursor":"answer","historyVersion":"thread:checkpoint","tail":"","unavailable":null});
         assert!(validator.is_valid(&delta));
         for scenario in [
@@ -3524,8 +3525,7 @@ mod tests {
             "order_count",
             "removed_id",
             "order_id",
-            "revision_key",
-            "revision_value",
+            "retired_revisions",
             "cursor_empty",
             "cursor_long",
             "version_long",
@@ -3539,10 +3539,7 @@ mod tests {
                 }
                 "removed_id" => payload["removed"] = json!([""]),
                 "order_id" => payload["order"] = json!([""]),
-                "revision_key" => payload["itemRevisions"] = json!({"":"0".repeat(64)}),
-                "revision_value" => {
-                    payload["itemRevisions"]["answer"] = json!("not-a-sha256-digest")
-                }
+                "retired_revisions" => payload["itemRevisions"] = json!({"answer":"0".repeat(64)}),
                 "cursor_empty" => payload["nextCursor"] = json!(""),
                 "cursor_long" => payload["nextAfterCursor"] = json!("x".repeat(4097)),
                 "version_long" => payload["historyVersion"] = json!("x".repeat(8194)),
@@ -3564,7 +3561,7 @@ mod tests {
     #[test]
     fn state_stream_transcript_caps_and_incomplete_snapshots_stay_hint_only() {
         let delta = json!({"delta":true,"items":[{"id":"answer","role":"assistant","text":"after"}],
-            "removed":[],"itemRevisions":{"answer":studio_runtime_store::sha256_hex(b"after")},"truncated":false});
+            "removed":[],"truncated":false});
         for scenario in [
             "complete", "items", "snapshot", "deleted", "cursor", "unknown",
         ] {
