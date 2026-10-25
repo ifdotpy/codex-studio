@@ -8,6 +8,7 @@ struct ExistingGuest {
     infos: AtomicUsize,
     info_override: std::sync::Mutex<Option<Value>>,
     info_change: std::sync::Mutex<Option<(Arc<RuntimeStore>, String, String, Value)>>,
+    credential_copies_at_turn_start: std::sync::Mutex<Vec<usize>>,
 }
 impl GuestRpc for ExistingGuest {
     fn stream(
@@ -18,6 +19,15 @@ impl GuestRpc for ExistingGuest {
         timeout: std::time::Duration,
         on_frame: &mut dyn FnMut(Value) -> Result<(), GuestError>,
     ) -> Result<Value, GuestError> {
+        if method == "provider.rpc"
+            && params["action"] == "write"
+            && params["message"]["method"] == "turn/start"
+        {
+            self.credential_copies_at_turn_start
+                .lock()
+                .unwrap()
+                .push(self.inner.state.lock().unwrap().credential_documents.len());
+        }
         if method == "provider.rpc" && params["action"] == "info" {
             self.infos.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if let Some((store, actor, field, value)) = self.info_change.lock().unwrap().take() {
@@ -250,6 +260,246 @@ async fn vm_existing_reattach_resumes_credential_maintenance_only_after_normal_i
     assert_eq!(native.starts, 1);
     assert!(native.writes.is_empty());
     drop(native);
+    worker.shutdown().await.unwrap();
+}
+
+struct AuthRecoveryCredentials {
+    store: Arc<RuntimeStore>,
+    guest: Arc<ExistingGuest>,
+    attempts: AtomicUsize,
+    refuse: bool,
+}
+
+impl preparation::VmProviderLaunchResolver for AuthRecoveryCredentials {
+    fn resolve(
+        &self,
+        _: preparation::VmProviderLaunchRequest,
+    ) -> preparation::VmProviderLaunchFuture<'_> {
+        panic!("an existing Ready VM must not resolve or start another process");
+    }
+
+    fn refresh_claude_credentials(
+        &self,
+        actors: Vec<preparation::VmProviderLaunchRequest>,
+    ) -> preparation::VmProviderRefreshFuture<'_> {
+        Box::pin(async move {
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.guest.inner.changed.notify_one();
+            assert_eq!(actors.len(), 1);
+            let actor = &actors[0];
+            assert_eq!(actor.agent_id, FIXTURE_AGENT_ID);
+            assert_eq!(actor.epoch, FIXTURE_AGENT_EPOCH);
+            assert_eq!(actor.account_key, "default");
+            assert_eq!(actor.provider, "claude");
+            assert_eq!(actor.generation, 1);
+            assert_eq!(actor.cwd, "/home/studio/project");
+            if self.refuse {
+                return Err(WorkerError::PreparationPending(
+                    "test/auth-recovery-copy-refused".into(),
+                ));
+            }
+            crate::linux_vm_provider::copy_guest_credentials(
+                self.store.clone(),
+                self.guest.clone(),
+                crate::linux_vm_provider::GuestCredentialTarget {
+                    agent_id: &actor.agent_id,
+                    actor_epoch: actor.epoch,
+                    provider: "claude",
+                    account_key: &actor.account_key,
+                    relative_path: &VmClaudeRefreshResolver::credential_path(&actor.account_key),
+                },
+                br#"{"claudeAiOauth":{"accessToken":"fake-rotated-auth-recovery"}}"#,
+            )
+            .await
+            .map_err(|_| WorkerError::PreparationPending("test/auth-recovery-copy".into()))?;
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn vm_existing_auth_recovery_copies_rotated_credentials_before_native_submit() {
+    auth_recovery_turn(false).await;
+}
+
+#[tokio::test]
+async fn vm_existing_auth_recovery_copy_failure_keeps_original_input_pending() {
+    auth_recovery_turn(true).await;
+}
+
+async fn auth_recovery_turn(refuse: bool) {
+    let (state, guest) = existing_actor(false).await;
+    let resolver = Arc::new(AuthRecoveryCredentials {
+        store: state.bridge.store.clone(),
+        guest: guest.clone(),
+        attempts: AtomicUsize::new(0),
+        refuse,
+    });
+    let mut resources = claude_preparation::claude_resources(&state);
+    resources.guest_rpc = Some(guest.clone());
+    resources.vm_provider_launch = Some(resolver.clone());
+    let mut peer = Peer::new();
+    peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    worker_barrier(&worker).await;
+    assert_eq!(
+        resolver.attempts.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert!(
+        guest
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .credential_documents
+            .is_empty()
+    );
+    assert!(guest.inner.state.lock().unwrap().writes.is_empty());
+
+    // The real terminal and continuation owners create the auth retry marker.
+    {
+        let mut native = guest.inner.state.lock().unwrap();
+        VmTurnGuest::enqueue_frame(
+            &mut native,
+            &format!("linux-worker:{}", state.agent),
+            json!({"method":"turn/completed","params":{"threadId":"fake-thread-0",
+                "turn":{"id":"vm-turn","status":"failed","error":{"message":"OAuth session expired"}}}}),
+        );
+        guest.inner.changed.notify_one();
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if state.record().await["usageResume"]["cause"] == "auth" {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the failed native turn records its auth continuation");
+    worker_barrier(&worker).await;
+    let failed = state.record().await;
+    assert_eq!(failed["authResumeAttempt"], 1);
+    assert_eq!(failed["usageResume"]["status"], "scheduled");
+    assert_eq!(failed["nativeFailureHold"], true);
+    assert_eq!(failed["inFlight"], false);
+    assert_eq!(state.event_status("input").await, "delivered");
+    state.enqueue("auth-recovery-original").await;
+    assert_eq!(
+        state.event_status("auth-recovery-original").await,
+        "pending"
+    );
+
+    let actor = state.agent.clone();
+    let retry_at = failed["usageResume"]["dueAt"].as_f64().unwrap() + 1.0;
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let limits = crate::usage_resume::LimitsObservation::from_record(
+                        json!({"accountKey":"default","at":retry_at,"error":null,"data":{}}),
+                        Some("fake-rotated-auth-marker".into()),
+                    )
+                    .unwrap();
+                    let staged = crate::continuation_runtime::stage_tick(
+                        tx,
+                        &actor,
+                        retry_at,
+                        Some(&limits),
+                    )
+                    .unwrap();
+                    assert!(staged.changed());
+                    Ok::<_, WorkerError>(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    let resumed = state.record().await;
+    assert_eq!(resumed["usageResume"]["cause"], "auth");
+    assert_eq!(resumed["usageResume"]["status"], "started");
+    assert_eq!(resumed["authResumeAttempt"], 1);
+    assert_eq!(resumed["epoch"], state.epoch);
+    assert_eq!(resumed["accountKey"], "default");
+    assert_eq!(resumed["threadId"], "fake-thread-0");
+    assert_ne!(resumed["nativeFailureHold"], true);
+    assert_eq!(
+        state.event_status("auth-recovery-original").await,
+        "pending"
+    );
+    assert_eq!(state.event_status("input").await, "delivered");
+    let writes_before = guest.inner.state.lock().unwrap().writes.len();
+    assert_eq!(writes_before, 0);
+    state.wake(&worker).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let changed = guest.inner.changed.notified();
+            if resolver.attempts.load(std::sync::atomic::Ordering::SeqCst) > 0
+                || guest
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .writes
+                    .iter()
+                    .any(|write| write["method"] == "turn/start")
+            {
+                break;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .expect("the auth retry reaches either its credential gate or the native submit boundary");
+    worker_barrier(&worker).await;
+    assert_eq!(
+        resolver.attempts.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the existing Ready session must refresh before an auth-recovery native submit"
+    );
+    if refuse {
+        assert_eq!(
+            guest.inner.state.lock().unwrap().writes.len(),
+            writes_before
+        );
+        assert_eq!(
+            state.event_status("auth-recovery-original").await,
+            "pending"
+        );
+        assert!(
+            guest
+                .inner
+                .state
+                .lock()
+                .unwrap()
+                .credential_documents
+                .is_empty()
+        );
+    } else {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while state.event_status("auth-recovery-original").await != "delivered" {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the exact original pending input is delivered after the copy");
+        assert_eq!(
+            *guest.credential_copies_at_turn_start.lock().unwrap(),
+            vec![1]
+        );
+        assert_eq!(
+            guest.inner.state.lock().unwrap().credential_documents.len(),
+            1
+        );
+    }
+    assert_eq!(state.event_status("input").await, "delivered");
+    assert_eq!(guest.inner.state.lock().unwrap().starts, 1);
+    assert!(guest.inner.state.lock().unwrap().stops.is_empty());
     worker.shutdown().await.unwrap();
 }
 

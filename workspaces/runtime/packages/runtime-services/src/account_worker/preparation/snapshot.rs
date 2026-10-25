@@ -1770,6 +1770,109 @@ mod resource_tests {
             .expect("a VM agent keeps its tools");
     }
 
+    /// Claude resends its tools on each turn. Old host threads need the current
+    /// catalog without changing their saved source or exact moved tool list.
+    #[tokio::test]
+    async fn an_unfrozen_native_claude_on_an_old_thread_gets_the_current_catalog() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store opens");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("runtime resources")
+            .capture_filesystem(None);
+        store
+            .transaction_with(move |tx| {
+                let failed = |error: WorkerError| StoreError::SchemaMismatch(error.to_string());
+                for mode in ["native", "vm"] {
+                    for (thread_id, source) in [
+                        (Some("thread-old"), None),
+                        (Some("thread-old"), Some("legacy")),
+                        (None, None),
+                    ] {
+                        let mut record = json!({"id":"claude", "rootId":"claude", "epoch":1,
+                            "status":"running", "isLead":true, "name":"Lead", "provider":"claude",
+                            "accountKey":"default", "executionMode":mode, "cwd":"/line"});
+                        if let Some(thread_id) = thread_id {
+                            record["threadId"] = json!(thread_id);
+                        }
+                        if let Some(source) = source {
+                            record["nativeToolSource"] = json!(source);
+                        }
+                        AgentRepository::put(
+                            tx,
+                            &AgentRecord::from_value(record.clone()).expect("agent"),
+                        )?;
+                        let snapshot = thread_snapshot(
+                            tx,
+                            &resources,
+                            &record,
+                            "connection",
+                            Path::new("/state"),
+                            None,
+                        )
+                        .map_err(failed)?;
+                        let case = format!("{mode} {thread_id:?} {source:?}");
+                        let expected_source = if thread_id.is_some() {
+                            thread::CatalogSource::Legacy
+                        } else {
+                            thread::CatalogSource::Current
+                        };
+                        assert_eq!(snapshot.catalog.source, expected_source, "{case}");
+                        let tools = thread::tool_definitions(&snapshot).expect("tools");
+                        assert!(
+                            tools.iter().any(|tool| tool.name == crate::sign_in::TOOL),
+                            "{case}: Claude must receive the sign-in tool"
+                        );
+                        assert_eq!(snapshot.catalog.definitions, resources.tools, "{case}");
+                        assert_eq!(
+                            actor_tool_definitions(tx, &resources, &record).map_err(failed)?,
+                            json!(tools),
+                            "{case}: the context tool reports the same catalog"
+                        );
+                        let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
+                            thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => {
+                                attempt
+                            }
+                            other => panic!("{case}: {other:?}"),
+                        };
+                        assert_eq!(
+                            attempt.before_submit.set["nativeToolSource"],
+                            json!(expected_source),
+                            "{case}"
+                        );
+                        assert_eq!(attempt.params["dynamicTools"], json!(tools), "{case}");
+
+                        let mut frozen = snapshot;
+                        let saved_tools = resources
+                            .legacy_tools
+                            .iter()
+                            .filter(|tool| tool.name == "orchestration_title")
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        assert_eq!(saved_tools.len(), 1);
+                        let saved = json!({"baseInstructions":"saved base", "developerInstructions":"saved role",
+                            "model":"default", "dynamicTools":saved_tools});
+                        record["frozenNativeParams"] = saved;
+                        frozen.frozen = frozen_params(&record).map_err(failed)?;
+                        assert_eq!(
+                            thread::tool_definitions(&frozen).expect("exact frozen tools"),
+                            saved_tools,
+                            "{case}: moved tool snapshots stay exact"
+                        );
+                        assert_eq!(
+                            actor_tool_definitions(tx, &resources, &record).map_err(failed)?,
+                            json!(saved_tools),
+                            "{case}: frozen context tools stay exact"
+                        );
+                    }
+                }
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("Claude keeps current tools and exact frozen boundaries");
+    }
+
     #[test]
     fn only_host_codex_threads_send_sign_in_links_to_studio() {
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
