@@ -412,7 +412,8 @@ p {
   background: var(--raised);
   border: var(--studio-border-width) solid var(--line);
   border-radius: 18px;
-  transition: border-color 0.15s;
+  --composer-border-transition: border-color 0.15s;
+  transition: var(--composer-border-transition);
 }
 #composer:focus-within {
   border-color: var(--accent);

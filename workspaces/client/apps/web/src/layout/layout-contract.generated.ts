@@ -809,6 +809,18 @@ export const layoutTokens = {
     purpose:
       "Conversation header and timeline row height in short touch landscape",
   },
+  "keyboard.motionDuration": {
+    value: 300,
+    unit: "ms",
+    purpose:
+      "Composer translation and transcript padding duration during the native keyboard animation",
+  },
+  "keyboard.motionTargetTolerance": {
+    value: 0.1,
+    unit: "px",
+    purpose:
+      "Maximum transform matrix serialization error when retaining the current keyboard animation target",
+  },
 } as const;
 export const layoutValues = {
   navigation: {
@@ -872,6 +884,8 @@ export const layoutValues = {
   keyboard: {
     occlusionMin: 100,
     compactMaxHeight: 400,
+    motionDuration: 300,
+    motionTargetTolerance: 0.1,
   },
   viewport: {
     zoomTolerance: 0.01,

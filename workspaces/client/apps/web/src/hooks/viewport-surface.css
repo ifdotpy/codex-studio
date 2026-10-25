@@ -119,3 +119,24 @@ html[data-viewport-keyboard] #conversation #messages {
   padding-bottom: var(--keyboard-scroll-clearance, 0px);
   scroll-padding-bottom: var(--keyboard-scroll-clearance, 0px);
 }
+
+/* Only the center follows the keyboard. Root, navigation, and headers stay fixed. */
+html[data-viewport-short-landscape] {
+  --keyboard-motion: var(--layout-keyboard-motion-duration) ease-out;
+}
+html[data-viewport-short-landscape] #composer {
+  transition:
+    var(--composer-border-transition, border-color 0s),
+    transform var(--keyboard-motion);
+}
+html[data-viewport-short-landscape] #conversation #messages {
+  transition:
+    padding-bottom var(--keyboard-motion),
+    scroll-padding-bottom var(--keyboard-motion);
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-viewport-short-landscape] #composer,
+  html[data-viewport-short-landscape] #conversation #messages {
+    transition: none;
+  }
+}

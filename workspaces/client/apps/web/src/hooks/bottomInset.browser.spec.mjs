@@ -54,6 +54,7 @@ test("Duo uses the bottom band for passive status and keeps every target above H
   const page = await browser.newPage({
     viewport: { width: 951, height: 669 },
     hasTouch: false,
+    reducedMotion: "reduce",
   });
   await page.addInitScript(() =>
     Object.defineProperty(navigator, "maxTouchPoints", { value: 5 }),

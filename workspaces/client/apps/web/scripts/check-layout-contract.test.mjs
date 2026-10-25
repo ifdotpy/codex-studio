@@ -151,3 +151,18 @@ test("preserves font-relative component thresholds in generated metadata", () =>
     /--layout-fixture-column: 47.5em;/,
   );
 });
+
+test("generates keyboard motion duration with milliseconds intact", () => {
+  const motion = structuredClone(contract);
+  motion.tokens["keyboard.motionDuration"] = {
+    value: 300,
+    unit: "ms",
+    purpose: "Center column keyboard animation duration",
+  };
+  assert.doesNotThrow(() => validateContract(motion));
+  const output = renderContract(motion);
+  assert.match(
+    output["src/layout/layout-contract.generated.css"],
+    /--layout-keyboard-motion-duration: 300ms/,
+  );
+});

@@ -10,7 +10,10 @@ import {
   keyboardCycleFrames,
 } from "../../tests/layout/keyboardSequences.mjs";
 
-for (const [name, steps] of Object.entries(keyboardSequences))
+for (const [name, steps] of Object.entries({
+  ...keyboardSequences,
+  "smooth motion": keyboardSequences["device final"],
+}))
   test(`keyboard frame stays pinned: ${name}`, async ({ browser }) => {
     const server = await createFixtureViteServer({
       configFile: false,
@@ -42,6 +45,7 @@ for (const [name, steps] of Object.entries(keyboardSequences))
     const page = await browser.newPage({
       viewport: { width: 867, height: 669 },
       hasTouch: true,
+      reducedMotion: name === "smooth motion" ? "no-preference" : "reduce",
     });
     try {
       await server.listen();
@@ -139,6 +143,91 @@ for (const [name, steps] of Object.entries(keyboardSequences))
           n.style.transform = "translateZ(0)";
         });
       const baseline = await page.evaluate(() => window.stepKeyboard({}));
+      if (name === "smooth motion") {
+        await expect(page.locator("#composer")).toHaveCSS(
+          "transition-duration",
+          "0s, 0.3s",
+        );
+        const captures = await page.evaluate(async () => {
+          const capture = (patch) => {
+            window.stepKeyboard(patch);
+            document.body.getBoundingClientRect();
+            const animations = document.getAnimations();
+            animations.forEach((a) => a.pause());
+            const rows = [];
+            for (const ms of [0, 75, 150, 225, 300]) {
+              animations.forEach((a) => (a.currentTime = ms));
+              const rect = (selector) => {
+                const r = document
+                  .querySelector(selector)
+                  .getBoundingClientRect();
+                return { top: r.top, bottom: r.bottom, height: r.height };
+              };
+              rows.push({
+                ms,
+                sidebar: rect("#sidebar"),
+                header: rect("header"),
+                composer: rect("#composer"),
+                padding: parseFloat(
+                  getComputedStyle(document.querySelector("#messages"))
+                    .paddingBottom,
+                ),
+              });
+              if (ms === 150) {
+                const before = rect("#composer").bottom;
+                window.stepKeyboard(patch);
+                const after = rect("#composer").bottom;
+                if (Math.abs(after - before) > 1)
+                  throw new Error(
+                    "Repeated viewport event moved the animated composer",
+                  );
+              }
+            }
+            animations.forEach((a) => a.finish());
+            return rows;
+          };
+          return {
+            open: capture({ height: 323, innerHeight: 323 }),
+            close: capture({ height: 669, innerHeight: 669 }),
+          };
+        });
+        for (const [direction, rows] of Object.entries(captures)) {
+          expect(rows.length).toBeGreaterThan(4);
+          for (const row of rows) {
+            expect(row.sidebar.top).toBe(0);
+            expect(row.sidebar.height).toBe(635);
+            expect(row.header.top).toBe(0);
+            expect(row.header.height).toBe(44);
+          }
+          const bottoms = rows.map((r) => r.composer.bottom);
+          expect(new Set(bottoms.map(Math.round)).size).toBeGreaterThan(3);
+          expect(bottoms.at(-1)).toBeCloseTo(
+            direction === "open" ? 323 : 635,
+            0,
+          );
+          for (let i = 1; i < rows.length; i++) {
+            const sign = direction === "open" ? 1 : -1;
+            expect(sign * (bottoms[i] - bottoms[i - 1])).toBeLessThanOrEqual(1);
+            expect(
+              sign * (rows[i].padding - rows[i - 1].padding),
+            ).toBeGreaterThanOrEqual(-1);
+          }
+        }
+        await test.info().attach("center-motion-frames", {
+          body: JSON.stringify(captures, null, 2),
+          contentType: "application/json",
+        });
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await expect(page.locator("#composer")).toHaveCSS(
+          "transition-duration",
+          "0s",
+        );
+        const instant = await page.evaluate(() =>
+          window.stepKeyboard({ height: 323, innerHeight: 323 }),
+        );
+        expect(instant.composerBottom).toBe(323);
+        return;
+      }
       const records = [];
       const frames = keyboardCycleFrames(steps);
       for (const [index, step] of frames.entries()) {

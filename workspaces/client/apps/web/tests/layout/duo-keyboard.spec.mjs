@@ -10,7 +10,7 @@ import {
   keyboardCycleFrames,
 } from "./keyboardSequences.mjs";
 
-test.use({ hasTouch: true });
+test.use({ hasTouch: true, reducedMotion: "reduce" });
 for (const count of [1, 8]) {
   test(`Duo keyboard keeps ${count} attachment chips inside the composer`, async ({
     page,
@@ -159,6 +159,65 @@ for (const count of [1, 8]) {
       await page.locator("#message").fill("Keep this draft");
       const fullSidebarHeight = (await page.locator("#sidebar").boundingBox())
         .height;
+      if (count === 1) {
+        await page.emulateMedia({ reducedMotion: "no-preference" });
+        const motion = await page.evaluate(async () => {
+          const sidebar = document.querySelector("#sidebar");
+          const baseline = sidebar.getBoundingClientRect().toJSON();
+          const messages = document.querySelector("#messages");
+          messages.scrollTop = messages.scrollHeight;
+          await new Promise(requestAnimationFrame);
+          window.resizeDuoViewport({
+            height: 323,
+            innerHeight: 323,
+            offsetTop: 0,
+            pageTop: 0,
+            scrollY: 0,
+          });
+          document.body.getBoundingClientRect();
+          const animations = document
+            .getAnimations()
+            .filter((a) => a.effect?.target?.matches?.("#composer,#messages"));
+          animations.forEach((a) => a.pause());
+          const frames = [];
+          for (const ms of [0, 75, 150, 225, 300]) {
+            animations.forEach((a) => (a.currentTime = ms));
+            await new Promise(requestAnimationFrame);
+            await new Promise(requestAnimationFrame);
+            frames.push({
+              ms,
+              sidebar: sidebar.getBoundingClientRect().toJSON(),
+              composerTop: document
+                .querySelector("#composer")
+                .getBoundingClientRect().top,
+              lastBottom: messages
+                .querySelector(".message:last-child")
+                .getBoundingClientRect().bottom,
+              padding: parseFloat(getComputedStyle(messages).paddingBottom),
+            });
+          }
+          animations.forEach((a) => a.finish());
+          return { baseline, frames };
+        });
+        for (const frame of motion.frames) {
+          expect(frame.sidebar).toEqual(motion.baseline);
+          expect(frame.lastBottom).toBeLessThanOrEqual(frame.composerTop + 1);
+        }
+        await test.info().attach("actual-app-center-motion", {
+          body: JSON.stringify(motion, null, 2),
+          contentType: "application/json",
+        });
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await page.evaluate(() =>
+          window.resizeDuoViewport({
+            height: 669,
+            innerHeight: 669,
+            offsetTop: 0,
+            pageTop: 0,
+            scrollY: 0,
+          }),
+        );
+      }
       await page.evaluate(() =>
         window.resizeDuoViewport({
           height: 323,

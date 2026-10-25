@@ -17,14 +17,12 @@ export function useMobileViewport(active: boolean, compact = false) {
     let fullWidth = previousFrame?.width || 0;
     let keyboardRecoveryPending = false;
     let composer: HTMLElement | null = null;
-    let composerShift = 0;
     let messages: HTMLElement | null = null;
     const recoveryFrames = new Set<number>();
     const resetComposer = () => {
       composer?.removeAttribute("data-keyboard-floating");
       composer?.style.removeProperty("--keyboard-composer-shift");
       messages?.style.removeProperty("--keyboard-scroll-clearance");
-      composerShift = 0;
     };
     const clear = () => {
       resetComposer();
@@ -131,16 +129,29 @@ export function useMobileViewport(active: boolean, compact = false) {
       }
       if (overlay && composer) {
         const bounds = composer.getBoundingClientRect();
-        const naturalBottom = bounds.bottom - composerShift;
+        const transform = getComputedStyle(composer).transform;
+        const translation =
+          transform === "none" ? 0 : new DOMMatrixReadOnly(transform).m42;
+        const naturalBottom = bounds.bottom - translation;
         // Both rectangles use the browser's coordinate origin. pageTop may use
         // a different origin while iOS pans its layout viewport.
         const visibleTop =
           document.getElementById("root")?.getBoundingClientRect().top ?? top;
-        composerShift = Math.min(0, visibleTop + height - naturalBottom);
-        composer.style.setProperty(
-          "--keyboard-composer-shift",
-          `${composerShift}px`,
-        );
+        const composerShift = Math.min(0, visibleTop + height - naturalBottom);
+        const retainTarget = (
+          node: HTMLElement,
+          property: string,
+          value: number,
+        ) => {
+          const previous = parseFloat(node.style.getPropertyValue(property));
+          if (
+            !Number.isFinite(previous) ||
+            Math.abs(previous - value) >
+              layoutValues.keyboard.motionTargetTolerance
+          )
+            node.style.setProperty(property, `${value}px`);
+        };
+        retainTarget(composer, "--keyboard-composer-shift", composerShift);
         composer.setAttribute("data-keyboard-floating", "");
         if (messages) {
           const clearance = Math.max(
@@ -148,10 +159,7 @@ export function useMobileViewport(active: boolean, compact = false) {
             messages.getBoundingClientRect().bottom -
               (naturalBottom - bounds.height + composerShift),
           );
-          messages.style.setProperty(
-            "--keyboard-scroll-clearance",
-            `${clearance}px`,
-          );
+          retainTarget(messages, "--keyboard-scroll-clearance", clearance);
         }
       } else resetComposer();
       // Safari can retain a document scroll offset after it reveals a focused input.
