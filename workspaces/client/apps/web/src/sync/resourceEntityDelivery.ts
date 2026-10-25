@@ -5,6 +5,11 @@ const PERSIST_DEADLINE_MS = 1000;
 
 function revokeCursorProof(event: ResourceChangeEvent) {
   for (const entry of event.resourceVersions ?? []) {
+    if (entry.replyKind === "delta" && entry.viewSnapshot?.terminalOutput) {
+      // Without a durable base this is an interval, not a complete view.
+      entry.viewSnapshot = { ...entry.viewSnapshot };
+      delete entry.viewSnapshot.terminalOutput;
+    }
     delete entry.cursor;
     delete entry.replyKind;
   }
@@ -121,10 +126,7 @@ export class ResourceEntityDelivery {
             }),
           ]);
         } catch (error) {
-          for (const entry of event.resourceVersions ?? []) {
-            delete entry.cursor;
-            delete entry.replyKind;
-          }
+          revokeCursorProof(event);
           console.error("Stream entity persistence failed", error);
         } finally {
           clearTimeout(timer);

@@ -168,6 +168,63 @@ describe("bounded stream entity delivery", () => {
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(frame(1));
   });
 
+  it.each(["failure", "invalidate", "overflow"] as const)(
+    "withholds a terminal interval without its persisted base after %s",
+    async (mode) => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      let finish!: () => void;
+      const persist = vi.fn().mockResolvedValueOnce(undefined);
+      if (mode === "failure")
+        persist.mockRejectedValueOnce(new Error("disk full"));
+      else
+        persist.mockImplementationOnce(
+          () =>
+            new Promise<void>((resolve) => {
+              finish = resolve;
+            }),
+        );
+      const dispatch = vi.fn();
+      const delivery = new ResourceEntityDelivery(persist, dispatch);
+      const terminal = (
+        revision: number,
+        reason: ResourceChangeEvent["reason"] = "change",
+      ): ResourceChangeEvent => ({
+        ...frame(revision, reason),
+        resources: [{ kind: "terminal-output", terminalId: "shell" }],
+        resourceVersions: [
+          {
+            revision,
+            cursor: { workspaceId: "a".repeat(32), seq: revision },
+            replyKind: revision === 1 ? "snapshot" : "delta",
+            viewSnapshot: {
+              terminalOutput: {
+                text: "x",
+                offset: revision,
+                status: "running",
+                truncated: false,
+              },
+            },
+          },
+        ],
+      });
+      delivery.receive(terminal(1, "initial"));
+      await vi.advanceTimersByTimeAsync(0);
+      dispatch.mockClear();
+      delivery.receive(terminal(2));
+      if (mode === "invalidate") delivery.invalidate();
+      if (mode === "overflow") delivery.receive(terminal(3, "overflow"));
+      if (finish) finish();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(dispatch).toHaveBeenCalled();
+      for (const [event] of dispatch.mock.calls) {
+        expect(event.resourceVersions[0].cursor).toBeUndefined();
+        expect(
+          event.resourceVersions[0].viewSnapshot?.terminalOutput,
+        ).toBeUndefined();
+      }
+    },
+  );
+
   it("retains invalidation if storage rejects the batch", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const dispatch = vi.fn();

@@ -362,6 +362,13 @@ async fn sync_stream(
             _ => {}
         }
     }
+    let mut terminal_cursors = BTreeMap::new();
+    super::subscriptions::attach_terminal_output_cursors(
+        Some(&state),
+        &mut initial_event,
+        &mut terminal_cursors,
+    )
+    .await;
     attach_transient_snapshots(Some(&state), &mut initial_event, &mut voice_sequences).await;
     let mut initial = VecDeque::new();
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -428,6 +435,7 @@ async fn sync_stream(
         resources,
         entity_sequence: initial_entity_sequence,
         transcript_sequences,
+        terminal_cursors,
         voice_sequences,
         draft_sequence: initial_draft_sequence,
         store: Some(store),
@@ -632,8 +640,12 @@ async fn attach_initial_entries(
             continue;
         }
         let cursor = since.get(&value.to_string()).cloned();
-        let initial =
+        let mut initial =
             super::subscriptions::initial_snapshot(state.clone(), resource.clone(), cursor).await?;
+        if matches!(resource, ResourceRef::TerminalOutputResource(_)) {
+            // Notification revisions belong to the hub; output offsets belong to cursor.seq.
+            initial.revision = entry.revision;
+        }
         // Passive handlers leave transient and legacy inline fields with their
         // existing owner. A failed durable interval still supplies its revision.
         if initial.cursor.is_some() || initial.resource.is_some() {
@@ -1074,6 +1086,7 @@ struct ResourceStream {
     resources: Vec<Value>,
     entity_sequence: i64,
     transcript_sequences: BTreeMap<String, i64>,
+    terminal_cursors: BTreeMap<String, SubscriptionCursor>,
     voice_sequences: BTreeMap<String, i64>,
     draft_sequence: i64,
     store: Option<Arc<RuntimeStore>>,
@@ -1116,6 +1129,12 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
     {
         state.vault_readiness = readiness_source(http, &state.resources).await.ok()?;
     }
+    state.terminal_cursors.retain(|id, _| {
+        state
+            .resources
+            .iter()
+            .any(|resource| resource["kind"] == "terminal-output" && resource["terminalId"] == *id)
+    });
     state.voice_sequences.retain(|id, _| {
         state
             .resources
@@ -1184,15 +1203,21 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         )
         .ok()?;
         attach_transcript_changes(&mut event, updates);
+        attach_initial_entries(http_state, &mut event, &update.since)
+            .await
+            .ok()?;
+        super::subscriptions::attach_terminal_output_cursors(
+            state.http_state.as_ref(),
+            &mut event,
+            &mut state.terminal_cursors,
+        )
+        .await;
         attach_transient_snapshots(
             state.http_state.as_ref(),
             &mut event,
             &mut state.voice_sequences,
         )
         .await;
-        attach_initial_entries(http_state, &mut event, &update.since)
-            .await
-            .ok()?;
         state.entity_transfers.extend(
             entity_transfer::attach(
                 http_state,
@@ -1381,6 +1406,12 @@ async fn next_frame(
                     state.entity_sequence = cursor.seq;
                 }
             }
+            super::subscriptions::attach_terminal_output_cursors(
+                state.http_state.as_ref(),
+                &mut event,
+                &mut state.terminal_cursors,
+            )
+            .await;
             attach_transient_snapshots(
                 state.http_state.as_ref(),
                 &mut event,
@@ -1828,6 +1859,180 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[tokio::test(start_paused = true)]
+    async fn state_stream_terminal_live_cursors_keep_independent_frame_budgets() {
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated terminal state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction_with(|tx| {
+            for id in ["one", "two"] {
+                tx.execute("INSERT INTO user_terminals(id,record,output,offset) VALUES(?1,?2,'a',0)", rusqlite::params![id,json!({"id":id,"agent":"lead","title":"Shell","cwd":"/","created":1,"status":"running"}).to_string()])?;
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("terminals");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(http.clone()).expect("router");
+        let query = form_urlencoded::Serializer::new(String::new())
+            .append_pair("protocol", SYNC_PROTOCOL_VERSION_TEXT)
+            .append_pair("tokenRates", "false")
+            .append_pair("resources", &json!([{"kind":"terminal-output","terminalId":"one"},{"kind":"terminal-output","terminalId":"two"}]).to_string()).finish();
+        let request = axum::http::Request::builder()
+            .uri(format!("/api/sync/stream?{query}"))
+            .header("host", "127.0.0.1:4321")
+            .header("x-canvas-token", "token")
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                12345,
+            ))))
+            .body(Body::empty())
+            .expect("request");
+        let mut body = app
+            .oneshot(request)
+            .await
+            .expect("SSE")
+            .into_body()
+            .into_data_stream();
+        for _ in 0..3 {
+            let _initial = body
+                .next()
+                .await
+                .expect("session and two initial snapshots")
+                .expect("bytes");
+        }
+        let count = studio_runtime_schema::shared_values::SYNC_TERMINAL_STREAM_MAX_CHARS;
+        store
+            .transaction_with(move |tx| {
+                tx.execute(
+                    "UPDATE user_terminals SET output=?1",
+                    [format!("a{}", "\u{0001}".repeat(count))],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("both outputs");
+        for _ in 0..2 {
+            let bytes = body
+                .next()
+                .await
+                .expect("independent live interval")
+                .expect("bytes");
+            assert!(bytes.len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+            let frame: Value = serde_json::from_str(
+                std::str::from_utf8(&bytes)
+                    .expect("UTF8")
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON");
+            assert_eq!(frame["resources"].as_array().expect("refs").len(), 1);
+            let entry = &frame["resourceVersions"][0];
+            assert_eq!(
+                entry["replyKind"], "delta",
+                "combined terminal data must not drop its cursor for recovery"
+            );
+            assert_eq!(entry["cursor"]["seq"], count + 1);
+            assert_eq!(
+                entry["viewSnapshot"]["terminalOutput"]["text"]
+                    .as_str()
+                    .expect("inline output")
+                    .chars()
+                    .count(),
+                count
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_stream_terminal_live_cursor_uses_intervals_and_resets_lost_buffers() {
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated terminal state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO user_terminals(id,record,output,offset) VALUES('shell',?1,'a🙂',0)", [json!({"id":"shell","agent":"lead","title":"Shell","cwd":"/","created":1,"status":"running"}).to_string()])?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("terminal baseline");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(http.clone()).expect("router");
+        let request = axum::http::Request::builder()
+            .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22terminal-output%22%2C%22terminalId%22%3A%22shell%22%7D%5D&tokenRates=false"))
+            .header("host", "127.0.0.1:4321").header("x-canvas-token", "token")
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],12345))))
+            .body(Body::empty()).expect("request");
+        let response = app.oneshot(request).await.expect("SSE response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let document = |bytes: &[u8]| -> Value {
+            let text = std::str::from_utf8(bytes).expect("UTF8 SSE");
+            serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON")
+        };
+        let _session = body.next().await.expect("session").expect("bytes");
+        let initial = document(&body.next().await.expect("snapshot").expect("bytes"));
+        assert_eq!(initial["resourceVersions"][0]["replyKind"], "snapshot");
+        assert_eq!(
+            initial["resourceVersions"][0]["revision"], initial["revision"],
+            "terminal notification revision must keep the hub revision domain"
+        );
+        assert_eq!(
+            initial["resourceVersions"][0]["viewSnapshot"]["terminalOutput"]["text"],
+            "a🙂"
+        );
+        for (text, offset, expected, kind, seq) in [
+            ("a🙂中", 0, "中", "delta", 3),
+            ("tail", 20, "tail", "snapshot", 24),
+            ("tail!", 20, "!", "delta", 25),
+            ("new", 0, "new", "snapshot", 3),
+        ] {
+            store
+                .transaction_with(move |tx| {
+                    tx.execute(
+                        "UPDATE user_terminals SET output=?1,offset=?2 WHERE id='shell'",
+                        rusqlite::params![text, offset],
+                    )?;
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .expect("output commit");
+            http.sync_changes.notify_one();
+            let frame = document(&body.next().await.expect("live frame").expect("bytes"));
+            let entry = &frame["resourceVersions"][0];
+            assert_eq!(
+                entry["viewSnapshot"]["terminalOutput"]["text"], expected,
+                "live append must not replay retained history"
+            );
+            assert_eq!(entry["replyKind"], kind);
+            assert_eq!(entry["cursor"]["seq"], seq);
+        }
+        drop(body);
+        assert!(
+            http.sync_sessions.0.lock().expect("sessions").is_empty(),
+            "closed stream releases cursor owner"
+        );
+    }
 
     #[tokio::test]
     async fn state_stream_rename_failure_carries_the_exact_receipt_without_entity_changes() {
@@ -4421,6 +4626,7 @@ mod tests {
             resources: vec![json!({"kind": "queue", "agentId": "agent-a"})],
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
@@ -4472,6 +4678,7 @@ mod tests {
             resources: vec![json!({"kind":"accounts"})],
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
@@ -4761,6 +4968,7 @@ mod tests {
             resources,
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
@@ -4981,6 +5189,7 @@ mod tests {
             resources: Vec::new(),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,

@@ -209,9 +209,13 @@ retains its scoped recovery read.
 Open process and work-review panels and complaint threads receive their bounded
 records in `viewSnapshot` through typed screen subscriptions. Room baselines
 retain a newest-message window and an older-history cursor. Open terminal output
-uses Unicode-scalar offsets; the renderer applies overlapping tails as appends
-and stores the retained output with its resume cursor under the projection write
-lock. A reconnect reuses that applied base or receives a replacement snapshot.
+uses Unicode-scalar offsets. Each live subscription sends an initial snapshot,
+then only output since its last sent cursor, including status updates with no new
+text. Buffer loss, an output reset, or an oversized interval sends a bounded
+replacement snapshot. Removing a terminal selector releases its live cursor.
+The renderer merges intervals and stores retained output and its resume cursor
+under the projection write lock before notifying readers. A reconnect reuses
+that applied base or receives a replacement snapshot.
 Saved terminal history and explicit retries remain user actions.
 
 The existing native EventSource transport and RxDB projection cache remain in

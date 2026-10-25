@@ -937,6 +937,17 @@ export function createSyncClient(options: SyncClientOptions) {
                 false,
               );
             const previous = row?.payload ? JSON.parse(row.payload) : undefined;
+            if (
+              resource.kind === "terminal-output" &&
+              previous?.workspaceId === workspaceId &&
+              previous.viewEpoch === event.epoch &&
+              previous.viewRevision >= entry.revision
+            ) {
+              // Late snapshots must not restore output from before a reset.
+              entry.cursor = { workspaceId, seq: previous.seq };
+              entry.viewSnapshot = previous.viewSnapshot;
+              return;
+            }
             const snapshot = { ...entry.viewSnapshot };
             if (snapshot.terminalOutput)
               snapshot.terminalOutput = mergeTerminalOutput(
@@ -946,12 +957,28 @@ export function createSyncClient(options: SyncClientOptions) {
                 snapshot.terminalOutput,
                 entry.replyKind === "delta",
               );
+            // A replayed terminal interval keeps the cursor of the merged base.
+            // Snapshots may reset the offset, and status can change without output.
+            const appliedCursor = snapshot.terminalOutput
+              ? { ...cursor, seq: snapshot.terminalOutput.offset }
+              : cursor;
             if (!isCurrent()) return;
-            await persistProjection(db.projections, {
-              id,
-              payload: JSON.stringify({ ...cursor, viewSnapshot: snapshot }),
-              seq: cursor.seq,
-            });
+            await persistProjection(
+              db.projections,
+              {
+                id,
+                payload: JSON.stringify({
+                  ...appliedCursor,
+                  ...(resource.kind === "terminal-output"
+                    ? { viewEpoch: event.epoch, viewRevision: entry.revision }
+                    : {}),
+                  viewSnapshot: snapshot,
+                }),
+                seq: appliedCursor.seq,
+              },
+              resource.kind === "terminal-output",
+            );
+            entry.cursor = appliedCursor;
             entry.viewSnapshot = snapshot;
           },
         );

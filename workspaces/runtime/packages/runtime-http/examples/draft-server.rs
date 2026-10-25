@@ -48,11 +48,43 @@ async fn write_entity(
     Ok(axum::Json(serde_json::json!({"seq":sequence})))
 }
 
+/// Terminal source writes are opt-in and isolated to this test server.
+async fn write_terminal(
+    axum::extract::State(store): axum::extract::State<Arc<RuntimeStore>>,
+    headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    if headers.get("x-canvas-token").and_then(|v| v.to_str().ok()) != Some("draft-witness") {
+        return Err(axum::http::StatusCode::FORBIDDEN);
+    }
+    store
+        .transaction_with(move |tx| {
+            let id = body["id"]
+                .as_str()
+                .ok_or_else(|| StoreError::SchemaMismatch("fixture terminal id".into()))?;
+            let record = studio_runtime_store::TerminalRecord::from_value(serde_json::json!({
+                "id":id,"agent":"lead","title":"Shell","cwd":"/","created":1,
+                "status":body["status"].as_str().unwrap_or("running")
+            }))?;
+            studio_runtime_store::TerminalsRepository::put(
+                tx,
+                id,
+                &record,
+                body["text"].as_str().unwrap_or_default(),
+                body["offset"].as_i64().unwrap_or_default(),
+            )
+        })
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(axum::Json(serde_json::json!({"ok":true})))
+}
+
 #[tokio::main]
 async fn main() {
     // Vitest owns the directory so even forced fixture cleanup removes state.
     let directory = std::path::PathBuf::from(std::env::args_os().nth(1).expect("state directory"));
     let store = Arc::new(RuntimeStore::open(Some(&directory)).await.expect("store"));
+    let terminals = std::env::args().any(|arg| arg == "--terminal-live");
     let entities = std::env::args().any(|arg| arg == "--entity-live");
     if entities {
         studio_runtime_services::entity_publication::install(&store)
@@ -113,6 +145,13 @@ async fn main() {
         None,
     );
     let mut app = router(state).expect("real router");
+    if terminals {
+        app = app.merge(
+            axum::Router::new()
+                .route("/fixture/terminal", axum::routing::post(write_terminal))
+                .with_state(store.clone()),
+        );
+    }
     if entities {
         app = app.merge(
             axum::Router::new()

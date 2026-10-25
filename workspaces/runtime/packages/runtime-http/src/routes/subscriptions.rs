@@ -231,6 +231,43 @@ async fn view_initial(
     serde_json::from_value(value).map_err(|_| ApiError::internal())
 }
 
+/// Each live stream owns only the last terminal offset it sent. Reuse the same
+/// reader and reset rules as reconnect; other view handlers keep their snapshots.
+pub(super) async fn attach_terminal_output_cursors(
+    state: Option<&HttpState>,
+    event: &mut crate::generated::ResourceChangeEvent,
+    cursors: &mut std::collections::BTreeMap<String, SubscriptionCursor>,
+) {
+    let Some(state) = state else { return };
+    for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
+        let ResourceRef::TerminalOutputResource(terminal) = resource else {
+            continue;
+        };
+        if entry.view_snapshot.is_none() {
+            match initial_snapshot(
+                state.clone(),
+                resource.clone(),
+                cursors.get(&terminal.terminal_id).cloned(),
+            )
+            .await
+            {
+                Ok(mut snapshot) => {
+                    snapshot.revision = entry.revision;
+                    *entry = snapshot;
+                }
+                Err(error) => {
+                    cursors.remove(&terminal.terminal_id);
+                    eprintln!("subscribed terminal interval unavailable: {error:?}");
+                    continue;
+                }
+            }
+        }
+        if let Some(cursor) = &entry.cursor {
+            cursors.insert(terminal.terminal_id.clone(), cursor.clone());
+        }
+    }
+}
+
 pub(super) async fn attach_view_snapshots(
     state: Option<&HttpState>,
     event: &mut crate::generated::ResourceChangeEvent,

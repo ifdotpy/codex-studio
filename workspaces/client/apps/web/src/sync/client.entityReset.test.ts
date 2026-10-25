@@ -1402,16 +1402,17 @@ describe("entity pull reset wiring", () => {
       text: string,
       seq: number,
       replyKind: "snapshot" | "delta",
+      revision = seq,
     ): ResourceChangeEvent => ({
       protocol: SYNC_PROTOCOL_VERSION,
       workspaceId,
       epoch: "epoch",
-      revision: seq,
+      revision,
       reason: "initial",
       resources: [resource],
       resourceVersions: [
         {
-          revision: seq,
+          revision,
           cursor: { workspaceId, seq },
           replyKind,
           viewSnapshot: {
@@ -1443,6 +1444,16 @@ describe("entity pull reset wiring", () => {
       workspaceId,
       seq: 3,
     });
+    const late = event("a🙂", 2, "delta");
+    await client.persistResourceEntityChanges(late, () => true);
+    expect(late.resourceVersions[0].viewSnapshot?.terminalOutput?.text).toBe(
+      "a🙂中",
+    );
+    expect(late.resourceVersions[0].cursor?.seq).toBe(3);
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 3,
+    });
     const record = [...rows.values()].find(
       (row) => JSON.parse(row.payload).viewSnapshot?.terminalOutput,
     );
@@ -1458,6 +1469,33 @@ describe("entity pull reset wiring", () => {
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
       seq: 3,
+    });
+    fail = false;
+    const exited = event("", 3, "delta", 4);
+    exited.resourceVersions[0].viewSnapshot!.terminalOutput!.status = "exited";
+    await client.persistResourceEntityChanges(exited, () => true);
+    const stored = () =>
+      [...rows.values()]
+        .map((row) => JSON.parse(row.payload))
+        .find((row) => row.viewSnapshot?.terminalOutput);
+    expect(stored().viewSnapshot.terminalOutput.status).toBe("exited");
+    await client.persistResourceEntityChanges(
+      event("x", 1, "snapshot", 5),
+      () => true,
+    );
+    expect(stored().viewSnapshot.terminalOutput.text).toBe("x");
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 1,
+    });
+    await client.persistResourceEntityChanges(
+      event("a🙂", 2, "snapshot"),
+      () => true,
+    );
+    expect(stored().viewSnapshot.terminalOutput.text).toBe("x");
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 1,
     });
   });
 });
