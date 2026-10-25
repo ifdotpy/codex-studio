@@ -25,8 +25,8 @@ use studio_runtime_services::{
     },
 };
 use studio_runtime_store::{
-    AgentId, AgentRepository, AgentStatus, QueueEvent, QueueEventId, QueueEventRepository,
-    RuntimeStore, SchedulerRepository,
+    AgentId, AgentRepository, QueueEvent, QueueEventId, QueueEventRepository, RuntimeStore,
+    SchedulerRepository,
 };
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -2253,6 +2253,29 @@ mod tests {
         }
         drop(hints.take());
         (directory, store, hints)
+    }
+
+    #[tokio::test]
+    async fn current_workspace_account_classification_does_not_admit_a_legacy_writer() {
+        let (_directory, store, _hints) =
+            registry_fixture(&[("agent", "codex", "account", None)]).await;
+        queue_user_event(&store, "input", "agent").await;
+        let before = store.writer_admissions();
+        let (legacy, agents, has_work) = super::classify_pending_agents(
+            store.clone(),
+            "account".into(),
+            vec![("agent".into(), 0, None)],
+        )
+        .await
+        .expect("current workspace remains dispatchable");
+        assert!(legacy.is_empty());
+        assert_eq!(agents, [("agent".to_owned(), 0)]);
+        assert!(has_work);
+        assert_eq!(
+            store.writer_admissions(),
+            before,
+            "Read-only account paging must not enqueue a legacy cleanup transaction"
+        );
     }
 
     async fn queue_user_event(store: &RuntimeStore, id: &'static str, agent: &'static str) {

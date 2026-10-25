@@ -16,41 +16,82 @@ const EXECUTION_FIELDS: &[&str] = &[
     "connectionRecovery",
 ];
 
+// Shared admission predicate for the read probe and the writer's authoritative snapshot.
+const UNSETTLED_LEGACY_PREDICATE: &str = "(json_extract(record,'$.workspaceMode')='image' OR json_extract(record,'$.imageWorkspace')=1) AND COALESCE(json_extract(record,'$.legacyWorkspaceSettled'),0)=0";
+
 pub async fn finish_stored_workspaces(store: &RuntimeStore) -> Result<usize, StoreError> {
+    // Current workspace paging is read-only. Do not queue an empty legacy
+    // transaction behind account workers on every account in a paging pass.
+    let pending = store
+        .read_async::<_, StoreError>("legacy-workspace/pending", |db| {
+            Ok(db.query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE {UNSETTLED_LEGACY_PREDICATE})"
+                ),
+                [],
+                |row| row.get::<_, bool>(0),
+            )?)
+        })
+        .await?;
+    if !pending {
+        return Ok(0);
+    }
     let at = crate::event_write::unix_time()
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-    store.transaction(move |tx| {
-        let rows = {
-            let mut statement = tx.prepare("SELECT record FROM runtime_agents WHERE (json_extract(record,'$.workspaceMode')='image' OR json_extract(record,'$.imageWorkspace')=1) AND COALESCE(json_extract(record,'$.legacyWorkspaceSettled'),0)=0")?;
-            statement.query_map([], |row| row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?
-        };
-        let mut count = 0;
-        for row in rows {
-            let mut value: Value = serde_json::from_str(&row).map_err(|_| StoreError::InvalidStoredObject { table: "runtime_agents", id: "legacy".into() })?;
-            let mut execution = value.get("legacyWorkspaceExecution").and_then(Value::as_object).cloned().unwrap_or_default();
-            for field in EXECUTION_FIELDS {
-                if let Some(saved) = value.get(*field).filter(|saved| !saved.is_null()).cloned() {
-                    execution.entry((*field).to_owned()).or_insert(saved);
-                    value[*field] = Value::Null;
+    store
+        .transaction(move |tx| {
+            let rows = {
+                let mut statement = tx.prepare(&format!(
+                    "SELECT record FROM runtime_agents WHERE {UNSETTLED_LEGACY_PREDICATE}"
+                ))?;
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            let mut count = 0;
+            for row in rows {
+                let mut value: Value =
+                    serde_json::from_str(&row).map_err(|_| StoreError::InvalidStoredObject {
+                        table: "runtime_agents",
+                        id: "legacy".into(),
+                    })?;
+                let mut execution = value
+                    .get("legacyWorkspaceExecution")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                for field in EXECUTION_FIELDS {
+                    if let Some(saved) = value.get(*field).filter(|saved| !saved.is_null()).cloned()
+                    {
+                        execution.entry((*field).to_owned()).or_insert(saved);
+                        value[*field] = Value::Null;
+                    }
                 }
+                if !execution.is_empty() {
+                    value["legacyWorkspaceExecution"] = Value::Object(execution);
+                }
+                if !matches!(value["status"].as_str(), Some("archived" | "deleted")) {
+                    value["status"] = json!("completed");
+                }
+                value["autoWake"] = json!(false);
+                value["inFlight"] = json!(false);
+                value["legacyWorkspaceFinished"] = json!(true);
+                value["legacyWorkspaceSettled"] = json!(true);
+                let id = value["id"].as_str().unwrap_or("legacy").to_owned();
+                let record = AgentRecord::from_value(value).map_err(|_| {
+                    StoreError::InvalidStoredObject {
+                        table: "runtime_agents",
+                        id: id.clone(),
+                    }
+                })?;
+                AgentRepository::put(tx, &record)?;
+                crate::task_settlement::settle_agent_tasks(tx, &id, at)?;
+                crate::agents_create::publish_agent(tx, &record.value())?;
+                count += 1;
             }
-            if !execution.is_empty() { value["legacyWorkspaceExecution"] = Value::Object(execution); }
-            if !matches!(value["status"].as_str(), Some("archived" | "deleted")) {
-                value["status"] = json!("completed");
-            }
-            value["autoWake"] = json!(false);
-            value["inFlight"] = json!(false);
-            value["legacyWorkspaceFinished"] = json!(true);
-            value["legacyWorkspaceSettled"] = json!(true);
-            let id = value["id"].as_str().unwrap_or("legacy").to_owned();
-            let record = AgentRecord::from_value(value).map_err(|_| StoreError::InvalidStoredObject { table: "runtime_agents", id: id.clone() })?;
-            AgentRepository::put(tx, &record)?;
-            crate::task_settlement::settle_agent_tasks(tx, &id, at)?;
-            crate::agents_create::publish_agent(tx, &record.value())?;
-            count += 1;
-        }
-        Ok(count)
-    }).await
+            Ok(count)
+        })
+        .await
 }
 
 #[cfg(test)]
