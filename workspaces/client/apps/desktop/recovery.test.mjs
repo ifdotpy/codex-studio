@@ -577,7 +577,7 @@ test("launchd registration failure is an error and cannot report success", async
 });
 
 test.skipIf(!process.env.CODEX_DESKTOP_E2E)(
-  "the hidden desktop survives crash loops and resets its recovery budget",
+  "the hidden desktop survives crash loops and supports native reload",
   async () => {
     const { execFile } = await import("node:child_process");
     const { promisify } = await import("node:util");
