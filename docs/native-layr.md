@@ -86,9 +86,9 @@ Acceptance runs `layr merge <line> --expect <state>` in main.
 A changed worker head prevents acceptance.
 Lead and reviewer results do not cause a merge.
 
-At turn end, Studio runs `layr save` and `layr cache repair`.
+At turn end, Studio runs `layr cache repair` and `layr save`.
 This automatic state preserves unfinished work separately from the named head.
-Archive saves remaining work and calls `layr line delete <line>`.
+Archive saves remaining work and calls `layr line delete -D <line>`.
 Layr retains the states.
 Archive of a lead retains main.
 
@@ -120,16 +120,20 @@ Studio does not choose build commands or automatically publish caches.
 
 A native reviewer uses main as its read-only working directory.
 It owns no Layr line.
-Codex uses the read-only sandbox for the review turn.
+Codex permits writes only in the private reviewer scratch folder.
 The `layr_read` tool reads states outside that sandbox through a command allowlist.
 It permits `show`, `diff`, `log`, and the existing history read commands.
-It does not permit line changes.
+It does not permit changes to main or worker lines.
 Reviewer turn completion does not save or repair main.
 
 The host user owns the entire store.
 Native mode does not create separate Unix users as the VM mode does.
-A reviewer cannot run an arbitrary `layr try` command through `layr_read`.
-Use the lead or an implementer for those checks.
+The native `layr_read` tool also accepts `try <state> -- <command>`.
+Studio runs the command in a temporary Layr copy.
+On macOS, `sandbox-exec` permits writes only in that copy and the private scratch folder.
+On Linux, Bubblewrap provides the same restriction and must be installed.
+The check has no network access.
+The check cannot change main or the worker lines.
 
 ## Migration
 

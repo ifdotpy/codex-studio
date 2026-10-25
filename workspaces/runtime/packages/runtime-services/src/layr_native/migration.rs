@@ -33,42 +33,6 @@ fn git(directory: &Path, args: &[&str]) -> Result<String> {
         .map_err(|_| NativeLayrError::Refused("Non-UTF-8 worktree path".into()))
 }
 
-fn repositories(project: &Path) -> Result<Vec<PathBuf>> {
-    let mut found = Vec::new();
-    let mut pending = vec![project.to_owned()];
-    while let Some(folder) = pending.pop() {
-        if folder.join(".git").is_dir() {
-            found.push(folder.clone());
-        }
-        for entry in fs::read_dir(&folder)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            if entry.file_type()?.is_dir()
-                && !matches!(
-                    name.to_str(),
-                    Some(
-                        ".git"
-                            | ".worktrees"
-                            | "node_modules"
-                            | "target"
-                            | ".venv"
-                            | "venv"
-                            | "__pycache__"
-                            | ".next"
-                            | ".turbo"
-                    )
-                )
-            {
-                if !entry.path().join(".git").is_file() {
-                    pending.push(entry.path());
-                }
-            }
-        }
-    }
-    found.sort();
-    Ok(found)
-}
-
 fn safe_name(value: &str) -> String {
     let name: String = value
         .chars()
@@ -97,7 +61,7 @@ pub fn migrate(state_dir: &Path, project: &Path, dry_run: bool) -> Result<Value>
     let project_id = project_id(&record)?;
     let mut lines = Vec::new();
     let mut seen = BTreeSet::new();
-    for repo in repositories(&project)? {
+    for repo in crate::vm_preparation::import_repository_roots(&project)? {
         let relative = repo
             .strip_prefix(&project)
             .map_err(|error| NativeLayrError::Refused(error.to_string()))?;

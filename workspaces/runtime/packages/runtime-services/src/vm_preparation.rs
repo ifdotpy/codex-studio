@@ -104,6 +104,31 @@ fn code_archive(source: &Path, worktree: bool) -> std::io::Result<VmProjectArchi
     })
 }
 
+/// Repositories admitted by the same code rules as the project archive.
+pub(crate) fn import_repository_roots(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let exclusions = vm_archive_exclusions(root)?;
+    let mut repositories = Vec::new();
+    let mut pending = vec![root.to_owned()];
+    while let Some(folder) = pending.pop() {
+        if folder.join(".git").exists() {
+            repositories.push(folder.clone());
+        }
+        for entry in fs::read_dir(&folder)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_name() == ".git" || !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let relative = path.strip_prefix(root).map_err(std::io::Error::other)?;
+            if !vm_archive_skip(root, relative, &path, &exclusions) {
+                pending.push(path);
+            }
+        }
+    }
+    repositories.sort();
+    Ok(repositories)
+}
+
 fn add_vm_tar_directory<W: Write>(
     output: &mut TarGzipWriter<W>,
     root: &Path,

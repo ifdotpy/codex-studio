@@ -4465,11 +4465,23 @@ mod actor_tests {
 
     #[test]
     fn vm_reviewer_result_is_accepted_without_a_layr_merge() {
+        assert_reviewer_result_is_accepted_without_a_layr_merge("vm", "layr");
+    }
+
+    #[test]
+    fn native_layr_reviewer_result_is_accepted_without_a_merge_and_implementer_requires_merge() {
+        assert_reviewer_result_is_accepted_without_a_layr_merge("native", "layr-native");
+    }
+
+    fn assert_reviewer_result_is_accepted_without_a_layr_merge(
+        execution_mode: &str,
+        workspace_mode: &str,
+    ) {
         let mut connection = database();
         for (id, role) in [("lead", "lead"), ("worker", "reviewer")] {
             let record = json!({
                 "id":id,"rootId":"lead","epoch":2,"status":"running","autoWake":true,
-                "inFlight":true,"agentMode":"multi","concurrency":8,"executionMode":"vm",
+                "inFlight":true,"agentMode":"multi","concurrency":8,"executionMode":execution_mode,"workspaceMode":workspace_mode,
                 "isLead":(id == "lead"),"role":role,"layrProjectId":"project","layrLine":id
             });
             connection

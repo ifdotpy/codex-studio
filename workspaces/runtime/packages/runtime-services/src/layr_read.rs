@@ -209,7 +209,7 @@ pub(crate) async fn run_native(
     if record["role"] != "reviewer" || record["layrReady"] != true {
         return crate::host_exec::refused("layr_read requires a ready Layr reviewer".into());
     }
-    let argv = match command(args) {
+    let argv = match native_command(args) {
         Ok(argv) => argv,
         Err(error) => return crate::host_exec::refused(error),
     };
@@ -227,8 +227,11 @@ pub(crate) async fn run_native(
                         crate::layr_native::NativeLayrError::Refused("Missing reviewer cwd".into())
                     })?;
                     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-                    let output =
-                        crate::layr_native::run(&state_dir, std::path::Path::new(cwd), &refs)?;
+                    let output = if argv.first().map(String::as_str) == Some("try") {
+                        crate::layr_native::reviewer_try(&state_dir, &record, &argv)?
+                    } else {
+                        crate::layr_native::run(&state_dir, std::path::Path::new(cwd), &refs)?
+                    };
                     Ok(json!({"exitCode":0,"stdout":output,"stderr":""}))
                 },
             )
@@ -244,7 +247,37 @@ pub(crate) async fn run_native(
             certainty: DeliveryCertainty::Written,
             applied: Some(true),
         },
-        Ok(Err(error)) => crate::host_exec::refused(error.to_string()),
+        Ok(Err(error @ crate::layr_native::NativeLayrError::Refused(_))) => {
+            crate::host_exec::refused(error.to_string())
+        }
+        Ok(Err(error)) => crate::host_exec::unknown(error.to_string()),
         Err(_) => crate::host_exec::unknown("Native Layr read worker failed".into()),
     }
+}
+
+fn native_command(args: &Value) -> Result<Vec<String>, String> {
+    if let Ok(argv) = command(args) {
+        return Ok(argv);
+    }
+    let items = args["args"]
+        .as_array()
+        .filter(|items| (4..=MAX_ARGUMENTS).contains(&items.len()))
+        .ok_or_else(|| {
+            "Supply a native Layr read command or try <state> -- <command>".to_owned()
+        })?;
+    if items[0] != "try"
+        || items[2] != "--"
+        || items.iter().any(|item| {
+            item.as_str().is_none_or(|value| {
+                value.contains('\0') || value.chars().count() > MAX_ARGUMENT_CHARS
+            })
+        })
+    {
+        return Err("Supply a native Layr read command or try <state> -- <command>".into());
+    }
+    Ok(items
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect())
 }

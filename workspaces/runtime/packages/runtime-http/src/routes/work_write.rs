@@ -685,7 +685,7 @@ async fn finalize_accepted_archive(
         let revision = latest["revision"].as_str().unwrap_or_default();
         let execution_mode = owner_value.get("executionMode").and_then(Value::as_str).unwrap_or_default();
         // A host owner's Git checks run after this read ends.
-        let host_check = (execution_mode != "vm").then(|| {
+        let host_check = (execution_mode != "vm" && !studio_runtime_services::layr_native::is_native(&owner_value)).then(|| {
             (
                 owner_value.get("cwd").and_then(Value::as_str).unwrap_or_default().to_owned(),
                 revision.to_owned(),
@@ -1801,9 +1801,9 @@ inventory::submit! {
 fn native_layr_error(
     error: studio_runtime_services::layr_native::NativeLayrError,
 ) -> studio_runtime_services::linux_vm_guest::GuestError {
-    let uncertain = matches!(
+    let uncertain = !matches!(
         error,
-        studio_runtime_services::layr_native::NativeLayrError::Unknown(_)
+        studio_runtime_services::layr_native::NativeLayrError::Refused(_)
     );
     studio_runtime_services::linux_vm_guest::GuestError::Transport {
         message: error.to_string(),

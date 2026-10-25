@@ -136,10 +136,14 @@ pub fn operation(
             _ => Err(NativeLayrError::Unknown(path.display().to_string())),
         };
     }
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&path)?;
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path)?;
     let pending = json!({"id":id,"intent":intent,"status":"pending"});
     file.write_all(pending.to_string().as_bytes())?;
     file.sync_all()?;
@@ -249,9 +253,32 @@ pub(super) fn prepare_files(state_dir: &Path, record: &Value) -> Result<Value> {
         )?;
     }
     let state = run(state_dir, &cwd, &["rev-parse", "head"])?;
-    Ok(
-        json!({"cwd":cwd,"layrProjectId":project,"layrLine":line,"layrStateId":state,"layrReady":true}),
-    )
+    let mut result = json!({"cwd":cwd,"layrProjectId":project,"layrLine":line,"layrStateId":state,"layrReady":true});
+    if reviewer {
+        let scratch = state_dir.join(NATIVE_LAYR_DIRECTORY).join("scratch").join(
+            studio_runtime_store::sha256_hex(text(record, "id")?.as_bytes()),
+        );
+        fs::create_dir_all(&scratch)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700))?;
+        }
+        let canonical = fs::canonicalize(&scratch)?;
+        let expected = fs::canonicalize(state_dir)?
+            .join(NATIVE_LAYR_DIRECTORY)
+            .join("scratch")
+            .join(studio_runtime_store::sha256_hex(
+                text(record, "id")?.as_bytes(),
+            ));
+        if canonical != expected {
+            return Err(NativeLayrError::Refused(
+                "Reviewer scratch folder has a symlink ancestor".into(),
+            ));
+        }
+        result["layrScratch"] = json!(canonical);
+    }
+    Ok(result)
 }
 
 pub async fn prepare(store: Arc<RuntimeStore>, record: Value) -> Result<Value> {
@@ -297,16 +324,50 @@ pub async fn prepare(store: Arc<RuntimeStore>, record: Value) -> Result<Value> {
         .await
 }
 
+/// Confirm the stored association against the owned project path before any effect.
+fn associated_cwd(state_dir: &Path, record: &Value) -> Result<PathBuf> {
+    if record["layrReady"] != true {
+        return Err(NativeLayrError::Refused(
+            "The native Layr workspace is not ready".into(),
+        ));
+    }
+    let project = project_id(record)?;
+    let expected_line = if record["isLead"] == true || record["role"] == "reviewer" {
+        "main".to_owned()
+    } else {
+        format!(
+            "agent-{}",
+            studio_runtime_store::sha256_hex(text(record, "id")?.as_bytes())
+        )
+    };
+    if text(record, "layrLine")? != expected_line {
+        return Err(NativeLayrError::Refused(
+            "The native Layr line association changed".into(),
+        ));
+    }
+    let expected = main_path(state_dir, &project)
+        .parent()
+        .ok_or_else(|| NativeLayrError::Refused("Invalid main path".into()))?
+        .join(expected_line);
+    let actual = fs::canonicalize(text(record, "cwd")?)?;
+    if actual != fs::canonicalize(expected)? {
+        return Err(NativeLayrError::Refused(
+            "The native Layr cwd association changed".into(),
+        ));
+    }
+    Ok(actual)
+}
+
 pub fn save(state_dir: &Path, record: &Value, request_id: &str) -> Result<Value> {
-    let cwd = PathBuf::from(text(record, "cwd")?);
+    let cwd = associated_cwd(state_dir, record)?;
     operation(
         state_dir,
         request_id,
         &json!({"agent":record["id"],"cwd":cwd,"kind":"save"}),
         || {
             if record["role"] != "reviewer" {
-                run(state_dir, &cwd, &["save"])?;
                 run(state_dir, &cwd, &["cache", "repair"])?;
+                run(state_dir, &cwd, &["save"])?;
             }
             Ok(
                 json!({"stateId":run(state_dir,&cwd,&["rev-parse",if record["role"] == "reviewer" { "head" } else { "head@{0}" }])?}),
@@ -333,7 +394,7 @@ pub fn remove(state_dir: &Path, record: &Value, request_id: &str) -> Result<Valu
                 run(
                     state_dir,
                     &main_path(state_dir, &project),
-                    &["line", "delete", line],
+                    &["line", "delete", "-D", line],
                 )?;
             }
             Ok(json!({"state":"removed"}))
@@ -342,9 +403,9 @@ pub fn remove(state_dir: &Path, record: &Value, request_id: &str) -> Result<Valu
 }
 
 pub fn evidence(state_dir: &Path, record: &Value, revision: &str) -> Result<Value> {
-    let cwd = Path::new(text(record, "cwd")?);
-    let resolved = run(state_dir, cwd, &["rev-parse", revision])?;
-    if revision != resolved || run(state_dir, cwd, &["rev-parse", "head"])? != resolved {
+    let cwd = associated_cwd(state_dir, record)?;
+    let resolved = run(state_dir, &cwd, &["rev-parse", revision])?;
+    if revision != resolved || run(state_dir, &cwd, &["rev-parse", "head"])? != resolved {
         return Err(NativeLayrError::Refused(
             "Submit the full Layr state ID".into(),
         ));
@@ -367,6 +428,8 @@ pub fn merge(
             "Invalid native Layr merge owner".into(),
         ));
     }
+    let main = associated_cwd(state_dir, lead)?;
+    associated_cwd(state_dir, worker)?;
     operation(
         state_dir,
         request_id,
@@ -374,12 +437,10 @@ pub fn merge(
         || {
             run(
                 state_dir,
-                Path::new(text(lead, "cwd")?),
+                &main,
                 &["merge", text(worker, "layrLine")?, "--expect", revision],
             )?;
-            Ok(
-                json!({"stateId":run(state_dir,Path::new(text(lead,"cwd")?),&["rev-parse","head"])?}),
-            )
+            Ok(json!({"stateId":run(state_dir,&main,&["rev-parse","head"])?}))
         },
     )
 }

@@ -667,6 +667,11 @@ pub(super) fn guidance(
         for (name, value) in crate::layr_native::thread_environment(state_root) {
             thread_config.insert(format!("shell_environment_policy.set.{name}"), value);
         }
+        if record["role"] == "reviewer"
+            && let Some(scratch) = record["layrScratch"].as_str()
+        {
+            thread_config.insert("shell_environment_policy.set.TMPDIR".into(), json!(scratch));
+        }
         thread_config.insert(
             "shell_environment_policy.exclude".into(),
             json!(["LAYR_SOCKET", "LAYR_PROJECT", "LAYR_LINE", "LAYR_SESSION"]),

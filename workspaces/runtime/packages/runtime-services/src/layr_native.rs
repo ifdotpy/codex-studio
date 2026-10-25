@@ -232,7 +232,10 @@ mod receipt_tests {
         fs::create_dir_all(binary_path(state.path()).parent().unwrap()).unwrap();
         fs::copy(binary, binary_path(state.path())).unwrap();
         let mut lead = json!({"id":"lead","isLead":true,"autoWake":true,"cwd":source.path()});
-        configure_new_chat(&mut lead, source.path().to_str().unwrap());
+        configure_new_chat(
+            &mut lead,
+            fs::canonicalize(source.path()).unwrap().to_str().unwrap(),
+        );
         let ready = runtime::prepare_files(state.path(), &lead).unwrap();
         for (key, value) in ready.as_object().unwrap() {
             lead[key] = value.clone();
@@ -268,6 +271,27 @@ mod receipt_tests {
             fs::read_to_string(main.join("code.txt")).unwrap(),
             "worker result\n"
         );
+        let mut reviewer =
+            json!({"id":"reviewer","role":"reviewer","autoWake":true,"isLead":false});
+        configure_child(&mut reviewer, &lead, &lead);
+        let ready = runtime::prepare_files(state.path(), &reviewer).unwrap();
+        for (key, value) in ready.as_object().unwrap() {
+            reviewer[key] = value.clone();
+        }
+        let args = vec!["try".into(),state_id.clone(),"--".into(),"/bin/sh".into(),"-c".into(),
+            "printf local > review-check; printf note > \"$TMPDIR/note\"; if printf forbidden > \"$1/code.txt\"; then exit 7; fi".into(),
+            "review-check".into(),main.to_string_lossy().into_owned()];
+        reviewer_try(state.path(), &reviewer, &args).unwrap();
+        assert_eq!(
+            fs::read_to_string(main.join("code.txt")).unwrap(),
+            "worker result\n"
+        );
+        assert!(!main.join("review-check").exists());
+        assert!(
+            PathBuf::from(reviewer["layrScratch"].as_str().unwrap())
+                .join("note")
+                .is_file()
+        );
         save(state.path(), &worker, "worker-turn-end").unwrap();
         remove(state.path(), &worker, "archive-worker").unwrap();
         assert!(!cwd.exists());
@@ -280,7 +304,77 @@ mod receipt_tests {
             .unwrap()
             .contains("worker result")
         );
+        let worktree = tempfile::tempdir().unwrap();
+        git(&[
+            "worktree",
+            "add",
+            "-b",
+            "migration-fixture",
+            worktree.path().to_str().unwrap(),
+        ]);
+        fs::write(worktree.path().join("code.txt"), "migrated worktree\n").unwrap();
+        fs::write(worktree.path().join(".env"), "TEST_VALUE=migrated\n").unwrap();
+        let plan = migration::migrate(state.path(), source.path(), true).unwrap();
+        assert_eq!(plan["lines"].as_array().unwrap().len(), 1);
+        let imported = migration::migrate(state.path(), source.path(), false).unwrap();
+        assert_eq!(imported["projectId"], lead["layrProjectId"]);
+        let migrated = main
+            .parent()
+            .unwrap()
+            .join(imported["lines"][0]["line"].as_str().unwrap());
+        assert_eq!(
+            fs::read_to_string(migrated.join("code.txt")).unwrap(),
+            "migrated worktree\n"
+        );
+        assert_eq!(
+            fs::read_to_string(migrated.join(".env")).unwrap(),
+            "TEST_VALUE=migrated\n"
+        );
+        let again = migration::migrate(state.path(), source.path(), false).unwrap();
+        assert_eq!(imported["lines"], again["lines"]);
         // Layr states have immutable flags. Keep the isolated store for inspection.
         println!("native host evidence store: {}", state.keep().display());
     }
+}
+
+/// A review check may change only its temporary copy and private scratch folder.
+pub fn reviewer_try(
+    state_dir: &Path,
+    record: &Value,
+    argv: &[String],
+) -> Result<String, NativeLayrError> {
+    if record["role"] != "reviewer" || argv.len() < 4 || argv[0] != "try" || argv[2] != "--" {
+        return Err(NativeLayrError::Refused(
+            "Use try <state> -- <command> for a reviewer check".into(),
+        ));
+    }
+    let cwd = Path::new(
+        record["cwd"]
+            .as_str()
+            .ok_or_else(|| NativeLayrError::Refused("Missing reviewer cwd".into()))?,
+    );
+    let scratch = record["layrScratch"]
+        .as_str()
+        .ok_or_else(|| NativeLayrError::Refused("Missing reviewer scratch folder".into()))?;
+    #[cfg(target_os = "macos")]
+    let wrapper = r#"scratch=$1; shift; profile=$1; shift; export TMPDIR="$scratch"; exec /usr/bin/sandbox-exec -D "WORKSPACE=$PWD" -D "SCRATCH=$scratch" -p "$profile" "$@""#;
+    #[cfg(target_os = "macos")]
+    let profile = r#"(version 1)(deny default)(allow process*)(allow sysctl-read)(allow mach-lookup)(allow file-read*)(allow file-write* (subpath (param "WORKSPACE")) (subpath (param "SCRATCH")))"#;
+    #[cfg(not(target_os = "macos"))]
+    let wrapper = r#"scratch=$1; shift; shift; exec bwrap --unshare-all --die-with-parent --ro-bind / / --bind "$PWD" "$PWD" --bind "$scratch" "$scratch" --proc /proc --dev /dev --chdir "$PWD" --setenv TMPDIR "$scratch" -- "$@""#;
+    #[cfg(not(target_os = "macos"))]
+    let profile = "";
+    let mut args = vec![
+        "try",
+        argv[1].as_str(),
+        "--",
+        "/bin/sh",
+        "-c",
+        wrapper,
+        "studio-review-try",
+        scratch,
+        profile,
+    ];
+    args.extend(argv[3..].iter().map(String::as_str));
+    run(state_dir, cwd, &args)
 }
