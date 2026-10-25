@@ -419,7 +419,7 @@ export default function Usage({
   );
   useEffect(() => {
     setCosts(null);
-    return subscribeStateProjection(
+    const stop = subscribeStateProjection(
       (snapshot) => {
         const value = snapshot?.runtime.accountCostsByAccount?.[accountKey];
         if (!snapshot) return;
@@ -443,6 +443,10 @@ export default function Usage({
       },
       () => {},
     );
+    return () => {
+      costObservation.current = null;
+      stop();
+    };
   }, [stateDir, accountKey, subscribeStateProjection, sendCostInterest]);
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => {

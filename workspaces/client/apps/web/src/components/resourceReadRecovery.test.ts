@@ -825,6 +825,58 @@ describe("resource read callers", () => {
     post.mockClear();
   });
 
+  it("waits for a new baseline after A to B to A before B's baseline arrives", async () => {
+    const rejections: Array<(error: Error) => void> = [];
+    post.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejections.push(reject);
+        }),
+    );
+    const render = (accountKey: string) =>
+      mount(() =>
+        Usage({
+          agent: { id: "lead", rootId: "lead", accountKey } as Agent,
+          stateDir: "private-fixture",
+          limits: null,
+          reload: vi.fn(),
+          opened: true,
+        }),
+      );
+    render("a");
+    const old = {
+      accountKey: "a",
+      at: 100,
+      error: null,
+      stale: false,
+      refreshing: false,
+      data: { last30DaysUSD: 3 },
+    };
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { a: old } } });
+    expect(post).toHaveBeenCalledTimes(1);
+    // React tears down the previous projection effect before installing the
+    // new account's effects; the existing effect fixture retains component refs.
+    for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+    render("b");
+    for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+    render("a");
+    expect(post).toHaveBeenCalledTimes(1);
+    const current = { ...old, at: 200, data: { last30DaysUSD: 4 } };
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { a: current } } });
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenLastCalledWith("/api/costs/interest", {
+      account_key: "a",
+    });
+    rejections[1]!(new Error("Newest A interest failed"));
+    await Promise.resolve();
+    const view = JSON.stringify(render("a"));
+    expect(view).toContain("Refresh failed · stale estimate");
+    expect(view).toContain("$4.00");
+    post.mockClear();
+  });
+
   it("applies both cost display projections without GETs", async () => {
     const session = {
       rootId: "lead",
