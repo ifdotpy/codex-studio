@@ -23,13 +23,7 @@ import { createDraftStorage } from "../sync/draftStorage";
 import { useNativeDrafts } from "../native/useNativeDrafts";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
-import { createEntityDataObserver } from "../sync/subscriptions/entityData";
-import { createResourceEvents } from "../sync/resourceEvents";
-import {
-  createSubscriptions,
-  createDataObserver,
-} from "../sync/subscriptions/events";
-import { SignedEventSource } from "./eventSource";
+import { createServerSubscriptions } from "../sync/subscriptions/server";
 import { createTranscriptCache } from "../sync/transcriptCache";
 import { createTokenRateCache } from "../usage/tokenRate";
 import { createEntitySequenceScope } from "../sync/entitySequence";
@@ -75,41 +69,19 @@ export function createServerServices(server: StudioServer) {
   let runtime:
     | {
         sync: ReturnType<typeof createSyncClient>;
-        resources: ReturnType<
-          typeof createSubscriptions<ReturnType<typeof createResourceEvents>>
-        >;
+        resources: ReturnType<typeof createServerSubscriptions>;
       }
     | undefined;
   let stopName = () => {};
   const synchronization = () => {
     if (runtime) return runtime;
     let sync!: ReturnType<typeof createSyncClient>;
-    const transportEvents = createResourceEvents({
+    const resources = createServerSubscriptions({
       api,
       tokenRates,
-      sync: {
-        syncDatabase: () => sync.syncDatabase(),
-        persistResourceEntityChanges: (...args) =>
-          sync.persistResourceEntityChanges(...args),
-      },
-      openEvents: (url) =>
-        new SignedEventSource(
-          new URL(url, transport.owner.origin).href,
-          api.fetchApiRequest,
-        ),
-      storageName: (name) =>
-        transport.owner.id === "local"
-          ? name
-          : `${name}:server:${transport.owner.id}`,
+      sync: () => sync,
+      owner: transport.owner,
     });
-    const resources = createSubscriptions(
-      transportEvents,
-      createDataObserver(
-        () => sync,
-        transportEvents,
-        createEntityDataObserver(() => sync.syncDatabase()),
-      ),
-    );
     sync = createSyncClient({
       api,
       resources,
