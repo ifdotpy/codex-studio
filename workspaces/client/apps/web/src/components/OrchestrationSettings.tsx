@@ -2,6 +2,7 @@ import {
   IdleCompactionSettings,
   idleCompactionDefaults,
 } from "./IdleCompactionSettings";
+import { BackgroundShellSettings } from "./BackgroundShellSettings";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useState } from "react";
 import { Button, NumberInput } from "@mantine/core";
@@ -19,7 +20,7 @@ type Settings = Configuration["settings"];
 
 /** One whole-number orchestration setting and its generated bounds. */
 export interface OrchestrationSettingSpec {
-  field: Exclude<keyof Settings, "idleCompaction">;
+  field: Exclude<keyof Settings, "idleCompaction" | "shellPolicy">;
   label: string;
   help: string;
   ariaLabel: string;
@@ -135,6 +136,11 @@ export function OrchestrationSettings({ active }: { active: boolean }) {
               }
             />
           ))}
+          <BackgroundShellSettings
+            configuration={configuration}
+            setConfiguration={setConfiguration}
+            disabled={busy}
+          />
           <IdleCompactionSettings
             value={
               configuration.settings.idleCompaction ?? idleCompactionDefaults

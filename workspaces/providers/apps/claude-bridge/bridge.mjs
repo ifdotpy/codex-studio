@@ -73,6 +73,11 @@ import {
 import { claudeImage } from "./images.mjs";
 import { listSkills } from "./skills.mjs";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
+import {
+  createShellPolicy,
+  replaceBackgroundTasks,
+  backgroundOutputPath,
+} from "./shell-policy.mjs";
 import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
 import {
   declaredTimeoutMs,
@@ -1098,6 +1103,8 @@ function finishTurn(s, active, result, error) {
       clearTurnTimers(active);
       active.toolClocks.clear();
       if (active.turn === turn) active.turn = null;
+      active.shellLastUseAt = Date.now();
+      active.shellPolicy?.touch();
       if (state.stall) {
         active.stall = null;
         state.stall.ended();
@@ -1838,7 +1845,7 @@ async function startSession(s, active, p) {
         continue;
       }
       if (m.type === "system" && m.subtype === "background_tasks_changed") {
-        active.tasks = new Map(m.tasks.map((t) => [t.task_id, t]));
+        active.tasks = replaceBackgroundTasks(active.tasks, m.tasks);
         catalogCache.activityChanged();
         continue;
       }
@@ -2283,6 +2290,16 @@ async function startSession(s, active, p) {
             old.type === "commandExecution" && !b.is_error
               ? backgroundedCommandFields(m.tool_use_result)
               : null;
+          if (background) {
+            const id = background.backgroundTaskId;
+            active.tasks.set(id, {
+              ...active.tasks.get(id),
+              task_id: id,
+              task_type: "local_bash",
+              is_backgrounded: true,
+              output_file: backgroundOutputPath(m.tool_use_result, text),
+            });
+          }
           const finished = {
             ...old,
             status: b.is_error ? "failed" : "completed",
@@ -2395,6 +2412,7 @@ function newActive(turn) {
     assistantBlocks: new Map(),
     usage: new ResponseUsage(),
     idleRequestStartedAt: Date.now(),
+    shellLastUseAt: Date.now(),
     // Stall watchdog state: the newest CLI message time, the running tool
     // calls of the current turn, and the recovery of a stalled turn.
     lastEventAt: Date.now(),
@@ -3356,6 +3374,19 @@ async function handle(method, p) {
       throw new Error("This Claude background task is no longer active");
     await active.q.stopTask(p.taskId);
     return {};
+  }
+  if (method === "claude/shellPolicy") {
+    const active = queries.get(p.threadId);
+    if (!active?.q) return { watched: 0 };
+    active.shellPolicy ??= createShellPolicy({
+      lastUseAt: active.shellLastUseAt,
+      emit: (report) =>
+        emit("thread/shellPolicy/updated", { threadId: p.threadId, report }),
+      stop: (taskId) => active.q.stopTask(taskId),
+      busy: () =>
+        !!active.turn || queryHasInput(active) || !!studioWaits.get(p.threadId),
+    });
+    return active.shellPolicy.tick(active, p);
   }
   if (method === "mcpServerStatus/list" || method === "mcpServer/reconnect") {
     await session(p.threadId);

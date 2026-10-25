@@ -31,6 +31,10 @@ pub(super) fn apply(
         .provider_handle
         .strip_prefix("account:")
         .ok_or(NotificationDispatchError::InvalidNotification)?;
+    if method == "thread/shellPolicy/updated" {
+        crate::shell_policy::observe(tx, agent, &p["report"], at)?;
+        return Ok(Some(DispatchOutcome::Written));
+    }
     if method == "thread/idleCompaction/updated" {
         if let Some(request) = p["preparedSummary"]["requestId"].as_str() {
             if agent["idleCompactionEpisode"]["id"] == request

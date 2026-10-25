@@ -1029,6 +1029,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             monitor_shutdown.subscribe(),
         ))
     });
+    let shell_policy_task = tokio::spawn(studio_runtime_services::shell_policy::run(
+        Arc::clone(&store),
+        Arc::clone(&account_session),
+        Arc::new(studio_runtime_services::shell_pressure::HostPressure::default()),
+        monitor_shutdown.subscribe(),
+    ));
     let continuation_task = tokio::spawn(continuation_scheduler(
         Arc::clone(&store),
         continuation_scheduler_wake,
@@ -1312,6 +1318,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         history_cleanup.map_err(std::io::Error::other)??;
         shutdown_join("federation delivery task", federation_task).await??;
         shutdown_join("continuation scheduler task", continuation_task).await??;
+        shutdown_join("background shell policy task", shell_policy_task).await??;
         #[cfg(unix)]
         if let Some(task) = idle_compaction_task {
             shutdown_join("idle compaction scheduler task", task).await??;

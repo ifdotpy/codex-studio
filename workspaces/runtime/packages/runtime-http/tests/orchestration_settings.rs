@@ -41,7 +41,7 @@ async fn call(app: &axum::Router, method: &str, body: Option<Value>) -> (u16, Va
 }
 
 fn settings(hold: Value, unload: Value) -> Value {
-    json!({ HOLD: hold, UNLOAD: unload, "idleCompaction":{"mode":"off","minTokens":150000} })
+    json!({ HOLD: hold, UNLOAD: unload, "idleCompaction":{"mode":"off","minTokens":150000}, "shellPolicy":{"quietThresholdMs":0,"pressureCleanup":true} })
 }
 
 #[tokio::test]
@@ -135,4 +135,44 @@ async fn idle_compaction_modes_and_token_minimum_round_trip() {
         let (status, _) = call(&app, "POST", Some(requested)).await;
         assert!((400..500).contains(&status));
     }
+}
+
+#[tokio::test]
+async fn shell_policy_defaults_persist_and_reject_invalid_thresholds() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    let app = router(HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    ))
+    .unwrap();
+    for threshold in [0, 10000, 60000] {
+        let mut requested = settings(json!(10), json!(15));
+        requested["shellPolicy"] = json!({"quietThresholdMs":threshold,"pressureCleanup":false});
+        let (status, body) = call(&app, "POST", Some(requested.clone())).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["settings"], requested);
+        assert_eq!(call(&app, "GET", None).await.1["settings"], requested);
+    }
+    for invalid in [
+        json!({"quietThresholdMs":1,"pressureCleanup":true}),
+        json!({"quietThresholdMs":9999,"pressureCleanup":true}),
+        json!({"quietThresholdMs":10000.5,"pressureCleanup":true}),
+        json!({"quietThresholdMs":10000,"pressureCleanup":"true"}),
+    ] {
+        let mut requested = settings(json!(10), json!(15));
+        requested["shellPolicy"] = invalid;
+        assert!((400..500).contains(&call(&app, "POST", Some(requested)).await.0));
+    }
+    let mut legacy = settings(json!(10), json!(15));
+    legacy.as_object_mut().unwrap().remove("shellPolicy");
+    assert_eq!(
+        call(&app, "POST", Some(legacy)).await.1["settings"]["shellPolicy"]["pressureCleanup"],
+        false
+    );
 }

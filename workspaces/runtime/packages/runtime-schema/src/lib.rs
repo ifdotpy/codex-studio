@@ -14,6 +14,7 @@ pub mod multi_server_protocol;
 pub mod provider_input;
 pub mod provider_method_policy;
 pub mod shared_values;
+pub mod shell_policy;
 pub mod task_results;
 pub mod usage;
 

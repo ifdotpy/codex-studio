@@ -1952,6 +1952,7 @@ fn journal_one(
                             && let Some(interrupt) =
                                 SchedulerRepository::observe_started(tx, &identity, turn)?
                         {
+                            crate::shell_policy::note_activity(tx, &identity.agent_id, now())?;
                             let agent = NotificationDispatchRepository::agent_record(
                                 tx,
                                 &identity.agent_id,
@@ -2011,6 +2012,9 @@ fn journal_one(
                             NotificationDispatchRepository::agent_record(tx, &identity.agent_id)?
                                 .ok_or_else(|| invalid(&identity.agent_id))?;
                         if scheduler::settle_terminal_in_transaction(tx, &identity, params)? {
+                            if agent_before["lastCompletedTurn"] != params["turn"]["id"] {
+                                crate::shell_policy::note_activity(tx, &identity.agent_id, now())?;
+                            }
                             invalidate_auth_on_failure(
                                 &agent_before,
                                 claude_account_pin,

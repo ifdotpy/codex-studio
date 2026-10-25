@@ -32,7 +32,7 @@ export function query({prompt,options}){
   supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],
   accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
   initializationResult:async()=>({commands:[]}),
-  setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async()=>{},
+  setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async id=>fs.appendFileSync(cwd+'/.stop-calls',id+'\n'),
   setMcpServers:async()=>({added:[],removed:[],errors:{}}),
   backgroundTasks:async toolUseId=>{
    fs.appendFileSync(cwd+'/.background-calls',String(toolUseId)+'\n');
@@ -53,11 +53,11 @@ export function query({prompt,options}){
    yield {type:'system',subtype:'task_started',task_id:'bash-1',tool_use_id:'toolu-1',task_type:'local_bash',is_backgrounded:false,description:'sleep 600',uuid:'s-1'};
    await movedPromise;
    yield {type:'system',subtype:'task_updated',task_id:'bash-1',patch:{is_backgrounded:true},uuid:'s-2'};
-   yield {type:'user',uuid:'u-1',message:{role:'user',content:[{type:'tool_result',tool_use_id:'toolu-1',content:'Command running in background with ID: bash-1. Output is being written to: /tmp/bash-1.output'}]},tool_use_result:{stdout:'',stderr:'',interrupted:false,backgroundTaskId:'bash-1',backgroundedByUser:true}};
+   yield {type:'user',uuid:'u-1',message:{role:'user',content:[{type:'tool_result',tool_use_id:'toolu-1',content:'Command running in background with ID: bash-1. Output is being written to: '+cwd+'/bash-1.output.'}]},tool_use_result:{stdout:'',stderr:'',interrupted:false,backgroundTaskId:'bash-1',backgroundedByUser:true}};
    yield {type:'result',subtype:'success',usage,result:'continued'};
    await until(cwd+'/.finish',abort.signal);
    if(abort.signal.aborted)return;
-   yield {type:'system',subtype:'task_notification',task_id:'bash-1',tool_use_id:'toolu-1',status:'completed',output_file:'/tmp/bash-1.output',summary:'Background command completed (exit code 0)',uuid:'s-3'};
+   yield {type:'system',subtype:'task_notification',task_id:'bash-1',tool_use_id:'toolu-1',status:'completed',output_file:cwd+'/bash-1.output',summary:'Background command completed (exit code 0)',uuid:'s-3'};
    await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));
   }
  };
@@ -69,8 +69,8 @@ afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
 
-async function runningCommand() {
-  const bridge = await startBridge(FAKE_SDK, "claude-background-");
+async function runningCommand(options = {}) {
+  const bridge = await startBridge(FAKE_SDK, "claude-background-", options);
   bridges.push(bridge);
   const turn = (
     await bridge.call("turn/start", {
@@ -84,6 +84,92 @@ async function runningCommand() {
   );
   return { bridge, turn };
 }
+
+test("native background shell policy checks in and stops through the real bridge", async () => {
+  const { bridge, turn } = await runningCommand({ clock: true });
+  const args = {
+    threadId: bridge.thread,
+    settings: { quietThresholdMs: 10000, pressureCleanup: true },
+    eligible: true,
+    critical: false,
+  };
+  await bridge.call("claude/shellPolicy", args);
+  await bridge.writeSignal(".registered");
+  await bridge.note(
+    (n) =>
+      n.method === "item/started" && n.params.item.canMoveToBackground === true,
+  );
+  await move(bridge, turn);
+  await bridge.note((n) => n.method === "turn/completed");
+  // The native envelope supplies the output path; a replace snapshot must
+  // not discard it. Write the file at that path without changing the fixture's
+  // public Bash envelope.
+  const output = path.join(bridge.root, "bash-1.output");
+  await fs.writeFile(output, "");
+  try {
+    await bridge.call("claude/shellPolicy", args);
+    await bridge.advanceTime(10000);
+    await bridge.call("claude/shellPolicy", args);
+    const quiet = await bridge.note(
+      (n) =>
+        n.method === "thread/shellPolicy/updated" &&
+        n.params.report.kind === "quiet",
+    );
+    assert.equal(quiet.params.report.taskId, "bash-1");
+    await bridge.advanceTime(1790000);
+    await bridge.call("claude/shellPolicy", {
+      ...args,
+      critical: true,
+      eligible: false,
+    });
+    assert.equal(existsSync(path.join(bridge.root, ".stop-calls")), false);
+    await bridge.call("claude/shellPolicy", { ...args, critical: true });
+    const stopped = await bridge.note(
+      (n) =>
+        n.method === "thread/shellPolicy/updated" &&
+        n.params.report.kind === "cleanup_stopped",
+    );
+    assert.equal(stopped.params.report.taskId, "bash-1");
+    assert.equal(
+      await fs.readFile(path.join(bridge.root, ".stop-calls"), "utf8"),
+      "bash-1\n",
+    );
+    await bridge.call("claude/shellPolicy", { ...args, critical: true });
+    assert.equal(
+      await fs.readFile(path.join(bridge.root, ".stop-calls"), "utf8"),
+      "bash-1\n",
+    );
+  } finally {
+    await fs.unlink(output);
+  }
+});
+
+test("the first critical observation uses the session's existing idle clock", async () => {
+  const { bridge, turn } = await runningCommand({ clock: true });
+  await bridge.writeSignal(".registered");
+  await bridge.note(
+    (n) =>
+      n.method === "item/started" && n.params.item.canMoveToBackground === true,
+  );
+  await move(bridge, turn);
+  await bridge.note((n) => n.method === "turn/completed");
+  await bridge.advanceTime(1800000);
+  await bridge.call("claude/shellPolicy", {
+    threadId: bridge.thread,
+    settings: { quietThresholdMs: 0, pressureCleanup: true },
+    eligible: true,
+    critical: true,
+  });
+  await bridge.note(
+    (n) =>
+      n.method === "thread/shellPolicy/updated" &&
+      n.params.report.kind === "cleanup_stopped",
+  );
+  assert.equal(
+    await fs.readFile(path.join(bridge.root, ".stop-calls"), "utf8"),
+    "bash-1\n",
+  );
+});
 
 const move = (bridge, turnId, itemId = "toolu-1") =>
   bridge.call("thread/commandExecution/background", {

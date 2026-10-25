@@ -75,6 +75,22 @@ fn shared_values_ts() -> String {
                 "CLAUDE_MCP_AUTO_BACKGROUND_MS",
                 values::CLAUDE_MCP_AUTO_BACKGROUND_MS.to_string(),
             ),
+            (
+                "SHELL_QUIET_MIN_MS",
+                crate::shell_policy::QUIET_MIN_MS.to_string(),
+            ),
+            (
+                "SHELL_POLICY_DEFAULTS",
+                format!(
+                    "{{\n  quietThresholdMs: {},\n  pressureCleanup: {},\n}}",
+                    crate::shell_policy::Settings::default().quiet_threshold_ms,
+                    crate::shell_policy::Settings::default().pressure_cleanup
+                ),
+            ),
+            (
+                "SHELL_PRESSURE_IDLE_MINUTES",
+                (crate::shell_policy::PRESSURE_IDLE_MS / 60_000).to_string(),
+            ),
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
                 "MODEL_WHITELIST_PREFERENCE_KEY",
@@ -494,6 +510,32 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
     )?;
     check_delivery_parity(openapi)?;
+    for (suffix, value) in [
+        ("minimum", 0),
+        ("maximum", values::MAX_SAFE_INTEGER),
+        (
+            "default",
+            crate::shell_policy::Settings::default().quiet_threshold_ms as i64,
+        ),
+    ] {
+        expect_number(
+            openapi,
+            &format!(
+                "/components/schemas/BackgroundShellPolicySettings/properties/quietThresholdMs/{suffix}"
+            ),
+            value,
+        )?;
+    }
+    if openapi.pointer(
+        "/components/schemas/BackgroundShellPolicySettings/properties/pressureCleanup/default",
+    ) != Some(&serde_json::json!(
+        crate::shell_policy::Settings::default().pressure_cleanup
+    )) {
+        return Err(
+            "BackgroundShellPolicySettings defaults must match runtime-schema/src/shell_policy.rs"
+                .into(),
+        );
+    }
     let modes = serde_json::json!(crate::claude_permissions::PERMISSION_MODES);
     for path in [
         "/components/schemas/CreateAgentRequest/properties/permission_mode/enum",
@@ -919,6 +961,15 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
                 "// {HEADER}\nexport const HUMAN_INPUT = {};\nexport const STUDIO_EVENT_INPUT = {};\n",
                 json_string(crate::provider_input::ProviderInputOrigin::Human.as_str()),
                 json_string(crate::provider_input::ProviderInputOrigin::StudioEvent.as_str()),
+            ),
+        },
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/shell-policy.generated.mjs".into(),
+            text: format!(
+                "// {HEADER}\nexport const QUIET_MIN_MS = {};\nexport const PRESSURE_IDLE_MS = {};\nexport const PRESSURE_RESTART_GUARD_MS = {};\n",
+                crate::shell_policy::QUIET_MIN_MS,
+                crate::shell_policy::PRESSURE_IDLE_MS,
+                crate::shell_policy::PRESSURE_RESTART_GUARD_MS
             ),
         },
         Rendered {
