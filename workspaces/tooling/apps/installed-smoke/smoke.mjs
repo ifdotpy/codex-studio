@@ -399,7 +399,11 @@ class Backend {
   async get(route, ms) {
     if (!route.startsWith("/api/analytics?"))
       return this.request("GET", route, undefined, ms);
-    const timing = { route, startedAt: new Date().toISOString() };
+    const timing = {
+      route,
+      startedAt: new Date().toISOString(),
+      timeoutMs: ms ?? REQUEST_MS,
+    };
     const start = Date.now();
     try {
       const value = await this.request("GET", route, undefined, ms);
@@ -925,12 +929,22 @@ export class Smoke {
     return sqliteEvidence(this.state, id, this.runId).permissions;
   }
 
-  analyticsSnapshot(id, ms) {
-    return this.sqliteRoAgent === id
-      ? Promise.resolve(
-          sqliteEvidence(this.state, id, this.runId, true).analytics,
-        )
-      : this.backend.get(analyticsRoute(id), ms);
+  async analyticsSnapshot(id, ms) {
+    if (this.sqliteRoAgent === id)
+      return sqliteEvidence(this.state, id, this.runId, true).analytics;
+    const before = this.backend.analyticsTimings.length;
+    try {
+      return await this.backend.get(analyticsRoute(id), ms);
+    } finally {
+      const timings = this.backend.analyticsTimings.slice(before);
+      if (timings.length) {
+        this.usageEvidence.analyticsLatency ??= [];
+        this.usageEvidence.analyticsLatency.push(
+          ...timings.map((timing) => ({ ...timing, agentId: id })),
+        );
+        this.saveUsage();
+      }
+    }
   }
 
   async turn(provider) {

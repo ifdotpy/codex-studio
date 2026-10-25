@@ -1195,3 +1195,80 @@ c.execute('INSERT INTO analytics_usage_roots VALUES(?,?)',('owned',1));c.commit(
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("note proof rejects shell flags, metacharacters and split arguments", async () => {
+  const { scenarioEvidence, NOTES_FILE, NOTES_MARKER } =
+    await import("../usage.mjs");
+  const root = path.join(os.tmpdir(), "shell-note-fixture");
+  const file = path.join(root, NOTES_FILE);
+  const make = (command) => [
+    {
+      role: "user",
+      text: `This is turn 2 of a usage check. Read ${NOTES_FILE}.`,
+    },
+    { role: "assistant", text: "Before" },
+    {
+      role: "output",
+      toolStatus: "completed",
+      turnId: "long",
+      text: JSON.stringify({
+        type: "commandExecution",
+        command,
+        cwd: root,
+        exitCode: 0,
+        aggregatedOutput: NOTES_MARKER,
+      }),
+    },
+    { role: "assistant", text: "After" },
+    { role: "user", text: "Turn 3: reply with exactly FINAL" },
+  ];
+  for (const command of [
+    `/bin/bash -l cat ${file}`,
+    `/bin/bash -lc cat ${file}\n`,
+    ...[
+      "; true",
+      " & true",
+      " | true",
+      " $HOME",
+      " `true`",
+      " > changed",
+      " < other",
+    ].map((suffix) => `/bin/bash -lc cat ${file}${suffix}`),
+    `/bin/echo; /bin/bash -lc cat ${file}`,
+    `/bin/bash -lc 'cat' ${file}`,
+    `cat "${file}" extra`,
+  ])
+    assert.throws(
+      () => scenarioEvidence(make(command), "codex", root),
+      /note read/,
+      command,
+    );
+});
+
+test("failed analytics collection persists its latency before a provider row exists", async () => {
+  const { Smoke, analyticsRoute } = await import("../smoke.mjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-timeout-test-"));
+  const file = path.join(root, "evidence.json");
+  const smoke = new Smoke({
+    url: "http://fixture",
+    app: os.tmpdir(),
+    model: {},
+    usage: true,
+  });
+  smoke.evidencePath = file;
+  smoke.saveUsage = () =>
+    fs.writeFileSync(file, JSON.stringify(smoke.usageEvidence));
+  smoke.backend.request = async () => {
+    throw new Error("TimeoutError: request timed out");
+  };
+  try {
+    await assert.rejects(smoke.analyticsSnapshot("a", 17), /timed out/);
+    const evidence = JSON.parse(fs.readFileSync(file));
+    assert.equal(evidence.providers.length, 0);
+    assert.equal(evidence.analyticsLatency[0].route, analyticsRoute("a"));
+    assert.equal(evidence.analyticsLatency[0].outcome, "timeout");
+    assert.equal(evidence.analyticsLatency[0].timeoutMs, 17);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
