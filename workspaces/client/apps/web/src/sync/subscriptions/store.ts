@@ -192,7 +192,7 @@ export function createSubscriptionStore(transport: SubscriptionTransport) {
         entry.observers.delete(accept);
       };
     },
-    publish<R extends ResourceRef>(ref: R, data: ResourceData<R>) {
+    publish<R extends ResourceRef>(ref: R, data: ResourceData<R> | undefined) {
       const entry = entryFor(ref);
       entry.state = { ...entry.state, data, error: null };
       status(entry);

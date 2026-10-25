@@ -8,7 +8,7 @@ import {
 
 export type ObserveSubscriptionData = <R extends ResourceRef>(
   ref: R,
-  accept: (data: ResourceData<R>) => void,
+  accept: (data: ResourceData<R> | undefined) => void,
   failed: (error: unknown) => void,
 ) => () => void;
 

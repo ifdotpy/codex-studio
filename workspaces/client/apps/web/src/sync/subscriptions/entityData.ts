@@ -13,7 +13,7 @@ export function createEntityDataObserver(
 ): ObserveSubscriptionData {
   return <R extends ResourceRef>(
     ref: R,
-    accept: (data: ResourceData<R>) => void,
+    accept: (data: ResourceData<R> | undefined) => void,
     failed: (error: unknown) => void,
   ) => {
     const scope = SUBSCRIPTION_ENTITY_SCOPES[ref.kind as ScopeKind];
@@ -78,7 +78,7 @@ export function createEntityDataObserver(
               default:
                 data = entities;
             }
-            if (data !== undefined) accept(data as ResourceData<R>);
+            accept(data as ResourceData<R> | undefined);
           },
           error: failed,
         });

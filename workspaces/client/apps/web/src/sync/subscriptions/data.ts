@@ -15,14 +15,14 @@ export function createDataObserver(
 ): ObserveSubscriptionData {
   return <R extends ResourceRef>(
     ref: R,
-    accept: (data: ResourceData<R>) => void,
+    accept: (data: ResourceData<R> | undefined) => void,
     failed: (error: unknown) => void,
   ) => {
     if (ref.kind === "transcript") {
       return sync().subscribeTranscriptProjection(
         `transcript:${ref.agentId}`,
         (data) => {
-          if (data !== null) accept(data as ResourceData<R>);
+          accept(data === null ? undefined : (data as ResourceData<R>));
         },
         (error) => {
           if (error !== null) failed(error);
