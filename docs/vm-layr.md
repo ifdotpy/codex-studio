@@ -33,8 +33,7 @@ the VM main line ([vm-mac-sync.md](vm-mac-sync.md)).
 `project.import` and `project.ensure` also set the project's layr rules once
 (docs/btrfs-local-vcs.md, decision 23): main stays protected, but its owner, the
 lead, may also commit in it; the `studio-agents` group, which holds every agent
-user, may not change roles, replicate, change remotes, import or export records,
-or make backups. Workers own their lines; the lead merges a reviewed state with
+user, may not change roles, replicate, change remotes, or import and export records. Workers own their lines; the lead merges a reviewed state with
 `layr merge <line> --expect <state>`.
 
 An explicit re-import requires a new request ID and the expected main state ID.
@@ -44,38 +43,20 @@ Use `layr export` when you need a normal copy outside the VM.
 
 ### Migration
 
-`codex_layr_migration.py PROJECT_FOLDER...` (installed app scripts, Studio Python, VM
-running) moves a project and its Git worktrees into layr:
-
-- It imports the project with the code rule above, with Mac folder sync paused
-  (`sync/config.json`); the user turns sync on per project.
-- Each worktree of the project's repositories (in `.worktrees` at any depth or elsewhere)
-  becomes a line `wt-<repository>-<folder>` that starts at main. The repository folder of
-  the line takes the worktree's files: committed and uncommitted work, and files that Git
-  ignores such as `.env`, without `.git` and regenerable folders (guest method
-  `sync.mac.worktree`).
-- A worktree that Git marks prunable (its `.git` file is gone) is skipped and reported;
-  its commits stay in Git.
-- The Mac worktrees stay. `layr-projects/<id>/worktrees.json` records each moved
-  worktree with its line and state; a repeated run skips them. `--dry-run` lists what
-  would move.
+The host command `codex_layr_migration.py` was removed with the Python backend.
+The guest method `sync.mac.worktree` still imports a supplied worktree into a new line from main.
+It keeps the worktree's code and ignored files, without `.git` or regenerable folders.
+It leaves the Mac worktree unchanged.
 
 ### Operator commands
 
-`codex_layr_exec.py PROJECT_FOLDER -- COMMAND...` (installed app scripts, Studio Python,
-VM running) runs one command in the project's VM main line as the owner of main, the user of
-the lead. It is how the user or a Mac agent sets up a project without a chat, for example a
-first build and `layr save --caches` ("Warm caches" below):
-
-- Guest method `project.exec` (root broker): it reads the owner from the main folder, runs
-  the command with `runuser`, never as root, in main or `--subpath` below it, and returns the
-  output (at most 512 KiB) and the exit code. The deadline is 300 seconds, at most 1800.
-- Only the guest service reaches the broker, so the method comes only from the Mac. It gives
-  no right that the lead does not have.
-- The request ID makes a retry safe: the broker returns the saved result and does not run
-  the command again. The command prints the ID first; after a lost reply, run it again with
-  `--operation-id`.
-- The broker keeps each command's argv and output in `layr-admin/commands/<id>/`.
+The host command `codex_layr_exec.py` was removed with the Python backend.
+The guest method `project.exec` still runs a command as the owner of main.
+It supports a subpath below main and a deadline of 300 seconds, with a maximum of 1800 seconds.
+It returns at most 512 KiB of output and the exit code.
+The broker keeps the arguments and output in `layr-admin/commands/<id>/`.
+A retry with the same request ID returns the saved result.
+Only the guest service can reach the broker.
 
 ### Warm caches
 
@@ -87,7 +68,7 @@ files in it. The import leaves out the ignored folders, so the attribute changes
 becomes a cache in the VM:
 
 1. The file is part of main; on the Mac it comes with Mac folder sync.
-2. A build in main (the lead's, or the operator's through `codex_layr_exec.py`) makes the
+2. A build in main, from the lead or `project.exec`, makes the
    folders; `layr save --caches` in main gives them to the head of main. A later save on the
    same head keeps the caches that earlier saves gave it and adds its own: the record of each
    save names all cache folders of main, with their subvolume IDs. A head that lost caches
@@ -271,28 +252,61 @@ The repository contains the layr source at `workspaces/runtime/apps/layr`.
 Its manifest records the base commit, its Git tree, and the SHA-256 hashes of the files.
 The guest installer verifies those hashes before a build.
 It uses Rust 1.90.0 and the committed Cargo lock file.
-The folder has fixes on top of the base commit (`git log -- workspaces/runtime/apps/layr`).
-The command below replaces the folder with a layr commit, so take these fixes into layr first.
+The source matches layr 0.2.0, commit `efa2fa142b44c278d264f59355d0d97d815fe5ba`.
+It includes the `crates/layr-store` and `crates/layr-model` workspace members.
+The layr-desk source keeps its existing revision.
 
 Run this command to select another committed layr revision:
 
-The former Python backend command has been removed. See [testing](testing.md)
-for current Rust checks.
+```sh
+python3 workspaces/tooling/apps/repository-checks/update-vm-layr.py \
+  --source /Users/igor/Projects/layr --revision efa2fa1
+```
 
+The helper is independent of the retired Python backend.
+It removes only files named by the previous manifest.
 The command reads the Git commit through `git archive`.
 It does not read or change that repository's work files.
 With `--name layr-desk`, the same command vendors the vault writer into
 `workspaces/runtime/apps/layr-desk` ([vault.md](vault.md)).
 
+Layr 0.2.0 removes the old command names. Use these commands:
+
+- `layr line new <name> <state>` and `layr line delete -D <name>` manage lines.
+- `layr save -m <message>` makes a named state.
+- `layr save --force --note <text>` makes an automatic state, including unfinished changes.
+- `layr rev-parse head` reads the named head. `head@{0}` reads the latest automatic state.
+- `layr git push` exports to Git. `layr git sync` updates the local Git view.
+
+Studio uses `status --json` for Mac sync and host command ignore checks.
+The change lists use `staged`, `unstaged`, `untracked`, `conflicts`, and `ignored`.
+JSON state IDs use UUID form. `rev-parse` prints the equivalent 32-character display form.
+Ignored files do not make a line dirty.
+
+After the updated payload reaches `/opt/codex-studio/vm`, the guest command to install it is:
+
+```sh
+sudo bash /opt/codex-studio/vm/guest/install-layr.sh
+```
+
+The installer verifies the manifest, builds with the pinned Rust toolchain, and restarts the layr daemon.
+Run it only after VM commands finish.
+The install keeps the existing store and its machine identity.
+
 ## Checks
 
 Run each command separately:
 
-The former Python backend command has been removed. See [testing](testing.md)
-for current Rust checks.
+```sh
+STUDIO_GUEST_PYTHON=python3.13 node workspaces/runtime/apps/vm-guest/run-guest-suite.mjs
+cargo test -j 4 --locked -p studio-runtime-services --lib layr_read::tests
+```
+
+The guest runner requires a built `codex-process-supervisor`.
+Set `STUDIO_SUPERVISOR_BINARY` if its binary is outside the default Cargo target folder.
 
 The layr tests run on Linux as root, with btrfs-progs and git (for example in an OrbStack
-machine): `cargo test --locked` in `workspaces/runtime/apps/layr`. The btrfs regression tests
+machine): `cargo test -j 4 --locked` in `workspaces/runtime/apps/layr`. The btrfs regression tests
 (warm caches, regenerable folders, the git store) are in the upstream layr repository
 (`tests/run.sh`); run them there as root before vendoring a new revision.
 

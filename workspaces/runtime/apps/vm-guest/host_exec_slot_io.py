@@ -86,7 +86,7 @@ def _ignored_new(line: Path, env, rels):
                 made_folders.append(folder)
             os.close(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
             made_files.append(target)
-        proc = subprocess.run(["layr", "status", "--porcelain", "--ignored", "-z"], cwd=line, env=env,
+        proc = subprocess.run(["layr", "status", "--json", "--ignored"], cwd=line, env=env,
                               capture_output=True, timeout=600)
         require(proc.returncode == 0, "layr status failed: " + proc.stderr.decode(errors="replace")[-1000:],
                 "layr_failed")
@@ -98,7 +98,7 @@ def _ignored_new(line: Path, env, rels):
                 folder.rmdir()
             except OSError:
                 pass  # Something else wrote into the folder meanwhile; it stays.
-    ignored = {row[3:] for row in proc.stdout.decode(errors="surrogateescape").split("\0") if row.startswith("!! ")}
+    ignored = set(json.loads(proc.stdout)["ignored"])
     return {rel for rel in rels if rel in ignored}
 
 

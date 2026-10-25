@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from pathlib import Path
 import sys
@@ -23,6 +24,17 @@ class MacSyncRead(unittest.IsolatedAsyncioTestCase):
         self.sync = MacSync(self.root, self.root, None)
         self.sync.lines = AsyncMock(return_value=("owner", self.root, self.root, self.root))
         self.sync.checkout = AsyncMock()
+
+    async def test_clean_uses_status_json_and_ignores_ignored_files(self) -> None:
+        status = {"staged": [], "unstaged": [], "untracked": [], "conflicts": [], "ignored": ["target/cache"]}
+        self.sync.layr = AsyncMock(return_value=json.dumps(status))
+        await self.sync.clean(self.root, "owner", "main")
+        self.sync.layr.assert_awaited_once_with(["status", "--json"], cwd=self.root, owner="owner")
+        for field in ("staged", "unstaged", "untracked", "conflicts"):
+            with self.subTest(field=field):
+                self.sync.layr.return_value = json.dumps({**status, field: ["changed"]})
+                with self.assertRaises(GuestError):
+                    await self.sync.clean(self.root, "owner", "main")
 
     async def read(self, path: str, offset: int = 0) -> dict:
         return await self.sync.dispatch("read-request", "sync.mac.read", {

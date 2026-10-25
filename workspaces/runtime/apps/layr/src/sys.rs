@@ -92,6 +92,23 @@ fn ioctl_ptr<T>(fd: BorrowedFd, req: libc::c_ulong, arg: &mut T) -> io::Result<(
     Ok(())
 }
 
+/// True when the folder `path`, or the nearest folder above it that exists, ignores case
+/// (ext4 `casefold`, set with `chattr +F`). New folders take this flag from their parent.
+#[cfg(all(target_os = "linux", feature = "overlayfs"))]
+pub fn casefold(path: &std::path::Path) -> bool {
+    use rustix::fs::{open, Mode, OFlags};
+    const FS_CASEFOLD_FL: libc::c_long = 0x4000_0000;
+    let Some(dir) = path.ancestors().find(|p| p.is_dir()) else {
+        return false;
+    };
+    let Ok(fd) = open(dir, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC, Mode::empty()) else {
+        return false;
+    };
+    let mut flags: libc::c_long = 0;
+    // File systems without inode flags, such as some network ones, answer with an error: no casefold.
+    ioctl_ptr(fd.as_fd(), libc::FS_IOC_GETFLAGS as _, &mut flags).is_ok() && flags & FS_CASEFOLD_FL != 0
+}
+
 /// Create the subvolume `name` in the folder `dir`.
 pub fn subvol_create(dir: BorrowedFd, name: &str) -> Result<()> {
     let mut a = vol_args(0, 0, name)?;
@@ -135,6 +152,32 @@ pub fn filesystem_uuid(fd: BorrowedFd) -> io::Result<[u8; 16]> {
 pub fn subvol_set_flags(fd: BorrowedFd, flags: u64) -> io::Result<()> {
     let mut f: u64 = flags;
     ioctl_ptr(fd, SUBVOL_SETFLAGS, &mut f)
+}
+
+/// Set the identity of a verified file restore, as btrfs receive does before sealing it.
+#[cfg(target_os = "linux")]
+pub fn subvol_set_received(fd: BorrowedFd, uuid: [u8; 16], transid: u64) -> io::Result<()> {
+    #[repr(C)]
+    struct ReceivedSubvolArgs {
+        uuid: [u8; 16],
+        stransid: u64,
+        rtransid: u64,
+        stime: Timespec,
+        rtime: Timespec,
+        flags: u64,
+        reserved: [u64; 16],
+    }
+    let zero_time = Timespec { sec: 0, nsec: 0 };
+    let mut args = ReceivedSubvolArgs {
+        uuid,
+        stransid: transid,
+        rtransid: 0,
+        stime: zero_time,
+        rtime: zero_time,
+        flags: 0,
+        reserved: [0; 16],
+    };
+    ioctl_ptr(fd, 0xc0c8_9425, &mut args)
 }
 
 pub struct RawSubvolInfo {
@@ -397,10 +440,93 @@ pub fn apfs_supported(path: &std::path::Path) -> bool {
     // SAFETY: statfs initializes a valid native structure; path is NUL-terminated.
     unsafe {
         let mut stat: libc::statfs = std::mem::zeroed();
-        libc::statfs(path.as_ptr(), &mut stat) == 0
-            && CStr::from_ptr(stat.f_fstypename.as_ptr()).to_bytes() == b"apfs"
-            && libc::pathconf(path.as_ptr(), libc::_PC_CASE_SENSITIVE) == 1
+        libc::statfs(path.as_ptr(), &mut stat) == 0 && CStr::from_ptr(stat.f_fstypename.as_ptr()).to_bytes() == b"apfs"
     }
+}
+
+/// The name of the entry at `path` as the volume stores it. On a volume that ignores case,
+/// `readme` can find an entry stored as `README`. `None` when nothing is there.
+#[cfg(target_os = "macos")]
+pub fn stored_name(path: &std::path::Path) -> Option<std::ffi::OsString> {
+    name_attribute(path, libc::ATTR_CMN_NAME)
+}
+
+/// The full path of the entry at `path` with the names as the volume stores them.
+#[cfg(target_os = "macos")]
+pub fn stored_path(path: &std::path::Path) -> Option<std::ffi::OsString> {
+    name_attribute(path, libc::ATTR_CMN_FULLPATH)
+}
+
+/// One name attribute (`ATTR_CMN_NAME` or `ATTR_CMN_FULLPATH`) of the entry at `path`.
+#[cfg(target_os = "macos")]
+fn name_attribute(path: &std::path::Path, attr: libc::attrgroup_t) -> Option<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStrExt;
+    // Paths below a deep store can be longer than PATH_MAX. Status asks for each file: one
+    // buffer per thread instead of an allocation per call.
+    thread_local!(static BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0u8; 4 + 8 + 64 * 1024]));
+    let c = cpath(path).ok()?;
+    let mut attrs = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: attr,
+        volattr: 0,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
+    BUF.with_borrow_mut(|buf| {
+        // SAFETY: attrs and buf are valid for their sizes; the path is NUL-terminated.
+        if unsafe {
+            libc::getattrlist(
+                c.as_ptr(),
+                (&mut attrs as *mut libc::attrlist).cast(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                libc::FSOPT_NOFOLLOW,
+            )
+        } != 0
+        {
+            return None;
+        }
+        let off = 4 + i32::from_ne_bytes(buf[4..8].try_into().ok()?) as usize;
+        let len = u32::from_ne_bytes(buf[8..12].try_into().ok()?) as usize;
+        let raw = buf.get(off..off + len)?;
+        Some(std::ffi::OsStr::from_bytes(raw.strip_suffix(&[0]).unwrap_or(raw)).to_os_string())
+    })
+}
+
+/// `case_sensitive` for a device, remembered per process.
+#[cfg(target_os = "macos")]
+pub fn case_sensitive_dev(dev: u64, path: &std::path::Path) -> bool {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<std::collections::HashMap<u64, bool>>> = OnceLock::new();
+    let map = SEEN.get_or_init(Default::default);
+    if let Some(v) = map.lock().unwrap().get(&dev) {
+        return *v;
+    }
+    let v = case_sensitive(path);
+    map.lock().unwrap().insert(dev, v);
+    v
+}
+
+/// True when names that differ only in case are different entries on the volume of `path`.
+/// A path that cannot be checked counts as case-sensitive: Layr then refuses nothing and keeps
+/// its earlier behavior.
+#[cfg(target_os = "macos")]
+pub fn case_sensitive(path: &std::path::Path) -> bool {
+    // The nearest folder that exists answers for a path that is not made yet.
+    let mut at = Some(path);
+    while let Some(p) = at {
+        if p.exists() {
+            let Ok(c) = cpath(p) else {
+                return true;
+            };
+            // SAFETY: the path is NUL-terminated.
+            return unsafe { libc::pathconf(c.as_ptr(), libc::_PC_CASE_SENSITIVE) } != 0;
+        }
+        at = p.parent();
+    }
+    true
 }
 #[cfg(target_os = "macos")]
 pub fn apfs_clone(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
@@ -436,6 +562,228 @@ pub fn apfs_clone(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()
     Ok(())
 }
 #[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ApfsDataIdentity {
+    pub generation: Option<u32>,
+    pub clone_id: Option<u64>,
+}
+
+/// Kernel data identity, not a timestamp or a user-writable extended attribute.
+#[cfg(target_os = "macos")]
+pub fn apfs_data_identity(path: &std::path::Path) -> io::Result<ApfsDataIdentity> {
+    let path = cpath(path)?;
+    let mut attrs = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: libc::ATTR_CMN_RETURNED_ATTRS | libc::ATTR_CMN_GEN_COUNT,
+        volattr: 0,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: libc::ATTR_CMNEXT_CLONEID,
+    };
+    // getattrlist packs all fields on four-byte boundaries, including u64.
+    // PACK_INVAL_ATTRS keeps the layout fixed when an attribute is unsupported.
+    let mut buf = [0u8; 36];
+    let flags = libc::FSOPT_NOFOLLOW | libc::FSOPT_PACK_INVAL_ATTRS | libc::FSOPT_ATTR_CMN_EXTENDED;
+    // SAFETY: attrs and buf are valid for their declared sizes; path is NUL-terminated.
+    if unsafe {
+        libc::getattrlist(
+            path.as_ptr(),
+            (&mut attrs as *mut libc::attrlist).cast(),
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            flags as _,
+        )
+    } != 0
+    {
+        let e = io::Error::last_os_error();
+        return match e.raw_os_error() {
+            Some(libc::ENOTSUP | libc::EINVAL) => Ok(ApfsDataIdentity::default()),
+            _ => Err(e),
+        };
+    }
+    let word = |off| u32::from_ne_bytes(buf[off..off + 4].try_into().unwrap());
+    if word(0) != buf.len() as u32 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid APFS data identity length"));
+    }
+    let generation = word(24);
+    let clone_id = u64::from_ne_bytes(buf[28..36].try_into().unwrap());
+    Ok(ApfsDataIdentity {
+        // Apple documents zero for an invalid count, including mapped files.
+        generation: (word(4) & libc::ATTR_CMN_GEN_COUNT != 0 && generation != 0).then_some(generation),
+        clone_id: (word(20) & libc::ATTR_CMNEXT_CLONEID != 0 && clone_id != 0).then_some(clone_id),
+    })
+}
+
+/// The physical extents of a file: (file offset, length, device offset). `None` when APFS does
+/// not report a mapping for some range (a hole, or data not yet allocated).
+#[cfg(target_os = "macos")]
+pub fn apfs_extents(f: &std::fs::File, len: u64) -> Option<Vec<(u64, u64, u64)>> {
+    use std::os::fd::AsRawFd;
+    // The kernel structure is packed to four bytes.
+    #[repr(C, packed(4))]
+    struct Log2Phys {
+        flags: u32,
+        contig: i64,
+        offset: i64,
+    }
+    let mut out = Vec::new();
+    let mut pos = 0u64;
+    while pos < len {
+        let mut l = Log2Phys { flags: 0, contig: (len - pos) as i64, offset: pos as i64 };
+        // SAFETY: the descriptor is live and `l` is the in/out structure of F_LOG2PHYS_EXT.
+        if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_LOG2PHYS_EXT, &mut l as *mut Log2Phys) } != 0 {
+            return None;
+        }
+        let (contig, dev) = (l.contig, l.offset);
+        if contig <= 0 || dev < 0 {
+            return None;
+        }
+        let n = (contig as u64).min(len - pos);
+        out.push((pos, n, dev as u64));
+        pos += n;
+    }
+    Some(out)
+}
+
+/// One entry of a folder as `getattrlistbulk` returns it.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkEntry {
+    pub name: std::ffi::OsString,
+    /// `st_mode`: the type bits and the permission bits.
+    pub mode: u32,
+    pub dev: u64,
+    pub ino: u64,
+    pub uid: u32,
+    pub gid: u32,
+    pub size: u64,
+    pub nlink: u64,
+    pub mtime: (i64, i64),
+    pub ctime: (i64, i64),
+    pub birth: (i64, i64),
+    pub data: ApfsDataIdentity,
+}
+
+/// Read the metadata of all entries of an open folder with `getattrlistbulk`: one call returns
+/// many entries, with their change counters and clone IDs. The order is the folder order.
+#[cfg(target_os = "macos")]
+pub fn apfs_bulk_read(dir: std::os::fd::BorrowedFd<'_>, buf: &mut Vec<u8>) -> io::Result<Vec<BulkEntry>> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let mut attrs = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: libc::ATTR_CMN_RETURNED_ATTRS
+            | libc::ATTR_CMN_NAME
+            | libc::ATTR_CMN_DEVID
+            | libc::ATTR_CMN_CRTIME
+            | libc::ATTR_CMN_MODTIME
+            | libc::ATTR_CMN_CHGTIME
+            | libc::ATTR_CMN_OWNERID
+            | libc::ATTR_CMN_GRPID
+            | libc::ATTR_CMN_ACCESSMASK
+            | libc::ATTR_CMN_GEN_COUNT
+            | libc::ATTR_CMN_FILEID,
+        volattr: 0,
+        dirattr: libc::ATTR_DIR_LINKCOUNT | libc::ATTR_DIR_DATALENGTH,
+        fileattr: libc::ATTR_FILE_LINKCOUNT | libc::ATTR_FILE_DATALENGTH,
+        forkattr: libc::ATTR_CMNEXT_CLONEID,
+    };
+    let flags = libc::FSOPT_NOFOLLOW | libc::FSOPT_PACK_INVAL_ATTRS | libc::FSOPT_ATTR_CMN_EXTENDED;
+    if buf.len() < 256 * 1024 {
+        buf.resize(256 * 1024, 0);
+    }
+    let mut out = Vec::new();
+    loop {
+        // SAFETY: the folder descriptor is live; attrs and buf are valid for their sizes.
+        let n = unsafe {
+            libc::getattrlistbulk(
+                dir.as_raw_fd(),
+                (&mut attrs as *mut libc::attrlist).cast(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                flags as u64,
+            )
+        };
+        if n < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if n == 0 {
+            return Ok(out);
+        }
+        let mut pos = 0usize;
+        for _ in 0..n {
+            let rd = |off: usize, len: usize| -> io::Result<&[u8]> {
+                buf.get(off..off + len).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "short getattrlistbulk entry"))
+            };
+            let u32_at = |off: usize| -> io::Result<u32> { Ok(u32::from_ne_bytes(rd(off, 4)?.try_into().unwrap())) };
+            let i32_at = |off: usize| -> io::Result<i32> { Ok(i32::from_ne_bytes(rd(off, 4)?.try_into().unwrap())) };
+            let u64_at = |off: usize| -> io::Result<u64> { Ok(u64::from_ne_bytes(rd(off, 8)?.try_into().unwrap())) };
+            let time_at = |off: usize| -> io::Result<(i64, i64)> { Ok((u64_at(off)? as i64, u64_at(off + 8)? as i64)) };
+            let len = u32_at(pos)? as usize;
+            if len == 0 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "empty getattrlistbulk entry"));
+            }
+            // Layout: length, returned attributes (5 words), then the attributes in bit order.
+            let returned = pos + 4;
+            let (cmn, fork) = (u32_at(returned)?, u32_at(returned + 16)?);
+            let mut q = returned + 20;
+            let name_ref = q;
+            q += 8;
+            let dev = u32_at(q)? as u64;
+            q += 4;
+            let birth = time_at(q)?;
+            q += 16;
+            let mtime = time_at(q)?;
+            q += 16;
+            let ctime = time_at(q)?;
+            q += 16;
+            let uid = u32_at(q)?;
+            q += 4;
+            let gid = u32_at(q)?;
+            q += 4;
+            let access = u32_at(q)?;
+            q += 4;
+            let generation = u32_at(q)?;
+            q += 4;
+            let ino = u64_at(q)?;
+            q += 8;
+            // The folder group comes only for folders, the file group only for other objects;
+            // both start with a link count and a size. The access mask carries the type bits.
+            // (Asking for ATTR_CMN_OBJTYPE as well makes the kernel drop the setuid bit.)
+            let links = u32_at(q)?;
+            q += 4;
+            let size = u64_at(q)?;
+            q += 8;
+            let clone_id = u64_at(q)?;
+            let name_off = name_ref as i64 + i32_at(name_ref)? as i64;
+            let name_len = u32_at(name_ref + 4)? as usize;
+            let raw = rd(name_off as usize, name_len)?;
+            let name = std::ffi::OsStr::from_bytes(raw.strip_suffix(&[0]).unwrap_or(raw)).to_os_string();
+            out.push(BulkEntry {
+                name,
+                mode: access,
+                dev,
+                ino,
+                uid,
+                gid,
+                size,
+                nlink: links as u64,
+                mtime,
+                ctime,
+                birth,
+                data: ApfsDataIdentity {
+                    generation: (cmn & libc::ATTR_CMN_GEN_COUNT != 0 && generation != 0).then_some(generation),
+                    clone_id: (fork & libc::ATTR_CMNEXT_CLONEID != 0 && clone_id != 0).then_some(clone_id),
+                },
+            });
+            pos += len;
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub fn apfs_marker(path: &std::path::Path, value: Option<&[u8]>) -> io::Result<Vec<u8>> {
     apfs_attribute(path, c"com.layr.subvolume", value)
 }
@@ -450,13 +798,24 @@ pub fn apfs_attribute(path: &std::path::Path, name: &CStr, value: Option<&[u8]>)
             }
             return Ok(Vec::new());
         }
-        let mut v = vec![0u8; 4096];
-        let n = libc::getxattr(path.as_ptr(), name.as_ptr(), v.as_mut_ptr().cast(), v.len(), 0, libc::XATTR_NOFOLLOW);
-        if n < 0 {
-            return Err(io::Error::last_os_error());
+        // Ask for the size first: the removed paths of a thin layer can be large.
+        loop {
+            let size = libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, libc::XATTR_NOFOLLOW);
+            if size < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut v = vec![0u8; size as usize + 1];
+            let n = libc::getxattr(path.as_ptr(), name.as_ptr(), v.as_mut_ptr().cast(), v.len(), 0, libc::XATTR_NOFOLLOW);
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.raw_os_error() == Some(libc::ERANGE) {
+                    continue;
+                }
+                return Err(e);
+            }
+            v.truncate(n as usize);
+            return Ok(v);
         }
-        v.truncate(n as usize);
-        Ok(v)
     }
 }
 #[cfg(target_os = "macos")]
@@ -486,6 +845,17 @@ pub fn apfs_publish(src: &std::path::Path, dst: &std::path::Path) -> io::Result<
     Ok(())
 }
 
+/// Exchange two entries in one step.
+#[cfg(target_os = "macos")]
+pub fn apfs_swap(a: &std::path::Path, b: &std::path::Path) -> io::Result<()> {
+    let (a, b) = (cpath(a)?, cpath(b)?);
+    // SAFETY: both paths are valid C strings. RENAME_SWAP needs both entries to exist.
+    if unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_SWAP) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 pub fn apfs_copy_metadata(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
     let (src, dst) = (cpath(src)?, cpath(dst)?);
@@ -494,6 +864,16 @@ pub fn apfs_copy_metadata(src: &std::path::Path, dst: &std::path::Path) -> io::R
         libc::copyfile(src.as_ptr(), dst.as_ptr(), std::ptr::null_mut(), libc::COPYFILE_METADATA | libc::COPYFILE_NOFOLLOW)
     } != 0
     {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn apfs_copy_metadata_fd(src: std::os::fd::BorrowedFd<'_>, dst: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: both descriptors remain open; the state pointer may be null.
+    if unsafe { libc::fcopyfile(src.as_raw_fd(), dst.as_raw_fd(), std::ptr::null_mut(), libc::COPYFILE_METADATA) } != 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -574,6 +954,36 @@ pub fn apfs_mtime(path: &std::path::Path, sec: i64, nsec: i64) -> io::Result<()>
     let times = [libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_OMIT }, libc::timespec { tv_sec: sec, tv_nsec: nsec }];
     // SAFETY: the path and two timespec values remain live for the call.
     if unsafe { libc::utimensat(libc::AT_FDCWD, path.as_ptr(), times.as_ptr(), libc::AT_SYMLINK_NOFOLLOW) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Set the creation time of the entry itself. APFS clones keep it; new entries need it set.
+#[cfg(target_os = "macos")]
+pub fn apfs_set_birthtime(path: &std::path::Path, sec: i64, nsec: i64) -> io::Result<()> {
+    let path = cpath(path)?;
+    let mut attrs = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: libc::ATTR_CMN_CRTIME,
+        volattr: 0,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
+    let mut time = libc::timespec { tv_sec: sec, tv_nsec: nsec };
+    // SAFETY: attrs and the timespec stay live for the call; the path is NUL-terminated.
+    if unsafe {
+        libc::setattrlist(
+            path.as_ptr(),
+            (&mut attrs as *mut libc::attrlist).cast(),
+            (&mut time as *mut libc::timespec).cast(),
+            std::mem::size_of::<libc::timespec>(),
+            libc::FSOPT_NOFOLLOW,
+        )
+    } != 0
+    {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -754,4 +1164,23 @@ pub fn overlay_mtime(path: &std::path::Path, sec: i64, nano: i64) -> io::Result<
     } else {
         Err(io::Error::last_os_error())
     }
+}
+
+/// Permanently drop all user and group privileges in a single-threaded service child.
+pub fn drop_to_user(uid: u32, gid: u32) -> Result<()> {
+    if uid == 0 {
+        anyhow::bail!("registry.user must be unprivileged");
+    }
+    if gid == 0 {
+        anyhow::bail!("registry.user must use an unprivileged primary group");
+    }
+    set_groups(&[])?;
+    // SAFETY: the caller is a dedicated child, before it reads any network data.
+    if unsafe { libc::setgid(gid) } != 0 || unsafe { libc::setuid(uid) } != 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    if rustix::process::getuid().as_raw() != uid || rustix::process::geteuid().as_raw() != uid {
+        anyhow::bail!("cannot drop registry privileges");
+    }
+    Ok(())
 }

@@ -50,7 +50,7 @@ fn time(sec: i64, nano: i64) -> Vec<u8> {
     v
 }
 /// A full stream is valid even when the caller offers an incremental parent.
-/// This preserves old peer and backup compatibility without changing their protocol.
+/// This preserves old peer and remote copy compatibility without changing their protocol.
 pub fn send(root: &Path, out: &mut dyn Write) -> Result<()> {
     let info = crate::storage::subvol_info(root)?;
     if !info.readonly {
@@ -235,6 +235,20 @@ pub fn receive(src: &mut dyn Read, dir: &Path, expected: &crate::recv::Expect) -
                 break;
             }
             let p = path(&root, value(&at, 15)?, !matches!(code, 8..=14 | 19 | 20))?;
+            // On a volume that ignores case, README and Readme are one entry: refuse instead of
+            // failing on an unclear error or replacing the other entry.
+            let clash = |q: &Path| -> Result<()> {
+                if let Some(stored) = crate::fsutil::case_clash(q) {
+                    bail!(
+                        "{} and {stored} differ only in case, and this volume does not tell them apart; use a case-sensitive APFS volume for the store",
+                        q.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                    );
+                }
+                Ok(())
+            };
+            if matches!(code, 3 | 4 | 8 | 10) {
+                clash(&p)?;
+            }
             match code {
                 3 => {
                     fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&p)?;
@@ -247,6 +261,13 @@ pub fn receive(src: &mut dyn Read, dir: &Path, expected: &crate::recv::Expect) -
                 }
                 9 => {
                     let to = path(&root, value(&at, 16)?, false)?;
+                    // A rename of an entry to another case of its own name is no clash: the
+                    // entry that `to` finds is `p` itself, in the same folder.
+                    let itself = to.parent() == p.parent()
+                        && crate::fsutil::case_clash(&to).is_some_and(|s| p.file_name() == Some(s.as_ref()));
+                    if !itself {
+                        clash(&to)?;
+                    }
                     fs::rename(&p, to)?;
                 }
                 10 => {

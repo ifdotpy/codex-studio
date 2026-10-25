@@ -169,6 +169,60 @@ impl Tree {
         Ok(Some(File::from(fd)))
     }
 
+    /// Replace a private index file with a clone. Working files must keep their inode.
+    /// Hard-linked or flagged destinations use the existing copy path.
+    #[cfg(target_os = "macos")]
+    pub fn replace_index_file(&self, src: &File, rel: &str, finish: impl FnOnce(&File) -> Result<()>) -> Result<bool> {
+        use std::os::macos::fs::MetadataExt as _;
+        use std::os::unix::fs::MetadataExt;
+        let (dir, name) = self.parent(rel)?;
+        let old = match rustix::fs::openat(
+            &dir,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        ) {
+            Ok(fd) => File::from(fd),
+            Err(_) => return Ok(false),
+        };
+        let meta = old.metadata()?;
+        if !meta.is_file() || meta.nlink() != 1 || meta.st_flags() != 0 {
+            return Ok(false);
+        }
+        let temp = format!(".layr-copy-{}", crate::ids::new_id());
+        match crate::sys::apfs_clone_at(src.as_fd(), dir.as_fd(), &temp) {
+            Ok(()) => {}
+            Err(e) if matches!(e.raw_os_error(), Some(libc::EXDEV | libc::ENOTSUP)) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        }
+        let result = (|| -> Result<bool> {
+            let fd = rustix::fs::openat(&dir, temp.as_str(), OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())?;
+            crate::sys::apfs_unseal_fd(fd.as_fd())?;
+            let mode = rustix::fs::fstat(&fd)?.st_mode;
+            rustix::fs::fchmod(&fd, Mode::from_raw_mode(mode | 0o200))?;
+            let prepared = File::from(rustix::fs::openat(
+                &dir,
+                temp.as_str(),
+                OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?);
+            // Keep destination attributes, ACL and origin identity, just as an in-place
+            // copy does. COPYFILE_METADATA replaces attributes without copying data.
+            crate::sys::apfs_copy_metadata_fd(old.as_fd(), prepared.as_fd())?;
+            finish(&prepared)?;
+            let current = rustix::fs::statat(&dir, name, AtFlags::SYMLINK_NOFOLLOW)?;
+            if current.st_ino != meta.ino() || current.st_dev as u64 != meta.dev() || current.st_nlink != 1 {
+                bail!("index destination changed during copy: {rel}");
+            }
+            rustix::fs::renameat(&dir, temp.as_str(), &dir, name)?;
+            Ok(true)
+        })();
+        if result.is_err() {
+            let _ = rustix::fs::unlinkat(&dir, temp.as_str(), AtFlags::empty());
+        }
+        result
+    }
+
     /// An existing regular file opened for writing, or None (absent, a link, not a file).
     pub fn open_write(&self, rel: &str) -> Result<Option<File>> {
         let (d, n) = match self.parent(rel) {

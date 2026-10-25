@@ -6,6 +6,8 @@
 #[macro_use]
 mod ctx;
 mod access;
+#[cfg(target_os = "macos")]
+mod apfs_commit;
 #[cfg(any(target_os = "macos", feature = "overlayfs"))]
 mod apfs_stream;
 #[cfg(any(target_os = "macos", feature = "overlayfs"))]
@@ -17,18 +19,27 @@ mod changes;
 mod cmd;
 mod db;
 mod diff;
+mod disk;
 mod fsutil;
 mod gitbridge;
 mod ids;
+use layr_store::http;
 mod ignore_rules;
+mod lineops;
 mod merge;
 mod model;
+mod oci;
 mod oplog;
 mod overlay;
+mod overlay_managers;
+mod person;
 mod privs;
+mod probes;
+mod radar;
 mod recv;
 mod repo;
 mod revs;
+mod secrets;
 #[cfg(target_os = "linux")]
 mod send_cache;
 mod service;
@@ -42,9 +53,12 @@ mod storage;
 #[path = "apfs.rs"]
 mod storage;
 mod store;
+mod store_remote;
 mod stream;
 #[allow(unsafe_code)]
 mod sys;
+#[cfg(target_os = "macos")]
+mod thin;
 mod trace;
 mod tree;
 
@@ -52,6 +66,19 @@ use std::collections::HashMap;
 
 fn main() {
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().map(String::as_str) == Some("__registry-http") {
+        let result = (|| -> anyhow::Result<()> {
+            anyhow::ensure!(argv.len() == 3, "invalid internal registry arguments");
+            anyhow::ensure!(!rustix::process::geteuid().is_root(), "registry HTTP process must not run as root");
+            let fd = rustix::io::dup(std::io::stdin())?;
+            crate::oci::registry::handle(std::net::TcpStream::from(fd), std::path::Path::new(&argv[1]), &argv[2])
+        })();
+        if let Err(e) = result {
+            eprintln!("layr registry HTTP: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     #[cfg(any(target_os = "macos", feature = "overlayfs"))]
     if argv.first().map(String::as_str) == Some("__apfs-send") {
         let result = (|| -> anyhow::Result<()> {
@@ -95,6 +122,24 @@ fn main() {
                 argv.drain(..2);
             }
             _ => break,
+        }
+    }
+    if argv.first().map(String::as_str) == Some("person") {
+        match person::run(&argv[1..]) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("layr person: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if argv.first().map(String::as_str) == Some("mount") {
+        match disk::run(&argv[1..]) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("layr mount: {error:#}");
+                std::process::exit(1);
+            }
         }
     }
     if argv.first().map(|s| s.as_str()) == Some("daemon") {

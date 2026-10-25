@@ -19,7 +19,7 @@ line's git layer and can name an older commit; use this ID to identify the sourc
 
 `HOST_EXEC_TREE` is the git tree ID of that state: the 40 hexadecimal digits that
 `layr rev-parse <state>^{tree}` prints in the guest. It is the tree of the commit that
-`layr push` exports for the state, so it equals `git rev-parse HEAD^{tree}` after a git
+`layr git push` exports for the state, so it equals `git rev-parse HEAD^{tree}` after a git
 sync of that state. Use it to record the whole source tree of a build. A tree computed
 in the slot is not this value: the slot holds ignored build output, and layr-only files
 of the state do not have to be there. The

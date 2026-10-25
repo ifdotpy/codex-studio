@@ -49,6 +49,7 @@ pub(crate) fn tool_definition() -> Option<&'static crate::thread_prepare::ToolDe
                     "Run one read-only layr command as your Linux user in your read-only line, outside your sandbox: {}. \
                      args is the argument list after `layr`, for example [\"diff\", \"<base>\", \"<state>\"] or \
                      [\"show\", \"<state>:<path>\"]. [\"--line\", \"<line>\", \"log\"] reads another line of your project. \
+                     Use head for the current named state. log --json writes JSON Lines; status --json writes one JSON object. \
                      Write notes and copies only in $TMPDIR.",
                     COMMANDS.join(", ")
                 ),
