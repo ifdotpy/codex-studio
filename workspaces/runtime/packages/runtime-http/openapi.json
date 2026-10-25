@@ -24913,11 +24913,18 @@
                 "$ref": "#/components/schemas/ExecutionStatus"
               },
               {
+                "$ref": "#/components/schemas/RequestStatus"
+              },
+              {
+                "$ref": "#/components/schemas/AgentStatus"
+              },
+              {
                 "enum": [
                   "answered",
                   "expired",
                   "lost",
-                  "approved"
+                  "approved",
+                  "deleted"
                 ],
                 "type": "string"
               },
@@ -24926,6 +24933,7 @@
               }
             ],
             "default": null,
+            "description": "The status of the referenced record: a tool request stage, a request card status, or a spawned agent status.",
             "title": "Status"
           },
           "taskId": {
@@ -25591,6 +25599,9 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/SupervisorIdentity"
+              },
+              {
+                "$ref": "#/components/schemas/RecoveryConnectionGeneration"
               },
               {
                 "type": "null"
@@ -38781,6 +38792,30 @@
           "agentId"
         ],
         "title": "ReceiptsResource",
+        "type": "object"
+      },
+      "RecoveryConnectionGeneration": {
+        "additionalProperties": false,
+        "description": "A recovery receipt `supervisor` that earlier releases wrote when the start attempt had no supervisor identity. It holds only the start attempt's `connectionGeneration` and identifies no supervisor; current releases write null instead.",
+        "properties": {
+          "generation": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          }
+        },
+        "required": [
+          "generation"
+        ],
+        "title": "RecoveryConnectionGeneration",
         "type": "object"
       },
       "RecoveryOutcome": {
