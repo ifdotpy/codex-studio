@@ -16,6 +16,9 @@ export default {
       // Final stream accounting, deferred result totals and explicit unfinished-response gaps.
       "usage.test.mjs",
       "usage-bridge.test.mjs",
+      // Portable image codecs, bounded compression and visible pre-input refusals.
+      "images.test.mjs",
+      "images-bridge.test.mjs",
     ],
   },
 };
