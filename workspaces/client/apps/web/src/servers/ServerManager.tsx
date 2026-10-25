@@ -147,10 +147,6 @@ export default function ServerManager({
                   : server.id === "local" && state === "working"
                     ? "This computer"
                     : status;
-              const system =
-                summary?.system === "Darwin"
-                  ? "macOS"
-                  : summary?.system || "OS unavailable";
               const address =
                 server.id === "local"
                   ? discovery.snapshot?.localOrigin || server.origin
@@ -206,7 +202,9 @@ export default function ServerManager({
                     <DataList.Item className="server-settings-host">
                       <DataList.ItemLabel>Host</DataList.ItemLabel>
                       <DataList.ItemValue>
-                        <span className="server-settings-system">{system}</span>
+                        <span className="server-settings-system">
+                          Studio server
+                        </span>
                         <span
                           className="server-settings-address"
                           title={address}

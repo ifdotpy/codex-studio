@@ -197,7 +197,7 @@ export default function ProjectDirectoryPicker({
           }}
           disabled={saving}
         >
-          Browse in Finder…
+          Browse folders…
         </Button>
       )}
       <div className="directory-location">

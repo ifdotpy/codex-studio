@@ -31,7 +31,7 @@ export async function openSignInPage(
     }
     if (!desktop?.openSignIn || !canForwardSignIn())
       throw new Error(
-        "Update LAYR Studio on this Mac to sign in to a command on another computer.",
+        "Update LAYR Studio on this computer to sign in to a command on another computer.",
       );
     return desktop.openSignIn({ url: parsed.href, forward });
   }

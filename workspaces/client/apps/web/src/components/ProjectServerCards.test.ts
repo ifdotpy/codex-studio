@@ -29,7 +29,7 @@ describe("new chat actions", () => {
     );
     expect(markup).toContain("Workspace");
     expect(markup).toContain("layr");
-    expect(markup).toContain("ASIF");
+    expect(markup).toContain("Image");
     expect(markup).toContain("worktree");
     expect(markup).toContain('aria-label="Agent role" role="radiogroup"');
     expect(markup).toMatch(/<input[^>]*type="radio"[^>]*value="worker"/);

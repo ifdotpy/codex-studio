@@ -142,7 +142,7 @@ async function openNewChat(page, server, classic = false) {
 }
 for (const [choice, badge] of [
   ["layr", "LAYR"],
-  ["ASIF", "ASIF"],
+  ["Image", "IMAGE"],
   ["worktree", "WT"],
 ]) {
   test(`macOS New chat ${choice} and actual model menus`, async ({ page }) => {
@@ -172,7 +172,7 @@ for (const [choice, badge] of [
         .click();
       await expect.poll(() => creations.length).toBe(1);
       expect(creations[0]).toMatchObject({
-        workspaceMode: choice === "ASIF" ? "image" : choice,
+        workspaceMode: choice === "Image" ? "image" : choice,
         model: "gpt-5.6-sol",
         effort: "high",
         worker_defaults: {

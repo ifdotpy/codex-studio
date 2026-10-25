@@ -16,10 +16,10 @@ describe("sign-in alerts through Web Push", () => {
   it("names the device without its user agent", () => {
     expect(
       deviceName("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X)"),
-    ).toBe("iPhone");
-    expect(deviceName("Mozilla/5.0 (Linux; Android 16)")).toBe("Android phone");
+    ).toBe("Phone");
+    expect(deviceName("Mozilla/5.0 (Linux; Android 16)")).toBe("Phone");
     expect(deviceName("Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0)")).toBe(
-      "Mac",
+      "Computer",
     );
     expect(deviceName("Other")).toBe("This device");
   });
@@ -31,13 +31,13 @@ describe("sign-in alerts through Web Push", () => {
           endpoint: "https://web.push.apple.com/abc",
           keys: { p256dh: "BAEC", auth: "AAEC", extra: "no" },
         },
-        "iPhone",
+        "My phone",
       ),
     ).toEqual({
       endpoint: "https://web.push.apple.com/abc",
       p256dh: "BAEC",
       auth: "AAEC",
-      device: "iPhone",
+      device: "My phone",
     });
     expect(() => subscriptionBody({ endpoint: "x" }, "iPhone")).toThrow(
       "no push subscription keys",
@@ -110,7 +110,7 @@ describe("turning on sign-in push for this device", () => {
         endpoint: "https://web.push.apple.com/new",
         p256dh: "BAEC",
         auth: "AAEC",
-        device: "iPhone",
+        device: "Phone",
       },
     ]);
   });

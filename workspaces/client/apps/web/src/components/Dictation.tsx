@@ -268,7 +268,7 @@ function NativeDictation({
           : Promise.resolve({
               permit: undefined,
               error: Error(
-                "Transcription requires the updated LAYR Studio desktop app on macOS. Your recording is saved.",
+                "Transcription is unavailable in this app. Use an updated desktop app with transcription support. Your recording is saved.",
               ),
             }));
       if (!(await beginTranscription(row, attempt)))

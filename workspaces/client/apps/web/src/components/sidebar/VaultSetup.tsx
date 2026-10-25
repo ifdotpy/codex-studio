@@ -192,13 +192,13 @@ export default function VaultSetup({
       <Stack>
         <Text size="sm">
           The vault keeps an end-to-end encrypted copy of each saved state of
-          the project in your AWS account. Desk and this Mac decrypt it; AWS and
-          the gateway see only ciphertext.
+          the project in your AWS account. Desk and this computer decrypt it;
+          AWS and the gateway see only ciphertext.
         </Text>
         {!facts && !error && <Text size="sm">Loading…</Text>}
         {facts && !facts.site && (
           <Alert color="yellow">
-            This Mac has no Desk gateway yet (~/.config/studio-vault/
+            This computer has no Desk gateway yet (~/.config/studio-vault/
             gateway.json). Set one up first: layr-desk docs/self-hosted.md.
           </Alert>
         )}
@@ -220,8 +220,9 @@ export default function VaultSetup({
             ) : desktop ? (
               <>
                 <Text size="sm">
-                  Terminal shows the 24 words once. Write them on paper twice,
-                  then press Enter in Terminal. Studio does not see the words.
+                  A terminal shows the 24 words once. Write them on paper twice,
+                  then press Enter in the terminal. Studio does not see the
+                  words.
                 </Text>
                 <Group>
                   <Button
@@ -229,13 +230,14 @@ export default function VaultSetup({
                     loading={waitingForKeys}
                     onClick={() => void showKeys()}
                   >
-                    Show the paper key in Terminal
+                    Show the paper key in a terminal
                   </Button>
                 </Group>
               </>
             ) : (
               <Text size="sm">
-                Run this in a terminal of this Mac, then reopen this dialog:{" "}
+                Run this in a terminal on this computer, then reopen this
+                dialog:{" "}
                 <Code>{`layr-desk keys --project ${facts.prefix} --clear`}</Code>
               </Text>
             )}

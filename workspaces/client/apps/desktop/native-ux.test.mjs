@@ -25,6 +25,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
     const events = [];
     const intervals = new Set();
     let backendBuild = "installed";
+    let notificationFailure = null;
     class Window extends EventEmitter {
       constructor() {
         super();
@@ -72,7 +73,8 @@ test("desktop native settings, notification and speech boundaries work with fixt
       }
       show() {
         events.push(["notice"]);
-        this.emit("show");
+        if (notificationFailure) this.emit("failed", {}, notificationFailure);
+        else this.emit("show");
       }
     }
     const app = {
@@ -179,6 +181,9 @@ test("desktop native settings, notification and speech boundaries work with fixt
       notification: () => notification,
       setBackendBuild: (value) => {
         backendBuild = value;
+      },
+      setNotificationFailure: (value) => {
+        notificationFailure = value;
       },
     };
   }
@@ -424,6 +429,19 @@ test("desktop native settings, notification and speech boundaries work with fixt
       false,
       "an open sign-in card plays the sound",
     );
+    f.setNotificationFailure("Notifications are not allowed");
+    await assert.rejects(
+      f.invoke("notify", {
+        title: "Question",
+        body: "Open the question",
+        target,
+      }),
+      {
+        message:
+          "STUDIO_NOTIFICATIONS_DENIED: Allow notifications for LAYR Studio in this computer's notification settings.",
+      },
+    );
+    f.setNotificationFailure(null);
     assert.equal(await f.invoke("cancelTranscription", "unknown"), false);
     await assert.rejects(
       f.invoke("transcribeAudio", { id: "a", permit: "invalid" }),

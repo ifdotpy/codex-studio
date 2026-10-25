@@ -43,7 +43,7 @@ test("settings tabs stay in the direct app when there are no paired servers", as
       "Appearance",
       "Federation",
       "Servers",
-      "Linux VM",
+      "VM",
       "Servers",
       "Federation",
       "Appearance",
@@ -53,7 +53,7 @@ test("settings tabs stay in the direct app when there are no paired servers", as
       await tab.click();
       await expect(settings).toBeVisible();
       await expect(tab).toHaveAttribute("aria-selected", "true");
-      if (name === "Linux VM")
+      if (name === "VM")
         await expect(
           settings.getByText("VM state: stopped", { exact: true }),
         ).toBeVisible();
@@ -111,7 +111,7 @@ test("paired-server settings still hand off between shell and local frame", asyn
       .getByRole("button", { name: "Studio settings", exact: true })
       .click();
     await expect(settings).toBeVisible();
-    await settings.getByRole("tab", { name: "Linux VM", exact: true }).click();
+    await settings.getByRole("tab", { name: "VM", exact: true }).click();
     await expect(settings).toBeHidden();
     const frameSettings = localFrame.getByRole("dialog", {
       name: "Studio settings",
@@ -119,7 +119,7 @@ test("paired-server settings still hand off between shell and local frame", asyn
     });
     await expect(frameSettings).toBeVisible();
     await expect(
-      frameSettings.getByRole("tab", { name: "Linux VM", exact: true }),
+      frameSettings.getByRole("tab", { name: "VM", exact: true }),
     ).toHaveAttribute("aria-selected", "true");
 
     await frameSettings
@@ -239,9 +239,7 @@ test("reopening shell settings resets a frame-owned tab to Servers", async ({
       exact: true,
     });
     await expect(shellSettings).toBeVisible();
-    await shellSettings
-      .getByRole("tab", { name: "Linux VM", exact: true })
-      .click();
+    await shellSettings.getByRole("tab", { name: "VM", exact: true }).click();
     await expect(shellSettings).toBeHidden();
     const frameSettings = localFrame.getByRole("dialog", {
       name: "Studio settings",

@@ -51,10 +51,10 @@ export function applicationServerKey(
 
 /** A short name of this device for the device list. */
 export function deviceName(userAgent: string): string {
-  if (/iPhone/.test(userAgent)) return "iPhone";
-  if (/iPad/.test(userAgent)) return "iPad";
-  if (/Android/.test(userAgent)) return "Android phone";
-  if (/Macintosh/.test(userAgent)) return "Mac";
+  if (/iPhone/.test(userAgent)) return "Phone";
+  if (/iPad/.test(userAgent)) return "Tablet";
+  if (/Android/.test(userAgent)) return "Phone";
+  if (/Macintosh/.test(userAgent)) return "Computer";
   return "This device";
 }
 
