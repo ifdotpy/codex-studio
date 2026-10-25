@@ -30,6 +30,14 @@ export function query({prompt,options}){
    const text=input.value.message.content[0].text;
    yield {type:'user',isReplay:true,uuid:input.value.uuid};
    yield {type:'system',subtype:'init'};
+   if(text==='background'){
+    yield stream(events[0],'background-tool');
+    yield result();
+    await waitForFile(options.cwd+'/.finish',{signal:abort.signal});
+    yield stream(events[1],'background-tool');yield stream(events[2],'background-tool');
+    yield {type:'assistant',parent_tool_use_id:'background-tool',uuid:'child-done',message:{id:'response-1',content:[{type:'text',text:'background-finished'}]}};
+    continue;
+   }
    if(text==='steer'){
     yield stream(events[0]);
     const next=await prompt.next();
@@ -53,8 +61,8 @@ export function query({prompt,options}){
   }
  }};
 }`;
-async function setup() {
-  const b = await startBridge(sdk, "claude-usage-");
+async function setup(thread = {}) {
+  const b = await startBridge(sdk, "claude-usage-", { thread });
   bridges.push(b);
   return b;
 }
@@ -170,4 +178,62 @@ test("subagent stream usage retains its parent tool identity", async () => {
       tokens: expect.objectContaining({ output: 720 }),
     }),
   );
+});
+
+test("background subagent final usage survives completion of its owning Studio turn", async () => {
+  const b = await setup();
+  const turn = await start(b, "background");
+  await done(b, turn);
+  await fs.writeFile(path.join(b.root, ".finish"), "");
+  await b.note(
+    (n) =>
+      n.method === "item/completed" &&
+      n.params.item.text === "Subagent: background-finished",
+  );
+  expect(observations(b).filter((o) => o.kind === "response")).toMatchObject([
+    {
+      responseId: "response-1",
+      turnId: turn,
+      parentToolUseId: "background-tool",
+      tokens: { output: 720 },
+    },
+  ]);
+  expect(observations(b).filter((o) => o.kind === "gap")).toEqual([]);
+});
+test("response usage includes the known model context window before result", async () => {
+  const b = await setup({ contextWindow: 200000 });
+  const turn = await start(b, "normal");
+  await done(b, turn);
+  expect(observations(b).find((o) => o.kind === "response")).toHaveProperty(
+    "modelContextWindow",
+    200000,
+  );
+});
+
+test("emitted notifications match the shared Rust dispatch golden fixture", async () => {
+  const golden = JSON.parse(
+    await fs.readFile(
+      new URL(
+        "../../../runtime/packages/runtime-schema/src/fixtures/claude-usage-notifications.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const b = await setup({ contextWindow: 200000 });
+  await done(b, await start(b, "normal"));
+  await done(b, await start(b, "interrupted"));
+  const notes = b.notes.filter((n) => n.method === "thread/tokenUsage/updated");
+  const selected = [
+    notes.find((n) => n.params.studioUsage.kind === "response"),
+    notes.find((n) => n.params.studioUsage.kind === "cumulative"),
+    notes.find((n) => n.params.studioUsage.kind === "gap"),
+  ];
+  const normalized = selected.map((n) => ({
+    ...n.params,
+    threadId: "thread",
+    turnId: "turn",
+    studioUsage: { ...n.params.studioUsage, turnId: "turn" },
+  }));
+  expect(normalized).toEqual(golden);
 });

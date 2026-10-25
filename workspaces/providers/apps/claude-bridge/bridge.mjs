@@ -1748,10 +1748,14 @@ async function startSession(s, active, p) {
       }
       if (!turn) continue;
       if (m.type === "stream_event")
-        for (const studioUsage of active.usage.observe(m, turn.id))
+        for (const studioUsage of active.usage.observe(
+          m,
+          turn.id,
+          s.contextWindow,
+        ))
           emit("thread/tokenUsage/updated", {
             threadId: s.id,
-            turnId: turn.id,
+            turnId: studioUsage.turnId,
             studioUsage,
           });
       if (m.parent_tool_use_id) {

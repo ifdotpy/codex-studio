@@ -7,6 +7,7 @@
 /** @typedef {Extract<StreamEvent, {type: 'message_delta'}>['usage']} DeltaUsage */
 /** @typedef {import('./usage-contract.generated.d.mts').UsageTokens} UsageTokens */
 /** @typedef {import('./usage-contract.generated.d.mts').UsageObservation} UsageObservation */
+/** @typedef {Extract<UsageObservation, {kind: 'gap'}>['reason']} GapReason */
 
 /** Claude input excludes cache; thinking is already included in output.
  * @param {Message['usage']} usage
@@ -62,9 +63,10 @@ export class ResponseUsage {
   pending = new Map();
 
   /** @param {StreamMessage} frame @param {string | undefined} turnId
+   * @param {number | undefined} [modelContextWindow]
    * @returns {UsageObservation[]}
    */
-  observe(frame, turnId) {
+  observe(frame, turnId, modelContextWindow) {
     const parent = frame.parent_tool_use_id ?? null;
     const event = frame.event;
     /** @type {UsageObservation[]} */
@@ -89,6 +91,7 @@ export class ResponseUsage {
           model: current.message.model,
           tokens: responseTokens(current.message.usage),
           evidence: "live",
+          ...(modelContextWindow === undefined ? {} : { modelContextWindow }),
           ...(current.turnId === undefined ? {} : { turnId: current.turnId }),
           ...(parent === null ? {} : { parentToolUseId: parent }),
         });
@@ -98,7 +101,7 @@ export class ResponseUsage {
   }
 
   /** @param {{message:Message,turnId:string | undefined}} current
-   * @param {'streamInterrupted' | 'queryClosed'} reason
+   * @param {GapReason} reason
    * @returns {UsageObservation}
    */
   gap(current, reason) {
@@ -111,7 +114,7 @@ export class ResponseUsage {
     };
   }
 
-  /** @param {'streamInterrupted' | 'queryClosed'} reason
+  /** @param {GapReason} reason
    * @param {string | undefined} [turnId]
    * @returns {UsageObservation[]}
    */
@@ -119,6 +122,8 @@ export class ResponseUsage {
     /** @type {UsageObservation[]} */
     const observations = [];
     for (const [parent, current] of this.pending) {
+      // Background subagents may continue beyond the main Studio turn.
+      if (reason === "streamInterrupted" && parent !== null) continue;
       if (turnId !== undefined && current.turnId !== turnId) continue;
       observations.push(this.gap(current, reason));
       this.pending.delete(parent);
