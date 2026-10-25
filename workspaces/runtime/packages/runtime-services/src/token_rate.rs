@@ -7,6 +7,10 @@ use std::sync::{Arc, OnceLock};
 use crate::change_notifications::{ChangeNotificationHub, SYNC_FRAME_MIN_INTERVAL};
 use crate::notification_dispatch::{NotificationObservation, NotificationPostCommit};
 use serde::{Deserialize, Serialize};
+use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::usage::{
+    UsageObservation, UsageProvider, UsageScope, UsageTokens, parse_token_usage,
+};
 use studio_runtime_schema::{TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -215,12 +219,14 @@ struct ProjectedAgent {
     rate: f64,
     actual: f64,
     pending: f64,
-    lifetime: Option<f64>,
+    lifetime: Option<UsageTokens>,
     baseline: Option<f64>,
     timing_valid: bool,
     generation_started: Option<f64>,
     samples: VecDeque<(f64, f64)>,
-    response_outputs: BTreeMap<String, f64>,
+    // Exact first response values for this turn; eviction would make replay change totals.
+    response_outputs: BTreeMap<(String, String), UsageTokens>,
+    response_output_total: f64,
     tools: BTreeSet<String>,
     generation_elapsed: f64,
     response_durations: VecDeque<(f64, f64)>,
@@ -656,9 +662,10 @@ fn project_effect(
                         state.actual = 0.0;
                         state.pending = 0.0;
                         state.estimated = false;
-                        state.baseline = state.lifetime;
+                        state.baseline = state.lifetime.as_ref().map(|tokens| tokens.output as f64);
                         state.samples.clear();
                         state.response_outputs.clear();
+                        state.response_output_total = 0.0;
                         state.tools.clear();
                         state.generation_elapsed = 0.0;
                         state.response_durations.clear();
@@ -668,7 +675,7 @@ fn project_effect(
                     state.timing_valid = true;
                 }
             }
-            "thread/tokenUsage/updated" => project_usage(state, params, at),
+            "thread/tokenUsage/updated" => project_usage(state, observation),
             "turn/completed"
                 if observed_turn(params, Some(&state.turn)).as_deref() == Some(&state.turn) =>
             {
@@ -679,7 +686,6 @@ fn project_effect(
             _ => {}
         },
         NotificationPostCommit::TokenRateAssociation(_) => match observation.method.as_str() {
-            "thread/tokenUsage/updated" => associate_response(state, params),
             "item/started" | "item/completed" => project_item_association(state, observation),
             _ => {}
         },
@@ -705,96 +711,113 @@ fn observed_turn<'a>(params: &'a serde_json::Value, fallback: Option<&'a str>) -
         .map(str::to_owned)
 }
 
-fn project_usage(state: &mut ProjectedAgent, params: &serde_json::Value, at: f64) {
-    let usage = &params["tokenUsage"];
-    let total = usage["total"]["outputTokens"].as_f64();
-    let last = usage["last"]["outputTokens"].as_f64();
-    let response = params["responseOutputTokens"]
-        .as_f64()
-        .or_else(|| params["responseUsage"]["outputTokens"].as_f64())
-        .or(last);
-    if state.baseline.is_none() {
-        state.baseline = total.map(|total| (total - last.unwrap_or(0.0)).max(0.0));
+fn project_usage(state: &mut ProjectedAgent, observation: &NotificationObservation) {
+    let Some(agent) = observation.agent.as_ref() else {
+        return;
+    };
+    let provider = match ProviderKind::of_record(agent) {
+        Ok(ProviderKind::Codex) => UsageProvider::Codex,
+        Ok(ProviderKind::Claude) => UsageProvider::Claude,
+        Err(_) => return,
+    };
+    let Ok(usage) = parse_token_usage(provider, &observation.params) else {
+        // Invalid evidence cannot replace a live estimate with a rate sample.
+        return;
+    };
+    let turn_id = match &usage {
+        UsageObservation::Response { turn_id, .. }
+        | UsageObservation::Cumulative { turn_id, .. }
+        | UsageObservation::Gap { turn_id, .. } => turn_id.as_deref(),
+    };
+    let turn = turn_id
+        .or_else(|| observation.params["turnId"].as_str())
+        .or_else(|| agent_turn(observation));
+    if turn != Some(state.turn.as_str()) {
+        return;
     }
-    if let Some(turn_output) = params["turnOutputTokens"].as_f64() {
-        state.actual = state.actual.max(turn_output);
-    } else if let (Some(total), Some(baseline)) = (total, state.baseline) {
-        state.actual = state.actual.max((total - baseline).max(0.0));
-    } else if let Some(response) = response {
-        let identity = params["responseId"]
-            .as_str()
-            .filter(|id| !id.is_empty())
-            .map(|id| format!("response:{id}"))
-            .unwrap_or_else(|| {
-                format!(
-                    "pending:{}:{response}",
-                    usage["last"]["totalTokens"].as_u64().unwrap_or_default()
-                )
-            });
-        state.response_outputs.insert(identity, response);
-        while state.response_outputs.len() > 1024 {
-            if let Some(oldest) = state.response_outputs.keys().next().cloned() {
-                state.response_outputs.remove(&oldest);
-            }
-        }
-        state.actual = state.response_outputs.values().sum();
-    }
-    if let Some(total) = total {
-        state.lifetime = Some(total);
-    }
-    if let Some(response) = response {
-        let queued_duration = state
-            .response_durations
-            .pop_front()
-            .map(|(duration, pending)| {
-                state.response_duration_pending_tokens =
-                    (state.response_duration_pending_tokens - pending).max(0.0);
-                duration
-            });
-        let duration = queued_duration.or_else(|| {
-            state.generation_started.map(|started| {
-                state.generation_elapsed + (at - started).max(MIN_GENERATION_DURATION_SECONDS)
-            })
-        });
-        if state.active
-            && state.timing_valid
-            && let Some(duration) = duration
-        {
-            state.rate = round_rate(
-                (response / duration.max(MIN_GENERATION_DURATION_SECONDS)).min(MAX_TOKEN_RATE),
-            );
-            if queued_duration.is_none() {
-                state.pending = 0.0;
-                state.estimated = false;
-                state.generation_started = Some(at);
-                state.generation_elapsed = 0.0;
-            }
-        }
-    }
+    project_usage_observation(state, usage, observation.observed_at);
 }
 
-fn associate_response(state: &mut ProjectedAgent, params: &serde_json::Value) {
-    let Some(response_id) = params["responseId"].as_str().filter(|id| !id.is_empty()) else {
-        return;
-    };
-    let Some(output_tokens) = params["requestUsage"]["outputTokens"]
-        .as_f64()
-        .or_else(|| params["tokenUsage"]["last"]["outputTokens"].as_f64())
-    else {
-        return;
-    };
-    let pending = state
-        .response_outputs
-        .iter()
-        .filter(|(key, value)| key.starts_with("pending:") && **value == output_tokens)
-        .map(|(key, _)| key.clone())
-        .collect::<Vec<_>>();
-    if pending.len() == 1 {
-        state.response_outputs.remove(&pending[0]);
-        state
-            .response_outputs
-            .insert(format!("response:{response_id}"), output_tokens);
-        state.actual = state.response_outputs.values().sum();
+fn project_usage_observation(state: &mut ProjectedAgent, usage: UsageObservation, at: f64) {
+    match usage {
+        UsageObservation::Gap { .. } => {}
+        UsageObservation::Cumulative {
+            scope, total, last, ..
+        } => {
+            let output = total.output as f64;
+            if state.baseline.is_none()
+                || state
+                    .lifetime
+                    .as_ref()
+                    .is_some_and(|previous| total.decreased_from(previous))
+            {
+                state.baseline = Some(match scope {
+                    UsageScope::CodexThread => {
+                        (output - last.map_or(0.0, |tokens| tokens.output as f64)).max(0.0)
+                    }
+                    UsageScope::ClaudeQuery => 0.0,
+                });
+            }
+            state.lifetime = Some(total);
+            if state.response_outputs.is_empty() {
+                state.actual = state
+                    .actual
+                    .max((output - state.baseline.unwrap_or(0.0)).max(0.0));
+                state.pending = 0.0;
+                // The cumulative total includes output estimated before tool starts.
+                // Keep durations for delayed response records, without counting their
+                // provisional tokens again in the snapshot.
+                for (_, pending) in &mut state.response_durations {
+                    *pending = 0.0;
+                }
+                state.response_duration_pending_tokens = 0.0;
+                state.estimated = false;
+            }
+        }
+        UsageObservation::Response {
+            response_id,
+            tokens,
+            ..
+        } => {
+            let identity = (state.turn.clone(), response_id);
+            if state.response_outputs.contains_key(&identity) {
+                // The accounting owner records replay conflicts. The rate projection
+                // preserves the first value and never consumes timing twice.
+                return;
+            }
+            let response = tokens.output as f64;
+            state.response_outputs.insert(identity, tokens);
+            state.response_output_total += response;
+            state.actual = state.response_output_total;
+            let queued_duration =
+                state
+                    .response_durations
+                    .pop_front()
+                    .map(|(duration, pending)| {
+                        state.response_duration_pending_tokens =
+                            (state.response_duration_pending_tokens - pending).max(0.0);
+                        duration
+                    });
+            let duration = queued_duration.or_else(|| {
+                state.generation_started.map(|started| {
+                    state.generation_elapsed + (at - started).max(MIN_GENERATION_DURATION_SECONDS)
+                })
+            });
+            if state.active
+                && state.timing_valid
+                && let Some(duration) = duration
+            {
+                state.rate = round_rate(
+                    (response / duration.max(MIN_GENERATION_DURATION_SECONDS)).min(MAX_TOKEN_RATE),
+                );
+                if queued_duration.is_none() {
+                    state.pending = 0.0;
+                    state.estimated = false;
+                    state.generation_started = Some(at);
+                    state.generation_elapsed = 0.0;
+                }
+            }
+        }
     }
 }
 
@@ -810,13 +833,15 @@ fn project_item_association(state: &mut ProjectedAgent, observation: &Notificati
         && agent.is_some_and(|agent| agent["inFlight"].as_bool() == Some(true))
         && let Some(turn) = turn.as_deref()
     {
+        state.response_outputs.clear();
+        state.response_output_total = 0.0;
         state.turn = turn.to_owned();
         state.active = true;
         state.estimated = false;
         state.rate = 0.0;
         state.actual = 0.0;
         state.pending = 0.0;
-        state.baseline = state.lifetime;
+        state.baseline = state.lifetime.as_ref().map(|tokens| tokens.output as f64);
         state.timing_valid = false;
     }
     if !state.active || turn.as_deref() != Some(state.turn.as_str()) {
@@ -974,6 +999,310 @@ mod tests {
         })
     }
 
+    fn response_usage(turn: &str, response: &str, output: u64) -> serde_json::Value {
+        json!({"turnId":turn,"responseId":response,"usageSource":"claudeResponse",
+            "requestUsage":{"inputTokens":0,"outputTokens":output},
+            "responseOutputTokens":output})
+    }
+
+    fn usage_at(projector: &mut RateProjector, cursor: u64, at: f64, params: serde_json::Value) {
+        let mut effect = usage_effect("agent", "provider", 1, cursor, "turn");
+        if let NotificationPostCommit::TokenRateUsage(observation) = &mut effect {
+            observation.agent = Some(SharedJson::new(
+                json!({"id":"agent","rootId":"agent","turnId":"turn","provider":"claude"}),
+            ));
+            observation.method = "thread/tokenUsage/updated".into();
+            observation.params = SharedJson::new(params);
+            observation.observed_at = at;
+        }
+        assert!(observe(projector, &effect));
+    }
+
+    #[test]
+    fn repeated_response_usage_with_fresh_receipt_keeps_its_first_duration() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        usage_at(
+            &mut projector,
+            2,
+            11.0,
+            response_usage("turn", "response", 100),
+        );
+        assert_eq!(projector.snapshot().records[0].rate.0, 10.0);
+        usage_at(
+            &mut projector,
+            3,
+            12.0,
+            response_usage("turn", "response", 100),
+        );
+        assert_eq!(projector.snapshot().records[0].rate.0, 10.0);
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 100.0);
+    }
+
+    #[test]
+    fn old_turn_usage_cannot_change_the_live_turn() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        usage_at(
+            &mut projector,
+            2,
+            11.0,
+            response_usage("turn", "response", 100),
+        );
+        let current = projector.snapshot();
+        usage_at(
+            &mut projector,
+            3,
+            12.0,
+            response_usage("old-turn", "response", 999),
+        );
+        assert_eq!(projector.snapshot(), current);
+    }
+
+    #[test]
+    fn response_only_totals_survive_the_old_response_cache_bound() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        for index in 0..1025 {
+            usage_at(
+                &mut projector,
+                index + 2,
+                index as f64 + 2.0,
+                response_usage("turn", &format!("response-{index:04}"), 1),
+            );
+        }
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 1025.0);
+        usage_at(
+            &mut projector,
+            1027,
+            1027.0,
+            response_usage("turn", "response-0000", 1),
+        );
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 1025.0);
+    }
+
+    #[test]
+    fn final_cumulative_usage_does_not_replace_the_response_rate() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        usage_at(
+            &mut projector,
+            2,
+            11.0,
+            response_usage("turn", "response", 100),
+        );
+        usage_at(
+            &mut projector,
+            3,
+            12.0,
+            json!({"turnId":"turn","tokenUsage":{"total":{"inputTokens":0,"outputTokens":100},"last":{"inputTokens":0,"outputTokens":100}}}),
+        );
+        assert_eq!(projector.snapshot().records[0].rate.0, 10.0);
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 100.0);
+    }
+
+    fn typed_usage(usage: studio_runtime_schema::usage::UsageObservation) -> serde_json::Value {
+        json!({"studioUsage":usage})
+    }
+
+    fn typed_response(turn: &str, response: &str, output: u64) -> serde_json::Value {
+        typed_usage(studio_runtime_schema::usage::UsageObservation::Response {
+            response_id: response.into(),
+            turn_id: Some(turn.into()),
+            model: "claude".into(),
+            tokens: studio_runtime_schema::usage::UsageTokens {
+                output,
+                ..Default::default()
+            },
+            evidence: studio_runtime_schema::usage::UsageEvidence::Live,
+            parent_tool_use_id: None,
+            model_context_window: None,
+        })
+    }
+
+    #[test]
+    fn typed_responses_keep_first_values_and_do_not_consume_the_next_duration_on_replay() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        usage_at(
+            &mut projector,
+            2,
+            11.0,
+            typed_response("turn", "first", 100),
+        );
+        super::append_response_duration(
+            projector.agents.get_mut("agent").expect("agent"),
+            2.0,
+            20.0,
+        );
+        usage_at(
+            &mut projector,
+            3,
+            12.0,
+            typed_response("turn", "first", 999),
+        );
+        let state = &projector.agents["agent"];
+        assert_eq!(state.rate, 10.0);
+        assert_eq!(state.actual, 100.0);
+        assert_eq!(state.response_durations.front(), Some(&(2.0, 20.0)));
+        usage_at(
+            &mut projector,
+            4,
+            13.0,
+            typed_response("turn", "second", 50),
+        );
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 150.0);
+        assert_eq!(projector.snapshot().records[0].rate.0, 25.0);
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 5, "next-turn")
+        ));
+        usage_at(
+            &mut projector,
+            6,
+            15.0,
+            typed_response("next-turn", "first", 30),
+        );
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 30.0);
+        assert_eq!(projector.snapshot().records[0].rate.0, 3.0);
+        let current = projector.snapshot();
+        usage_at(&mut projector, 7, 16.0, typed_response("turn", "late", 500));
+        assert_eq!(projector.snapshot(), current);
+    }
+
+    #[test]
+    fn typed_gaps_and_cumulative_fallback_never_sample_response_timing() {
+        use studio_runtime_schema::usage::{
+            UsageGapReason, UsageObservation, UsageScope, UsageTokens,
+        };
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        usage_at(
+            &mut projector,
+            2,
+            5.0,
+            typed_usage(UsageObservation::Gap {
+                response_id: "gap".into(),
+                turn_id: Some("turn".into()),
+                model: None,
+                reason: UsageGapReason::StreamInterrupted,
+            }),
+        );
+        assert_eq!(projector.agents["agent"].generation_started, Some(1.0));
+        let cumulative = |turn: &str, output| {
+            typed_usage(UsageObservation::Cumulative {
+                scope: UsageScope::CodexThread,
+                turn_id: Some(turn.into()),
+                total: UsageTokens {
+                    output,
+                    ..Default::default()
+                },
+                last: Some(UsageTokens {
+                    output: 20,
+                    ..Default::default()
+                }),
+                model_context_window: None,
+                models: None,
+            })
+        };
+        usage_at(&mut projector, 3, 6.0, cumulative("turn", 120));
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 20.0);
+        assert_eq!(projector.snapshot().records[0].rate.0, 0.0);
+        assert_eq!(projector.agents["agent"].generation_started, Some(1.0));
+        usage_at(
+            &mut projector,
+            4,
+            11.0,
+            typed_response("turn", "response", 100),
+        );
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 100.0);
+        assert_eq!(projector.snapshot().records[0].rate.0, 10.0);
+        usage_at(&mut projector, 5, 12.0, cumulative("turn", 999));
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 100.0);
+        assert_eq!(projector.snapshot().records[0].rate.0, 10.0);
+        let current = projector.snapshot();
+        usage_at(&mut projector, 6, 13.0, cumulative("old-turn", 2000));
+        assert_eq!(projector.snapshot(), current);
+    }
+
+    #[test]
+    fn cumulative_fallback_reconciles_queued_stream_estimates() {
+        let mut projector = RateProjector::default();
+        for (effect, bit) in provider_turn("provider", "agent", 0).into_iter().take(4) {
+            assert!(projector.observe(&effect, bit));
+        }
+        assert!(projector.agents["agent"].response_duration_pending_tokens > 0.0);
+        usage_at(
+            &mut projector,
+            7,
+            7.0,
+            typed_usage(studio_runtime_schema::usage::UsageObservation::Cumulative {
+                scope: studio_runtime_schema::usage::UsageScope::CodexThread,
+                turn_id: Some("turn".into()),
+                total: studio_runtime_schema::usage::UsageTokens {
+                    output: 30,
+                    ..Default::default()
+                },
+                last: Some(studio_runtime_schema::usage::UsageTokens {
+                    output: 30,
+                    ..Default::default()
+                }),
+                model_context_window: None,
+                models: None,
+            }),
+        );
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 30.0);
+        assert_eq!(
+            projector.agents["agent"].response_duration_pending_tokens,
+            0.0
+        );
+    }
+
+    #[test]
+    fn legacy_total_only_aggregate_cannot_change_the_live_projection() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        usage_at(
+            &mut projector,
+            2,
+            11.0,
+            typed_response("turn", "response", 100),
+        );
+        let current = projector.snapshot();
+        usage_at(
+            &mut projector,
+            3,
+            12.0,
+            json!({
+                "turnId":"turn", "turnOutputTokens":999, "responseOutputTokens":100,
+                "tokenUsage":{"total":{"totalTokens":5000}, "last":{"inputTokens":10,"outputTokens":100}}
+            }),
+        );
+        assert_eq!(projector.snapshot(), current);
+        assert_eq!(projector.agents["agent"].generation_started, Some(11.0));
+    }
+
     #[test]
     fn token_rate_projection_constants_keep_the_established_bounds() {
         assert_eq!(super::MAX_TOKEN_RATE, 1_000.0);
@@ -1010,7 +1339,7 @@ mod tests {
             ..super::ProjectedAgent::default()
         };
 
-        super::project_usage(&mut state, &json!({"responseOutputTokens":10}), 8.0);
+        super::project_usage_observation(&mut state, serde_json::from_value(json!({"kind":"response","responseId":"response","turnId":"turn","model":"claude","evidence":"live","tokens":{"uncachedInput":0,"cacheReadInput":0,"cacheWriteInput":0,"output":10}})).expect("typed response"), 8.0);
 
         assert_eq!(state.actual, 10.0);
         assert_eq!(state.pending, 20.0);
@@ -1221,10 +1550,10 @@ mod tests {
     /// A mixed turn of both providers: Codex streams raw deltas, the Claude bridge streams
     /// coalesced character counts; both report usage and tool items.
     fn provider_turn(provider: &str, agent: &str, base: u64) -> Vec<(NotificationPostCommit, u8)> {
-        let observation =
-            |cursor: u64, method: &str, params: serde_json::Value| NotificationObservation {
+        let observation = |cursor: u64, method: &str, params: serde_json::Value| {
+            NotificationObservation {
                 agent: Some(SharedJson::new(
-                    json!({"id":agent,"rootId":"root","turnId":"turn","inFlight":true}),
+                    json!({"id":agent,"rootId":"root","turnId":"turn","inFlight":true,"provider":if provider.starts_with("claude") { "claude" } else { "codex" }}),
                 )),
                 method: method.into(),
                 params: SharedJson::new(params),
@@ -1235,7 +1564,8 @@ mod tests {
                 },
                 observed_at: (base + cursor) as f64 * 0.1,
                 provider_at: 0.0,
-            };
+            }
+        };
         let delta = if provider.starts_with("claude") {
             json!({"coalescedDeltaCharacters":40})
         } else {
@@ -1286,7 +1616,7 @@ mod tests {
                 NotificationPostCommit::TokenRateUsage(observation(
                     6,
                     "thread/tokenUsage/updated",
-                    json!({"turnId":"turn","tokenUsage":{"total":{"outputTokens":30},"last":{"outputTokens":12,"totalTokens":40}}}),
+                    json!({"threadId":"thread","turnId":"turn","tokenUsage":{"total":{"inputTokens":0,"cachedInputTokens":0,"outputTokens":30,"reasoningOutputTokens":0,"totalTokens":30},"last":{"inputTokens":0,"cachedInputTokens":0,"outputTokens":12,"reasoningOutputTokens":0,"totalTokens":12}}}),
                 )),
                 1,
             ),

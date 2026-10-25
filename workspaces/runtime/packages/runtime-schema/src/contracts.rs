@@ -768,6 +768,9 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .pointer_mut(&format!("/components/schemas/{name}"))
             .ok_or_else(|| format!("OpenAPI is missing Rust-owned {name}"))? = schema;
     }
+    for (name, schema) in crate::usage::schemas() {
+        openapi["components"]["schemas"][name] = schema;
+    }
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
         (
@@ -861,6 +864,29 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         text: serde_json::to_string_pretty(&draft_schema).map_err(|error| error.to_string())?
             + "\n",
     });
+    let usage_schema = schemars::schema_for!(crate::usage::UsageObservation).to_value();
+    rendered.push(Rendered {
+        path:
+            "workspaces/runtime/packages/runtime-schema/src/schemas/usage-observation.schema.json"
+                .into(),
+        text: serde_json::to_string_pretty(&usage_schema).map_err(|error| error.to_string())?
+            + "\n",
+    });
+    if with_api_types {
+        let mut usage_generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .with(|settings| settings.definitions_path = "/components/schemas".into())
+            .into_generator();
+        usage_generator.subschema_for::<crate::usage::UsageObservation>();
+        let usage_document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Usage contract","version":"1"},
+            "paths":{}, "components":{"schemas":usage_generator.take_definitions(true)}
+        });
+        rendered.push(Rendered {
+            path: "workspaces/providers/apps/claude-bridge/usage-contract.generated.d.mts".into(),
+            text: api_types(root, &usage_document, "--rust-owned")?,
+        });
+    }
     if with_api_types {
         let mut generator = schemars::generate::SchemaSettings::draft2020_12()
             .for_serialize()

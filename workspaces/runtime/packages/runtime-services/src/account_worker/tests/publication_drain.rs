@@ -71,9 +71,9 @@ fn token_rate_usage_effect(cursor: u64) -> NotificationPostCommit {
     NotificationPostCommit::TokenRateUsage(NotificationObservation {
         agent: Some(SharedJson::new(rate_agent())),
         method: "thread/tokenUsage/updated".into(),
-        params: SharedJson::new(json!({"turnId":"turn","tokenUsage":{
-            "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
-            "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
+        params: SharedJson::new(json!({"threadId":"thread","turnId":"turn","tokenUsage":{
+            "total":{"inputTokens":20,"cachedInputTokens":0,"outputTokens":100,"reasoningOutputTokens":0,"totalTokens":120},
+            "last":{"inputTokens":2,"cachedInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0,"totalTokens":12}
         }})),
         delivery: ProviderDeliveryIdentity {
             provider_handle: "account:default".into(),

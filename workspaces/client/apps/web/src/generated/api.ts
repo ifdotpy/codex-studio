@@ -11709,6 +11709,18 @@ export interface components {
        */
       share_status?: boolean;
     };
+    /** @description One model's cumulative contribution to a Claude query. */
+    CumulativeModelUsage: {
+      /** @description Provider model identifier; dimensionless. */
+      model: string;
+      /**
+       * Format: double
+       * @description Provider's informational cost estimate; USD.
+       */
+      providerCostUsd?: number | null;
+      /** @description Disjoint cumulative token counts; tokens. */
+      tokens: components["schemas"]["UsageTokens"];
+    };
     /**
      * DefaultAccountGroupsRequest
      * @description Replace the default account order of projects without their own order. An empty list removes it. Repeating a request sets the same value.
@@ -24715,6 +24727,16 @@ export interface components {
       validUntil: number | null;
     };
     /**
+     * @description Provenance of a final response; legacy observations may be provisional.
+     * @enum {string}
+     */
+    UsageEvidence: "live" | "recovered" | "legacy";
+    /**
+     * @description Why final response accounting is unavailable.
+     * @enum {string}
+     */
+    UsageGapReason: "streamInterrupted" | "queryClosed";
+    /**
      * UsageLimitsData
      * @description Known usage projection plus account-service fields passed through unchanged.
      */
@@ -24793,6 +24815,60 @@ export interface components {
        */
       readAt?: null | number;
     };
+    /** @description Accounting evidence, preserving response identity and cumulative counter scope. */
+    UsageObservation:
+      | {
+          /** @description How the final usage was collected. */
+          evidence: components["schemas"]["UsageEvidence"];
+          /** @constant */
+          kind: "response";
+          /** @description Provider model identifier; dimensionless. */
+          model: string;
+          /**
+           * Format: uint64
+           * @description Model context capacity; tokens.
+           */
+          modelContextWindow?: number | null;
+          /** @description Parent tool identifier; absent means main loop. */
+          parentToolUseId?: string | null;
+          /** @description Native response identifier; dimensionless. */
+          responseId: string;
+          /** @description Final disjoint token counts; tokens. */
+          tokens: components["schemas"]["UsageTokens"];
+          /** @description Native turn identifier; dimensionless. */
+          turnId?: string | null;
+        }
+      | {
+          /** @constant */
+          kind: "cumulative";
+          /** @description Most recent response without an identity; tokens. */
+          last?: components["schemas"]["UsageTokens"] | null;
+          /**
+           * Format: uint64
+           * @description Model context capacity; tokens.
+           */
+          modelContextWindow?: number | null;
+          /** @description Per-model running counters and informational provider costs. */
+          models?: components["schemas"]["CumulativeModelUsage"][] | null;
+          /** @description Counter's reset and accumulation domain. */
+          scope: components["schemas"]["UsageScope"];
+          /** @description Running disjoint category counts; tokens. */
+          total: components["schemas"]["UsageTokens"];
+          /** @description Native turn identifier; dimensionless. */
+          turnId?: string | null;
+        }
+      | {
+          /** @constant */
+          kind: "gap";
+          /** @description Provider model identifier, when known. */
+          model?: string | null;
+          /** @description Final-usage loss reason. */
+          reason: components["schemas"]["UsageGapReason"];
+          /** @description Native response identifier; dimensionless. */
+          responseId: string;
+          /** @description Native turn identifier; dimensionless. */
+          turnId?: string | null;
+        };
     /**
      * UsageResumeCause
      * @enum {string}
@@ -24999,6 +25075,39 @@ export interface components {
      * @enum {string}
      */
     UsageResumeStatus: "scheduled" | "started" | "cancelled" | "unknown";
+    /**
+     * @description Counter ownership: a native Codex thread or one Claude SDK query.
+     * @enum {string}
+     */
+    UsageScope: "codexThread" | "claudeQuery";
+    /** @description Disjoint billable token categories; reasoning is already included in output. */
+    UsageTokens: {
+      /**
+       * Format: uint64
+       * @description Input served from the prompt cache; tokens.
+       */
+      cacheReadInput: number;
+      /**
+       * Format: uint64
+       * @description Input written to the prompt cache; tokens.
+       */
+      cacheWriteInput: number;
+      /**
+       * Format: uint64
+       * @description All generated output, including reasoning; tokens.
+       */
+      output: number;
+      /**
+       * Format: uint64
+       * @description Known reasoning subset of output; tokens, absent when unknown.
+       */
+      reasoningOutput?: number | null;
+      /**
+       * Format: uint64
+       * @description Base-rate input, excluding cache reads and writes; tokens.
+       */
+      uncachedInput: number;
+    };
     /**
      * VaultAwsProfileDto
      * @description An AWS profile of this Mac: signedIn says whether it has keys or a usable sign-in.
