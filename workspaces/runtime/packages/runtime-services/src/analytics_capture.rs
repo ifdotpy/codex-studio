@@ -8,8 +8,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_schema::usage::{
-    UsageEvidence, UsageObservation, UsageParseError, UsageProvider, UsageScope, UsageTokens,
-    parse_analytics_usage_row, parse_token_usage,
+    LegacyUsageTotals, UsageEvidence, UsageObservation, UsageParseError, UsageProvider, UsageScope,
+    UsageTokens, parse_analytics_usage_row, parse_legacy_totals, parse_token_usage,
 };
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
@@ -59,6 +59,7 @@ pub struct PreparedCapture {
     stream: Value,
     model: bool,
     usage: Option<UsageObservation>,
+    legacy_usage: Option<LegacyUsageTotals>,
 }
 impl PreparedCapture {
     pub fn event(
@@ -131,11 +132,17 @@ impl PreparedCapture {
         {
             return Err(StoreError::SchemaValidation(format!("analytics_notice{pointer}")).into());
         }
-        let usage = if method == "thread/tokenUsage/updated" {
+        let (usage, legacy_usage) = if method == "thread/tokenUsage/updated" {
             let provider = usage_provider(&agent);
-            Some(parse_token_usage(provider, params)?)
+            match parse_token_usage(provider, params) {
+                Ok(observation) => (Some(observation), None),
+                Err(error) => match parse_legacy_totals(provider, params) {
+                    Ok(legacy) => (None, Some(legacy)),
+                    Err(_) => return Err(error.into()),
+                },
+            }
         } else {
-            None
+            (None, None)
         };
         let (input, output) = item_sizes(
             params["item"]["type"].as_str().unwrap_or(""),
@@ -153,6 +160,7 @@ impl PreparedCapture {
             stream: payload_size(&params["delta"]),
             model: false,
             usage,
+            legacy_usage,
         })
     }
     pub fn model_payload(
@@ -265,6 +273,11 @@ impl PreparedCapture {
                 ..
             },
         ) = &self.usage
+        {
+            meta["turnId"] = json!(turn);
+        }
+        if let Some(legacy) = &self.legacy_usage
+            && let Some(turn) = &legacy.turn_id
         {
             meta["turnId"] = json!(turn);
         }
@@ -401,12 +414,20 @@ impl CaptureSnapshot {
             if let UsageObservation::Response { response_id, .. }
             | UsageObservation::Gap { response_id, .. } = observation
             {
-                let raw: Option<String> = db.query_row_cached(
-                    "SELECT record FROM analytics_usage WHERE agent=?1 AND json_extract(record,'$.responseId')=?2 ORDER BY CASE WHEN json_extract(record,'$.studioUsage.evidence') IN ('live','recovered') THEN 0 ELSE 1 END,seq LIMIT 1",
-                    params![text(&meta["agentId"]),response_id],|row|row.get(0)).optional()?;
-                rows.exact_response = raw
-                    .map(|raw| serde_json::from_str(&raw).map_err(StoreError::from))
-                    .transpose()?;
+                let response = Repo::read(
+                    db,
+                    CaptureTable::Usage,
+                    &hash(&json!([meta["agentId"], response_id])),
+                )?;
+                rows.exact_response = match response {
+                    Some(row) => Some(row),
+                    None => Repo::usage_response(
+                        db,
+                        text(&meta["agentId"]),
+                        &meta["threadId"],
+                        &json!(response_id),
+                    )?,
+                };
             }
             rows.prior_usage = Repo::usage_prior(
                 db,
@@ -414,6 +435,13 @@ impl CaptureSnapshot {
                 &meta["threadId"],
                 prepared.at,
                 domain(observation),
+            )?;
+        }
+        if let Some(legacy) = &prepared.legacy_usage {
+            rows.usage = Repo::read(
+                db,
+                CaptureTable::Usage,
+                &legacy_usage_key(&meta, legacy, &prepared.params),
             )?;
         }
         if prepared.method == "analytics/rateLimits" {
@@ -869,6 +897,7 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
             stream: q.stream.clone(),
             model: q.model,
             usage: q.usage.clone(),
+            legacy_usage: q.legacy_usage.clone(),
         };
         let recursive = decide(CaptureSnapshot::from_records(
             std::sync::Arc::new(next),
@@ -1213,6 +1242,28 @@ mod usage_contract_tests {
     use super::*;
 
     #[test]
+    fn typed_usage_legacy_claude_totals_are_preserved_without_invented_categories() {
+        let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread"});
+        let prepared=PreparedCapture::event(&agent,"thread/tokenUsage/updated",&json!({"threadId":"thread","tokenUsage":{"total":{"totalTokens":23},"last":{"totalTokens":7}}}),1.0,2.0,CaptureSource::Live).expect("supported pre-contract notification");
+        let decision = decide(
+            CaptureSnapshot::from_records(Arc::new(prepared), CaptureRows::default())
+                .expect("snapshot"),
+        )
+        .expect("legacy capture");
+        let row = &decision
+            .rows
+            .iter()
+            .find(|(table, _)| *table == CaptureTable::Usage)
+            .expect("legacy usage row")
+            .1;
+        assert_eq!(row["total"]["totalTokens"], 23);
+        assert_eq!(row["last"]["totalTokens"], 7);
+        assert!(row.get("studioUsage").is_none());
+        assert!(row["last"].get("inputTokens").is_none());
+        assert!(row["last"].get("outputTokens").is_none());
+    }
+
+    #[test]
     fn typed_usage_final_replay_is_immutable_and_legacy_is_recoverable() {
         let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread","model":"claude"});
         let observation = json!({"kind":"response","responseId":"response","model":"claude","evidence":"live","tokens":{"uncachedInput":10,"cacheReadInput":3,"cacheWriteInput":2,"output":7}});
@@ -1357,8 +1408,46 @@ pub(crate) fn analytics_tokens(tokens: &UsageTokens) -> Value {
         "cachedInputTokens":tokens.cache_read_input,"cacheWriteInputTokens":tokens.cache_write_input,
         "outputTokens":tokens.output,"reasoningOutputTokens":tokens.reasoning_output,"totalTokens":tokens.total()})
 }
+fn legacy_usage_key(meta: &Value, legacy: &LegacyUsageTotals, params: &Value) -> String {
+    if let Some(response) = &legacy.response_id {
+        return hash(&json!([meta["agentId"], response]));
+    }
+    let identity = studio_runtime_schema::usage::legacy_notice_identity(
+        text(&meta["agentId"]),
+        text(&meta["accountKey"]),
+        meta["turnId"].as_str(),
+        params,
+    )
+    .unwrap_or_else(|| {
+        json!([
+            meta["agentId"],
+            meta["accountKey"],
+            legacy.total_tokens,
+            legacy.last_total_tokens
+        ])
+    });
+    hash(&identity)
+}
 fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut CaptureDecision) {
     let Some(mut observation) = q.usage.clone() else {
+        if let Some(legacy) = &q.legacy_usage {
+            if rows.usage.is_some() {
+                return;
+            }
+            let mut last = json!({});
+            if let Some(total) = legacy.last_total_tokens {
+                last["totalTokens"] = json!(total);
+            }
+            let row = merge(
+                meta,
+                json!({"id":legacy_usage_key(meta,legacy,&q.params),"at":q.at,"recordedAt":q.recorded_at,
+                "source":q.source.name(),"timestampSource":timestamp_source(q),"model":legacy.model.as_deref().or_else(||meta["model"].as_str()),
+                "last":last,"total":{"totalTokens":legacy.total_tokens},"responseId":legacy.response_id,
+                "modelContextWindow":legacy.model_context_window,"counterDomain":legacy.scope}),
+            );
+            mark_generation(meta, None, out);
+            out.rows.push((CaptureTable::Usage, row));
+        }
         return;
     };
     if let Some(turn) = &rows.turn
@@ -1422,9 +1511,13 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
             _ => {}
         }
     }
-    let id = existing
-        .map(|row| text(&row["id"]).to_owned())
-        .unwrap_or_else(|| usage_key(meta, &observation));
+    let id = if matches!(&observation, UsageObservation::Response { .. }) {
+        usage_key(meta, &observation)
+    } else {
+        existing
+            .map(|row| text(&row["id"]).to_owned())
+            .unwrap_or_else(|| usage_key(meta, &observation))
+    };
     let mut row = merge(
         meta,
         json!({"id":id,"at":q.at,"recordedAt":q.recorded_at,"source":q.source.name(),

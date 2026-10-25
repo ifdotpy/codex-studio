@@ -28,6 +28,49 @@ pub fn analytics_usage_notification(
     }
 }
 
+/// Preserve the legacy cost reader's structural checks while allowing unknown categories.
+/// Canonical observations own their validation and take precedence over legacy columns.
+pub fn validate_legacy_analytics_cost_fields(row: &Value) -> Result<(), UsageParseError> {
+    if row.get("studioUsage").is_some() {
+        return Ok(());
+    }
+    for key in ["last", "delta"] {
+        let Some(value) = row.get(key) else {
+            continue;
+        };
+        if key == "delta" && value.is_null() {
+            continue;
+        }
+        let object = value
+            .as_object()
+            .ok_or_else(|| UsageParseError(format!("invalid legacy analytics {key} object")))?;
+        for field in [
+            "inputTokens",
+            "cachedInputTokens",
+            "cacheWriteInputTokens",
+            "outputTokens",
+        ] {
+            if object
+                .get(field)
+                .is_some_and(|value| !value.is_null() && !value.is_number())
+            {
+                return Err(UsageParseError(format!(
+                    "invalid legacy analytics {key}.{field}"
+                )));
+            }
+        }
+    }
+    if row
+        .get("inputTokensAreUncached")
+        .is_some_and(|value| !value.is_null() && !value.is_boolean())
+    {
+        return Err(UsageParseError(
+            "invalid legacy analytics inputTokensAreUncached".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Decode canonical observations first, retaining legacy rows without rewriting them.
 /// Legacy response evidence remains provisional until native journal recovery replaces it.
 pub fn parse_analytics_usage_row(
@@ -51,7 +94,8 @@ pub fn parse_analytics_usage_row(
     } else {
         UsageProvider::Codex
     };
-    if let Some(response_id) = text("responseId").filter(|id| !id.is_empty()) {
+    if let Some(response_id) = legacy_response_id(row) {
+        let response_id = response_id.to_owned();
         let selected = row
             .get("delta")
             .filter(|v| known(v, "inputTokens") && known(v, "outputTokens"))
@@ -83,6 +127,18 @@ pub fn parse_analytics_usage_row(
         model_context_window,
         models: None,
     })
+}
+/// Response identity of pre-contract rows, excluding notices that merely associate a response.
+pub fn legacy_response_id(row: &Value) -> Option<&str> {
+    if matches!(
+        row.get("counterDomain").and_then(Value::as_str),
+        Some("nativeNotice" | "codexThread" | "claudeQuery")
+    ) {
+        return None;
+    }
+    row.get("responseId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
 }
 fn known(value: &Value, key: &str) -> bool {
     value.get(key).is_some_and(|v| !v.is_null())
@@ -133,6 +189,22 @@ fn tokens(value: &Value, provider: UsageProvider) -> Result<UsageTokens, UsagePa
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn legacy_native_notice_response_association_is_still_cumulative() {
+        let row = json!({"responseId":"associated-response","counterDomain":"nativeNotice",
+            "last":{"inputTokens":10,"outputTokens":2},"total":{"inputTokens":100,"outputTokens":20}});
+        assert!(
+            matches!(
+                parse_analytics_usage_row(UsageProvider::Codex, &row).expect("legacy notice"),
+                UsageObservation::Cumulative {
+                    scope: UsageScope::CodexThread,
+                    ..
+                }
+            ),
+            "an association with a response does not turn a running counter into response evidence"
+        );
+    }
 
     #[test]
     fn legacy_history_notification_preserves_exact_counter_receipt_objects() {

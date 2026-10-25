@@ -363,5 +363,14 @@ retains request token tuples so context pricing tiers apply per request. Native
 journal receipts replace provisional legacy evidence and add missing responses;
 final live or recovered evidence takes precedence. The typed response reader
 provides a bounded variant for diagnostics. Old analytics rows remain readable
-through the [shared adapter](../runtime-schema/src/usage/persisted.rs); rebuilding
-the derived cost tables upgrades their counting rules without rewriting usage rows.
+through the [shared adapter](../runtime-schema/src/usage/persisted.rs). Opening an
+existing aggregate adds nullable eligibility and final-evidence columns without
+reading usage records or rebuilding groups. NULL eligibility preserves the prior
+derived interpretation; newly written responses suppress matching legacy rows.
+Historical totals can therefore retain previously counted cumulative observations
+until their affected scopes receive new evidence. This delivery does not recalculate
+all historical costs.
+
+Journal partitioning batches receipts through current and historical agent scopes
+and the existing usage response index. Capture checks canonical response IDs before
+the existing thread-scoped legacy lookup. Neither path adds a startup index.

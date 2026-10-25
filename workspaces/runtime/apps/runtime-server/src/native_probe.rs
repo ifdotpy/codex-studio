@@ -534,6 +534,58 @@ mod tests {
     }
 
     #[test]
+    fn schema_check_refuses_changed_usage_fragment() {
+        let directory = tempfile::tempdir().expect("schema fixture");
+        let methods = [
+            "initialize",
+            "config/read",
+            "thread/loaded/list",
+            "turn/start",
+            "thread/metadata/update",
+            "thread/queue/list",
+            "thread/backgroundTerminals/list",
+            "thread/settings/update",
+            "model/list",
+        ];
+        let usage: serde_json::Value =
+            serde_json::from_str(studio_runtime_schema::usage::CODEX_USAGE_SCHEMA).expect("vendor");
+        for (name, value) in [
+            (
+                "ClientRequest.json",
+                json!({"oneOf":methods.map(|method|json!({"properties":{"method":{"enum":[method]}}}))}),
+            ),
+            (
+                "v2/TurnStartParams.json",
+                json!({"properties":{"cyberAccessProgram":{}},"definitions":{"CyberAccessProgram":{"enum":["standard","daybreakBlue","daybreakRed"]}}}),
+            ),
+            (
+                "v2/ModelListResponse.json",
+                json!({"definitions":{"Model":{"properties":{"availableAccessPrograms":{}}}}}),
+            ),
+            ("v2/ThreadTokenUsageUpdatedNotification.json", usage.clone()),
+        ] {
+            let path = directory.path().join(name);
+            fs::create_dir_all(path.parent().expect("parent")).expect("fixture directory");
+            fs::write(path, value.to_string()).expect("schema file");
+        }
+        assert!(super::schema_check(directory.path()).is_ok());
+        let mut changed = usage;
+        changed["definitions"]["TokenUsageBreakdown"]["properties"]["inputTokens"]["type"] =
+            json!("number");
+        fs::write(
+            directory
+                .path()
+                .join("v2/ThreadTokenUsageUpdatedNotification.json"),
+            changed.to_string(),
+        )
+        .expect("changed schema");
+        assert!(matches!(
+            super::schema_check(directory.path()),
+            Err(studio_runtime_services::native_runtime::CompatibilityRefusal::ProtocolSchema)
+        ));
+    }
+
+    #[test]
     fn version_probe_runs_candidate_with_isolated_home() {
         let directory = tempfile::tempdir().expect("temporary fixture directory");
         let executable = directory.path().join("codex");

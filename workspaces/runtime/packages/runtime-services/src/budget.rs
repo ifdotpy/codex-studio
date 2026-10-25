@@ -141,6 +141,7 @@ pub struct BudgetSnapshot {
     initialized: bool,
     live_only: bool,
     live_usage: Option<u64>,
+    provider: studio_runtime_schema::usage::UsageProvider,
 }
 impl BudgetSnapshot {
     pub fn from_records(
@@ -224,6 +225,12 @@ impl BudgetSnapshot {
             initialized,
             live_only: uses_live_usage(durable_agent),
             live_usage: None,
+            provider: match ProviderKind::of_record(durable_agent)
+                .map_err(|_| invalid("runtime_agents/provider"))?
+            {
+                ProviderKind::Claude => studio_runtime_schema::usage::UsageProvider::Claude,
+                ProviderKind::Codex => studio_runtime_schema::usage::UsageProvider::Codex,
+            },
         })
     }
     pub fn state(&self) -> &BudgetState {
@@ -267,11 +274,10 @@ pub struct UsageObservation {
     response: bool,
     thread: Option<String>,
     estimated: bool,
+    gap: bool,
+    informational: bool,
     at: f64,
     source: CaptureSource,
-}
-fn tokens(value: Option<&Value>) -> Option<u64> {
-    value.and_then(Value::as_u64)
 }
 impl UsageObservation {
     pub fn from_record(
@@ -280,59 +286,113 @@ impl UsageObservation {
         at: f64,
         source: CaptureSource,
     ) -> Result<Self, BudgetError> {
+        use studio_runtime_schema::usage::{
+            UsageObservation as ParsedUsage, parse_legacy_totals, parse_token_usage,
+        };
         if !params.is_object() || params.to_string().len() > MAX_RECORD_BYTES || !at.is_finite() {
             return Err(invalid("tokenUsage"));
         }
         validate("BudgetCapture", params, "tokenUsage")?;
+        let parsed = parse_token_usage(snapshot.provider, params);
+        let informational = matches!(
+            &parsed,
+            Ok(ParsedUsage::Cumulative {
+                scope: studio_runtime_schema::usage::UsageScope::ClaudeQuery,
+                ..
+            })
+        );
+        let (exact, amount, counter, response, turn, identity_usage, gap) = match parsed {
+            Ok(ref observation) => {
+                let identity_usage =
+                    serde_json::to_value(observation).map_err(|_| invalid("tokenUsage"))?;
+                match observation {
+                    ParsedUsage::Response {
+                        response_id,
+                        turn_id,
+                        tokens,
+                        ..
+                    } => (
+                        true,
+                        Some(tokens.total().ok_or(BudgetError::Overflow)?),
+                        None,
+                        Some(response_id.clone()),
+                        turn_id.clone(),
+                        identity_usage,
+                        false,
+                    ),
+                    ParsedUsage::Cumulative {
+                        turn_id,
+                        total,
+                        last,
+                        ..
+                    } => (
+                        false,
+                        Some(
+                            last.as_ref()
+                                .unwrap_or(total)
+                                .total()
+                                .ok_or(BudgetError::Overflow)?,
+                        ),
+                        Some(total.total().ok_or(BudgetError::Overflow)?),
+                        studio_runtime_schema::usage::legacy_notice_response_association(params)
+                            .map(str::to_owned),
+                        turn_id.clone(),
+                        identity_usage,
+                        false,
+                    ),
+                    ParsedUsage::Gap {
+                        response_id,
+                        turn_id,
+                        ..
+                    } => (
+                        false,
+                        None,
+                        None,
+                        Some(response_id.clone()),
+                        turn_id.clone(),
+                        identity_usage,
+                        true,
+                    ),
+                }
+            }
+            Err(_) => {
+                let legacy = parse_legacy_totals(snapshot.provider, params)
+                    .map_err(|_| invalid("tokenUsage"))?;
+                (
+                    legacy.response_id.is_some(),
+                    Some(legacy.last_total_tokens.unwrap_or(legacy.total_tokens)),
+                    if legacy.response_id.is_none() {
+                        Some(legacy.total_tokens)
+                    } else {
+                        None
+                    },
+                    legacy.response_id,
+                    legacy.turn_id,
+                    json!([legacy.total_tokens, legacy.last_total_tokens]),
+                    false,
+                )
+            }
+        };
+        if amount.is_some_and(|n| n > MAX_TOKENS) || counter.is_some_and(|n| n > MAX_TOKENS) {
+            return Err(BudgetError::Overflow);
+        }
         let a = &snapshot.agent;
-        let usage = params
-            .get("tokenUsage")
-            .filter(|v| truthy(Some(v)))
-            .cloned()
-            .unwrap_or(json!({}));
-        let last = params
-            .get("requestUsage")
-            .filter(|v| truthy(Some(v)))
-            .or_else(|| usage.get("last"))
-            .cloned()
-            .unwrap_or(json!({}));
-        let response = truthy(params.get("responseId"));
-        let claude = params.get("usageSource").and_then(Value::as_str) == Some("claudeResponse");
-        let exact = response && (truthy(params.get("rawTokenUsageRecord")) || claude);
-        let mut amount = tokens(last.get("totalTokens"));
-        if amount.is_none() && claude {
-            amount = [
-                "inputTokens",
-                "cachedInputTokens",
-                "cacheWriteInputTokens",
-                "outputTokens",
-            ]
-            .iter()
-            .map(|field| tokens(last.get(*field)))
-            .collect::<Option<Vec<_>>>()
-            .map(|values| values.into_iter().try_fold(0, add))
-            .transpose()?;
-        }
-        let counter = tokens(usage.get("total").and_then(|v| v.get("totalTokens")));
-        if amount.is_none() && !exact {
-            amount = counter;
-        }
-        let observed_turn = params.get("turnId").filter(|v| truthy(Some(v)));
-        let identity_turn = match (source, params.get("turnId")) {
-            (CaptureSource::History, Some(turn)) => turn.clone(),
-            _ => observed_turn.cloned().unwrap_or(json!(a.turn_id)),
+        let identity_turn = match source {
+            CaptureSource::History => turn.clone(),
+            CaptureSource::Live => turn.clone().or_else(|| a.turn_id.clone()),
         };
         let identity = if exact {
-            json!([a.id, "response", params["responseId"]])
+            json!([a.id, "response", response])
         } else {
-            json!([
-                a.id,
-                a.account_key,
-                "notice",
-                identity_turn,
-                usage.get("total"),
-                usage.get("last")
-            ])
+            studio_runtime_schema::usage::legacy_notice_identity(
+                &a.id,
+                &a.account_key,
+                identity_turn.as_deref(),
+                params,
+            )
+            .unwrap_or_else(|| {
+                json!([a.id, a.account_key, "notice", identity_turn, identity_usage])
+            })
         };
         let thread = params
             .get("threadId")
@@ -345,8 +405,10 @@ impl UsageObservation {
             exact,
             amount,
             counter,
-            response,
+            response: response.is_some(),
             thread,
+            gap,
+            informational,
             estimated: params
                 .get("_analyticsTimestampSource")
                 .and_then(Value::as_str)
@@ -375,8 +437,17 @@ pub fn capture(
 ) -> Result<CaptureDecision, BudgetError> {
     let mut state = snapshot.state.clone();
     let p = observation;
+    if p.informational {
+        return Ok(CaptureDecision {
+            state,
+            usage: None,
+            changed: false,
+        });
+    }
     let mut inserted = None;
-    if p.source == CaptureSource::Live || p.at >= state.created {
+    if p.gap {
+        state.fault("missingFinalUsage");
+    } else if p.source == CaptureSource::Live || p.at >= state.created {
         if let Some(previous) = previous {
             if previous.id != p.key || previous.agent != snapshot.agent.id {
                 return Err(invalid("runtime_budget_usage/identity"));
@@ -386,7 +457,12 @@ pub fn capture(
             }
             if p.exact {
                 if previous.kind != "response" || p.amount != Some(previous.tokens) {
-                    return Err(invalid("runtime_budget_usage/responseReplayConflict"));
+                    state.fault("responseReplayConflict");
+                    return Ok(CaptureDecision {
+                        state,
+                        usage: None,
+                        changed: true,
+                    });
                 }
                 return Ok(CaptureDecision {
                     state: snapshot.state.clone(),
@@ -774,4 +850,152 @@ pub fn team_status(
     status.tokens_used = Some(spent);
     status.reached = root.token_budget.is_some_and(|budget| spent >= budget);
     Ok(status)
+}
+
+#[cfg(test)]
+mod typed_usage_tests {
+    use super::*;
+    fn snapshot() -> BudgetSnapshot {
+        let agent = json!({"id":"a","provider":"claude","threadId":"t","turnId":"u","created":0});
+        BudgetSnapshot::from_records(&agent, &agent, None, 100.).expect("snapshot")
+    }
+    #[test]
+    fn claude_query_totals_never_charge_budget_across_restarts() {
+        let mut snapshot = snapshot();
+        for (index, total) in [100, 200, 50, 500].into_iter().enumerate() {
+            let params = json!({"studioUsage":{"kind":"cumulative","scope":"claudeQuery","total":{"uncachedInput":total,"cacheReadInput":0,"cacheWriteInput":0,"output":0}}});
+            let observation = UsageObservation::from_record(
+                &snapshot,
+                &params,
+                101. + index as f64,
+                CaptureSource::Live,
+            )
+            .expect("query totals");
+            let decision =
+                capture(&snapshot, &observation, None).expect("informational query usage");
+            assert_eq!(
+                decision.state.spent, 0,
+                "higher and lower restarted query totals are informational"
+            );
+            assert!(decision.usage.is_none());
+            snapshot.state = decision.state;
+        }
+    }
+
+    #[test]
+    fn native_live_and_imported_notices_keep_pre_upgrade_receipt_keys() {
+        let agent = json!({"id":"a","provider":"codex","accountKey":"default","threadId":"t","turnId":"u","created":0});
+        let snapshot = BudgetSnapshot::from_records(&agent, &agent, None, 100.).expect("snapshot");
+        let total = json!({"inputTokens":20,"cachedInputTokens":5,"cacheWriteInputTokens":0,"outputTokens":4,"reasoningOutputTokens":1,"totalTokens":24});
+        let last = json!({"inputTokens":5,"cachedInputTokens":1,"cacheWriteInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,"totalTokens":6});
+        let params = json!({"threadId":"t","turnId":"u","tokenUsage":{"total":total,"last":last}});
+        let old = json!(["a", "default", "notice", "u", total, last]);
+        let expected = sha256_hex(python_json_with_separators(&old, ",", ":").as_bytes());
+        for source in [CaptureSource::Live, CaptureSource::History] {
+            let observation = UsageObservation::from_record(&snapshot, &params, 101., source)
+                .expect("native notice");
+            assert_eq!(
+                observation.key(),
+                expected,
+                "live and imported token_count use the same native identity"
+            );
+        }
+    }
+
+    #[test]
+    fn pre_contract_notice_receipt_identity_survives_typed_parsing() {
+        let snapshot = snapshot();
+        let params = json!({"turnId":"u","tokenUsage":{"total":{"totalTokens":20},"last":{"totalTokens":5}}});
+        let observation =
+            UsageObservation::from_record(&snapshot, &params, 101., CaptureSource::History)
+                .expect("old aggregate");
+        let old_identity = json!(["a","default","notice","u",{"totalTokens":20},{"totalTokens":5}]);
+        let old_key = sha256_hex(python_json_with_separators(&old_identity, ",", ":").as_bytes());
+        assert_eq!(
+            observation.key(),
+            old_key,
+            "pre-upgrade committed history receipts must be found on replay"
+        );
+    }
+
+    #[test]
+    fn typed_response_replay_gap_and_cumulative_reset() {
+        let mut snapshot = snapshot();
+        let observation = |snapshot: &BudgetSnapshot, usage: Value, at| {
+            UsageObservation::from_record(
+                snapshot,
+                &json!({"threadId":"t","turnId":"u","studioUsage":usage}),
+                at,
+                CaptureSource::Live,
+            )
+            .expect("typed observation")
+        };
+        let response = json!({"kind":"response","responseId":"r","model":"claude","evidence":"live","tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2}});
+        let first = capture(
+            &snapshot,
+            &observation(&snapshot, response.clone(), 101.),
+            None,
+        )
+        .expect("first");
+        let previous = first.usage.expect("response row");
+        snapshot.state = first.state;
+        let replay = capture(
+            &snapshot,
+            &observation(&snapshot, response, 102.),
+            Some(&previous),
+        )
+        .expect("replay");
+        assert!(!replay.changed);
+        assert_eq!(replay.state.spent, 12);
+        let gap = capture(
+            &snapshot,
+            &observation(
+                &snapshot,
+                json!({"kind":"gap","responseId":"missing","reason":"queryClosed"}),
+                103.,
+            ),
+            None,
+        )
+        .expect("gap");
+        assert_eq!(gap.state.accounting(), "provisional");
+        assert_eq!(gap.state.spent, 12);
+        assert!(gap.usage.is_none());
+        snapshot.state = gap.state;
+        for (at, total, spent) in [(104., 20, 20), (105., 5, 25)] {
+            let usage = json!({"kind":"cumulative","scope":"codexThread","total":{"uncachedInput":total,"cacheReadInput":0,"cacheWriteInput":0,"output":0}});
+            let decision =
+                capture(&snapshot, &observation(&snapshot, usage, at), None).expect("cumulative");
+            assert_eq!(decision.state.spent, spent);
+            snapshot.state = decision.state;
+        }
+    }
+
+    #[test]
+    fn response_replay_conflict_records_fault_without_aborting_capture() {
+        let snapshot = snapshot();
+        let params = json!({"threadId":"t","usageSource":"claudeResponse","responseId":"r","model":"claude","requestUsage":{"inputTokens":10,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":2,"totalTokens":12}});
+        let observation =
+            UsageObservation::from_record(&snapshot, &params, 101., CaptureSource::Live)
+                .expect("observation");
+        let first = capture(&snapshot, &observation, None).expect("first");
+        let previous = first.usage.expect("usage row");
+        let mut snapshot = snapshot;
+        snapshot.state = first.state;
+        let mut changed = params;
+        changed["requestUsage"]["outputTokens"] = json!(3);
+        changed["requestUsage"]["totalTokens"] = json!(13);
+        let changed = UsageObservation::from_record(&snapshot, &changed, 102., CaptureSource::Live)
+            .expect("changed observation");
+        let decision = capture(&snapshot, &changed, Some(&previous))
+            .expect("conflict must not abort dispatch");
+        assert!(decision.usage.is_none());
+        assert_eq!(decision.state.spent, 12);
+        assert!(
+            decision
+                .state
+                .faults
+                .iter()
+                .any(|fault| fault == "responseReplayConflict")
+        );
+    }
 }

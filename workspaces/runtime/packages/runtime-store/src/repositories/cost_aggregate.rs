@@ -40,7 +40,7 @@ CREATE TABLE analytics_cost_rows (
     id TEXT PRIMARY KEY, root TEXT NOT NULL, agent TEXT NOT NULL, thread TEXT, turn TEXT,
     seq INTEGER NOT NULL, at REAL NOT NULL, model TEXT, account_key TEXT, response TEXT,
     input REAL, cached REAL, cache_write REAL, output REAL, uncached INTEGER NOT NULL,
-    counted INTEGER NOT NULL, counted_model TEXT, eligible INTEGER NOT NULL, final_evidence INTEGER NOT NULL);
+    counted INTEGER NOT NULL, counted_model TEXT, eligible INTEGER, final_evidence INTEGER NOT NULL);
 CREATE TABLE analytics_cost_groups (
     root TEXT NOT NULL, model TEXT, account TEXT NOT NULL, input REAL, cached REAL,
     cache_write REAL, output REAL, uncached INTEGER NOT NULL, count INTEGER NOT NULL);
@@ -50,7 +50,7 @@ CREATE TABLE analytics_cost_groups (
 const INDEXES: &str = "
 CREATE INDEX analytics_cost_rows_scope ON analytics_cost_rows(root, agent, thread, turn);
 CREATE INDEX analytics_cost_rows_unmodeled ON analytics_cost_rows(root, agent) WHERE model IS NULL;
-CREATE INDEX analytics_cost_rows_response ON analytics_cost_rows(root, agent, response)
+CREATE INDEX analytics_cost_rows_response ON analytics_cost_rows(root, thread, response)
     WHERE response IS NOT NULL;
 CREATE INDEX analytics_cost_groups_key ON analytics_cost_groups(
     root, model, account, input, cached, cache_write, output, uncached);
@@ -61,6 +61,25 @@ const ROW_COLUMNS: &str = "id,agent,thread,turn,seq,at,model,account_key,respons
 
 /// The account key of a usage row or agent record without `accountKey`.
 pub const DEFAULT_ACCOUNT: &str = "default";
+
+/// Batched receipt lookup through current/history agent scopes and the existing usage index.
+/// Parameters: serialized receipt tuples and the default account owner.
+const JOURNAL_RECEIPT_SQL: &str = "
+WITH receipts AS MATERIALIZED (
+ SELECT json_extract(value,'$[0]') account,json_extract(value,'$[1]') thread,
+        json_extract(value,'$[2]') response FROM json_each(?1)
+), scopes AS MATERIALIZED (
+ SELECT id agent,COALESCE(json_extract(record,'$.accountKey'),?2) account,
+        json_extract(record,'$.threadId') thread FROM analytics_agents
+ UNION
+ SELECT a.id,COALESCE(json_extract(h.value,'$.accountKey'),?2),
+        json_extract(h.value,'$.threadId')
+ FROM analytics_agents a,json_each(a.record,'$.accountHistory') h
+)
+SELECT r.account,r.thread,r.response,u.record
+FROM receipts r JOIN scopes s ON s.account=r.account AND s.thread=r.thread
+CROSS JOIN analytics_usage u INDEXED BY analytics_usage_response
+WHERE u.agent=s.agent AND u.thread=s.thread AND json_extract(u.record,'$.responseId')=r.response";
 
 /// Token counts of one usage row as priced; `None` is an unreported count.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
@@ -96,6 +115,8 @@ impl From<&UsageTokens> for CostTokens {
 }
 
 fn cost_observation(record: &serde_json::Value) -> StoreResult<Option<UsageObservation>> {
+    studio_runtime_schema::usage::persisted::validate_legacy_analytics_cost_fields(record)
+        .map_err(|error| StoreError::SchemaValidation(error.to_string()))?;
     match parse_analytics_usage_row(UsageProvider::Codex, record) {
         Ok(observation) => Ok(Some(observation)),
         Err(error) if record.get("studioUsage").is_some() => {
@@ -190,10 +211,12 @@ pub fn recorded_responses_bounded(
     )?;
     let mut source = statement.query(params![ids, sql_limit])?;
     let mut rows = Vec::new();
+    let mut inspected = 0;
     while let Some(row) = source.next()? {
-        if rows.len() == limit {
+        if inspected == limit {
             return Ok((rows, true));
         }
+        inspected += 1;
         let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(2)?)?;
         let fields = UsageCostFields::deserialize(&value)?;
         let parsed = parse_analytics_usage_row(UsageProvider::Codex, &value);
@@ -210,15 +233,23 @@ pub fn recorded_responses_bounded(
                 Some(tokens),
                 evidence,
             ),
+            Ok(UsageObservation::Cumulative { .. } | UsageObservation::Gap { .. }) => continue,
             Err(error) if value.get("studioUsage").is_some() => {
                 return Err(StoreError::SchemaValidation(error.to_string()));
             }
-            _ => (
-                fields.response_id.as_deref().unwrap_or_default().to_owned(),
-                fields.model.as_deref().map(str::to_owned),
-                None,
-                UsageEvidence::Legacy,
-            ),
+            _ => {
+                let Some(response) =
+                    studio_runtime_schema::usage::persisted::legacy_response_id(&value)
+                else {
+                    continue;
+                };
+                (
+                    response.to_owned(),
+                    fields.model.as_deref().map(str::to_owned),
+                    None,
+                    UsageEvidence::Legacy,
+                )
+            }
         };
         rows.push(RecordedResponse {
             agent_id: row.get(0)?,
@@ -237,32 +268,31 @@ pub fn partition_journal_receipts(
     db: &Connection,
     receipts: &BTreeSet<CostReceipt>,
 ) -> StoreResult<JournalPartition> {
-    let mut result = JournalPartition::default();
-    let mut statement = db.prepare_cached(
-        "SELECT record FROM analytics_usage WHERE thread=?1
-         AND COALESCE(json_extract(record,'$.studioUsage.responseId'),json_extract(record,'$.responseId'))=?2
-         AND COALESCE(json_extract(record,'$.accountKey'),'default')=?3",
-    )?;
-    for receipt @ (account, thread, response) in receipts {
-        let mut rows = statement.query(params![thread, response, account])?;
-        let mut final_response = false;
-        while let Some(row) = rows.next()? {
-            let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(0)?)?;
-            match parse_analytics_usage_row(UsageProvider::Claude, &value) {
-                Ok(UsageObservation::Response {
-                    evidence: UsageEvidence::Live | UsageEvidence::Recovered,
-                    ..
-                }) => final_response = true,
-                Err(error) if value.get("studioUsage").is_some() => {
-                    return Err(StoreError::SchemaValidation(error.to_string()));
-                }
-                _ => {}
+    let mut result = JournalPartition {
+        accepted: receipts.clone(),
+        superseded: BTreeSet::new(),
+    };
+    if receipts.is_empty() {
+        return Ok(result);
+    }
+    let encoded = serde_json::to_string(receipts)?;
+    let mut statement = db.prepare_cached(JOURNAL_RECEIPT_SQL)?;
+    let mut rows = statement.query(params![encoded, DEFAULT_ACCOUNT])?;
+    while let Some(row) = rows.next()? {
+        let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(3)?)?;
+        match parse_analytics_usage_row(UsageProvider::Claude, &value) {
+            Ok(UsageObservation::Response {
+                evidence: UsageEvidence::Live | UsageEvidence::Recovered,
+                ..
+            }) => {
+                let receipt = (row.get(0)?, row.get(1)?, row.get(2)?);
+                result.accepted.remove(&receipt);
+                result.superseded.insert(receipt);
             }
-        }
-        if final_response {
-            result.superseded.insert(receipt.clone());
-        } else {
-            result.accepted.insert(receipt.clone());
+            Err(error) if value.get("studioUsage").is_some() => {
+                return Err(StoreError::SchemaValidation(error.to_string()));
+            }
+            _ => {}
         }
     }
     Ok(result)
@@ -304,7 +334,8 @@ struct CostRow {
     uncached: bool,
     /// The contribution currently added to `analytics_cost_groups`.
     counted: Option<Option<String>>,
-    eligible: bool,
+    /// NULL preserves pre-contract derived counting; new rows explicitly mark response eligibility.
+    eligible: Option<bool>,
     final_evidence: bool,
 }
 
@@ -365,7 +396,10 @@ fn contributions(
 ) -> Vec<Option<Option<String>>> {
     // Identity is (agent, response), across turns/threads and legacy key versions.
     let mut winners = HashMap::<(&str, &str), &CostRow>::new();
-    for row in rows.iter().filter(|row| included(row) && row.eligible) {
+    for row in rows
+        .iter()
+        .filter(|row| included(row) && row.eligible == Some(true))
+    {
         let Some(response) = row.response.as_deref() else {
             continue;
         };
@@ -377,12 +411,27 @@ fn contributions(
         }
     }
     let suppressed = |row: &CostRow| {
-        !row.eligible
-            || row.response.as_deref().is_none_or(|response| {
+        match row.eligible {
+            Some(false) => true,
+            Some(true) => row.response.as_deref().is_none_or(|response| {
                 winners
                     .get(&(row.agent.as_str(), response))
                     .is_none_or(|winner| winner.id != row.id)
-            })
+            }),
+            // NULL marks a pre-contract derived row: preserve its old interpretation
+            // until new response evidence supersedes it.
+            None => match row.response.as_deref() {
+                Some(response) => winners.contains_key(&(row.agent.as_str(), response)),
+                None => rows.iter().any(|other| {
+                    included(other)
+                        && other.eligible != Some(false)
+                        && other.response.is_some()
+                        && other.agent == row.agent
+                        && other.thread == row.thread
+                        && other.turn == row.turn
+                }),
+            },
+        }
     };
     let mut turn_models = HashMap::<(&str, Option<&str>), (f64, i64, &str)>::new();
     let mut thread_models = HashMap::<(&str, Option<&str>), (f64, i64, &str)>::new();
@@ -451,13 +500,9 @@ fn migrate_2026_10_22_drop_python_cost_projection(db: &Transaction<'_>) -> Store
     Ok(())
 }
 
-/// Create the aggregate in `db` (an analytics database or a test copy of its
-/// schema) unless it exists, and fill it from the existing usage rows.
+/// Create a missing aggregate, or add compatibility markers without reading usage
+/// records or changing existing derived groups.
 pub fn install(db: &Connection) -> StoreResult<()> {
-    let old: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_cost_rows') AND NOT EXISTS(SELECT 1 FROM pragma_table_info('analytics_cost_rows') WHERE name='eligible')", [], |row| row.get(0))?;
-    if old {
-        db.execute_batch("DROP TABLE analytics_cost_groups; DROP TABLE analytics_cost_rows;")?;
-    }
     let exists: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_cost_rows')",
         [],
@@ -466,6 +511,17 @@ pub fn install(db: &Connection) -> StoreResult<()> {
     if !exists {
         db.execute_batch(TABLES)?;
         backfill(db)?;
+    } else {
+        let columns = db
+            .prepare("PRAGMA table_info(analytics_cost_rows)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<HashSet<_>, _>>()?;
+        if !columns.contains("eligible") {
+            db.execute_batch("ALTER TABLE analytics_cost_rows ADD COLUMN eligible INTEGER")?;
+        }
+        if !columns.contains("final_evidence") {
+            db.execute_batch("ALTER TABLE analytics_cost_rows ADD COLUMN final_evidence INTEGER NOT NULL DEFAULT 0")?;
+        }
     }
     Ok(())
 }
@@ -571,7 +627,7 @@ fn cost_row(
         _ => None,
     };
     CostRow {
-        eligible: response.is_some() || observation.is_none() && fields.response_id.is_some(),
+        eligible: Some(response.is_some()),
         final_evidence: response.is_some_and(|(_, evidence)| *evidence != UsageEvidence::Legacy),
         id,
         agent,
@@ -682,7 +738,16 @@ fn scope_rows(
             .query_map(params![root, agent], CostRow::from_sql)?
             .collect();
     }
-    let mut statement = db.prepare_cached(&format!("SELECT {ROW_COLUMNS} FROM analytics_cost_rows WHERE root=?1 AND agent=?2 AND ((thread IS ?3 AND turn IS ?4) OR (response IS NOT NULL AND response=?5))"))?;
+    // Every selected response must bring all its counterparts, including responses
+    // merely sharing the touched turn; otherwise a suppressed legacy row can revive.
+    let mut statement = db.prepare_cached(&format!(
+        "WITH affected AS (
+            SELECT response FROM analytics_cost_rows WHERE root=?1 AND agent=?2
+            AND ((thread IS ?3 AND turn IS ?4) OR response=?5)
+         )
+         SELECT {ROW_COLUMNS} FROM analytics_cost_rows WHERE root=?1 AND agent=?2
+         AND ((thread IS ?3 AND turn IS ?4) OR response IN (SELECT response FROM affected))"
+    ))?;
     let mut rows = BTreeMap::new();
     for (thread, turn, response) in turns {
         for row in statement.query_map(
@@ -875,18 +940,113 @@ mod tests {
     use std::path::Path;
 
     #[tokio::test]
+    async fn typed_usage_receipt_lookup_uses_existing_response_index() {
+        let temp = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store
+            .analytics_transaction::<_, StoreError>(|tx, _| {
+                let mut query = tx.prepare(&format!(
+                    "EXPLAIN QUERY PLAN {}",
+                    super::JOURNAL_RECEIPT_SQL
+                ))?;
+                let count = query.parameter_count();
+                let details = query
+                    .query_map(
+                        rusqlite::params_from_iter(std::iter::repeat_n(
+                            rusqlite::types::Value::Null,
+                            count,
+                        )),
+                        |row| row.get::<_, String>(3),
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert!(
+                    details
+                        .iter()
+                        .any(|line| line.contains("SEARCH")
+                            && line.contains("analytics_usage_response")),
+                    "receipt lookup must seek existing usage identity index: {details:?}"
+                );
+                assert!(
+                    !details
+                        .iter()
+                        .any(|line| line.contains("SCAN analytics_usage")),
+                    "no repeated usage-record scans: {details:?}"
+                );
+                for (sql, index) in [
+                    (
+                        crate::repositories::analytics_capture::CAPTURE_RECORD_BY_ID_SQL
+                            .replace("{table}", "analytics_usage"),
+                        "sqlite_autoindex_analytics_usage_1",
+                    ),
+                    (
+                        crate::repositories::analytics_capture::USAGE_RESPONSE_SQL.to_owned(),
+                        "analytics_usage_response",
+                    ),
+                ] {
+                    let mut query = tx.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                    let parameters = query.parameter_count();
+                    let plan = query
+                        .query_map(
+                            rusqlite::params_from_iter(std::iter::repeat_n(
+                                rusqlite::types::Value::Null,
+                                parameters,
+                            )),
+                            |row| row.get::<_, String>(3),
+                        )?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    assert!(
+                        plan.iter()
+                            .any(|line| line.contains("SEARCH") && line.contains(index)),
+                        "capture lookup must seek its existing index: {plan:?}"
+                    );
+                }
+
+                Ok(())
+            })
+            .await
+            .expect("query plan");
+    }
+
+    #[test]
+    fn typed_usage_legacy_migration_keeps_totals_without_reading_usage_rows() {
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+        let db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY,id TEXT UNIQUE,agent TEXT,root TEXT,thread TEXT,turn TEXT,at REAL,record TEXT);
+            CREATE TABLE analytics_cost_rows(id TEXT PRIMARY KEY,root TEXT NOT NULL,agent TEXT NOT NULL,thread TEXT,turn TEXT,seq INTEGER NOT NULL,at REAL NOT NULL,model TEXT,account_key TEXT,response TEXT,input REAL,cached REAL,cache_write REAL,output REAL,uncached INTEGER NOT NULL,counted INTEGER NOT NULL,counted_model TEXT);
+            CREATE TABLE analytics_cost_groups(root TEXT NOT NULL,model TEXT,account TEXT NOT NULL,input REAL,cached REAL,cache_write REAL,output REAL,uncached INTEGER NOT NULL,count INTEGER NOT NULL);
+            WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<512)
+            INSERT INTO analytics_usage SELECT x,CAST(x AS TEXT),'agent',NULL,'thread','turn',1,'{}' FROM n;
+            INSERT INTO analytics_cost_rows VALUES('legacy','root','agent','thread','turn',1,1,'m','acct',NULL,10,0,0,2,0,1,'m');
+            INSERT INTO analytics_cost_groups VALUES('root','m','acct',10,0,0,2,0,1);").expect("pre-upgrade fixture");
+        db.authorizer(Some(|context: AuthContext<'_>| match context.action {
+            AuthAction::Read {
+                table_name: "analytics_usage",
+                ..
+            } => Authorization::Deny,
+            _ => Authorization::Allow,
+        }))
+        .expect("usage-read guard");
+        super::install(&db).expect("bounded additive migration does not inspect usage records");
+        let groups = super::cost_groups(&db, "root", &Default::default()).expect("legacy groups");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].tokens.input_tokens, Some(10.0));
+        assert_eq!(groups[0].tokens.output_tokens, Some(2.0));
+        assert_eq!(groups[0].count, 1);
+    }
+
+    #[tokio::test]
     async fn typed_usage_final_deduplicates_legacy_without_merging_request_tiers() {
         let temp = tempfile::tempdir().expect("temporary state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         store.analytics_transaction::<_,StoreError>(|tx,_| {
-            for (id,response,evidence,input) in [("old","r1","legacy",900),("final","r1","live",10),("large","r2","recovered",250001)] {
-                AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&json!({"id":id,"agentId":"agent","rootId":"root","threadId":"thread","turnId":id,"at":1,"last":{},"total":{},
+            for (id,response,evidence,input) in [("old","r1","legacy",900),("final","r1","live",10),("large","r2","recovered",250001),("later","r3","live",20)] {
+                AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&json!({"id":id,"agentId":"agent","rootId":"root","threadId":"thread","turnId":if id=="later"{"old"}else{id},"at":1,"last":{},"total":{},
                     "studioUsage":{"kind":"response","responseId":response,"model":"m","evidence":evidence,"tokens":{"uncachedInput":input,"cacheReadInput":3,"cacheWriteInput":2,"output":1}}}))?;
             }
             let groups=super::cost_groups(tx,"root",&Default::default())?;
             let mut inputs=groups.iter().map(|group| { assert_eq!(group.count,1); assert!(group.input_uncached); group.tokens.input_tokens.expect("normalized input") as u64 }).collect::<Vec<_>>();
             inputs.sort();
-            assert_eq!(inputs,vec![10,250001],"keep separate request sizes for pricing thresholds, count each final response once");
+            assert_eq!(inputs,vec![10,20,250001],"keep separate request sizes for pricing thresholds, count each final response once");
             Ok(())
         }).await.expect("typed request costs");
     }
@@ -896,6 +1056,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         store.analytics_transaction::<_, StoreError>(|tx, _| {
+            tx.execute("INSERT INTO analytics_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","accountKey":"acct","threadId":"thread"}).to_string()])?;
+
             for (id, evidence) in [("legacy", "legacy"), ("final", "recovered")] {
                 let row = json!({"id":id,"agentId":"agent","rootId":"root","threadId":"thread","at":1,
                     "responseId":id,"model":"m","accountKey":"acct","last":{},"total":{},
@@ -932,8 +1094,15 @@ mod tests {
                 }}
             });
             AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &row)?;
+            let mut legacy = row;
+            legacy.as_object_mut().expect("usage row").remove("studioUsage");
+            legacy["id"] = json!("legacy-notice");
+            legacy["responseId"] = json!("associated-response");
+            legacy["counterDomain"] = json!("nativeNotice");
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &legacy)?;
             let groups = super::cost_groups(tx, "root", &Default::default())?;
             assert!(groups.is_empty(), "running totals must never become response cost samples");
+            assert!(super::recorded_responses(tx, &["agent".to_owned()])?.is_empty());
             Ok(())
         }).await.expect("verify cumulative accounting");
     }
@@ -943,6 +1112,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         store.analytics_transaction::<_, StoreError>(|tx, _| {
+            tx.execute("INSERT INTO analytics_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","accountKey":"acct","threadId":"thread"}).to_string()])?;
+
             for (id, evidence) in [("legacy", "legacy"), ("final", "live")] {
                 let row = json!({
                     "id":id,"agentId":"agent","rootId":"root","threadId":"thread",

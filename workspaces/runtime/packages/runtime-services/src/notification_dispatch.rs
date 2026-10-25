@@ -740,11 +740,38 @@ pub fn dispatch_notification_with_effects(
                     }
                 }
                 "thread/tokenUsage/updated" => {
-                    effects.capture_usage(transaction, &mut agent, params, observed_at)?;
-                    if crate::event_write::truthy(agent.get("movedFrom")) {
-                        effects.capture_move_cache(transaction, &agent, params, observed_at)?;
+                    let provider = match crate::provider_adapter::ProviderKind::of_record(&agent)
+                        .map_err(|_| NotificationDispatchError::InvalidNotification)?
+                    {
+                        crate::provider_adapter::ProviderKind::Claude => {
+                            studio_runtime_schema::usage::UsageProvider::Claude
+                        }
+                        crate::provider_adapter::ProviderKind::Codex => {
+                            studio_runtime_schema::usage::UsageProvider::Codex
+                        }
+                    };
+                    let observation =
+                        match studio_runtime_schema::usage::parse_token_usage(provider, params) {
+                            Ok(usage) => TokenUsageObservation::Typed(usage),
+                            Err(_) => TokenUsageObservation::Legacy(
+                                studio_runtime_schema::usage::parse_legacy_totals(provider, params)
+                                    .map_err(|_| NotificationDispatchError::InvalidNotification)?,
+                            ),
+                        };
+                    let mut normalized = params.clone();
+                    if let TokenUsageObservation::Typed(usage) = &observation {
+                        normalized["studioUsage"] = serde_json::to_value(usage)?;
                     }
-                    apply_token_usage(&mut agent, params, observed_at)?
+                    effects.capture_usage(transaction, &mut agent, &normalized, observed_at)?;
+                    if crate::event_write::truthy(agent.get("movedFrom")) {
+                        effects.capture_move_cache(
+                            transaction,
+                            &agent,
+                            &normalized,
+                            observed_at,
+                        )?;
+                    }
+                    apply_token_usage(&mut agent, &observation, observed_at)?
                 }
                 _ => return Err(NotificationDispatchError::InvalidNotification),
             };
@@ -1938,26 +1965,64 @@ fn suffix(text: &str, limit: usize) -> String {
     text.chars().skip(count.saturating_sub(limit)).collect()
 }
 
+enum TokenUsageObservation {
+    Typed(studio_runtime_schema::usage::UsageObservation),
+    Legacy(studio_runtime_schema::usage::LegacyUsageTotals),
+}
+
 fn apply_token_usage(
     agent: &mut Value,
-    params: &Value,
+    observation: &TokenUsageObservation,
     observed_at: f64,
 ) -> Result<DispatchOutcome, NotificationDispatchError> {
-    let Some(usage) = params.get("tokenUsage").and_then(Value::as_object) else {
-        return Err(NotificationDispatchError::InvalidNotification);
+    use studio_runtime_schema::usage::UsageObservation;
+    let observation = match observation {
+        TokenUsageObservation::Typed(usage) => usage,
+        TokenUsageObservation::Legacy(usage) => {
+            agent["contextUsage"] = json!({"tokens":usage.last_total_tokens,"window":usage.model_context_window,"at":observed_at});
+            return Ok(DispatchOutcome::Written);
+        }
     };
-    let tokens = usage.get("last").and_then(|last| last.get("totalTokens"));
-    let window = usage.get("modelContextWindow");
-    if tokens.is_some_and(|value| value.as_u64().is_none())
-        || window.is_some_and(|value| !value.is_null() && value.as_u64().is_none())
-    {
-        return Err(NotificationDispatchError::InvalidNotification);
-    }
-    agent["contextUsage"] = json!({
-        "tokens": tokens.cloned().unwrap_or(Value::Null),
-        "window": window.cloned().unwrap_or(Value::Null),
-        "at": observed_at,
-    });
+    let (tokens, window) = match observation {
+        UsageObservation::Response {
+            tokens,
+            model_context_window,
+            parent_tool_use_id,
+            ..
+        } => {
+            if parent_tool_use_id.is_some() {
+                return Ok(DispatchOutcome::Written);
+            }
+            (Some(tokens), *model_context_window)
+        }
+        UsageObservation::Cumulative {
+            last,
+            model_context_window,
+            ..
+        } => {
+            if last.is_none() {
+                if let Some(window) = model_context_window {
+                    let tokens = agent
+                        .pointer("/contextUsage/tokens")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    agent["contextUsage"] =
+                        json!({"tokens":tokens,"window":window,"at":observed_at});
+                }
+                return Ok(DispatchOutcome::Written);
+            }
+            (last.as_ref(), *model_context_window)
+        }
+        UsageObservation::Gap { .. } => return Ok(DispatchOutcome::Written),
+    };
+    let tokens = tokens
+        .map(|tokens| {
+            tokens
+                .total()
+                .ok_or(NotificationDispatchError::InvalidNotification)
+        })
+        .transpose()?;
+    agent["contextUsage"] = json!({"tokens":tokens,"window":window,"at":observed_at});
     Ok(DispatchOutcome::Written)
 }
 
@@ -2174,6 +2239,111 @@ mod tests {
         NotificationDispatchRepository, QueueEvent, QueueEventId, QueueEventRepository,
         RuntimeStore, SchedulerRepository, StoreError, TranscriptRepository,
     };
+
+    #[tokio::test]
+    async fn typed_usage_conflict_keeps_first_charge_and_dispatches_context() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        store
+            .transaction_with(|tx| {
+                AgentRepository::put(
+                    tx,
+                    &AgentRecord::from_value(json!({
+                        "id":"agent","rootId":"agent","epoch":1,"status":"running",
+                        "threadId":"thread","accountKey":"default","provider":"claude",
+                        "turnId":"turn","inFlight":true,"autoWake":false,"created":0,
+                        "activeTools":[],"events":0
+                    }))
+                    .unwrap(),
+                )
+            })
+            .await
+            .unwrap();
+        for (index, output) in [2, 2, 3].into_iter().enumerate() {
+            store.transaction_with(move |tx| {
+                let notification = json!({"method":"thread/tokenUsage/updated","params":{
+                    "threadId":"thread","turnId":"turn","studioUsage":{
+                        "kind":"response","responseId":"r","turnId":"turn","model":"claude","evidence":"live",
+                        "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":output},"modelContextWindow":1000
+                    }}});
+                let result = super::dispatch_notification_with_effects(tx,"agent",&PublicationContext::default(),&NotificationStreamBuffer::default(),&identity(index as u64 + 1),&frame(&notification),100. + index as f64,&crate::notification_runtime_effects::RuntimeNotificationEffects).expect("usage dispatch continues");
+                assert_eq!(result.outcome,DispatchOutcome::Written);
+                let agent = studio_runtime_store::budget::BudgetRepository::agent(tx,"agent")?;
+                assert_eq!(agent["tokensUsed"],12,"one immutable response charge");
+                assert_eq!(agent["contextUsage"]["tokens"],10 + output,"context dispatch completes even on conflict");
+                assert_eq!(agent["tokenUsageAccounting"],if index == 2 {"provisional"} else {"responseRecords"});
+                let state: String = tx.query_row("SELECT record FROM runtime_budget WHERE id='agent'",[],|row|row.get(0)).map_err(StoreError::from)?;
+                let state: Value = serde_json::from_str(&state)?;
+                assert_eq!(state["faults"].as_array().unwrap().iter().any(|fault|fault == "responseReplayConflict"),index == 2);
+                Ok::<_,super::NotificationDispatchError>(())
+            }).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_usage_bridge_golden_frames_reach_budget_and_context() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        store
+            .transaction_with(|tx| {
+                AgentRepository::put(
+                    tx,
+                    &AgentRecord::from_value(json!({
+                        "id":"agent","rootId":"agent","epoch":1,"status":"running",
+                        "threadId":"thread","accountKey":"default","provider":"claude",
+                        "turnId":"turn","inFlight":true,"autoWake":false,"created":0,
+                        "activeTools":[],"events":0
+                    }))
+                    .unwrap(),
+                )
+            })
+            .await
+            .unwrap();
+        let frames: Vec<Value> = serde_json::from_str(include_str!(
+            "../../runtime-schema/src/fixtures/claude-usage-notifications.json"
+        ))
+        .unwrap();
+        for (index, params) in frames.into_iter().enumerate() {
+            store
+                .transaction_with(move |tx| {
+                    let notification =
+                        json!({"method":"thread/tokenUsage/updated","params":params});
+                    let result = super::dispatch_notification_with_effects(
+                        tx,
+                        "agent",
+                        &PublicationContext::default(),
+                        &NotificationStreamBuffer::default(),
+                        &identity(index as u64 + 1),
+                        &frame(&notification),
+                        100. + index as f64,
+                        &crate::notification_runtime_effects::RuntimeNotificationEffects,
+                    )
+                    .expect("bridge usage dispatch");
+                    assert_eq!(result.outcome, DispatchOutcome::Written);
+                    let agent = studio_runtime_store::budget::BudgetRepository::agent(tx, "agent")?;
+                    assert_eq!(
+                        agent["tokensUsed"], 806,
+                        "response and cumulative evidence settle by max"
+                    );
+                    assert_eq!(
+                        agent["contextUsage"]["tokens"], 806,
+                        "only final response usage changes the context gauge"
+                    );
+                    assert_eq!(agent["contextUsage"]["window"], 200000);
+                    assert_eq!(
+                        agent["tokenUsageAccounting"],
+                        if index == 2 {
+                            "provisional"
+                        } else {
+                            "responseRecords"
+                        }
+                    );
+                    Ok::<_, super::NotificationDispatchError>(())
+                })
+                .await
+                .unwrap();
+        }
+    }
 
     #[test]
     fn borrowed_notification_signature_matches_owned_payload_with_unknown_fields() {
@@ -2419,7 +2589,7 @@ mod tests {
             let notifications = [
                 json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"one "}}),
                 json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"two "}}),
-                json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread","turnId":"turn","tokenUsage":{"total":{"totalTokens":9},"last":{"totalTokens":9},"modelContextWindow":1000}}}),
+                json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread","turnId":"turn","tokenUsage":{"total":{"totalTokens":9,"inputTokens":9,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":9,"inputTokens":9,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"modelContextWindow":1000}}}),
                 json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"cmd","type":"commandExecution","command":"ls","status":"inProgress"}}}),
                 json!({"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"cmd","type":"commandExecution","command":"ls","status":"completed","aggregatedOutput":"a","exitCode":0}}}),
             ];
@@ -2984,7 +3154,7 @@ mod tests {
                 &streams,
                 &identity(1),
                 &frame(
-                    &json!({"method":method,"params":{"threadId":"thread","tokenUsage":{"total":{"totalTokens":5},"last":{"totalTokens":5},"modelContextWindow":1000}}}),
+                    &json!({"method":method,"params":{"threadId":"thread","turnId":"turn","tokenUsage":{"total":{"totalTokens":5,"inputTokens":5,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":5,"inputTokens":5,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"modelContextWindow":1000}}}),
                 ),
                 1234.5,
             );
