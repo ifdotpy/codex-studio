@@ -621,6 +621,7 @@ describe("resource read callers", () => {
         }),
       );
     render(false);
+    for (const accept of projectionListeners) accept({ runtime: {} });
     expect(post).not.toHaveBeenCalled();
     render(true);
     render(true);
@@ -649,6 +650,7 @@ describe("resource read callers", () => {
         }),
       );
     render();
+    for (const accept of projectionListeners) accept({ runtime: {} });
     await Promise.resolve();
     const saved = {
       accountKey: "default",
@@ -737,6 +739,7 @@ describe("resource read callers", () => {
         }),
       );
     render(true);
+    for (const accept of projectionListeners) accept({ runtime: {} });
     render(false);
     render(true);
     rejections[0]!(new Error("Old opening failed"));
@@ -760,6 +763,65 @@ describe("resource read callers", () => {
     const view = JSON.stringify(render(true));
     expect(view).not.toContain("Refresh failed · stale estimate");
     expect(view).toContain("$4.00");
+    post.mockClear();
+  });
+
+  it("does not treat a switched account's initial cached value as refresh confirmation", async () => {
+    const rejections: Array<(error: Error) => void> = [];
+    post.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejections.push(reject);
+        }),
+    );
+    const render = (accountKey: string) =>
+      mount(() =>
+        Usage({
+          agent: { id: "lead", rootId: "lead", accountKey } as Agent,
+          stateDir: "private-fixture",
+          limits: null,
+          reload: vi.fn(),
+          opened: true,
+        }),
+      );
+    render("default");
+    for (const accept of projectionListeners)
+      accept({
+        runtime: {
+          accountCostsByAccount: {
+            default: {
+              accountKey: "default",
+              at: 100,
+              stale: false,
+              refreshing: false,
+              error: null,
+            },
+          },
+        },
+      });
+    render("second");
+    expect(post).toHaveBeenCalledTimes(1);
+    for (const accept of projectionListeners)
+      accept({
+        runtime: {
+          accountCostsByAccount: {
+            second: {
+              accountKey: "second",
+              at: 100,
+              stale: false,
+              refreshing: false,
+              error: null,
+              data: { last30DaysUSD: 5 },
+            },
+          },
+        },
+      });
+    expect(post).toHaveBeenCalledTimes(2);
+    rejections[1]!(new Error("Second account interest failed"));
+    await Promise.resolve();
+    const view = JSON.stringify(render("second"));
+    expect(view).toContain("Refresh failed · stale estimate");
+    expect(view).toContain("$5.00");
     post.mockClear();
   });
 

@@ -4,7 +4,14 @@ import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
 import { accountLimits } from "../usage/accountUsage";
 import { weeklyRunway } from "../usage/weeklyRunway";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Button, Popover, Progress, Tabs, Tooltip } from "@mantine/core";
 import {
   ChevronUp,
@@ -331,15 +338,31 @@ export default function Usage({
   const rootId = agent.rootId || agent.id;
   useSubscription(visible ? { kind: "session-cost", agentId: rootId } : null);
   useSubscription(visible && limitsOpened ? { kind: "costs" } : null);
-  const costObservation = useRef<{ scope: string; signature: string } | null>(
-    null,
-  );
+  const costObservation = useRef<{
+    scope: string;
+    signature: string | null;
+  } | null>(null);
   const costInterest = useRef<{
     scope: string;
+    accountKey: string;
     baseline: string | null;
-    settled: boolean;
+    phase: "baseline" | "pending" | "settled";
   } | null>(null);
   const [costInterestError, setCostInterestError] = useState("");
+  const sendCostInterest = useCallback(
+    (attempt: NonNullable<typeof costInterest.current>) => {
+      if (costInterest.current !== attempt || attempt.phase !== "baseline")
+        return;
+      attempt.phase = "pending";
+      void post("/api/costs/interest", {
+        account_key: attempt.accountKey,
+      }).catch((error) => {
+        if (costInterest.current === attempt && attempt.phase === "pending")
+          setCostInterestError(errorText(error));
+      });
+    },
+    [post],
+  );
   useEffect(() => {
     if (!visible || !limitsOpened) {
       costInterest.current = null;
@@ -347,23 +370,20 @@ export default function Usage({
     }
     const scope = JSON.stringify([stateDir, accountKey]);
     if (costInterest.current?.scope === scope) return;
-    const attempt = {
+    const observation =
+      costObservation.current?.scope === scope ? costObservation.current : null;
+    const attempt: NonNullable<typeof costInterest.current> = {
       scope,
-      baseline:
-        costObservation.current?.scope === scope
-          ? costObservation.current.signature
-          : null,
-      settled: false,
+      accountKey,
+      baseline: observation?.signature ?? null,
+      phase: "baseline",
     };
     costInterest.current = attempt;
     setCostInterestError("");
-    void post("/api/costs/interest", { account_key: accountKey }).catch(
-      (error) => {
-        if (costInterest.current === attempt && !attempt.settled)
-          setCostInterestError(errorText(error));
-      },
-    );
-  }, [visible, limitsOpened, stateDir, accountKey, post]);
+    // A local projection baseline distinguishes cached data from the result
+    // of this opening, including when switching accounts while already open.
+    if (observation) sendCostInterest(attempt);
+  }, [visible, limitsOpened, stateDir, accountKey, sendCostInterest]);
   const costScope = JSON.stringify([stateDir, rootId]);
   const [sessionCostState, setSessionCostState] = useState<{
     scope: string;
@@ -402,20 +422,28 @@ export default function Usage({
     return subscribeStateProjection(
       (snapshot) => {
         const value = snapshot?.runtime.accountCostsByAccount?.[accountKey];
-        if (!value) return;
+        if (!snapshot) return;
         const scope = JSON.stringify([stateDir, accountKey]);
-        const signature = JSON.stringify(value);
+        const signature = value ? JSON.stringify(value) : null;
         costObservation.current = { scope, signature };
         const attempt = costInterest.current;
-        if (attempt?.scope === scope && signature !== attempt.baseline) {
-          attempt.settled = true;
-          setCostInterestError("");
+        if (attempt?.scope === scope) {
+          if (attempt.phase === "baseline") {
+            attempt.baseline = signature;
+            sendCostInterest(attempt);
+          } else if (
+            attempt.phase === "pending" &&
+            signature !== attempt.baseline
+          ) {
+            attempt.phase = "settled";
+            setCostInterestError("");
+          }
         }
-        setCosts(value);
+        setCosts(value || null);
       },
       () => {},
     );
-  }, [stateDir, accountKey, subscribeStateProjection]);
+  }, [stateDir, accountKey, subscribeStateProjection, sendCostInterest]);
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now() / 1000), 30000);
