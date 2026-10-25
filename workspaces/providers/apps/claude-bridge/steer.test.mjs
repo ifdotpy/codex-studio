@@ -387,7 +387,12 @@ test.concurrent("input origin survives turn/steer: studio_event,human,studio_eve
     assert.equal(message.text_not_typed, synthetic ? true : undefined);
   }
   await end(bridge);
-  assert.equal((await completed(bridge, turn)).params.turn.status, "completed");
+  // All input has echoed; completion now waits on real journal I/O, not a
+  // grace timer. Advancing virtual deadlines can outrun that I/O under contention.
+  const done = await bridge.note(
+    (note) => note.method === "turn/completed" && note.params.turn.id === turn,
+  );
+  assert.equal(done.params.turn.status, "completed");
 });
 
 test.concurrent("a failed split prefix closes its query without submitting the remaining parts", async ({
