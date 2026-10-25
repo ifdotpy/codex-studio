@@ -3006,6 +3006,20 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
         .unwrap();
     assert_eq!(before_workspace_refusal, after_workspace_refusal);
 
+    assert!(
+        crate::managed_child_create::spawn_agents(
+            &store,
+            &actor,
+            &json!({"agents":[{"name":"Native","prompt":"Task","workspace":"layr-native"}]}),
+            "dispatcher-native-parent-refusal",
+            20.45,
+            &CreationEnvironment,
+        )
+        .await
+        .is_err(),
+        "native Layr requires a native Layr parent"
+    );
+
     let legacy_request = crate::managed_child_create::spawn_agents(
         &store,
         &actor,

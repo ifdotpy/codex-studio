@@ -806,27 +806,16 @@ The chat badge shows `Layr`, `Layr VM`, or `WT`.
 Shared workers show `SHARED`. Hover or focus the badge for its path.
 See [VM chats](linux-vm-workspaces.md).
 
-On a real Mac, default-config agent start took 2.610 s at 50,000 files and 10.104 s at
-200,000 files with no staged source change. After source `git add`, it took 3.757 s and
-10.212 s. The first `git status` took 0.983 s and 4.661 s with no staged change, and 0.844 s
-and 4.013 s after `git add`. At 200,000 files, staged start used 5.365 s for source Git status,
-0.618 s for path copy, 0.610 s for index entry reads, and 1.857 s for index changes. It did not
-mirror Git metadata or restat paths. The base build took 361.245 s, including 87.022 s for file
-copy and 223.949 s for index handling. These step times overlap.
-The base-copy worker now splits nested directory trees into balanced tar shards. This fixed the
-earlier 443.842 s 50,000-file build, which had put nearly all payload files in one shard.
-A native agent can set `base_ref` to a branch, tag, or commit. Studio gives the requested ref and
-resolved commit to the worker in its first input. The worker checks it out. Studio does not
-run Git checkpoints or collect worker changes inside image copies. The worker result includes
-the copy path, source path, copy time, and confirmation that uncommitted changes were copied.
-Ask the worker to commit on a named branch. Integrate its changes by reading files from the
-copy or fetching the branch, for example `git fetch <path> <branch>`.
+A Git worktree can select `base_ref` as a branch, tag, or commit.
+Studio gives the resolved commit to the worker before its first turn.
+Ask the worker to commit on a named branch.
+Use a reviewed Layr state for native Layr and VM task acceptance.
 Only the lead creates agents. Unfinished work of a failed or deleted worker returns to ready.
 Native reviewers use the chosen folder. Their sandbox is read-only when YOLO is off.
 VM reviewers always use read-only lines.
-The lead owns review and integration. Acceptance merges a reviewed VM state.
-The runtime does not merge native worker changes.
-Archive retains a macOS image, removes a safe Git worktree, or removes a layr worker line.
+The lead owns review and integration. Acceptance merges a reviewed Layr state.
+Archive removes a safe Git worktree or an owned Layr line.
+Legacy workspaces keep their files and stored records.
 
 Creating ready work with an assigned worker queues one `work_ready` event.
 Changing the owner or releasing blocked work also notifies the assigned worker.
@@ -1352,12 +1341,11 @@ Archive requires a reason. It hides a worker through the existing tombstone filt
 and stores an archive receipt with its actor, time, epoch, and unknown tool request IDs.
 Active work blocks archive. A finished worker can keep unknown tool outcomes when
 no operation can still run. A command with a completed turn and a missing process
-is marked lost; its outcome stays unknown. Studio detaches and retains image
-workspaces. A Git
-worktree is removed only when Studio can verify its registration and archive ref.
-Dirty and nested worktrees stay with an exact reason. Restore recreates the saved
-image workspace by reattaching it, or recreates a Git worktree from its saved branch. Deleting
-the worker removes its image. History and native threads remain.
+is marked lost; its outcome stays unknown. Legacy workspaces retain their files.
+A Git worktree is removed only when Studio can verify its registration and archive ref.
+Dirty and nested worktrees stay with an exact reason.
+Restore recreates a Git worktree from its saved branch.
+History and native threads remain.
 Archive children before their parent. A later user deletion or stop invalidates
 the archive receipt. Repeated calls keep the same request result.
 
@@ -1393,7 +1381,7 @@ Archive commit and workspace cleanup follow one flow:
 4. Recover through the saved tool receipt after a lost response. A later archive
    call preserves the original archive identity; uncertain effects stay held.
 
-After an image detach interruption, make a new `archive` call to finish detaching. After partial Git removal, make a new `archive` call to retry cleanup. Studio
+After partial Git removal, make a new `archive` call to retry cleanup. Studio
 preserves the failed cleanup record and Git error. It can repair the exact saved
 Git registration without changing worktree files. Modified or untracked files
 stay. A missing or changed original `.git` file leaves the folder for inspection.
@@ -1405,8 +1393,7 @@ A failed remote check keeps the worker. An exact retry of an old stale-main
 accept receipt repeats only the archive check, not the task decision.
 For `orchestration_task` actions `accept` and `reject`, supply the decision text
 in the `result` field.
-`maintenance_report` lists old image workspaces, bases, and Git worktrees without
-removing them. Disk reports include workspace and base sizes.
+`maintenance_report` lists retained workspaces and Git worktrees without removing them.
 
 Agent tools accept a unique ID prefix of at least eight characters among agents
 visible to the caller. Ambiguous and unknown IDs return candidate full IDs.

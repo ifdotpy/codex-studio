@@ -226,7 +226,7 @@ this relocated layout; M-01 delivered them in PR #40.
   typed Rust boundary, PR #63.)
 
 Source workspace is a repository term, distinct from agents' runtime worktrees
-and image workspaces. Moving source must not change their state paths or identity.
+and legacy workspace records. Moving source must not change their state paths or identity.
 
 ## Behavior, state, and failure contracts
 

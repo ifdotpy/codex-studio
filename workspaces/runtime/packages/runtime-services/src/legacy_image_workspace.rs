@@ -32,3 +32,60 @@ pub async fn finish_stored_workspaces(store: &RuntimeStore) -> Result<usize, Sto
         Ok(count)
     }).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use studio_runtime_store::AgentId;
+
+    #[tokio::test]
+    async fn startup_retains_legacy_rows_and_prompt_snapshots_without_an_executor() {
+        let directory = tempfile::tempdir().expect("state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let original: Value = serde_json::from_str(include_str!(
+            "../tests/startup_recovery/legacy-image-agent.json"
+        ))
+        .expect("legacy fixture");
+        let record = AgentRecord::from_value(original.clone()).expect("legacy stored record");
+        store.transaction(move |tx| {
+            AgentRepository::put(tx, &record)?;
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('legacy-item','legacy-agent',?1,1.0)", [json!({"id":"legacy-item","agent":"legacy-agent","text":"saved transcript"}).to_string()])?;
+            Ok(())
+        }).await.expect("fixture rows");
+        assert_eq!(
+            finish_stored_workspaces(&store)
+                .await
+                .expect("legacy recovery"),
+            1
+        );
+        assert_eq!(
+            finish_stored_workspaces(&store)
+                .await
+                .expect("idempotent recovery"),
+            0
+        );
+        let db = store.test_reader().expect("reader");
+        let saved = AgentRepository::get(&db, &AgentId::from("legacy-agent"))
+            .expect("lookup")
+            .expect("row retained")
+            .value();
+        let mut expected = original;
+        expected["status"] = json!("completed");
+        expected["autoWake"] = json!(false);
+        expected["inFlight"] = json!(false);
+        expected["legacyWorkspaceFinished"] = json!(true);
+        for (key, value) in expected.as_object().expect("record") {
+            assert_eq!(saved.get(key), Some(value), "{key} must remain stored");
+        }
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM runtime_items WHERE id='legacy-item'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("transcript lookup");
+        assert_eq!(count, 1);
+    }
+}
