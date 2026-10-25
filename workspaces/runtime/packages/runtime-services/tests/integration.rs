@@ -117,3 +117,6 @@ pub(crate) mod process_support;
 pub(crate) mod projection_fixtures;
 
 pub(crate) use callback_fixtures::frozen as recovery_fixtures;
+
+#[path = "test_support/agent_views.rs"]
+pub(crate) mod agent_view_fixtures;

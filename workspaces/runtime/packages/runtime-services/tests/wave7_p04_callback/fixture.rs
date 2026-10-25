@@ -189,7 +189,7 @@ pub fn physical_snapshot(store: &RuntimeStore) -> Value {
 fn snapshot_rows(store: &RuntimeStore, logical: bool) -> Value {
     use rusqlite::types::ValueRef;
     let connection = store.test_reader().unwrap();
-    super::turn_fixtures::assert_agent_view_projections(&connection);
+    super::agent_view_fixtures::assert_agent_view_projections(&connection);
     let mut names=connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").unwrap();
     let tables = names
         .query_map([], |r| r.get::<_, String>(0))

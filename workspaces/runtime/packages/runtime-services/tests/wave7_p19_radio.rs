@@ -210,7 +210,7 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
 }
 fn state(store: &RuntimeStore, tables: &Value) -> Value {
     let db = store.test_reader().expect("read");
-    super::turn_fixtures::assert_agent_view_projections(&db);
+    super::agent_view_fixtures::assert_agent_view_projections(&db);
     let mut result = serde_json::Map::new();
     for table in tables.as_object().expect("tables").keys() {
         let order = if table == "chat_messages" {
@@ -271,7 +271,7 @@ fn normalize(value: &mut Value) {
                 {
                     // View projections are checked against their OpenAPI owners above.
                     rows.retain(|row| {
-                        !super::turn_fixtures::is_agent_view_collection(&row["collection"])
+                        !super::agent_view_fixtures::is_agent_view_collection(&row["collection"])
                     });
                     rows.sort_by_key(|row| {
                         (

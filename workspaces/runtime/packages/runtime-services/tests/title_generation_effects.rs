@@ -117,7 +117,7 @@ fn agent_and_projection(store: &RuntimeStore) -> (String, Vec<Value>) {
 
 fn persisted_snapshot(store: &RuntimeStore) -> Value {
     let connection = store.test_reader().expect("snapshot reader");
-    super::turn_fixtures::assert_agent_view_projections(&connection);
+    super::agent_view_fixtures::assert_agent_view_projections(&connection);
     let agent: String = connection
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='title-agent'",

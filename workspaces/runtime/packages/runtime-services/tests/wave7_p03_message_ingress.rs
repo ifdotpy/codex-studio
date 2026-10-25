@@ -270,7 +270,7 @@ async fn python_send_and_receipt_corpus() {
 /// and omitting only independently generated scheduling timestamps.
 fn logical_state(store: &RuntimeStore) -> BTreeMap<String, Value> {
     let db = store.test_reader().expect("logical state reader");
-    super::turn_fixtures::assert_agent_view_projections(&db);
+    super::agent_view_fixtures::assert_agent_view_projections(&db);
     let json_rows = |sql: &str| -> Vec<Value> {
         db.prepare(sql)
             .expect("logical state query")
