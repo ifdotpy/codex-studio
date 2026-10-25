@@ -12,6 +12,16 @@ import sys
 
 
 def main() -> None:
+    if "--help" in sys.argv[1:]:
+        print("Usage: codex_layr_native_migration.py [--state DIR] [--dry-run] PROJECT...")
+        print("Wait for current WT turns to finish. Pause their chats in Studio before import.")
+        print("Each Git worktree becomes a separate Layr line. Original folders remain intact.")
+        print("Existing WT chats keep their Git paths. The script does not pause or convert chats.")
+        print("Use --dry-run to print the worktree map and command list for each project.")
+        print("After import, start a new Layr chat for the same project folder.")
+        print("Review each imported line before its printed merge command.")
+        print("Keep old chats paused. Repeated imports replay receipts, without later Git edits.")
+        return
     binary = os.environ.get("STUDIO_RUNTIME_SERVER") or shutil.which("studio-runtime-server")
     if not binary:
         raise SystemExit("studio-runtime-server is missing. Run just install first.")

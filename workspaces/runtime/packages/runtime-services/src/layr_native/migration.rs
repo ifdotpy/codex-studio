@@ -48,6 +48,47 @@ fn safe_name(value: &str) -> String {
     name.trim_matches('-').to_owned()
 }
 
+fn quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn operator_commands(state: &Path, project: &Path, lines: &[Value]) -> Value {
+    let state_arg = quote(&state.to_string_lossy());
+    let project_arg = quote(&project.to_string_lossy());
+    let mut commands = vec![
+        format!("git -C {project_arg} worktree list --porcelain"),
+        format!("studio-runtime-server native-layr migrate --state {state_arg} --dry-run {project_arg}"),
+        format!("studio-runtime-server native-layr migrate --state {state_arg} {project_arg}"),
+    ];
+    let project_id = studio_runtime_store::sha256_hex(project.to_string_lossy().as_bytes());
+    let main = main_path(state, &project_id);
+    let environment = super::transport_environment(state, cfg!(target_os = "linux"))
+        .into_iter()
+        .map(|(name,value)| format!("{name}={}", quote(value.as_str().unwrap_or_default())))
+        .collect::<Vec<_>>().join(" ");
+    let layr = format!("env {environment} {} -C {}", quote(&binary_path(state).to_string_lossy()), quote(&main.to_string_lossy()));
+    commands.push(format!("{layr} line list"));
+    for line in lines.iter().filter(|line| line["status"] != "skipped") {
+        let name = line["line"].as_str().unwrap_or_default();
+        commands.push(format!("{layr} diff {}", quote(&format!("main...{name}"))));
+        if let Some(state_id) = line["stateId"].as_str() {
+            commands.push(format!("{layr} merge {} --expect {}", quote(name), quote(state_id)));
+        }
+    }
+    json!({
+        "steps":[
+            "Wait for current WT turns to finish. Pause those chats in Studio before the import.",
+            "Each open Git worktree becomes a separate Layr line. Original folders remain intact.",
+            "Existing WT chats keep their Git working directories. This command does not pause or convert chats.",
+            "Run the dry run, inspect the worktree-to-line map, then run the migration once the source is quiet.",
+            "Create a new Layr chat for the same original project folder. It uses native main.",
+            "Review each imported line before running its printed merge command. The command uses the exact imported state.",
+            "Keep old WT chats paused after the import. A repeated migration replays receipts and does not copy later edits."
+        ],
+        "commands":commands
+    })
+}
+
 /// Project identity uses the canonical source folder, as native chat preparation does.
 pub fn migrate(state_dir: &Path, project: &Path, dry_run: bool) -> Result<Value> {
     let project = fs::canonicalize(project)?;
@@ -93,7 +134,7 @@ pub fn migrate(state_dir: &Path, project: &Path, dry_run: bool) -> Result<Value>
         }
     }
     if dry_run {
-        return Ok(json!({"dryRun":true,"projectId":project_id,"source":project,"lines":lines}));
+        return Ok(json!({"dryRun":true,"projectId":project_id,"source":project,"operator":operator_commands(state_dir,&project,&lines),"lines":lines}));
     }
     let ready = runtime::prepare_files(state_dir, &record)?;
     let main = PathBuf::from(
@@ -183,6 +224,24 @@ pub fn migrate(state_dir: &Path, project: &Path, dry_run: bool) -> Result<Value>
         line["stateId"] = receipt["stateId"].clone();
     }
     Ok(
-        json!({"dryRun":false,"projectId":project_id,"source":project,"mainPath":main,"lines":lines}),
+        json!({"dryRun":false,"projectId":project_id,"source":project,"mainPath":main,"operator":operator_commands(state_dir,&project,&lines),"lines":lines}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_commands_preserve_paths_and_pin_imported_states() {
+        let state = Path::new("/state with spaces");
+        let project = Path::new("/project's code");
+        let lines = vec![json!({"line":"wt-worker","status":"imported","stateId":"full-exact-state"})];
+        let report = operator_commands(state, project, &lines);
+        let commands = report["commands"].as_array().unwrap();
+        assert!(commands[1].as_str().unwrap().contains("--dry-run '/project'\"'\"'s code'"));
+        assert!(commands[2].as_str().unwrap().contains("--state '/state with spaces'"));
+        assert!(commands.last().unwrap().as_str().unwrap().ends_with("merge 'wt-worker' --expect 'full-exact-state'"));
+        assert!(report["steps"].as_array().unwrap().iter().any(|step|step.as_str().unwrap().contains("does not pause or convert")));
+    }
 }

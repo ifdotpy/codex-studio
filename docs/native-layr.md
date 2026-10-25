@@ -162,6 +162,24 @@ It excludes the worktree's `.git` pointer and regenerable folders.
 Prunable worktrees are reported and skipped.
 Completed receipts make a repeated migration idempotent.
 
+For a project with running WT chats:
+
+1. Wait for the current turns to finish.
+2. Pause those chats in Studio before the import.
+3. Run the dry run below and inspect each worktree-to-line entry.
+4. Run the migration while the original project and worktrees are quiet.
+5. Create a new **Layr** chat for the same original project folder.
+6. Review each imported line before you run its printed merge command.
+
+Each open Git worktree becomes a separate Layr line.
+Existing WT chats keep their Git working directories.
+The script does not pause chats or change their workspace mode.
+Keep those chats paused after the import.
+The new chat uses native main.
+Completed receipts do not copy later edits from the old Git paths.
+The report prints the command list for each project.
+After import, its merge commands pin each imported state with `--expect`.
+
 Inspect the migration first:
 
 ```sh
@@ -171,6 +189,7 @@ python3 workspaces/runtime/apps/native-layr/codex_layr_native_migration.py \
 
 Then omit `--dry-run` to import the project.
 The wrapper uses `studio-runtime-server native-layr migrate`.
+Use `--help` for the operator steps without starting the migration.
 It starts no backend and opens no Studio database.
 `STUDIO_RUNTIME_SERVER` can select the exact server binary.
 
