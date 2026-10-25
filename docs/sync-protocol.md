@@ -346,6 +346,32 @@ whether a resource has an applied baseline; the outbox owns whether a message ha
 a server receipt. Neither stale resource data nor an unacknowledged message alone
 means that the connection is lost.
 
+Transport activity is distinct from connection health. The connection module
+owns the closed activity states: stopped, preparing, waiting for an owner,
+retry scheduled, connecting, open, paused, and offline. Activity is derived from
+the current opening attempt, lock request, retry timer, and stream. Presentation
+must not infer an active attempt from degraded health alone. Browser offline
+activity takes precedence in presentation, including while server health is
+still fresh. Both offline and online transitions notify listeners even when
+health has not changed.
+
+The same connection module owns the closed failure reasons and optional retry
+deadline. Failure reasons describe observed boundaries, not an inferred remote
+cause; an unclassified interruption is unknown. A validated server frame clears
+the failure. The retry deadline is Unix epoch milliseconds belonging to the
+actual retry timer and is cleared when that timer fires or is canceled. UI copy
+consumes this detail without maintaining a second recovery state machine.
+
+Only one stream-opening attempt may prepare durable cursors at a time. Peer
+heartbeats and subscription changes coalesce with that attempt rather than
+canceling it. Opening uses the current resource union; newly requested resources
+without a prepared cursor receive a baseline. Cursor preparation for opening and
+subscription changes is bounded by the connection module's named preparation
+budget. If optional cursor reads do not finish, the stream requests an
+authoritative SSE baseline without a cursor. This is not an HTTP polling fallback
+and does not bypass the durable application receipt. Closing the attempt cancels
+its preparation; late results cannot reopen a superseded stream.
+
 An intentionally hidden tab releases its stream with a `paused` connection state.
 Returning to the tab resumes coordination without reporting that pause as a
 network failure. Browser `online` and `offline` events are network hints: an
