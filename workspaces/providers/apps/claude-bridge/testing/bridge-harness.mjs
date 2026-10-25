@@ -207,8 +207,7 @@ export async function startBridge(
       }
     },
     async restart() {
-      child.stdin.end();
-      await exited;
+      await stop();
       notes.length = 0;
       waiting.clear();
       stderr = "";
@@ -216,28 +215,37 @@ export async function startBridge(
       await bridge.call("thread/resume", { threadId: bridge.thread });
     },
     async close() {
-      child.stdin.end();
-      // A failed virtual-clock scenario can leave teardown waiting on a frozen timer.
-      // Always reap this fixture's child, including when the test itself timed out.
-      const guard = setTimeout(() => child.kill("SIGKILL"), HANG_GUARD_MS);
       try {
-        // Bounded shutdown timers run on the virtual clock; advance it until exit.
-        // A clock that can no longer be driven cannot finish the child: reap it.
-        if (clock)
-          while (child.exitCode === null && child.signalCode === null)
-            try {
-              await bridge.advanceTime(VIRTUAL_STEP_MS);
-            } catch {
-              child.kill("SIGKILL");
-              break;
-            }
-        await exited;
+        await stop();
       } finally {
-        clearTimeout(guard);
         await fs.rm(root, { recursive: true, force: true });
       }
     },
   };
+  // Ends the current child for close() and restart(): drives a virtual clock
+  // until exit, reaps a child whose clock can no longer be driven, and always
+  // observes the exit registered at spawn.
+  async function stop() {
+    child.stdin.end();
+    // A failed virtual-clock scenario can leave teardown waiting on a frozen timer.
+    // Always reap this fixture's child, including when the test itself timed out.
+    const guard = setTimeout(() => child.kill("SIGKILL"), HANG_GUARD_MS);
+    try {
+      // Bounded shutdown timers run on the virtual clock; advance it until exit.
+      // A clock that can no longer be driven cannot finish the child: reap it.
+      if (clock)
+        while (child.exitCode === null && child.signalCode === null)
+          try {
+            await bridge.advanceTime(VIRTUAL_STEP_MS);
+          } catch {
+            child.kill("SIGKILL");
+            break;
+          }
+      await exited;
+    } finally {
+      clearTimeout(guard);
+    }
+  }
   bridge.thread = (
     await bridge.call("thread/start", {
       cwd: root,

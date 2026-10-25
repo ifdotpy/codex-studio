@@ -586,6 +586,19 @@ test("harness close reaps a signal-killed bridge and repeats safely", async () =
   await b.close();
 });
 
+test("harness restart drives a virtual clock until the bridge exits", async () => {
+  const b = await startBridge(sdk, "claude-usage-harness-restart-", {
+    clock: true,
+  });
+  bridges.push(b);
+  await start(b, "shutdown-deferred");
+  await b.note((n) => n.method === "provider/generationStarted");
+  const first = b.process;
+  await b.restart();
+  expect(first.exitCode !== null || first.signalCode !== null).toBe(true);
+  expect(b.process).not.toBe(first);
+});
+
 test("harness close reaps a bridge whose virtual clock cannot be driven", async () => {
   const b = await startBridge(sdk, "claude-usage-harness-disconnect-", {
     clock: true,
