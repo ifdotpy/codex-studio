@@ -523,10 +523,9 @@ export function useMessages(
   enabled = true,
 ) {
   const { syncGet } = useServerApi();
-  const { watchResourceChanges } = useServerResources();
   const { peekTranscript } = useServerTranscripts();
   const transcript = useSubscription(
-    enabled && managed && kind === "agent" && id
+    enabled && kind === "agent" && id
       ? {
           kind: "transcript",
           agentId: id,
@@ -535,6 +534,15 @@ export function useMessages(
       : null,
   );
 
+  const roomSubscription = useSubscription(
+    enabled && kind !== "agent" && id
+      ? {
+          kind: "room",
+          roomId: id,
+          ...(kind === "legacy" ? { legacy: true } : {}),
+        }
+      : null,
+  );
   const scope = JSON.stringify([workspace, syncWorkspaceId, kind, managed, id]);
   const history = useRef(
     new Map<
@@ -896,7 +904,6 @@ export function useMessages(
       syncId === scope &&
       syncActive.current === scope &&
       id &&
-      managed &&
       kind === "agent"
     )
       return;
@@ -933,21 +940,7 @@ export function useMessages(
       );
       return;
     }
-    let stopped = false;
-    if (!id || !enabled) return;
-    if (managed && kind === "agent") return;
-    const resource =
-      kind === "room"
-        ? ({ kind: "room", roomId: id } as const)
-        : ({ kind: "transcript", agentId: id } as const);
-    const stopWatch = watchResourceChanges(
-      resource,
-      () => void load(() => !stopped),
-    );
-    return () => {
-      stopped = true;
-      stopWatch();
-    };
+    // The subscription acknowledgement carries this view's baseline.
   }, [
     load,
     id,
@@ -960,7 +953,7 @@ export function useMessages(
     enabled,
   ]);
   useEffect(() => {
-    if (!id || !managed || kind !== "agent") return;
+    if (!id || !enabled || kind !== "agent") return;
     if (transcript.data !== undefined) {
       syncActive.current = scope;
       setSyncId(scope);
@@ -970,6 +963,7 @@ export function useMessages(
     if (transcript.error) setNotice(errorText(transcript.error));
   }, [
     id,
+    enabled,
     managed,
     kind,
     syncWorkspaceId,
@@ -978,6 +972,61 @@ export function useMessages(
     transcript.data,
     transcript.status,
     transcript.error,
+  ]);
+  useEffect(() => {
+    const data = roomSubscription.data;
+    if (!id || !enabled || kind === "agent" || !data) return;
+    if (Array.isArray(data)) {
+      setLoadedId(scope);
+      setItems(
+        data.map((m) => ({
+          id: m.id,
+          text: m.text,
+          at: m.at,
+          role: m.author === "user" ? "user" : "assistant",
+          deliveryStatus: m.status ?? undefined,
+          deliveryError: m.error ?? undefined,
+        })),
+      );
+      setNotice("");
+      return;
+    }
+    const previous = roomPages.current.get(scope);
+    const received = agentChatMessages(data.messages);
+    const merged = new Map(
+      (previous?.items ?? []).map((item) => [item.id, item]),
+    );
+    for (const item of received) merged.set(item.id, item);
+    const bounded = boundTranscriptItems(
+      [...merged.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)),
+      sizeOfMessage,
+      "newest",
+      previous?.anchorId,
+    );
+    const next: RoomPage = {
+      items: bounded.items,
+      size: bounded.bytes,
+      before: bounded.droppedOldest
+        ? (bounded.items[0]?.seq ?? null)
+        : (previous?.before ?? data.nextBefore ?? null),
+      after: previous?.after ?? null,
+      pollAfter: received.at(-1)?.seq ?? previous?.pollAfter ?? null,
+      anchorId: previous?.anchorId,
+    };
+    roomPages.current.set(scope, next);
+    trimTranscriptPageCache(roomPages.current, scope);
+    setLoadedId(scope);
+    setItems(next.items);
+    setBefore(next.before);
+    setNotice("");
+    setConnection(roomSubscription.status === "live" ? "live" : "reconnecting");
+  }, [
+    id,
+    enabled,
+    kind,
+    scope,
+    roomSubscription.data,
+    roomSubscription.status,
   ]);
   const fetchPage = async (query: {
     before?: string;

@@ -76,6 +76,8 @@ pub const SYNC_ENTITY_PAGE_LIMIT: i64 = 500;
 pub const SYNC_ENTITY_STREAM_MAX_DOCUMENTS: i64 = 512;
 /// Maximum complete resources SSE event, including event/id/data lines, in UTF-8 bytes.
 pub const SYNC_STREAM_EVENT_MAX_BYTES: usize = 262144;
+/// Maximum retained terminal output per stream snapshot and renderer cache, in Unicode scalars.
+pub const SYNC_TERMINAL_STREAM_MAX_CHARS: usize = 16_384;
 /// Opaque history cursor prefix that includes the named preceding persisted row.
 /// Synthetic reasoning rows have no runtime_items identity of their own.
 pub const TRANSCRIPT_BEFORE_INCLUSIVE_CURSOR_PREFIX: &str = "@transcript-before-inclusive:";

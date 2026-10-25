@@ -1,3 +1,4 @@
+import { watchResourceReads } from "./reads";
 import type { ResourceData, ResourceRef } from "./contracts";
 import type { ObserveSubscriptionData } from "./module";
 import type { ResourceVersion } from "../resourceEvents";
@@ -12,6 +13,7 @@ export function createDataObserver(
   >,
   events: SubscriptionTransport,
   observeEntities?: ObserveSubscriptionData,
+  recoverView?: (ref: ResourceRef) => Promise<unknown>,
 ): ObserveSubscriptionData {
   return <R extends ResourceRef>(
     ref: R,
@@ -31,7 +33,49 @@ export function createDataObserver(
         ref,
       );
     }
+    const viewValue = (version?: ResourceVersion) => {
+      const view = version?.viewSnapshot;
+      const viewData =
+        ref.kind === "processes"
+          ? view?.processes
+          : ref.kind === "work"
+            ? view?.work
+            : ref.kind === "complaint"
+              ? view?.complaint
+              : ref.kind === "room"
+                ? (view?.room ?? view?.legacyMessages)
+                : ref.kind === "terminal-output"
+                  ? view?.terminalOutput
+                  : undefined;
+      return viewData;
+    };
+    if (
+      recoverView &&
+      ["processes", "work", "complaint", "room", "terminal-output"].includes(
+        ref.kind,
+      )
+    ) {
+      let stopped = false;
+      const stop = watchResourceReads(
+        ref,
+        async (version) => {
+          const value = viewValue(version) ?? (await recoverView(ref));
+          if (!stopped) accept(value as ResourceData<R>);
+        },
+        failed,
+        { events, waitForBaseline: true },
+      );
+      return () => {
+        stopped = true;
+        stop();
+      };
+    }
     const transient = (version?: ResourceVersion) => {
+      const viewData = viewValue(version);
+      if (viewData !== undefined) {
+        accept(viewData as ResourceData<R>);
+        return;
+      }
       const data =
         version?.progress !== undefined
           ? version.progress.value

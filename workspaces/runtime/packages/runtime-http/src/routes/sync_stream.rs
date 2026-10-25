@@ -1012,6 +1012,7 @@ async fn attach_transient_snapshots(
     event: &mut ResourceChangeEvent,
     voice_sequences: &mut BTreeMap<String, i64>,
 ) {
+    super::subscriptions::attach_view_snapshots(state, event).await;
     let Some(state) = state else { return };
     for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
         match resource {

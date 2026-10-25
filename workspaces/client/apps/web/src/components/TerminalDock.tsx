@@ -23,7 +23,7 @@ import { errorText, type GetResult, type PostBody } from "../api";
 import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
 import { copyText } from "../clipboard/clipboard";
-import { useServerResourceReads } from "../servers/ServerServicesContext";
+import { useSubscription } from "../sync/subscriptions";
 import { serverParentOrigin } from "../servers/environment";
 
 type Shell = GetResult<"/api/terminals">["items"][number];
@@ -550,7 +550,14 @@ function ShellView({
   shell: Shell;
   notify: (message: string) => void;
 }) {
-  const watchResourceReads = useServerResourceReads();
+  const output = useSubscription({
+    kind: "terminal-output",
+    terminalId: shell.id,
+  });
+  const outputRef = useRef(output.data);
+  outputRef.current = output.data;
+  const offsetRef = useRef(0);
+  const applyOutputRef = useRef<() => void>(() => {});
   const { get, post, syncPost } = useServerApi();
 
   const host = useRef<HTMLDivElement>(null);
@@ -699,10 +706,9 @@ function ShellView({
   useEffect(() => {
     const generation = ++inputGeneration.current;
     let disposed = false;
-    let cleanupOutput: (() => void) | undefined;
     let observer: ResizeObserver | undefined;
     let resizeTimer: ReturnType<typeof setTimeout>;
-    let offset = 0;
+    offsetRef.current = 0;
     inputChain.current = Promise.resolve();
     inputBlocked.current = false;
     setInputFailure("");
@@ -756,29 +762,27 @@ function ShellView({
         observer = new ResizeObserver(resize);
         observer.observe(host.current);
         resize();
-        const stopOutput = watchResourceReads(
-          { kind: "terminal", terminalId: shell.id },
-          async () => {
-            const output = await get("/api/terminals/output", {
-              query: { id: shell.id, offset },
-            });
-            if (disposed) return;
-            if (output.truncated) {
-              instance!.reset();
-              setTruncated(true);
-            }
-            if (output.text) instance!.write(output.text);
-            offset = output.offset;
-            setStatus(output.status);
-            instance!.options.disableStdin =
-              inputBlocked.current || !running(output.status);
-            setFailure(output.error || "");
-          },
-          (failure) => {
-            if (!disposed) setFailure(errorText(failure));
-          },
-        );
-        cleanupOutput = stopOutput;
+        applyOutputRef.current = () => {
+          const value = outputRef.current;
+          if (!value || disposed) return;
+          const chars = Array.from(value.text);
+          const start = value.offset - chars.length;
+          if (offsetRef.current < start || offsetRef.current > value.offset) {
+            instance!.reset();
+            offsetRef.current = start;
+            setTruncated(start > 0);
+          }
+          const append = chars
+            .slice(Math.max(0, offsetRef.current - start))
+            .join("");
+          if (append) instance!.write(append);
+          offsetRef.current = value.offset;
+          setStatus(value.status);
+          instance!.options.disableStdin =
+            inputBlocked.current || !running(value.status);
+          setFailure(value.error || "");
+        };
+        applyOutputRef.current();
       })
       .catch((e) => {
         if (!disposed) setFailure(errorText(e));
@@ -786,13 +790,17 @@ function ShellView({
     return () => {
       disposed = true;
       fenceInput();
-      cleanupOutput?.();
+      applyOutputRef.current = () => {};
       clearTimeout(resizeTimer);
       observer?.disconnect();
       instance?.dispose();
       terminal.current = null;
     };
-  }, [shell.id, retry, watchResourceReads]);
+  }, [shell.id, retry]);
+  useEffect(() => {
+    applyOutputRef.current();
+    if (output.error) setFailure(errorText(output.error));
+  }, [output.data, output.error]);
   return (
     <div className="terminal-shell-view">
       {truncated && (

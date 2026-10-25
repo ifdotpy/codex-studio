@@ -1,3 +1,4 @@
+import { mergeTerminalOutput } from "./subscriptions/terminalOutput";
 import { SUBSCRIPTION_ENTITY_SCOPES } from "../generated/subscriptionEntities";
 import { cursorDocumentId, parseAppliedCursor } from "./subscriptions/cursors";
 import { serverDatabaseSuffix } from "../servers/environment";
@@ -695,6 +696,46 @@ export function createSyncClient(options: SyncClientOptions) {
     for (const [index, entry] of event.resourceVersions.entries()) {
       if (!isCurrent()) return;
       const resource = entry.resource ?? event.resources[index];
+      if (
+        resource &&
+        entry.cursor &&
+        entry.viewSnapshot &&
+        (resource.kind === "terminal-output" || resource.kind === "room")
+      ) {
+        const cursor = entry.cursor;
+        if (cursor.workspaceId !== workspaceId)
+          throw new Error("Foreign view cursor");
+        await withEntityProjectionWrite(
+          db.projections.database.name,
+          async () => {
+            if (!isCurrent()) return;
+            const id = await cursorDocumentId(resource);
+            const [row] =
+              await db.projections.storageInstance.findDocumentsById(
+                [id],
+                false,
+              );
+            const previous = row?.payload ? JSON.parse(row.payload) : undefined;
+            const snapshot = { ...entry.viewSnapshot };
+            if (snapshot.terminalOutput)
+              snapshot.terminalOutput = mergeTerminalOutput(
+                previous?.workspaceId === workspaceId
+                  ? previous.viewSnapshot?.terminalOutput
+                  : undefined,
+                snapshot.terminalOutput,
+                entry.replyKind === "delta",
+              );
+            if (!isCurrent()) return;
+            await persistProjection(db.projections, {
+              id,
+              payload: JSON.stringify({ ...cursor, viewSnapshot: snapshot }),
+              seq: cursor.seq,
+            });
+            entry.viewSnapshot = snapshot;
+          },
+        );
+        continue;
+      }
       if (
         resource &&
         entry.cursor &&

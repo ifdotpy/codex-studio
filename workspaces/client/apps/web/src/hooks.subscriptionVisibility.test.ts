@@ -31,7 +31,7 @@ it("keeps a mounted hidden conversation out of subscription interest", () => {
 });
 it("subscribes the visible managed conversation", () => {
   useMessages("visible-chat", "agent", true, "workspace", "workspace");
-  expect(subscription).toHaveBeenLastCalledWith(
+  expect(subscription).toHaveBeenCalledWith(
     expect.objectContaining({ kind: "transcript", agentId: "visible-chat" }),
   );
 });

@@ -42,6 +42,10 @@ enum ResourceKind {
     Transcript,
     Transcripts,
     Room,
+    Processes,
+    Complaint,
+    Work,
+    TerminalOutput,
     Task,
     Tasks,
     Workspace,
@@ -229,6 +233,10 @@ impl ResourceNotifications {
                     | ResourceKind::Transcript
                     | ResourceKind::Transcripts
                     | ResourceKind::Room
+                    | ResourceKind::Processes
+                    | ResourceKind::Complaint
+                    | ResourceKind::Work
+                    | ResourceKind::TerminalOutput
                     | ResourceKind::Task
                     | ResourceKind::Tasks
                     | ResourceKind::Workspace => explicit

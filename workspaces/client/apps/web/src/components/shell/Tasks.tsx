@@ -5,14 +5,14 @@ import {
   Textarea,
   TextInput,
 } from "@mantine/core";
-import { useRef, useState } from "react";
-import { errorText, type PostBody } from "../../api";
+import { useEffect, useRef, useState } from "react";
+import { errorText, type GetResult, type PostBody } from "../../api";
 import {
   useServerApi,
   useServerStorage,
 } from "../../servers/ServerServicesContext";
 import { createMutationJournal } from "../../servers/mutationIdentity";
-import { useWorkspaceResource } from "../useWorkspaceResource";
+import { useSubscription } from "../../sync/subscriptions";
 import {
   gateFields,
   parseGate,
@@ -519,17 +519,23 @@ function TaskDetail({
 
 export default function Tasks({
   agentId,
-  revision = 0,
 }: {
   agentId: string;
   revision?: number;
 }) {
-  const { post } = useServerApi();
+  const { get, post } = useServerApi();
   const storage = useServerStorage();
-  const [reload, setReload] = useState(0);
-  const resource = useWorkspaceResource("/api/work", `${revision}:${reload}`, {
-    query: { agent: agentId },
-  });
+  const subscription = useSubscription({ kind: "work", agentId });
+  const [manual, setManual] = useState<{
+    agentId: string;
+    data: GetResult<"/api/work">;
+  } | null>(null);
+  useEffect(() => setManual(null), [subscription.data, agentId]);
+  const resource = {
+    data: manual?.agentId === agentId ? manual.data : subscription.data,
+    loading: subscription.status === "loading",
+    error: subscription.error ? errorText(subscription.error) : "",
+  };
   const [selectedId, setSelectedId] = useState("");
   const [status, setStatus] = useState("");
   const [owner, setOwner] = useState("");
@@ -559,7 +565,6 @@ export default function Tasks({
       );
       await post("/api/work", { ...payload, id: identity!.requestId });
       identity!.finish();
-      setReload((value) => value + 1);
       setNotice("The task action completed.");
       return true;
     } catch (failure) {
@@ -585,7 +590,11 @@ export default function Tasks({
         <Button
           variant="default"
           disabled={busy}
-          onClick={() => setReload((value) => value + 1)}
+          onClick={() => {
+            void get("/api/work", { query: { agent: agentId } })
+              .then((data) => setManual({ agentId, data }))
+              .catch((error) => setError(errorText(error)));
+          }}
         >
           Refresh tasks
         </Button>

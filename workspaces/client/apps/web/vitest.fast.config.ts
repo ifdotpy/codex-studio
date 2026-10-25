@@ -9,6 +9,8 @@ export default {
     include: [
       "src/precompressedAssets.test.mjs",
       "src/sync/subscriptions/store.test.ts",
+      "src/sync/subscriptions/viewData.test.ts",
+      "src/sync/subscriptions/terminalOutput.test.ts",
       "src/sync/subscriptions/server.test.ts",
       "src/sync/subscriptions/entityData.test.ts",
       // Preserve newly landed safety witnesses, including the real Rust draft-route fixture.

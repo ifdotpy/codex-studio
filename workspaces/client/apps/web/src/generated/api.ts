@@ -10739,6 +10739,15 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /** ComplaintResource */
+    ComplaintResource: {
+      complaintId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "complaint";
+    };
     /** ComplaintResponseDto */
     ComplaintResponseDto: {
       /** At */
@@ -16794,6 +16803,15 @@ export interface components {
       /** @default null */
       responseTarget?: components["schemas"]["ProcessResponseTarget"] | null;
     };
+    /** ProcessesResource */
+    ProcessesResource: {
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "processes";
+    };
     /** ProcessIdentity */
     ProcessIdentity: {
       /** Accountkey */
@@ -19038,7 +19056,11 @@ export interface components {
       | components["schemas"]["VaultJobProgressResource"]
       | components["schemas"]["RenameProgressResource"]
       | components["schemas"]["AgentDetailResource"]
-      | components["schemas"]["MonitorsResource"];
+      | components["schemas"]["MonitorsResource"]
+      | components["schemas"]["ProcessesResource"]
+      | components["schemas"]["WorkResource"]
+      | components["schemas"]["ComplaintResource"]
+      | components["schemas"]["TerminalOutputResource"];
     /**
      * ResourceRevisionEntry
      * @description Per-resource revision; StateResource uses the entity sequence.
@@ -19062,6 +19084,7 @@ export interface components {
       transcriptSnapshot?:
         | components["schemas"]["TranscriptPageResponse"]
         | null;
+      viewSnapshot?: components["schemas"]["SubscriptionViewSnapshot"];
       /** @description Transient voice records and session state. Recover through HTTP if the cursor interval is missing or incomplete. */
       voiceRecords?: components["schemas"]["VoiceRecordBatch"] | null;
     };
@@ -19545,6 +19568,8 @@ export interface components {
        * @enum {string}
        */
       kind: "room";
+      /** @description Legacy canvas history, rather than coordination room messages. */
+      legacy?: boolean;
       /** Roomid */
       roomId: string;
     };
@@ -21687,6 +21712,7 @@ export interface components {
       accounts: components["schemas"]["AccountsResponse"];
       agentDetail: components["schemas"]["AgentDetailEntityDto"];
       "auth-progress": components["schemas"]["ClaudeLoginResponse"] | null;
+      complaint: components["schemas"]["ComplaintDetailResponse"];
       costs: components["schemas"]["AccountCostResponse"][];
       desktop: components["schemas"]["DesktopResponse"];
       drafts: components["schemas"]["DraftChangeBatch"];
@@ -21694,15 +21720,19 @@ export interface components {
       models: components["schemas"]["SyncEntityPayload"][];
       monitors: components["schemas"]["MonitorEntityDto"][];
       "multi-server": components["schemas"]["AccessSnapshot"];
+      processes: components["schemas"]["ProcessList"];
       queue: components["schemas"]["SyncEntityPayload"][];
       receipts: components["schemas"]["SyncEntityPayload"][];
       "rename-progress": components["schemas"]["RenameResponse"] | null;
-      room: components["schemas"]["SyncEntityPayload"][];
+      room:
+        | components["schemas"]["ChatRead"]
+        | components["schemas"]["MessageHistory"];
       "session-cost": components["schemas"]["SessionCostResponse"];
       state: components["schemas"]["SyncEntityPayload"][];
       task: components["schemas"]["TaskEntityDto"];
       tasks: components["schemas"]["TaskEntityDto"][];
       terminal: components["schemas"]["TerminalRecord"];
+      "terminal-output": components["schemas"]["TerminalOutput"];
       terminals: components["schemas"]["TerminalRecord"][];
       transcript: components["schemas"]["TranscriptPageResponse"];
       transcripts: components["schemas"]["SyncEntityPayload"][];
@@ -21713,6 +21743,7 @@ export interface components {
         | null;
       "vault-readiness": boolean;
       voice: components["schemas"]["VoiceRecordBatch"];
+      work: components["schemas"]["WorkList"];
       workspace: components["schemas"]["SyncEntityPayload"][];
     };
     /**
@@ -21721,6 +21752,15 @@ export interface components {
      * @enum {string}
      */
     SubscriptionReplyKind: "delta" | "snapshot";
+    /** @description Bounded subscribed view records. Terminal output offsets count Unicode scalar values. Omission is reserved for oversized scoped recovery. */
+    SubscriptionViewSnapshot: {
+      complaint?: components["schemas"]["ComplaintDetailResponse"];
+      legacyMessages?: components["schemas"]["MessageHistory"];
+      processes?: components["schemas"]["ProcessList"];
+      room?: components["schemas"]["ChatRead"];
+      terminalOutput?: components["schemas"]["TerminalOutput"];
+      work?: components["schemas"]["WorkList"];
+    };
     /** SummaryAccount */
     SummaryAccount: {
       /**
@@ -23170,6 +23210,15 @@ export interface components {
       text: string;
       /** Truncated */
       truncated: boolean;
+    };
+    /** TerminalOutputResource */
+    TerminalOutputResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "terminal-output";
+      terminalId: string;
     };
     /**
      * TerminalRecord
@@ -26126,6 +26175,15 @@ export interface components {
       taskDefaultGate?: components["schemas"]["TaskAcceptanceGate"];
       /** Tasks */
       tasks: components["schemas"]["WorkItem"][];
+    };
+    /** WorkResource */
+    WorkResource: {
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "work";
     };
     /** WorkResultDto */
     WorkResultDto: {

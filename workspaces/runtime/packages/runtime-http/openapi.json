@@ -22180,6 +22180,25 @@
         "title": "ComplaintRecordResponse",
         "type": "object"
       },
+      "ComplaintResource": {
+        "additionalProperties": false,
+        "properties": {
+          "complaintId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "const": "complaint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "complaintId"
+        ],
+        "title": "ComplaintResource",
+        "type": "object"
+      },
       "ComplaintResponseDto": {
         "additionalProperties": false,
         "properties": {
@@ -36541,6 +36560,25 @@
         "title": "ProcessTree",
         "type": "object"
       },
+      "ProcessesResource": {
+        "additionalProperties": false,
+        "properties": {
+          "agentId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "const": "processes",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "agentId"
+        ],
+        "title": "ProcessesResource",
+        "type": "object"
+      },
       "ProfileBody": {
         "additionalProperties": false,
         "properties": {
@@ -42306,6 +42344,7 @@
             "accounts": "#/components/schemas/AccountsResource",
             "agentDetail": "#/components/schemas/AgentDetailResource",
             "auth-progress": "#/components/schemas/AuthProgressResource",
+            "complaint": "#/components/schemas/ComplaintResource",
             "costs": "#/components/schemas/CostsResource",
             "desktop": "#/components/schemas/DesktopResource",
             "drafts": "#/components/schemas/DraftsResource",
@@ -42313,6 +42352,7 @@
             "models": "#/components/schemas/ModelsResource",
             "monitors": "#/components/schemas/MonitorsResource",
             "multi-server": "#/components/schemas/MultiServerResource",
+            "processes": "#/components/schemas/ProcessesResource",
             "queue": "#/components/schemas/QueueResource",
             "receipts": "#/components/schemas/ReceiptsResource",
             "rename-progress": "#/components/schemas/RenameProgressResource",
@@ -42322,12 +42362,14 @@
             "task": "#/components/schemas/TaskResource",
             "tasks": "#/components/schemas/TasksResource",
             "terminal": "#/components/schemas/TerminalResource",
+            "terminal-output": "#/components/schemas/TerminalOutputResource",
             "terminals": "#/components/schemas/TerminalsResource",
             "transcript": "#/components/schemas/TranscriptResource",
             "transcripts": "#/components/schemas/TranscriptsResource",
             "vault-job-progress": "#/components/schemas/VaultJobProgressResource",
             "vault-readiness": "#/components/schemas/VaultReadinessResource",
             "voice": "#/components/schemas/VoiceResource",
+            "work": "#/components/schemas/WorkResource",
             "workspace": "#/components/schemas/WorkspaceResource"
           },
           "propertyName": "kind"
@@ -42410,6 +42452,18 @@
           },
           {
             "$ref": "#/components/schemas/MonitorsResource"
+          },
+          {
+            "$ref": "#/components/schemas/ProcessesResource"
+          },
+          {
+            "$ref": "#/components/schemas/WorkResource"
+          },
+          {
+            "$ref": "#/components/schemas/ComplaintResource"
+          },
+          {
+            "$ref": "#/components/schemas/TerminalOutputResource"
           }
         ],
         "title": "ResourceRef"
@@ -42518,6 +42572,9 @@
               }
             ],
             "description": "Newest transcript history window sent immediately after a subscription acknowledgement, with older-history cursors. The server shrinks it to fit the stream event byte limit; a single oversized newest item requires scoped recovery."
+          },
+          "viewSnapshot": {
+            "$ref": "#/components/schemas/SubscriptionViewSnapshot"
           },
           "voiceRecords": {
             "anyOf": [
@@ -44016,6 +44073,10 @@
             "const": "room",
             "title": "Kind",
             "type": "string"
+          },
+          "legacy": {
+            "description": "Legacy canvas history, rather than coordination room messages.",
+            "type": "boolean"
           },
           "roomId": {
             "minLength": 1,
@@ -49060,6 +49121,9 @@
               }
             ]
           },
+          "complaint": {
+            "$ref": "#/components/schemas/ComplaintDetailResponse"
+          },
           "costs": {
             "items": {
               "$ref": "#/components/schemas/AccountCostResponse"
@@ -49090,6 +49154,9 @@
           "multi-server": {
             "$ref": "#/components/schemas/AccessSnapshot"
           },
+          "processes": {
+            "$ref": "#/components/schemas/ProcessList"
+          },
           "queue": {
             "items": {
               "$ref": "#/components/schemas/SyncEntityPayload"
@@ -49113,10 +49180,14 @@
             ]
           },
           "room": {
-            "items": {
-              "$ref": "#/components/schemas/SyncEntityPayload"
-            },
-            "type": "array"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatRead"
+              },
+              {
+                "$ref": "#/components/schemas/MessageHistory"
+              }
+            ]
           },
           "session-cost": {
             "$ref": "#/components/schemas/SessionCostResponse"
@@ -49138,6 +49209,9 @@
           },
           "terminal": {
             "$ref": "#/components/schemas/TerminalRecord"
+          },
+          "terminal-output": {
+            "$ref": "#/components/schemas/TerminalOutput"
           },
           "terminals": {
             "items": {
@@ -49176,6 +49250,9 @@
           "voice": {
             "$ref": "#/components/schemas/VoiceRecordBatch"
           },
+          "work": {
+            "$ref": "#/components/schemas/WorkList"
+          },
           "workspace": {
             "items": {
               "$ref": "#/components/schemas/SyncEntityPayload"
@@ -49209,7 +49286,11 @@
           "vault-job-progress",
           "vault-readiness",
           "voice",
-          "workspace"
+          "workspace",
+          "processes",
+          "work",
+          "complaint",
+          "terminal-output"
         ],
         "type": "object"
       },
@@ -49221,6 +49302,31 @@
         ],
         "title": "SubscriptionReplyKind",
         "type": "string"
+      },
+      "SubscriptionViewSnapshot": {
+        "additionalProperties": false,
+        "description": "Bounded subscribed view records. Terminal output offsets count Unicode scalar values. Omission is reserved for oversized scoped recovery.",
+        "properties": {
+          "complaint": {
+            "$ref": "#/components/schemas/ComplaintDetailResponse"
+          },
+          "legacyMessages": {
+            "$ref": "#/components/schemas/MessageHistory"
+          },
+          "processes": {
+            "$ref": "#/components/schemas/ProcessList"
+          },
+          "room": {
+            "$ref": "#/components/schemas/ChatRead"
+          },
+          "terminalOutput": {
+            "$ref": "#/components/schemas/TerminalOutput"
+          },
+          "work": {
+            "$ref": "#/components/schemas/WorkList"
+          }
+        },
+        "type": "object"
       },
       "SummaryAccount": {
         "additionalProperties": false,
@@ -53192,6 +53298,25 @@
           "status"
         ],
         "title": "TerminalOutput",
+        "type": "object"
+      },
+      "TerminalOutputResource": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "terminal-output",
+            "type": "string"
+          },
+          "terminalId": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "terminalId"
+        ],
+        "title": "TerminalOutputResource",
         "type": "object"
       },
       "TerminalRecord": {
@@ -59844,6 +59969,25 @@
           "tasks"
         ],
         "title": "WorkList",
+        "type": "object"
+      },
+      "WorkResource": {
+        "additionalProperties": false,
+        "properties": {
+          "agentId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "const": "work",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "agentId"
+        ],
+        "title": "WorkResource",
         "type": "object"
       },
       "WorkResultDto": {

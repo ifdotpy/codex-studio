@@ -250,13 +250,12 @@ export default function BackgroundTasks({
     } | null>(null),
     [mobileDetail, setMobileDetail] = useState(false),
     [now, setNow] = useState(Date.now() / 1000);
-  const [processRecords, setProcessRecords] = useState<ManagedProcess[]>([]);
-  const [responseTargetState, setResponseTargetState] = useState<{
-    ownerKey: string;
-    target: ProcessResponseTarget | null;
-  } | null>(null);
-  const [processLoadError, setProcessLoadError] = useState("");
-  const [processLoading, setProcessLoading] = useState(false);
+  const processes = useSubscription(
+    opened && leadId ? { kind: "processes", agentId: leadId } : null,
+  );
+  const processRecords = processes.data?.processes ?? [];
+  const processLoadError = processes.error ? errorText(processes.error) : "";
+  const processLoading = processes.status === "loading";
   const [controlPending, setControlPending] = useState(false);
   const [includeWorkers, setIncludeWorkers] = useState(false);
   const [pendingControl, setPendingControl] =
@@ -267,49 +266,22 @@ export default function BackgroundTasks({
   const agents = data.threads,
     owner = (id: string) => agents.find((a) => a.id === id),
     scopeOwner = owner(leadId || ""),
-    responseOwnerKey = responseOwnerIdentityKey(scopeOwner),
+    streamedTarget = processes.data?.responseTarget,
     responseTarget =
-      responseTargetState?.ownerKey === responseOwnerKey
-        ? responseTargetState.target
+      scopeOwner?.inFlight &&
+      streamedTarget &&
+      streamedTarget.agent === scopeOwner.id &&
+      streamedTarget.epoch === scopeOwner.epoch &&
+      streamedTarget.threadId === scopeOwner.threadId &&
+      streamedTarget.turnId === scopeOwner.turnId &&
+      streamedTarget.accountKey === (scopeOwner.accountKey || "default")
+        ? streamedTarget
         : null;
   useEffect(() => {
     if (!opened) return;
     const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => clearInterval(timer);
   }, [opened]);
-  useEffect(() => {
-    if (!opened || !leadId) return;
-    let cancelled = false;
-    setResponseTargetState(null);
-    setProcessRecords([]);
-    setProcessLoading(true);
-    get("/api/processes", { query: { agent: leadId } })
-      .then((result) => {
-        if (cancelled) return;
-        setProcessRecords(result.processes);
-        setResponseTargetState({
-          ownerKey: responseOwnerKey,
-          target: result.responseTarget || null,
-        });
-        setProcessLoadError("");
-      })
-      .catch((error) => {
-        if (!cancelled) setProcessLoadError(errorText(error));
-      })
-      .finally(() => {
-        if (!cancelled) setProcessLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    opened,
-    leadId,
-    controlStorageKey,
-    data.runtime.monitors,
-    data.runtime.tasks,
-    responseOwnerKey,
-  ]);
   useEffect(() => {
     if (!leadId) return;
     setControlResult(null);

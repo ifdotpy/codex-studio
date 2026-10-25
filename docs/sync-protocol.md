@@ -145,6 +145,14 @@ exhaustion stays visible until reconnect or an explicit retry. The visible trans
 uses inline stream snapshots and intervals; a revision-only oversized interval
 retains its scoped recovery read.
 
+Open process and work-review panels and complaint threads receive their bounded
+records in `viewSnapshot` through typed screen subscriptions. Room baselines
+retain a newest-message window and an older-history cursor. Open terminal output
+uses Unicode-scalar offsets; the renderer applies overlapping tails as appends
+and stores the retained output with its resume cursor under the projection write
+lock. A reconnect reuses that applied base or receives a replacement snapshot.
+Saved terminal history and explicit retries remain user actions.
+
 The existing native EventSource transport and RxDB projection cache remain in
 use. Adding a separate query cache is unnecessary for this contract. The Rust HTTP adapter
 owns SSE framing; the renderer and server compare the same generated schema

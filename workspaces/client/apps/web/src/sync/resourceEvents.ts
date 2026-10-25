@@ -56,6 +56,7 @@ export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
 
 export type ResourceVersion = {
+  viewSnapshot?: components["schemas"]["SubscriptionViewSnapshot"];
   cursor?: components["schemas"]["SubscriptionCursor"];
   replyKind?: components["schemas"]["SubscriptionReplyKind"];
   /** Transient subscribed value; never sent through the entity persister. */
@@ -609,6 +610,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         event.resourceVersions?.find(
           (entry) => entry.resource && resourceKey(entry.resource) === key,
         ) ?? event.resourceVersions?.[resourceIndex];
+      if (revisionEntry?.viewSnapshot)
+        version.viewSnapshot = revisionEntry.viewSnapshot;
       if (revisionEntry?.cursor) version.cursor = revisionEntry.cursor;
       if (revisionEntry?.replyKind) version.replyKind = revisionEntry.replyKind;
       if (

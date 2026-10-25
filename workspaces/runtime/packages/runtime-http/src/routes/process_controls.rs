@@ -74,7 +74,7 @@ fn connections(state: &HttpState, owners: &[Value]) -> controls::Connections {
         })
         .collect()
 }
-async fn read_listing(state: HttpState, scope: String) -> Result<Value, ApiError> {
+pub(super) async fn read_listing(state: HttpState, scope: String) -> Result<Value, ApiError> {
     let store = store(&state)?;
     store
         .read_async("runtime-http/routes/process_controls", move |tx| {

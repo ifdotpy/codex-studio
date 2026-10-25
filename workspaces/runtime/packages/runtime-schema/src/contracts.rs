@@ -56,6 +56,10 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
+                "SYNC_TERMINAL_STREAM_MAX_CHARS",
+                values::SYNC_TERMINAL_STREAM_MAX_CHARS.to_string(),
+            ),
+            (
                 "STUDIO_ERRORS_DISMISS_MAX_IDS",
                 values::STUDIO_ERRORS_DISMISS_MAX_IDS.to_string(),
             ),

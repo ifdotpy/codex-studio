@@ -104,9 +104,160 @@ async fn entity_initial(
     super::subscription_entities::initial_snapshot(state, resource, since).await
 }
 
+// View records are transient except resumable room/terminal output, which the
+// renderer stores together with its applied cursor before notifying readers.
+fn is_view_resource(resource: &ResourceRef) -> bool {
+    matches!(
+        resource,
+        ResourceRef::ProcessesResource(_)
+            | ResourceRef::WorkResource(_)
+            | ResourceRef::ComplaintResource(_)
+            | ResourceRef::RoomResource(_)
+            | ResourceRef::TerminalOutputResource(_)
+    )
+}
+
+async fn view_value(
+    state: HttpState,
+    resource: ResourceRef,
+    since: Option<SubscriptionCursor>,
+) -> Result<Value, ApiError> {
+    use serde_json::json;
+    match resource {
+        ResourceRef::ProcessesResource(r) => {
+            Ok(json!({"processes":super::process_controls::read_listing(state, r.agent_id).await?}))
+        }
+        ResourceRef::WorkResource(r) => {
+            Ok(json!({"work":super::work_items::work_for_agent(state, r.agent_id).await?}))
+        }
+        ResourceRef::ComplaintResource(r) => Ok(
+            json!({"complaint":super::questions_reads::complaint_for_id(state, r.complaint_id).await?}),
+        ),
+        ResourceRef::RoomResource(r) => {
+            if r.legacy == Some(true) {
+                let store = state.store.ok_or_else(ApiError::internal)?;
+                let messages = store
+                    .read_async("runtime-http/legacy-room-subscription", move |tx| {
+                        studio_runtime_services::coordination::history(tx, &r.room_id)
+                            .map_err(|_| ApiError::internal())
+                    })
+                    .await?;
+                return Ok(json!({"legacyMessages":messages}));
+            }
+            let mut room = serde_json::to_value(
+                super::messages::room_snapshot(
+                    state,
+                    r.room_id,
+                    None,
+                    None,
+                    studio_runtime_schema::shared_values::SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS as i64,
+                )
+                .await?,
+            )
+            .map_err(|_| ApiError::internal())?;
+            // Preserve an exclusive history boundary while fitting a bounded tail.
+            while serde_json::to_vec(&room)
+                .map_err(|_| ApiError::internal())?
+                .len()
+                > SYNC_STREAM_EVENT_MAX_BYTES / 2
+            {
+                let Some(messages) = room["messages"].as_array_mut() else {
+                    break;
+                };
+                if messages.len() <= 1 {
+                    break;
+                }
+                messages.remove(0);
+                let first = messages[0]["seq"].clone();
+                room["nextBefore"] = first;
+            }
+            Ok(json!({"room":room}))
+        }
+        ResourceRef::TerminalOutputResource(r) => {
+            let offset = since
+                .filter(|c| c.workspace_id == state.workspace_id)
+                .map_or(0, |c| c.seq);
+            let store = state.store.ok_or_else(ApiError::internal)?;
+            let mut output =
+                studio_runtime_services::terminal_driver::output(&store, &r.terminal_id, offset)
+                    .await
+                    .map_err(super::terminals::terminal_error)?;
+            if offset > output["offset"].as_i64().unwrap_or_default() {
+                output = studio_runtime_services::terminal_driver::output(&store, &r.terminal_id, 0).await.map_err(super::terminals::terminal_error)?;
+            }
+            // Worst-case JSON escaping is six bytes per scalar. This bound leaves
+            // room for resource metadata and the event envelope.
+            let max_chars = studio_runtime_schema::shared_values::SYNC_TERMINAL_STREAM_MAX_CHARS;
+            let text = output["text"].as_str().ok_or_else(ApiError::internal)?;
+            let count = text.chars().count();
+            if count > max_chars {
+                output["text"] = json!(text.chars().skip(count - max_chars).collect::<String>());
+                output["truncated"] = json!(true);
+            }
+            Ok(json!({"terminalOutput":output}))
+        }
+        _ => Err(ApiError::internal()),
+    }
+}
+
+async fn view_initial(
+    state: HttpState,
+    resource: ResourceRef,
+    since: Option<SubscriptionCursor>,
+) -> Result<ResourceRevisionEntry, ApiError> {
+    let snapshot = view_value(state.clone(), resource.clone(), since.clone()).await?;
+    let mut value = serde_json::json!({"revision":0,"resource":resource,"viewSnapshot":snapshot});
+    if let Some(output) = snapshot.get("terminalOutput") {
+        let offset = output["offset"].as_i64().ok_or_else(ApiError::internal)?;
+        value["revision"] = serde_json::json!(offset);
+        value["cursor"] = serde_json::json!({"workspaceId":state.workspace_id,"seq":offset});
+        value["replyKind"] = serde_json::json!(if since
+            .is_some_and(|c| c.workspace_id == state.workspace_id && c.seq <= offset)
+            && output["truncated"] == false
+        {
+            "delta"
+        } else {
+            "snapshot"
+        });
+    }
+    if let Some(room) = snapshot.get("room") {
+        let seq = room["messages"]
+            .as_array()
+            .and_then(|messages| messages.last())
+            .and_then(|message| message["seq"].as_i64())
+            .unwrap_or(0);
+        value["cursor"] = serde_json::json!({"workspaceId":state.workspace_id,"seq":seq});
+        value["replyKind"] = serde_json::json!("snapshot");
+    }
+    serde_json::from_value(value).map_err(|_| ApiError::internal())
+}
+
+pub(super) async fn attach_view_snapshots(
+    state: Option<&HttpState>,
+    event: &mut crate::generated::ResourceChangeEvent,
+) {
+    let Some(state) = state else { return };
+    for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
+        if !is_view_resource(resource) || entry.view_snapshot.is_some() {
+            continue;
+        }
+        match initial_snapshot(state.clone(), resource.clone(), None).await {
+            Ok(mut snapshot) => {
+                snapshot.revision = entry.revision;
+                *entry = snapshot;
+            }
+            Err(error) => eprintln!("subscribed view snapshot unavailable: {error:?}"),
+        }
+    }
+}
+
 // This is the only resource-kind registration list. The parity witness compares
 // its complete set against the generated OpenAPI ResourceRef discriminator.
 resource_handlers! {
+    ProcessesResourceHandler => ProcessesResource, view_initial;
+    WorkResourceHandler => WorkResource, view_initial;
+    ComplaintResourceHandler => ComplaintResource, view_initial;
+    TerminalOutputResourceHandler => TerminalOutputResource, view_initial;
     AgentDetailResourceHandler => AgentDetailResource, entity_initial;
     MonitorsResourceHandler => MonitorsResource, entity_initial;
     AccountsResourceHandler => AccountsResource, passive_initial;
@@ -120,7 +271,7 @@ resource_handlers! {
     QueueResourceHandler => QueueResource, passive_initial;
     ReceiptsResourceHandler => ReceiptsResource, passive_initial;
     RenameProgressResourceHandler => RenameProgressResource, passive_initial;
-    RoomResourceHandler => RoomResource, passive_initial;
+    RoomResourceHandler => RoomResource, view_initial;
     SessionCostResourceHandler => SessionCostResource, entity_initial;
     StateResourceHandler => StateResource, entity_initial;
     TaskResourceHandler => TaskResource, entity_initial;
@@ -194,6 +345,12 @@ fn same_scope(resource: &ResourceRef, changed: &ResourceRef) -> bool {
 }
 
 async fn content_fingerprint(state: HttpState, resource: ResourceRef) -> Option<Vec<u8>> {
+    if is_view_resource(&resource) {
+        return view_value(state, resource, None)
+            .await
+            .ok()
+            .and_then(|value| serde_json::to_vec(&value).ok());
+    }
     let reference = serde_json::to_value(&resource).ok()?;
     if reference["kind"].as_str().is_some_and(|kind| {
         studio_runtime_schema::sync_protocol::subscription_entity_scopes().contains_key(kind)
