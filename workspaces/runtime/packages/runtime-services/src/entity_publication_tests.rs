@@ -1113,6 +1113,24 @@ fn lost_monitor(id: &str, agent: &str, at: f64) -> String {
     .to_string()
 }
 
+/// Resolve the grouped row through its public projection, without copying its key format.
+fn monitor_error_id(store: &studio_runtime_store::RuntimeStore, monitor: &str) -> String {
+    let monitor = monitor.to_owned();
+    store
+        .test_read_transaction(move |tx| {
+            let now = crate::event_write::unix_time().expect("clock");
+            Ok(crate::studio_errors::list(tx, now)?["items"]
+                .as_array()
+                .expect("error rows")
+                .iter()
+                .find(|row| row["monitorId"] == monitor)
+                .and_then(|row| row["id"].as_str())
+                .expect("listed monitor group")
+                .to_owned())
+        })
+        .expect("group ID read")
+}
+
 /// Full Studio error list rebuilds on the store's writer thread.
 async fn full_publications(store: &studio_runtime_store::RuntimeStore) -> u64 {
     store
@@ -1167,8 +1185,9 @@ async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
         vec!["lost-watch".into(), lost_monitor("lost-watch", CHAT, now)],
     )
     .await;
+    let lost_watch = monitor_error_id(&store, "lost-watch");
     assert!(
-        !client_entity(&store, "studioError", "monitor:lost-watch")
+        !client_entity(&store, "studioError", &lost_watch)
             .expect("listed")
             .0
     );
@@ -1239,9 +1258,11 @@ async fn every_studio_error_change_still_publishes_with_its_source_write() {
         )
         .await;
     }
+    let lost_a = monitor_error_id(&store, "lost-a");
+    let lost_b = monitor_error_id(&store, "lost-b");
     assert_published_list(&store);
     assert_eq!(
-        client_entity(&store, "studioError", "monitor:lost-a")
+        client_entity(&store, "studioError", &lost_a)
             .expect("listed")
             .1["agentName"],
         "Published chat"
@@ -1254,7 +1275,7 @@ async fn every_studio_error_change_still_publishes_with_its_source_write() {
     )
     .await;
     assert_eq!(
-        client_entity(&store, "studioError", "monitor:lost-a")
+        client_entity(&store, "studioError", &lost_a)
             .expect("listed")
             .1["agentName"],
         "Renamed"
@@ -1268,7 +1289,7 @@ async fn every_studio_error_change_still_publishes_with_its_source_write() {
     )
     .await;
     assert!(
-        client_entity(&store, "studioError", "monitor:lost-a")
+        client_entity(&store, "studioError", &lost_a)
             .expect("tombstone")
             .0
     );
@@ -1280,29 +1301,30 @@ async fn every_studio_error_change_still_publishes_with_its_source_write() {
     )
     .await;
     assert!(
-        !client_entity(&store, "studioError", "monitor:lost-a")
+        !client_entity(&store, "studioError", &lost_a)
             .expect("restored")
             .0
     );
     assert_published_list(&store);
 
+    let dismissed = lost_a.clone();
     store
-        .transaction_with(move |tx| crate::studio_errors::dismiss(tx, "monitor:lost-a", now))
+        .transaction_with(move |tx| crate::studio_errors::dismiss(tx, &dismissed, now))
         .await
         .expect("dismissal commits");
     assert!(
-        client_entity(&store, "studioError", "monitor:lost-a")
+        client_entity(&store, "studioError", &lost_a)
             .expect("dismissed")
             .0
     );
     write(
         &store,
         "DELETE FROM runtime_operation_receipts WHERE id=?1",
-        vec!["studio-errors:dismissed:monitor:lost-a".into()],
+        vec![format!("studio-errors:dismissed:{lost_a}")],
     )
     .await;
     assert!(
-        !client_entity(&store, "studioError", "monitor:lost-a")
+        !client_entity(&store, "studioError", &lost_a)
             .expect("undismissed")
             .0
     );
@@ -1314,7 +1336,7 @@ async fn every_studio_error_change_still_publishes_with_its_source_write() {
     )
     .await;
     assert!(
-        client_entity(&store, "studioError", "monitor:lost-b")
+        client_entity(&store, "studioError", &lost_b)
             .expect("removed")
             .0
     );
