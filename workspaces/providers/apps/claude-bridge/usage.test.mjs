@@ -156,3 +156,75 @@ test("mixed known and unknown model thinking totals remain unknown", () => {
     tokens: { reasoningOutput: 20 },
   });
 });
+
+test("tool identity keeps its original turn across responses and nested tool ownership", () => {
+  const usage = new ResponseUsage();
+  usage.registerTool("parent", "original");
+  const start = events.find((e) => e.type === "message_start");
+  if (!start) throw new Error("missing SDK fixture");
+  for (const turn of ["later", "even-later"]) {
+    usage.observe(frame(start, "parent"), turn);
+    expect(
+      usage.observe(frame({ type: "message_stop" }, "parent"), turn),
+    ).toMatchObject([{ turnId: "original" }]);
+  }
+  usage.registerTool("nested", usage.turnFor("parent", "current"));
+  expect(usage.turnFor("nested", "current")).toBe("original");
+});
+test("context windows use the response model and its SDK canonical alias", () => {
+  const usage = new ResponseUsage();
+  usage.recordModels({
+    alias: { ...modelUsage, canonicalModel: "claude-opus-5-5" },
+  });
+  for (const event of events) {
+    const observations = usage.observe(frame(event), "turn");
+    if (event.type === "message_stop")
+      expect(observations).toMatchObject([{ modelContextWindow: 200000 }]);
+  }
+});
+
+test("query-close accounting is final and late SDK frames cannot repeat it", () => {
+  const usage = new ResponseUsage();
+  const start = events.find((e) => e.type === "message_start");
+  if (!start) throw new Error("missing SDK fixture");
+  usage.observe(frame(start, "parent"), "turn");
+  expect(usage.finish("queryClosed")).toMatchObject([
+    { kind: "gap", responseId: "response-1" },
+  ]);
+  expect(usage.finish("queryClosed")).toEqual([]);
+  for (const event of events)
+    expect(usage.observe(frame(event, "parent"), "later")).toEqual([]);
+});
+
+test("pricing aliases never overwrite exact model context windows", () => {
+  const usage = new ResponseUsage();
+  usage.recordModels({
+    "claude-opus-5-5": modelUsage,
+    "claude-opus-5-5[1m]": {
+      ...modelUsage,
+      contextWindow: 1000000,
+      canonicalModel: "claude-opus-5-5",
+    },
+  });
+  for (const event of events) {
+    const observations = usage.observe(frame(event), "turn");
+    if (event.type === "message_stop")
+      expect(observations).toMatchObject([{ modelContextWindow: 200000 }]);
+  }
+});
+test("a pricing alias with conflicting candidate windows remains unknown", () => {
+  const usage = new ResponseUsage();
+  usage.recordModels({
+    "variant-200k": { ...modelUsage, canonicalModel: "claude-opus-5-5" },
+    "variant-1m": {
+      ...modelUsage,
+      contextWindow: 1000000,
+      canonicalModel: "claude-opus-5-5",
+    },
+  });
+  for (const event of events) {
+    const observations = usage.observe(frame(event), "turn");
+    if (event.type === "message_stop")
+      expect(observations[0]).not.toHaveProperty("modelContextWindow");
+  }
+});
