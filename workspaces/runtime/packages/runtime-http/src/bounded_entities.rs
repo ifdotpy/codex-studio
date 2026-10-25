@@ -25,6 +25,17 @@ enum Publication {
 /// One ordered writer owns the durable summaries for this HTTP workspace.
 /// Source observers only enqueue; filesystem reads remain outside SQL callbacks.
 pub(crate) async fn start(state: &HttpState) -> Result<(), StoreError> {
+    start_with_pricing_fetch(
+        state,
+        studio_runtime_services::usage::fetch_models_dev_catalog,
+    )
+    .await
+}
+
+async fn start_with_pricing_fetch<F>(state: &HttpState, fetch: F) -> Result<(), StoreError>
+where
+    F: FnOnce() -> Option<Value> + Send + 'static,
+{
     let Some(store) = state.store.clone() else {
         return Ok(());
     };
@@ -110,7 +121,7 @@ pub(crate) async fn start(state: &HttpState) -> Result<(), StoreError> {
     let mut agent_roots = read_agent_roots(&store).await?;
     publish_accounts(state).await?;
     publish_costs(state).await?;
-    publish_sessions(state).await?;
+    publish_session_roots_with_fetch(state, None, fetch).await?;
     publish_desktop(state).await?;
     let state = state.clone();
     runtime.spawn(async move {
@@ -506,6 +517,26 @@ async fn settle_cost_worker_failure(state: &HttpState, key: &str) -> Result<(), 
     }).await
 }
 
+// Fetching is bounded by the catalog owner's request timeout and daily attempt TTL.
+// Both startup (even without teams) and source-driven session publication use this path.
+async fn refresh_session_pricing<F>(state: &HttpState, fetch: F) -> Result<(), StoreError>
+where
+    F: FnOnce() -> Option<Value> + Send + 'static,
+{
+    let root = std::path::PathBuf::from(&state.state_dir);
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "bounded-entities/pricing-refresh",
+        move || {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |time| time.as_secs_f64());
+            studio_runtime_services::usage::refresh_pricing_with_fetch(&root, now, fetch);
+        },
+    )
+    .await
+    .map_err(|_| StoreError::ReadTaskFailed)
+}
+
 async fn publish_sessions(state: &HttpState) -> Result<(), StoreError> {
     publish_session_roots(state, None).await
 }
@@ -514,11 +545,28 @@ async fn publish_session_roots(
     state: &HttpState,
     roots: Option<BTreeSet<String>>,
 ) -> Result<(), StoreError> {
+    publish_session_roots_with_fetch(
+        state,
+        roots,
+        studio_runtime_services::usage::fetch_models_dev_catalog,
+    )
+    .await
+}
+
+async fn publish_session_roots_with_fetch<F>(
+    state: &HttpState,
+    roots: Option<BTreeSet<String>>,
+    fetch: F,
+) -> Result<(), StoreError>
+where
+    F: FnOnce() -> Option<Value> + Send + 'static,
+{
     let store = state
         .store
         .as_ref()
         .ok_or(StoreError::ReadTaskFailed)?
         .clone();
+    refresh_session_pricing(state, fetch).await?;
     let selected = roots.clone();
     let ids = store.read_async("bounded-entities/session-roots", move |tx| {
         if let Some(roots) = selected {
@@ -546,7 +594,15 @@ async fn publish_session_roots(
         .unwrap_or_default();
     let source = store.clone();
     let rows=studio_runtime_process::blocking_pool::spawn_blocking("bounded-entities/session-costs",move || ids.into_iter().map(|id| {
-        let value=studio_runtime_services::costs::session_cost_with_account_profiles(&source,&id,&profiles).unwrap_or_else(|error|json!({"rootId":id,"totalUSD":null,"pricedSamples":0,"breakdown":{"models":{},"providers":{}},"unknownModels":[],"estimated":true,"pricingState":"loading","cacheAgeSeconds":0,"refreshing":false,"method":error.to_string()}));
+        let value=studio_runtime_services::costs::session_cost_with_account_profiles(&source,&id,&profiles).unwrap_or_else(|error| {
+            // A completed pricing attempt with no usable catalog is an unavailable
+            // estimate (ready + null total), rather than work still loading.
+            let pricing_state = match error {
+                studio_runtime_services::costs::CostsError::Dependency(_)
+                | studio_runtime_services::costs::CostsError::InvalidPricing => "ready",
+                _ => "loading",
+            };
+            json!({"rootId":id,"totalUSD":null,"pricedSamples":0,"breakdown":{"models":{},"providers":{}},"unknownModels":[],"estimated":true,"pricingState":pricing_state,"cacheAgeSeconds":0,"refreshing":false,"method":error.to_string()})});
         (id,value)
     }).collect()).await.map_err(|_|StoreError::ReadTaskFailed)?;
     match roots {
@@ -599,6 +655,11 @@ mod tests {
             Some(store),
             Some(Arc::new(policy)),
         );
+        let pricing = root.path().join("model-pricing");
+        std::fs::create_dir_all(&pricing).expect("pricing directory");
+        std::fs::write(pricing.join("refresh-state.json"),
+            json!({"lastAttemptAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("time").as_secs_f64()}).to_string()
+        ).expect("fixture suppresses upstream pricing requests");
         (root, state)
     }
 
@@ -618,6 +679,128 @@ mod tests {
                 Ok(serde_json::from_str::<Value>(&raw)?["value"].clone())
             })
             .expect("published source entity")
+    }
+
+    fn pricing_providers() -> Value {
+        json!({
+            "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2}}}},
+            "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2}}}}
+        })
+    }
+
+    async fn pricing_team(state: &HttpState) {
+        std::fs::remove_file(
+            std::path::Path::new(&state.state_dir).join("model-pricing/refresh-state.json"),
+        )
+        .expect("enable injected refresh");
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('pricing-team',?1)",
+                    [
+                        json!({"id":"pricing-team","rootId":"pricing-team","isLead":true})
+                            .to_string(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("team");
+    }
+
+    #[tokio::test]
+    async fn startup_pricing_refresh_makes_session_ready_without_account_interest() {
+        let (root, state) = state().await;
+        pricing_team(&state).await;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetched = calls.clone();
+        start_with_pricing_fetch(&state, move || {
+            fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(pricing_providers())
+        })
+        .await
+        .expect("startup");
+        assert_eq!(
+            entity(&state, "sessionCost", "pricing-team")["pricingState"],
+            "ready"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(
+            !root.path().join("account-costs").exists(),
+            "no account scan"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_pricing_refresh_reuses_fresh_artifact_and_refreshes_expired_artifact() {
+        let (root, state) = state().await;
+        pricing_team(&state).await;
+        let directory = root.path().join("model-pricing");
+        std::fs::create_dir_all(&directory).expect("pricing directory");
+        let artifact = directory.join("models-dev-v1.json");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_secs_f64();
+        let mut value =
+            json!({"version":1,"fetchedAtEpoch":now,"catalog":{"providers":pricing_providers()}});
+        std::fs::write(&artifact, value.to_string()).expect("fresh artifact");
+        publish_session_roots_with_fetch(&state, None, || panic!("fresh catalog must not fetch"))
+            .await
+            .expect("fresh publication");
+        assert_eq!(
+            entity(&state, "sessionCost", "pricing-team")["pricingState"],
+            "ready"
+        );
+        value["fetchedAtEpoch"] = json!(1);
+        std::fs::write(&artifact, value.to_string()).expect("expired artifact");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetched = calls.clone();
+        publish_session_roots_with_fetch(&state, None, move || {
+            fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(pricing_providers())
+        })
+        .await
+        .expect("expired publication");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        publish_session_roots_with_fetch(&state, None, || {
+            panic!("refreshed catalog must not fetch")
+        })
+        .await
+        .expect("repeated publication");
+    }
+
+    #[tokio::test]
+    async fn failed_session_pricing_refresh_respects_attempt_ttl() {
+        let (root, state) = state().await;
+        pricing_team(&state).await;
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetched = calls.clone();
+        publish_session_roots_with_fetch(&state, None, move || {
+            fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        })
+        .await
+        .expect("failed fetch publication");
+        assert_eq!(
+            entity(&state, "sessionCost", "pricing-team")["pricingState"],
+            "ready"
+        );
+        assert!(entity(&state, "sessionCost", "pricing-team")["totalUSD"].is_null());
+        publish_session_roots_with_fetch(&state, None, || {
+            panic!("failed attempt must keep its TTL")
+        })
+        .await
+        .expect("attempt TTL publication");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(
+            root.path()
+                .join("model-pricing/refresh-state.json")
+                .exists()
+        );
     }
 
     #[tokio::test]

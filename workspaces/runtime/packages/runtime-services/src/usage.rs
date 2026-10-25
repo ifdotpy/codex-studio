@@ -979,6 +979,31 @@ fn acquire_codex_scan_lock_for(
     }
 }
 
+/// Durable attempt marker relative to the state root; shared by scan and session refreshes.
+const PRICING_REFRESH_STATE: &str = "model-pricing/refresh-state.json";
+
+fn pricing_refresh_due(state_dir: &Path, now: f64) -> bool {
+    let catalog_attempt = crate::pricing::load_pricing(state_dir)
+        .filter(|loaded| loaded.catalog.is_some())
+        .map_or(0.0, |loaded| loaded.last_attempt_at);
+    let failed_attempt = read_json(&state_dir.join(PRICING_REFRESH_STATE))
+        .and_then(|value| value.get("lastAttemptAt").and_then(Value::as_f64))
+        .unwrap_or_default();
+    now - catalog_attempt.max(failed_attempt) >= PRICING_CATALOG_TTL_SECONDS
+}
+
+/// Ensure session pricing independently of account scans. The cached artifact metadata
+/// avoids reparsing the catalog on each publication; the existing lock and durable
+/// attempt TTL fence concurrent session and account callers, including failed fetches.
+pub fn refresh_pricing_with_fetch<F>(state_dir: &Path, now: f64, fetch: F)
+where
+    F: FnOnce() -> Option<Value>,
+{
+    if pricing_refresh_due(state_dir, now) {
+        let _catalog = pricing_catalog_with_fetch(state_dir, now, fetch);
+    }
+}
+
 fn pricing_catalog_with_fetch<F>(
     state_dir: &Path,
     now: f64,
@@ -990,43 +1015,14 @@ where
     let _catalog_guard = PRICING_CATALOG_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let path = state_dir.join("model-pricing/models-dev-v1.json");
-    let attempt_path = state_dir.join("model-pricing/refresh-state.json");
-    let mut artifact = read_json(&path).filter(|artifact| {
-        artifact.get("version").and_then(Value::as_u64) == Some(1)
-            && artifact
-                .get("catalog")
-                .and_then(|catalog| crate::pricing::PricingCatalog::from_value(catalog).ok())
-                .is_some()
-    });
-    let current_catalog = artifact
-        .as_ref()
-        .and_then(|artifact| artifact.get("catalog"))
-        .and_then(|catalog| crate::pricing::PricingCatalog::from_value(catalog).ok());
-    let last_attempt = artifact
-        .as_ref()
-        .and_then(|artifact| {
-            artifact
-                .get("lastAttemptAt")
-                .and_then(Value::as_f64)
-                .or_else(|| artifact.get("fetchedAtEpoch").and_then(Value::as_f64))
-                .or_else(|| {
-                    artifact
-                        .get("fetchedAt")
-                        .and_then(Value::as_str)
-                        .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
-                        .map(|stamp| stamp.timestamp() as f64)
-                })
-        })
-        .unwrap_or_default()
-        .max(
-            read_json(&attempt_path)
-                .and_then(|value| value.get("lastAttemptAt").and_then(Value::as_f64))
-                .unwrap_or_default(),
-        );
-    if now - last_attempt < PRICING_CATALOG_TTL_SECONDS {
+    let path = state_dir.join(crate::pricing::PRICING_ARTIFACT);
+    let attempt_path = state_dir.join(PRICING_REFRESH_STATE);
+    let current_catalog =
+        crate::pricing::load_pricing(state_dir).and_then(|loaded| loaded.catalog.clone());
+    if !pricing_refresh_due(state_dir, now) {
         return current_catalog;
     }
+    let mut artifact = current_catalog.as_ref().and_then(|_| read_json(&path));
 
     if write_pricing_attempt(&attempt_path, now).is_err() {
         return current_catalog;
@@ -1064,7 +1060,7 @@ where
     Some(catalog)
 }
 
-fn fetch_models_dev_catalog() -> Option<Value> {
+pub fn fetch_models_dev_catalog() -> Option<Value> {
     fetch_models_dev_catalog_with(|agent, url| {
         let response = agent
             .get(url)
