@@ -210,6 +210,7 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
 }
 fn state(store: &RuntimeStore, tables: &Value) -> Value {
     let db = store.test_reader().expect("read");
+    super::turn_fixtures::assert_agent_view_projections(&db);
     let mut result = serde_json::Map::new();
     for table in tables.as_object().expect("tables").keys() {
         let order = if table == "chat_messages" {
@@ -268,8 +269,10 @@ fn normalize(value: &mut Value) {
                 if key == "sync_entities"
                     && let Some(rows) = value.as_array_mut()
                 {
-                    // Keep every collection written by the scenario. The Python
-                    // oracle builds its own projection rows for agent/room/event.
+                    // View projections are checked against their OpenAPI owners above.
+                    rows.retain(|row| {
+                        !super::turn_fixtures::is_agent_view_collection(&row["collection"])
+                    });
                     rows.sort_by_key(|row| {
                         (
                             row["collection"].as_str().unwrap_or_default().to_owned(),

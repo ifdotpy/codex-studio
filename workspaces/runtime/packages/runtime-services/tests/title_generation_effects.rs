@@ -117,6 +117,7 @@ fn agent_and_projection(store: &RuntimeStore) -> (String, Vec<Value>) {
 
 fn persisted_snapshot(store: &RuntimeStore) -> Value {
     let connection = store.test_reader().expect("snapshot reader");
+    super::turn_fixtures::assert_agent_view_projections(&connection);
     let agent: String = connection
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='title-agent'",
@@ -572,6 +573,14 @@ async fn persisted_python_results_match_apply_late_writers_and_refusal() {
             .as_object_mut()
             .expect("Python snapshot")
             .remove("receipts");
+        // Added summary/detail publications share the durable sequence owner.
+        // Keep complete payload/hash parity; check counters as positive revisions.
+        for snapshot in [&mut rust_without_receipts, &mut python_without_receipts] {
+            for projection in snapshot["projection"].as_array_mut().expect("projections") {
+                assert!(projection[2].as_i64().is_some_and(|seq| seq > 0));
+                projection[2] = json!("<revision>");
+            }
+        }
         assert_eq!(
             rust_without_receipts, python_without_receipts,
             "agent, events, and projection for {scenario:?}"

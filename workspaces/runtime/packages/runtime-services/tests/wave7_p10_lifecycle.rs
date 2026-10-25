@@ -552,6 +552,7 @@ async fn production_delete_releases_deleted_worker_work_item() {
 fn state(store: &RuntimeStore) -> Value {
     let db = store.test_reader().expect("reader");
     let records = agent_management::read(&db).expect("records");
+    super::turn_fixtures::assert_agent_view_projections(&db);
     let mut statement = db.prepare("SELECT collection,id,seq,hash,payload,deleted FROM sync_entities ORDER BY collection,id").expect("sync read");
     let sync = statement
         .query_map([], |r| {
@@ -1382,6 +1383,7 @@ async fn production_child_notification_matches_python_corpus() {
         // source publication and removals have dedicated Rust witnesses.
         .filter(|row| {
             row[0] != "workspace"
+                && !super::turn_fixtures::is_agent_view_collection(&row[0])
                 && row[0] != "queue"
                 && row[0] != "questionHistory"
                 && row[0] != "retainedWorktree"

@@ -968,8 +968,8 @@ mod tests {
                 .expect("count successful retry rows");
             assert_eq!(
                 (agents, events, projections),
-                (1, 1, 1),
-                "failpoint {index}"
+                (1, 1, 3),
+                "failpoint {index}: agent plus summary/detail projections"
             );
             let (event_status, queue_metadata): (String, i64) = connection
                 .query_row(

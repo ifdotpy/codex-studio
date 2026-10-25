@@ -270,6 +270,7 @@ async fn python_send_and_receipt_corpus() {
 /// and omitting only independently generated scheduling timestamps.
 fn logical_state(store: &RuntimeStore) -> BTreeMap<String, Value> {
     let db = store.test_reader().expect("logical state reader");
+    super::turn_fixtures::assert_agent_view_projections(&db);
     let json_rows = |sql: &str| -> Vec<Value> {
         db.prepare(sql)
             .expect("logical state query")
@@ -350,7 +351,7 @@ fn logical_state(store: &RuntimeStore) -> BTreeMap<String, Value> {
         ),
         (
             "sync_entities",
-            "SELECT json_object('collection',collection,'id',id,'seq',seq,'hash',CASE WHEN payload IS NULL THEN hash ELSE 'verified payload hash' END,'payload',json(CASE WHEN collection='event' AND payload IS NOT NULL THEN json_set(payload,'$.value.created','generated timestamp') ELSE payload END),'deleted',deleted) FROM sync_entities ORDER BY rowid",
+            "SELECT json_object('collection',collection,'id',id,'seq',seq,'hash',CASE WHEN payload IS NULL THEN hash ELSE 'verified payload hash' END,'payload',json(CASE WHEN collection='event' AND payload IS NOT NULL THEN json_set(payload,'$.value.created','generated timestamp') ELSE payload END),'deleted',deleted) FROM sync_entities WHERE collection NOT IN ('agentSummary','agentDetail') ORDER BY rowid",
         ),
         (
             "sync_documents",
@@ -387,6 +388,18 @@ fn assert_json(actual: &Value, expected: &Value, path: &str) {
             for (i, (a, b)) in a.iter().zip(b).enumerate() {
                 assert_json(a, b, &format!("{path}/{i}"));
             }
+        }
+        _ if path.ends_with("/seq") => {
+            // New view publications share the sequence owner with legacy rows.
+            // Exact counters are covered by rollback/replay and resume tests.
+            assert!(
+                actual.as_i64().is_some_and(|n| n > 0),
+                "{path}: actual revision"
+            );
+            assert!(
+                expected.as_i64().is_some_and(|n| n > 0),
+                "{path}: expected revision"
+            );
         }
         _ => assert_eq!(actual, expected, "{path}"),
     }
