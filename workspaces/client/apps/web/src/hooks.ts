@@ -520,12 +520,13 @@ export function useMessages(
   managed = false,
   workspace = "",
   syncWorkspaceId = "",
+  enabled = true,
 ) {
   const { syncGet } = useServerApi();
   const { watchResourceChanges } = useServerResources();
   const { peekTranscript } = useServerTranscripts();
   const transcript = useSubscription(
-    managed && kind === "agent" && id
+    enabled && managed && kind === "agent" && id
       ? {
           kind: "transcript",
           agentId: id,
@@ -933,7 +934,7 @@ export function useMessages(
       return;
     }
     let stopped = false;
-    if (!id) return;
+    if (!id || !enabled) return;
     if (managed && kind === "agent") return;
     const resource =
       kind === "room"
@@ -947,7 +948,17 @@ export function useMessages(
       stopped = true;
       stopWatch();
     };
-  }, [load, id, kind, managed, accept, syncId, scope, syncWorkspaceId]);
+  }, [
+    load,
+    id,
+    kind,
+    managed,
+    accept,
+    syncId,
+    scope,
+    syncWorkspaceId,
+    enabled,
+  ]);
   useEffect(() => {
     if (!id || !managed || kind !== "agent") return;
     if (transcript.data !== undefined) {

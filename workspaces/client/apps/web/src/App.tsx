@@ -2388,6 +2388,7 @@ export default function App({ active = true }: { active?: boolean }) {
     <StudioErrorsScope value={studioErrors}>
       {active && (
         <SidebarWarnings
+          visible={!(mobileClient && sidebar)}
           data={data}
           agent={agent}
           opened={opened}
@@ -2931,6 +2932,7 @@ export default function App({ active = true }: { active?: boolean }) {
               />
             ) : (
               <SelectedConversation
+                visible={!(mobileClient && sidebar)}
                 projectName={projectName}
                 recentChats={
                   agent?.empty

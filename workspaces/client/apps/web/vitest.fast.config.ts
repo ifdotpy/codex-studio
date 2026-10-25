@@ -16,6 +16,7 @@ export default {
       "src/sync/progressSubscription.test.ts",
       "src/components/sidebar/Vault.test.ts",
       "src/hooks/chatPrefetch.test.ts",
+      "src/hooks.subscriptionVisibility.test.ts",
       "src/hooks/snapshotRecovery.test.ts",
       "src/servers/serverNames.test.ts",
       "src/renameRequest.test.ts",

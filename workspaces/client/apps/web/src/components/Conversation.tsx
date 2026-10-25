@@ -225,6 +225,7 @@ function useCompactHeaderTools() {
 
 export default function Conversation(p: {
   id: string | null;
+  visible?: boolean;
   projectName?: string;
   recentChats?: RecentProjectChat[];
   syncWorkspaceId?: string;
@@ -377,6 +378,7 @@ export default function Conversation(p: {
     p.agent?.source === "managed",
     p.data.stateDir,
     p.syncWorkspaceId,
+    p.visible ?? true,
   );
   const outgoing = (p.outgoing || []).filter(
     (entry) => entry.body.room === p.id,
