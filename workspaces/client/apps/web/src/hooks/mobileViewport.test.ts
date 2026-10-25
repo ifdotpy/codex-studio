@@ -39,7 +39,11 @@ let root: {
   setAttribute: ReturnType<typeof vi.fn>;
   removeAttribute: ReturnType<typeof vi.fn>;
 };
-let documentMock: { documentElement: typeof root; activeElement: unknown };
+let documentMock: EventTarget & {
+  documentElement: typeof root;
+  activeElement: unknown;
+  querySelectorAll: ReturnType<typeof vi.fn>;
+};
 let queries: EventTarget & { matches: boolean };
 let frames: Map<number, FrameRequestCallback>;
 let cleanup: void | (() => void);
@@ -61,7 +65,25 @@ beforeEach(() => {
     setAttribute: vi.fn(),
     removeAttribute: vi.fn(),
   };
-  documentMock = { documentElement: root, activeElement: null };
+  documentMock = Object.assign(new EventTarget(), {
+    documentElement: root,
+    activeElement: null,
+    querySelectorAll: vi.fn(() => []),
+  });
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
+  vi.stubGlobal(
+    "MutationObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
   windowMock = Object.assign(new EventTarget(), {
     visualViewport: viewport,
     innerHeight: 669,
@@ -107,9 +129,86 @@ function resize(patch: Partial<Viewport>, event = "resize") {
 it("tracks a wide touch viewport with the keyboard already open", () => {
   viewport.height = 350;
   mount();
-  expect(root.style.get("--mobile-viewport-height")).toBe("350px");
-  expect(root.style.get("--mobile-safe-area-bottom")).toBe("0px");
+  expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+  expect(root.style.get("--mobile-safe-area-bottom")).toBe(
+    "env(safe-area-inset-bottom)",
+  );
   expect(root.setAttribute).toHaveBeenCalledWith("data-viewport-surface", "");
+});
+it("pins the Duo keyboard frame when innerHeight shrinks and the document scrolls", () => {
+  mount();
+  documentMock.activeElement = new Textarea();
+  windowMock.innerHeight = root.clientHeight = 323;
+  windowMock.scrollY = 346;
+  resize({ height: 323, offsetTop: 346 });
+  expect(root.style.get("--mobile-viewport-top")).toBe("346px");
+  expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+  expect(root.style.get("--mobile-safe-area-bottom")).toBe(
+    "env(safe-area-inset-bottom)",
+  );
+  expect(root.setAttribute).toHaveBeenCalledWith(
+    "data-viewport-keyboard-compact",
+    "",
+  );
+  expect(windowMock.scrollTo).not.toHaveBeenCalled();
+  windowMock.innerHeight = root.clientHeight = 669;
+  windowMock.scrollY = 0;
+  resize({ height: 669, offsetTop: 0 });
+  expect(root.style.get("--mobile-viewport-top")).toBe("0px");
+  expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+  expect(root.style.get("--mobile-safe-area-bottom")).toBe(
+    "env(safe-area-inset-bottom)",
+  );
+});
+it("marks short keyboard space below 400px and restores passive status at the boundary", () => {
+  viewport.height = 399;
+  mount();
+  expect(root.setAttribute).toHaveBeenCalledWith(
+    "data-viewport-keyboard-compact",
+    "",
+  );
+  root.removeAttribute.mockClear();
+  resize({ height: 400 });
+  expect(root.removeAttribute).toHaveBeenCalledWith(
+    "data-viewport-keyboard-compact",
+  );
+});
+it("does not hide passive status in a short window without keyboard occlusion", () => {
+  viewport.height = windowMock.innerHeight = root.clientHeight = 380;
+  mount();
+  expect(root.setAttribute).not.toHaveBeenCalledWith(
+    "data-viewport-keyboard-compact",
+    "",
+  );
+});
+it("uses the short touch landscape boundary without changing portrait or tall layouts", () => {
+  viewport.height = 699;
+  windowMock.innerHeight = root.clientHeight = 699;
+  mount();
+  expect(root.setAttribute).toHaveBeenCalledWith(
+    "data-viewport-short-landscape",
+    "",
+  );
+  windowMock.innerHeight = root.clientHeight = 700;
+  resize({ height: 700 });
+  expect(root.removeAttribute).toHaveBeenCalledWith(
+    "data-viewport-short-landscape",
+  );
+  root.setAttribute.mockClear();
+  resize({ width: 390, height: 669 });
+  expect(root.setAttribute).not.toHaveBeenCalledWith(
+    "data-viewport-short-landscape",
+    "",
+  );
+});
+it("does not use the compact header for a short non-touch document", () => {
+  queries.matches = false;
+  viewport.height = windowMock.innerHeight = root.clientHeight = 585;
+  mount(true, true);
+  expect(root.setAttribute).not.toHaveBeenCalledWith(
+    "data-viewport-short-landscape",
+    "",
+  );
 });
 it("does not constrain an ordinary desktop document", () => {
   queries.matches = false;
@@ -138,7 +237,9 @@ it("updates toolbar, keyboard, offset, and rotation geometry without focus chang
   expect(root.style.get("--mobile-safe-area-top")).toBe(
     "max(0px, calc(env(safe-area-inset-top) - 20px))",
   );
-  expect(root.style.get("--mobile-safe-area-bottom")).toBe("0px");
+  expect(root.style.get("--mobile-safe-area-bottom")).toBe(
+    "env(safe-area-inset-bottom)",
+  );
   windowMock.innerHeight = root.clientHeight = 951;
   Object.assign(viewport, { height: 951, offsetTop: 0 });
   windowMock.dispatchEvent(new Event("orientationchange"));
@@ -199,4 +300,50 @@ it("responds when pointer capability changes", () => {
   queries.dispatchEvent(new Event("change"));
   flush();
   expect(root.style.size).toBe(0);
+});
+
+it("re-measures a short post-keyboard webview after focusout and a scroll reset", () => {
+  mount();
+  documentMock.activeElement = new Textarea();
+  windowMock.innerHeight = root.clientHeight = 323;
+  resize({ height: 323, offsetTop: 346 });
+  documentMock.activeElement = null;
+  windowMock.innerHeight = root.clientHeight = 587;
+  resize({ height: 587, offsetTop: 0 });
+  windowMock.scrollTo.mockImplementation(() => {
+    windowMock.innerHeight = root.clientHeight = 669;
+    Object.assign(viewport, { height: 669, offsetTop: 0 });
+  });
+  documentMock.dispatchEvent(new Event("focusout"));
+  flush();
+  flush();
+  expect(windowMock.scrollTo).toHaveBeenCalledWith(0, 0);
+  expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+});
+
+it("keeps the full frame when the active same-document App changes during the keyboard", () => {
+  mount();
+  documentMock.activeElement = new Textarea();
+  windowMock.innerHeight = root.clientHeight = 323;
+  resize({ height: 323, offsetTop: 346 });
+  cleanup?.();
+  cleanup = undefined;
+  mount();
+  expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+});
+
+it("keeps the portrait viewport fallback outside short touch landscape", () => {
+  viewport.width = 390;
+  mount();
+  documentMock.activeElement = new Textarea();
+  windowMock.innerHeight = root.clientHeight = 323;
+  resize({ height: 323, offsetTop: 346 });
+  expect(root.style.get("--mobile-viewport-height")).toBe("323px");
+  expect(root.style.get("--mobile-safe-area-bottom")).toBe("0px");
+  root.setAttribute.mockClear();
+  resize({ height: 330 });
+  expect(root.setAttribute).not.toHaveBeenCalledWith(
+    "data-viewport-short-landscape",
+    "",
+  );
 });

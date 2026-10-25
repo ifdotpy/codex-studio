@@ -72,6 +72,24 @@ html[data-viewport-surface] .usage-footer {
   margin-bottom: 0;
 }
 
+/* Keep the transcript above a short keyboard. Controls stay in the footer;
+   only passive session text leaves the visible layout. */
+html[data-viewport-keyboard] :is(.usage-passive-anchor, .viewport-bottom-band) {
+  display: none;
+}
+
+html[data-viewport-keyboard-compact] #composer .attachment-list {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  min-width: 0;
+  max-width: 100%;
+}
+
+html[data-viewport-keyboard-compact] #composer .attachment-chip {
+  flex: none;
+}
+
 .mantine-Drawer-content #sidebar,
 .mantine-Drawer-content #team {
   height: 100%;
@@ -89,4 +107,15 @@ html[data-viewport-surface] body :is(input, textarea, select) {
     var(--studio-touch-input-min-font-size),
     var(--input-fz, var(--studio-text-body))
   ) !important;
+}
+
+/* Translation keeps the full conversation, sidebar, and panel layout in place. */
+html #composer[data-keyboard-floating] {
+  position: relative;
+  transform: translateY(var(--keyboard-composer-shift, 0px));
+  z-index: var(--layout-layers-app);
+}
+html[data-viewport-keyboard] #conversation #messages {
+  padding-bottom: var(--keyboard-scroll-clearance, 0px);
+  scroll-padding-bottom: var(--keyboard-scroll-clearance, 0px);
 }

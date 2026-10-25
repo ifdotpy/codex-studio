@@ -153,10 +153,10 @@ test("wide touch viewport keeps the root and portals inside all safe edges", asy
       );
       await expect
         .poll(() => bounds(selector))
-        .toMatchObject({ top: 20, bottom: 370 });
+        .toMatchObject({ top: 20, bottom: 655 });
       await expect
         .poll(() => bounds("#viewport-content"))
-        .toMatchObject({ left: 0, right: 867, top: 20, bottom: 370 });
+        .toMatchObject({ left: 0, right: 867, top: 20, bottom: 655 });
       await page.evaluate(() => window.openPortal(""));
       await expect(page.locator(selector)).toHaveCount(0);
       await page.evaluate(() =>
