@@ -159,11 +159,7 @@ async function end(bridge, fail = false) {
   const ready = bridge.note(
     (n) => n.method === "fixture/result-ready" && n.params.token === token,
   );
-  // Publish the complete token atomically: a file watcher can observe creation
-  // before an asynchronous write has filled the file.
-  const readyFile = path.join(bridge.root, `.end-${token}.tmp`);
-  await fs.writeFile(readyFile, token);
-  await fs.rename(readyFile, path.join(bridge.root, ".end"));
+  await bridge.writeSignal(".end", token);
   await ready;
 }
 
@@ -610,8 +606,7 @@ const fixtureSignal = (bridge, name) => (n) =>
   n.method === "fixture/signal" &&
   n.params.name === path.join(bridge.root, name);
 const marker = (bridge, name) => bridge.note(fixtureSignal(bridge, name));
-const release = (bridge, name) =>
-  fs.writeFile(path.join(bridge.root, name), "");
+const release = (bridge, name) => bridge.writeSignal(name);
 const turnItems = async (bridge, turn) =>
   (
     await bridge.call("thread/read", {

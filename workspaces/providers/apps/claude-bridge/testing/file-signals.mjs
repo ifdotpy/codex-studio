@@ -24,6 +24,7 @@ export function waitForFile(
       watcher.close();
       clearTimeout(deadline);
       signal.removeEventListener("abort", abort);
+      process.off("message", notified);
     };
     function abort() {
       cleanup();
@@ -38,6 +39,15 @@ export function waitForFile(
         cleanup();
         reject(error);
       }
+    }
+    function notified(message) {
+      if (message?.fixtureFile === file) check();
+    }
+    // A publisher notification makes delivery explicit even when filesystem
+    // notifications are coalesced. The file remains the durable condition.
+    if (typeof process.send === "function") {
+      process.on("message", notified);
+      process.channel?.unref();
     }
     watcher.on("error", (error) => {
       cleanup();

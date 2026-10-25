@@ -57,7 +57,7 @@ export async function startBridge(
       ],
       {
         cwd: root,
-        stdio: ["pipe", "pipe", "pipe", ...(clock ? ["ipc"] : [])],
+        stdio: ["pipe", "pipe", "pipe", "ipc"],
         env: {
           ...process.env,
           STUDIO_CLAUDE_ACCOUNT: "test@example.test",
@@ -90,9 +90,21 @@ export async function startBridge(
   };
   attach();
   let sequence = 0;
+  let signalSequence = 0;
   const bridge = {
     root,
     notes,
+    async writeSignal(name, content = "") {
+      const file = path.join(root, name);
+      const temporary = path.join(root, `.signal-${++signalSequence}.tmp`);
+      await fs.writeFile(temporary, content);
+      await fs.rename(temporary, file);
+      await new Promise((resolve, reject) => {
+        child.send({ fixtureFile: file }, (error) =>
+          error ? reject(error) : resolve(),
+        );
+      });
+    },
     async advanceTime(ms) {
       const controller = new AbortController();
       const timer = setTimeout(
