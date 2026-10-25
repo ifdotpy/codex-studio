@@ -10274,6 +10274,8 @@ export interface components {
        * @default null
        */
       launchArgs?: null | string;
+      /** @description Move eligible MCP calls to the background after 120 seconds. The default is on. */
+      mcpAutoBackground?: boolean;
       /**
        * Permissionmode
        * @default null
@@ -10323,6 +10325,11 @@ export interface components {
       /** @default null */
       controlOperation?: components["schemas"]["ClaudeControlOperation"] | null;
       /**
+       * @description Effective native cache policy. Automatic main-query TTL depends on the Claude account.
+       * @enum {string}
+       */
+      effectivePromptCacheTtl?: "5m" | "1h" | "automatic";
+      /**
        * Nativeid
        * @default null
        */
@@ -10362,6 +10369,8 @@ export interface components {
     ClaudeSettings: {
       /** Autocompactwindow */
       autoCompactWindow?: number | null;
+      /** @description Move eligible MCP calls to the background after 120 seconds. The default is on. */
+      mcpAutoBackground?: boolean;
       /** Permissionmode */
       permissionMode?:
         | ("default" | "acceptEdits" | "auto" | "plan" | "bypassPermissions")

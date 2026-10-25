@@ -71,6 +71,10 @@ fn shared_values_ts() -> String {
     ts_constants(
         &mut text,
         &[
+            (
+                "CLAUDE_MCP_AUTO_BACKGROUND_MS",
+                values::CLAUDE_MCP_AUTO_BACKGROUND_MS.to_string(),
+            ),
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
                 "MODEL_WHITELIST_PREFERENCE_KEY",
@@ -855,6 +859,13 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/session-policy.generated.mjs".into(),
+            text: format!(
+                "// {HEADER}\nexport const MCP_AUTO_BACKGROUND_MS = {};\n",
+                values::CLAUDE_MCP_AUTO_BACKGROUND_MS
+            ),
+        },
         Rendered {
             path: "workspaces/providers/apps/claude-bridge/provider-method-policy.generated.mjs"
                 .into(),

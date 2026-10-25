@@ -404,10 +404,15 @@ impl ControlSnapshot {
 }
 pub fn settings(value: &Value) -> Result<Value> {
     let object = value.as_object().ok_or(ControlError::Request)?;
-    if object
-        .keys()
-        .any(|k| !["permissionMode", "thinking", "autoCompactWindow"].contains(&k.as_str()))
-    {
+    if object.keys().any(|k| {
+        ![
+            "permissionMode",
+            "thinking",
+            "autoCompactWindow",
+            "mcpAutoBackground",
+        ]
+        .contains(&k.as_str())
+    }) {
         return Err(ControlError::Request);
     }
     if let Some(mode) = object.get("permissionMode")
@@ -416,6 +421,9 @@ pub fn settings(value: &Value) -> Result<Value> {
         return Err(ControlError::Request);
     }
     if object.get("thinking").is_some_and(|v| !v.is_boolean())
+        || object
+            .get("mcpAutoBackground")
+            .is_some_and(|v| !v.is_boolean())
         || object.get("autoCompactWindow").is_some_and(|v| {
             !v.is_null() && !v.as_u64().is_some_and(|n| (100000..=1000000).contains(&n))
         })

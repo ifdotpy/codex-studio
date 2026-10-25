@@ -27,6 +27,7 @@ export function cacheReport(
   requestId,
   now = Date.now(),
   effective = {},
+  env = process.env,
 ) {
   const n = (value) => (Number.isFinite(value) && value >= 0 ? value : 0);
   const writes = n(usage.cache_creation_input_tokens);
@@ -42,7 +43,7 @@ export function cacheReport(
           ? "1h"
           : "unknown";
   const configuredTtl =
-    process.env.CLAUDE_CODE_PROMPT_CACHE_TTL || effective.promptCacheTtl;
+    env.CLAUDE_CODE_PROMPT_CACHE_TTL || effective.promptCacheTtl;
   if (configuredTtl === "5m") ttl = "5m";
   return {
     requestId,

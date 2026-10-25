@@ -70,6 +70,7 @@ default-filter = '''
     (package(=studio-runtime-services) & kind(lib) & test(/^account_worker::preparation::team_restore::idle_return_tests::/)) |
     (package(=studio-runtime-services) & kind(lib) & test(/^account_worker::idle_unload::tests::/)) |
     (package(=studio-runtime-schema) & kind(lib) & test(/^idle_compaction::tests::/)) |
+    (package(=studio-runtime-services) & kind(test) & binary(=integration) & (test(claude_worker_cache_scope_follows_agent_authority_on_start_and_resume) | test(mcp_auto_background_accepts_only_booleans))) |
     (package(=studio-runtime-http) & kind(lib) & test(pricing_refresh)) |
     (package(=studio-runtime-services) & kind(lib) & (test(usage::tests::codex_session_fixture_) | test(restored_claude_query_total_keeps_the_pending_estimate_until_response))) |
     (package(=studio-runtime-services) & ((kind(lib) & test(analytics_projection::tests::projection_equals_the_direct_capture_of_a_turn)) | (kind(test) & binary(=integration) & test(session_cost_golden::session_cost_matches_the_row_scanning_golden_answers)))) |

@@ -27,7 +27,7 @@ test.afterEach(async ({ browser }, testInfo) => {
   );
 });
 
-test("claude settings auth ui", async ({ browser: _browser }) => {
+test("claude settings auth ui", async ({ browser: _browser }, testInfo) => {
   test.setTimeout(120_000);
   const root = resolve(import.meta.dirname, "../../");
   const workspaceId = "0123456789abcdef0123456789abcdef";
@@ -96,15 +96,20 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
           import {MantineProvider} from '@mantine/core';
           import '@mantine/core/styles.css';
           import {ClaudeSettings} from '/src/components/ClaudeSettings.tsx';
+          import {ModelCatalogReader} from '/src/components/agents/WorkerModelPicker.tsx';
           import ClaudeSignIn from '/src/components/ClaudeSignIn.tsx';
           const agent={id:'chat',accountKey:'claude-work',provider:'claude',status:'idle',model:'sonnet'};
+          const reader={scope:'claude-settings-fixture',read:async()=>{throw new Error('Unexpected model read')},
+            subscribeState(accept){window.modelSubscriptions=(window.modelSubscriptions||0)+1;
+              accept({entitiesComplete:true,runtime:{modelsByAccount:{'claude-work':[{model:'sonnet',accountKey:'claude-work',catalogPosition:0}]}}});
+              return ()=>{};}};
           function Fixture(){
             const [account,setAccount]=useState({id:'claude-work',label:'Work',email:'work@example.com',provider:'claude',status:'signedOut'});
             const [login,setLogin]=useState(false);
-            return <MantineProvider>
+            return <MantineProvider><ModelCatalogReader.Provider value={reader}>
               <ClaudeSettings agent={agent} account={account} onSignIn={key=>{window.signInAccount=key;setLogin(true)}}/>
               {login&&<ClaudeSignIn account={account} scope='settings-fixture' onClose={()=>setLogin(false)} onReady={()=>{setAccount({...account,status:'ready'});setLogin(false)}}/>}
-            </MantineProvider>;
+            </ModelCatalogReader.Provider></MantineProvider>;
           }
           createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
@@ -124,6 +129,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
     let receipt;
     let settingsReads = 0;
     let modelReads = 0;
+    let savedSettings = { permissionMode: "acceptEdits", thinking: true };
     const loginStarts = [];
     const mutations = [];
     await page.route("**/api/**", async (route) => {
@@ -139,9 +145,11 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
             status: 400,
             json: { error: "Sign in with claude auth login first" },
           });
+        if (body.action === "settings") savedSettings = body.settings;
         return route.fulfill({
           json: {
-            settings: { permissionMode: "acceptEdits", thinking: true },
+            settings: savedSettings,
+            effectivePromptCacheTtl: "5m",
             turns: [],
           },
         });
@@ -221,6 +229,8 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
     await page
       .getByRole("button", { name: "Submit authorization response" })
       .click();
+    // Account updates preserve local edits. Reload through the explicit retry.
+    await page.getByRole("button", { name: "Retry Claude settings" }).click();
     await page.waitForFunction(
       () =>
         !document.querySelector('select[aria-label="Permission mode"]')
@@ -249,9 +259,41 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       0,
     );
     assert.equal(settingsReads, 2);
-    assert.equal(modelReads, 1);
+    assert.equal(modelReads, 0);
+    assert.equal(await page.evaluate(() => window.modelSubscriptions), 1);
     assert.deepEqual(mutations, []);
     assert.deepEqual(errors, []);
+
+    await page.getByText("More settings and actions", { exact: true }).click();
+    const background = page.getByLabel("Move slow MCP calls to the background");
+    assert.equal(await background.isChecked(), true);
+    await page
+      .getByText("Prompt cache duration: 5 minutes.", { exact: true })
+      .waitFor();
+    await page.getByText(/background after 120 seconds/).waitFor();
+    await background.uncheck();
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll('[aria-live="polite"]')].some(
+        (node) => node.textContent === "Saved",
+      ),
+    );
+    assert.equal(mutations.at(-1).settings.mcpAutoBackground, false);
+    assert.equal(typeof mutations.at(-1).request_id, "string");
+    assert.equal(settingsReads, 2);
+    for (const width of [320, 1200]) {
+      await page.setViewportSize({ width, height: 1100 });
+      await background.scrollIntoViewIfNeeded();
+      assert.equal(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+        true,
+      );
+      await page.screenshot({
+        path: testInfo.outputPath(`mcp-${width}.png`),
+        fullPage: true,
+      });
+    }
 
     // A chat without a native thread can return stored settings after sign-out.
     const emptyChat = await browser.newPage();
