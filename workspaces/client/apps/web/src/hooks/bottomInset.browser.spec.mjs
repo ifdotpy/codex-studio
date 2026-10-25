@@ -128,6 +128,8 @@ test("Duo uses the bottom band for passive status and keeps every target above H
       "visualViewport: h 669, offTop 0, pageTop 0, scrollY 0",
     );
     await expect(debug).toContainText("root height: 669px");
+    await expect(debug).toContainText("root rect top: 0px");
+    await expect(debug).toContainText("composer rect top/bottom:");
     await expect(debug).toContainText(
       "root padding T/R/B/L: 0px / 84px / 34px / 0px",
     );
@@ -164,6 +166,12 @@ test("Duo uses the bottom band for passive status and keeps every target above H
       window.dispatchEvent(new Event("scroll"));
     });
     await expect(debug).toContainText("innerHeight: 323px");
+    await expect(debug).toContainText("root rect top: 346px");
+    const composerRect = await page.locator("#composer").evaluate((n) => {
+      const r = n.getBoundingClientRect();
+      return `composer rect top/bottom: ${r.top}px / ${r.bottom}px`;
+    });
+    await expect(debug).toContainText(composerRect);
     await expect(debug).toContainText(
       "visualViewport: h 323, offTop 346, pageTop 346, scrollY 346",
     );

@@ -21,6 +21,11 @@ export function LayoutDebug() {
     const update = () => {
       const style = getComputedStyle(root);
       const safe = getComputedStyle(probe);
+      const composer =
+        document.querySelector<HTMLElement>(
+          "#composer[data-keyboard-floating]",
+        ) || document.querySelector<HTMLElement>("#composer");
+      const composerBounds = composer?.getBoundingClientRect();
       const padding = (s: CSSStyleDeclaration) =>
         [s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft].join(
           " / ",
@@ -36,6 +41,9 @@ export function LayoutDebug() {
           `visualViewport.width: ${window.visualViewport ? `${window.visualViewport.width}px` : "unavailable"}`,
           `display-mode: ${standalone.matches || (navigator as Navigator & { standalone?: boolean }).standalone ? "standalone" : "browser"}`,
           `root height: ${style.height}`,
+          `root rect top: ${root.getBoundingClientRect().top}px`,
+          `composer rect top/bottom: ${composerBounds ? `${composerBounds.top}px / ${composerBounds.bottom}px` : "absent"}`,
+          `composer shift: ${composer?.style.getPropertyValue("--keyboard-composer-shift") || "none"}`,
           `root padding T/R/B/L: ${padding(style)}`,
           `safe-area T/R/B/L: ${padding(safe)}`,
           `data-viewport-surface: ${document.documentElement.hasAttribute("data-viewport-surface")}`,
