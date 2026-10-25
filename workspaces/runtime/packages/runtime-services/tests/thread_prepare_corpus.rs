@@ -399,3 +399,19 @@ fn only_a_claude_worker_turns_user_mcp_servers_off() {
         );
     }
 }
+
+#[test]
+fn claude_worker_cache_scope_follows_agent_authority_on_start_and_resume() {
+    for lead in [true, false] {
+        for thread in [None, Some("thread")] {
+            let mut value = baseline();
+            value["account"]["provider"] = json!("claude");
+            value["settings"]["is_lead"] = json!(lead);
+            value["actor"]["thread_id"] = json!(thread);
+            value["settings"]["claude_options"] = json!({"mcpAutoBackground":false});
+            let prepared = attempt(plan(&snapshot(&value), "attempt", "ticket"));
+            assert_eq!(prepared.params["managedWorker"], json!(!lead));
+            assert_eq!(prepared.params["claude"]["mcpAutoBackground"], false);
+        }
+    }
+}

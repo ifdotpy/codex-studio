@@ -383,6 +383,8 @@ impl ProviderAdapter for ClaudeAdapter {
             options.insert("env".into(), json!(environment));
         }
         params.insert("claude".into(), json!(options));
+        // Managed SDK queries use native subagent cache policy, including reviewers.
+        params.insert("managedWorker".into(), json!(!s.settings.is_lead));
         // A managed worker (a child agent) runs without the user's MCP servers.
         if s.actor.parent_id.is_some() {
             params.insert("userMcp".into(), json!(false));

@@ -882,3 +882,14 @@ async fn rewind_rejection_preserves_the_reason_without_claiming_no_file_effects(
     assert_eq!(agent["workspaceOperation"], "branch_recovery");
     assert!(!agent["workspaceReservationId"].is_null());
 }
+
+#[test]
+fn mcp_auto_background_accepts_only_booleans() {
+    use studio_runtime_services::claude_controls::settings;
+    for value in [json!(true), json!(false)] {
+        assert!(settings(&json!({"mcpAutoBackground":value})).is_ok());
+    }
+    for value in [json!(null), json!(1), json!("true")] {
+        assert!(settings(&json!({"mcpAutoBackground":value})).is_err());
+    }
+}

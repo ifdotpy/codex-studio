@@ -20928,6 +20928,10 @@
             "default": null,
             "title": "Launchargs"
           },
+          "mcpAutoBackground": {
+            "description": "Move eligible MCP calls to the background after 120 seconds. The default is on.",
+            "type": "boolean"
+          },
           "permissionMode": {
             "anyOf": [
               {
@@ -21051,6 +21055,15 @@
             ],
             "default": null
           },
+          "effectivePromptCacheTtl": {
+            "description": "Effective native cache policy. Automatic main-query TTL depends on the Claude account.",
+            "enum": [
+              "5m",
+              "1h",
+              "automatic"
+            ],
+            "type": "string"
+          },
           "nativeId": {
             "anyOf": [
               {
@@ -21154,6 +21167,10 @@
               }
             ],
             "title": "Autocompactwindow"
+          },
+          "mcpAutoBackground": {
+            "description": "Move eligible MCP calls to the background after 120 seconds. The default is on.",
+            "type": "boolean"
           },
           "permissionMode": {
             "anyOf": [

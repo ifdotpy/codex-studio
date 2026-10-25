@@ -59,6 +59,10 @@ import { createCommandTransport, commandMethods } from "./commands.mjs";
 
 import { thinkingFlag } from "./thinking.mjs";
 import {
+  mcpBackgroundEnvironment,
+  sessionCachePolicy,
+} from "./session-policy.mjs";
+import {
   createSessionStore,
   ephemeralSessionOptions,
   isDiskFull,
@@ -411,6 +415,7 @@ const settings = (s) =>
     includePartialMessages: true,
     env: {
       ...process.env,
+      ...mcpBackgroundEnvironment(s),
       // Per-thread host declarations must reach the CLI process, not settings.json.
       ...Object.fromEntries(
         ["CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE"]
@@ -1434,6 +1439,7 @@ async function startSession(s, active, p) {
       s.approvalPolicy,
       s.sandbox,
       s.claude,
+      s.managedWorker,
       s.developerInstructions,
       s.dynamicTools,
     ]);
@@ -1452,10 +1458,18 @@ async function startSession(s, active, p) {
     const externalMcpServers = await movedExternalConfigs(s);
     const titleOptions = ephemeralSessionOptions(s);
     const mode = titleOptions.permissionMode || permissionMode(s, p);
+    const cachePolicy = await boundedPreparation(
+      () => sessionCachePolicy(s, settings(s), resolveSettings),
+      deadline,
+      () => {},
+      "cache_policy",
+      startedAt,
+    );
+    active.cachePolicy = cachePolicy;
     const q = query({
       prompt: prompt(),
       options: {
-        ...settings(s),
+        ...cachePolicy.options,
         // Match Python's --no-session-persistence and --tools "" title flags.
         ...titleOptions,
         model: s.moveProof?.options.model || p.model || s.model,
@@ -1955,10 +1969,14 @@ async function startSession(s, active, p) {
           m.message.id &&
           m.message.usage
         ) {
-          const { effective } = await resolveSettings({
+          const { effective: resolved } = await resolveSettings({
             cwd: s.cwd,
             settingSources: settings(s).settingSources,
           });
+          const effective =
+            s.managedWorker === true
+              ? { ...resolved, promptCacheTtl: active.cachePolicy.ttl }
+              : resolved;
           s.idleCache = cacheReport(
             s,
             m.message.usage,
@@ -1967,6 +1985,7 @@ async function startSession(s, active, p) {
               ? active.idleRequest.at
               : active.idleRequestStartedAt || Date.now(),
             effective,
+            active.cachePolicy.options.env,
           );
           emit("thread/idleCompaction/updated", {
             threadId: s.id,
@@ -2413,6 +2432,10 @@ async function handle(method, p) {
       active = queries.get(s.id);
     return {
       settings: s.claude || {},
+      effectivePromptCacheTtl: (
+        active?.cachePolicy ||
+        (await sessionCachePolicy(s, settings(s), resolveSettings))
+      ).ttl,
       turns: s.turns.map((t) => ({
         id: t.id,
         status: t.status,
@@ -2631,10 +2654,11 @@ async function handle(method, p) {
   if (method === "thread/compact/start") {
     const s = await session(p.threadId);
     if (p.idleCompaction) {
-      const { effective: options } = await resolveSettings({
-        cwd: s.cwd,
-        settingSources: settings(s).settingSources,
-      });
+      const { effective: options } = await sessionCachePolicy(
+        s,
+        settings(s),
+        resolveSettings,
+      );
       const refusal = idleRefusal(
         s,
         queries.get(s.id),
