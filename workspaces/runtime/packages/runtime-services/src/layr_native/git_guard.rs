@@ -20,6 +20,7 @@ fn quote(value: &str) -> String {
 fn wrapper_script(state_dir: &Path, real_git: &Path) -> String {
     include_str!("git-guard.sh")
         .replace("@REAL_GIT@", &quote(&real_git.to_string_lossy()))
+        .replace("@LAYR@", &quote(&binary_path(state_dir).to_string_lossy()))
         .replace("@STORE@", &quote(&store_path(state_dir).to_string_lossy()))
         .replace("@COMMIT_REFUSAL@", &quote(COMMIT_REFUSAL))
 }
@@ -213,7 +214,7 @@ mod tests {
             input: None,
             stdout_limit: 4096,
             stderr_limit: 4096,
-            timeout: Duration::from_secs(10),
+            timeout: Duration::from_secs(60),
         })
         .map(|output| String::from_utf8_lossy(&output.stdout.bytes).into_owned())
     }
@@ -227,6 +228,15 @@ mod tests {
         let state = CanonicalPath::existing(&state)
             .expect("canonical fixture state")
             .into_path_buf();
+        fs::create_dir_all(binary_path(&state).parent().expect("binary parent"))
+            .expect("managed binary directory");
+        crate::atomic_file::replace(
+            &binary_path(&state),
+            b"#!/bin/sh\nprintf '%s\\n' \"$@\"\n",
+            Some(0o755),
+            false,
+        )
+        .expect("fake Layr");
         let real_git = root.path().join("real git'");
         crate::atomic_file::replace(
             &real_git,
@@ -474,7 +484,9 @@ mod tests {
         let line = main.with_file_name("worker");
         let before = invoke(&real_git, &line, &["rev-parse", "HEAD"]).expect("initial Git head");
         fs::write(line.join("file"), "first\nsecond\n").expect("worker edit");
-        layr(&line, &["add", "file"]);
+        if operation != "proxy" {
+            layr(&line, &["add", "file"]);
+        }
         match operation {
             "named" => {
                 let output = layr(&line, &["save", "-m", "named"]);
@@ -525,6 +537,180 @@ mod tests {
                     invoke(&real_git, &line, &["rev-parse", "HEAD"]).expect("exported head")
                 );
             }
+            "proxy" => {
+                let wrapper = binary_path(&state).with_file_name("git");
+                for args in [
+                    vec!["rev-parse", "HEAD"],
+                    vec!["rev-parse", "--short=12", "HEAD"],
+                    vec!["rev-parse", "HEAD^{tree}"],
+                    vec!["rev-parse", "HEAD:file"],
+                    vec!["rev-parse", "--show-toplevel"],
+                    vec!["rev-parse", "--git-dir"],
+                    vec!["rev-parse", "--is-inside-work-tree"],
+                    vec!["rev-parse", "--abbrev-ref", "HEAD"],
+                    vec!["rev-parse", "--verify", "HEAD^{tree}"],
+                    vec!["rev-parse", "--short=8", "HEAD:file"],
+                    vec!["status", "--porcelain", "--untracked-files=no"],
+                    vec!["status", "--porcelain=v1", "-z"],
+                    vec!["diff"],
+                    vec!["diff", "HEAD"],
+                    vec!["show", "HEAD:file"],
+                    vec!["log", "-1", "--format=%ct"],
+                    vec!["log", "-1", "--format=%H"],
+                    vec!["blame", "file"],
+                    vec!["grep", "first"],
+                    vec!["grep", "first", "HEAD"],
+                    vec!["ls-files"],
+                    vec!["ls-files", "--stage", "-z"],
+                    vec!["merge-base", "HEAD", "HEAD"],
+                    vec!["merge-base", "--is-ancestor", "HEAD", "HEAD"],
+                    vec!["cat-file", "-t", "HEAD"],
+                    vec!["describe", "--always"],
+                ] {
+                    assert_eq!(
+                        invoke_environment(&wrapper, &line, &args, &environment)
+                            .expect("proxy read"),
+                        invoke(&real_git, &line, &args).expect("Git read"),
+                        "{args:?}"
+                    );
+                }
+                for args in [vec!["grep", "missing"], vec!["diff", "--exit-code"]] {
+                    assert!(
+                        invoke_environment(&wrapper, &line, &args, &environment).is_err(),
+                        "{args:?}"
+                    );
+                    assert!(invoke(&real_git, &line, &args).is_err(), "{args:?}");
+                }
+                fs::create_dir(line.join("nested")).expect("nested folder");
+                assert_eq!(
+                    invoke_environment(
+                        &wrapper,
+                        &line.join("nested"),
+                        &["rev-parse", "--show-toplevel"],
+                        &environment
+                    )
+                    .expect("nested root"),
+                    invoke(&real_git, &line, &["rev-parse", "--show-toplevel"]).expect("Git root")
+                );
+                assert_eq!(
+                    invoke_environment(
+                        &wrapper,
+                        &source,
+                        &[
+                            "-C",
+                            line.to_str().expect("line"),
+                            "-C",
+                            "nested",
+                            "rev-parse",
+                            "--show-prefix"
+                        ],
+                        &environment
+                    )
+                    .expect("relative -C"),
+                    "nested/\n"
+                );
+                // Compare Layr's index with an independently staged Git fixture.
+                fs::write(source.join("file"), "first\nsecond\n").expect("reference edit");
+                invoke(&real_git, &source, &["add", "file"]).expect("reference Git stage");
+                layr(&line, &["add", "file"]);
+                for args in [
+                    vec!["status", "--porcelain", "-z"],
+                    vec!["ls-files", "--stage", "-z"],
+                ] {
+                    assert_eq!(
+                        invoke_environment(&wrapper, &line, &args, &environment)
+                            .expect("Layr index read"),
+                        invoke(&real_git, &source, &args).expect("reference Git index read"),
+                        "{args:?}"
+                    );
+                }
+                for args in [
+                    vec!["diff", "--cached"],
+                    vec!["diff", "--staged", "--raw"],
+                    vec!["status", "--porcelain=v2"],
+                ] {
+                    assert!(
+                        invoke_environment(&wrapper, &line, &args, &environment).is_err(),
+                        "unsupported stage read: {args:?}"
+                    );
+                }
+                let probe = line.join("build-probe");
+                fs::create_dir_all(probe.join("src")).expect("build probe");
+                fs::write(
+                    probe.join("Cargo.toml"),
+                    "[package]\nname='git-proxy-probe'\nversion='0.0.0'\nedition='2024'\n",
+                )
+                .expect("Cargo manifest");
+                fs::write(probe.join("src/lib.rs"), "pub fn probe() {}\n").expect("Cargo source");
+                fs::write(
+                    probe.join("build.rs"),
+                    r#"
+fn main() {
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git").args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    let commit = git(&["rev-parse", "HEAD"]);
+    assert_eq!(commit.len(), 40);
+    assert!(commit.bytes().all(|b| b.is_ascii_hexdigit()));
+    git(&["log", "-1", "--format=%ct"]).parse::<u64>().unwrap();
+    assert!(!git(&["rev-parse", "--abbrev-ref", "HEAD"]).is_empty());
+    assert!(!git(&["rev-parse", "--show-toplevel"]).is_empty());
+    git(&["status", "--porcelain", "--untracked-files=no"]);
+}
+"#,
+                )
+                .expect("build.rs probe");
+                let cargo_target = root_path.join("cargo-target");
+                let mut build_environment = environment.to_vec();
+                build_environment.extend([
+                    ("CARGO_INCREMENTAL", "0"),
+                    (
+                        "CARGO_TARGET_DIR",
+                        cargo_target.to_str().expect("Cargo target"),
+                    ),
+                    ("CARGO_PROFILE_DEV_DEBUG", "0"),
+                ]);
+                invoke_environment(
+                    Path::new("cargo"),
+                    &probe,
+                    &["build", "-j", "4", "--offline", "--quiet"],
+                    &build_environment,
+                )
+                .expect("Cargo build.rs uses managed Git");
+                fs::write(
+                    probe.join("package.json"),
+                    "{\"name\":\"git-proxy-probe\",\"private\":true}",
+                )
+                .expect("pnpm manifest");
+                invoke_environment(Path::new("pnpm"), &probe, &["exec", "node", "-e", "require('node:fs').writeFileSync('git-stamp',require('node:child_process').execFileSync('git',['rev-parse','HEAD']))"], &environment).expect("pnpm uses managed Git");
+                assert_eq!(
+                    fs::read_to_string(probe.join("git-stamp")).expect("pnpm build stamp"),
+                    invoke(&real_git, &line, &["rev-parse", "HEAD"]).expect("Git build stamp")
+                );
+                for name in ["space file", "tab\tfile", "line\nfile", "żółć.txt"] {
+                    fs::write(line.join(name), "first\n").expect("quoted path");
+                    layr(&line, &["add", name]);
+                }
+                layr(&line, &["save", "-m", "quoted paths"]);
+                fs::write(line.join("tab\tfile"), "first\nchanged\n").expect("quoted path edit");
+                for args in [
+                    vec!["status", "--porcelain"],
+                    vec!["status", "--porcelain", "-z"],
+                    vec!["ls-files"],
+                    vec!["ls-files", "-z"],
+                    vec!["grep", "-F", "first"],
+                    vec!["log", "-1", "--format=%f"],
+                ] {
+                    assert_eq!(
+                        invoke_environment(&wrapper, &line, &args, &environment)
+                            .expect("Git syntax read"),
+                        invoke(&real_git, &line, &args).expect("reference Git syntax read"),
+                        "{args:?}"
+                    );
+                }
+            }
             _ => panic!("unknown fixture operation"),
         }
         assert!(
@@ -561,5 +747,373 @@ mod tests {
     #[ignore = "requires STUDIO_LAYR_NATIVE_TEST_BINARY and APFS or btrfs"]
     fn real_managed_layr_git_push_updates_local_bare_remote() {
         real_managed_layr_git_operation("push");
+    }
+
+    #[test]
+    #[ignore = "requires STUDIO_LAYR_NATIVE_TEST_BINARY and APFS or btrfs"]
+    fn real_managed_git_proxy_preserves_tool_outputs_and_build_stamps() {
+        real_managed_layr_git_operation("proxy");
+    }
+    #[test]
+    fn native_git_proxy_routes_reads_preserves_paths_and_never_retries_failures() {
+        let root = tempfile::tempdir().expect("fixture directory");
+        let state = root.path().join("state with quote'");
+        let line = store_path(&state).join("projects/project/lines/main");
+        fs::create_dir_all(line.join("nested")).expect("line fixture");
+        fs::create_dir_all(binary_path(&state).parent().expect("binary parent"))
+            .expect("binary fixture");
+        let state = CanonicalPath::existing(&state)
+            .expect("canonical state")
+            .into_path_buf();
+        let real_git = root.path().join("real git'");
+        for (program, body) in [
+            (
+                &real_git,
+                "#!/bin/sh\n[ \"$1:$2\" != grep:missing ] || exit 1\nprintf 'git\\n'; printf '%s\\n' \"$@\"\n",
+            ),
+            (
+                &binary_path(&state),
+                "#!/bin/sh\n[ \"$1\" != grep ] || exit 1\nprintf 'layr\\n'; printf '%s\\n' \"$@\"\n",
+            ),
+        ] {
+            crate::atomic_file::replace(program, body.as_bytes(), Some(0o755), false)
+                .expect("fake tool");
+        }
+        let wrapper = binary_path(&state).with_file_name("git");
+        crate::atomic_file::replace(
+            &wrapper,
+            wrapper_script(&state, &real_git).as_bytes(),
+            Some(0o755),
+            false,
+        )
+        .expect("wrapper");
+        fs::write(line.join("file"), "fixture").expect("show file fixture");
+        for (args, expected) in [
+            (
+                vec!["status", "--porcelain=v1", "-z"],
+                "layr\nstatus\n--porcelain=v1\n-z\n",
+            ),
+            (
+                vec!["diff", "HEAD~1...HEAD", "--", "HEAD", "path with space"],
+                "git\ndiff\nHEAD~1...HEAD\n--\nHEAD\npath with space\n",
+            ),
+            (vec!["show", "HEAD:file"], "layr\nshow\nhead:file\n"),
+            (
+                vec!["rev-parse", "HEAD^{tree}"],
+                "layr\nrev-parse\nhead^{tree}\n",
+            ),
+            (
+                vec!["rev-parse", "HEAD:file"],
+                "layr\nrev-parse\nhead:file\n",
+            ),
+            (
+                vec!["rev-parse", "--show-toplevel"],
+                "layr\nrev-parse\n--show-toplevel\n",
+            ),
+            (
+                vec!["rev-parse", "--is-inside-work-tree"],
+                "layr\nrev-parse\n--is-inside-work-tree\n",
+            ),
+            (
+                vec!["log", "-1", "--format=%ct"],
+                "layr\nlog\n-1\n--format=%ct\n",
+            ),
+            (
+                vec!["merge-base", "--is-ancestor", "HEAD~1", "HEAD"],
+                "layr\nmerge-base\n--is-ancestor\nhead~1\nhead\n",
+            ),
+            (vec!["ls-files", "-z"], "layr\nls-files\n-z\n"),
+            (vec!["rev-parse", "HEAD"], "git\nrev-parse\nHEAD\n"),
+            (
+                vec!["rev-parse", "--short=12", "HEAD"],
+                "git\nrev-parse\n--short=12\nHEAD\n",
+            ),
+            (vec!["log", "--format=%H"], "git\nlog\n--format=%H\n"),
+            (vec!["cat-file", "-t", "HEAD"], "git\ncat-file\n-t\nHEAD\n"),
+            (
+                vec!["describe", "--always", "--dirty"],
+                "git\ndescribe\n--always\n--dirty\n",
+            ),
+            (vec!["blame", "file"], "git\nblame\nfile\n"),
+        ] {
+            assert_eq!(
+                invoke(&wrapper, &line, &args).expect("read route"),
+                expected,
+                "{args:?}"
+            );
+        }
+        assert!(
+            invoke(&wrapper, &line, &["grep", "missing"]).is_err(),
+            "grep exit 1 must not fall back"
+        );
+        for args in [
+            vec!["diff", "--output=changed"],
+            vec!["log", "--output", "changed"],
+            vec!["log", "--format=%H", "--out=changed"],
+            vec!["ls-files", "--debug", "--output=changed"],
+        ] {
+            assert!(
+                invoke(&wrapper, &line, &args).is_err(),
+                "read output must not write: {args:?}"
+            );
+        }
+        assert_eq!(
+            invoke(&wrapper, root.path(), &["status", "--porcelain"]).expect("outside"),
+            "git\nstatus\n--porcelain\n"
+        );
+        assert_eq!(
+            invoke(
+                &wrapper,
+                root.path(),
+                &["-C", line.to_str().expect("line"), "diff", "HEAD"]
+            )
+            .expect("selected line"),
+            format!("git\n-C\n{}\ndiff\nHEAD\n", line.display())
+        );
+        assert_eq!(
+            invoke(&wrapper, &line, &["-C", "", "diff", "HEAD"]).expect("empty -C"),
+            "git\n-C\n\ndiff\nHEAD\n"
+        );
+        let missing_git = line.join("missing.git");
+        assert!(
+            invoke(
+                &wrapper,
+                root.path(),
+                &[
+                    "--git-dir",
+                    missing_git.to_str().expect("missing Git directory"),
+                    "init"
+                ]
+            )
+            .is_err(),
+            "a missing Git directory must not bypass the guard"
+        );
+        assert_eq!(
+            invoke_environment(
+                &wrapper,
+                &line,
+                &["rev-parse", "--show-toplevel"],
+                &[("GIT_DIR", "missing.git")]
+            )
+            .expect("explicit Git selector"),
+            "git\nrev-parse\n--show-toplevel\n"
+        );
+    }
+
+    fn review_proxy_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let root = tempfile::tempdir().expect("fixture");
+        let state = root.path().join("state");
+        let line = store_path(&state).join("projects/project/lines/worker");
+        fs::create_dir_all(&line).expect("line");
+        fs::create_dir_all(binary_path(&state).parent().expect("bin")).expect("bin");
+        let state = CanonicalPath::existing(&state)
+            .expect("state")
+            .into_path_buf();
+        let git = root.path().join("real-git");
+        for (program, body) in [
+            (&git, "#!/bin/sh\nprintf 'git\\n'; printf '%s\\n' \"$@\"\n"),
+            (
+                &binary_path(&state),
+                "#!/bin/sh\nprintf 'layr\\n'; printf '%s\\n' \"$@\"\n",
+            ),
+        ] {
+            crate::atomic_file::replace(program, body.as_bytes(), Some(0o755), false)
+                .expect("tool");
+        }
+        let wrapper = binary_path(&state).with_file_name("git");
+        crate::atomic_file::replace(
+            &wrapper,
+            wrapper_script(&state, &git).as_bytes(),
+            Some(0o755),
+            false,
+        )
+        .expect("wrapper");
+        (root, wrapper, line)
+    }
+
+    #[test]
+    fn proxy_optional_values_do_not_hide_output_writes() {
+        let (_root, wrapper, line) = review_proxy_fixture();
+        for option in ["--pretty", "--format", "--abbrev", "--color", "--decorate"] {
+            assert!(
+                invoke(&wrapper, &line, &["log", option, "--output=written"]).is_err(),
+                "{option}"
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_global_options_do_not_hide_a_later_native_target() {
+        let (root, wrapper, line) = review_proxy_fixture();
+        for prefix in [
+            vec!["--exec-path=/tmp"],
+            vec!["-p"],
+            vec!["--namespace", "test"],
+            vec!["--namespace=test"],
+            vec!["--no-pager"],
+            vec!["--literal-pathspecs"],
+            vec!["--bare"],
+        ] {
+            let mut args = prefix.clone();
+            args.extend([
+                "-C",
+                line.to_str().expect("line"),
+                "-c",
+                "color.ui=false",
+                "commit",
+            ]);
+            assert!(invoke(&wrapper, root.path(), &args).is_err(), "{prefix:?}");
+        }
+    }
+
+    #[test]
+    fn proxy_classifies_the_final_directory_after_all_c_options() {
+        let (root, wrapper, line) = review_proxy_fixture();
+        let args = ["-C", root.path().to_str().expect("outside"), "add", "."];
+        assert_eq!(
+            invoke(&wrapper, &line, &args).expect("outside write"),
+            format!("git\n{}\n", args.join("\n"))
+        );
+        let args = [
+            "-C",
+            line.to_str().expect("line"),
+            "-C",
+            root.path().to_str().expect("outside"),
+            "commit",
+        ];
+        assert_eq!(
+            invoke(&wrapper, root.path(), &args).expect("final outside"),
+            format!("git\n{}\n", args.join("\n"))
+        );
+    }
+
+    #[test]
+    fn proxy_preserves_head_dot_paths() {
+        let (_root, wrapper, line) = review_proxy_fixture();
+        fs::write(line.join("HEAD.md"), "path").expect("path");
+        assert_eq!(
+            invoke(&wrapper, &line, &["diff", "HEAD.md"]).expect("path read"),
+            "git\ndiff\nHEAD.md\n"
+        );
+    }
+
+    #[test]
+    fn proxy_defers_existing_head_paths_to_git() {
+        let (_root, wrapper, line) = review_proxy_fixture();
+        fs::write(line.join("HEAD"), "path").expect("path");
+        assert_eq!(
+            invoke(&wrapper, &line, &["diff", "HEAD"]).expect("path parser"),
+            "git\ndiff\nHEAD\n"
+        );
+    }
+
+    #[test]
+    fn proxy_preserves_paths_after_the_separator() {
+        let (_root, wrapper, line) = review_proxy_fixture();
+        let args = ["diff", "--", "HEAD", "HEAD.md"];
+        let output = invoke(&wrapper, &line, &args).expect("path read");
+        assert!(output.ends_with("--\nHEAD\nHEAD.md\n"), "{output}");
+    }
+
+    #[test]
+    fn proxy_keeps_git_porcelain_path_quoting_without_nul() {
+        let (_root, wrapper, line) = review_proxy_fixture();
+        assert_eq!(
+            invoke(&wrapper, &line, &["status", "--porcelain"]).expect("quoting"),
+            "git\nstatus\n--porcelain\n"
+        );
+    }
+
+    #[test]
+    fn proxy_keeps_git_ls_files_path_quoting_without_nul() {
+        let (_root, wrapper, line) = review_proxy_fixture();
+        assert_eq!(
+            invoke(&wrapper, &line, &["ls-files"]).expect("quoting"),
+            "git\nls-files\n"
+        );
+    }
+
+    #[test]
+    fn proxy_uses_git_for_all_grep_forms() {
+        let (_root, wrapper, line) = review_proxy_fixture();
+        for args in [
+            vec!["grep", "needle"],
+            vec!["grep", "-G", "-e", "a\\{1\\}"],
+            vec!["grep", "-F", "-z", "needle"],
+        ] {
+            assert_eq!(
+                invoke(&wrapper, &line, &args).expect("grep grammar"),
+                format!("git\n{}\n", args.join("\n"))
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_log_format_requires_a_tested_placeholder() {
+        let (_root, wrapper, line) = review_proxy_fixture();
+        for format in [
+            "--format=%Q",
+            "--format=%C(auto)%s",
+            "--format=%f",
+            "--format=%ct%G?",
+            "--format=%ct%Q",
+        ] {
+            assert_eq!(
+                invoke(&wrapper, &line, &["log", "-1", format]).expect("format fallback"),
+                format!("git\nlog\n-1\n{format}\n")
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_rev_parse_verify_keeps_git_exit_and_output_semantics() {
+        let (_root, wrapper, line) = review_proxy_fixture();
+        let args = ["rev-parse", "--verify", "HEAD^{tree}"];
+        assert_eq!(
+            invoke(&wrapper, &line, &args).expect("verify fallback"),
+            format!("git\n{}\n", args.join("\n"))
+        );
+    }
+
+    #[test]
+    fn proxy_rev_parse_flags_do_not_change_revision_arity() {
+        let (_root, wrapper, line) = review_proxy_fixture();
+        for args in [
+            vec!["rev-parse", "--short"],
+            vec!["rev-parse", "--show-toplevel", "HEAD^{tree}"],
+            vec!["rev-parse", "--short=8", "HEAD:file"],
+        ] {
+            assert_eq!(
+                invoke(&wrapper, &line, &args).expect("flag fallback"),
+                format!("git\n{}\n", args.join("\n"))
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_cached_formats_never_fall_back_to_the_head_only_index() {
+        let (_root, wrapper, line) = review_proxy_fixture();
+        for args in [
+            vec!["diff", "--cached", "--raw"],
+            vec!["diff", "--staged", "--numstat"],
+            vec!["-c", "color.ui=false", "diff", "--cached"],
+        ] {
+            let error = invoke(&wrapper, &line, &args).expect_err("unsupported cached read");
+            assert!(
+                matches!(error, ChildError::Failed(reason) if reason.contains("layr diff --cached"))
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_porcelain_v2_refuses_the_head_only_index() {
+        let (_root, wrapper, line) = review_proxy_fixture();
+        for args in [
+            vec!["status", "--porcelain=v2"],
+            vec!["status", "--porcelain=2", "-z"],
+        ] {
+            let error = invoke(&wrapper, &line, &args).expect_err("unsupported staged format");
+            assert!(matches!(error, ChildError::Failed(reason) if reason.contains("layr status")));
+        }
     }
 }
