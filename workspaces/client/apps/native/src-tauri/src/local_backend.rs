@@ -3,6 +3,44 @@ use std::{path::PathBuf, time::Duration};
 #[cfg(desktop)]
 use studio_client_core::{backend::Backend, startup};
 
+#[cfg(any(target_os = "macos", test))]
+pub fn bundle_resource_dir(executable: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let executable = std::fs::canonicalize(executable)
+        .map_err(|error| format!("Cannot resolve the application executable: {error}"))?;
+    let directory = executable
+        .parent()
+        .ok_or("Cannot locate the application executable directory.")?;
+    // Cargo places development resources beside the host executable.
+    #[cfg(debug_assertions)]
+    if directory.join(".cargo-lock").is_file() {
+        return Ok(directory.to_path_buf());
+    }
+    let resources = directory
+        .parent()
+        .ok_or("Cannot locate the application resources.")?
+        .join("Resources");
+    std::fs::canonicalize(resources)
+        .map_err(|error| format!("Cannot resolve the application resources: {error}"))
+}
+
+pub fn workspace_resources(resources: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let workspace = resources.join("workspace");
+    #[cfg(debug_assertions)]
+    let workspace = if workspace.join("bin/studio-runtime-server").is_file() {
+        workspace
+    } else {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(5)
+            .ok_or("Cannot locate development resources.")?
+            .to_path_buf()
+    };
+    #[cfg(desktop)]
+    let workspace = std::fs::canonicalize(workspace)
+        .map_err(|error| format!("Cannot resolve the backend resources: {error}"))?;
+    Ok(workspace)
+}
+
 pub fn origin() -> Result<String, String> {
     let port = std::env::var("CODEX_DESKTOP_PORT").unwrap_or_else(|_| "4620".into());
     let port: u16 = port.parse().map_err(|_| "Invalid desktop backend port.")?;
@@ -89,4 +127,84 @@ pub async fn verify(
     _allow_start: bool,
 ) -> Result<(), String> {
     Err("Pair this mobile application with a Studio server first.".into())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{bundle_resource_dir, workspace_resources};
+
+    struct Bundle(std::path::PathBuf);
+
+    impl Bundle {
+        fn new() -> Self {
+            let fixture = Self(std::env::temp_dir().join(format!(
+                "studio-bundle-path-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            )));
+            std::fs::create_dir_all(&fixture.0).unwrap();
+            fixture
+        }
+    }
+
+    impl Drop for Bundle {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn symlinked_bundle_resolves_canonical_resources_and_backend() {
+        let fixture = Bundle::new();
+        let contents = fixture.0.join("real/Codex Studio.app/Contents");
+        std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+        let resources = contents.join("Resources");
+        std::fs::create_dir_all(resources.join("workspace/bin")).unwrap();
+        let executable = contents.join("MacOS/studio-native-client");
+        std::fs::write(&executable, b"host").unwrap();
+        let backend = resources.join("workspace/bin/studio-runtime-server");
+        std::fs::write(&backend, b"backend").unwrap();
+        std::os::unix::fs::symlink(fixture.0.join("real"), fixture.0.join("link")).unwrap();
+
+        let actual = bundle_resource_dir(
+            &fixture
+                .0
+                .join("link/Codex Studio.app/Contents/MacOS/studio-native-client"),
+        )
+        .unwrap();
+        assert_eq!(actual, resources.canonicalize().unwrap());
+        assert_eq!(
+            workspace_resources(&actual)
+                .unwrap()
+                .join("bin/studio-runtime-server"),
+            backend.canonicalize().unwrap()
+        );
+        assert_eq!(
+            actual,
+            bundle_resource_dir(&executable.canonicalize().unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn missing_bundle_paths_return_startup_errors() {
+        let fixture = Bundle::new();
+        let executable = fixture
+            .0
+            .join("Codex Studio.app/Contents/MacOS/studio-native-client");
+        assert!(
+            bundle_resource_dir(&executable)
+                .unwrap_err()
+                .starts_with("Cannot resolve the application executable:")
+        );
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, b"host").unwrap();
+        assert!(
+            bundle_resource_dir(&executable)
+                .unwrap_err()
+                .starts_with("Cannot resolve the application resources:")
+        );
+    }
 }
