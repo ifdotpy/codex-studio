@@ -13362,13 +13362,13 @@ export interface components {
       origin: null | string;
     };
     IdleCompactionSettings: {
-      /** @default 200000 */
+      /** @default 150000 */
       minTokens: number;
       /**
        * @default off
        * @enum {string}
        */
-      mode: "off" | "log" | "compact";
+      mode: "off" | "log" | "compact" | "compact_on_return";
     };
     /** IdRequest */
     IdRequest: {

@@ -528,6 +528,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         crate::idle_compaction::Mode::Off,
         crate::idle_compaction::Mode::Log,
         crate::idle_compaction::Mode::Compact,
+        crate::idle_compaction::Mode::CompactOnReturn,
     ])
     .map_err(|error| error.to_string())?;
     if openapi.pointer("/components/schemas/IdleCompactionSettings/properties/mode/enum")

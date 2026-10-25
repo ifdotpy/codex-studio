@@ -61,7 +61,14 @@ export function cacheReport(
 export function idleRefusal(s, active, expected, effective = {}) {
   if (expected.prefix !== promptPrefix(s, effective)) return "prefix_changed";
   if (expected.requestId !== s.idleCache?.requestId) return "newer_request";
-  if (active?.turn || active?.tasks?.size || active?.input?.values?.length)
+  if (
+    active?.turn ||
+    active?.tasks?.size ||
+    active?.input?.values?.length ||
+    active?.input?.pending?.length ||
+    active?.reservingInput ||
+    active?.pendingSteers?.size
+  )
     return "active";
   return null;
 }

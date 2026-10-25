@@ -28,7 +28,7 @@ export function IdleCompactionSettings({
     <>
       <SettingsRow
         label="Claude idle compaction"
-        help="Compact a long Claude conversation before its one-hour prompt cache expires."
+        help="Compact an idle Claude conversation before its five-minute or one-hour cache expires. Compaction can start 30 seconds before unload. Compact on return prepares a summary. It keeps the history until the next input."
       >
         <NativeSelect
           aria-label="Claude idle compaction"
@@ -38,6 +38,7 @@ export function IdleCompactionSettings({
             { value: "off", label: "Off" },
             { value: "log", label: "Log only" },
             { value: "compact", label: "Compact" },
+            { value: "compact_on_return", label: "Compact on return" },
           ]}
           onChange={(event) =>
             onChange({

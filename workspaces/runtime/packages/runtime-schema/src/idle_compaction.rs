@@ -9,6 +9,7 @@ pub enum Mode {
     Off,
     Log,
     Compact,
+    CompactOnReturn,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -60,11 +61,11 @@ mod tests {
             IDLE_COMPACTION_DEFAULT_MIN_TOKENS
         );
         for (value, expected) in [
-            ("99999", 100000),
+            ("59999", 60000),
             ("250000.5", 250001),
-            ("NaN", 200000),
-            ("inf", 200000),
-            ("invalid", 200000),
+            ("NaN", 150000),
+            ("inf", 150000),
+            ("invalid", 150000),
         ] {
             assert_eq!(
                 Settings::default()
@@ -80,6 +81,9 @@ mod tests {
         assert!(!settings.valid());
         settings.min_tokens = IDLE_COMPACTION_MIN_TOKENS;
         assert!(settings.valid());
-        assert!(serde_json::from_str::<Mode>("\"compact_on_return\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<Mode>("\"compact_on_return\"").unwrap(),
+            Mode::CompactOnReturn
+        );
     }
 }

@@ -32,6 +32,15 @@ pub(super) fn apply(
         .strip_prefix("account:")
         .ok_or(NotificationDispatchError::InvalidNotification)?;
     if method == "thread/idleCompaction/updated" {
+        if let Some(request) = p["preparedSummary"]["requestId"].as_str() {
+            if agent["idleCompactionEpisode"]["id"] == request
+                && crate::idle_compaction::settled(tx, request)?
+            {
+                agent["idleSummaryPrepared"] = json!(request);
+                persist_agent(tx, &id, agent)?;
+            }
+            return Ok(Some(DispatchOutcome::Written));
+        }
         crate::idle_compaction::observe(tx, agent, &p["report"])?;
         persist_agent(tx, &id, agent)?;
         return Ok(Some(DispatchOutcome::Written));
@@ -258,8 +267,13 @@ pub(super) fn apply(
                 put_task(tx, &task)?;
             }
             if decision.compacted {
-                if let Some(request_id) = agent["startAttempt"]["actionRequestId"].as_str()
-                    && request_id.starts_with(crate::idle_compaction::REQUEST_PREFIX)
+                let deferred = p["item"]["idleCompactionOnReturn"] == true
+                    && p["item"]["idleCompactionRequestId"] == agent["idleCompactionEpisode"]["id"];
+                if let Some(request_id) = if deferred {
+                    p["item"]["idleCompactionRequestId"].as_str()
+                } else {
+                    agent["startAttempt"]["actionRequestId"].as_str()
+                } && request_id.starts_with(crate::idle_compaction::REQUEST_PREFIX)
                 {
                     tx.execute_cached(
                         "UPDATE runtime_operation_receipts SET result=json_set(result,'$.outcome','compacted','$.completedAt',?2) WHERE id=?1 AND signature='idle-compaction'",
@@ -270,7 +284,11 @@ pub(super) fn apply(
                         &id,
                         &format!("{request_id}:notice"),
                         ("system", "Idle compaction"),
-                        crate::idle_compaction::NOTICE,
+                        if deferred {
+                            crate::idle_compaction::ON_RETURN_NOTICE
+                        } else {
+                            crate::idle_compaction::NOTICE
+                        },
                         json!({"idleCompaction":true}),
                         at,
                     )?;

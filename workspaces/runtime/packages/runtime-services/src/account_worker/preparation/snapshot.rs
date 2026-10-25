@@ -1251,7 +1251,14 @@ pub(super) fn submission_snapshot(
         text(record, "threadId")?,
         optional(record, "compactions")?.unwrap_or(0),
     );
-    let restore = turn::needs_team_restore(&epoch, &delivered_manifests);
+    let idle_summary_return = intent.provider == ProviderKind::Claude
+        && record["idleSummaryPrepared"]
+            .as_str()
+            .is_some_and(|request| !request.is_empty())
+        && record["idleSummaryPrepared"] == record["idleCompactionEpisode"]["id"]
+        && studio_runtime_store::OrchestrationSettingsRepository::idle_compaction(tx)?.mode
+            == studio_runtime_schema::idle_compaction::Mode::CompactOnReturn;
+    let restore = idle_summary_return || turn::needs_team_restore(&epoch, &delivered_manifests);
     let team_state = if restore {
         super::team_restore::snapshot(tx, record)?
     } else {
@@ -1359,6 +1366,7 @@ pub(super) fn submission_snapshot(
     let concurrency = root_concurrency(&root)?;
     Ok((
         turn::PreparationSnapshot {
+            idle_summary_return,
             provider: Some(intent.provider),
             actor: turn::Actor {
                 id: intent.agent_id.clone(),

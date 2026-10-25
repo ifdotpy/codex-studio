@@ -7,6 +7,9 @@ export default {
     ...base.test,
     name: "fast",
     include: [
+      // Idle preparation keeps the original history until the next admitted input.
+      "idle-summary.test.mjs",
+      "idle-compaction.test.mjs",
       // Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.
       "restart-reconcile.test.mjs",
       "lifecycle-safety.test.mjs",
