@@ -8,6 +8,7 @@ export default {
     name: "fast",
     include: [
       "src/precompressedAssets.test.mjs",
+      "src/scrollbars.test.mjs",
       "src/sync/subscriptions/store.test.ts",
       "src/sync/subscriptions/viewData.test.ts",
       "src/sync/subscriptions/terminalOutput.test.ts",
