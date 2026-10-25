@@ -283,7 +283,6 @@ resource_handlers! {
     VoiceResourceHandler => VoiceResource, passive_initial;
     WorkResourceHandler => WorkResource, entity_initial;
     WorkspaceResourceHandler => WorkspaceResource, passive_initial;
-    WorkResourceHandler => WorkResource, entity_initial;
 }
 
 pub(super) fn handler(
