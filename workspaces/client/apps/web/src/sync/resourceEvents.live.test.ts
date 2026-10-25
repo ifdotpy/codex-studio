@@ -1325,12 +1325,25 @@ it("a late terminal follower consumes owner merged views without repeated recove
   await vi.advanceTimersByTimeAsync(0);
   expect(recover).not.toHaveBeenCalled();
   const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+  const beforeFailure = owner.posted.filter(
+    (message) => message.kind === "resource-event",
+  ).length;
   owner.persist.mockRejectedValueOnce(new Error("disk full"));
   owner.source.emit("resources", frame(14, "new", 3, "snapshot"));
   await vi.advanceTimersByTimeAsync(0);
-  const failed = relay();
-  expect(failed.resourceVersions[0].cursor).toBeUndefined();
-  expect(failed.resourceVersions[0].replyKind).toBeUndefined();
+  expect(
+    owner.posted.filter((message) => message.kind === "resource-event"),
+  ).toHaveLength(beforeFailure);
+  expect(owner.source.closed).toBe(true);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(owner.sources).toHaveLength(2);
+  const retry = new URL(owner.urls.at(-1)!, "http://studio.test");
+  expect(
+    JSON.parse(retry.searchParams.get("since") ?? "[]").some(
+      (entry: { resource: unknown }) =>
+        JSON.stringify(entry.resource) === JSON.stringify(resource),
+    ),
+  ).toBe(false);
   quiet.mockRestore();
   stop();
 });
@@ -1393,4 +1406,109 @@ it("the owner coalesces a subscribed peer recovery request into its bounded curs
   await vi.advanceTimersByTimeAsync(1000);
   expect(f.sources).toHaveLength(2);
   expect(f.get).not.toHaveBeenCalled();
+});
+
+it("a failed Work write fences its queued terminal reset before reconnect cursors are read", async () => {
+  const f = await fixture();
+  const terminal = {
+    kind: "terminal-output",
+    terminalId: "queued-reset",
+  } as const;
+  const work = { kind: "work", agentId: "lead" } as const;
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "terminal-output"
+      ? { workspaceId: "workspace", seq: 40 }
+      : undefined,
+  );
+  f.transport.watchResourceChanges(terminal, vi.fn());
+  f.transport.watchResourceChanges(work, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 1 });
+  const snapshot = (revision: number, text: string, offset: number) => ({
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision,
+    reason: "change",
+    resources: [terminal],
+    resourceVersions: [
+      {
+        revision,
+        cursor: { workspaceId: "workspace", seq: offset },
+        replyKind: "snapshot",
+        viewSnapshot: {
+          terminalOutput: { text, offset, status: "running", truncated: false },
+        },
+      },
+    ],
+  });
+  f.source.emit("resources", {
+    ...snapshot(10, "o".repeat(40), 40),
+    reason: "initial",
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  let reject!: (error: Error) => void;
+  f.persist.mockReturnValueOnce(
+    new Promise<void>((_resolve, failed) => {
+      reject = failed;
+    }),
+  );
+  const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 11,
+    reason: "change",
+    resources: [work],
+    resourceVersions: [
+      {
+        revision: 11,
+        resource: work,
+        cursor: { workspaceId: "workspace", seq: 5 },
+        replyKind: "snapshot",
+        entityChanges: { after: 0, through: 5, documents: [] },
+      },
+    ],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  f.source.emit("resources", snapshot(12, "new", 3));
+  reject(new Error("Work storage unavailable"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.source.closed).toBe(true);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(f.sources).toHaveLength(2);
+  const resumed = new URL(f.urls.at(-1)!, "http://studio.test");
+  expect(
+    JSON.parse(resumed.searchParams.get("since") ?? "[]").some(
+      (entry: { resource: unknown }) =>
+        JSON.stringify(entry.resource) === JSON.stringify(terminal),
+    ),
+  ).toBe(false);
+  quiet.mockRestore();
+});
+
+it("relays legacy revision-only hints from an owner to a follower", async () => {
+  const owner = await fixture(false, true, true);
+  const follower = await fixture(true);
+  const accept = vi.fn();
+  follower.transport.watchResourceChanges({ kind: "state" }, accept);
+  accept.mockClear();
+  owner.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 20,
+    reason: "change",
+    resources: [{ kind: "state" }],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const message = owner.posted
+    .filter((message) => message.kind === "resource-event")
+    .at(-1)!;
+  expect(message.event.revision).toBe(20);
+  expect(message.event.resourceVersions).toBeUndefined();
+  follower.source.emit("resources", message.event);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(accept).toHaveBeenCalledOnce();
 });

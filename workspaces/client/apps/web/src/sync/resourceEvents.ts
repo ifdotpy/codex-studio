@@ -759,7 +759,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         kind: "resource-event",
         event: {
           ...event,
-          resourceVersions: event.resourceVersions.map((entry, index) => {
+          resourceVersions: event.resourceVersions?.map((entry, index) => {
             const resource = entry.resource ?? event.resources[index];
             const snapshot = resource && terminalPeerSnapshot(resource, entry);
             return snapshot ? { ...entry, ...snapshot } : entry;

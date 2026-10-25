@@ -49,7 +49,7 @@ export class ResourceEntityDelivery {
   }
 
   private revoke(event: ResourceChangeEvent) {
-    for (const [index, entry] of event.resourceVersions.entries()) {
+    for (const [index, entry] of (event.resourceVersions ?? []).entries()) {
       const resource = entry.resource ?? event.resources[index];
       if (
         resource?.kind !== "terminal-output" ||
@@ -73,7 +73,7 @@ export class ResourceEntityDelivery {
   }
 
   private restoreTerminalBases(event: ResourceChangeEvent) {
-    for (const [index, entry] of event.resourceVersions.entries()) {
+    for (const [index, entry] of (event.resourceVersions ?? []).entries()) {
       const resource = entry.resource ?? event.resources[index];
       if (
         resource?.kind !== "terminal-output" ||
@@ -157,7 +157,7 @@ export class ResourceEntityDelivery {
       (frame) =>
         frame?.epoch === event.epoch &&
         frame.workspaceId === event.workspaceId &&
-        frame.resourceVersions.some((entry, index) => {
+        frame.resourceVersions?.some((entry, index) => {
           const reference = entry.resource ?? frame.resources[index];
           return (
             reference &&
@@ -174,7 +174,7 @@ export class ResourceEntityDelivery {
     event: ResourceChangeEvent,
     waitForPendingSnapshot = false,
   ) {
-    for (const [index, entry] of event.resourceVersions.entries()) {
+    for (const [index, entry] of (event.resourceVersions ?? []).entries()) {
       const resource = entry.resource ?? event.resources[index];
       if (resource?.kind !== "terminal-output") continue;
       const required = this.terminalSnapshotsRequired.get(
@@ -319,7 +319,7 @@ export class ResourceEntityDelivery {
           if (persistenceFailed && this.failed) {
             // A fresh subscription must recover the whole missed interval.
             // Queued deltas have no applied base and cannot prove liveness.
-            for (const pending of this.pending) revokeCursorProof(pending);
+            for (const pending of this.pending) this.revoke(pending);
             this.pending = [];
             if (this.failed(event, persistenceError) === false)
               this.dispatch(event);

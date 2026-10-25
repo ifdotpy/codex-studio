@@ -75,6 +75,78 @@ describe("bounded stream entity delivery", () => {
     expect(failed).not.toHaveBeenCalled();
   });
 
+  it.each(["reject", "timeout"] as const)(
+    "recovers a new owner's terminal base after an old write %s without stale proof",
+    async (cause) => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      let resolve!: () => void;
+      let reject!: (error: Error) => void;
+      const persist = vi
+        .fn()
+        .mockReturnValueOnce(
+          new Promise<void>((done, failed) => {
+            resolve = done;
+            reject = failed;
+          }),
+        )
+        .mockResolvedValue(undefined);
+      const dispatch = vi.fn();
+      const failed = vi.fn();
+      const delivery = new ResourceEntityDelivery(persist, dispatch, failed);
+      const resource = {
+        kind: "terminal-output",
+        terminalId: "new-owner",
+      } as const;
+      const snapshot = (
+        revision: number,
+        epoch: string,
+      ): ResourceChangeEvent => ({
+        ...frame(revision, "initial"),
+        epoch,
+        resources: [resource],
+        resourceVersions: [
+          {
+            revision,
+            cursor: { workspaceId: "a".repeat(32), seq: revision },
+            replyKind: "snapshot",
+            viewSnapshot: {
+              terminalOutput: {
+                text: "new",
+                offset: revision,
+                status: "running",
+                truncated: false,
+              },
+            },
+          },
+        ],
+      });
+      delivery.receive(snapshot(10, "old-owner"));
+      delivery.beginOwnership();
+      dispatch.mockClear();
+      delivery.receive(snapshot(20, "new-owner"));
+      if (cause === "reject") {
+        reject(new Error("old cancelled write failed"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(failed).not.toHaveBeenCalled();
+      } else {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(failed).toHaveBeenCalledOnce();
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(delivery.requiresSnapshot(resource)).toBe(true);
+        resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        delivery.receive(snapshot(21, "new-owner"));
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(delivery.requiresSnapshot(resource)).toBe(false);
+      const latest = dispatch.mock.calls.at(-1)![0] as ResourceChangeEvent;
+      expect(latest.epoch).toBe("new-owner");
+      expect(latest.resourceVersions[0].cursor).toBeDefined();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(delivery.requiresSnapshot(resource)).toBe(false);
+    },
+  );
+
   it("revokes every queued receipt before recovering a failed current write", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     let reject!: (error: Error) => void;
