@@ -4336,14 +4336,78 @@ async fn wait_for_direct_completion<T: Clone + Send + Sync + 'static>(
     })
 }
 
-/// Requests that the restart witness provider recorded, in order.
+/// Requests that the restart witness provider finished recording, in order.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn restart_provider_requests(root: &std::path::Path) -> Vec<Value> {
-    std::fs::read_to_string(root.join("requests.jsonl"))
-        .unwrap_or_default()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+    let bytes = match std::fs::read(root.join("requests.jsonl")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => panic!("read restart provider request log: {error}"),
+    };
+    // The fixture's trailing newline publishes each record. A filesystem event
+    // can expose an unfinished append, including a split UTF-8 character, so
+    // decode only completed records and let the file watcher wake us again.
+    bytes
+        .split_inclusive(|byte| *byte == b'\n')
+        .filter(|line| line.ends_with(b"\n"))
+        .map(|line| serde_json::from_slice(line).expect("completed provider request is valid JSON"))
         .collect()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn restart_provider_requests_waits_for_the_record_newline() {
+    use std::io::Write;
+
+    let root = tempfile::tempdir().unwrap();
+    assert!(restart_provider_requests(root.path()).is_empty());
+    let mut writer = std::fs::File::create(root.path().join("requests.jsonl")).unwrap();
+    let first = json!({"method":"turn/start","params":{"threadId":"first"}});
+    writeln!(writer, "{first}").unwrap();
+    assert_eq!(restart_provider_requests(root.path()), vec![first.clone()]);
+
+    // A filesystem event can arrive before appendFileSync finishes its record.
+    writer
+        .write_all(br#"{"method":"turn/interrupt","params":{"threadId":"sec"#)
+        .unwrap();
+    assert_eq!(restart_provider_requests(root.path()), vec![first.clone()]);
+    writer.write_all(br#"ond"}}"#).unwrap();
+    assert_eq!(restart_provider_requests(root.path()), vec![first.clone()]);
+    writer.write_all(b"\n").unwrap();
+    assert_eq!(
+        restart_provider_requests(root.path()),
+        vec![
+            first,
+            json!({"method":"turn/interrupt","params":{"threadId":"second"}})
+        ]
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn restart_provider_requests_keeps_completed_records_before_partial_utf8() {
+    use std::io::Write;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut writer = std::fs::File::create(root.path().join("requests.jsonl")).unwrap();
+    let first = json!({"method":"turn/start"});
+    writeln!(writer, "{first}").unwrap();
+    writer.write_all(b"{\"text\":\"\xc3").unwrap();
+    assert_eq!(restart_provider_requests(root.path()), vec![first.clone()]);
+    writer.write_all(b"\xa9\"}\n").unwrap();
+    assert_eq!(
+        restart_provider_requests(root.path()),
+        vec![first, json!({"text":"é"})]
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+#[should_panic(expected = "completed provider request is valid JSON")]
+fn restart_provider_requests_rejects_a_malformed_completed_record() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("requests.jsonl"), b"{\"method\":\n").unwrap();
+    restart_provider_requests(root.path());
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
