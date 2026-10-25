@@ -10,7 +10,9 @@
   overflow: hidden;
   background: #000d;
   color: #fff;
-  font: 10px/1.4 monospace;
+  font: 9px/1.2 monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   pointer-events: none;
 }
 .layout-debug-probe {

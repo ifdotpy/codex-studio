@@ -75,6 +75,17 @@ test("Duo uses the bottom band for passive status and keeps every target above H
     await expect(
       page.locator(".layout-debug, .layout-debug-probe"),
     ).toHaveCount(0);
+    expect(
+      await page.locator("#message").evaluate((n) => {
+        const event = new PointerEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          pointerType: "touch",
+        });
+        n.dispatchEvent(event);
+        return event.defaultPrevented;
+      }),
+    ).toBe(false);
     const status = page.locator(".session-cost-summary");
     await expect(status).toBeVisible();
     const before = await status.boundingBox();
@@ -129,6 +140,9 @@ test("Duo uses the bottom band for passive status and keeps every target above H
       "visualViewport: h 669, offTop 0, pageTop 0, scrollY 0",
     );
     await expect(debug).toContainText("root height: 669px");
+    await expect(debug).toContainText("sidebar moved frames: 0");
+    await expect(debug).toContainText("root moved frames: 0");
+    await expect(debug).toContainText("vv pan events this open: 0");
     await expect(debug).toContainText("root rect top: 0px");
     await expect(debug).toContainText("composer rect top/bottom:");
     await expect(debug).toContainText(
@@ -167,6 +181,7 @@ test("Duo uses the bottom band for passive status and keeps every target above H
       window.dispatchEvent(new Event("scroll"));
     });
     await expect(debug).toContainText("innerHeight: 323px");
+    await expect(debug).toContainText("vv pan events this open: 1");
     await expect(debug).toContainText("root rect top: 346px");
     const composerRect = await page.locator("#composer").evaluate((n) => {
       const r = n.getBoundingClientRect();
@@ -184,6 +199,50 @@ test("Duo uses the bottom band for passive status and keeps every target above H
         ),
       )
       .toBe(8);
+    await page
+      .locator("#sidebar")
+      .evaluate((n) => (n.style.transform = "translateY(10px)"));
+    await expect(debug).toContainText(/sidebar moved frames: [1-9]/);
+    await expect(debug).toContainText("last moved frame:");
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/bottom-check?kbdNoPan=1&layoutDebug=1`,
+    );
+    const intercepted = await page.locator("#message").evaluate((n) => {
+      const focus = n.focus.bind(n);
+      let options;
+      n.focus = (value) => {
+        options = value;
+        focus(value);
+      };
+      const event = new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        pointerType: "touch",
+      });
+      n.dispatchEvent(event);
+      n.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      const again = new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        pointerType: "touch",
+      });
+      n.dispatchEvent(again);
+      return {
+        prevented: event.defaultPrevented,
+        options,
+        focused: document.activeElement === n,
+        secondPrevented: again.defaultPrevented,
+      };
+    });
+    expect(intercepted).toEqual({
+      prevented: true,
+      options: { preventScroll: true },
+      focused: true,
+      secondPrevented: false,
+    });
+    await expect(page.locator(".layout-debug")).toContainText(
+      "kbdNoPan experiment: on",
+    );
   } finally {
     await page.close();
     await server.close();
