@@ -572,7 +572,7 @@ pub(in crate::account_worker) async fn recover(
             let mut request = store::decode(&store::receipt(tx, &call.key(), "written")?.unwrap_or(value["request"].clone()))?;
             // Older retained calls marked every method lightweight. Recover
             // ownership from the call itself, including Submitted-only intent.
-            request.lightweight = !studio_runtime_schema::provider_method_policy::is_thread_serialized(&call.method, &call.params);
+            request.lightweight = !studio_runtime_schema::provider_method_policy::is_recovered_thread_serialized(&call.method, &call.params);
             // The answer comes back on the lane the request was sent on, as
             // in `retained_request`: a host request keeps no actor lane.
             let actor_id = match call.actor.as_ref() {
@@ -623,10 +623,16 @@ mod replay_identity_tests {
         let database = RuntimeStore::open(Some(root.path())).await.expect("store");
         database
             .transaction_with(|tx| {
-                for (index, method) in [
-                    Method::ClaudeSettings,
-                    Method::ClaudeState,
-                    Method::ThreadRead,
+                for (index, (method, params)) in [
+                    (Method::ClaudeSettings, json!({"threadId":"thread-1"})),
+                    (Method::ClaudeState, json!({"threadId":"thread-1"})),
+                    (
+                        Method::ThreadRead,
+                        json!({"threadId":"thread-1","includeTurns":true}),
+                    ),
+                    (Method::ThreadRead, Value::Null),
+                    (Method::ThreadRead, json!("unreadable")),
+                    (Method::ThreadRead, json!([])),
                 ]
                 .into_iter()
                 .enumerate()
@@ -635,7 +641,7 @@ mod replay_identity_tests {
                     call.actor = None;
                     call.operation = format!("legacy:{index}");
                     call.method = method.as_str().into();
-                    call.params = json!({"threadId":"thread-1","includeTurns":true});
+                    call.params = params;
                     let key = call.key();
                     let request = RecoveredRequest {
                         ticket: RequestTicket {
@@ -667,7 +673,16 @@ mod replay_identity_tests {
         let restored = recover(&database, "default", 4)
             .await
             .expect("recover legacy records");
-        assert_eq!(restored.len(), 3);
+        assert_eq!(restored.len(), 6);
+        assert_eq!(
+            restored
+                .iter()
+                .map(|(_, request)| request.lightweight)
+                .collect::<Vec<_>>(),
+            vec![false; 6],
+            "null, string and array parameters must retain ownership"
+        );
+        let restored_count = restored.len();
         let (mut session, initialize) = SessionState::new(
             4,
             studio_runtime_providers::ProviderKind::Claude.wire(),
@@ -731,7 +746,7 @@ mod replay_identity_tests {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            if index < 2 {
+            if index + 1 < restored_count {
                 assert!(writes.is_empty());
             } else {
                 assert_eq!(writes.len(), 1);

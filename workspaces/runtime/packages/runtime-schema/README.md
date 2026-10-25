@@ -93,4 +93,5 @@ OpenAPI parity checks use this owner, and `studio-contracts` generates the web t
 
 The provider method policy owns per-thread serialization methods and parameter
 predicates. Both the Rust transport and the generated Claude bridge module consume
-this owner; contract drift checks cover the bridge copy.
+this owner; contract drift checks cover the bridge copy. Recovery conservatively
+reserves serialized-capable methods when their parameter predicate is unreadable.

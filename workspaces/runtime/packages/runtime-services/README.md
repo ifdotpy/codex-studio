@@ -329,7 +329,9 @@ until every restored identity settles; an unknown deadline retains its reservati
 Cancellation of an Unknown request is refused. A late reply or proven-unsent
 rejection can release its ownership. Retained recovery derives serialization from
 the persisted call's method and parameters using the shared method policy, so
-legacy lightweight flags cannot bypass ownership. All 32 unresolved requests can be recovered; initialization has a separate
+legacy lightweight flags cannot bypass ownership. Unreadable recovered policy
+parameters conservatively retain ownership; valid objects keep the normal
+parameter predicate. All 32 unresolved requests can be recovered; initialization has a separate
 record slot. Merge late Written evidence by request/operation identity, preserving
 any durable Unknown flag. A late write receipt must not resurrect a request already
 durably resolved; restore only unresolved records.
