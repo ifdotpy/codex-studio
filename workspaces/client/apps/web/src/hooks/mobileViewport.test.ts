@@ -17,6 +17,12 @@ class Viewport extends EventTarget {
   scale = 1;
 }
 class Textarea {
+  focus = vi.fn((_options?: FocusOptions) => {
+    documentMock.activeElement = this;
+  });
+  blur = vi.fn(() => {
+    documentMock.activeElement = null;
+  });
   matches(selector: string) {
     return selector === "#composer textarea";
   }
@@ -32,12 +38,15 @@ let windowMock: EventTarget & {
 };
 let root: {
   clientHeight: number;
+  hasAttribute: (name: string) => boolean;
   style: Map<string, string> & {
     setProperty: (key: string, value: string) => void;
     removeProperty: (key: string) => void;
   };
-  setAttribute: ReturnType<typeof vi.fn>;
-  removeAttribute: ReturnType<typeof vi.fn>;
+  setAttribute: ReturnType<
+    typeof vi.fn<(name: string, value?: string) => unknown>
+  >;
+  removeAttribute: ReturnType<typeof vi.fn<(name: string) => unknown>>;
 };
 let documentMock: EventTarget & {
   documentElement: typeof root;
@@ -53,8 +62,10 @@ beforeEach(() => {
   viewport = new Viewport();
   queries = Object.assign(new EventTarget(), { matches: true });
   const style = new Map<string, string>();
+  const attributes = new Set<string>();
   root = {
     clientHeight: 669,
+    hasAttribute: (name) => attributes.has(name),
     style: Object.assign(style, {
       setProperty: (key: string, value: string) => {
         style.set(key, value);
@@ -63,8 +74,8 @@ beforeEach(() => {
         style.delete(key);
       },
     }),
-    setAttribute: vi.fn(),
-    removeAttribute: vi.fn(),
+    setAttribute: vi.fn((name: string) => attributes.add(name)),
+    removeAttribute: vi.fn((name: string) => attributes.delete(name)),
   };
   documentMock = Object.assign(new EventTarget(), {
     documentElement: root,
@@ -361,4 +372,41 @@ it("does not move fixed chrome when document scroll precedes the visual offset",
   viewport.dispatchEvent(new Event("resize"));
   expect(root.style.get("--mobile-viewport-top")).toBe("0px");
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+});
+
+function gesture(target: unknown, type = "pointerdown") {
+  const event = new Event(type, { cancelable: true });
+  Object.defineProperty(event, "target", { value: target });
+  documentMock.dispatchEvent(event);
+  return event;
+}
+it("uses preventScroll for the first composer touch without a debug flag", () => {
+  mount();
+  const textarea = new Textarea();
+  expect(gesture(textarea).defaultPrevented).toBe(true);
+  expect(textarea.focus).toHaveBeenCalledWith({ preventScroll: true });
+  expect(gesture(textarea, "touchstart").defaultPrevented).toBe(true);
+  expect(textarea.focus).toHaveBeenCalledTimes(1);
+});
+it("refocuses a closed-keyboard textarea but leaves open-keyboard selection native", () => {
+  mount();
+  const textarea = new Textarea();
+  documentMock.activeElement = textarea;
+  expect(gesture(textarea).defaultPrevented).toBe(true);
+  expect(textarea.blur).toHaveBeenCalledTimes(1);
+  expect(textarea.focus).toHaveBeenCalledTimes(1);
+  gesture(textarea, "pointerup");
+  root.setAttribute("data-viewport-keyboard", "");
+  expect(gesture(textarea).defaultPrevented).toBe(false);
+  expect(textarea.focus).toHaveBeenCalledTimes(1);
+});
+it("leaves desktop focus native and removes interception on owner cleanup", () => {
+  queries.matches = false;
+  mount();
+  const textarea = new Textarea();
+  expect(gesture(textarea).defaultPrevented).toBe(false);
+  queries.matches = true;
+  cleanup?.();
+  cleanup = undefined;
+  expect(gesture(textarea).defaultPrevented).toBe(false);
 });

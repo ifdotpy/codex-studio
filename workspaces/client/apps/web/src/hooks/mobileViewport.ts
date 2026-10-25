@@ -2,6 +2,9 @@ import { hasTouchCapability, touchPointerMedia } from "./touchCapability";
 import { useEffect } from "react";
 import { layoutValues } from "../layout/layout-contract.generated";
 
+/** Count of touch gestures intercepted by the active viewport owner, in gestures. */
+export const viewportGestureCountAttribute = "data-keyboard-gesture-count";
+
 const fullFrames = new WeakMap<Document, { height: number; width: number }>();
 
 /** Keep the full touch layout behind the keyboard while its composer follows the visible bottom. */
@@ -12,6 +15,8 @@ export function useMobileViewport(active: boolean, compact = false) {
     const root = document.documentElement;
     const coarsePointer = touchPointerMedia();
     let frame = 0;
+    let interceptedTextarea: HTMLTextAreaElement | null = null;
+    let gestureCount = 0;
     const previousFrame = fullFrames.get(document);
     let fullHeight = previousFrame?.height || 0;
     let fullWidth = previousFrame?.width || 0;
@@ -26,6 +31,7 @@ export function useMobileViewport(active: boolean, compact = false) {
     };
     const clear = () => {
       resetComposer();
+      root.removeAttribute(viewportGestureCountAttribute);
       root.removeAttribute("data-viewport-surface");
       root.removeAttribute("data-viewport-keyboard");
       root.removeAttribute("data-viewport-keyboard-compact");
@@ -200,6 +206,60 @@ export function useMobileViewport(active: boolean, compact = false) {
       };
       next(1);
     };
+    const focusWithoutNativePan = (event: Event) => {
+      if (
+        !viewport ||
+        !hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints)
+      )
+        return;
+      if (
+        event.type === "pointerdown" &&
+        (event as PointerEvent).pointerType === "mouse"
+      )
+        return;
+      const target = event.target;
+      if (
+        !(target instanceof HTMLTextAreaElement) ||
+        !target.matches("#composer textarea")
+      )
+        return;
+      const focused = document.activeElement === target;
+      if (
+        focused &&
+        root.hasAttribute("data-viewport-keyboard") &&
+        interceptedTextarea !== target
+      )
+        return;
+      event.preventDefault();
+      if (interceptedTextarea !== target) {
+        interceptedTextarea = target;
+        root.setAttribute(
+          viewportGestureCountAttribute,
+          String(++gestureCount),
+        );
+        if (focused) target.blur();
+        target.focus({ preventScroll: true });
+      }
+    };
+    const endGesture = () => {
+      interceptedTextarea = null;
+    };
+    document.addEventListener("pointerdown", focusWithoutNativePan, {
+      capture: true,
+      passive: false,
+    });
+    document.addEventListener("touchstart", focusWithoutNativePan, {
+      capture: true,
+      passive: false,
+    });
+    const gestureEndEvents = [
+      "pointerup",
+      "pointercancel",
+      "touchend",
+      "touchcancel",
+    ];
+    for (const type of gestureEndEvents)
+      document.addEventListener(type, endGesture, true);
     document.addEventListener("focusout", recoverAfterBlur);
     update();
     coarsePointer.addEventListener("change", schedule);
@@ -211,6 +271,14 @@ export function useMobileViewport(active: boolean, compact = false) {
     return () => {
       cancelAnimationFrame(frame);
       recoveryFrames.forEach(cancelAnimationFrame);
+      document.removeEventListener("pointerdown", focusWithoutNativePan, {
+        capture: true,
+      });
+      document.removeEventListener("touchstart", focusWithoutNativePan, {
+        capture: true,
+      });
+      for (const type of gestureEndEvents)
+        document.removeEventListener(type, endGesture, true);
       document.removeEventListener("focusout", recoverAfterBlur);
       composerResize.disconnect();
       content.disconnect();
