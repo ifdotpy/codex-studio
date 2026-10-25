@@ -598,6 +598,9 @@ Final response replays preserve the first token counts and report conflicts in
 analytics coverage. Native rollout responses carry recovered evidence, while
 running counters remain separate observations. Historical budget repair uses
 the parser-owned [persisted-row adapter](../runtime-schema/src/usage/persisted.rs).
+Imported `token_count` notices retain their original counter objects and response
+association metadata so pre-upgrade budget receipts and ambiguity handling replay
+unchanged. Their interpretation and receipt identity belong to the shared parser.
 
 Usage notifications pass through `runtime-schema::usage::parse_token_usage` before
 budget, context-gauge, and move-cache consumers run. Budget response rows retain the

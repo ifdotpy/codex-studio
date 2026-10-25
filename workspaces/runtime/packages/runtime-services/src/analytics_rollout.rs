@@ -461,6 +461,23 @@ mod tests {
             params["tokenUsage"], previous["tokenUsage"],
             "native counter objects must preserve pre-upgrade notice receipt identity"
         );
+        let receipt = |params: &serde_json::Value| {
+            let identity = studio_runtime_schema::usage::legacy_notice_identity(
+                "agent",
+                "account",
+                Some("turn"),
+                params,
+            )
+            .expect("native notice identity");
+            studio_runtime_store::sha256_hex(
+                studio_runtime_store::python_json_with_separators(&identity, ",", ":").as_bytes(),
+            )
+        };
+        assert_eq!(
+            receipt(params),
+            receipt(&previous),
+            "shared parser preserves the exact pre-upgrade receipt hash"
+        );
     }
 
     #[test]
