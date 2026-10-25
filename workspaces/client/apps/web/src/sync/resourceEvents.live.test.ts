@@ -67,7 +67,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function fixture(follower = false, session = true) {
+async function fixture(follower = false, session = true, peerOwner = false) {
   vi.useFakeTimers();
   vi.stubGlobal("window", {
     addEventListener: vi.fn(),
@@ -81,7 +81,7 @@ async function fixture(follower = false, session = true) {
   let acquire: ((lock: Lock | null) => Promise<void>) | undefined;
   vi.stubGlobal("navigator", {
     onLine: true,
-    ...(follower
+    ...(follower || peerOwner
       ? {
           locks: {
             request: (
@@ -90,7 +90,11 @@ async function fixture(follower = false, session = true) {
               callback: (lock: Lock | null) => Promise<void>,
             ) => {
               acquire = callback;
-              return callback(null);
+              return callback(
+                peerOwner
+                  ? ({ name: "fixture", mode: "exclusive" } as Lock)
+                  : null,
+              );
             },
           },
         }
@@ -98,15 +102,18 @@ async function fixture(follower = false, session = true) {
   });
   vi.stubGlobal("location", { origin: "http://studio.test" });
   let deliverPeer: ((event: MessageEvent) => void) | undefined;
+  const posted: any[] = [];
   vi.stubGlobal(
     "BroadcastChannel",
-    follower
+    follower || peerOwner
       ? class {
           onmessage: ((event: MessageEvent) => void) | null = null;
           constructor() {
             deliverPeer = (event) => this.onmessage?.(event);
           }
-          postMessage() {}
+          postMessage(message: unknown) {
+            posted.push(structuredClone(message));
+          }
           close() {}
         }
       : undefined,
@@ -186,6 +193,16 @@ async function fixture(follower = false, session = true) {
     stopState,
     get,
     readCursor,
+    posted,
+    peerMessage: (message: Record<string, unknown>) =>
+      deliverPeer?.({
+        data: {
+          ...message,
+          workspaceId: "workspace",
+          apiSchemaHash: API_SCHEMA_HASH,
+          tabId: "late-follower",
+        },
+      } as MessageEvent),
     takeOwnership: () => {
       void acquire?.({ name: "fixture", mode: "exclusive" } as Lock);
     },
@@ -1160,4 +1177,132 @@ it("takes terminal ownership with a snapshot and resumes only its proven baselin
     resource,
     since: { workspaceId: "workspace", seq: 3 },
   });
+});
+
+it("a late terminal follower consumes owner merged views without repeated recovery GETs", async () => {
+  const owner = await fixture(false, true, true);
+  const { mergeTerminalOutput } =
+    await import("./subscriptions/terminalOutput");
+  const { createDataObserver } = await import("./subscriptions/data");
+  const resource = {
+    kind: "terminal-output",
+    terminalId: "late-follower",
+  } as const;
+  owner.transport.watchResourceChanges(resource, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  owner.source.emit("subscriptions", { gen: 1 });
+  let merged: Parameters<typeof mergeTerminalOutput>[0];
+  owner.persist.mockImplementation(async (event, current) => {
+    if (!current()) return;
+    for (const entry of event.resourceVersions) {
+      if (!entry.viewSnapshot?.terminalOutput) continue;
+      merged = mergeTerminalOutput(
+        merged,
+        entry.viewSnapshot.terminalOutput,
+        entry.replyKind === "delta",
+      );
+      entry.viewSnapshot = { terminalOutput: merged };
+    }
+  });
+  const frame = (
+    revision: number,
+    text: string,
+    offset: number,
+    replyKind = "delta",
+  ) => ({
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision,
+    reason: "change",
+    resources: [resource],
+    resourceVersions: [
+      {
+        revision,
+        cursor: { workspaceId: "workspace", seq: offset },
+        replyKind,
+        viewSnapshot: {
+          terminalOutput: { text, offset, status: "running", truncated: false },
+        },
+      },
+    ],
+  });
+  owner.source.emit("resources", {
+    ...frame(10, "old", 3, "snapshot"),
+    reason: "initial",
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const follower = await fixture(true);
+  const recover = vi.fn(async () => merged);
+  const accept = vi.fn();
+  const stop = createDataObserver(
+    () => ({}) as any,
+    follower.transport,
+    undefined,
+    recover,
+  )(resource, accept, vi.fn());
+  const relay = () => {
+    const message = owner.posted
+      .filter((message) => message.kind === "resource-event")
+      .at(-1)!;
+    follower.source.emit("resources", message.event);
+    return message.event;
+  };
+  owner.peerMessage({
+    kind: "subscriptions",
+    resources: [resource],
+    reset: true,
+    tokenRates: false,
+  });
+  const replay = relay();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(replay.resourceVersions[0]).toMatchObject({
+    replyKind: "snapshot",
+    viewSnapshot: { terminalOutput: { text: "old" } },
+  });
+  expect(accept).toHaveBeenLastCalledWith(merged);
+  for (const revision of [11, 12]) {
+    owner.source.emit("resources", frame(revision, "!", revision - 7));
+    await vi.advanceTimersByTimeAsync(0);
+    const broadcast = relay();
+    expect(broadcast.resourceVersions[0]).toMatchObject({
+      replyKind: "snapshot",
+      viewSnapshot: { terminalOutput: merged },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(accept).toHaveBeenLastCalledWith(merged);
+  }
+  let finish!: () => void;
+  const apply = owner.persist.getMockImplementation()!;
+  owner.persist.mockImplementationOnce(async (event, current) => {
+    await new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    await apply(event, current);
+  });
+  const before = owner.posted.filter(
+    (message) => message.kind === "resource-event",
+  ).length;
+  owner.source.emit("resources", frame(13, "!", 6));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(
+    owner.posted.filter((message) => message.kind === "resource-event"),
+  ).toHaveLength(before);
+  finish();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(relay().resourceVersions[0]).toMatchObject({
+    replyKind: "snapshot",
+    viewSnapshot: { terminalOutput: { text: "old!!!" } },
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(recover).not.toHaveBeenCalled();
+  const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+  owner.persist.mockRejectedValueOnce(new Error("disk full"));
+  owner.source.emit("resources", frame(14, "new", 3, "snapshot"));
+  await vi.advanceTimersByTimeAsync(0);
+  const failed = relay();
+  expect(failed.resourceVersions[0].cursor).toBeUndefined();
+  expect(failed.resourceVersions[0].replyKind).toBeUndefined();
+  quiet.mockRestore();
+  stop();
 });

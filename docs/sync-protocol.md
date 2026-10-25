@@ -220,7 +220,10 @@ older output cursor is cached. A reconnect under the same owner reuses its
 proven applied base or receives a replacement snapshot. If a replacement snapshot
 cannot be persisted or is skipped during cancellation or overflow, later intervals
 retain only a recovery hint. Re-add and reconnect omit the saved cursor until a
-fresh snapshot commits, so stale output cannot become the new base.
+fresh snapshot commits, so stale output cannot become the new base. The stream
+owner shares its complete merged terminal view with followers as a snapshot only
+after cursor persistence succeeds; cached replay and ordinary appends require no
+terminal output GETs in those followers. Raw server intervals retain delta semantics.
 Saved terminal history and explicit retries remain user actions.
 
 The existing native EventSource transport and RxDB projection cache remain in

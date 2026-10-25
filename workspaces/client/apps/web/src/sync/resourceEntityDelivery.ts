@@ -110,7 +110,32 @@ export class ResourceEntityDelivery {
     this.pending = [];
   }
 
-  private withholdUnsafeTerminalIntervals(event: ResourceChangeEvent) {
+  private hasPendingTerminalSnapshot(
+    resource: ResourceChangeEvent["resources"][number],
+    event: ResourceChangeEvent,
+  ) {
+    const key = subscriptionKey(resource);
+    return [this.current, ...this.pending].some(
+      (frame) =>
+        frame?.epoch === event.epoch &&
+        frame.workspaceId === event.workspaceId &&
+        frame.resourceVersions.some((entry, index) => {
+          const reference = entry.resource ?? frame.resources[index];
+          return (
+            reference &&
+            subscriptionKey(reference) === key &&
+            entry.replyKind === "snapshot" &&
+            entry.cursor &&
+            entry.viewSnapshot?.terminalOutput
+          );
+        }),
+    );
+  }
+
+  private withholdUnsafeTerminalIntervals(
+    event: ResourceChangeEvent,
+    waitForPendingSnapshot = false,
+  ) {
     for (const [index, entry] of event.resourceVersions.entries()) {
       const resource = entry.resource ?? event.resources[index];
       if (resource?.kind !== "terminal-output") continue;
@@ -118,7 +143,12 @@ export class ResourceEntityDelivery {
         subscriptionKey(resource),
       );
       if (
-        (entry.replyKind === "delta" && this.requiresSnapshot(resource)) ||
+        (entry.replyKind === "delta" &&
+          this.requiresSnapshot(resource) &&
+          !(
+            waitForPendingSnapshot &&
+            this.hasPendingTerminalSnapshot(resource, event)
+          )) ||
         (required &&
           entry.replyKind === "snapshot" &&
           required.epoch === event.epoch &&
@@ -136,7 +166,7 @@ export class ResourceEntityDelivery {
   }
 
   receive(event: ResourceChangeEvent) {
-    this.withholdUnsafeTerminalIntervals(event);
+    this.withholdUnsafeTerminalIntervals(event, true);
     const hasInitialSnapshot =
       (event.reason === "initial" || event.reason === "reconnect") &&
       event.resourceVersions?.some(

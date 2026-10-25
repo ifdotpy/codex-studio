@@ -573,6 +573,29 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     return event;
   }
 
+  function terminalPeerSnapshot(
+    resource: ResourceRef,
+    version: Pick<ResourceVersion, "cursor" | "viewSnapshot">,
+  ) {
+    const output = version.viewSnapshot?.terminalOutput;
+    const cursor = version.cursor;
+    if (
+      resource.kind !== "terminal-output" ||
+      !output ||
+      !cursor ||
+      cursor.workspaceId !== workspaceId ||
+      cursor.seq !== output.offset ||
+      entityDelivery.requiresSnapshot(resource)
+    )
+      return undefined;
+    // Only the owner's post-persistence complete view can establish a follower base.
+    return {
+      cursor,
+      replyKind: "snapshot" as const,
+      viewSnapshot: { terminalOutput: output },
+    };
+  }
+
   function dispatchEvent(received: ResourceChangeEvent) {
     const event = currentResourceEvent(received);
     if (!workspaceId || event.workspaceId !== workspaceId) {
@@ -722,7 +745,18 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     )
       pendingReset = true;
     setStatus("live");
-    if (owner || independent) broadcast({ kind: "resource-event", event });
+    if (owner || independent)
+      broadcast({
+        kind: "resource-event",
+        event: {
+          ...event,
+          resourceVersions: event.resourceVersions.map((entry, index) => {
+            const resource = entry.resource ?? event.resources[index];
+            const snapshot = resource && terminalPeerSnapshot(resource, entry);
+            return snapshot ? { ...entry, ...snapshot } : entry;
+          }),
+        },
+      });
     flushResourceChanges();
   }
 
@@ -1162,6 +1196,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             ...(resourceVersion.cursor
               ? { cursor: resourceVersion.cursor, replyKind: "delta" as const }
               : {}),
+            ...terminalPeerSnapshot(resource, resourceVersion),
             ...(resource.kind === "state" && resourceVersion.entitySequenceReset
               ? { entitySequenceReset: true }
               : resource.kind === "state" &&

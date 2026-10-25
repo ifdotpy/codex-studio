@@ -225,6 +225,55 @@ describe("bounded stream entity delivery", () => {
     },
   );
 
+  it("queues a cold terminal interval behind its pending authoritative snapshot", async () => {
+    let finish!: () => void;
+    const persist = vi
+      .fn()
+      .mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+      )
+      .mockResolvedValue(undefined);
+    const dispatch = vi.fn();
+    const delivery = new ResourceEntityDelivery(persist, dispatch);
+    const terminal = (
+      revision: number,
+      replyKind: "snapshot" | "delta",
+    ): ResourceChangeEvent => ({
+      ...frame(revision, revision === 1 ? "initial" : "change"),
+      resources: [{ kind: "terminal-output", terminalId: "queued" }],
+      resourceVersions: [
+        {
+          revision,
+          cursor: { workspaceId: "a".repeat(32), seq: revision },
+          replyKind,
+          viewSnapshot: {
+            terminalOutput: {
+              text: revision === 1 ? "a" : "!",
+              offset: revision,
+              status: "running",
+              truncated: false,
+            },
+          },
+        },
+      ],
+    });
+    delivery.receive(terminal(1, "snapshot"));
+    delivery.receive(terminal(2, "delta"));
+    expect(dispatch).not.toHaveBeenCalled();
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(dispatch.mock.calls.map(([event]) => event.revision)).toEqual([
+      1, 2,
+    ]);
+    expect(
+      dispatch.mock.calls[1][0].resourceVersions[0].viewSnapshot.terminalOutput
+        .text,
+    ).toBe("!");
+  });
+
   it("retains invalidation if storage rejects the batch", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const dispatch = vi.fn();
