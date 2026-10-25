@@ -611,3 +611,50 @@ fn mixed_batch_splits_only_at_the_owned_attachment_admission_budget() {
         "invalid single input reaches explicit compiler refusal rather than disappearing"
     );
 }
+
+#[test]
+fn tagged_radio_answer_does_not_block_the_agent_queue() {
+    let mut connection = database();
+    connection
+        .execute(
+            "UPDATE runtime_events SET kind='followup' WHERE id='first'",
+            [],
+        )
+        .expect("answer kind writes");
+    connection
+        .execute(
+            r#"INSERT INTO runtime_event_meta(id,record) VALUES('first','{"radioAnswerTurnId":"turn"}')"#,
+            [],
+        )
+        .expect("radio answer receipt writes");
+    let transaction = connection.transaction().expect("claim begins");
+    let claim = SchedulerRepository::claim_for_preparation(&transaction, "agent", 4, "a", 10.0, 32)
+        .expect("tagged answer is valid")
+        .expect("the queue is claimed");
+    assert_eq!(claim.refusal_reason, None);
+    let ids = claim
+        .events
+        .iter()
+        .map(|e| e.id.0.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["first", "tie", "later"]);
+    transaction.commit().expect("claim commits");
+}
+
+#[test]
+fn selected_ordinary_event_is_claimed_alone() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("claim begins");
+    let claim =
+        SchedulerRepository::claim_selected_event(&transaction, "agent", 4, "a", 10.0, "later")
+            .expect("selected event is valid")
+            .expect("selected event is claimed");
+    assert_eq!(claim.refusal_reason, None);
+    let ids = claim
+        .events
+        .iter()
+        .map(|e| e.id.0.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["later"]);
+    transaction.commit().expect("claim commits");
+}

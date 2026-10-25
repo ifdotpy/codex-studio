@@ -831,3 +831,70 @@ impl radio_runtime::RadioCreation for Creation {
         Ok(())
     }
 }
+
+fn input(id: &str, kind: &str) -> QueueEvent {
+    QueueEvent {
+        id: QueueEventId::from(id),
+        agent: AgentId::from("a"),
+        kind: kind.to_owned(),
+        text: id.to_owned(),
+        status: "pending".to_owned(),
+        created: 1.0,
+        epoch: 1,
+        turn_id: None,
+        error: None,
+    }
+}
+
+/// The single radio rule for queued input: while the agent's live radio turn
+/// holds the floor only the exact tagged answer passes; otherwise every
+/// ordinary row, tagged answers included, is deliverable.
+#[tokio::test]
+async fn live_radio_turn_admits_only_its_tagged_answer_and_releases_the_rest() {
+    let corpus = corpus();
+    let case = corpus
+        .cases
+        .iter()
+        .find(|c| c["name"] == "binding")
+        .expect("binding");
+    let root = tempfile::tempdir().expect("radio state directory");
+    copy_template(&corpus, root.path());
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    seed(&store, &case["before"]).await;
+    let radio_event = case["body"]["event"].as_str().expect("event").to_owned();
+    let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
+    let rows = vec![
+        input("plain", "user"),
+        input("answer", "followup"),
+        input("stale", "followup"),
+    ];
+    store
+        .transaction_with(move |db| -> Result<(), ProjectsError> {
+            db.execute(
+                "UPDATE runtime_events SET turn_id='live', status='dispatching' WHERE id=?1",
+                [&radio_event],
+            )?;
+            for (id, turn) in [("answer", "live"), ("stale", "ended")] {
+                db.execute(
+                    "INSERT INTO runtime_event_meta(id,record) VALUES(?1,?2)",
+                    rusqlite::params![id, json!({"radioAnswerTurnId": turn}).to_string()],
+                )?;
+            }
+            let ids = |agent: Value, rows: &[QueueEvent]| -> Result<Vec<String>, ProjectsError> {
+                Ok(
+                    radio_runtime::select_pending(db, &prepared, &agent, rows, 1000.0)?
+                        .into_iter()
+                        .map(|event| event.id.0)
+                        .collect(),
+                )
+            };
+            let live = json!({"id":"a","inFlight":true,"turnId":"live"});
+            assert_eq!(ids(live.clone(), &rows)?, ["answer"]);
+            assert!(ids(live, &rows[..1])?.is_empty(), "other input waits");
+            let ended = json!({"id":"a","inFlight":false,"turnId":null});
+            assert_eq!(ids(ended, &rows)?, ["plain", "answer", "stale"]);
+            Ok(())
+        })
+        .await
+        .expect("radio selection");
+}

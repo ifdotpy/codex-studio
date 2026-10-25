@@ -68,7 +68,7 @@
     ]
   },
   "radio-policy": {
-    "reason": "radio_turn is unreachable through scheduler claim (also refuses radioAnswerTurnId); room binding and peer readiness belong to radio service. Plain radio follows Python.",
+    "reason": "The store scheduler claims a radio_turn only by the exact event id that the services select_pending policy chose; a plain claim refuses a pending radio or radio_turn event. select_pending owns the radio rule, so the store no longer refuses a radioAnswerTurnId answer: it is ordinary input unless a live radio turn holds the floor, where only the exact answer passes. Room binding and peer readiness belong to radio service. Plain radio follows Python.",
     "fields": ["/entryResult"]
   }
 }

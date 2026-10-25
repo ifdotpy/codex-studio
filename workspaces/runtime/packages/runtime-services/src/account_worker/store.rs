@@ -667,14 +667,22 @@ pub(super) async fn claim(
                     now(),
                 )
                 .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-                if let Some(event) = selected.first().filter(|event| event.kind == "radio_turn") {
-                    return scheduler::claim_radio_turn_in_transaction(
+                // `select_pending` owns the radio rule: one radio turn, the exact
+                // answer to the live turn, or all ordinary rows. Nothing selected
+                // means the live turn holds the floor: wait without a hold; the
+                // agent is claimable again once that turn ends.
+                if selected.is_empty() {
+                    return Ok(None);
+                }
+                let ordinary = events.iter().filter(|e| e.kind != "radio_turn").count();
+                if selected.len() < ordinary || selected[0].kind == "radio_turn" {
+                    return scheduler::claim_selected_event_in_transaction(
                         tx,
                         &agent,
                         epoch,
                         attempt,
                         now(),
-                        &event.id.0,
+                        &selected[0].id.0,
                     )
                     .map_err(Into::into);
                 }
