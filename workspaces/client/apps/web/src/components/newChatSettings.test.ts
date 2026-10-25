@@ -8,8 +8,8 @@ import {
 import { isServerCommand } from "../servers/navigation";
 
 test.each([
-  ["Darwin", "layr"],
-  ["Linux", "worktree"],
+  ["Darwin", "layr-native"],
+  ["Linux", "layr-native"],
   ["Windows", "worktree"],
   [undefined, "worktree"],
 ])("%s defaults to %s", (system, mode) =>

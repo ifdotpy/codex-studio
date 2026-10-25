@@ -37,7 +37,6 @@ const DIAGNOSTICS_RESPONSE_FIELDS: &[&str] = &[
     "runtimeLockOperations",
     "supervisor",
     "blockingPoolMetrics",
-    "imageMounts",
 ];
 
 pub(crate) fn routes() -> RouteGroup {
@@ -327,7 +326,6 @@ async fn diagnostics(
             "runtimeLockOperations": studio_runtime_services::diagnostics::runtime_lock_operations(),
             "supervisor": supervisor,
             "blockingPoolMetrics": blocking_pool_metrics,
-            "imageMounts": studio_runtime_services::image_workspace::mount_diagnostics(),
         });
         let mut value = value;
         redact_untrusted_diagnostic_text(&mut value);
@@ -468,6 +466,23 @@ async fn ui_summary(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::UiSummaryResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
+    let vm_state_dir = state.vm_state_dir;
+    let has_studio_vm = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/ui-summary/vm-capability",
+        move || {
+            #[cfg(unix)]
+            {
+                studio_runtime_services::linux_vm_runtime::studio_vm_is_created(&vm_state_dir)
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = vm_state_dir;
+                false
+            }
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?;
     let account_driver = state.account_driver;
     let account_policy = state.account_policy;
     // The account listing reads auth files, so it runs before the store read.
@@ -488,8 +503,9 @@ async fn ui_summary(
     .map_err(|_| ApiError::internal())??;
     let value = store
         .read_async("runtime-http/routes/system_reads", move |transaction| {
-            let value =
+            let mut value =
                 system_reads::ui_summary(transaction, accounts).map_err(ApiError::stored)?;
+            value["hasStudioVm"] = Value::Bool(has_studio_vm);
             super::generated_json::<crate::generated::UiSummaryResponse>(value)
         })
         .await?;

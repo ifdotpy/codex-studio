@@ -1042,9 +1042,6 @@ export { browserExecutablePath, waitForFixturePort };
  *   "parentId" | "rootId" | "threadId" | "orchestratorId" | "orchestratorName" |
  *   "isLead" | "role" | "sharedRoomId" | "model" | "provider" | "effort" |
  *   "fastMode" | "concurrency" | "accountKey" | "cwd" | "worktree" |
- *   "worktreePreparation" | "imageWorkspace" | "imageWorkspaceReady" |
- *   "imageWorkspacePhase" | "imageWorkspaceError" | "imageWorkspaceRepo" |
- *   "imageWorkspaceBaseRepo" | "imageWorkspaceSubpath" | "imageWorkspaceBaseRef" |
  *   "created" | "updated" | "turnId" | "turnStatus" | "inFlight" | "compactions" |
  *   "tokensUsed" | "contextUsage" | "error" | "tail" | "canSend" | "launcherAlive" |
  *   "empty" | "yoloMode" | "agentMode" | "agentModeRevision" | "agentModeSupported" |

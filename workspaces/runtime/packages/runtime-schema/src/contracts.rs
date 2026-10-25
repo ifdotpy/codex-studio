@@ -472,6 +472,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         "/components/schemas/TranscriptResource/properties/tail/maximum",
         values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
     )?;
+    crate::workspace_modes::check_openapi(openapi)?;
     check_delivery_parity(openapi)?;
     let modes = serde_json::json!(crate::claude_permissions::PERMISSION_MODES);
     for path in [
@@ -800,6 +801,7 @@ fn subscription_scopes_ts(
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     let mut openapi = read_json(root, OPENAPI_PATH)?;
+    crate::workspace_modes::update_openapi(&mut openapi);
     for (name, schema) in crate::agent_progress::schemas()
         .into_iter()
         .chain(crate::desktop::schemas())
@@ -834,6 +836,21 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: web("workspaceModes.ts"),
+            text: format!(
+                "// {HEADER}\nexport const CHAT_WORKSPACE_MODES = {} as const;\nexport const DEFAULT_CHAT_WORKSPACE_MODE = {};\n",
+                format!(
+                    "[\n{},\n]",
+                    crate::workspace_modes::CHAT_WORKSPACE_MODES
+                        .iter()
+                        .map(|mode| format!("  {}", json_string(mode)))
+                        .collect::<Vec<_>>()
+                        .join(",\n")
+                ),
+                json_string(crate::workspace_modes::DEFAULT_CHAT_WORKSPACE_MODE)
+            ),
+        },
         Rendered {
             path: web("subscriptionEntities.ts"),
             text: subscription_scopes_ts(

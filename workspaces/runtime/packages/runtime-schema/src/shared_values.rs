@@ -261,32 +261,6 @@ pub const DISK_FULL_MAX_RESUMES: u64 = 5;
 pub const DISK_FULL_ERROR_PATTERN: &str =
     "ENOSPC|No space left on device|database or disk is full|SQLITE_FULL";
 
-// Image workspace mount identity (docs/workspace-images.md, "Mount identity"). Studio
-// writes the marker file at the root of each agent volume when it attaches the volume. The
-// marker names the agent and the (st_dev, st_ino) of the image file at attach time.
-/// File name of the image workspace marker.
-pub const IMAGE_WORKSPACE_MARKER_NAME: &str = ".studio-workspace.json";
-/// Schema version of the image workspace marker.
-pub const IMAGE_WORKSPACE_MARKER_SCHEMA: u64 = 1;
-/// The closed results of one mount point check.
-pub const IMAGE_MOUNT_STATUSES: &[&str] = &[
-    "mounted",
-    "detached",
-    "plain-folder",
-    "foreign-volume",
-    "image-replaced",
-    "attached-elsewhere",
-    "image-missing",
-];
-/// The mount results that need an operator; they are never repaired automatically.
-pub const IMAGE_MOUNT_PROBLEM_STATUSES: &[&str] = &[
-    "plain-folder",
-    "foreign-volume",
-    "image-replaced",
-    "attached-elsewhere",
-    "image-missing",
-];
-
 // In-place VM guest updates (docs/linux-vm-workspaces.md, "Guest updates"). Provisioning
 // writes the Mac's update key (root only) and the record of the parts that only
 // provisioning installs; the root broker reads both. Paths in the guest.
@@ -386,14 +360,5 @@ mod tests {
         ] {
             assert_eq!(byte_label(bytes), label);
         }
-    }
-
-    #[test]
-    fn problem_statuses_are_mount_statuses() {
-        assert!(
-            IMAGE_MOUNT_PROBLEM_STATUSES
-                .iter()
-                .all(|status| IMAGE_MOUNT_STATUSES.contains(status))
-        );
     }
 }

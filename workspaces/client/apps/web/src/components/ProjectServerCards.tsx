@@ -59,6 +59,7 @@ export default function ProjectServerCards({
   const [fetched, setFetched] = useState<{
     key: string;
     system?: string;
+    hasStudioVm?: boolean;
   } | null>(null);
   const system =
     server?.system ??
@@ -67,7 +68,7 @@ export default function ProjectServerCards({
   fetchedKey.current = fetched?.key || "";
   const [modeChoice, setModeChoice] = useState<{
     server: string;
-    mode: "layr" | "image" | "worktree";
+    mode: NewChatSettings["workspaceMode"];
   } | null>(null);
   const mode =
     modeChoice?.server === selected
@@ -78,7 +79,7 @@ export default function ProjectServerCards({
     "workspaceMode"
   > | null>(null);
   const [platformError, setPlatformError] = useState("");
-  const knownSystem = !!server?.system;
+  const knownSystem = !!server?.system && server.hasStudioVm !== undefined;
   const disabled = !!server?.disabled;
   const available = !!server;
   useEffect(() => {
@@ -96,7 +97,11 @@ export default function ProjectServerCards({
     })
       .then((value) => {
         if (!controller.signal.aborted)
-          setFetched({ key: connectionKey, system: value.system });
+          setFetched({
+            key: connectionKey,
+            system: value.system,
+            hasStudioVm: value.hasStudioVm,
+          });
       })
       .catch((error) => {
         if (!controller.signal.aborted) setPlatformError(String(error));
@@ -149,7 +154,7 @@ export default function ProjectServerCards({
           );
         })}
       </div>
-      {system === "Darwin" && (
+      {(system === "Darwin" || system === "Linux") && (
         <div className="new-chat-run-mode">
           <Text component="label" id="new-chat-run-mode-label" size="sm">
             Workspace
@@ -164,15 +169,18 @@ export default function ProjectServerCards({
                 mode:
                   value === "layr"
                     ? "layr"
-                    : value === "image"
-                      ? "image"
+                    : value === "layr-native"
+                      ? "layr-native"
                       : "worktree",
               })
             }
             data={[
-              { value: "layr", label: "layr" },
-              { value: "image", label: "ASIF" },
-              { value: "worktree", label: "worktree" },
+              { value: "layr-native", label: "Layr" },
+              ...((server?.hasStudioVm ??
+              (fetched?.key === connectionKey && fetched.hasStudioVm))
+                ? [{ value: "layr", label: "Layr VM" }]
+                : []),
+              { value: "worktree", label: "WT" },
             ]}
           />
         </div>
@@ -209,7 +217,8 @@ export default function ProjectServerCards({
               { ...location, serverId: selected },
               {
                 ...models,
-                workspaceMode: system === "Darwin" ? mode : "worktree",
+                workspaceMode:
+                  system === "Darwin" || system === "Linux" ? mode : "worktree",
               },
             )
           }

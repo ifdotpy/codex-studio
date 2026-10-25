@@ -428,9 +428,6 @@ const settings = (s) =>
             CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
           }
         : {}),
-      ...(typeof s.studioImageWorkspaceTempDir === "string"
-        ? { TMPDIR: s.studioImageWorkspaceTempDir }
-        : {}),
     },
     stderr: (line) => process.stderr.write(line),
   });

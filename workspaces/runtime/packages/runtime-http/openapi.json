@@ -3931,116 +3931,6 @@
             "title": "Id",
             "type": "string"
           },
-          "imageWorkspace": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Imageworkspace"
-          },
-          "imageWorkspaceBaseRef": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacebaseref"
-          },
-          "imageWorkspaceBaseRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacebaserepo"
-          },
-          "imageWorkspaceCreatedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Imageworkspacecreatedat"
-          },
-          "imageWorkspaceError": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspaceerror"
-          },
-          "imageWorkspaceHasGit": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Imageworkspacehasgit"
-          },
-          "imageWorkspacePhase": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacephase"
-          },
-          "imageWorkspaceReady": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Imageworkspaceready"
-          },
-          "imageWorkspaceRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacerepo"
-          },
-          "imageWorkspaceSubpath": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacesubpath"
-          },
           "lastAnswer": {
             "anyOf": [
               {
@@ -4517,12 +4407,6 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
                 "type": "string"
               },
               {
@@ -5215,116 +5099,6 @@
           "id": {
             "title": "Id",
             "type": "string"
-          },
-          "imageWorkspace": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Imageworkspace"
-          },
-          "imageWorkspaceBaseRef": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacebaseref"
-          },
-          "imageWorkspaceBaseRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacebaserepo"
-          },
-          "imageWorkspaceCreatedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Imageworkspacecreatedat"
-          },
-          "imageWorkspaceError": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspaceerror"
-          },
-          "imageWorkspaceHasGit": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Imageworkspacehasgit"
-          },
-          "imageWorkspacePhase": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacephase"
-          },
-          "imageWorkspaceReady": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Imageworkspaceready"
-          },
-          "imageWorkspaceRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacerepo"
-          },
-          "imageWorkspaceSubpath": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Imageworkspacesubpath"
           },
           "inFlight": {
             "anyOf": [
@@ -6165,12 +5939,6 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
                 "type": "string"
               },
               {
@@ -6861,10 +6629,6 @@
             "$ref": "#/components/schemas/ClaudePreInputRetryRecordResponse",
             "default": null
           },
-          "cleanedImageWorkspace": {
-            "$ref": "#/components/schemas/CleanedImageWorkspaceRecordResponse",
-            "default": null
-          },
           "cleanedWorktree": {
             "$ref": "#/components/schemas/WorktreeCleanupRecordResponse",
             "default": null
@@ -7131,214 +6895,6 @@
           "id": {
             "title": "Id",
             "type": "string"
-          },
-          "imageWorkspace": {
-            "default": null,
-            "title": "Imageworkspace",
-            "type": "boolean"
-          },
-          "imageWorkspaceBaseError": {
-            "default": null,
-            "title": "Imageworkspacebaseerror",
-            "type": "string"
-          },
-          "imageWorkspaceBaseRef": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacebaseref"
-          },
-          "imageWorkspaceBaseRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacebaserepo"
-          },
-          "imageWorkspaceCleanupResult": {
-            "$ref": "#/components/schemas/ImageWorkspaceCleanupResultRecordResponse",
-            "default": null
-          },
-          "imageWorkspaceCleanupRetry": {
-            "$ref": "#/components/schemas/ImageWorkspaceCleanupRetryRecordResponse",
-            "default": null
-          },
-          "imageWorkspaceCollect": {
-            "$ref": "#/components/schemas/ImageWorkspaceCollectResultRecordResponse",
-            "default": null
-          },
-          "imageWorkspaceCreatedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacecreatedat"
-          },
-          "imageWorkspaceError": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspaceerror"
-          },
-          "imageWorkspaceHandoffText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacehandofftext"
-          },
-          "imageWorkspaceHasGit": {
-            "default": null,
-            "title": "Imageworkspacehasgit",
-            "type": "boolean"
-          },
-          "imageWorkspaceMount": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacemount"
-          },
-          "imageWorkspaceNoticeError": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacenoticeerror"
-          },
-          "imageWorkspaceNoticeId": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacenoticeid"
-          },
-          "imageWorkspaceNoticeSent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacenoticesent"
-          },
-          "imageWorkspaceNoticeText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacenoticetext"
-          },
-          "imageWorkspacePhase": {
-            "anyOf": [
-              {
-                "enum": [
-                  "read_only",
-                  "ready",
-                  "fallback",
-                  "archiving",
-                  "archived",
-                  "removed"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacephase"
-          },
-          "imageWorkspaceReady": {
-            "default": null,
-            "title": "Imageworkspaceready",
-            "type": "boolean"
-          },
-          "imageWorkspaceRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacerepo"
-          },
-          "imageWorkspaceSnapshotCommit": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacesnapshotcommit"
-          },
-          "imageWorkspaceSubpath": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacesubpath"
           },
           "importedFrom": {
             "default": null,
@@ -8269,19 +7825,12 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Workspacemode"
           },
           "workspaceModeExplicit": {
@@ -9010,126 +8559,6 @@
           "id": {
             "title": "Id",
             "type": "string"
-          },
-          "imageWorkspace": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspace"
-          },
-          "imageWorkspaceBaseRef": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacebaseref"
-          },
-          "imageWorkspaceBaseRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacebaserepo"
-          },
-          "imageWorkspaceCreatedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacecreatedat"
-          },
-          "imageWorkspaceError": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspaceerror"
-          },
-          "imageWorkspaceHasGit": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacehasgit"
-          },
-          "imageWorkspacePhase": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacephase"
-          },
-          "imageWorkspaceReady": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspaceready"
-          },
-          "imageWorkspaceRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacerepo"
-          },
-          "imageWorkspaceSubpath": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacesubpath"
           },
           "inFlight": {
             "anyOf": [
@@ -10032,19 +9461,12 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Workspacemode"
           },
           "workspaceOperation": {
@@ -17047,126 +16469,6 @@
             "title": "Id",
             "type": "string"
           },
-          "imageWorkspace": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspace"
-          },
-          "imageWorkspaceBaseRef": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacebaseref"
-          },
-          "imageWorkspaceBaseRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacebaserepo"
-          },
-          "imageWorkspaceCreatedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacecreatedat"
-          },
-          "imageWorkspaceError": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspaceerror"
-          },
-          "imageWorkspaceHasGit": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacehasgit"
-          },
-          "imageWorkspacePhase": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacephase"
-          },
-          "imageWorkspaceReady": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspaceready"
-          },
-          "imageWorkspaceRepo": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacerepo"
-          },
-          "imageWorkspaceSubpath": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Imageworkspacesubpath"
-          },
           "inFlight": {
             "anyOf": [
               {
@@ -18068,19 +17370,12 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Workspacemode"
           },
           "workspaceOperation": {
@@ -21274,121 +20569,6 @@
         "title": "ClaudeTurn",
         "type": "object"
       },
-      "CleanedImageWorkspaceRecordResponse": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "properties": {
-          "branch": {
-            "default": null,
-            "title": "Branch",
-            "type": "string"
-          },
-          "bytes": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Bytes"
-          },
-          "collect": {
-            "$ref": "#/components/schemas/ImageWorkspaceCollectResultRecordResponse",
-            "default": null
-          },
-          "createdAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "default": null,
-            "title": "Createdat"
-          },
-          "freedBytes": {
-            "default": null,
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Freedbytes",
-            "type": "integer"
-          },
-          "head": {
-            "default": null,
-            "title": "Head",
-            "type": "string"
-          },
-          "mount": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Mount"
-          },
-          "path": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Path"
-          },
-          "phase": {
-            "default": null,
-            "title": "Phase",
-            "type": "string"
-          },
-          "relative": {
-            "default": null,
-            "title": "Relative",
-            "type": "string"
-          },
-          "repo": {
-            "default": null,
-            "title": "Repo",
-            "type": "string"
-          },
-          "restoreHeads": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "default": null,
-            "title": "Restoreheads",
-            "type": "object"
-          },
-          "source": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Source"
-          }
-        },
-        "title": "CleanedImageWorkspaceRecordResponse",
-        "type": "object"
-      },
       "CodexLoginReceipt": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -23704,10 +22884,10 @@
             "default": null
           },
           "workspaceMode": {
-            "default": "worktree",
+            "default": "layr-native",
             "enum": [
+              "layr-native",
               "layr",
-              "image",
               "worktree",
               "shared"
             ],
@@ -23991,10 +23171,10 @@
             "default": null
           },
           "workspaceMode": {
-            "default": "worktree",
+            "default": "layr-native",
             "enum": [
+              "layr-native",
               "layr",
-              "image",
               "worktree"
             ],
             "title": "Workspacemode",
@@ -24763,17 +23943,6 @@
           },
           "httpRequestMetrics": {
             "$ref": "#/components/schemas/HttpRequestMetrics"
-          },
-          "imageMounts": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ImageMountDiagnostics"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
           },
           "migrations": {
             "$ref": "#/components/schemas/MigrationStatus"
@@ -28346,254 +27515,6 @@
           "mode",
           "minTokens"
         ],
-        "type": "object"
-      },
-      "ImageMountDiagnostics": {
-        "additionalProperties": false,
-        "description": "Startup image workspace mount check. Paths and details stay in `mounts check`.",
-        "properties": {
-          "checkedAt": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Checkedat"
-          },
-          "problems": {
-            "items": {
-              "$ref": "#/components/schemas/ImageMountProblem"
-            },
-            "title": "Problems",
-            "type": "array"
-          },
-          "state": {
-            "enum": [
-              "pending",
-              "checked",
-              "failed",
-              "unsupported"
-            ],
-            "title": "State",
-            "type": "string"
-          },
-          "strayAttachments": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Strayattachments",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "state",
-          "checkedAt",
-          "problems",
-          "strayAttachments"
-        ],
-        "title": "ImageMountDiagnostics",
-        "type": "object"
-      },
-      "ImageMountProblem": {
-        "additionalProperties": false,
-        "properties": {
-          "agentId": {
-            "title": "Agentid",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "plain-folder",
-              "foreign-volume",
-              "image-replaced",
-              "attached-elsewhere",
-              "image-missing"
-            ],
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "agentId",
-          "status"
-        ],
-        "title": "ImageMountProblem",
-        "type": "object"
-      },
-      "ImageWorkspaceCleanupResultRecordResponse": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "properties": {
-          "bytes": {
-            "default": null,
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Bytes",
-            "type": "integer"
-          },
-          "collect": {
-            "$ref": "#/components/schemas/ImageWorkspaceCollectResultRecordResponse",
-            "default": null
-          },
-          "freedBytes": {
-            "default": null,
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Freedbytes",
-            "type": "integer"
-          },
-          "reason": {
-            "default": null,
-            "title": "Reason",
-            "type": "string"
-          },
-          "restoreHeads": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "default": null,
-            "title": "Restoreheads",
-            "type": "object"
-          },
-          "state": {
-            "default": null,
-            "title": "State",
-            "type": "string"
-          }
-        },
-        "title": "ImageWorkspaceCleanupResultRecordResponse",
-        "type": "object"
-      },
-      "ImageWorkspaceCleanupRetryRecordResponse": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "properties": {
-          "at": {
-            "title": "At",
-            "type": "number"
-          },
-          "attempts": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Attempts",
-            "type": "integer"
-          },
-          "error": {
-            "title": "Error",
-            "type": "string"
-          },
-          "nextAt": {
-            "title": "Nextat",
-            "type": "number"
-          }
-        },
-        "required": [
-          "attempts",
-          "at",
-          "nextAt",
-          "error"
-        ],
-        "title": "ImageWorkspaceCleanupRetryRecordResponse",
-        "type": "object"
-      },
-      "ImageWorkspaceCollectRepositoryRecordResponse": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "properties": {
-          "branch": {
-            "default": null,
-            "title": "Branch",
-            "type": "string"
-          },
-          "commit": {
-            "default": null,
-            "title": "Commit",
-            "type": "string"
-          },
-          "head": {
-            "default": null,
-            "title": "Head",
-            "type": "string"
-          },
-          "path": {
-            "title": "Path",
-            "type": "string"
-          },
-          "rawRef": {
-            "default": null,
-            "title": "Rawref",
-            "type": "string"
-          },
-          "state": {
-            "default": null,
-            "title": "State",
-            "type": "string"
-          }
-        },
-        "required": [
-          "path"
-        ],
-        "title": "ImageWorkspaceCollectRepositoryRecordResponse",
-        "type": "object"
-      },
-      "ImageWorkspaceCollectResultRecordResponse": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "properties": {
-          "branch": {
-            "default": null,
-            "title": "Branch",
-            "type": "string"
-          },
-          "commit": {
-            "default": null,
-            "title": "Commit",
-            "type": "string"
-          },
-          "conflict": {
-            "default": null,
-            "title": "Conflict",
-            "type": "string"
-          },
-          "conflicts": {
-            "default": null,
-            "items": {
-              "$ref": "#/components/schemas/JsonValue"
-            },
-            "title": "Conflicts",
-            "type": "array"
-          },
-          "path": {
-            "default": null,
-            "title": "Path",
-            "type": "string"
-          },
-          "rawRef": {
-            "default": null,
-            "title": "Rawref",
-            "type": "string"
-          },
-          "repositories": {
-            "default": null,
-            "items": {
-              "$ref": "#/components/schemas/ImageWorkspaceCollectRepositoryRecordResponse"
-            },
-            "title": "Repositories",
-            "type": "array"
-          },
-          "state": {
-            "default": null,
-            "title": "State",
-            "type": "string"
-          }
-        },
-        "title": "ImageWorkspaceCollectResultRecordResponse",
         "type": "object"
       },
       "ImportListResponse": {
@@ -56807,6 +55728,11 @@
             },
             "title": "Chats",
             "type": "array"
+          },
+          "hasStudioVm": {
+            "default": false,
+            "description": "The server has a created Studio Linux VM.",
+            "type": "boolean"
           },
           "projects": {
             "items": {

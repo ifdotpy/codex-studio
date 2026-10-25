@@ -46,13 +46,6 @@ fn validate_vm_parent_workspace(workspace: &str, vm_parent: bool) -> Result<(), 
     Ok(())
 }
 
-fn validate_image_workspace_platform(workspace: &str, is_macos: bool) -> Result<(), Error> {
-    if workspace == "image" && !is_macos {
-        return Err(Error::Unavailable("workspace-state/image-provisioning"));
-    }
-    Ok(())
-}
-
 fn host_project_cwd<'a>(vm_workspace: bool, root: &'a Value, parent_cwd: &'a str) -> &'a str {
     if vm_workspace {
         root.get("hostProjectPath")
@@ -73,11 +66,6 @@ pub enum ManagedCreationEnvironmentError {
 /// Host account facts and model admission. Production implementations resolve
 /// model settings through the retained `AccountSessionPort` broker.
 pub trait ManagedCreationEnvironment: Send + Sync {
-    /// Whether this environment can provision image workspaces. Kept injectable
-    /// so platform-independent tests can exercise the macOS provisioning path.
-    fn supports_image_workspace(&self) -> bool {
-        cfg!(target_os = "macos")
-    }
     /// Guest RPC boundary used by VM review state capture. Production uses the
     /// runtime's Linux VM socket; tests inject a fake guest.
     fn guest_rpc(
@@ -138,42 +126,6 @@ pub trait ManagedCreationEnvironment: Send + Sync {
         Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
         ManagedCreationEnvironmentError,
     >;
-
-    /// Start image workspace provisioning after child rows commit. Tests override this
-    /// boundary so ordinary workspace tests never create real disk images.
-    fn provision_image_workspace(
-        &self,
-        _store: &RuntimeStore,
-        root: &Path,
-        agent_id: &str,
-    ) -> Result<Value, ManagedCreationEnvironmentError> {
-        #[cfg(target_os = "macos")]
-        {
-            // Complete before returning: the caller releases the queued wake
-            // signals only after this hook and the readiness update commit.
-            let workspace =
-                crate::image_workspace::create_workspace(root, agent_id).map_err(|_| {
-                    ManagedCreationEnvironmentError::Unavailable(
-                        "workspace-state/image-provisioning",
-                    )
-                })?;
-            Some(workspace)
-                .filter(|workspace| {
-                    workspace.get("path").and_then(Value::as_str).is_some()
-                        && workspace.get("mount").and_then(Value::as_str).is_some()
-                })
-                .ok_or(ManagedCreationEnvironmentError::Unavailable(
-                    "workspace-state/image-provisioning",
-                ))
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (root, agent_id);
-            Err(ManagedCreationEnvironmentError::Unavailable(
-                "workspace-state/image-provisioning",
-            ))
-        }
-    }
 }
 
 fn expand_review_home(path: &str, home: Option<&str>) -> PathBuf {
@@ -512,7 +464,8 @@ pub(crate) async fn spawn_agents(
             .get("workspace")
             .and_then(Value::as_str)
             .or_else(|| {
-                if role == "reviewer" && !vm_actor {
+                if role == "reviewer" && !vm_actor && !crate::layr_native::is_native(&parent_value)
+                {
                     Some("shared")
                 } else if vm_actor {
                     Some("layr")
@@ -522,21 +475,10 @@ pub(crate) async fn spawn_agents(
             })
             .unwrap_or("worktree");
         validate_vm_parent_workspace(workspace, vm_actor)?;
-        // Python resolves image support and starts its base before the writer
-        // (`codex_runtime.py:8895-8915`, `codex_workspace_images.py:834`); refuse
-        // before drafting or committing children when this provider is absent.
-        validate_image_workspace_platform(workspace, environment.supports_image_workspace())?;
-        let worktree = match workspace {
-            "worktree" => true,
-            "shared" => false,
-            "image" | "layr" | "linux" => false,
-            _ => {
-                return Err(crate::managed_host_tools::Error::Invalid(
-                    "workspace must be \"image\", \"worktree\", or \"shared\"",
-                )
-                .into());
-            }
-        };
+        if !studio_runtime_schema::workspace_modes::accepts_worker(workspace) {
+            return Err(crate::managed_host_tools::Error::Invalid("Unknown workspace mode").into());
+        }
+        let worktree = workspace == "worktree";
         // Python `git_toplevel` decides Git support for an implementer's
         // folder; a reviewer has no repository there (`spawn_agents`).
         let in_git = !vm_actor
@@ -709,33 +651,19 @@ pub(crate) async fn spawn_agents(
         };
         let project_worker_base = project_worker_base.as_deref();
         let base_ref_request = requested_base_ref.or(project_worker_base);
-        let (worktree, (base_ref, base_commit, main_ref, behind_main)) = resolve_child_base(
-            worktree,
-            workspace == "image",
-            Path::new(host_cwd),
-            base_ref_request,
-        )?;
-        let (workspace_in_git, image_workspace_has_git) = match vm_actor {
-            false => (in_git, in_git),
-            true => {
-                let in_git = parent_value
-                    .get("workspaceInGit")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                (
-                    in_git,
-                    in_git
-                        || parent_value
-                            .get("imageWorkspaceHasGit")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                )
-            }
+        let (worktree, (base_ref, base_commit, main_ref, behind_main)) =
+            resolve_child_base(worktree, Path::new(host_cwd), base_ref_request)?;
+        let workspace_in_git = if vm_actor {
+            parent_value
+                .get("workspaceInGit")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        } else {
+            in_git
         };
         let body = json!({"account_key":account_key,"name":name,"model":model,"effort":effort,
             "prompt":prompt,"workspace_explicit":spec.get("workspace").is_some(),
-            "_workspaceInGit":workspace_in_git,
-            "_imageWorkspaceHasGit":image_workspace_has_git});
+            "_workspaceInGit":workspace_in_git});
         let draft = crate::host_worker_create::prepare_work_item(
             &body,
             Path::new(host_cwd),
@@ -762,13 +690,8 @@ pub(crate) async fn spawn_agents(
         let mut record = crate::host_worker_create::persisted_record(&draft)
             .map_err(map_create_error)?
             .value();
-        if workspace == "image" {
-            crate::agents_create::set_image_workspace_fields(&mut record, child_directory);
-            if base_ref_request.is_some() {
-                record["imageWorkspaceBaseRef"] = json!(base_ref);
-                record["workerBaseRef"] = json!(base_ref);
-                record["workerBaseCommit"] = json!(base_commit);
-            }
+        if workspace == "layr-native" {
+            crate::layr_native::configure_child(&mut record, &parent_value, &root_value);
         } else if vm_workspace {
             record["workspaceMode"] = json!("layr");
             let (child_cwd, subpath) = vm_directory.as_ref().ok_or(Error::Refused)?;
@@ -780,11 +703,11 @@ pub(crate) async fn spawn_agents(
             }
         }
         if let Some(note) = workspace_note {
-            record["imageWorkspaceError"] = json!(note);
+            record["worktreeWarning"] = json!(note);
         }
-        // Python `create`: an implementer outside Git and outside an image
-        // works in the folder itself, and the record says so.
-        if !vm_actor && role == "implementer" && !worktree && workspace != "image" && !in_git {
+        // An implementer outside Git uses the selected folder.
+        if !vm_actor && role == "implementer" && !worktree && workspace != "layr-native" && !in_git
+        {
             record["worktreeWarning"] = json!(no_worktree_warning(
                 record["cwd"].as_str().unwrap_or(child_directory)
             ));
@@ -829,22 +752,8 @@ pub(crate) async fn spawn_agents(
         });
     }
 
-    let image_provisions = drafts
-        .iter()
-        .filter(|draft| draft.workspace == "image")
-        .map(|draft| {
-            (
-                draft.id.clone(),
-                draft.record["imageWorkspaceRepo"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned(),
-                draft.record["epoch"].as_i64().unwrap_or_default(),
-            )
-        })
-        .collect::<Vec<_>>();
     let request_id = request_id.to_owned();
-    let mut result = store.transaction_with_error(move |tx| -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
+    let result = store.transaction_with_error(move |tx| -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
         recheck_actor(tx, &actor_record)?;
         let current_root = AgentRepository::get(tx, &actor_record.root_id)?
             .ok_or(crate::managed_host_tools::Error::Stale)?;
@@ -880,38 +789,11 @@ pub(crate) async fn spawn_agents(
             }
             crate::child_permissions::inherit_claude_permissions(&mut draft.record, &current_parent, &current_root.value(), &draft.intent).map_err(crate::managed_host_tools::Error::Invalid)?;
             let mut text = draft.prompt.clone();
-            if draft.workspace != "image"
-                && let Some(error) = draft
-                    .record
-                    .get("imageWorkspaceError")
-                    .and_then(Value::as_str)
-                    .filter(|error| !error.is_empty())
-            {
-                text.push_str(&format!(
-                    "\n\n[Studio workspace fallback] {error} {}",
-                    if draft.worktree {
-                        "Studio will use a Git worktree."
-                    } else {
-                        "Studio will use the selected folder."
-                    }
-                ));
-            }
             if draft.worktree {
                 text.push_str(&format!("\n\n[Studio worker base] Commit {} from ref {}.", draft.record["workerBaseCommit"].as_str().unwrap_or_default(), draft.record["workerBaseRef"].as_str().unwrap_or("HEAD")));
                 if let Some(behind) = draft.worker_base_behind_main.filter(|behind| *behind != 0) {
                     text.push_str(&format!(" This base is {behind} commits behind {}. Check for newer project instructions before starting.", draft.worker_base_main_ref.as_deref().unwrap_or("main")));
                 }
-            }
-            if draft.workspace == "image"
-                && let Some(base_ref) = draft
-                    .record
-                    .get("imageWorkspaceBaseRef")
-                    .and_then(Value::as_str)
-            {
-                text.push_str(&format!(
-                    "\n\n[Studio requested base] Ref {base_ref} resolves to commit {}. Check out this commit yourself before editing.",
-                    draft.record["workerBaseCommit"].as_str().unwrap_or_default()
-                ));
             }
             if let Some(task) = &draft.task_id {
                 let work = studio_runtime_store::WorkItemsRepository::work_record(tx, task)?
@@ -945,67 +827,6 @@ pub(crate) async fn spawn_agents(
             signals,
         })
     }).await.map_err(Error::from)?;
-    for (id, root, epoch) in image_provisions {
-        let workspace = match environment.provision_image_workspace(store, Path::new(&root), &id) {
-            Ok(workspace) => workspace,
-            Err(error) => {
-                if let Err(cleanup_error) = crate::image_workspace::remove_workspace(&id, true) {
-                    eprintln!("Could not remove failed image workspace: {cleanup_error}");
-                }
-                crate::agents_create::persist_image_provision_failure(
-                    store,
-                    &id,
-                    epoch,
-                    &format!("{error:?}"),
-                )
-                .await
-                .map_err(|_| Error::Unavailable("workspace-state/image-provisioning"))?;
-                return Err(Error::from(error));
-            }
-        };
-        let id_for_update = id.clone();
-        let committed = store
-            .transaction(move |tx| {
-                let Some(record) =
-                    AgentRepository::get(tx, &AgentId::from(id_for_update.as_str()))?
-                else {
-                    return Ok(None);
-                };
-                let value = record.into_value();
-                if !crate::agents_create::image_provision_is_current(&value, epoch) {
-                    return Ok(None);
-                }
-                let invalid = || studio_runtime_store::StoreError::InvalidStoredObject {
-                    table: "runtime_agents",
-                    id: id_for_update.clone(),
-                };
-                let now = crate::event_write::unix_time().map_err(|_| invalid())?;
-                crate::image_workspace_agents::record_ready(tx, value, &workspace, now)
-                    .map(Some)
-                    .map_err(|error| match error {
-                        crate::event_write::EventWriteError::Store(error) => error,
-                        _ => invalid(),
-                    })
-            })
-            .await
-            .map_err(Error::from)?;
-        let Some(committed) = committed else {
-            if let Err(cleanup_error) = crate::image_workspace::remove_workspace(&id, true) {
-                eprintln!("Could not remove stale image workspace: {cleanup_error}");
-            }
-            return Err(crate::managed_host_tools::Error::Stale.into());
-        };
-        if let Some(children) = result.value["agents"].as_array_mut() {
-            for child in children {
-                if child.get("id").and_then(Value::as_str) == Some(id.as_str()) {
-                    child["cwd"] = committed["cwd"].clone();
-                    child["imageWorkspaceReady"] = json!(true);
-                    child["imageWorkspacePhase"] = json!("ready");
-                    break;
-                }
-            }
-        }
-    }
     Ok(result)
 }
 
@@ -1308,10 +1129,7 @@ fn project_child(record: &Value, task_id: Option<&str>, worktree: bool) -> Value
             .unwrap_or_else(|| json!(if worktree { "worktree" } else { "shared" })),
     );
     output.insert("workspaceBackend".to_owned(), Value::Null);
-    for (key, field) in [
-        ("workspaceError", "imageWorkspaceError"),
-        ("warning", "worktreeWarning"),
-    ] {
+    for (key, field) in [("warning", "worktreeWarning")] {
         if let Some(value) = record
             .get(field)
             .filter(|value| event_write::truthy(Some(value)))
@@ -1364,11 +1182,10 @@ type WorkerBase = (String, String, Option<String>, Option<i64>);
 /// folder, as lead creation does; the returned flag is the workspace used.
 fn resolve_child_base(
     worktree: bool,
-    image: bool,
     host_cwd: &Path,
     base_ref_request: Option<&str>,
 ) -> Result<(bool, WorkerBase), Error> {
-    if !(worktree || (image && base_ref_request.is_some())) {
+    if !worktree {
         return Ok((worktree, Default::default()));
     }
     match crate::host_worker_create::resolve_worker_base(host_cwd, base_ref_request) {
@@ -1563,10 +1380,9 @@ pub(crate) async fn request_review(
     )
     .await?;
     let body = json!({"account_key":account_key,"name":"Review","model":model,
-        "effort":effort,"prompt":spec.get("prompt").and_then(Value::as_str).unwrap_or(""),
-        "_workspaceInGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false),
-        "_imageWorkspaceHasGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false)
-            || parent_value.get("imageWorkspaceHasGit").and_then(Value::as_bool).unwrap_or(false)});
+            "effort":effort,"prompt":spec.get("prompt").and_then(Value::as_str).unwrap_or(""),
+            "_workspaceInGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false),
+    });
     let prepared = crate::host_worker_create::prepare_work_item(
         &body,
         Path::new(&directory),
@@ -1598,7 +1414,6 @@ pub(crate) async fn request_review(
     record["worktree"] = json!(false);
     record["workspaceMode"] = json!("shared");
     record["workspaceInGit"] = json!(false);
-    record["imageWorkspaceHasGit"] = json!(false);
     record["workerBaseRef"] = Value::Null;
     record["workerBaseCommit"] = Value::Null;
     record["maxAgents"] = root_value
@@ -1704,8 +1519,8 @@ impl crate::native_review::ReviewCreator for ReviewCreator<'_> {
 #[allow(clippy::unwrap_used)]
 mod vm_review_identity_tests {
     use super::{
-        Error, WorkerBase, host_project_cwd, resolve_child_base, validate_image_workspace_platform,
-        validate_vm_parent_workspace, vm_review_guest_ids,
+        Error, WorkerBase, host_project_cwd, resolve_child_base, validate_vm_parent_workspace,
+        vm_review_guest_ids,
     };
     use serde_json::json;
 
@@ -1802,21 +1617,11 @@ mod vm_review_identity_tests {
     }
 
     #[test]
-    fn image_child_refuses_on_unsupported_platform_before_creation() {
-        assert!(matches!(
-            validate_image_workspace_platform("image", false),
-            Err(Error::Unavailable("workspace-state/image-provisioning"))
-        ));
-        assert!(validate_image_workspace_platform("image", true).is_ok());
-        assert!(validate_image_workspace_platform("worktree", false).is_ok());
-    }
-
-    #[test]
     fn worktree_without_repository_falls_back_to_host() {
         let directory = tempfile::tempdir().unwrap();
-        let (worktree, base) = resolve_child_base(true, false, directory.path(), None).unwrap();
+        let (worktree, base) = resolve_child_base(true, directory.path(), None).unwrap();
         assert!(!worktree);
         assert_eq!(base, WorkerBase::default());
-        assert!(resolve_child_base(true, false, directory.path(), Some("HEAD")).is_err());
+        assert!(resolve_child_base(true, directory.path(), Some("HEAD")).is_err());
     }
 }
