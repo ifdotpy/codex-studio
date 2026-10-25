@@ -43,7 +43,7 @@ pub struct PricingCatalog {
 }
 
 /// Path of the models.dev pricing artifact under the state root.
-const PRICING_ARTIFACT: &str = "model-pricing/models-dev-v1.json";
+pub(crate) const PRICING_ARTIFACT: &str = "model-pricing/models-dev-v1.json";
 
 /// The pricing artifact (about 6 MB of JSON) parsed once per file version.
 pub struct LoadedPricing {
@@ -51,6 +51,8 @@ pub struct LoadedPricing {
     pub catalog: Option<PricingCatalog>,
     /// Cache signature of the catalog, which stored session costs record.
     pub signature: Option<String>,
+    /// Most recent catalog refresh attempt, in Unix epoch seconds.
+    pub(crate) last_attempt_at: f64,
 }
 
 /// The artifact envelope; the catalog stays a document because its signature is the hash
@@ -59,6 +61,12 @@ pub struct LoadedPricing {
 struct PricingArtifact {
     version: u64,
     catalog: Value,
+    #[serde(default, rename = "lastAttemptAt")]
+    last_attempt_at: Option<f64>,
+    #[serde(default, rename = "fetchedAtEpoch")]
+    fetched_at_epoch: Option<f64>,
+    #[serde(default, rename = "fetchedAt")]
+    fetched_at: Option<String>,
 }
 
 static LOADED: LazyLock<crate::file_derived::FileDerived<LoadedPricing>> =
@@ -77,7 +85,26 @@ pub fn load_pricing(state_root: &Path) -> Option<Arc<LoadedPricing>> {
         let signature = catalog_value
             .filter(|_| catalog.is_some())
             .and_then(crate::analytics::catalog_signature);
-        Some(LoadedPricing { catalog, signature })
+        let last_attempt_at = artifact
+            .as_ref()
+            .and_then(|artifact| {
+                artifact
+                    .last_attempt_at
+                    .or(artifact.fetched_at_epoch)
+                    .or_else(|| {
+                        artifact
+                            .fetched_at
+                            .as_deref()
+                            .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
+                            .map(|stamp| stamp.timestamp() as f64)
+                    })
+            })
+            .unwrap_or_default();
+        Some(LoadedPricing {
+            catalog,
+            signature,
+            last_attempt_at,
+        })
     })
 }
 
