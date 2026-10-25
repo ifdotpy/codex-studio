@@ -1414,7 +1414,7 @@ mod tests {
             count(59, 400_000, 100_000, 40_000),
             count(58, 400_000, 100_000, 40_000),
             json!({"timestamp":at(57),"type":"compacted","payload":{
-                "latest_token_usage_record":serde_json::from_str::<Value>(&record(57,"r1",400_000,100_000,40_000)).unwrap()["payload"]}}).to_string(),
+                "latest_token_usage_record":serde_json::from_str::<Value>(&record(57,"r1",400_000,100_000,40_000)).expect("valid response fixture")["payload"]}}).to_string(),
             record(56, "r2", 600_000, 100_000, 60_000),
             // Compaction's cumulative total omits part of the recovered responses.
             count(55, 900_000, 150_000, 90_000),
@@ -1466,26 +1466,26 @@ mod tests {
 
     #[test]
     fn codex_session_fixture_token_count_only_is_not_priced() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join("sessions")).unwrap();
+        let root = tempfile::tempdir().expect("fixture directory");
+        std::fs::create_dir(root.path().join("sessions")).expect("fixture sessions");
         let now = chrono::Utc::now();
         std::fs::write(root.path().join("sessions/counts.jsonl"), [
             json!({"type":"turn_context","payload":{"model":"gpt-test"}}).to_string(),
             json!({"timestamp":now.to_rfc3339(),"type":"event_msg","payload":{"type":"token_count",
                 "info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":0,"output_tokens":1000000}}}}).to_string(),
-        ].join("\n")).unwrap();
+        ].join("\n")).expect("counter-only log");
         let catalog = crate::pricing::PricingCatalog::from_value(&json!({"providers":{
             "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2}}}},
             "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2}}}}
         }}))
-        .unwrap();
+        .expect("fixture catalog");
         let report = super::scan_codex_sessions_with_catalog(
             root.path(),
             now.timestamp() as f64,
             &AtomicBool::new(false),
             || Some(catalog),
         )
-        .unwrap();
+        .expect("scan counter-only fixture");
         assert_eq!(report["last30DaysUSD"], Value::Null);
         assert_eq!(report["last30DaysTokens"], Value::Null);
         assert_eq!(report["coverage"], "partial");
