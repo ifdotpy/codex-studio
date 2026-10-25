@@ -149,12 +149,6 @@ fn run(case: &Value, records: &Value) -> Value {
                     now,
                 ) {
                     Ok(tokens) => json!(tokens),
-                    Err(studio_runtime_services::budget::BudgetError::Invalid(location))
-                        if Some(step_index) == changed_replay_step
-                            && location == "runtime_budget_usage/responseReplayConflict" =>
-                    {
-                        json!({"rustRefusal":"responseReplayConflict"})
-                    }
                     Err(error) => panic!("{}: {error}", case["name"]),
                 }
             }
@@ -270,16 +264,21 @@ fn run(case: &Value, records: &Value) -> Value {
         tx.commit().expect("commit");
         let output = json!({"result":result,"stored":stored(&connection)});
         if Some(step_index) == changed_replay_step {
+            let previous = &outputs.last().expect("prior Rust output")["stored"];
             assert_eq!(
-                output["result"],
-                json!({"rustRefusal":"responseReplayConflict"}),
-                "{}: Rust refuses changed-content replay",
-                case["name"]
+                output["stored"]["usage"], previous["usage"],
+                "conflict preserves first response"
             );
             assert_eq!(
-                output["stored"],
-                outputs.last().expect("prior Rust output")["stored"],
-                "Rust conflict refusal writes nothing"
+                output["stored"]["agents"][id]["tokensUsed"],
+                previous["agents"][id]["tokensUsed"]
+            );
+            assert!(
+                output["stored"]["states"][id]["faults"]
+                    .as_array()
+                    .expect("faults")
+                    .iter()
+                    .any(|fault| fault == "responseReplayConflict")
             );
         }
         outputs.push(output);
@@ -361,7 +360,7 @@ fn changed_response_replay_step(case: &Value) -> Option<usize> {
 }
 
 #[test]
-fn exact_response_replay_is_noop_and_conflicting_replay_refuses_without_writes() {
+fn exact_response_replay_is_noop_and_conflicting_replay_records_fault() {
     let (case, records) = fixture();
     let mut connection = db(&records, &case);
     sync_fixture(&connection);
@@ -391,21 +390,29 @@ fn exact_response_replay_is_noop_and_conflicting_replay_refuses_without_writes()
         "identical replay writes nothing"
     );
 
-    let before_conflict = all_stored(&connection);
     let tx = connection.transaction().expect("conflict transaction");
     let mut agent =
         studio_runtime_store::budget::BudgetRepository::agent(&tx, "a").expect("current agent");
     let mut changed = params.clone();
     changed["requestUsage"]["totalTokens"] = json!(21);
+    changed["requestUsage"]["inputTokens"] = json!(21);
     assert!(
-        budget_service::capture(&tx, &mut agent, &changed, 101., CaptureSource::Live, 100.)
-            .is_err()
+        budget_service::capture(&tx, &mut agent, &changed, 101., CaptureSource::Live, 100.).is_ok()
     );
     tx.commit().expect("commit conflict refusal");
+    let after = all_stored(&connection);
+    assert_eq!(after["stored"]["usage"], before_replay["stored"]["usage"]);
+    assert_eq!(after["stored"]["agents"]["a"]["tokensUsed"], 20);
     assert_eq!(
-        all_stored(&connection),
-        before_conflict,
-        "conflicting replay writes nothing"
+        after["stored"]["agents"]["a"]["tokenUsageAccounting"],
+        "provisional"
+    );
+    assert!(
+        after["stored"]["states"]["a"]["faults"]
+            .as_array()
+            .expect("faults")
+            .iter()
+            .any(|fault| fault == "responseReplayConflict")
     );
 }
 
@@ -587,7 +594,7 @@ fn history_capture_uses_event_turn_and_keeps_durable_turn() {
     supplied["turnId"] = json!("newer-rollout-context-turn");
     let first_notice = json!({
         "turnId":"historical-event-turn-a",
-        "tokenUsage":{"total":{"totalTokens":20},"last":{"totalTokens":20}}
+        "usageSource":"tokenCount","tokenUsage":{"total":{"totalTokens":20,"inputTokens":20,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":20,"inputTokens":20,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0}}
     });
 
     for (turn_id, expected_receipts) in [
@@ -599,7 +606,7 @@ fn history_capture_uses_event_turn_and_keeps_durable_turn() {
         } else {
             json!({
                 "turnId":turn_id,
-                "tokenUsage":{"total":{"totalTokens":20},"last":{"totalTokens":20}}
+                "usageSource":"tokenCount","tokenUsage":{"total":{"totalTokens":20,"inputTokens":20,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":20,"inputTokens":20,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0}}
             })
         };
         let tx = connection.transaction().expect("transaction");
@@ -648,7 +655,7 @@ fn history_capture_uses_event_turn_and_keeps_durable_turn() {
         "turnId":"historical-response-turn",
         "responseId":"response-1",
         "rawTokenUsageRecord":{"response_id":"response-1"},
-        "tokenUsage":{"total":{"totalTokens":20},"last":{"totalTokens":20}}
+        "usageSource":"responseRecord","tokenUsage":{"total":{"totalTokens":20,"inputTokens":20,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":20,"inputTokens":20,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0}}
     });
     let tx = connection.transaction().expect("response transaction");
     budget_service::capture(
@@ -693,7 +700,7 @@ fn capture_partial_copy_uses_durable_identity() {
     case["agents"][0]["turnId"] = json!("durable-turn");
     case["agents"][0]["created"] = json!(50);
     case["steps"] = json!([{"op":"capture", "at":101, "params":{
-        "tokenUsage":{"total":{"totalTokens":20},"last":{"totalTokens":20}}
+        "usageSource":"tokenCount","tokenUsage":{"total":{"totalTokens":20,"inputTokens":20,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":20,"inputTokens":20,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0}}
     }}]);
     for source in [CaptureSource::Live, CaptureSource::History] {
         case["steps"][0]["source"] = json!(source);
@@ -1036,8 +1043,8 @@ fn claude_budget_admission_uses_recorded_response_usage() {
                 case["agents"][0]["tokenBudget"] = json!(1000);
                 case["agents"][0]["lastCompletedTurn"] = json!("completed-turn");
                 case["seed_captures"] = json!([{"params":{
-                    "responseId":"response", "usageSource":"claudeResponse",
-                    "requestUsage":{"totalTokens":spent}
+                    "responseId":"response", "usageSource":if provider == "claude" {"claudeResponse"} else {"responseRecord"},
+                    "requestUsage":{"totalTokens":spent,"inputTokens":spent,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0}
                 }}]);
                 let initial = records(&case);
                 let mut connection = db(&initial, &case);

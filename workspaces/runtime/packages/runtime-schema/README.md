@@ -104,3 +104,8 @@ uncached versus inclusive historical input semantics, and reconstructs sparse
 legacy Claude notifications for totals-only budget migration. Analytics notice
 and usage schema copies are checked against the usage owner's renderer by a
 short-tier parity witness.
+
+`parse_legacy_totals` is a transitional total-only projection for pre-contract
+Claude bridges and their journal replay. It never invents missing token categories,
+accepts no Codex input, and cannot bypass malformed `studioUsage`. Retire it once
+those bridges and the replay window have closed.

@@ -222,8 +222,8 @@ async fn stalled() -> Stall {
 fn b_flood() -> impl Iterator<Item = Value> {
     (0..FLOOD_FRAMES).map(|index| {
         json!({"method":"thread/tokenUsage/updated","params":{"threadId":"fake-thread-1","turnId":"turn-b",
-            "tokenUsage":{"total":{"inputTokens":index,"outputTokens":0,"totalTokens":index},
-            "last":{"inputTokens":1,"outputTokens":0,"totalTokens":1}}}})
+            "tokenUsage":{"total":{"inputTokens":index,"cachedInputTokens":0,"reasoningOutputTokens":0,"outputTokens":0,"totalTokens":index},
+            "last":{"inputTokens":1,"cachedInputTokens":0,"reasoningOutputTokens":0,"outputTokens":0,"totalTokens":1}}}})
     })
 }
 

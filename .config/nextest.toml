@@ -59,7 +59,12 @@ inherits = "ci"
 # Actor timing uses a deterministic clock; registry durability observes completed SQLite checkpoints.
 # Typed accounting mappings, strict ingress and native SDK schema parity.
 # Typed usage analytics: cumulative exclusion, final evidence preservation, and rollout normalization.
+
+# Typed usage legacy compatibility, budget replay, gap, reset and dispatch witnesses.
 default-filter = '''
+    (package(=studio-runtime-services) & kind(lib) & (test(budget::typed_usage_tests::) | test(agent_move::usage_tests::) | test(typed_usage_conflict_keeps_first_charge_and_dispatches_context) | test(typed_usage_bridge_golden_frames_reach_budget_and_context))) |
+    (package(=studio-runtime-schema) & kind(lib) & test(usage::legacy_tests::)) |
+    (package(=studio-runtime-server) & kind(bin) & test(native_probe::tests::schema_check_refuses_changed_usage_fragment)) |
     (package(=studio-runtime-schema) & kind(lib) & test(usage::tests::)) |
     (package(=studio-runtime-store) & kind(lib) & test(repositories::cost_aggregate::tests::typed_usage_)) |
     (package(=studio-runtime-services) & kind(lib) & (test(analytics_capture::usage_contract_tests::) | test(analytics_history_repair::usage_contract_tests::) | test(analytics_rollout::tests::typed_usage_))) |
@@ -127,6 +132,9 @@ platform = 'cfg(target_os = "linux")'
 # Actor timing uses a deterministic clock; registry durability observes completed SQLite checkpoints.
 # Typed accounting mappings, strict ingress and native SDK schema parity.
 default-filter = '''
+    (package(=studio-runtime-services) & kind(lib) & (test(budget::typed_usage_tests::) | test(agent_move::usage_tests::) | test(typed_usage_conflict_keeps_first_charge_and_dispatches_context) | test(typed_usage_bridge_golden_frames_reach_budget_and_context))) |
+    (package(=studio-runtime-schema) & kind(lib) & test(usage::legacy_tests::)) |
+    (package(=studio-runtime-server) & kind(bin) & test(native_probe::tests::schema_check_refuses_changed_usage_fragment)) |
     (package(=studio-runtime-schema) & kind(lib) & test(usage::tests::)) |
     (package(=studio-runtime-store) & kind(lib) & test(repositories::cost_aggregate::tests::typed_usage_)) |
     (package(=studio-runtime-services) & kind(lib) & (test(analytics_capture::usage_contract_tests::) | test(analytics_history_repair::usage_contract_tests::) | test(analytics_rollout::tests::typed_usage_))) |
