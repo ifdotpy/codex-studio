@@ -68,6 +68,8 @@ pub enum WorkspaceCleanupError {
 pub enum CleanupEffect {
     ArchiveImage,
     RemoveImage,
+    SaveNativeTurn,
+    ReleaseNativeLine,
     SaveVmTurn { turn_id: String },
     ReleaseVmLine { method: String },
     SaveWorktreeRef { identity: Value },
@@ -423,11 +425,14 @@ fn plan(
     }
     let mut effects = Vec::new();
     let is_vm = agent.get("executionMode").and_then(Value::as_str) == Some("vm");
-    let image = agent.get("imageWorkspace").and_then(Value::as_bool) == Some(true);
+
     let vm_dispose = is_vm
         && (agent.get("layrReady").and_then(Value::as_bool) == Some(true)
             || action == CleanupAction::Archive);
-    if vm_dispose {
+    if crate::layr_native::is_native(agent) && agent["layrReady"] == true {
+        effects.push(CleanupEffect::SaveNativeTurn);
+        effects.push(CleanupEffect::ReleaseNativeLine);
+    } else if vm_dispose {
         if let Some(turns) = agent.get("layrTurnSaves").and_then(Value::as_object) {
             for (turn, state) in turns {
                 if state.get("status").and_then(Value::as_str) != Some("saved") {
@@ -444,19 +449,6 @@ fn plan(
                 "line.remove".into()
             },
         });
-    } else if image && action == CleanupAction::Archive {
-        if agent.get("imageWorkspaceReady").and_then(Value::as_bool) == Some(true)
-            || agent
-                .pointer("/cleanedImageWorkspace/phase")
-                .and_then(Value::as_str)
-                == Some("archiving")
-        {
-            effects.push(CleanupEffect::ArchiveImage);
-        }
-    } else if image && action == CleanupAction::Delete {
-        if agent.get("imageWorkspacePhase").and_then(Value::as_str) != Some("removed") {
-            effects.push(CleanupEffect::RemoveImage);
-        }
     } else if action == CleanupAction::Archive
         && agent.get("worktreeReady").and_then(Value::as_bool) == Some(true)
     {
@@ -820,7 +812,7 @@ async fn complete_effect(
 
 fn valid_receipt(effect: &CleanupEffect, receipt: &Value) -> bool {
     match effect {
-        CleanupEffect::SaveVmTurn { .. } => receipt
+        CleanupEffect::SaveNativeTurn | CleanupEffect::SaveVmTurn { .. } => receipt
             .get("stateId")
             .and_then(Value::as_str)
             .is_some_and(|state_id| !state_id.is_empty()),
@@ -871,16 +863,8 @@ fn apply_effect_result(
     receipt: &Value,
 ) -> Result<(), WorkspaceCleanupError> {
     match effect {
-        CleanupEffect::ArchiveImage => {
-            agent["imageWorkspaceReady"] = json!(false);
-            agent["imageWorkspacePhase"] = json!("archived");
-            agent["cleanedImageWorkspace"] = json!({"phase":"archived","freedBytes":receipt.get("freedBytes").cloned().unwrap_or(json!(0))});
-        }
-        CleanupEffect::RemoveImage => {
-            agent["imageWorkspaceReady"] = json!(false);
-            agent["imageWorkspacePhase"] = json!("removed");
-        }
-        CleanupEffect::ReleaseVmLine { .. } => {
+        CleanupEffect::ArchiveImage | CleanupEffect::RemoveImage => {}
+        CleanupEffect::ReleaseNativeLine | CleanupEffect::ReleaseVmLine { .. } => {
             agent["layrReady"] = json!(false);
         }
         CleanupEffect::RemoveWorktree { identity } => {
@@ -917,6 +901,9 @@ fn apply_effect_result(
                 .as_object_mut()
                 .ok_or(WorkspaceCleanupError::InvalidRecord)?
                 .remove("worktreeCleanup");
+        }
+        CleanupEffect::SaveNativeTurn => {
+            agent["layrStateId"] = receipt["stateId"].clone();
         }
         CleanupEffect::SaveWorktreeRef { .. } => {}
         CleanupEffect::SaveVmTurn { turn_id } => {
@@ -1002,15 +989,18 @@ impl CleanupPorts for ProductionPorts {
         request_id: &str,
     ) -> Result<Value, EffectFailure> {
         match effect {
-            CleanupEffect::ArchiveImage => crate::image_workspace::archive_workspace(
-                agent["id"].as_str().ok_or(EffectFailure::NotSent)?,
-            )
-            .map_err(|_| EffectFailure::Unknown),
-            CleanupEffect::RemoveImage => crate::image_workspace::remove_workspace(
-                agent["id"].as_str().ok_or(EffectFailure::NotSent)?,
-                false,
-            )
-            .map_err(|_| EffectFailure::Unknown),
+            CleanupEffect::SaveNativeTurn => {
+                crate::layr_native::save(&self.state_dir, agent, request_id)
+                    .map_err(|_| EffectFailure::Unknown)
+            }
+            CleanupEffect::ReleaseNativeLine => {
+                crate::layr_native::remove(&self.state_dir, agent, request_id)
+                    .map_err(|_| EffectFailure::Unknown)
+            }
+            // Historical image records keep their files. New cleanup plans never emit these effects.
+            CleanupEffect::ArchiveImage | CleanupEffect::RemoveImage => {
+                Ok(json!({"state":"kept","reason":"legacy image workspace"}))
+            }
             CleanupEffect::SaveVmTurn { turn_id } => {
                 let client =
                     crate::linux_vm_guest::UnixGuestRpc::for_runtime_state(&self.state_dir);
@@ -1629,31 +1619,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_removes_image_workspace_through_the_effect_port() {
+    async fn legacy_image_cleanup_preserves_files_and_record_fields() {
         let (_directory, store) = fixture().await;
         put_agent(
             &store,
             json!({"imageWorkspace":true,"imageWorkspaceReady":true}),
         )
         .await;
-        let ports = Arc::new(FakePorts::new(vec![Ok(
-            json!({"state":"removed","freedBytes":44}),
-        )]));
+        let ports = Arc::new(FakePorts::new(vec![]));
         cleanup_agent_workspace_with_ports(
             Arc::clone(&store),
-            "cleanup-agent".to_owned(),
+            "cleanup-agent".into(),
             CleanupAction::Delete,
             ports.clone(),
         )
         .await
-        .expect("delete removes image workspace");
-        assert!(matches!(
-            ports.calls.lock().expect("calls mutex")[0].0,
-            CleanupEffect::RemoveImage
-        ));
-        let saved = agent(&store);
-        assert_eq!(saved["imageWorkspacePhase"], "removed");
-        assert_eq!(saved["imageWorkspaceReady"], false);
+        .expect("metadata cleanup");
+        assert!(ports.calls.lock().unwrap().is_empty());
+        assert_eq!(agent(&store)["imageWorkspaceReady"], true);
     }
 
     #[tokio::test]

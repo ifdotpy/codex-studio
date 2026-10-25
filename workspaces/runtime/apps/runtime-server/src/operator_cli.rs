@@ -1,6 +1,7 @@
 //! Operator entry points run before Tokio or any runtime state is opened.
 mod install;
 mod linux_vm;
+mod native_layr;
 mod service;
 
 use serde::Deserialize;
@@ -32,6 +33,7 @@ pub(crate) fn dispatch() -> Option<ExitCode> {
         Some("service") => service::run(&args[1..]),
         Some("install-cli") => install::run(&args[1..]),
         Some("linux-vm") => linux_vm::run(&args[1..]),
+        Some("native-layr") => native_layr::run(&args[1..]),
         Some("--help" | "-h") => {
             println!(
                 "usage: studio-runtime-server [--port PORT]\n       studio-runtime-server service <install|status|uninstall> [--state DIRECTORY]\n       studio-runtime-server install-cli [--bin-dir DIRECTORY] [--project DIRECTORY]\n       studio-runtime-server linux-vm <start|stop|status> [--state DIRECTORY]\n\nService installation enables startup without starting or restarting a service.\nUse just deliver-server to change the Linux server release."

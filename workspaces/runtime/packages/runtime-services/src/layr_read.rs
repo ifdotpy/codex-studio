@@ -196,3 +196,54 @@ pub(crate) async fn run(
 
 #[cfg(test)]
 mod tests;
+
+/// Native reviewers retain their provider sandbox. This port permits history reads only.
+pub(crate) async fn run_native(
+    store: &studio_runtime_store::RuntimeStore,
+    actor: &Actor,
+    args: &Value,
+    request_id: &str,
+) -> DispatchedOperation {
+    let record = actor.record().value();
+    if record["role"] != "reviewer" || record["layrReady"] != true {
+        return crate::host_exec::refused("layr_read requires a ready Layr reviewer".into());
+    }
+    let argv = match command(args) {
+        Ok(argv) => argv,
+        Err(error) => return crate::host_exec::refused(error),
+    };
+    let state_dir = store.root().to_owned();
+    let request_id = identity(actor.record().id.0.as_str(), request_id);
+    let outcome = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/native-layr/read",
+        move || {
+            crate::layr_native::operation(
+                &state_dir,
+                &request_id,
+                &json!({"agent":record["id"],"args":argv}),
+                || {
+                    let cwd = record["cwd"].as_str().ok_or_else(|| {
+                        crate::layr_native::NativeLayrError::Refused("Missing reviewer cwd".into())
+                    })?;
+                    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+                    let output =
+                        crate::layr_native::run(&state_dir, std::path::Path::new(cwd), &refs)?;
+                    Ok(json!({"exitCode":0,"stdout":output,"stderr":""}))
+                },
+            )
+        },
+    )
+    .await;
+    match outcome {
+        Ok(Ok(value)) => DispatchedOperation {
+            result: OperationResult {
+                value,
+                signals: Vec::new(),
+            },
+            certainty: DeliveryCertainty::Written,
+            applied: Some(true),
+        },
+        Ok(Err(error)) => crate::host_exec::refused(error.to_string()),
+        Err(_) => crate::host_exec::unknown("Native Layr read worker failed".into()),
+    }
+}

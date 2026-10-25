@@ -174,6 +174,15 @@ async fn prepare_attempt(
     queue: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
     let initial = snapshot(&store, agent_id.clone()).await?;
+    if crate::layr_native::is_native(&initial.agent.record) {
+        let ready = crate::layr_native::prepare(Arc::clone(&store), initial.agent.record.clone())
+            .await
+            .map_err(|error| WorkspaceError::Git(error.to_string()))?;
+        let cwd = ready["cwd"].as_str().ok_or(WorkspaceError::InvalidRecord)?;
+        return Ok(WorkspaceDecision::Ready {
+            token: ReadyToken::new(&ready, PathBuf::from(cwd)),
+        });
+    }
     let actor = actor(&initial)?;
     // VM paths are guest paths, so they cannot enter Git canonicalization. The
     // native-action owner binds the line; this token admits only the persisted
@@ -209,81 +218,9 @@ async fn prepare_attempt(
         });
     }
     if actor.image_bound() {
-        #[cfg(not(target_os = "macos"))]
-        return Ok(image_workspace_refusal_decision());
-        #[cfg(target_os = "macos")]
-        {
-            if actor.deleted_at.is_some() || !actor.auto_wake {
-                return Ok(WorkspaceDecision::Defer {
-                    by: crate::workspace_ready::DeferredBy::Actor,
-                });
-            }
-            if !actor.image_workspace_ready {
-                return Ok(match actor.image_workspace_phase.as_deref() {
-                    Some("creating") => WorkspaceDecision::Defer {
-                        by: crate::workspace_ready::DeferredBy::Actor,
-                    },
-                    // Python `prepare_locked` starts the base build and the copy here.
-                    // The turn waits for the ready copy instead of running read-only.
-                    Some("read_only") => {
-                        crate::image_workspace_agents::start(&store, &agent_id);
-                        WorkspaceDecision::Defer {
-                            by: crate::workspace_ready::DeferredBy::Actor,
-                        }
-                    }
-                    _ => WorkspaceDecision::Refuse(
-                        crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported,
-                    ),
-                });
-            }
-            let read_agent_id = agent_id.clone();
-            let mounted = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/workspace_ready_git",
-                move || crate::image_workspace::ensure_mounted(&read_agent_id),
-            )
-            .await
-            .map_err(|_| WorkspaceError::Worker)?
-            .map_err(|error| WorkspaceError::Git(format!("image workspace mount: {error}")))?;
-            let repo = mounted
-                .get("path")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .ok_or(WorkspaceError::InvalidRecord)?;
-            let path = image_turn_cwd(
-                &repo,
-                initial.agent.record["imageWorkspaceSubpath"].as_str(),
-            )?;
-            let mount = mounted
-                .get("mount")
-                .and_then(Value::as_str)
-                .ok_or(WorkspaceError::InvalidRecord)?
-                .to_owned();
-            // Python `prepare_locked`: the record names the mounted directory and
-            // mount, and the agent gets the ready notice once.
-            let write_id = agent_id.clone();
-            let write_path = path.clone();
-            let record = store
-                .transaction_with(move |tx| {
-                    crate::image_workspace_agents::record_mounted(
-                        tx,
-                        &write_id,
-                        &write_path,
-                        &mount,
-                        now(),
-                    )
-                })
-                .await
-                .map_err(|error| match error {
-                    crate::event_write::EventWriteError::Store(error) => {
-                        WorkspaceError::Store(error)
-                    }
-                    _ => WorkspaceError::InvalidRecord,
-                })?
-                .unwrap_or_else(|| initial.agent.record.clone());
-            return Ok(WorkspaceDecision::Ready {
-                token: ReadyToken::new(&record, path.into_path_buf()),
-            });
-        }
+        return Ok(WorkspaceDecision::Refuse(
+            crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported,
+        ));
     }
     if let Some(refusal) = unsupported(&actor) {
         return Ok(WorkspaceDecision::Refuse(refusal));
@@ -351,23 +288,6 @@ async fn prepare_attempt(
     provision(store, context, plan, git_deadline, timeout).await
 }
 
-/// The turn directory of an image agent: its mounted `repo` plus the saved
-/// subpath, as Python's `prepare_locked` builds it. A subpath that leaves the
-/// repository is an invalid record.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn image_turn_cwd(
-    repo: &Path,
-    subpath: Option<&str>,
-) -> Result<path_identity::LexicalPath, WorkspaceError> {
-    crate::image_workspace_agents::turn_cwd(repo, subpath).ok_or(WorkspaceError::InvalidRecord)
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn image_workspace_refusal_decision() -> WorkspaceDecision {
-    WorkspaceDecision::Refuse(crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported)
-}
-
-/// `deadline` bounds the effect; `budget` is the Git budget of each later phase.
 async fn provision(
     store: Arc<RuntimeStore>,
     context: Context,

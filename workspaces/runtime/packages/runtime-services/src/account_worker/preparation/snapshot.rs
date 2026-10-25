@@ -663,6 +663,15 @@ pub(super) fn guidance(
             state_root, agent_id,
         ));
     }
+    if crate::layr_native::is_native(record) {
+        for (name, value) in crate::layr_native::thread_environment(state_root) {
+            thread_config.insert(format!("shell_environment_policy.set.{name}"), value);
+        }
+        thread_config.insert(
+            "shell_environment_policy.exclude".into(),
+            json!(["LAYR_SOCKET", "LAYR_PROJECT", "LAYR_LINE", "LAYR_SESSION"]),
+        );
+    }
     Ok(thread::GuidanceBundle {
         instructions: resources.instructions.clone(),
         role,
@@ -859,7 +868,7 @@ pub(crate) fn actor_tool_definitions(
     }
     let definitions = catalog_definitions(resources, record)?;
     let cwd = text(record, "cwd")?.unwrap_or_default();
-    let filtered = thread::filter_tool_definitions(
+    let mut filtered = thread::filter_tool_definitions(
         definitions,
         &thread::CatalogFilter {
             provider: studio_runtime_providers::ProviderKind::of_record(record)
@@ -876,6 +885,13 @@ pub(crate) fn actor_tool_definitions(
         },
     )
     .map_err(|_| invalid("tool catalog"))?;
+    if crate::layr_native::is_native(record) && record["role"] == "reviewer" {
+        filtered.push(
+            crate::layr_read::tool_definition()
+                .ok_or_else(|| invalid("native layr read tool"))?
+                .clone(),
+        );
+    }
     serde_json::to_value(filtered).map_err(|_| invalid("tool catalog"))
 }
 

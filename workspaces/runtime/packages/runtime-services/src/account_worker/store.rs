@@ -3006,6 +3006,19 @@ async fn publish_pending(
         // The sink's delivery identity is the effect's provider identity.
         // It must make a replay after a crash between publish and delete safe.
         for effect in effects {
+            if let crate::notification_dispatch::NotificationPostCommit::TokenRateUsage(observation) =
+                &effect
+                && observation.method == "turn/completed"
+                && let Some(agent) = observation.agent.as_ref().and_then(|a| a["id"].as_str())
+                && let Some(turn) = observation
+                    .params
+                    .pointer("/turn/id")
+                    .and_then(Value::as_str)
+            {
+                crate::layr_native::save_turn(store, agent, turn)
+                    .await
+                    .map_err(|error| WorkerError::PreparationPending(error.to_string().into()))?;
+            }
             sink.publish(&effect).await?;
         }
     } else if value.get("analyticsOverflow").is_none() && value.get("publicationOverflow").is_none()
