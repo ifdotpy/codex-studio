@@ -6,19 +6,6 @@ const TEAM_SIZE = 512;
 const ROOM_COUNT = 256;
 const MEMBERS_PER_ROOM = 4;
 
-// Reference: the scan of all agents that roomLeadIds replaced.
-function scanLeadIds(room: Room, agents: Agent[]) {
-  const participants = new Set(room.members);
-  return [
-    ...new Set(
-      agents
-        .filter((agent) => participants.has(agent.id))
-        .map((agent) => (agent.isLead ? agent.id : agent.rootId))
-        .filter((id): id is string => !!id),
-    ),
-  ];
-}
-
 it("resolves room leads by member without scanning the whole team", () => {
   let reads = 0;
   const agents = Array.from({ length: TEAM_SIZE }, (_, index) => {
@@ -35,24 +22,24 @@ it("resolves room leads by member without scanning the whole team", () => {
       },
     }) as unknown as Agent;
   });
+  const examples = [
+    {
+      members: ["a449", "a1", "a128", "a65"],
+      leads: ["a0", "a64", "a128", "a448"],
+    },
+    { members: ["a65", "a64", "missing", "a1"], leads: ["a0", "a64"] },
+    { members: ["a511", "a510", "a449", "a448"], leads: ["a448"] },
+    { members: ["missing", "missing", "unknown", "unknown"], leads: [] },
+  ];
   const rooms = Array.from(
     { length: ROOM_COUNT },
-    (_, room) =>
-      ({
-        id: `r${room}`,
-        kind: "private",
-        members: Array.from(
-          { length: MEMBERS_PER_ROOM },
-          (_, member) => `a${(room * 7 + member * 131) % TEAM_SIZE}`,
-        ),
-      }) as unknown as Room,
+    (_, index) => examples[index % examples.length],
   );
-  const expected = rooms.map((room) => scanLeadIds(room, agents));
   reads = 0;
-  const actual = rooms.map((room) => roomLeadIds(room, agents));
-  expect(actual).toEqual(expected);
-  // One index pass over the team, then two reads per room member: the cost
-  // follows the rooms, not rooms x team (the scan reads 131072 ids).
+  for (const { members, leads } of rooms) {
+    const room = { kind: "private", members } as Room;
+    expect(roomLeadIds(room, agents)).toEqual(leads);
+  }
   expect(reads).toBeLessThanOrEqual(
     TEAM_SIZE + ROOM_COUNT * MEMBERS_PER_ROOM * 2,
   );

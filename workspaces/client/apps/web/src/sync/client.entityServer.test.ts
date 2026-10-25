@@ -1,3 +1,4 @@
+import { DRAFT_SERVER_READY_TIMEOUT_MS } from "./draftServerFixture";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -93,7 +94,9 @@ beforeAll(async () => {
   const lines = createInterface({ input: server.stdout! });
   try {
     const [line] = await Promise.race([
-      once(lines, "line", { signal: AbortSignal.timeout(30_000) }),
+      once(lines, "line", {
+        signal: AbortSignal.timeout(DRAFT_SERVER_READY_TIMEOUT_MS),
+      }),
       once(server, "exit").then(([code]) => {
         throw new Error(`Entity fixture exited: ${code}`);
       }),
@@ -108,7 +111,7 @@ beforeAll(async () => {
   } finally {
     lines.close();
   }
-});
+}, DRAFT_SERVER_READY_TIMEOUT_MS);
 afterAll(async () => {
   stopProjection?.();
   try {

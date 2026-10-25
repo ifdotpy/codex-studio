@@ -1361,6 +1361,17 @@ describe("entity pull reset wiring", () => {
         workspaceId,
         seq: 11,
       });
+      const emptyDelta = event(11, "delta");
+      delete emptyDelta.resourceVersions![0].entityChanges;
+      let current = true;
+      storageInstance.findDocumentsById.mockImplementationOnce(async () => {
+        current = false;
+        delete emptyDelta.resourceVersions![0].cursor;
+        return [];
+      });
+      await expect(
+        client.persistResourceEntityChanges(emptyDelta, () => current),
+      ).resolves.toBeUndefined();
     },
   );
   it("persists terminal records and cursor atomically, replays without duplicate output, and leaves the old cursor on failure", async () => {

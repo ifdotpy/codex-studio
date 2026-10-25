@@ -18,7 +18,7 @@ import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import {
   DURABLE_INPUT_QUEUE_KEY,
   PARENT_NOTICE_INPUT_KIND,
@@ -731,6 +731,38 @@ describe("scale verifier readiness markers", () => {
       watch.close();
     }
   });
+
+  it.each(["temporary", "missing"])(
+    "finds a published final marker after a %s notification",
+    async (notification) => {
+      const root = await newRoot();
+      const directory = await createReadinessMarkerDirectory(join(root, "m"));
+      const tokens = [randomUUID()];
+      let notify;
+      const watcher = new EventEmitter();
+      watcher.close = vi.fn();
+      const watch = await watchReadinessMarkers(
+        directory,
+        tokens,
+        null,
+        (_path, listener) => {
+          notify = listener;
+          return watcher;
+        },
+      );
+      try {
+        await expect(watch.next(performance.now() + 50)).rejects.toThrow(
+          /Timed out/,
+        );
+        await publish(directory, 0, `${tokens[0]}\n`);
+        if (notification === "temporary")
+          notify("rename", "worker-0.ready.tmp");
+        expect(await watch.next(performance.now() + 500)).toBe(0);
+      } finally {
+        watch.close();
+      }
+    },
+  );
 
   it("accepts a marker published before arming exactly once through the initial inspection", async () => {
     const root = await newRoot();

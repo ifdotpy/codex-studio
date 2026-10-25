@@ -57,7 +57,7 @@ export async function startBridge(
       ],
       {
         cwd: root,
-        stdio: ["pipe", "pipe", "pipe", ...(clock ? ["ipc"] : [])],
+        stdio: ["pipe", "pipe", "pipe", "ipc"],
         env: {
           ...process.env,
           STUDIO_CLAUDE_ACCOUNT: "test@example.test",
@@ -90,9 +90,21 @@ export async function startBridge(
   };
   attach();
   let sequence = 0;
+  let signalSequence = 0;
   const bridge = {
     root,
     notes,
+    async writeSignal(name, content = "") {
+      const file = path.join(root, name);
+      const temporary = path.join(root, `.signal-${++signalSequence}.tmp`);
+      await fs.writeFile(temporary, content);
+      await fs.rename(temporary, file);
+      await new Promise((resolve, reject) => {
+        child.send({ fixtureFile: file }, (error) =>
+          error ? reject(error) : resolve(),
+        );
+      });
+    },
     async advanceTime(ms) {
       if (child.exitCode !== null) return;
       const controller = new AbortController();
@@ -132,7 +144,16 @@ export async function startBridge(
         const message = await new Promise((resolve, reject) => {
           waiting.set(id, { resolve, reject });
           timer = setTimeout(
-            () => reject(new Error(method + " hung\n" + stderr)),
+            () =>
+              reject(
+                new Error(
+                  method +
+                    " hung\n" +
+                    stderr +
+                    "\nRecent notifications: " +
+                    JSON.stringify(notes.slice(-10)),
+                ),
+              ),
             HANG_GUARD_MS,
           );
           child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
@@ -160,7 +181,15 @@ export async function startBridge(
           };
           notifications.add(notify);
           timer = setTimeout(
-            () => reject(new Error("notification missing\n" + stderr)),
+            () =>
+              reject(
+                new Error(
+                  "notification missing\n" +
+                    stderr +
+                    "\nRecent notifications: " +
+                    JSON.stringify(notes.slice(-10)),
+                ),
+              ),
             HANG_GUARD_MS,
           );
           notify();
@@ -184,11 +213,19 @@ export async function startBridge(
       const exited =
         child.exitCode === null ? once(child, "exit") : Promise.resolve();
       child.stdin.end();
-      if (clock)
-        while (child.exitCode === null)
-          await bridge.advanceTime(VIRTUAL_STEP_MS);
-      await exited;
-      await fs.rm(root, { recursive: true, force: true });
+      // A failed virtual-clock scenario can leave teardown waiting on a frozen timer.
+      // Always reap this fixture's child, including when the test itself timed out.
+      const guard = setTimeout(() => child.kill("SIGKILL"), HANG_GUARD_MS);
+      try {
+        // Bounded shutdown timers run on the virtual clock; advance it until exit.
+        if (clock)
+          while (child.exitCode === null && child.signalCode === null)
+            await bridge.advanceTime(VIRTUAL_STEP_MS);
+        await exited;
+      } finally {
+        clearTimeout(guard);
+        await fs.rm(root, { recursive: true, force: true });
+      }
     },
   };
   bridge.thread = (

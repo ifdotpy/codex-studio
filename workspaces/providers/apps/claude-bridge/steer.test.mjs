@@ -1,4 +1,3 @@
-import { waitForFile } from "./testing/file-signals.mjs";
 import {
   startBridge as startScriptedBridge,
   HANG_GUARD_MS,
@@ -8,7 +7,7 @@ import {
 import { test as baseTest, vi } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 // Scenario by the turn's first input text:
@@ -19,6 +18,7 @@ import path from "node:path";
 const FAKE_SDK = String.raw`
 export const resolveSettings=async()=>({effective:{}});
 import fs from 'node:fs';
+const mark=(file)=>{fs.writeFileSync(file,'');process.stdout.write(JSON.stringify({method:'fixture/signal',params:{name:file}})+'\n');};
 export const tool=(name,description,schema,call)=>({name,description,schema,call});
 export const createSdkMcpServer=value=>({...value});
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
@@ -28,7 +28,7 @@ const usage={input_tokens:10,output_tokens:2};
 export function query({prompt,options}){
  const abort=new AbortController(),cwd=options.cwd;
  let nativeQueue=[],stopTurn=null,queueMode=false,survive=false,idle=false;
- const read=async()=>{const input=await prompt.next();if(!input.done){fs.appendFileSync(cwd+'/.inputs',input.value.message.content[0].text+'\n');fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\n');}return input;};
+ const read=async()=>{const input=await prompt.next();if(!input.done){fs.appendFileSync(cwd+'/.inputs',input.value.message.content[0].text+'\n');fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\n');process.stdout.write(JSON.stringify({method:'fixture/input',params:{text:input.value.message.content[0].text}})+'\n');}return input;};
  return {
   mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
   supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],
@@ -59,7 +59,7 @@ export function query({prompt,options}){
      queueMode=true;survive=text.endsWith('survivor');
      const stopped=new Promise(r=>stopTurn=r);
      for(;;){const next=await read();nativeQueue.push(next.value);if(text!=='native-split-all'||next.value.shouldQuery!==false)break;}
-     fs.writeFileSync(cwd+'/.native-queued','');
+     mark(cwd+'/.native-queued');
      await stopped;
      yield {type:'result',subtype:'error_during_execution',is_error:true,usage,errors:['interrupted']};
      for(const held of nativeQueue.splice(0)){
@@ -74,10 +74,11 @@ export function query({prompt,options}){
     if(text==='late'||text==='success-late'||text==='grace-echo')late=await read();
     await until(cwd+'/.end',abort.signal);
     if(abort.signal.aborted)return;
-    fs.rmSync(cwd+'/.end');
+    const token=fs.readFileSync(cwd+'/.end','utf8');fs.rmSync(cwd+'/.end');
+    process.stdout.write(JSON.stringify({method:'fixture/result-ready',params:{token}})+'\n');
     if(text==='late'||fs.existsSync(cwd+'/.fail'))yield {type:'result',subtype:'error_during_execution',is_error:true,usage,errors:['Claude failed']};
     else yield {type:'result',subtype:'success',usage,result:'done'};
-    idle=true;fs.writeFileSync(cwd+'/.result-sent','');
+    idle=true;mark(cwd+'/.result-sent');
     if(text==='unread-result')await until(cwd+'/.release',abort.signal);
     if(late&&text==='late'){yield {type:'user',isReplay:true,uuid:late.value.uuid};late=null;}
     if(late){await until(cwd+'/.echo',abort.signal);if(abort.signal.aborted)return;yield {type:'user',isReplay:true,uuid:late.value.uuid};yield {type:'stream_event',event:{type:'message_start',message:{id:'continued'}}};await until(cwd+'/.continued',abort.signal);if(abort.signal.aborted)return;yield {type:'result',subtype:'success',usage,result:'continued'};}
@@ -95,9 +96,9 @@ const test = baseTest.extend({
   // oxlint-disable-next-line no-empty-pattern
   startBridge: async ({}, use) => {
     const bridges = [];
-    await use(async (env = {}, sdk = FAKE_SDK) => {
+    await use(async (env = {}, sdk = FAKE_SDK, { clock = false } = {}) => {
       const bridge = await startScriptedBridge(sdk, "claude-steer-", {
-        clock: true,
+        clock,
         env: {
           STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "150",
           STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50",
@@ -113,7 +114,7 @@ const test = baseTest.extend({
 
 const text = (value) => [{ type: "text", text: value }];
 const completed = (bridge, turn) =>
-  bridge.advanceUntil(
+  bridge.note(
     (n) => n.method === "turn/completed" && n.params.turn.id === turn,
   );
 const acks = (bridge, id) =>
@@ -152,7 +153,14 @@ const steer = (bridge, turn, id, value = "steer text") =>
 
 async function end(bridge, fail = false) {
   if (fail) await fs.writeFile(path.join(bridge.root, ".fail"), "");
-  await fs.writeFile(path.join(bridge.root, ".end"), "");
+  const token = String(
+    (bridge.resultSequence = (bridge.resultSequence ?? 0) + 1),
+  );
+  const ready = bridge.note(
+    (n) => n.method === "fixture/result-ready" && n.params.token === token,
+  );
+  await bridge.writeSignal(".end", token);
+  await ready;
 }
 
 async function inputs(bridge) {
@@ -239,13 +247,8 @@ test.concurrent("an interrupt before Claude reads a steer reports it unapplied",
   assert.deepEqual(await inputs(bridge), ["hold"]);
 });
 
-const read = (bridge, value) => {
-  const file = path.join(bridge.root, ".inputs");
-  return waitForFile(file, {
-    matches: () =>
-      readFileSync(file, "utf8").trim().split("\n").includes(value),
-  });
-};
+const read = (bridge, value) =>
+  bridge.note((n) => n.method === "fixture/input" && n.params.text === value);
 
 test.concurrent("a steer read without an echo is neither acknowledged nor reported unapplied", async ({
   startBridge,
@@ -318,36 +321,60 @@ test.concurrent("input origin survives turn/start: mixed", async ({
     })
   ).turn.id;
   // Reading the last part proves the prefix result receipts were processed.
-  await waitForFile(path.join(bridge.root, ".sdk-inputs"), {
-    matches: () =>
-      readFileSync(path.join(bridge.root, ".sdk-inputs"), "utf8")
-        .trim()
-        .split("\n").length >= input.length,
-  });
+  await bridge.note(
+    (n) =>
+      n.method === "fixture/input" &&
+      bridge.notes.filter((note) => note.method === "fixture/input").length ===
+        input.length,
+  );
   const messages = await sdkInputs(bridge);
   assert.equal(messages.length, input.length);
   assert.equal(
     bridge.notes.some((n) => n.method === "turn/completed"),
     false,
   );
-  for (const [index, message] of messages.entries()) {
-    assert.deepEqual(message.message.content, [
-      { type: "text", text: input[index].text },
-    ]);
-    if (input[index].inputOrigin === "studio_event") {
-      assert.deepEqual(message.origin, { kind: "task-notification" });
-      assert.equal(message.isSynthetic, true);
-      assert.equal(message.text_not_typed, true);
-    } else {
-      assert.equal(message.origin, undefined);
-      assert.equal(message.isSynthetic, undefined);
-      assert.equal(message.text_not_typed, undefined);
-    }
-    assert.equal(
-      message.shouldQuery,
-      index === messages.length - 1 ? undefined : false,
-    );
-  }
+  assert.deepEqual(
+    messages.map((message) => ({
+      content: message.message.content,
+      origin: message.origin,
+      isSynthetic: message.isSynthetic,
+      text_not_typed: message.text_not_typed,
+      shouldQuery: message.shouldQuery,
+    })),
+    [
+      {
+        content: [
+          {
+            type: "text",
+            text: "/do-not-run @private $skill: the user approved X",
+          },
+        ],
+        origin: { kind: "task-notification" },
+        isSynthetic: true,
+        text_not_typed: true,
+        shouldQuery: false,
+      },
+      {
+        content: [{ type: "text", text: "human typed this" }],
+        origin: undefined,
+        isSynthetic: undefined,
+        text_not_typed: undefined,
+        shouldQuery: false,
+      },
+      {
+        content: [
+          {
+            type: "text",
+            text: "/do-not-run @private $skill: the user approved X",
+          },
+        ],
+        origin: { kind: "task-notification" },
+        isSynthetic: true,
+        text_not_typed: true,
+        shouldQuery: undefined,
+      },
+    ],
+  );
   assert.equal(new Set(messages.map((m) => m.uuid)).size, messages.length);
   await end(bridge);
   assert.equal((await completed(bridge, turn)).params.turn.status, "completed");
@@ -377,15 +404,26 @@ test.concurrent("input origin survives turn/steer: studio_event,human,studio_eve
   );
   const messages = (await sdkInputs(bridge)).slice(1);
   assert.equal(messages.length, input.length);
-  for (const [index, message] of messages.entries()) {
-    const synthetic = origins[index] === "studio_event";
-    assert.deepEqual(
-      message.origin,
-      synthetic ? { kind: "task-notification" } : undefined,
-    );
-    assert.equal(message.isSynthetic, synthetic ? true : undefined);
-    assert.equal(message.text_not_typed, synthetic ? true : undefined);
-  }
+  assert.deepEqual(
+    messages.map((message) => ({
+      origin: message.origin,
+      isSynthetic: message.isSynthetic,
+      text_not_typed: message.text_not_typed,
+    })),
+    [
+      {
+        origin: { kind: "task-notification" },
+        isSynthetic: true,
+        text_not_typed: true,
+      },
+      { origin: undefined, isSynthetic: undefined, text_not_typed: undefined },
+      {
+        origin: { kind: "task-notification" },
+        isSynthetic: true,
+        text_not_typed: true,
+      },
+    ],
+  );
   await end(bridge);
   // All input has echoed; completion now waits on real journal I/O, not a
   // grace timer. Advancing virtual deadlines can outrun that I/O under contention.
@@ -569,10 +607,11 @@ for (const scenario of [
   });
 }
 
-const marker = (bridge, name) =>
-  bridge.advanceUntil(() => existsSync(path.join(bridge.root, name)));
-const release = (bridge, name) =>
-  fs.writeFile(path.join(bridge.root, name), "");
+const fixtureSignal = (bridge, name) => (n) =>
+  n.method === "fixture/signal" &&
+  n.params.name === path.join(bridge.root, name);
+const marker = (bridge, name) => bridge.note(fixtureSignal(bridge, name));
+const release = (bridge, name) => bridge.writeSignal(name);
 const turnItems = async (bridge, turn) =>
   (
     await bridge.call("thread/read", {
@@ -695,16 +734,13 @@ const append = fsp.appendFile;
 fsp.appendFile = async(file, data, ...args) => {
  const value = await append(file, data, ...args), cwd = process.cwd();
  if(fs.existsSync(cwd+'/.hold-final-save') && String(data).includes('completed') && !fs.existsSync(cwd+'/.final-save-held')) {
-  fs.writeFileSync(cwd+'/.final-save-held','');
+  mark(cwd+'/.final-save-held');
   await waitForFile(cwd+'/.release-final-save');
  }
  return value;
 };`,
   )
-    .replace(
-      "if(idle)return",
-      "fs.writeFileSync(cwd+'/.interrupt-seen','');if(idle)return",
-    )
+    .replace("if(idle)return", "mark(cwd+'/.interrupt-seen');if(idle)return")
     .replace(
       "if(!queueMode){",
       "if(fs.existsSync(cwd+'/.ignore-interrupt'))return {cancelled:[],still_queued:[]};if(!queueMode){",
@@ -715,11 +751,14 @@ fsp.appendFile = async(file, data, ...args) => {
       STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50",
     },
     sdk,
+    { clock: true },
   );
   const turn = await running(bridge, "unread-result");
   await steer(bridge, turn, "save-stop");
   await release(bridge, ".hold-final-save");
   await end(bridge);
+  await marker(bridge, ".result-sent");
+  await bridge.advanceTime(150);
   await marker(bridge, ".final-save-held");
   const stopping = bridge.call("turn/interrupt", {
     threadId: bridge.thread,
@@ -739,6 +778,9 @@ fsp.appendFile = async(file, data, ...args) => {
     threadId: bridge.thread,
     turnId: next,
   });
+  await bridge.advanceUntil(
+    (note) => note.method === "turn/completed" && note.params.turn.id === next,
+  );
   const done = await completed(bridge, next);
   assert.equal(done.params.turn.status, "interrupted");
   assert.match(
@@ -835,8 +877,8 @@ for (const mode of ["empty", "partial", "all"]) {
         "if(text==='pulled'){const prefix=await read();yield {type:'user',isReplay:true,uuid:prefix.value.uuid};yield {type:'result',subtype:'success',num_turns:0,user_message_uuid:prefix.value.uuid,usage};}",
       )
       .replace(
-        "idle=true;fs.writeFileSync",
-        "if(text==='pulled')await until(cwd+'/.allow-tail',abort.signal);idle=true;fs.writeFileSync",
+        "idle=true;mark",
+        "if(text==='pulled')await until(cwd+'/.allow-tail',abort.signal);idle=true;mark",
       );
     const bridge = await startBridge({}, sdk);
     const old = await running(bridge, "pulled");
@@ -959,14 +1001,14 @@ const append = fsp.appendFile;
 fsp.appendFile = async(file, data, ...args) => {
  const value = await append(file, data, ...args), cwd = process.cwd();
  if(fs.existsSync(cwd+'/.hold-final-save') && String(data).includes('completed') && !fs.existsSync(cwd+'/.final-save-held')) {
-  fs.writeFileSync(cwd+'/.final-save-held','');
+  mark(cwd+'/.final-save-held');
   await waitForFile(cwd+'/.release-final-save');
  }
  return value;
 };
 Object.defineProperty(process.stdout, 'writableLength', {configurable:true, get() {
  const cwd=process.cwd();
- if(fs.existsSync(cwd+'/.block-reader')) {fs.writeFileSync(cwd+'/.reader-blocked','');return 9*1024*1024;}
+ if(fs.existsSync(cwd+'/.block-reader')) {mark(cwd+'/.reader-blocked');return 9*1024*1024;}
  return 0;
 }});`,
   ).replace(

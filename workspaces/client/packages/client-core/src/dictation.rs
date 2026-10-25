@@ -462,7 +462,10 @@ mod tests {
             .unwrap()
             .to_owned();
         let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[..44], &wav_header(3, 16000));
+        assert_eq!(
+            &bytes[..44],
+            b"RIFF*\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80>\0\0\0}\0\0\x02\0\x10\0data\x06\0\0\0"
+        );
         assert_eq!(&bytes[44..], &[1, 0, 0xfe, 0xff, 3, 0]);
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(

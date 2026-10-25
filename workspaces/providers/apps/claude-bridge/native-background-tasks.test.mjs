@@ -51,9 +51,14 @@ afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
 
-test.each(["completed", "failed", "killed", "stopped"])(
+test.each([
+  ["completed", "completed"],
+  ["failed", "failed"],
+  ["killed", "failed"],
+  ["stopped", "failed"],
+])(
   "a native task stays running until its %s notification and preserves the wake turn",
-  async (status) => {
+  async (status, expectedStatus) => {
     const bridge = await startBridge(FAKE_SDK, "claude-native-task-");
     bridges.push(bridge);
     const turn = (
@@ -92,7 +97,7 @@ test.each(["completed", "failed", "killed", "stopped"])(
       events.map((n) => [n.method, n.params.item.status]),
       [
         ...Array(4).fill(["item/started", "inProgress"]),
-        ["item/completed", status === "completed" ? "completed" : "failed"],
+        ["item/completed", expectedStatus],
       ],
     );
     const terminal = events.at(-1);

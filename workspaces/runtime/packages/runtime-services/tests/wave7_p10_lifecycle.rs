@@ -571,65 +571,6 @@ fn state(store: &RuntimeStore) -> Value {
     json!({"tables":records,"sync":sync})
 }
 
-/// Intentional divergence from the Python corpus (owner compatibility policy allows
-/// tightening): Python leaves reserved/dispatching/uncertain input rows of a deleted
-/// agent unchanged; Rust settles them (reserved -> cancelled, dispatching/uncertain ->
-/// failed, never delivered). Every other row is still compared to Python as-is.
-fn delete_settlement(
-    deleted: &[&str],
-    agent: Option<&str>,
-    status: Option<&str>,
-) -> Option<(&'static str, &'static str)> {
-    if !agent.is_some_and(|a| deleted.contains(&a)) {
-        return None;
-    }
-    match status? {
-        "reserved" => Some(("cancelled", "Agent deleted")),
-        "dispatching" | "uncertain" => Some(("failed", "Agent deleted; delivery outcome unknown")),
-        _ => None,
-    }
-}
-
-fn deleted_agents(tables: &Value) -> Vec<&str> {
-    tables["runtime_agents"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|a| a["deletedAt"].as_f64().is_some_and(|at| at != 0.0))
-        .filter_map(|a| a["id"].as_str())
-        .collect()
-}
-
-fn with_delete_settlement(expected: &Value, tables: &Value) -> Value {
-    let deleted = deleted_agents(tables);
-    let mut rows = expected.clone();
-    for row in rows.as_array_mut().into_iter().flatten() {
-        if let Some((status, _)) =
-            delete_settlement(&deleted, row["agent"].as_str(), row["status"].as_str())
-        {
-            row["status"] = json!(status);
-        }
-    }
-    rows
-}
-
-/// Same divergence in the expected `event` sync projections.
-fn with_delete_settlement_sync(expected: &mut [Value], tables: &Value) {
-    let deleted = deleted_agents(tables);
-    for row in expected.iter_mut().filter(|row| row[0] == "event") {
-        let mut payload: Value =
-            serde_json::from_str(row[2].as_str().expect("payload")).expect("event payload");
-        let value = &payload["value"];
-        if let Some((status, error)) =
-            delete_settlement(&deleted, value["agent"].as_str(), value["status"].as_str())
-        {
-            payload["value"]["status"] = json!(status);
-            payload["value"]["error"] = json!(error);
-            row[2] = json!(payload.to_string());
-        }
-    }
-}
-
 fn parsed_child_event_rows(rows: &Value) -> Value {
     let mut rows = rows.clone();
     for row in rows.as_array_mut().expect("event rows") {
@@ -868,35 +809,21 @@ fn assert_conversation_detail_sources(snapshot: &Value) {
 
 // Work partitions postdate the frozen oracle too. Compare their complete live
 // set with source records instead of letting added projections alter that oracle.
-fn assert_work_detail_sources(store: &RuntimeStore, snapshot: &Value) {
-    use studio_runtime_store::entity_publication::WorkHistoryKind;
-    let db = store.test_reader().expect("work source reader");
-    let mut expected = BTreeMap::new();
-    for source in snapshot["tables"]["runtime_work"]
+fn assert_work_detail_sources(case: &Value, snapshot: &Value) {
+    let expected = case["expected"]["workDetails"]
         .as_array()
-        .expect("work source rows")
-    {
-        let id = source["id"].as_str().expect("work id");
-        let mut detail = source.clone();
-        for kind in WorkHistoryKind::ALL {
-            detail[kind.field()] = json!([]);
-            for (index, value) in source[kind.field()]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .enumerate()
-            {
-                let entry_id = format!("{id}:{index}");
-                expected.insert((kind.collection().to_owned(), entry_id.clone()), json!({
-                    "id":entry_id,"taskId":id,"rootId":source["rootId"],"index":index,"value":value
-                }));
-            }
-        }
-        detail["submissionRefusal"] =
-            studio_runtime_services::work_write::current_submission_refusal(&db, source)
-                .expect("canonical current refusal");
-        expected.insert(("workDetail".to_owned(), id.to_owned()), detail);
-    }
+        .expect("work details fixture")
+        .iter()
+        .map(|row| {
+            (
+                (
+                    row[0].as_str().expect("work owner fixture").to_owned(),
+                    row[1].as_str().expect("work kind fixture").to_owned(),
+                ),
+                row[2].clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let actual = snapshot["sync"]
         .as_array()
         .expect("sync rows")
@@ -946,16 +873,13 @@ fn unrelated_work_projection_rows(snapshot: &Value) -> Vec<Value> {
 fn assert_records(store: &RuntimeStore, case: &Value) {
     let saved = state(store);
     assert_conversation_detail_sources(&saved);
-    assert_work_detail_sources(store, &saved);
+    assert_work_detail_sources(case, &saved);
     for (table, expected) in case["expected"]["records"]["tables"]
         .as_object()
         .expect("tables")
     {
         let mut actual = saved["tables"][table].clone();
         let mut expected = expected.clone();
-        if table == "runtime_events" {
-            expected = with_delete_settlement(&expected, &case["expected"]["records"]["tables"]);
-        }
         if table == "runtime_agents" {
             for rows in [&mut actual, &mut expected] {
                 if let Some(rows) = rows.as_array_mut() {
@@ -1008,7 +932,6 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
             row[1].as_str().unwrap_or_default().to_owned(),
         )
     });
-    with_delete_settlement_sync(&mut expected_sync, &case["expected"]["records"]["tables"]);
     assert_eq!(actual_sync, expected_sync, "{} sync_entities", case["name"]);
     // The frozen Python oracle predates view-scoped agent collections. Keep its
     // legacy comparison intact and check the added projections independently.
@@ -1403,11 +1326,7 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
                         }
                     }
                 }
-                let expected = if table == "runtime_events" {
-                    with_delete_settlement(expected, &case["expected"]["records"]["tables"])
-                } else {
-                    expected.clone()
-                };
+                let expected = expected.clone();
                 assert_eq!(actual_rows, expected, "Python effect corpus rows: {table}");
             }
         }
@@ -1457,10 +1376,7 @@ async fn production_child_notification_matches_python_corpus() {
         if table == "runtime_events" {
             assert_eq!(
                 parsed_child_event_rows(&actual["tables"][table]),
-                parsed_child_event_rows(&with_delete_settlement(
-                    expected,
-                    &case["expected"]["records"]["tables"]
-                )),
+                parsed_child_event_rows(expected),
                 "Python child notification event rows"
             );
         } else {
@@ -1492,7 +1408,6 @@ async fn production_child_notification_matches_python_corpus() {
         .iter()
         .map(|row| json!([row[0], row[1], row[2], row[3]]))
         .collect::<Vec<_>>();
-    with_delete_settlement_sync(&mut expected_sync, &case["expected"]["records"]["tables"]);
     expected_sync.sort_by_key(|row| (row[0].to_string(), row[1].to_string()));
     assert_eq!(
         actual_sync, expected_sync,

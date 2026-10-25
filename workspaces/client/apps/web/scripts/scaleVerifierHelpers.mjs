@@ -12,7 +12,15 @@ import {
   watch,
   writeSync,
 } from "node:fs";
-import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  unlink,
+} from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
@@ -862,9 +870,14 @@ export async function createReadinessMarkerDirectory(path) {
 }
 
 // Arms the directory watch before any worker is created, then inspects the
-// directory once so a marker published before arming is not missed. A marker
-// is accepted only when its final name holds the exact per-worker token.
-export async function watchReadinessMarkers(directory, tokens, signal = null) {
+// directory at arming and when a caller begins an empty wait. A marker is
+// accepted only when its final name holds the exact per-worker token.
+export async function watchReadinessMarkers(
+  directory,
+  tokens,
+  signal = null,
+  watchDirectory = watch,
+) {
   signal?.throwIfAborted();
   const ready = [];
   const seen = new Set();
@@ -902,13 +915,15 @@ export async function watchReadinessMarkers(directory, tokens, signal = null) {
   // Chain checks per worker so an initial ENOENT cannot swallow its rename event.
   const check = (index) => {
     const pending = checks.get(index) ?? Promise.resolve();
-    checks.set(index, pending.then(() => inspect(index)).catch(fail));
+    const next = pending.then(() => inspect(index)).catch(fail);
+    checks.set(index, next);
+    return next;
   };
   const checkAll = () => {
     for (let index = 0; index < tokens.length; index += 1) check(index);
   };
   const ownName = basename(directory);
-  const watcher = watch(directory, (_eventType, filename) => {
+  const inspectName = (filename) => {
     if (closed) return;
     if (filename == null) {
       checkAll();
@@ -919,19 +934,24 @@ export async function watchReadinessMarkers(directory, tokens, signal = null) {
     // base name (for example its recent creation). Only an entry inside the
     // directory with that name is an unknown marker.
     if (name === ownName) {
-      lstat(join(directory, name)).then(
+      return lstat(join(directory, name)).then(
         () => fail(new Error(`Unknown readiness marker name: ${name}`)),
         (error) => (error?.code === "ENOENT" ? checkAll() : fail(error)),
       );
-      return;
     }
-    // A temporary name exists only until the atomic rename publishes the final name.
-    if (name.endsWith(".tmp")) return;
-    const match = READINESS_MARKER_PATTERN.exec(name);
+    // A rename notification may retain the temporary name. Inspect only the
+    // corresponding final path; temporary contents never prove readiness.
+    const temporary = name.endsWith(".tmp");
+    const match = READINESS_MARKER_PATTERN.exec(
+      temporary ? name.slice(0, -4) : name,
+    );
     const index = match ? Number(match[1]) : Number.NaN;
-    if (!Number.isSafeInteger(index) || index >= tokens.length)
-      fail(new Error(`Unknown readiness marker name: ${name}`));
-    else check(index);
+    if (!Number.isSafeInteger(index) || index >= tokens.length) {
+      if (!temporary) fail(new Error(`Unknown readiness marker name: ${name}`));
+    } else return check(index);
+  };
+  const watcher = watchDirectory(directory, (_eventType, filename) => {
+    inspectName(filename);
   });
   watcher.on("error", fail);
   const onAbort = () =>
@@ -941,6 +961,7 @@ export async function watchReadinessMarkers(directory, tokens, signal = null) {
   return {
     path: (index) => join(directory, readinessMarkerName(index)),
     async next(deadlineAt) {
+      let reconciled = false;
       while (true) {
         if (failure) throw failure;
         if (closed) throw new Error("Readiness marker watch is closed.");
@@ -948,6 +969,14 @@ export async function watchReadinessMarkers(directory, tokens, signal = null) {
         const remaining = deadlineAt - performance.now();
         if (remaining <= 0)
           throw new Error("Timed out waiting for worker readiness markers.");
+        if (!reconciled) {
+          reconciled = true;
+          // Native watchers can coalesce away a rename before this wait starts.
+          // Inspect current entries once, then wait only for notifications.
+          await Promise.all((await readdir(directory)).map(inspectName));
+          await Promise.all(checks.values());
+          continue;
+        }
         await new Promise((resolveWait) => {
           const wakeWaiter = () => {
             clearTimeout(timer);

@@ -940,8 +940,10 @@ mod tests {
         assert_eq!(chunk["nextOffset"].as_u64(), Some(data.len() as u64));
         assert_eq!(data.len() as u64, bytes);
         assert_eq!(
-            chunk["sha256"],
-            data_encoding::HEXLOWER.encode(&Sha256::digest(&data))
+            data_encoding::HEXLOWER
+                .decode(chunk["sha256"].as_str().unwrap().as_bytes())
+                .unwrap(),
+            ring::digest::digest(&ring::digest::SHA256, &data).as_ref()
         );
         assert_eq!(export["sha256"], chunk["sha256"]);
         let past = receive(

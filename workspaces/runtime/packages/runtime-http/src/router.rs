@@ -1084,7 +1084,7 @@ mod tests {
             .to_owned();
         assert_eq!(
             etag,
-            format!("\"{}\"", studio_runtime_store::sha256_hex(&expected))
+            "\"873fd686508ac38929054cd684c90700b2cda4a7444666971ff5903d45a36bb4\""
         );
         assert!(!identity.headers().contains_key(header::CONTENT_ENCODING));
         assert_eq!(

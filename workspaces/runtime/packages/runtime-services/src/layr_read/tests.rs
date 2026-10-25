@@ -234,11 +234,8 @@ async fn a_vm_reviewer_reads_layr_through_one_exact_guest_request() {
         json!({"agentId": REVIEWER, "argv": ["layr", "--line", "main", "diff", "s1", "s2"]})
     );
     // Python `dynamic` keys the tool request as `<thread>:<call>`.
-    let identity = format!(
-        "layr-read:{}",
-        studio_runtime_store::sha256_hex(format!("{REVIEWER}:thread-1:read-1").as_bytes())
-    );
-    assert_eq!(request_id.as_deref(), Some(identity.as_str()));
+    let identity = "layr-read:35f1f22133704ced9123decbce90efded6d277fd58e50b9e2af4cc3a2974b275";
+    assert_eq!(request_id.as_deref(), Some(identity));
     assert_eq!(*timeout, Duration::from_secs(330));
 
     // A retry of the same tool request returns the first answer; the

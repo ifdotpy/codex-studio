@@ -476,11 +476,32 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary history directory");
         let path = directory.path().join("rollout.jsonl");
         let bound = MAX_HISTORY_TAIL as usize;
-        for (bytes, offset, expected) in [
-            ("{}\n{}".to_owned(), 3, "{}".to_owned()),
-            ("x".repeat(bound), 0, "x".repeat(bound)),
-            ("x".repeat(bound + 1), 0, String::new()),
-            ("{}".to_owned(), 3, String::new()),
+        let mut initial_identity = None;
+        for (bytes, offset, expected, expected_hash) in [
+            (
+                "{}\n{}".to_owned(),
+                3,
+                "{}".to_owned(),
+                "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            ),
+            (
+                "x".repeat(bound),
+                0,
+                "x".repeat(bound),
+                "1f8745f0d2d1387ec1af2211a3cf417b2e9e885e853472649c1d979d0e9370e3",
+            ),
+            (
+                "x".repeat(bound + 1),
+                0,
+                String::new(),
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                "{}".to_owned(),
+                3,
+                String::new(),
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
         ] {
             fs::write(&path, &bytes).expect("write fixture history");
             let observation = read_history_file(&json!({
@@ -489,19 +510,20 @@ mod tests {
             }))
             .expect("stable history")
             .expect("read bounded tail");
-            assert_eq!(
-                Some(observation.identity),
-                super::file_identity(&fs::metadata(&path).expect("history metadata"))
-            );
+            if let Some(identity) = initial_identity {
+                assert_eq!(
+                    observation.identity, identity,
+                    "rewriting the same file preserves identity"
+                );
+            } else {
+                initial_identity = Some(observation.identity);
+            };
             assert_eq!(observation.tail, expected);
             assert_eq!(
                 (observation.size, observation.final_size),
                 (bytes.len() as u64, bytes.len() as u64)
             );
-            assert_eq!(
-                observation.content_hash,
-                studio_runtime_store::sha256_hex(expected.as_bytes())
-            );
+            assert_eq!(observation.content_hash, expected_hash);
         }
     }
 
