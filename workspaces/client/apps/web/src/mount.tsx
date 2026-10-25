@@ -1,3 +1,4 @@
+import { LayoutDebug } from "./hooks/LayoutDebug";
 import { BottomInsetBand } from "./hooks/BottomInsetBand";
 import "./browser-reset.css";
 import { NativeServerCredentials } from "./native/serverCredentials";
@@ -62,6 +63,7 @@ async function mount() {
     createRoot(container).render(
       <UIErrorBoundary label="Studio" fullPage>
         <MantineProvider theme={theme} defaultColorScheme="auto">
+          <LayoutDebug />
           <BottomInsetBand>
             <SidebarWarningsProvider>
               {isServerView ? <App /> : <MultiServerApp />}
