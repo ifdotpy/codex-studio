@@ -20,6 +20,8 @@ impl EntityPublisher for DefaultPublisher {
             agents: pending.agents.clone(),
             requests: pending.requests.clone(),
             work: pending.work.clone(),
+            source_work_changes: Some(pending.work_changes.clone()),
+            work_refusal_owners: pending.work_refusal_owners.clone(),
             ..Default::default()
         };
         let server_id = RuntimeStore::transaction_local_server_id(transaction)?;
@@ -48,6 +50,9 @@ impl EntityPublisher for DefaultPublisher {
 /// the store.
 pub async fn install(store: &RuntimeStore) -> StoreResult<()> {
     store.install_entity_publisher(Arc::new(DefaultPublisher));
+    store
+        .transaction(crate::sync_policy::seed_work_details)
+        .await?;
     // Upgrades may have source errors but no studioError entities yet.
     crate::studio_errors::refresh(store).await
 }

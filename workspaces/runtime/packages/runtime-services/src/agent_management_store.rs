@@ -543,6 +543,7 @@ fn execute_decision(
         requests: written_ids(&decision.writes, "runtime_requests"),
         work: changed_work,
         checked_agents: Vec::new(),
+        ..Default::default()
     };
     let server_id = RuntimeStore::transaction_local_server_id(transaction)?;
     crate::sync_policy::publish_entity_changes(

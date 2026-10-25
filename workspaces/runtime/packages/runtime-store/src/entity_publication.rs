@@ -17,7 +17,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction, functions::FunctionFlags};
 
 use crate::StoreResult;
 
@@ -38,6 +38,8 @@ pub struct PendingEntities {
     pub annotations: BTreeSet<String>,
     pub tasks: BTreeSet<String>,
     pub work: BTreeSet<String>,
+    pub work_changes: BTreeMap<String, WorkSourceChanges>,
+    pub work_refusal_owners: BTreeSet<String>,
     /// Source rows of the derived Studio error list that changed.
     pub studio_errors: StudioErrorSources,
     pub queues: BTreeSet<String>,
@@ -54,10 +56,132 @@ impl PendingEntities {
             && self.annotations.is_empty()
             && self.tasks.is_empty()
             && self.work.is_empty()
+            && self.work_refusal_owners.is_empty()
             && self.studio_errors.is_empty()
             && self.queues.is_empty()
             && self.terminals.is_empty()
     }
+}
+
+/// Canonical work history fields and their scoped entity collections.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum WorkHistoryKind {
+    Result,
+    Decision,
+    Release,
+}
+impl WorkHistoryKind {
+    pub const ALL: [Self; 3] = [Self::Result, Self::Decision, Self::Release];
+    pub const fn field(self) -> &'static str {
+        match self {
+            Self::Result => "results",
+            Self::Decision => "decisions",
+            Self::Release => "releases",
+        }
+    }
+    pub const fn collection(self) -> &'static str {
+        match self {
+            Self::Result => "workResult",
+            Self::Decision => "workDecision",
+            Self::Release => "workRelease",
+        }
+    }
+}
+
+/// An authoritative OLD/NEW source delta recorded by SQLite, never supplied by callers.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WorkSourceChanges {
+    histories: BTreeMap<WorkHistoryKind, BTreeSet<usize>>,
+    refusal: bool,
+}
+impl WorkSourceChanges {
+    pub fn histories(&self) -> &BTreeMap<WorkHistoryKind, BTreeSet<usize>> {
+        &self.histories
+    }
+    pub fn refusal_changed(&self) -> bool {
+        self.refusal
+    }
+}
+
+/// Connection-local function identities used only by the source journal triggers.
+pub(crate) const WORK_HISTORY_FUNCTION: &str = "sync_work_history_change";
+pub(crate) const WORK_IDENTITY_FUNCTION: &str = "sync_work_identity_change";
+
+pub(crate) fn register_work_change_functions(connection: &Connection) -> crate::StoreResult<()> {
+    connection.create_scalar_function(
+        WORK_HISTORY_FUNCTION,
+        3,
+        FunctionFlags::empty(),
+        |context| {
+            let id: String = context.get(0)?;
+            let field: String = context.get(1)?;
+            let index: i64 = context.get(2)?;
+            let kind = WorkHistoryKind::ALL
+                .into_iter()
+                .find(|kind| kind.field() == field)
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+            let index = usize::try_from(index).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            push(Event::WorkHistory(id, kind, index));
+            Ok(0)
+        },
+    )?;
+    connection.create_scalar_function(
+        WORK_IDENTITY_FUNCTION,
+        2,
+        FunctionFlags::empty(),
+        |context| {
+            match (
+                context.get::<Option<String>>(0)?,
+                context.get::<Option<String>>(1)?,
+            ) {
+                (Some(owner), None) => push(Event::WorkRefusalOwner(owner)),
+                (None, Some(task)) => push(Event::WorkRefusalTask(task)),
+                _ => return Err(rusqlite::Error::InvalidQuery),
+            }
+            Ok(0)
+        },
+    )?;
+    Ok(())
+}
+
+/// Classify changes while OLD and NEW are already owned by the SQLite write.
+/// Metadata writes compare source fields but never enumerate history entries.
+pub(crate) fn prepare_work_change_journal(transaction: &Transaction<'_>) -> crate::StoreResult<()> {
+    for kind in WorkHistoryKind::ALL {
+        let field = kind.field();
+        transaction.execute_batch(&format!(
+            "CREATE TRIGGER IF NOT EXISTS work_history_{field}_insert AFTER INSERT ON runtime_work BEGIN
+             SELECT {WORK_HISTORY_FUNCTION}(NEW.id,'{field}',j.key) FROM json_each(NEW.record,'$.{field}') j; END;
+             CREATE TRIGGER IF NOT EXISTS work_history_{field}_update AFTER UPDATE OF record ON runtime_work
+             WHEN json_extract(OLD.record,'$.{field}') IS NOT json_extract(NEW.record,'$.{field}') OR json_extract(OLD.record,'$.rootId') IS NOT json_extract(NEW.record,'$.rootId') BEGIN
+             SELECT {WORK_HISTORY_FUNCTION}(NEW.id,'{field}',changed.key) FROM (
+               WITH old_values AS MATERIALIZED (SELECT key,value,type FROM json_each(OLD.record,'$.{field}')),
+                    new_values AS MATERIALIZED (SELECT key,value,type FROM json_each(NEW.record,'$.{field}'))
+               SELECT n.key FROM new_values n LEFT JOIN old_values o USING(key)
+               WHERE o.key IS NULL OR o.type IS NOT n.type OR o.value IS NOT n.value OR json_extract(OLD.record,'$.rootId') IS NOT json_extract(NEW.record,'$.rootId')
+               UNION SELECT o.key FROM old_values o LEFT JOIN new_values n USING(key) WHERE n.key IS NULL
+             ) changed; END;"
+        ))?;
+    }
+    transaction.execute_batch(&format!(
+        "CREATE TRIGGER IF NOT EXISTS work_identity_insert AFTER INSERT ON runtime_work BEGIN SELECT {WORK_IDENTITY_FUNCTION}(NULL,NEW.id); END;
+         CREATE TRIGGER IF NOT EXISTS work_identity_update AFTER UPDATE OF record ON runtime_work
+         WHEN json_extract(OLD.record,'$.owner') IS NOT json_extract(NEW.record,'$.owner') OR json_extract(OLD.record,'$.version') IS NOT json_extract(NEW.record,'$.version') BEGIN SELECT {WORK_IDENTITY_FUNCTION}(NULL,NEW.id); END;
+         CREATE TRIGGER IF NOT EXISTS work_owner_identity_update AFTER UPDATE OF record ON runtime_agents
+         WHEN json_extract(OLD.record,'$.epoch') IS NOT json_extract(NEW.record,'$.epoch')
+           OR json_extract(OLD.record,'$.accountKey') IS NOT json_extract(NEW.record,'$.accountKey')
+           OR json_extract(OLD.record,'$.threadId') IS NOT json_extract(NEW.record,'$.threadId')
+           OR json_extract(OLD.record,'$.turnId') IS NOT json_extract(NEW.record,'$.turnId')
+         BEGIN SELECT {WORK_IDENTITY_FUNCTION}(NEW.id,NULL); END;
+         CREATE TRIGGER IF NOT EXISTS work_attempt_identity_insert AFTER INSERT ON runtime_execution_runs BEGIN SELECT {WORK_IDENTITY_FUNCTION}(NEW.agent,NULL); END;
+         CREATE TRIGGER IF NOT EXISTS work_attempt_identity_delete AFTER DELETE ON runtime_execution_runs BEGIN SELECT {WORK_IDENTITY_FUNCTION}(OLD.agent,NULL); END;
+         CREATE TRIGGER IF NOT EXISTS work_attempt_identity_update AFTER UPDATE ON runtime_execution_runs
+         WHEN OLD.agent IS NOT NEW.agent OR OLD.account IS NOT NEW.account OR OLD.epoch IS NOT NEW.epoch OR OLD.thread IS NOT NEW.thread OR OLD.turn IS NOT NEW.turn OR OLD.created IS NOT NEW.created
+           OR json_extract(OLD.record,'$.latestAttemptId') IS NOT json_extract(NEW.record,'$.latestAttemptId')
+           OR json_extract(OLD.record,'$.status') IS NOT json_extract(NEW.record,'$.status')
+         BEGIN SELECT {WORK_IDENTITY_FUNCTION}(OLD.agent,NULL); SELECT {WORK_IDENTITY_FUNCTION}(NEW.agent,NULL); END;"
+    ))?;
+    Ok(())
 }
 
 /// Ids of the changed rows that the Studio error list reads. The list owner
@@ -164,6 +288,9 @@ enum Event {
     Published(Source, String),
     /// A partial projection write needs a full publication.
     Stale(Source, String),
+    WorkHistory(String, WorkHistoryKind, usize),
+    WorkRefusalOwner(String),
+    WorkRefusalTask(String),
 }
 
 thread_local! {
@@ -214,6 +341,9 @@ pub(crate) fn mark_published(collection: &str, id: &str) {
 
 /// Journal that `collection/id` needs a full publication before commit.
 pub fn mark_stale(collection: &str, id: &str) {
+    if collection == "work" {
+        push(Event::WorkRefusalTask(id.to_owned()));
+    }
     if let Some(source) = Source::of_collection(collection) {
         push(Event::Stale(source, id.to_owned()));
     }
@@ -248,9 +378,7 @@ pub(crate) fn pending(
         if *source != Source::Work {
             continue;
         }
-        if let Some(id) = id {
-            pending.work.insert(id.clone());
-        } else {
+        if id.is_none() {
             let mut statement = transaction.prepare(
                 "SELECT DISTINCT id FROM sync_entities WHERE collection IN ('work','workDetail') AND deleted=0 AND NOT EXISTS(SELECT 1 FROM runtime_work WHERE runtime_work.id=sync_entities.id)",
             )?;
@@ -349,6 +477,7 @@ pub(crate) fn pending(
     }
     let mut changed: BTreeMap<(Source, String), usize> = BTreeMap::new();
     let mut published: HashMap<(Source, String), usize> = HashMap::new();
+    let mut work_changes: BTreeMap<String, WorkSourceChanges> = BTreeMap::new();
     for (index, event) in events.into_iter().enumerate() {
         match event {
             Event::Row(source, row_id) => {
@@ -360,7 +489,25 @@ pub(crate) fn pending(
                 changed.insert((source, id), index);
             }
             Event::Published(source, id) => {
+                if source == Source::Work {
+                    work_changes.remove(&id);
+                }
                 published.insert((source, id), index);
+            }
+            Event::WorkHistory(id, kind, entry) => {
+                work_changes
+                    .entry(id)
+                    .or_default()
+                    .histories
+                    .entry(kind)
+                    .or_default()
+                    .insert(entry);
+            }
+            Event::WorkRefusalOwner(id) => {
+                pending.work_refusal_owners.insert(id);
+            }
+            Event::WorkRefusalTask(id) => {
+                work_changes.entry(id).or_default().refusal = true;
             }
         }
     }
@@ -383,5 +530,9 @@ pub(crate) fn pending(
             Source::QueueAsset | Source::Terminal | Source::Monitor | Source::Receipt => false,
         };
     }
+    pending.work_changes = work_changes
+        .into_iter()
+        .filter(|(id, _)| pending.work.contains(id))
+        .collect();
     Ok(pending)
 }

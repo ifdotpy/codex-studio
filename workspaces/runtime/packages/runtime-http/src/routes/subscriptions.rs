@@ -287,6 +287,7 @@ resource_handlers! {
     VaultReadinessResourceHandler => VaultReadinessResource, passive_initial;
     VoiceResourceHandler => VoiceResource, passive_initial;
     WorkspaceResourceHandler => WorkspaceResource, passive_initial;
+    WorkResourceHandler => WorkResource, entity_initial;
 }
 
 pub(super) fn handler(

@@ -3,6 +3,65 @@ import { createEntityDataObserver } from "./entityData";
 import type { createSyncClient } from "../client";
 vi.mock("../client", () => ({ syncDatabase: vi.fn() }));
 
+it("selects one visible agent detail before decoding and releases its observer", async () => {
+  let emit!: (rows: { id: string; toJSON: () => unknown }[]) => void;
+  const unsubscribe = vi.fn();
+  const find = vi.fn((query?: { selector?: { id?: string } }) => ({
+    $: {
+      subscribe: ({
+        next,
+      }: {
+        next: (rows: { toJSON: () => unknown }[]) => void;
+      }) => {
+        emit = (rows) =>
+          next(
+            query?.selector?.id
+              ? rows.filter((row) => row.id === query.selector!.id)
+              : rows,
+          );
+        return { unsubscribe };
+      },
+    },
+  }));
+  const observe = createEntityDataObserver((async () => ({
+    db: { projections: { find } },
+  })) as unknown as ReturnType<typeof createSyncClient>["syncDatabase"]);
+  const accept = vi.fn();
+  const stop = observe(
+    { kind: "agentDetail", agentId: "visible" },
+    accept,
+    vi.fn(),
+  );
+  await vi.waitFor(() => expect(emit).toBeTypeOf("function"));
+  const visible = {
+    id: "entity:agentDetail:visible",
+    toJSON: vi.fn(() => ({
+      id: "entity:agentDetail:visible",
+      seq: 1,
+      entity: {
+        collection: "agentDetail",
+        id: "visible",
+        value: { id: "visible", overview: { task: "Current work" } },
+      },
+    })),
+  };
+  const unrelated = {
+    id: "entity:workResult:other:0",
+    toJSON: vi.fn(() => ({ id: "entity:workResult:other:0" })),
+  };
+  emit([visible, unrelated]);
+  expect(find).toHaveBeenCalledExactlyOnceWith({
+    selector: { id: "entity:agentDetail:visible" },
+  });
+  expect(visible.toJSON).toHaveBeenCalledTimes(1);
+  expect(unrelated.toJSON).not.toHaveBeenCalled();
+  expect(accept).toHaveBeenCalledTimes(1);
+  emit([visible, unrelated]);
+  expect(accept).toHaveBeenCalledTimes(1);
+  stop();
+  expect(unsubscribe).toHaveBeenCalledOnce();
+});
+
 it("ignores offscreen workspace changes and preserves unchanged typed row identities", async () => {
   let emit!: (rows: { toJSON: () => unknown }[]) => void;
   const observe = createEntityDataObserver((async () => ({

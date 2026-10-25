@@ -281,6 +281,7 @@ const FEATURE_SCHEMA: &str = r#"
 
 pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
     transaction.execute_batch(FEATURE_SCHEMA)?;
+    crate::entity_publication::prepare_work_change_journal(transaction)?;
     transaction.execute_batch("CREATE INDEX IF NOT EXISTS runtime_receipt_transcript_item ON runtime_event_meta(json_extract(record,'$.transcriptItemId'))")?;
     // A deleted row is no longer readable by the writer journal. Its source
     // trigger owns the corresponding summary tombstone in the same transaction.

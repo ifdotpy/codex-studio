@@ -135,7 +135,12 @@ and the root agent's detail for `taskDefaultGate`. Its scoped `workDetail` metad
 and `workResult`, `workDecision`, and `workRelease` history records reconstruct the
 canonical OpenAPI `WorkItem`. The global `work` summary excludes histories.
 Unchanged history records keep their durable sequences, and unrelated cached
-updates do not notify the Tasks consumer. Task actions retain their existing
+updates do not notify the Tasks consumer. The source transaction compares its
+old and new history fields and publishes only changed indices; metadata writes
+do not enumerate or serialize history entries. Existing databases seed these
+projections once when the publisher starts, before accepting subscriptions.
+Visible single-agent detail observers select that entity before decoding rows.
+Task actions retain their existing
 request identities and receive their resulting view through the stream.
 
 Retained cleanup folders have their own `retainedWorktree` entities, including

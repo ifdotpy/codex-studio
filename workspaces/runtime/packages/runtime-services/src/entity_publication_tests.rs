@@ -11,6 +11,248 @@ use studio_runtime_store::{AgentRecord, AgentRepository, StoreError};
 const CHAT: &str = "published-chat";
 
 #[tokio::test]
+async fn work_metadata_skips_history_and_explicit_publication_is_not_repeated() {
+    use crate::sync_policy::{self, work_publication_probe};
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    let id = "metadata-history-cost";
+    let result = |id| json!({"id":id,"agent":CHAT,"text":"Evidence","checks":"Checked","revision":"abc","files":[],"created":1});
+    let work = json!({"id":id,"rootId":CHAT,"title":"Inspect","status":"ready","owner":null,"dependencies":[],"created":1,"updated":1,"version":1,"results":[result("first"),result("second")],"decisions":[]});
+    write(
+        &store,
+        "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",
+        vec![id.into(), work.to_string()],
+    )
+    .await;
+    work_publication_probe::take(id);
+    for statement in [
+        "UPDATE runtime_work SET record=json_set(record,'$.title','New title') WHERE id=?1",
+        "UPDATE runtime_work SET record=json_set(record,'$.owner','published-chat','$.status','running') WHERE id=?1",
+        "UPDATE runtime_work SET record=json_set(record,'$.gate',json('{\"command\":\"check\",\"timeout_ms\":1234}'),'$.version',2) WHERE id=?1",
+    ] {
+        write(&store, statement, vec![id.into()]).await;
+        let counts = work_publication_probe::take(id);
+        assert_eq!(
+            counts.history_entries, 0,
+            "metadata must not visit serialized history: {statement}"
+        );
+        assert_eq!(
+            counts.history_bytes, 0,
+            "metadata must not hash history payloads"
+        );
+    }
+    store
+        .transaction(move |_| {
+            studio_runtime_store::entity_publication::mark_stale("work", id);
+            Ok(())
+        })
+        .await
+        .expect("refusal-only publication");
+    assert_eq!(work_publication_probe::take(id).history_entries, 0);
+    write(&store, "UPDATE runtime_agents SET record=json_set(record,'$.name','Renamed owner','$.status','running') WHERE id=?1", vec![CHAT.into()]).await;
+    let owner_update = work_publication_probe::take(id);
+    assert_eq!(
+        owner_update.metadata, 0,
+        "unrelated owner updates must not reread owned task metadata"
+    );
+    assert_eq!(owner_update.history_entries, 0);
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "UPDATE runtime_work SET record=json_set(record,'$.title','Explicit') WHERE id=?1",
+                [id],
+            )?;
+            sync_policy::publish_entity_changes(
+                tx,
+                &sync_policy::EntityChanges {
+                    work: [id.to_owned()].into(),
+                    ..Default::default()
+                },
+                None,
+                &|_, _, _, _| true,
+            )
+        })
+        .await
+        .expect("explicit source publication");
+    assert_eq!(
+        work_publication_probe::take(id).metadata,
+        1,
+        "last publication suppresses the commit publisher"
+    );
+}
+
+#[tokio::test]
+async fn work_source_deltas_preserve_history_edits_reorder_root_move_and_rollback() {
+    use crate::sync_policy::work_publication_probe;
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    let id = "history-delta-cost";
+    let result = |id| json!({"id":id,"agent":CHAT,"text":"Evidence","checks":"Checked","revision":"abc","files":[],"created":1});
+    let mut first = result("first");
+    let second = result("second");
+    let third = result("third");
+    let work = json!({"id":id,"rootId":CHAT,"title":"Inspect","status":"ready","owner":null,"dependencies":[],"created":1,"updated":1,"version":1,"results":[first,second],"decisions":[],"releases":[true]});
+    write(
+        &store,
+        "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",
+        vec![id.into(), work.to_string()],
+    )
+    .await;
+    work_publication_probe::take(id);
+    write(
+        &store,
+        "UPDATE runtime_work SET record=json_insert(record,'$.results[#]',json(?2)) WHERE id=?1",
+        vec![id.into(), third.to_string()],
+    )
+    .await;
+    assert_eq!(
+        work_publication_probe::take(id).history_entries,
+        1,
+        "append publishes only the new result"
+    );
+    first["gate"] = json!({"status":"failed","config":{"command":"check","timeout_ms":1234},"output":"Changed gate output"});
+    write(
+        &store,
+        "UPDATE runtime_work SET record=json_set(record,'$.results[0].gate',json(?2)) WHERE id=?1",
+        vec![id.into(), first["gate"].to_string()],
+    )
+    .await;
+    assert_eq!(work_publication_probe::take(id).history_entries, 1);
+    let edited = client_entity(&store, "workResult", &format!("{id}:0"))
+        .expect("edited result")
+        .1;
+    assert_eq!(edited["value"]["id"], "first");
+    assert_eq!(edited["value"]["gate"]["output"], "Changed gate output");
+    write(
+        &store,
+        "UPDATE runtime_work SET record=json_set(record,'$.releases[0]',1) WHERE id=?1",
+        vec![id.into()],
+    )
+    .await;
+    assert_eq!(
+        work_publication_probe::take(id).history_entries,
+        1,
+        "JSON boolean and number values are distinct"
+    );
+    assert_eq!(
+        client_entity(&store, "workRelease", &format!("{id}:0"))
+            .expect("typed release")
+            .1["value"],
+        json!(1)
+    );
+    write(
+        &store,
+        "UPDATE runtime_work SET record=json_set(record,'$.rootId','moved-root') WHERE id=?1",
+        vec![id.into()],
+    )
+    .await;
+    assert_eq!(work_publication_probe::take(id).history_entries, 4);
+    assert_eq!(
+        client_entity(&store, "workResult", &format!("{id}:0"))
+            .expect("moved result")
+            .1["rootId"],
+        "moved-root"
+    );
+    write(
+        &store,
+        "UPDATE runtime_work SET record=json_set(record,'$.results',json(?2)) WHERE id=?1",
+        vec![id.into(), json!([second, first, third]).to_string()],
+    )
+    .await;
+    assert_eq!(
+        work_publication_probe::take(id).history_entries,
+        2,
+        "same-length reorder remains observable"
+    );
+    assert_eq!(
+        client_entity(&store, "workResult", &format!("{id}:0"))
+            .expect("reordered result")
+            .1["value"]["id"],
+        "second"
+    );
+    write(
+        &store,
+        "UPDATE runtime_work SET record=json_set(record,'$.results',json(?2)) WHERE id=?1",
+        vec![id.into(), json!([second]).to_string()],
+    )
+    .await;
+    for index in [1, 2] {
+        assert!(
+            client_entity(&store, "workResult", &format!("{id}:{index}"))
+                .expect("removed result")
+                .0
+        );
+    }
+    work_publication_probe::take(id);
+    let rollback: Result<(), StoreError> = store.transaction(move |tx| { tx.execute("UPDATE runtime_work SET record=json_set(record,'$.results[0].text','Rolled back') WHERE id=?1", [id])?; Err(StoreError::RecordContract("test rollback")) }).await;
+    assert!(rollback.is_err());
+    assert_eq!(
+        client_entity(&store, "workResult", &format!("{id}:0"))
+            .expect("surviving result")
+            .1["value"]["text"],
+        "Evidence"
+    );
+    write(
+        &store,
+        "UPDATE runtime_work SET record=json_set(record,'$.title','After rollback') WHERE id=?1",
+        vec![id.into()],
+    )
+    .await;
+    assert_eq!(
+        work_publication_probe::take(id).history_entries,
+        0,
+        "rolled-back journal entries cannot leak into a later commit"
+    );
+}
+
+#[tokio::test]
+async fn work_details_upgrade_seeds_before_first_stream_without_a_pull() {
+    use crate::sync_policy::work_publication_probe;
+    let directory = tempfile::tempdir().expect("isolated state");
+    let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+        .await
+        .expect("old store");
+    let id = "upgrade-work";
+    store.transaction(move |tx| {
+        AgentRepository::put(tx,&AgentRecord::from_value(chat(json!({"taskDefaultGate":{"command":"upgrade-check","timeout_ms":1234}})))?)?;
+        tx.execute("INSERT INTO runtime_work(id,record) VALUES(?1,?2)", rusqlite::params![id,json!({"id":id,"rootId":CHAT,"title":"Old assignment","status":"review","created":1,"updated":1,"version":1,"results":[{"id":"old-result","agent":CHAT,"text":"Old evidence","checks":"Checked","revision":"abc","files":[],"created":1}]}).to_string()])?;
+        tx.execute("DELETE FROM sync_entity_meta WHERE key=?1", [studio_runtime_store::WORK_DETAILS_SEED_MARKER])?;
+        Ok(())
+    }).await.expect("pre-upgrade sources without a publisher");
+    assert!(client_entity(&store, "workDetail", id).is_none());
+    super::install(&store)
+        .await
+        .expect("production startup publication");
+    assert_eq!(
+        client_entity(&store, "workDetail", id)
+            .expect("seeded before any pull")
+            .1["title"],
+        "Old assignment"
+    );
+    assert_eq!(
+        client_entity(&store, "workResult", &format!("{id}:0"))
+            .expect("seeded evidence")
+            .1["value"]["text"],
+        "Old evidence"
+    );
+    assert_eq!(
+        client_entity(&store, "agentDetail", CHAT)
+            .expect("root default")
+            .1["taskDefaultGate"]["command"],
+        "upgrade-check"
+    );
+    assert_eq!(work_publication_probe::take(id).history_entries, 1);
+    super::install(&store)
+        .await
+        .expect("idempotent startup readiness");
+    assert_eq!(
+        work_publication_probe::take(id).history_entries,
+        0,
+        "the durable marker skips later seed reads"
+    );
+}
+
+#[tokio::test]
 async fn work_detail_publishes_full_review_state_at_commit_and_retires_on_delete() {
     let (_dir, store) = store().await;
     seed_chat(

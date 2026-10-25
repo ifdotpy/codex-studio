@@ -5,6 +5,7 @@ use axum::{
     extract::ConnectInfo,
     http::Request,
 };
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
@@ -190,4 +191,68 @@ fn projected(store: &RuntimeStore, collection: &str, id: &str) -> Value {
             Ok(serde_json::from_str::<Value>(&raw)?["value"].clone())
         })
         .unwrap()
+}
+
+#[tokio::test]
+async fn legacy_work_is_available_in_the_first_sse_baseline_without_an_entity_pull() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    store.transaction(|tx| {
+        AgentRepository::put(tx,&AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,"status":"completed","isLead":true,"taskDefaultGate":{"command":"upgrade-check","timeout_ms":1234}}))?)?;
+        tx.execute("INSERT INTO runtime_work(id,record) VALUES('old-work',?1)",[json!({"id":"old-work","rootId":"lead","title":"Legacy assignment","status":"review","created":1,"updated":1,"version":1,"results":[{"id":"old-result","agent":"lead","text":"Legacy evidence","checks":"Checked","revision":"abc","files":[],"created":1}]}).to_string()])?;
+        tx.execute("DELETE FROM sync_entity_meta WHERE key=?1",[studio_runtime_store::WORK_DETAILS_SEED_MARKER])?;
+        Ok(())
+    }).await.unwrap();
+    studio_runtime_services::entity_publication::install(&store)
+        .await
+        .unwrap();
+    let workspace = store
+        .test_read_transaction(|tx| studio_runtime_store::SyncDocumentsRepository::workspace_id(tx))
+        .unwrap();
+    let app = router(HttpState::new(
+        "fixture-token".into(),
+        workspace,
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store),
+        None,
+    ))
+    .unwrap();
+    let resources =
+        json!([{"kind":"work","agentId":"lead"},{"kind":"agentDetail","agentId":"lead"}])
+            .to_string();
+    let query = form_urlencoded::Serializer::new(String::from("protocol=4&"))
+        .append_pair("resources", &resources)
+        .finish();
+    let request = Request::builder()
+        .uri(format!("/api/sync/stream?{query}"))
+        .header("host", "127.0.0.1:49171")
+        .header("x-canvas-token", "fixture-token")
+        .header(
+            studio_runtime_http::API_SCHEMA_HASH_HEADER,
+            studio_runtime_http::api_schema_hash(),
+        )
+        .extension(ConnectInfo(
+            "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 200, "first work subscription is handled");
+    let mut stream = response.into_body().into_data_stream();
+    let mut received = String::new();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(chunk) = stream.next().await {
+            received.push_str(std::str::from_utf8(&chunk.unwrap()).unwrap());
+            if received.contains("Legacy evidence") && received.contains("upgrade-check") {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("first SSE carries the upgraded work views");
+    assert!(received.contains("workDetail"), "{received}");
+    assert!(received.contains("workResult"), "{received}");
+    assert!(received.contains("Legacy assignment"), "{received}");
 }

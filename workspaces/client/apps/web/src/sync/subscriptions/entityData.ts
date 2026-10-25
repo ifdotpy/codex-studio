@@ -19,6 +19,28 @@ export function createEntityDataObserver(
   ) => {
     const scope = SUBSCRIPTION_ENTITY_SCOPES[ref.kind as ScopeKind];
     if (!scope) return () => {};
+    const reference = ref as unknown as Record<string, unknown>;
+    const selectedAgent = scope.agentField
+      ? reference[scope.agentField]
+      : undefined;
+    const needsTeam = Boolean(selectedAgent && ref.kind !== "work");
+    const selectedId = scope.idField ? reference[scope.idField] : undefined;
+    const collections = needsTeam
+      ? [...scope.collections, "agentSummary"]
+      : scope.collections;
+    const query =
+      typeof selectedId === "string" && scope.collections.length === 1
+        ? { selector: { id: `entity:${scope.collections[0]}:${selectedId}` } }
+        : {
+            selector: {
+              $or: collections.map((collection) => ({
+                id: {
+                  $gte: `entity:${collection}:`,
+                  $lt: `entity:${collection};`,
+                },
+              })),
+            },
+          };
     let stopped = false;
     let stop = () => {};
     let retained = new Map<
@@ -30,27 +52,23 @@ export function createEntityDataObserver(
     void database()
       .then(({ db }) => {
         if (stopped) return;
-        const subscription = db.projections.find().$.subscribe({
+        const subscription = db.projections.find(query).$.subscribe({
           next: (rows) => {
             const nextRetained = new Map<
               string,
               { seq: number; entity: SyncEntityPayload }
             >();
-            const reference = ref as unknown as Record<string, unknown>;
-            const selectedAgent = scope.agentField
-              ? reference[scope.agentField]
-              : undefined;
+            const values = rows.map((row) => row.toJSON());
             const selectedAgents = new Set([selectedAgent]);
-            for (const row of rows) {
-              const entity = row.toJSON().entity;
+            for (const value of needsTeam ? values : []) {
+              const entity = value.entity;
               if (
                 entity?.collection === "agentSummary" &&
                 entity.value.rootId === selectedAgent
               )
                 selectedAgents.add(entity.id);
             }
-            const entities = rows.flatMap((row): SyncEntityPayload[] => {
-              const value = row.toJSON();
+            const entities = values.flatMap((value): SyncEntityPayload[] => {
               const entity = value.entity;
               if (
                 value._deleted ||
