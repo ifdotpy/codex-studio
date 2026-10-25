@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 from pathlib import Path
 import pwd
@@ -95,12 +96,29 @@ class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
         whoami = await self.call(self.agents, "layr.exec", {"agentId": worker_id, "argv": ["id", "-un"]})
         self.assertEqual(base64.b64decode(whoami["stdout"]).decode().strip(), worker["owner"])
 
+        previous_uuid = json.loads(await self.agents.layr(worker, "status", "--json"))["head"]
+        previous_display = await self.agents.head(worker)
+
         # The worker changes its own line and saves its turn.
         await self.agents.command(worker["cwd"], ["sh", "-c", "echo four >> app.txt"], user=worker)
         await self.agents.layr(worker, "save", "-qam", "worker change")
         saved = await self.call(self.agents, "line.save", {"agentId": worker_id, "turnId": "turn-1"})
         self.assertTrue(saved["stateId"])
         head = (await self.call(self.agents, "line.status", {"agentId": worker_id}))["stateId"]
+        status_id = json.loads(await self.agents.layr(worker, "status", "--json"))["head"]
+        rows = json.loads(await self.agents.layr(lead, "line", "list", "--json"))
+        list_id = next(row["head"] for row in rows if row["name"] == worker_id)
+        for state in (status_id, list_id, head):
+            evidence = await self.call(self.agents, "line.evidence", {"agentId": worker_id, "stateId": state})
+            self.assertEqual(evidence["stateId"], state)
+
+        from common import GuestError
+        for state in (previous_uuid, previous_display):
+            with self.assertRaises(GuestError):
+                await self.call(self.agents, "line.evidence", {"agentId": worker_id, "stateId": state})
+            with self.assertRaises(GuestError):
+                await self.call(self.agents, "line.merge", {"agentId": lead_id, "sourceAgentId": worker_id,
+                    "expectedStateId": state})
 
         # The worker cannot write main, nor change roles.
         with self.assertRaises(Exception):
@@ -111,8 +129,8 @@ class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
 
         # The lead merges exactly the reviewed state, and may also commit in main.
         merged = await self.call(self.agents, "line.merge", {"agentId": lead_id, "sourceAgentId": worker_id,
-                                                             "expectedStateId": head})
-        self.assertEqual(merged["reviewedStateId"], head)
+                                                             "expectedStateId": status_id})
+        self.assertEqual(merged["reviewedStateId"], status_id)
         self.assertEqual((Path(lead["path"]) / "app.txt").read_text(), "one\ntwo\nthree\nfour\n")
         await self.agents.command(lead["path"], ["sh", "-c", "echo lead > lead.txt"], user=lead)
         await self.agents.layr(lead, "add", "lead.txt")
