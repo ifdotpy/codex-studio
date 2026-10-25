@@ -230,8 +230,13 @@ build without the 10 s alert grace.
 
 For usage accounting acceptance, announce and run `just smoke-installed --usage`.
 It uses both providers' cheapest offered models, with three turns each: short,
-about 300 words with a harmless `pwd` tool call, then short. Claude also receives a
-steer during the second turn. Usage waits follow SSE invalidations. The evidence
+about 300 words with one read of a script-created `notes.txt`, then short.
+The chats are first created idle with YOLO disabled; the script verifies their
+returned settings before sending a model message. Codex uses workspace-write
+restricted to the disposable run folder with approvals enabled; Claude uses
+default permission mode. Read-only Codex leads require a server API change and
+are outside this verifier. Claude also receives a steer during the second turn.
+Older evidence retains its original harmless `pwd` step. Usage waits follow SSE invalidations. The evidence
 contains final native Claude journal usage per message id, Codex rollout response
 usage, recorded response rows, budget tokens and accounting, the `sessionCost`
 entities sent to the renderer, independent base-rate price arithmetic from the
@@ -246,7 +251,10 @@ the exact Claude steer receipt and its materialized current-turn input. Interrup
 cancel model waits and prohibit further model submissions; cleanup continues under
 the same signal handlers. SSE connection establishment has a deadline. Server and
 bridge provenance captured before model submission stays immutable; recovery-time
-observations are recorded separately. Evidence checkpoints use an atomic rename.
+observations are recorded separately. Direct-child ancestry or the backend's
+authoritative supervisor account handle identifies a bridge. Recovery retains
+saved serving provenance when a current bridge is unavailable. Evidence
+checkpoints use an atomic rename, and recovery resumes completed snapshots.
 
 Evidence is written with private permissions below
 `~/.cache/codex-studio/live-usage/`. The run archives its chats and removes only its

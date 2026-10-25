@@ -394,6 +394,7 @@ test("an interrupt between turns prevents later paid submissions and cleanup han
     app: os.tmpdir(),
     model: {},
   });
+  smoke.root = path.join(os.tmpdir(), "smoke-cancellation-fixture");
   const posts = [];
   smoke.backend.post = async (...args) => {
     posts.push(args);
@@ -711,4 +712,262 @@ test("collector waits for a matching final-turn cost publication through SSE", a
     controller?.close();
     globalThis.fetch = original;
   }
+});
+
+test("supervisor account identity admits a retained bridge across backend replacement", async () => {
+  const { bridgeProcessMatches } = await import("../usage.mjs");
+  const bridge = "/release/workspaces/providers/apps/claude-bridge/bridge.mjs";
+  const processes = [
+    {
+      pid: 40,
+      ppid: 5,
+      command: `/usr/bin/node ${bridge} /state/account-servers/c`,
+    },
+  ];
+  const supervisor = {
+    enabled: true,
+    accountKey: "c",
+    stateDir: "/state",
+    health: {
+      stateDir: "/state",
+      handles: [
+        {
+          id: "account:c",
+          pid: 40,
+          signature: "launch",
+          startTime: "identity",
+          stdoutReaderAlive: true,
+        },
+      ],
+    },
+  };
+  assert.equal(
+    bridgeProcessMatches(
+      processes,
+      [bridge],
+      "/state/account-servers/c",
+      10,
+      supervisor,
+    ).length,
+    1,
+  );
+  assert.equal(
+    bridgeProcessMatches(
+      processes,
+      [bridge],
+      "/state/account-servers/c",
+      11,
+      supervisor,
+    ).length,
+    1,
+  );
+  assert.equal(
+    bridgeProcessMatches(processes, [bridge], "/state/account-servers/c", 11, {
+      ...supervisor,
+      accountKey: "other",
+    }).length,
+    0,
+  );
+});
+
+test("recovery uses saved serving provenance when no live bridge remains", async () => {
+  const { Smoke } = await import("../smoke.mjs");
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-recover-test-"));
+  const file = path.join(folder, "run.json");
+  const server = { sha256: "build", stateDir: "/state" };
+  const savedBridge = [
+    { pid: 40, bridge: "/saved/bridge.mjs", sha256: "bridge-build" },
+  ];
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      format: "studio-live-usage-v1",
+      runId: "abcdef12",
+      server,
+      chatIds: ["a"],
+      runFolder: "/owned/run",
+      checks: [],
+      providers: [
+        { agentId: "a", provider: "claude", bridgeProcesses: savedBridge },
+      ],
+    }),
+  );
+  const smoke = new Smoke({
+    url: "http://fixture",
+    app: os.tmpdir(),
+    model: {},
+  });
+  smoke.backend.get = async (route) =>
+    route === "/api/desktop"
+      ? { backendBuild: "build", stateDir: "/state", pid: 10 }
+      : { accounts: [] };
+  smoke.ownEntities = async () => ({
+    agent: {
+      name: "Studio smoke abcdef12 claude",
+      id: "a",
+      provider: "claude",
+      accountKey: "c",
+      model: "haiku",
+    },
+  });
+  smoke.bridgeObservation = async () => {
+    throw new Error("No live bridge");
+  };
+  let recovered;
+  smoke.collectUsage = async (_chat, _provider, scenario) => {
+    recovered = await smoke.currentBridgeProvenance("c", scenario.savedBridge);
+  };
+  smoke.serverObservation = () => ({ ...server, pid: 10 });
+  smoke.saveUsage = () => {};
+  smoke.printUsage = () => {};
+  try {
+    await smoke.recover(file);
+    assert.deepEqual(recovered.serving, savedBridge);
+    assert.equal(recovered.current.available, false);
+    assert.deepEqual(smoke.usageEvidence.server, server);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("cancellation during Claude steering prevents steer and final message submissions", async () => {
+  const { Smoke } = await import("../smoke.mjs");
+  const smoke = new Smoke({
+    url: "http://fixture",
+    app: os.tmpdir(),
+    model: {},
+  });
+  smoke.root = path.join(os.tmpdir(), "smoke-steer-fixture");
+  const posts = [];
+  smoke.backend.post = async (...args) => {
+    posts.push(args);
+  };
+  smoke.transcript = async () => [{ role: "assistant", turnId: "initial" }];
+  smoke.live = {
+    entities: new Map([["agentSummary:a", { turnId: "long" }]]),
+    changed: async () => {},
+  };
+  smoke.chatStatus = async () => {
+    smoke.cancel.abort(new Error("steer interrupted"));
+    return { inFlight: true };
+  };
+  smoke.saveUsage = () => {};
+  await assert.rejects(
+    smoke.usageScenario({ id: "a" }, "claude"),
+    /steer interrupted/,
+  );
+  assert.equal(posts.length, 1);
+});
+
+test("usage chat stays idle until returned permissions have been verified", async () => {
+  const { Smoke } = await import("../smoke.mjs");
+  const original = globalThis.fetch;
+  try {
+    for (const unsafe of [true, false]) {
+      const smoke = new Smoke({
+        url: "http://fixture",
+        app: os.tmpdir(),
+        model: {},
+        usage: true,
+      });
+      smoke.root = path.join(os.tmpdir(), "owned-smoke-folder");
+      smoke.accountsByProvider = new Map([["codex", "default"]]);
+      smoke.chooseModel = async () => ({ model: "small", efforts: [] });
+      smoke.saveUsage = () => {};
+      smoke.answered = async () => [];
+      smoke.backend.get = async () => ({ protocolVersion: 4 });
+      let controller;
+      globalThis.fetch = async (_url, { signal }) =>
+        new Response(
+          new ReadableStream({
+            start(stream) {
+              controller = stream;
+              signal.addEventListener("abort", () => stream.close(), {
+                once: true,
+              });
+            },
+          }),
+        );
+      const posts = [];
+      smoke.backend.post = async (route, body) => {
+        posts.push({ route, body });
+        if (route === "/api/leads") {
+          const record = {
+            id: body.id,
+            role: "orchestrator",
+            yoloMode: unsafe,
+            cwd: smoke.root,
+            provider: "codex",
+          };
+          controller.enqueue(
+            new TextEncoder().encode(
+              `event: resources\ndata: ${JSON.stringify({ resourceVersions: [{ entityChanges: { documents: [{ collection: "agentDetail", id: body.id, value: record }] } }] })}\n\n`,
+            ),
+          );
+          return record;
+        }
+        if (route === "/api/rename") return {};
+        assert.ok(smoke.usageEvidence.permissions[body.room]);
+        return {};
+      };
+      try {
+        if (unsafe)
+          await assert.rejects(smoke.turn("codex"), /permission|YOLO/i);
+        else await smoke.turn("codex");
+        assert.equal(posts[0].route, "/api/leads");
+        assert.equal(posts[0].body.yolo_mode, false);
+        assert.equal(
+          posts.filter((post) => post.route === "/api/messages").length,
+          unsafe ? 0 : 1,
+        );
+      } finally {
+        await smoke.live?.close();
+      }
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("permission evidence rejects outside writable roots and accepts the read-only note result", async () => {
+  const { verifiedPermissions, scenarioEvidence, NOTES_FILE, NOTES_MARKER } =
+    await import("../usage.mjs");
+  const root = path.join(os.tmpdir(), "owned-note-fixture");
+  const record = { yoloMode: false, cwd: root, role: "orchestrator" };
+  assert.equal(
+    verifiedPermissions(record, "claude", root).permissionMode,
+    "default",
+  );
+  assert.throws(
+    () =>
+      verifiedPermissions(
+        { ...record, sandboxPolicy: { writableRoots: [root, os.homedir()] } },
+        "codex",
+        root,
+      ),
+    /outside/,
+  );
+  const transcript = [
+    {
+      role: "user",
+      text: `This is turn 2 of a usage check. Read ${NOTES_FILE}.`,
+    },
+    { role: "assistant", text: "Before the read" },
+    {
+      role: "output",
+      toolStatus: "completed",
+      turnId: "long",
+      text: JSON.stringify({
+        tool: "Read",
+        arguments: { file_path: path.join(root, NOTES_FILE) },
+        result: NOTES_MARKER,
+      }),
+    },
+    { role: "assistant", text: "After the read" },
+    { role: "user", text: "Turn 3: reply with exactly FINAL" },
+  ];
+  assert.equal(
+    scenarioEvidence(transcript, "codex", root).assistantResponses,
+    2,
+  );
 });

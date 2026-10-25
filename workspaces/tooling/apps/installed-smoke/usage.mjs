@@ -4,6 +4,9 @@ import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 
+export const NOTES_FILE = "notes.txt";
+export const NOTES_MARKER = "STUDIO_USAGE_READ_ONLY_NOTE";
+
 export const TOKEN_CATEGORIES = [
   "uncachedInput",
   "cacheReadInput",
@@ -301,19 +304,28 @@ export function scenarioEvidence(items, provider, root) {
     .map((item) => ({
       id: item.id,
       turnId: item.turnId,
+      toolStatus: item.toolStatus,
       ...JSON.parse(item.text),
     }));
   if (answers.length < 2)
     throw new Error("Long turn has fewer than two assistant responses");
-  if (
-    tools.length !== 1 ||
-    tools[0].exitCode !== 0 ||
-    !/\bpwd$/.test(tools[0].command ?? "") ||
-    tools[0].cwd !== root ||
-    !tools[0].aggregatedOutput?.includes(root)
-  )
+  const readOnlyNote = items[second].text.includes(NOTES_FILE);
+  const toolText = JSON.stringify(tools[0] ?? {});
+  const validTool =
+    tools.length === 1 &&
+    (readOnlyNote
+      ? toolText.includes(NOTES_FILE) &&
+        toolText.includes(NOTES_MARKER) &&
+        toolText.includes(root) &&
+        tools[0].toolStatus === "completed" &&
+        (tools[0].exitCode == null || tools[0].exitCode === 0)
+      : tools[0].exitCode === 0 &&
+        /\bpwd$/.test(tools[0].command ?? "") &&
+        tools[0].cwd === root &&
+        tools[0].aggregatedOutput?.includes(root));
+  if (!validTool)
     throw new Error(
-      "Long turn did not complete exactly one pwd call in the run folder",
+      `Long turn did not complete exactly one ${readOnlyNote ? "note read" : "pwd call"} in the run folder`,
     );
   const steer = long.find(
     (item) => item.role === "user" && item.text?.includes("usage-check steer"),
@@ -353,7 +365,13 @@ export function publicationReady(displayed, current, analytics, finalTurnId) {
 }
 
 /** Match known argv suffixes instead of splitting paths containing spaces. */
-export function bridgeProcessMatches(processes, bridges, root, serverPid) {
+export function bridgeProcessMatches(
+  processes,
+  bridges,
+  root,
+  serverPid,
+  supervisor,
+) {
   const parents = new Map(processes.map((row) => [row.pid, row.ppid]));
   const owned = (row) => {
     const seen = new Set();
@@ -366,14 +384,34 @@ export function bridgeProcessMatches(processes, bridges, root, serverPid) {
     return false;
   };
   return processes.flatMap((row) => {
-    if (!owned(row)) return [];
+    const handle =
+      supervisor?.enabled && supervisor.health?.stateDir === supervisor.stateDir
+        ? supervisor.health.handles?.find(
+            (handle) =>
+              handle.id === `account:${supervisor.accountKey}` &&
+              handle.pid === row.pid &&
+              handle.signature &&
+              handle.startTime &&
+              handle.stdoutReaderAlive !== false,
+          )
+        : null;
+    if (!owned(row) && !handle) return [];
     for (const bridge of bridges) {
       const suffix = ` ${bridge} ${root}`;
       if (
         row.command.endsWith(suffix) &&
         path.basename(row.command.slice(0, -suffix.length)) === "node"
       )
-        return [{ ...row, bridge, accountRoot: root }];
+        return [
+          {
+            ...row,
+            bridge,
+            accountRoot: root,
+            ownership: handle
+              ? { kind: "supervisor", handle }
+              : { kind: "backend", pid: serverPid },
+          },
+        ];
     }
     return [];
   });
@@ -430,4 +468,41 @@ export function preserveProvenance(evidence, server, recovery = false) {
       server,
     });
   } else evidence.server ??= server;
+}
+
+/** Verify server-returned settings before the idle chat receives its first message. */
+export function verifiedPermissions(record, provider, root) {
+  if (
+    record.yoloMode !== false ||
+    record.cwd !== root ||
+    record.role !== "orchestrator"
+  )
+    throw new Error(
+      "Unsafe usage permissions: expected an idle non-YOLO lead in the run folder",
+    );
+  const sandbox = record.sandboxPolicy?.type ?? record.sandbox;
+  if (
+    record.approvalPolicy === "never" ||
+    sandbox === "dangerFullAccess" ||
+    sandbox === "danger-full-access"
+  )
+    throw new Error("Unsafe usage permissions bypass approvals");
+  const roots = record.sandboxPolicy?.writableRoots ?? [record.cwd];
+  if (roots.length !== 1 || roots[0] !== root)
+    throw new Error("Unsafe usage permissions write outside the run folder");
+  const permissionMode = record.claudeOptions?.permissionMode ?? "default";
+  if (provider === "claude" && permissionMode !== "default")
+    throw new Error("Claude usage permissions must use default mode");
+  return {
+    verifiedAt: new Date().toISOString(),
+    yoloMode: false,
+    cwd: root,
+    role: record.role,
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+    writableRoots: roots,
+    ...(provider === "claude" ? { permissionMode } : {}),
+    policyOwner:
+      "runtime-services/src/thread_prepare.rs and claude-bridge/bridge.mjs permissionMode",
+  };
 }

@@ -33,6 +33,9 @@ import {
   validateSteer,
   atomicWriteJson,
   preserveProvenance,
+  verifiedPermissions,
+  NOTES_FILE,
+  NOTES_MARKER,
 } from "./usage.mjs";
 
 const DEFAULT_APP =
@@ -564,7 +567,10 @@ export class Smoke {
     return this.backend.post(route, body);
   }
 
-  bridgeObservation(accountKey) {
+  async bridgeObservation(accountKey) {
+    const desktop = await this.backend.get("/api/desktop");
+    if (desktop.stateDir !== this.state)
+      throw new CheckFailed("Bridge observation changed state directory");
     const release = fs.realpathSync(this.workspace());
     const releases = [this.workspace(), release];
     if (process.platform === "linux") {
@@ -602,7 +608,13 @@ export class Smoke {
       processes,
       bridges,
       accountRoot,
-      this.desktop.pid,
+      desktop.pid,
+      {
+        enabled: desktop.supervisorMode,
+        health: desktop.supervisor,
+        accountKey,
+        stateDir: this.state,
+      },
     );
     if (!matches.length)
       throw new CheckFailed(
@@ -801,6 +813,9 @@ export class Smoke {
         created: new Date().toISOString(),
       }),
     );
+    fs.writeFileSync(path.join(this.root, NOTES_FILE), NOTES_MARKER + "\n", {
+      mode: 0o600,
+    });
     return this.root;
   }
 
@@ -877,7 +892,7 @@ export class Smoke {
       if (provider === "claude") {
         this.usageEvidence.servingBridges ??= {};
         this.usageEvidence.servingBridges[account] ??=
-          this.bridgeObservation(account);
+          await this.bridgeObservation(account);
         this.saveUsage();
       }
       const protocol = await this.backend.get("/api/sync/protocol");
@@ -886,17 +901,65 @@ export class Smoke {
       });
       await this.live.ready;
     }
-    await this.submitModel("/api/agents", {
-      id,
-      name: `Studio smoke ${this.runId} ${provider}`,
-      prompt: `This is an automated Studio smoke check. Do not use tools. Reply with exactly ${token}.`,
-      cwd: this.root,
-      account_key: account,
-      model,
-      ...(effort ? { effort } : {}),
-      role: "orchestrator",
-      workspaceMode: "worktree",
-    });
+    if (this.usage) {
+      this.checkActive();
+      const created = await this.backend.post("/api/leads", {
+        id,
+        cwd: this.root,
+        account_key: account,
+        model,
+        ...(effort ? { effort } : {}),
+        workspaceMode: "worktree",
+        yolo_mode: false,
+        reuse_empty: false,
+      });
+      this.projectRegistered = true;
+      await this.backend.post("/api/rename", {
+        id,
+        name: `Studio smoke ${this.runId} ${provider}`,
+        request_id: `smoke-name-${this.runId}-${provider}`,
+      });
+      const permission = await until(
+        "idle chat permission record",
+        REQUEST_MS,
+        async () => {
+          this.checkActive();
+          const detail = this.live.entities.get(`agentDetail:${id}`);
+          return {
+            done: Boolean(detail),
+            value: detail
+              ? verifiedPermissions(
+                  { ...created, ...detail },
+                  provider,
+                  this.root,
+                )
+              : null,
+          };
+        },
+        (ms) => this.live.changed(ms),
+      );
+      this.usageEvidence.permissions ??= {};
+      this.usageEvidence.permissions[id] = permission;
+      this.saveUsage();
+      await this.submitModel("/api/messages", {
+        id: randomUUID(),
+        room: id,
+        delivery: "next_turn",
+        text: `This is an automated Studio smoke check. Do not use tools. Reply with exactly ${token}.`,
+      });
+    } else {
+      await this.submitModel("/api/agents", {
+        id,
+        name: `Studio smoke ${this.runId} ${provider}`,
+        prompt: `This is an automated Studio smoke check. Do not use tools. Reply with exactly ${token}.`,
+        cwd: this.root,
+        account_key: account,
+        model,
+        ...(effort ? { effort } : {}),
+        role: "orchestrator",
+        workspaceMode: "worktree",
+      });
+    }
     this.projectRegistered = true;
     await this.answered(id, token, TURN_MS);
     return {
@@ -922,7 +985,7 @@ export class Smoke {
       id: inputId,
       room: id,
       delivery: "next_turn",
-      text: `This is turn 2 of a usage check. Write about 150 words explaining why small deterministic tests are useful. Then use one harmless shell tool call to run pwd in ${this.root}. After that tool result write another 150 words about test cleanup. Do not read files, delegate, or create monitors. End with ${token}.`,
+      text: `This is turn 2 of a usage check. Write about 150 words explaining why small deterministic tests are useful. Then use one read-only file-read tool to read ${path.join(this.root, NOTES_FILE)} (if no file-read tool exists, run cat on that exact file). After that tool result write another 150 words about test cleanup. Do not read files, delegate, or create monitors. End with ${token}.`,
     });
     let steer = null;
     if (provider === "claude") {
@@ -956,7 +1019,7 @@ export class Smoke {
         id: steer.id,
         room: id,
         delivery: "current_turn",
-        text: "Keep going with the same requested 300-word answer and the single pwd tool call; mention reproducibility. This is the usage-check steer, not a new task.",
+        text: "Keep going with the same requested 300-word answer and the single read-only note read; mention reproducibility. This is the usage-check steer, not a new task.",
       });
     }
     const longItems = await this.answered(id, token, TURN_MS);
@@ -1014,12 +1077,18 @@ export class Smoke {
     const previous = this.usageEvidence.providers.find(
       (row) => row.agentId === id,
     );
-    const observedBridges =
-      provider === "claude" ? this.bridgeObservation(chat.account) : [];
-    const bridgeProcesses =
+    const savedBridge =
       this.usageEvidence.servingBridges?.[chat.account] ??
-      previous?.bridgeProcesses ??
-      observedBridges;
+      scenario.savedBridge ??
+      previous?.bridgeProcesses;
+    const provenance =
+      provider === "claude"
+        ? await this.currentBridgeProvenance(chat.account, savedBridge)
+        : {
+            serving: [],
+            current: { available: false, reason: "not a Claude run" },
+          };
+    const bridgeProcesses = provenance.serving;
     const proof = scenarioEvidence(transcript, provider, this.root);
     if (provider === "claude") {
       const item = transcript.find((item) =>
@@ -1084,7 +1153,12 @@ export class Smoke {
       displayedCost: displayedCost ?? null,
       reconciliation,
       bridgeProcesses,
-      bridgeObservationAtCollection: observedBridges,
+      bridgeObservationAtCollection: provenance.current,
+      permissions: this.usageEvidence.permissions?.[id] ??
+        previous?.permissions ?? {
+          verified: false,
+          reason: "OLD run preceded permission verification",
+        },
     };
     this.usageEvidence.providers = this.usageEvidence.providers.filter(
       (previous) => previous.agentId !== id,
@@ -1185,22 +1259,29 @@ export class Smoke {
       throw new CheckFailed(
         "Recovery requires the same backend build and state directory",
       );
-    preserveProvenance(
-      this.usageEvidence,
-      {
-        pid: this.desktop.pid,
-        sha256: this.desktop.backendBuild,
-        stateDir: this.state,
-        binary: fs.realpathSync(installationPaths(this.app).server),
-        release: fs.realpathSync(this.workspace()),
-      },
-      true,
-    );
+    preserveProvenance(this.usageEvidence, this.serverObservation(), true);
     const accounts = await this.backend.get("/api/accounts");
     this.accountRecords = new Map(
       accounts.accounts.map((account) => [account.id, account]),
     );
     for (const id of this.chats) {
+      const completed = this.usageEvidence.providers.find(
+        (row) => row.agentId === id,
+      );
+      if (
+        completed?.publication &&
+        publicationReady(
+          completed.displayedCost,
+          completed.publication.currentCost,
+          completed.analytics,
+          completed.publication.finalTurnId,
+        ) &&
+        (completed.provider !== "claude" ||
+          completed.scenario?.steer?.receipt?.materialized)
+      ) {
+        console.log(`Keeping completed usage snapshot for ${id}`);
+        continue;
+      }
       console.log(`Recovering usage snapshot for ${id}`);
       const entities = await this.ownEntities(id);
       const { agent } = entities;
@@ -1210,13 +1291,52 @@ export class Smoke {
       await this.collectUsage(
         { id, account: agent.accountKey, model: agent.model },
         agent.provider,
-        { entities },
+        {
+          entities,
+          savedBridge: this.usageEvidence.providers.find(
+            (row) => row.agentId === id,
+          )?.bridgeProcesses,
+        },
       );
     }
     this.usageEvidence.recoveredAt = new Date().toISOString();
     this.usageEvidence.checks = evidence.checks;
     this.saveUsage();
-    console.table(usageTable(this.usageEvidence, "OLD"));
+    this.printUsage();
+  }
+
+  serverObservation() {
+    return {
+      pid: this.desktop.pid,
+      stateDir: this.state,
+      binary: fs.realpathSync(installationPaths(this.app).server),
+      sha256: this.desktop.backendBuild,
+      release: fs.realpathSync(this.workspace()),
+    };
+  }
+
+  async currentBridgeProvenance(account, saved) {
+    try {
+      const observed = await this.bridgeObservation(account);
+      return {
+        serving: saved ?? observed,
+        current: { available: true, bridges: observed },
+      };
+    } catch (error) {
+      if (!saved?.length) throw error;
+      return {
+        serving: saved,
+        current: {
+          available: false,
+          reason: error.message,
+          at: new Date().toISOString(),
+        },
+      };
+    }
+  }
+
+  printUsage(label = "OLD") {
+    console.table(usageTable(this.usageEvidence, label));
     console.log(`Usage evidence: ${this.evidencePath}`);
   }
 
@@ -1224,13 +1344,7 @@ export class Smoke {
     const directory = path.join(os.homedir(), ".cache/codex-studio/live-usage");
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.evidencePath = path.join(directory, `${this.runId}.json`);
-    preserveProvenance(this.usageEvidence, {
-      pid: this.desktop.pid,
-      stateDir: this.state,
-      binary: fs.realpathSync(installationPaths(this.app).server),
-      sha256: this.desktop.backendBuild,
-      release: fs.realpathSync(this.workspace()),
-    });
+    preserveProvenance(this.usageEvidence, this.serverObservation());
     if (this.report.rows.length) this.usageEvidence.checks = this.report.rows;
     this.usageEvidence.chatIds = this.chats;
     this.usageEvidence.runFolder = this.root;
