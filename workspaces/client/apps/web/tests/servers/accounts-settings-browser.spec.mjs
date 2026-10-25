@@ -437,7 +437,10 @@ test("accounts settings show per-server state and provider choices", async ({
   await work.getByRole("button", { name: /^Limit details for/ }).click();
   await expect(work.getByRole("button", { name: "✓ Local" })).toBeVisible();
   await expect(
-    work.getByRole("button", { name: /sign in again/ }),
+    work.getByRole("button", {
+      name: "Sign in to Work on Remote",
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(work.getByRole("button", { name: "+ Empty" })).toBeVisible();
   await expect(accounts.getByText("Claude personal")).toBeVisible();
@@ -553,6 +556,7 @@ test("accounts settings show per-server state and provider choices", async ({
     path: resolve(screenshots, "accounts-mobile.png"),
   });
 
+  await settings.getByRole("button", { name: "Back", exact: true }).click();
   await settings.getByRole("tab", { name: "Servers", exact: true }).click();
   const servers = settings.getByRole("region", {
     name: "Servers",
@@ -941,7 +945,9 @@ test("accounts settings show per-server state and provider choices", async ({
     .click();
   await expect(settings).toBeVisible();
   await work.getByRole("button", { name: /^Limit details for/ }).click();
-  await work.getByRole("button", { name: /Remote · sign in again/ }).click();
+  await work
+    .getByRole("button", { name: "Sign in to Work on Remote", exact: true })
+    .click();
   const reconnect = remoteFrame.getByRole("dialog", {
     name: /Sign in to Codex · person@example.test · Remote/,
   });
