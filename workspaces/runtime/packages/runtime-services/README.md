@@ -598,6 +598,19 @@ complete store-boundary matrix. Its mutation manifest is
 shared `tests/turn_lifecycle/mutation_check.py` runner with `--manifest` and
 `--filter 'test(/^monitor_(corpus|recovery)::/)'`.
 
+## Usage analytics
+
+Analytics capture and rollout import consume the shared
+[`usage` contract](../runtime-schema/src/usage.rs). New usage rows retain the
+canonical observation in `studioUsage`; chart fields are presentation projections.
+Final response replays preserve the first token counts and report conflicts in
+analytics coverage. Native rollout responses carry recovered evidence, while
+running counters remain separate observations. Historical budget repair uses
+the parser-owned [persisted-row adapter](../runtime-schema/src/usage/persisted.rs).
+Imported `token_count` notices retain their original counter objects and response
+association metadata so pre-upgrade budget receipts and ambiguity handling replay
+unchanged. Their interpretation and receipt identity belong to the shared parser.
+
 Usage notifications pass through `runtime-schema::usage::parse_token_usage` before
 budget, context-gauge, and move-cache consumers run. Budget response rows retain the
 first total for each agent/response identity. An identical total replay is a no-op;
@@ -610,8 +623,9 @@ budget, because continuity across query restarts is unknown.
 Pre-contract Claude bridges and their journal replay remain readable through the
 usage owner's transitional `parse_legacy_totals` projection. This old-total path
 retains its existing budget treatment for migration compatibility. It preserves unknown
-token categories as unknown; remove this path after those bridges and their replay
-window have retired. Codex live notifications use its generated native schema.
+token categories as unknown. Analytics also persists these sparse notifications
+without inventing category counts or canonical observations; remove this path after
+those bridges and their replay window have retired. Codex live notifications use its generated native schema.
 
 ## Account cost scans
 

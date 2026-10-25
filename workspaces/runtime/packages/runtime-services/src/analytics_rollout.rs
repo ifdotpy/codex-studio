@@ -2,6 +2,7 @@
 //! token counters only; response bodies live only for the bounded input batch.
 use crate::analytics_capture::{CaptureError, first, number};
 use serde_json::{Value, json};
+use studio_runtime_schema::usage::{UsageProvider, parse_token_usage};
 use studio_runtime_store::truthy;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -99,7 +100,16 @@ impl RolloutContext {
                 self.value["pendingUsage"] =
                     json!({"responseId":p["response_id"],"turnId":turn,"usage":usage});
                 self.value["requestUsageAvailable"] = json!(true);
-                actions.push(event("thread/tokenUsage/updated",json!({"threadId":self.value["threadId"],"turnId":turn,"responseId":p["response_id"],"tokenUsage":{"total":tokens(&p["thread_token_usage"])?,"last":usage,"modelContextWindow":self.value["window"]},"turnUsage":tokens(&p["turn_token_usage"])?,"requestUsage":usage,"rawTokenUsageRecord":p,"usageSource":"responseRecord","_analyticsUsageKind":"response"}),at));
+                actions.push(usage_event(
+                    json!({
+                        "threadId":self.value["threadId"], "turnId":turn,
+                        "responseId":p["response_id"], "usageSource":"responseRecord",
+                        "requestUsage":usage, "rawTokenUsageRecord":p,
+                        "tokenUsage":{"modelContextWindow":self.value["window"]}
+                    }),
+                    at,
+                    &self.value["model"],
+                )?);
             }
             "response_item" => {
                 let mut body = p.clone();
@@ -302,6 +312,15 @@ fn event(method: &str, params: Value, at: f64) -> RolloutAction {
         at,
     }
 }
+fn usage_event(mut params: Value, at: f64, model: &Value) -> Result<RolloutAction, CaptureError> {
+    params["model"] = model.clone();
+    let observation = parse_token_usage(UsageProvider::Codex, &params)?;
+    Ok(event(
+        "thread/tokenUsage/updated",
+        json!({"threadId":params["threadId"],"turnId":params["turnId"],"studioUsage":observation}),
+        at,
+    ))
+}
 pub fn timestamp(value: &Value) -> Option<f64> {
     number(value).filter(|v| *v >= 0.).or_else(|| {
         value
@@ -407,8 +426,106 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn typed_usage_rollout_preserves_response_association_for_notices() {
+        let mut context =
+            RolloutContext::from_record(json!({"threadId":"thread","turnId":"turn","model":"m"}))
+                .expect("context");
+        let usage = json!({"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":1,"total_tokens":13});
+        context.actions(&json!({"type":"token_usage_record","payload":{"response_id":"response","usage":usage}}),"response-record",1.0).expect("response");
+        let notice = json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":usage,"last_token_usage":usage}}});
+        for identity in ["notice", "duplicate-notice"] {
+            let actions = context.actions(&notice, identity, 2.0).expect("notice");
+            let super::RolloutAction::Event { params, .. } = &actions[0] else {
+                panic!("notice")
+            };
+            assert_eq!(
+                params["responseId"], "response",
+                "preserve the pre-upgrade response association for budget ambiguity handling"
+            );
+            assert_eq!(params["usageSource"], "tokenCount");
+            assert_eq!(params["requestUsageAvailable"], true);
+        }
+    }
+
+    #[test]
+    fn typed_usage_imported_notice_preserves_native_notice_identity() {
+        let mut context = RolloutContext::from_record(json!({"threadId":"thread","turnId":"turn"}))
+            .expect("context");
+        let native = json!({"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":1,"total_tokens":13});
+        let actions=context.actions(&json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":native,"last_token_usage":native,"model_context_window":100}}}),"record",1.0).expect("import");
+        let super::RolloutAction::Event { params, .. } = &actions[0] else {
+            panic!("notice")
+        };
+        let previous = json!({"_analyticsTimestampSource":"fileModifiedEstimate","threadId":"thread","turnId":"turn","tokenUsage":{"total":super::tokens(&native).expect("total"),"last":super::tokens(&native).expect("last"),"modelContextWindow":100}});
+        assert_eq!(
+            params["tokenUsage"], previous["tokenUsage"],
+            "native counter objects must preserve pre-upgrade notice receipt identity"
+        );
+        let receipt = |params: &serde_json::Value| {
+            let identity = studio_runtime_schema::usage::legacy_notice_identity(
+                "agent",
+                "account",
+                Some("turn"),
+                params,
+            )
+            .expect("native notice identity");
+            studio_runtime_store::sha256_hex(
+                studio_runtime_store::python_json_with_separators(&identity, ",", ":").as_bytes(),
+            )
+        };
+        assert_eq!(
+            receipt(params),
+            receipt(&previous),
+            "shared parser preserves the exact pre-upgrade receipt hash"
+        );
+    }
+
+    #[test]
+    fn typed_usage_rollout_emits_recovered_response_and_scoped_cumulative() {
+        let mut context = RolloutContext::from_record(
+            json!({"threadId":"thread","model":"gpt-5","turnId":"turn"}),
+        )
+        .expect("context");
+        for (record, kind) in [
+            (
+                json!({"type":"token_usage_record","payload":{"response_id":"response","usage":{"input_tokens":10,"cached_input_tokens":3,"output_tokens":2,"reasoning_output_tokens":0,"total_tokens":12}}}),
+                "response",
+            ),
+            (
+                json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":3,"output_tokens":2,"reasoning_output_tokens":0,"total_tokens":12},"last_token_usage":{"input_tokens":10,"cached_input_tokens":3,"output_tokens":2,"reasoning_output_tokens":0,"total_tokens":12}}}}),
+                "cumulative",
+            ),
+        ] {
+            let actions = context
+                .actions(&record, "record", 1.0)
+                .expect("rollout actions");
+            let super::RolloutAction::Event { params, .. } = &actions[0] else {
+                panic!("usage event")
+            };
+            let normalized = serde_json::to_value(
+                studio_runtime_schema::usage::parse_token_usage(
+                    studio_runtime_schema::usage::UsageProvider::Codex,
+                    params,
+                )
+                .expect("shared parser"),
+            )
+            .expect("observation");
+            assert_eq!(normalized["kind"], kind);
+
+            if kind == "response" {
+                assert_eq!(normalized["evidence"], "recovered");
+                assert!(params.get("tokenUsage").is_none());
+                assert_eq!(normalized["tokens"]["uncachedInput"], 7);
+            } else {
+                assert_eq!(normalized["scope"], "codexThread");
+                assert!(params.get("studioUsage").is_none());
+            }
+        }
+    }
+
+    #[test]
     fn context_window_import_accepts_only_schema_owned_number_or_null() {
-        let mut context = RolloutContext::from_record(json!({"threadId":"thread"}))
+        let mut context = RolloutContext::from_record(json!({"threadId":"thread","turnId":"turn"}))
             .expect("fixture context is valid");
         context
             .actions(
@@ -457,8 +574,8 @@ mod tests {
                 &json!({
                     "type":"event_msg",
                     "payload":{"type":"token_count","info":{
-                        "total_token_usage":{"total_tokens":1},
-                        "last_token_usage":{"total_tokens":1},
+                        "total_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":1},
+                        "last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":1},
                         "model_context_window":{"window_id":"fixture-window"}
                     }}
                 }),
