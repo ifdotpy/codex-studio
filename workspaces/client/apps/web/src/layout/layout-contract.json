@@ -391,9 +391,9 @@
       "purpose": "Fallback root font size before a valid browser measurement"
     },
     "edgeRail.minInset": {
-      "value": 44,
+      "value": 64,
       "unit": "px",
-      "purpose": "Minimum side safe inset for the coarse pointer landscape rail"
+      "purpose": "Minimum side safe-area strip for the Duo rail, excluding ordinary phone notch insets"
     },
     "edgeRail.statusReserve": {
       "value": 112,
@@ -694,6 +694,31 @@
       "value": 20,
       "unit": "em",
       "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 20em) {"
+    },
+    "edgeRail.buttonSize": {
+      "value": 48,
+      "unit": "px",
+      "purpose": "Preferred round rail button diameter inside the side safe-area strip"
+    },
+    "layers.edgeRail": {
+      "value": 201,
+      "unit": "layer",
+      "purpose": "Conversation side rail above workspace drawers and below popovers"
+    },
+    "legacy_main_workspace.diffLineNumberWidth": {
+      "value": 48,
+      "unit": "px",
+      "purpose": "Existing workspace diff line-number button width, distinct from rail button diameter"
+    },
+    "legacy_main_appearance.agentModeLimitWidth": {
+      "value": 64,
+      "unit": "px",
+      "purpose": "Existing agent mode limit input width"
+    },
+    "legacy_main_style.tasksDrawerHeaderMin": {
+      "value": 64,
+      "unit": "px",
+      "purpose": "Existing compact tasks drawer header minimum height"
     }
   },
   "queries": {
@@ -1956,6 +1981,33 @@
       "key": "legacy_main_components_conversation_empty_chat_settings.query7269dc35",
       "plannedOwner": "main visual component",
       "purpose": "Retain the main component's exact query contract during responsive integration"
+    },
+    {
+      "path": "src/components/shell/Workspace.css",
+      "kind": "dimension",
+      "signature": "; width: 48px",
+      "count": 1,
+      "key": "legacy_main_workspace.diffLineNumberWidth",
+      "plannedOwner": "main visual component",
+      "purpose": "Keep the existing workspace diff line-number button width during responsive integration"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "{ width: 64px",
+      "count": 2,
+      "key": "legacy_main_appearance.agentModeLimitWidth",
+      "plannedOwner": "main visual component",
+      "purpose": "Existing agent mode limit input width"
+    },
+    {
+      "path": "src/style.css",
+      "kind": "dimension",
+      "signature": "{ min-height: 64px",
+      "count": 1,
+      "key": "legacy_main_style.tasksDrawerHeaderMin",
+      "plannedOwner": "main visual component",
+      "purpose": "Existing compact tasks drawer header minimum height"
     }
   ],
   "witnessViewports": [

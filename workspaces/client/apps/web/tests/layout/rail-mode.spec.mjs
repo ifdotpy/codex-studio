@@ -2,7 +2,13 @@ import { test, expect } from "../playwright.mjs";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.mjs";
 
 test.use({ hasTouch: true });
-for (const check of ["buttons", "header", "title", "background"]) {
+for (const check of [
+  "buttons",
+  "header",
+  "title",
+  "background",
+  "panel-background",
+]) {
   test(`Duo rail mode ${check} preserves the pane and normal headers`, async ({
     page,
     context,
@@ -35,6 +41,14 @@ for (const check of ["buttons", "header", "title", "background"]) {
         );
       }
       await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+        insets: { top: 0, right: 59, bottom: 34, left: 0 },
+      });
+      await page.setViewportSize({ width: 951, height: 669 });
+      await expect(page.locator(".workspace-header")).toBeVisible();
+      await expect(
+        page.getByRole("navigation", { name: "Conversation actions" }),
+      ).toHaveCount(0);
+      await cdp.send("Emulation.setSafeAreaInsetsOverride", {
         insets: { top: 0, right: 84, bottom: 34, left: 0 },
       });
       await page.setViewportSize({ width: 951, height: 669 });
@@ -60,10 +74,13 @@ for (const check of ["buttons", "header", "title", "background"]) {
         const radii = await rail.getByRole("button").evaluateAll((nodes) =>
           nodes.map((node) => ({
             radius: getComputedStyle(node).borderRadius,
+            width: node.getBoundingClientRect().width,
             background: getComputedStyle(node).backgroundColor,
           })),
         );
-        expect(radii.every((x) => parseFloat(x.radius) >= 22)).toBe(true);
+        expect(
+          radii.every((x) => parseFloat(x.radius) >= 24 && x.width === 48),
+        ).toBe(true);
         expect(
           radii.every(
             (x) => x.background.includes("rgba") || x.background.includes("/"),
@@ -127,6 +144,19 @@ for (const check of ["buttons", "header", "title", "background"]) {
         expect(await heading.locator("button,a,[tabindex]").count()).toBe(0);
         await expect(heading).toContainText("Home project");
       } else {
+        if (check === "panel-background") {
+          await rail
+            .getByRole("button", { name: "Chat actions", exact: true })
+            .click();
+          await page
+            .getByRole("menuitem", { name: "Changes", exact: true })
+            .click();
+          await expect(
+            page.locator(
+              ".workspace-drawer .mantine-Drawer-content, .workspace-panel-inline:not([hidden])",
+            ),
+          ).toBeVisible();
+        }
         const png = (await page.screenshot()).toString("base64");
         const colors = await page.evaluate(async (png) => {
           const image = new Image();
@@ -137,17 +167,25 @@ for (const check of ["buttons", "header", "title", "background"]) {
           canvas.height = image.height;
           const ctx = canvas.getContext("2d");
           ctx.drawImage(image, 0, 0);
-          return [850, 911].map((x) => [
-            ...ctx.getImageData(x, 300, 1, 1).data,
-          ]);
+          return [
+            [850, 300],
+            [911, 300],
+            [850, 650],
+            [911, 650],
+          ].map(([x, y]) => [...ctx.getImageData(x, y, 1, 1).data]);
         }, png);
         expect(colors[1]).toEqual(colors[0]);
+        if (check === "panel-background") {
+          expect(colors[2]).toEqual(colors[0]);
+          expect(colors[3]).toEqual(colors[0]);
+        }
       }
       for (const target of await page
         .locator(
-          "main.workspace button, main.workspace textarea, main.workspace input",
+          "main.workspace button, main.workspace textarea, main.workspace input, .workspace-drawer button, .workspace-drawer input, .workspace-drawer textarea",
         )
         .all()) {
+        if (!(await target.isVisible())) continue;
         const r = await target.boundingBox();
         if (!r || !r.width || !r.height) continue;
         expect(r.x + r.width).toBeLessThanOrEqual(867.5);
@@ -156,6 +194,19 @@ for (const check of ["buttons", "header", "title", "background"]) {
       await page.screenshot({
         path: test.info().outputPath(`rail-${check}.png`),
       });
+      if (check === "panel-background") {
+        await rail
+          .getByRole("button", { name: "Chat actions", exact: true })
+          .click();
+        await expect(
+          page.getByRole("menuitem", { name: "Browse prompts", exact: true }),
+        ).toBeVisible();
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("Escape");
+        await expect(
+          page.locator(".workspace-drawer .mantine-Drawer-content"),
+        ).toBeHidden();
+      }
       const escapedText = await page
         .locator("main.workspace")
         .evaluate((root) => {

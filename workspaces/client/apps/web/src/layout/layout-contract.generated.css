@@ -78,7 +78,7 @@
   --layout-legacy_style-dimension121: 44px;
   --layout-legacy_client-width760: 760px;
   --layout-viewport-root-font-default: 16px;
-  --layout-edge-rail-min-inset: 44px;
+  --layout-edge-rail-min-inset: 64px;
   --layout-edge-rail-status-reserve: 112px;
   --layout-legacy_style-dimension120: 44px;
   --layout-sidebar-resize-hit-width: 0.5rem;
@@ -139,4 +139,9 @@
   --layout-legacy_main_components_conversation_empty_chat_settings-query7a8a99ac: 35em;
   --layout-legacy_main_components_conversation_empty_chat_settings-query62cf757f: 25em;
   --layout-legacy_main_components_conversation_empty_chat_settings-query7269dc35: 20em;
+  --layout-edge-rail-button-size: 48px;
+  --layout-layers-edge-rail: 201;
+  --layout-legacy_main_workspace-diff-line-number-width: 48px;
+  --layout-legacy_main_appearance-agent-mode-limit-width: 64px;
+  --layout-legacy_main_style-tasks-drawer-header-min: 64px;
 }

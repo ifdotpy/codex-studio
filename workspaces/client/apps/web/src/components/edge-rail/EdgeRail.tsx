@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode, Ref } from "react";
 import { useLayoutEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { ActionIcon, Menu, Tooltip } from "@mantine/core";
 import { MessageSquare, MoreHorizontal, PanelLeft } from "lucide-react";
 import type { EdgeRailGeometry } from "./edgeRailPolicy";
@@ -64,7 +65,7 @@ export function EdgeRail({
       </Tooltip>
     );
   }
-  return (
+  const rail = (
     <nav
       ref={railRef}
       className="edge-rail"
@@ -132,4 +133,8 @@ export function EdgeRail({
       )}
     </nav>
   );
+  // The fixed viewport root creates a stacking context below portal drawers.
+  return typeof document === "undefined"
+    ? rail
+    : createPortal(rail, document.body);
 }

@@ -32,22 +32,23 @@ export function edgeRailGeometry(
       ...Object.values(insets),
       ...Object.values(metrics),
     ].every((value) => Number.isFinite(value) && value >= 0) ||
-    metrics.targetSize <= 0 ||
-    metrics.minimumInset < metrics.targetSize
+    metrics.targetSize <= 0
   )
     return null;
 
   const side = insets.left > insets.right ? "left" : "right";
   const width = insets[side];
+  const targetSize = Math.min(width, metrics.targetSize);
   const top = Math.max(insets.top, metrics.statusReserve);
   const height = viewportHeight - top - insets.bottom;
-  if (width < metrics.minimumInset || height < metrics.targetSize) return null;
+  if (targetSize <= 0 || width < metrics.minimumInset || height < targetSize)
+    return null;
   return {
     side,
     width,
     top,
     bottom: insets.bottom,
     height,
-    targetSize: metrics.targetSize,
+    targetSize,
   };
 }

@@ -416,9 +416,10 @@ export const layoutTokens = {
     purpose: "Fallback root font size before a valid browser measurement",
   },
   "edgeRail.minInset": {
-    value: 44,
+    value: 64,
     unit: "px",
-    purpose: "Minimum side safe inset for the coarse pointer landscape rail",
+    purpose:
+      "Minimum side safe-area strip for the Duo rail, excluding ordinary phone notch insets",
   },
   "edgeRail.statusReserve": {
     value: 112,
@@ -762,6 +763,34 @@ export const layoutTokens = {
     purpose:
       "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 20em) {",
   },
+  "edgeRail.buttonSize": {
+    value: 48,
+    unit: "px",
+    purpose:
+      "Preferred round rail button diameter inside the side safe-area strip",
+  },
+  "layers.edgeRail": {
+    value: 201,
+    unit: "layer",
+    purpose:
+      "Conversation side rail above workspace drawers and below popovers",
+  },
+  "legacy_main_workspace.diffLineNumberWidth": {
+    value: 48,
+    unit: "px",
+    purpose:
+      "Existing workspace diff line-number button width, distinct from rail button diameter",
+  },
+  "legacy_main_appearance.agentModeLimitWidth": {
+    value: 64,
+    unit: "px",
+    purpose: "Existing agent mode limit input width",
+  },
+  "legacy_main_style.tasksDrawerHeaderMin": {
+    value: 64,
+    unit: "px",
+    purpose: "Existing compact tasks drawer header minimum height",
+  },
 } as const;
 export const layoutValues = {
   navigation: {
@@ -843,6 +872,7 @@ export const layoutValues = {
     navigation: 190,
     navigationToggle: 201,
     emergency: 2147483647,
+    edgeRail: 201,
   },
   legacy_appearance: {
     width600: 600,
@@ -917,8 +947,9 @@ export const layoutValues = {
     width760: 760,
   },
   edgeRail: {
-    minInset: 44,
+    minInset: 64,
     statusReserve: 112,
+    buttonSize: 48,
   },
   legacy_main_App: {
     query91b57f15: 60,
@@ -926,6 +957,7 @@ export const layoutValues = {
   },
   legacy_main_appearance: {
     query0e42fa00: 760,
+    agentModeLimitWidth: 64,
   },
   legacy_main_components_Analytics: {
     dimensiond0f63a09: 320,
@@ -1013,6 +1045,7 @@ export const layoutValues = {
     query54b57a2c: 761,
     layere34829b4: 400,
     dimension21ad4b4e: 320,
+    tasksDrawerHeaderMin: 64,
   },
   legacy_main_workspace_layout: {
     query3686b719: 660,
@@ -1028,6 +1061,9 @@ export const layoutValues = {
     query7a8a99ac: 35,
     query62cf757f: 25,
     query7269dc35: 20,
+  },
+  legacy_main_workspace: {
+    diffLineNumberWidth: 48,
   },
 } as const;
 export const layoutQueries = {

@@ -14,7 +14,7 @@ import {
 export const layoutEdgeRailMetrics: EdgeRailMetrics = {
   minimumInset: layoutValues.edgeRail.minInset,
   statusReserve: layoutValues.edgeRail.statusReserve,
-  targetSize: layoutValues.controls.touchMin,
+  targetSize: layoutValues.edgeRail.buttonSize,
 };
 
 type RootStyle = Pick<

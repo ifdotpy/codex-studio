@@ -1,6 +1,6 @@
 .edge-rail {
   position: fixed;
-  z-index: var(--layout-layers-app);
+  z-index: var(--layout-layers-edge-rail);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -57,4 +57,39 @@ html:has(.workspace[data-edge-rail="true"]) .viewport-bottom-band {
 /* Keep the shared sidebar focus target visible outside the header. */
 .edge-rail #sidebar-toggle {
   display: inline-flex;
+}
+
+/* A workspace drawer keeps its controls in the safe rectangle. Its passive
+   backdrop continues below Home and behind the side rail. */
+html:has(.workspace[data-edge-rail="true"])
+  .workspace-drawer
+  .mantine-Drawer-content {
+  box-shadow: none;
+}
+
+html:has(.workspace[data-edge-rail="true"])
+  .workspace-drawer
+  .mantine-Drawer-inner::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: calc(-1 * env(safe-area-inset-right, 0px));
+  width: env(safe-area-inset-right, 0px);
+  height: calc(100% + var(--viewport-safe-bottom));
+  background: var(--mantine-color-body);
+  pointer-events: none;
+}
+
+html:has(.workspace[data-edge-rail="true"])
+  .workspace-drawer
+  .mantine-Drawer-inner::before {
+  content: "";
+  position: absolute;
+  top: 100%;
+  right: 0;
+  width: var(--drawer-size);
+  max-width: 100%;
+  height: var(--viewport-safe-bottom);
+  background: var(--mantine-color-body);
+  pointer-events: none;
 }

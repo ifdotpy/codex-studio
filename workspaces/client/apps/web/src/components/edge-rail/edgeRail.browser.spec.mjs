@@ -166,10 +166,6 @@ for (const capability of [
         .focus();
       await page.keyboard.press("Enter");
       await expect(item).toBeVisible();
-      await expect(
-        page.locator("[data-menu-dropdown] [data-autofocus]"),
-      ).toBeFocused();
-      await page.keyboard.press("ArrowDown");
       await expect(item).toBeFocused();
       await page.keyboard.press("Escape");
       await expect(item).toHaveCount(0);
