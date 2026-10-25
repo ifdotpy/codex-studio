@@ -63,7 +63,7 @@ where
         let state = self.state.clone();
         let fetch = self.fetch.clone();
         let publications = self.publications.clone();
-        let worker = state.track_cost_refresh_worker();
+        let worker = state.try_track_cost_refresh_worker()?;
         let readiness = self.readiness.clone();
         Some(tokio::spawn(async move {
             let _worker = worker;
@@ -457,6 +457,9 @@ async fn publish_costs(state: &HttpState) -> Result<(), StoreError> {
 /// A window-open interest admits work; publication and stream reads never do.
 /// An existing reservation joins its scan and receives the same entity result.
 pub(crate) async fn request_cost_refresh(state: &HttpState, key: &str) -> Result<(), StoreError> {
+    let worker = state
+        .try_track_cost_refresh_worker()
+        .ok_or(StoreError::ReadTaskFailed)?;
     let _publication = COST_PUBLICATION.lock().await;
     let account = accounts(state)
         .await?
@@ -490,7 +493,6 @@ pub(crate) async fn request_cost_refresh(state: &HttpState, key: &str) -> Result
         return Ok(());
     };
     let state = state.clone();
-    let worker = state.track_cost_refresh_worker();
     let cancelled = state.cost_scan_cancellation_handle();
     tokio::spawn(async move {
         let _worker = worker;
@@ -827,6 +829,10 @@ mod tests {
                 .expect("account cache metadata"),
             "no account scan"
         );
+        state
+            .shutdown_services()
+            .await
+            .expect("fixture refresh tasks drained");
     }
 
     #[tokio::test]
@@ -1078,6 +1084,10 @@ mod tests {
         })
         .await
         .expect("new catalog republishes inactive root b");
+        state
+            .shutdown_services()
+            .await
+            .expect("fixture refresh tasks drained");
     }
 
     #[tokio::test]
@@ -1133,6 +1143,78 @@ mod tests {
             publications.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pricing_refresh_shutdown_closes_admission_before_draining() {
+        let (_root, state) = state().await;
+        pricing_team(&state).await;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let fetch_started = started.clone();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let blocked = Arc::new(std::sync::Mutex::new(blocked));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetched = calls.clone();
+        let (sender, _publications) = mpsc::unbounded_channel();
+        let pricing = PricingRefresh::new(
+            state.clone(),
+            move || {
+                fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                fetch_started.notify_one();
+                blocked
+                    .lock()
+                    .expect("release receiver")
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("release shutdown fetch");
+                Some(pricing_providers())
+            },
+            sender.clone(),
+        );
+        let active = pricing.request().expect("pre-shutdown admission");
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+            .await
+            .expect("fetch gated");
+        let mut shutdown = Box::pin(state.shutdown_services());
+        assert!(
+            futures_util::poll!(shutdown.as_mut()).is_pending(),
+            "shutdown waits for the gated refresh"
+        );
+        // A second publisher has a free single-flight permit. It still cannot
+        // admit work once shutdown has closed the shared worker owner.
+        let late = PricingRefresh::new(state.clone(), || Some(pricing_providers()), sender);
+        let admitted_after_close = late.request();
+        let rejected = admitted_after_close.is_none();
+        release.send(()).expect("finish in-flight fetch");
+        active.await.expect("in-flight task finished");
+        if let Some(task) = admitted_after_close {
+            task.await.expect("drain old admission behavior");
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), shutdown)
+            .await
+            .expect("shutdown bounded")
+            .expect("shutdown drained pricing tasks");
+        assert!(
+            rejected,
+            "a request arriving after shutdown begins must not start a task"
+        );
+        assert!(
+            pricing.request().is_none(),
+            "completion events cannot reopen admission after the drain"
+        );
+        assert!(
+            late.request().is_none(),
+            "a free permit cannot reopen closed worker admission"
+        );
+        assert_eq!(
+            pricing.single_flight.available_permits(),
+            1,
+            "no pricing task remains alive"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(
+            request_cost_refresh(&state, "default").await.is_err(),
+            "account interest shares closed worker admission"
+        );
     }
 
     #[tokio::test]
@@ -1488,6 +1570,10 @@ mod tests {
             entity(&state, "desktop", "current")["application"],
             "codex-agents"
         );
+        state
+            .shutdown_services()
+            .await
+            .expect("fixture refresh tasks drained");
     }
 
     #[tokio::test]
