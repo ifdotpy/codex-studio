@@ -282,6 +282,19 @@ async fn project_deletion_rolls_back_every_write_boundary() {
                 .expect("project")
                 .is_some()
         );
+        f.store
+            .transaction(|tx| {
+                tx.execute_batch("DROP TRIGGER fail")?;
+                Ok(())
+            })
+            .await
+            .expect("remove failure injection");
+        let (status, retry) = f.call(f.body.clone()).await;
+        assert_eq!(
+            status, 200,
+            "same intention after definite rollback: {retry}"
+        );
+        assert_eq!(f.agent("a")["epoch"], 2);
     }
 }
 
@@ -320,7 +333,7 @@ async fn project_deletion_remote_and_ambiguous_membership_fail_closed() {
     }
     for patch in [
         json!({"projectId":"/prefix","projectServerId":"owner"}),
-        json!({"parentId":"child"}),
+        json!({"parentId":"child","projectId":"/p","projectServerId":"owner"}),
         json!({"remoteWorker":{"serverId":"remote"}}),
     ] {
         let mut child = agent("child", Some("lead"), "/worktree");
@@ -743,4 +756,174 @@ async fn project_deletion_refuses_unresolved_move_before_any_agent_redirect() {
     assert_eq!(status, 409, "{r}");
     assert_eq!(r["code"], "project_remote_scope");
     assert_eq!(f.agent("lead")["epoch"], 1);
+}
+
+#[tokio::test]
+async fn project_deletion_does_not_select_an_unbound_orphan_by_root_id() {
+    let f = Fixture::new(
+        vec![
+            agent("lead", None, "/p"),
+            agent("unbound-orphan", Some("missing"), "/other"),
+        ],
+        vec![],
+        false,
+    )
+    .await;
+    let (status, r) = f.call(f.body.clone()).await;
+    assert_eq!(status, 200, "{r}");
+    assert_eq!(r["deletedAgentIds"], json!(["lead"]));
+    assert_eq!(f.agent("unbound-orphan")["epoch"], 1);
+}
+
+#[tokio::test]
+async fn project_deletion_work_release_never_changes_another_project() {
+    use studio_runtime_services::{
+        account_session_runtime::AccountSessionPort, lifecycle_effects::ProductionLifecyclePorts,
+    };
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+    let mut other = agent("unrelated-worker", Some("other"), "/prefix");
+    other["rootId"] = json!("other");
+    other["status"] = json!("failed");
+    let mut f = Fixture::new(
+        vec![
+            agent("lead", None, "/p"),
+            agent("worker", Some("lead"), "/p"),
+            agent("other", None, "/prefix"),
+            other,
+        ],
+        vec![],
+        false,
+    )
+    .await;
+    f.store.transaction(|tx|{
+        for(id,root,owner)in [("selected-task","lead","worker"),("unrelated-task","other","unrelated-worker")] {
+            let task=json!({"id":id,"rootId":root,"owner":owner,"status":"running","title":"Task","description":"","created":1,"updated":1,"version":1,"dependencies":[],"results":[],"decisions":[],"createdBy":root});
+            tx.execute("INSERT INTO runtime_work(id,record) VALUES(?1,?2)",rusqlite::params![id,task.to_string()])?;
+        }Ok(())
+    }).await.expect("tasks");
+    let before: String = f
+        .store
+        .test_reader()
+        .expect("reader")
+        .query_row(
+            "SELECT record FROM runtime_work WHERE id='unrelated-task'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("before");
+    let ports: Arc<dyn LifecyclePorts> = Arc::new(ProductionLifecyclePorts::new(
+        f.store.clone(),
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(NoBroker),
+        None,
+    ));
+    let state = HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        f.store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(f.store.clone()),
+        None,
+    );
+    f.app = router(state).expect("router").layer(Extension(ports));
+    let (status, r) = f.call(f.body.clone()).await;
+    assert_eq!(status, 200, "{r}");
+    let reader = f.store.test_reader().expect("reader");
+    assert_eq!(
+        reader
+            .query_row(
+                "SELECT record FROM runtime_work WHERE id='unrelated-task'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .expect("after"),
+        before
+    );
+    let selected: String = reader
+        .query_row(
+            "SELECT record FROM runtime_work WHERE id='selected-task'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("selected");
+    assert!(serde_json::from_str::<Value>(&selected).expect("task")["owner"].is_null());
+}
+
+#[tokio::test]
+async fn project_deletion_unknown_commit_without_receipt_retries_the_same_intention() {
+    struct AbortFirstCommit {
+        armed: std::sync::atomic::AtomicBool,
+        wakes: AtomicUsize,
+    }
+    impl LifecyclePorts for AbortFirstCommit {
+        fn stage(&self, tx: &Transaction<'_>, _: &LifecycleEffect) -> Result<(), ManagementError> {
+            if self.armed.swap(false, Ordering::SeqCst) {
+                tx.commit_hook(Some(|| true))
+                    .map_err(studio_runtime_store::StoreError::from)?;
+            }
+            Ok(())
+        }
+        fn committed(&self) -> LifecycleCommitFuture<'_> {
+            Box::pin(async {
+                self.wakes.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+    let mut active = agent("lead", None, "/p");
+    active["status"] = json!("running");
+    active["inFlight"] = json!(true);
+    active["turnId"] = json!("turn");
+    active["threadId"] = json!("thread");
+    let mut f = Fixture::new(vec![active], vec![], false).await;
+    let abort = Arc::new(AbortFirstCommit {
+        armed: std::sync::atomic::AtomicBool::new(true),
+        wakes: AtomicUsize::new(0),
+    });
+    let ports: Arc<dyn LifecyclePorts> = abort.clone();
+    let state = HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        f.store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(f.store.clone()),
+        None,
+    );
+    f.app = router(state).expect("router").layer(Extension(ports));
+    let (status, unknown) = f.call(f.body.clone()).await;
+    assert_eq!(status, 500, "{unknown}");
+    assert!(
+        unknown.get("outcome").is_none(),
+        "a COMMIT error must not assert not_applied"
+    );
+    assert_eq!(f.agent("lead")["epoch"], 1);
+    assert_eq!(abort.wakes.load(Ordering::SeqCst), 0);
+    assert!(
+        ProjectsRepository::receipt(
+            &f.store.test_reader().expect("reader"),
+            "project-delete:delete-1"
+        )
+        .expect("receipt lookup")
+        .is_none()
+    );
+    f.store
+        .transaction(|tx| {
+            tx.commit_hook(None::<fn() -> bool>)?;
+            Ok(())
+        })
+        .await
+        .expect("remove controlled commit rejection");
+    let (status, reply) = f.call(f.body.clone()).await;
+    assert_eq!(
+        status, 200,
+        "same intention may apply after absent receipt: {reply}"
+    );
+    assert_eq!(f.agent("lead")["epoch"], 2);
+    assert_eq!(abort.wakes.load(Ordering::SeqCst), 1);
+    assert_eq!(f.call(f.body.clone()).await, (200, reply));
+    assert_eq!(f.agent("lead")["epoch"], 2);
 }

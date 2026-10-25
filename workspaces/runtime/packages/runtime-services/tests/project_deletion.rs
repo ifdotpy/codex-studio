@@ -75,6 +75,28 @@ async fn setup() -> (tempfile::TempDir, Arc<RuntimeStore>, Value) {
     (root, store, project)
 }
 async fn delete(store: Arc<RuntimeStore>, id: String) -> Value {
+    delete_with_ports(store, id, Arc::new(UnavailableLifecyclePorts)).await
+}
+struct StagedLifecycle;
+impl studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts for StagedLifecycle {
+    fn stage(
+        &self,
+        _: &studio_runtime_store::Transaction<'_>,
+        _: &studio_runtime_services::agent_lifecycle_runtime::LifecycleEffect,
+    ) -> Result<(), studio_runtime_services::agent_management::ManagementError> {
+        Ok(())
+    }
+    fn committed(
+        &self,
+    ) -> studio_runtime_services::agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+}
+async fn delete_with_ports(
+    store: Arc<RuntimeStore>,
+    id: String,
+    ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts>,
+) -> Value {
     let reader = store.test_reader().expect("reader");
     let seq = reader
         .query_row(
@@ -94,7 +116,7 @@ async fn delete(store: Arc<RuntimeStore>, id: String) -> Value {
             expected_workspace_id: workspace,
         },
         2.,
-        Arc::new(UnavailableLifecyclePorts),
+        ports,
     )
     .await
     .expect("delete")
@@ -245,4 +267,220 @@ async fn project_deletion_receipt_survives_store_restart() {
     .await
     .expect("replay after restart");
     assert_eq!(result, first);
+}
+
+#[tokio::test]
+async fn project_deletion_registry_only_remove_allows_fresh_creation() {
+    let (_root, store, project) = setup().await;
+    let path = project["id"].as_str().expect("id");
+    let response = studio_runtime_services::projects::write(
+        store.clone(),
+        json!({"action":"remove","path":path}),
+        "default".into(),
+        vec![],
+    )
+    .await
+    .expect("sidebar removal");
+    assert_eq!(response["removed"], true);
+    let accounts = accounts();
+    let context = agents_create::Context {
+        store: store.clone(),
+        accounts: Some(&accounts),
+        driver: Some(driver(store.root())),
+        catalog: None,
+        managed_creation_environment: None,
+        validate: Arc::new(|_, _| true),
+    };
+    let mut request = creation(path, false);
+    request.catalog = false;
+    request.intent = json!({});
+    agents_create::lead(&context, request)
+        .await
+        .expect("fresh create retains registry-only remove compatibility");
+}
+
+#[tokio::test]
+async fn project_deletion_location_reservation_rechecks_the_checked_lifetime() {
+    use studio_runtime_services::multi_server_transport::{
+        AccessError, OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
+    };
+    struct Peer(std::sync::atomic::AtomicUsize);
+    impl PairedTransport for Peer {
+        fn exchange<'a>(
+            &'a self,
+            _: &'a str,
+            envelope: &'a Value,
+            _: std::time::Duration,
+        ) -> futures_util::future::BoxFuture<'a, Result<Value, AccessError>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(
+                async move { Ok(json!({"requestId":envelope["requestId"],"outcome":"unknown"})) },
+            )
+        }
+    }
+    let (_root, store, project) = setup().await;
+    let id = project["id"].as_str().expect("project").to_owned();
+    store.transaction(|tx|{tx.execute("INSERT INTO runtime_access_clients(id,record) VALUES('peer',?1)",[json!({"id":"peer","clientId":"client","kind":"server","label":"Peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()])?;Ok(())}).await.expect("paired server");
+    // This is the earlier checked lifetime; no outbound reservation exists yet.
+    let reader = store.test_reader().expect("reader");
+    let admission =
+        studio_runtime_services::project_locations::location_admission(&reader, &id, None)
+            .expect("checked location lifetime");
+    drop(reader);
+    let mut payload = json!({"project":id,"name":"Project","path":"/remote","request":{"action":"add_location","project":id,"server":"peer","path":"/remote"},"signature":"signature"});
+    payload[studio_runtime_services::project_locations::LOCATION_ADMISSION_FIELD] = admission;
+    delete(store.clone(), id).await;
+    let peer = Arc::new(Peer(std::sync::atomic::AtomicUsize::new(0)));
+    let driver = OrchestrationDriver::new(
+        store.clone(),
+        peer.clone(),
+        Arc::new(RuntimeOrchestrationEffects::new(store.clone())),
+    );
+    assert!(
+        driver
+            .exchange("peer", "add_location", &payload, "location", 3)
+            .await
+            .is_err(),
+        "deletion between preparation and reservation must refuse"
+    );
+    assert_eq!(
+        peer.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "no remote effect"
+    );
+    assert_eq!(
+        store
+            .test_reader()
+            .expect("reader")
+            .query_row(
+                "SELECT count(*) FROM runtime_server_outbox WHERE id='location'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .expect("reservation"),
+        0
+    );
+}
+
+async fn seed_parent(store: &Arc<RuntimeStore>, path: &str) {
+    let accounts = accounts();
+    let context = agents_create::Context {
+        store: store.clone(),
+        accounts: Some(&accounts),
+        driver: Some(driver(store.root())),
+        catalog: None,
+        managed_creation_environment: None,
+        validate: Arc::new(|_, _| true),
+    };
+    let mut request = creation(path, false);
+    request.catalog = false;
+    request.intent = json!({});
+    agents_create::lead(&context, request)
+        .await
+        .expect("parent");
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_deletion_fences_prepared_spawn_and_includes_prior_spawn() {
+    for deletion_first in [false, true] {
+        let (_root, store, project) = setup().await;
+        let path = project["id"].as_str().expect("path");
+        seed_parent(&store, path).await;
+        let (observed_tx, observed_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let catalog = Arc::new(Catalog {
+            observed: Mutex::new(Some(observed_tx)),
+            release: Mutex::new(release_rx),
+        });
+        let worker_store = store.clone();
+        let account_driver = driver(store.root());
+        let pending = tokio::spawn(async move {
+            let accounts = accounts();
+            let context = agents_create::Context {
+                store: worker_store,
+                accounts: Some(&accounts),
+                driver: Some(account_driver),
+                catalog: Some(catalog),
+                managed_creation_environment: None,
+                validate: Arc::new(|_, _| true),
+            };
+            agents_create::agent(
+                &context,
+                agents_create::Creation {
+                    id: Some("spawned".into()),
+                    parent: Some("new-lead".into()),
+                    workspace: Some("shared".into()),
+                    account: Some("default".into()),
+                    prompt: "Task".into(),
+                    intent: json!({"model":"gpt-fixture"}),
+                    ..Default::default()
+                },
+            )
+            .await
+        });
+        tokio::time::timeout(DEADLINE, observed_rx)
+            .await
+            .expect("spawn deadline")
+            .expect("spawn prepared");
+        if deletion_first {
+            delete_with_ports(store.clone(), path.into(), Arc::new(StagedLifecycle)).await;
+        }
+        release_tx.send(()).expect("release spawn");
+        let result = tokio::time::timeout(DEADLINE, pending)
+            .await
+            .expect("spawn deadline")
+            .expect("spawn task");
+        if deletion_first {
+            assert!(result.is_err(), "stale spawn must refuse");
+        } else {
+            result.expect("spawn admitted before delete");
+            assert_eq!(
+                delete_with_ports(store.clone(), path.into(), Arc::new(StagedLifecycle)).await["deletedAgentIds"],
+                json!(["new-lead", "spawned"])
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn project_deletion_orders_archive_restore_with_its_writer() {
+    use studio_runtime_services::{agent_management::Action, agent_management_store};
+    use studio_runtime_store::{AgentRecord, AgentRepository};
+    for deletion_first in [false, true] {
+        let (_root, store, project) = setup().await;
+        let path = project["id"].as_str().expect("id");
+        seed_parent(&store, path).await;
+        let parent = ProjectsRepository::agent(&store.test_reader().expect("reader"), "new-lead")
+            .expect("read")
+            .expect("parent")
+            .1;
+        let epoch = parent["epoch"].as_i64().expect("epoch");
+        let mut worker = parent.clone();
+        for(k,v)in json!({"id":"archived","rootId":"new-lead","parentId":"new-lead","isLead":false,"role":"implementer","epoch":1,"status":"paused","autoWake":false,"deletedAt":1,"agentArchive":{"at":1,"epoch":1,"cleanupPending":false},"worktree":false,"worktreeReady":false,"workspaceMode":"shared"}).as_object().expect("patch"){worker[k]=v.clone();}
+        store
+            .transaction(move |tx| AgentRepository::put(tx, &AgentRecord::from_value(worker)?))
+            .await
+            .expect("archived worker");
+        if deletion_first {
+            delete(store.clone(), path.into()).await;
+        }
+        let result = agent_management_store::execute(
+            store.clone(),
+            &Action::Restore {
+                actor: "new-lead".into(),
+                epoch,
+                target: "archived".into(),
+            },
+            3.,
+        )
+        .await;
+        if deletion_first {
+            assert!(result.is_err(), "stale restore must refuse");
+        } else {
+            assert_eq!(result.expect("restore before delete")["status"], "restored");
+            assert_eq!(
+                delete(store.clone(), path.into()).await["deletedAgentIds"],
+                json!(["archived", "new-lead"])
+            );
+        }
+    }
 }

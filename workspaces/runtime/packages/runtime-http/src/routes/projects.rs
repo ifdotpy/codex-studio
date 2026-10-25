@@ -774,18 +774,23 @@ async fn remote_project_write(
         let operation = projects::cross_server_identity(&["project-location", "ui", request_id]);
         let project_store = store.clone();
         let project_id_for_read = project.to_owned();
-        let record = project_store
-            .read_async(
-                "runtime-http/routes/projects/project-read",
-                move |project_row| {
-                    studio_runtime_store::ProjectsRepository::get(project_row, &project_id_for_read)
+        let (record, admission) = project_store
+            .read_async("runtime-http/routes/projects/project-read", move |db| {
+                let record =
+                    studio_runtime_store::ProjectsRepository::get(db, &project_id_for_read)
                         .map_err(ApiError::stored)?
-                        .map(|(_, record)| record)
                         .ok_or_else(|| {
                             ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project")
-                        })
-                },
-            )
+                        })?
+                        .1;
+                let admission = studio_runtime_services::project_locations::location_admission(
+                    db,
+                    &project_id_for_read,
+                    None,
+                )
+                .map_err(|error| ApiError::new(StatusCode::CONFLICT, error.to_string()))?;
+                Ok::<_, ApiError>((record, admission))
+            })
             .await?;
         let locations = record
             .get("locations")
@@ -814,11 +819,12 @@ async fn remote_project_write(
             ));
         }
         let signature_data = json!({"action":action,"project":project,"server":server,"path":path});
-        let payload = json!({"project":project,"name":record.get("name"),"path":path,
+        let mut payload = json!({"project":project,"name":record.get("name"),"path":path,
             "request":signature_data,"signature":studio_runtime_store::sha256_hex(
                 studio_runtime_services::remote_transport::canonical_json(&signature_data)
                     .map_err(|_| ApiError::internal())?.as_bytes()),
             "location":existing});
+        payload[studio_runtime_services::project_locations::LOCATION_ADMISSION_FIELD] = admission;
         (project.to_owned(), operation, signature_data, payload, None)
     } else {
         return Err(ApiError::new(
@@ -846,7 +852,7 @@ async fn remote_project_write(
         let account_for_registration = default_account.clone();
         let operation_for_registration = operation_id.clone();
         let registration_for_write = registration.clone();
-        store.transaction_with(move |tx| -> Result<(), ProjectsError> {
+        let admission=store.transaction_with(move |tx| -> Result<Value, ProjectsError> {
             let receipt_id = format!("project-registration:{project_for_registration}");
             let mut has_receipt = false;
             if let Some((saved, previous)) = studio_runtime_store::ProjectsRepository::receipt(tx, &receipt_id)? {
@@ -855,7 +861,7 @@ async fn remote_project_write(
                     return Err(ProjectsError::Conflict("This request ID has different content"));
                 }
                 if previous.get("outcome").and_then(Value::as_str) == Some("applied") {
-                    return Ok(());
+                    return studio_runtime_services::project_locations::location_admission(tx,&project_for_registration,None).map_err(|_|ProjectsError::Conflict("The project changed before location reservation"));
                 }
             }
             if studio_runtime_store::ProjectsRepository::get(tx, &project_for_registration)?.is_none() {
@@ -869,10 +875,11 @@ async fn remote_project_write(
                 studio_runtime_store::ProjectsRepository::save_receipt(tx, &receipt_id, &signature_for_registration,
                     &json!({"outcome":"unknown","projectId":project_for_registration,"requestId":operation_for_registration}))?;
             }
-            Ok(())
+            studio_runtime_services::project_locations::location_admission(tx,&project_for_registration,None).map_err(|_|ProjectsError::Conflict("The project changed before location reservation"))
         })
         .await
         .map_err(projects_error)?;
+        payload[studio_runtime_services::project_locations::LOCATION_ADMISSION_FIELD] = admission;
     }
     let receipt_store = store.clone();
     let receipt_operation_id = operation_id.clone();

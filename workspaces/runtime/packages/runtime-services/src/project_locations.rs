@@ -2,7 +2,7 @@
 use crate::event_write::{python_json, request_signature, truthy};
 pub use crate::relocation::RelocationError as LocationError;
 use crate::relocation::{checked, identity, invalid, timestamp};
-use rusqlite::Transaction;
+use rusqlite::{OptionalExtension, Transaction};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -466,4 +466,76 @@ fn reconcile_tool(
     });
     next["updated"] = json!(now);
     Ok(Some((next, result)))
+}
+
+/// Internal outbound payload field. Its value binds reservation to the checked
+/// local project sequence, workspace, and optional managed actor epoch.
+pub const LOCATION_ADMISSION_FIELD: &str = "_projectAdmission";
+#[derive(serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocationAdmission {
+    project: String,
+    seq: i64,
+    workspace: String,
+    actor: Option<String>,
+    epoch: Option<i64>,
+}
+pub fn location_admission(
+    db: &rusqlite::Connection,
+    project: &str,
+    actor: Option<(&str, i64)>,
+) -> Result<Value, LocationError> {
+    let seq=db.query_row(
+        "SELECT s.seq FROM sync_entities s JOIN runtime_projects p ON p.id=s.id WHERE s.collection='project' AND s.id=?1 AND s.deleted=0",
+        [project],|row|row.get::<_,i64>(0),
+    ).optional()?.ok_or(LocationError::Refused("The project changed before location reservation"))?;
+    serde_json::to_value(LocationAdmission {
+        project: project.into(),
+        seq,
+        workspace: studio_runtime_store::SyncDocumentsRepository::workspace_id(db)?,
+        actor: actor.map(|(id, _)| id.into()),
+        epoch: actor.map(|(_, epoch)| epoch),
+    })
+    .map_err(|_| LocationError::Refused("Invalid project location admission"))
+}
+pub(crate) fn check_location_admission(
+    tx: &Transaction<'_>,
+    payload: &Value,
+) -> Result<(), LocationError> {
+    let Some(saved) = payload.get(LOCATION_ADMISSION_FIELD) else {
+        // Existing reserved envelopes predate this fence. Their retained outbox
+        // already prevents project deletion while they remain unresolved.
+        return Ok(());
+    };
+    let expected: LocationAdmission = serde_json::from_value(saved.clone())
+        .map_err(|_| LocationError::Refused("Invalid project location admission"))?;
+    if payload.get("project").and_then(Value::as_str) != Some(expected.project.as_str()) {
+        return Err(LocationError::Refused(
+            "The project location admission changed",
+        ));
+    }
+    let current = location_admission(
+        tx,
+        &expected.project,
+        expected.actor.as_deref().zip(expected.epoch),
+    )?;
+    if current != *saved {
+        return Err(LocationError::Refused(
+            "The project changed before location reservation",
+        ));
+    }
+    if let Some(actor) = expected.actor {
+        let current = ProjectsRepository::agent(tx, &actor)?
+            .ok_or(LocationError::Refused("The caller is no longer available"))?
+            .1;
+        if current.get("epoch").and_then(Value::as_i64) != expected.epoch
+            || truthy(current.get("deletedAt"))
+            || current.get("autoWake") != Some(&Value::Bool(true))
+        {
+            return Err(LocationError::Refused(
+                "The caller changed before location reservation",
+            ));
+        }
+    }
+    Ok(())
 }

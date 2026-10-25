@@ -2577,6 +2577,13 @@ impl OrchestrationDriver {
             let saved=outbox(tx,&envelope_for_claim.key,now)?;
             let decision=decide_delivery(saved.as_ref(),&envelope_for_claim.fingerprint,Some(&server_for_claim),true,&envelope_for_claim.action,now)?;
             if matches!(decision,DeliveryDecision::Execute) {
+                if matches!(envelope_for_claim.action.as_str(),"add_location"|"remove_location") {
+                    crate::project_locations::check_location_admission(tx,&envelope_for_claim.value()["payload"])
+                        .map_err(|error|match error {
+                            crate::project_locations::LocationError::Store(error)=>AccessError::from(error),
+                            _=>refused(409,"project_location_changed","The project or caller changed before location reservation"),
+                        })?;
+                }
                 // An in-flight claim is not due: the pump replays a running peer
                 // operation only after its exchange deadline has passed.
                 tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint,attempts,next_at) VALUES(?1,?2,?3,'running',?4,?5,0,?6) ON CONFLICT(id) DO UPDATE SET state='running',next_at=?6",params![envelope_for_claim.key,server_for_claim,envelope_for_claim.body,now,envelope_for_claim.fingerprint,in_flight_until])?;

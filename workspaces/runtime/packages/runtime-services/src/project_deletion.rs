@@ -134,16 +134,19 @@ fn delete_in_transaction(
     // Each selected tree goes through the existing transaction-only lifecycle
     // owner, under this ONE writer. Bound orphans are roots for this purpose.
     for root in roots {
-        agent_lifecycle_runtime::execute_in_transaction(
+        agent_lifecycle_runtime::execute_in_transaction_for_scope(
             tx,
             &Action::Delete { target: root },
             now,
             ports,
+            &selected,
         )?;
     }
     let rooms = retire_rooms(tx, &project_ids, &paths, &selected, now)?;
     for id in &project_ids {
-        ProjectsRepository::remove(tx, id)?;
+        if ProjectsRepository::remove(tx, id)? {
+            ProjectsRepository::record_destructive_removal(tx, id)?;
+        }
         prune_sidebar(tx, id, &paths, &selected)?;
     }
     let reply = json!({"id":request.id,"request_id":request.request_id,"outcome":"deleted","deletedAgentIds":selected,"deletedRoomIds":rooms});
@@ -344,13 +347,14 @@ fn membership(
         let owned = match binding(agent) {
             Ok(Some((p, s))) => projects.contains(p) && s == server,
             Ok(None) => {
-                agent.get("parentId").is_none_or(Value::is_null)
-                    && agent
-                        .get("hostProjectPath")
-                        .filter(|v| !v.is_null())
-                        .or_else(|| agent.get("cwd"))
-                        .and_then(Value::as_str)
-                        .is_some_and(|p| paths.contains(p))
+                agent.get("parentId").is_none_or(|parent| {
+                    parent.is_null() || parent.as_str().is_some_and(|id| !agents.contains_key(id))
+                }) && agent
+                    .get("hostProjectPath")
+                    .filter(|v| !v.is_null())
+                    .or_else(|| agent.get("cwd"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|p| paths.contains(p))
             }
             Err(_) => {
                 // Refuse malformed records that can belong to this project;
@@ -380,10 +384,6 @@ fn membership(
                 .get("parentId")
                 .and_then(Value::as_str)
                 .is_some_and(|p| selected.contains(p))
-                || agent
-                    .get("rootId")
-                    .and_then(Value::as_str)
-                    .is_some_and(|root| selected.contains(root))
             {
                 selected.insert(id.clone());
             }
@@ -529,11 +529,19 @@ pub(crate) fn admission_version(
     db: &Connection,
     id: &str,
 ) -> Result<Option<(i64, bool)>, StoreError> {
-    db.query_row(
-        "SELECT seq,deleted FROM sync_entities WHERE collection='project' AND id=?1",
-        [id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )
-    .optional()
-    .map_err(StoreError::from)
+    let version: Option<(i64, bool)> = db
+        .query_row(
+            "SELECT seq,deleted FROM sync_entities WHERE collection='project' AND id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    version
+        .map(|(seq, deleted)| {
+            Ok((
+                seq,
+                deleted && ProjectsRepository::is_destructive_removal(db, id, seq)?,
+            ))
+        })
+        .transpose()
 }
