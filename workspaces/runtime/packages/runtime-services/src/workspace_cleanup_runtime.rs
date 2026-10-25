@@ -904,6 +904,11 @@ fn apply_effect_result(
         }
         CleanupEffect::SaveNativeTurn => {
             agent["layrStateId"] = receipt["stateId"].clone();
+            if let Some(turns) = agent["layrTurnSaves"].as_object_mut() {
+                for save in turns.values_mut().filter(|save| save["status"] != "saved") {
+                    *save = json!({"status":"saved","stateId":receipt["stateId"]});
+                }
+            }
         }
         CleanupEffect::SaveWorktreeRef { .. } => {}
         CleanupEffect::SaveVmTurn { turn_id } => {

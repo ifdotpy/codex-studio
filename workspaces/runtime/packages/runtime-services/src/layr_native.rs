@@ -378,3 +378,31 @@ pub fn reviewer_try(
     args.extend(argv[3..].iter().map(String::as_str));
     run(state_dir, cwd, &args)
 }
+
+pub(crate) use runtime::stage_turn_save;
+
+#[cfg(test)]
+mod turn_save_tests {
+    use super::*;
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
+
+    #[tokio::test]
+    async fn native_terminal_stages_a_save_without_resetting_a_completed_receipt() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            let record = json!({"id":"native-save-agent","rootId":"native-save-agent","epoch":0,
+                "status":"idle","autoWake":true,"workspaceMode":"layr-native","layrReady":true,"cwd":"/native/main"});
+            AgentRepository::put(tx,&AgentRecord::from_value(record).map_err(StoreError::from)?)?;
+            stage_turn_save(tx,"native-save-agent","turn-1")?;
+            let id = AgentId::from("native-save-agent");
+            let mut saved = AgentRepository::get(tx,&id)?.unwrap().value();
+            assert_eq!(saved["layrTurnSaves"]["turn-1"]["status"],"pending");
+            saved["layrTurnSaves"]["turn-1"] = json!({"status":"saved","stateId":"exact-state"});
+            AgentRepository::put(tx,&AgentRecord::from_value(saved).map_err(StoreError::from)?)?;
+            stage_turn_save(tx,"native-save-agent","turn-1")?;
+            assert_eq!(AgentRepository::get(tx,&id)?.unwrap().value()["layrTurnSaves"]["turn-1"]["stateId"],"exact-state");
+            Ok(())
+        }).await.unwrap();
+    }
+}

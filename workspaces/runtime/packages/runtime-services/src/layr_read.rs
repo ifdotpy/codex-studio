@@ -62,6 +62,16 @@ pub(crate) fn tool_definition() -> Option<&'static crate::thread_prepare::ToolDe
         .as_ref()
 }
 
+/// Native reviewers share the read tool contract and can run a sandboxed temporary check.
+pub(crate) fn native_tool_definition() -> Option<&'static crate::thread_prepare::ToolDefinition> {
+    static DEFINITION: OnceLock<Option<crate::thread_prepare::ToolDefinition>> = OnceLock::new();
+    DEFINITION.get_or_init(|| {
+        let mut definition = tool_definition()?.clone();
+        definition.description = "Read native Layr states with show, diff, log and the history read commands. Use args [\"try\",\"<state>\",\"--\",\"<command>\",...] for a check in a temporary copy. The check can write only that copy and $TMPDIR, without network. Main and worker lines stay read-only. Supply arguments after layr.".into();
+        Some(definition)
+    }).as_ref()
+}
+
 /// The argument list after `layr`, or the refusal text.
 pub(crate) fn command(args: &Value) -> Result<Vec<String>, String> {
     let argv: Vec<String> = match args.get("args") {

@@ -892,7 +892,7 @@ pub(crate) fn actor_tool_definitions(
     .map_err(|_| invalid("tool catalog"))?;
     if crate::layr_native::is_native(record) && record["role"] == "reviewer" {
         filtered.push(
-            crate::layr_read::tool_definition()
+            crate::layr_read::native_tool_definition()
                 .ok_or_else(|| invalid("native layr read tool"))?
                 .clone(),
         );

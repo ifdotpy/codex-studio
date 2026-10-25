@@ -281,12 +281,25 @@ pub(super) fn prepare_files(state_dir: &Path, record: &Value) -> Result<Value> {
     Ok(result)
 }
 
-pub async fn prepare(store: Arc<RuntimeStore>, record: Value) -> Result<Value> {
+pub async fn prepare(store: Arc<RuntimeStore>, mut record: Value) -> Result<Value> {
     if record["deletedAt"].is_string()
         || record["deletedAt"].is_number()
         || record["autoWake"] != true
     {
         return Err(NativeLayrError::Refused("The agent is not active".into()));
+    }
+    // The next turn cannot enter its line before the previous quiet-point save.
+    let pending: Vec<String> = record["layrTurnSaves"]
+        .as_object()
+        .into_iter()
+        .flat_map(|turns| turns.iter())
+        .filter(|(_, save)| save["status"] != "saved")
+        .map(|(turn, _)| turn.clone())
+        .collect();
+    for turn in pending {
+        let id = text(&record, "id")?.to_owned();
+        save_turn(&store, &id, &turn).await?;
+        record = agent_value(&store, &id).await?;
     }
     let state_dir = store.root().to_owned();
     let expected = record.clone();
@@ -489,4 +502,31 @@ pub async fn save_turn(store: &Arc<RuntimeStore>, agent_id: &str, turn_id: &str)
             Ok(())
         })
         .await
+}
+
+/// The terminal transaction stages a save before it releases the next turn.
+pub(crate) fn stage_turn_save(
+    tx: &studio_runtime_store::Transaction<'_>,
+    agent_id: &str,
+    turn_id: &str,
+) -> std::result::Result<(), StoreError> {
+    let Some(agent) = AgentRepository::get(tx, &AgentId::from(agent_id))? else {
+        return Ok(());
+    };
+    let mut record = agent.value();
+    if !is_native(&record) || record["layrReady"] != true {
+        return Ok(());
+    }
+    if !record["layrTurnSaves"].is_object() {
+        record["layrTurnSaves"] = json!({});
+    }
+    if record["layrTurnSaves"][turn_id]["status"] == "saved" {
+        return Ok(());
+    }
+    record["layrTurnSaves"][turn_id] = json!({"status":"pending"});
+    AgentRepository::put(
+        tx,
+        &AgentRecord::from_value(record).map_err(StoreError::from)?,
+    )?;
+    Ok(())
 }
