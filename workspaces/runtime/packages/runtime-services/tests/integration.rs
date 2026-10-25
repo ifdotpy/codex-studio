@@ -22,7 +22,6 @@ mod context_repair_corpus;
 mod continuation_corpus;
 mod continuation_recovery;
 mod idle_compaction;
-mod image_workspace_corpus;
 mod media_auth_fixtures;
 mod monitor_flood_and_missed_rules;
 mod monitor_output_ui;

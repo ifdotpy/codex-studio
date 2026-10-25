@@ -27,12 +27,6 @@ const BRIEF_FIELDS: &[&str] = &[
     "agentArchive",
     "nativeRelease",
     "parkedEvent",
-    "imageWorkspace",
-    "imageWorkspaceReady",
-    "imageWorkspacePhase",
-    "imageWorkspaceError",
-    "imageWorkspaceCreatedAt",
-    "cleanedImageWorkspace",
 ];
 
 #[derive(Debug, Error)]
@@ -800,20 +794,7 @@ pub(crate) fn archived_cleanup_result(record: &Value) -> (Value, Value) {
         }
         None => json!({"state":"kept","reason":"already archived","bytes":0}),
     };
-    let cleaned_image = (!flag("imageWorkspaceReady"))
-        .then(|| record.get("cleanedImageWorkspace"))
-        .flatten()
-        .filter(|cleaned| truthy(Some(cleaned)));
-    let workspace = record
-        .get("imageWorkspaceCleanupResult")
-        .filter(|result| truthy(Some(result)))
-        .cloned()
-        .or_else(|| {
-            cleaned_image.map(|cleaned| {
-                json!({"state":"archived","bytes":cleaned.get("bytes").cloned().unwrap_or(json!(0))})
-            })
-        })
-        .unwrap_or(Value::Null);
+    let workspace = Value::Null;
     (worktree, workspace)
 }
 
@@ -859,19 +840,10 @@ fn next_epoch(agent: &Agent) -> Result<i64, ManagementError> {
         .ok_or(ManagementError::Invalid("Agent epoch limit reached"))
 }
 fn workspace_dependency(agent: &Agent) -> Result<(), ManagementError> {
-    let image_removed = agent
-        .record
-        .get("imageWorkspacePhase")
-        .and_then(Value::as_str)
-        == Some("removed");
     if agent.record.get("executionMode").and_then(Value::as_str) == Some("vm")
         || ["worktreeReady", "worktreeCleanup", "cleanedWorktree"]
             .iter()
             .any(|key| agent.flag(key))
-        || (!image_removed
-            && ["imageWorkspaceReady", "cleanedImageWorkspace"]
-                .iter()
-                .any(|key| agent.flag(key)))
     {
         return Err(ManagementError::Unavailable(
             "workspace-state/agent-lifecycle",
@@ -1283,7 +1255,7 @@ fn archive(
             "blockers":[{"kind":ArchiveBlockerKind::NativeStateUnconfirmed,"count":1,"ids":[agent.id()]}]
         })));
     }
-    // The workspace cleanup service removes the worktree, archives the image
+    // The workspace cleanup service removes the worktree, retains legacy workspace records
     // or releases the layr line from the durable intent written below.
     let reason = python_strip(reason);
     if reason.is_empty() || reason.chars().count() > 1000 {
@@ -1417,9 +1389,6 @@ fn restore(snapshot: &ManagementSnapshot, agent: &Agent) -> Result<Decision, Man
     object.insert("status".to_owned(), json!("paused"));
     object.insert("autoWake".to_owned(), json!(false));
     object.insert("epoch".to_owned(), json!(next_epoch(agent)?));
-    if agent.flag("imageWorkspace") && !agent.flag("imageWorkspaceReady") {
-        object.insert("imageWorkspacePhase".to_owned(), json!("read_only"));
-    }
     let mut decision = Decision::result(
         json!({"status":"restored","agent":brief(&record),"next":"Use orchestration_send to resume with an instruction"}),
     );

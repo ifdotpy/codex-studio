@@ -738,8 +738,7 @@ function Plan(c: Context) {
 function Checkpoints(c: Context) {
   if (
     c.selected?.provider === "claude" &&
-    (c.selected.imageWorkspace ||
-      c.selected.workspaceMode === "shared" ||
+    (c.selected.workspaceMode === "shared" ||
       (!c.selected.worktree && c.selected.workspaceMode !== "worktree"))
   ) {
     return (

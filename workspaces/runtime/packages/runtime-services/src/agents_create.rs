@@ -8,9 +8,8 @@
 //! provide the authoritative value once that change is merged.
 mod operations;
 pub(crate) use operations::DEFAULT_LEAD_MODEL;
+pub(crate) use operations::set_vm_workspace_fields;
 pub use operations::*;
-pub(crate) use operations::{image_provision_is_current, persist_image_provision_failure};
-pub(crate) use operations::{set_image_workspace_fields, set_vm_workspace_fields};
 
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};

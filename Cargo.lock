@@ -5676,7 +5676,6 @@ dependencies = [
  "notify",
  "objc2-core-foundation",
  "objc2-core-services",
- "plist",
  "process-wrap",
  "regex",
  "ring",

@@ -169,7 +169,7 @@ pub fn read(task: &Value, agent: &Value, requested_agent: &str) -> Result<Value,
     }
     let context = WorkspaceContext::from_agent(agent, requested_agent)
         .map_err(|_| "The task workspace is unavailable")?;
-    if context.execution_backed && !(context.image_workspace && context.image_workspace_ready) {
+    if context.execution_backed {
         return Err("The task workspace is not available on this server");
     }
     let path = task["outputFile"]

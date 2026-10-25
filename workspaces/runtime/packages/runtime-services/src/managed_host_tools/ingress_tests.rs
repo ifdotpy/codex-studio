@@ -2048,7 +2048,6 @@ struct CreationEnvironment;
 struct FakeVmReviewGuest;
 thread_local! {
     static VM_REVIEW_GUEST_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static IMAGE_PROVISION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 impl crate::linux_vm_guest::GuestRpc for FakeVmReviewGuest {
     fn stream(
@@ -2076,10 +2075,6 @@ thread_local! {
     static FAIL_MANAGED_WORKSPACE_PREPARATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnvironment {
-    fn supports_image_workspace(&self) -> bool {
-        true
-    }
-
     fn guest_rpc(
         &self,
         _: &RuntimeStore,
@@ -2168,16 +2163,6 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
             );
         }
         Ok(Box::new(AllowWorkspace))
-    }
-
-    fn provision_image_workspace(
-        &self,
-        _: &RuntimeStore,
-        _: &std::path::Path,
-        _: &str,
-    ) -> Result<Value, crate::managed_child_create::ManagedCreationEnvironmentError> {
-        IMAGE_PROVISION_CALLS.with(|calls| calls.set(calls.get() + 1));
-        Ok(json!({"path":"/fake-image/repo","mount":"/fake-image"}))
     }
 }
 impl crate::host_worker_create::CreationCatalog for CreationEnvironment {
@@ -3021,54 +3006,19 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
         .unwrap();
     assert_eq!(before_workspace_refusal, after_workspace_refusal);
 
-    let provision_calls_before = IMAGE_PROVISION_CALLS.get();
-    let image_base = crate::managed_child_create::spawn_agents(
+    let legacy_request = crate::managed_child_create::spawn_agents(
         &store,
         &actor,
-        &json!({"agents":[{"name":"Image Base","prompt":"Review the requested image base","workspace":"image","base_ref":"HEAD~1"}]}),
-        "dispatcher-image-base-ref",
+        &json!({"agents":[{"name":"Legacy","prompt":"Task","workspace":"image"}]}),
+        "dispatcher-legacy-workspace-refusal",
         20.5,
         &CreationEnvironment,
-    ).await
-    .expect("image base refs resolve to a worker checkout instruction");
-    assert_eq!(IMAGE_PROVISION_CALLS.get(), provision_calls_before + 1);
-    let image_base_id = image_base.value["agents"][0]["id"].as_str().unwrap();
-    let image_base_child = studio_runtime_store::AgentRepository::get(
-        &store.test_reader().unwrap(),
-        &studio_runtime_store::AgentId::from(image_base_id),
     )
-    .unwrap()
-    .unwrap()
-    .value();
-    assert_eq!(image_base_child["imageWorkspaceReady"], true);
-    assert_eq!(image_base_child["imageWorkspacePhase"], "ready");
-    assert_eq!(image_base_child["cwd"], "/fake-image/repo");
-    assert_eq!(image_base.value["agents"][0]["cwd"], "/fake-image/repo");
-    assert_eq!(image_base.value["agents"][0]["imageWorkspaceReady"], true);
-    let published_image_child: String = store
-        .test_reader()
-        .unwrap()
-        .query_row(
-            "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?1",
-            [image_base_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let published_image_child: Value = serde_json::from_str(&published_image_child).unwrap();
-    assert_eq!(published_image_child["value"]["cwd"], "/fake-image/repo");
-    assert_eq!(published_image_child["value"]["imageWorkspaceReady"], true);
-    assert_eq!(image_base_child["imageWorkspaceBaseRef"], "HEAD~1");
-    assert_eq!(image_base_child["workerBaseCommit"], base_commit);
-    let image_base_event: String = store
-        .test_reader()
-        .unwrap()
-        .query_row(
-            "SELECT text FROM runtime_events WHERE id=?1",
-            [format!("{image_base_id}:initial")],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(image_base_event.contains("Check out this commit yourself before editing."));
+    .await;
+    assert!(
+        legacy_request.is_err(),
+        "removed workspace mode must be refused"
+    );
 
     let reviewed = crate::managed_child_create::request_review(
         &store,

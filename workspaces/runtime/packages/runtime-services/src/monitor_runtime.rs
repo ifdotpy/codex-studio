@@ -929,8 +929,6 @@ const MONITOR_START_ACTOR_INPUTS: &[&str] = &[
     "/profile/id",
     "/role",
     "/isLead",
-    "/imageWorkspace",
-    "/imageWorkspaceReady",
     "/layrScratch",
 ];
 

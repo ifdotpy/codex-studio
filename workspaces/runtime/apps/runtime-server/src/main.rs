@@ -358,12 +358,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
-    if args.first().map(String::as_str) == Some("mounts") {
-        // Read-only `check`, or `repair` that only attaches at empty mount points.
-        let (report, ok) = studio_runtime_services::image_workspace::mounts_command(&args[1..])?;
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        std::process::exit(if ok { 0 } else { 1 });
-    }
     let port = parse_port(args.into_iter())?;
     studio_runtime_schema::initialize()?;
     startup_trace("backend-identity-started");
@@ -436,11 +430,8 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Ok(closed) => eprintln!("closed {closed} tasks of settled turns"),
         Err(error) => eprintln!("tasks of settled turns remain running: {error}"),
     }
+    studio_runtime_services::legacy_image_workspace::finish_stored_workspaces(&store).await?;
     startup_trace("store-recovery-completed");
-    // Report stranded or mismatched image workspace mounts; never repair them here.
-    std::thread::Builder::new()
-        .name("image-mount-check".to_owned())
-        .spawn(studio_runtime_services::image_workspace::run_startup_mount_check)?;
     let (workspace_id, limits_read) = store
         .read_async("runtime-server/startup", |db| {
             Ok::<_, studio_runtime_store::StoreError>((
@@ -744,15 +735,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     .await?;
     startup_trace("provider-and-io-setup-completed");
     let registry_wake = state.event_wake_handle();
-    studio_runtime_services::image_workspace_agents::install_wake(Arc::clone(&registry_wake));
-    // Python `resume_read_only_image_bases`: an image agent still in its
-    // read-only phase gets its base build and copy again after a restart.
-    #[cfg(target_os = "macos")]
-    match studio_runtime_services::image_workspace_agents::resume_read_only(&store).await {
-        Ok(0) => {}
-        Ok(count) => eprintln!("resumed the image workspace of {count} read-only agent(s)"),
-        Err(error) => eprintln!("image workspace resume failed: {error}"),
-    }
     let orchestration_wake = Arc::new(Notify::new());
     let federation_wake = Arc::new(Notify::new());
     observe_table_wakes(

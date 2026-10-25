@@ -58,8 +58,6 @@ jsonschema.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 # APFS clonefile(2) for host_exec slot clones.
 libc.workspace = true
-# Parses `hdiutil info -plist` for image workspace mount identity checks.
-plist = { version = "=1.10.3", default-features = false }
 dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFArray", "CFString"] }
 # CoreServices FSEvents declarations replace handwritten ABI signatures in the isolated adapter.

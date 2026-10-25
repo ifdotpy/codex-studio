@@ -867,13 +867,7 @@ fn project_child(record: &Value, task_id: Option<&str>) -> Value {
             .filter(|mode| truthy(Some(mode)))
             .cloned()
             .unwrap_or_else(|| {
-                if truthy(record.get("imageWorkspace")) {
-                    if record["environment"] == "linux" {
-                        json!("linux")
-                    } else {
-                        json!("image")
-                    }
-                } else if truthy(record.get("worktree")) {
+                if truthy(record.get("worktree")) {
                     json!("worktree")
                 } else {
                     json!("shared")
@@ -887,19 +881,6 @@ fn project_child(record: &Value, task_id: Option<&str>) -> Value {
             .cloned()
             .unwrap_or(Value::Null),
     );
-    if truthy(record.get("imageWorkspace")) {
-        output.insert(
-            "workspaceState".to_owned(),
-            json!(if truthy(record.get("imageWorkspaceReady")) {
-                "ready"
-            } else {
-                "building"
-            }),
-        );
-    }
-    if truthy(record.get("imageWorkspaceError")) {
-        copy_if(record, &mut output, "workspaceError", "imageWorkspaceError");
-    }
     if let Some(base_commit) = record.get("workerBaseCommit") {
         output.insert("baseRef".to_owned(), record["workerBaseRef"].clone());
         output.insert("baseCommit".to_owned(), base_commit.clone());

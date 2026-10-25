@@ -69,11 +69,11 @@ provider-compatible defaults.
 
 Chat creation selects `workspaceMode`.
 
-| Mode       | Platform        | Agent workspace                                     |
-| ---------- | --------------- | --------------------------------------------------- |
-| `layr`     | macOS, default  | Lead and agents in the Linux VM on owned layr lines |
-| `image`    | macOS           | Native agents in ASIF images                        |
-| `worktree` | macOS and Linux | Native agents in Git worktrees                      |
+| Mode                          | Platform                         | Agent workspace       |
+| ----------------------------- | -------------------------------- | --------------------- |
+| `layr-native` (Layr, default) | macOS and Linux                  | Native Layr lines     |
+| `layr` (Layr VM)              | Servers with the Studio Linux VM | Owned lines in the VM |
+| `worktree` (WT)               | macOS and Linux                  | Git worktrees         |
 
 A `worktree` worker gets its Git worktree at `<root>/codex-agents/<agent id>`.
 By default `<root>` is `.worktrees` in the worker's repository. To place the
@@ -86,7 +86,7 @@ restart. Archive and cleanup still manage worktrees under the previous root.
 
 The first layr chat imports the project once. Later chats reuse the VM main line.
 The Mac folder stays separate. Export a copy only on request.
-See [VM chats](linux-vm-workspaces.md) and [ASIF images](workspace-images.md).
+See [VM chats](linux-vm-workspaces.md).
 
 ## Setup
 

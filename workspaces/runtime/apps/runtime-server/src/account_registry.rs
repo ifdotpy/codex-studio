@@ -133,7 +133,6 @@ const WAKE_PAGE: usize = 32;
 const RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const ACCOUNT_WORKER_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
-const IMAGE_EXECUTION_DEPENDENCY: &str = "workspace-state/image-execution";
 
 fn next_retry_delay(current: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_RETRY_DELAY)
@@ -1733,36 +1732,19 @@ async fn classify_pending_agents(
     account: String,
     pending_agents: Vec<(String, i64, Option<String>)>,
 ) -> Result<(std::collections::BTreeSet<String>, Vec<(String, i64)>, bool), WorkerError> {
-    // A host that runs image turns starts the account worker for them like for
-    // any agent: workspace preparation mounts the image and runs the turn in
-    // `<mount>/repo`, and the worker's first pass makes their restart check.
-    if studio_runtime_services::image_workspace::IMAGE_EXECUTION_SUPPORTED {
-        let agents = pending_agents
-            .into_iter()
-            .map(|(id, epoch, _)| (id, epoch))
-            .collect();
-        return Ok((std::collections::BTreeSet::new(), agents, false));
-    }
-    let image_agents = pending_agents
+    // Legacy workspaces remain visible but cannot execute after removal.
+    studio_runtime_services::legacy_image_workspace::finish_stored_workspaces(&store).await?;
+    let legacy_agents = pending_agents
         .iter()
         .filter(|(_, _, mode)| mode.as_deref() == Some("image"))
         .map(|(id, _, _)| id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-    hold_image_workspace_agents(&store, &image_agents).await?;
+        .collect();
     let agents = pending_agents
         .into_iter()
         .filter_map(|(id, epoch, mode)| (mode.as_deref() != Some("image")).then_some((id, epoch)))
-        .collect::<Vec<_>>();
-    let image_recovery = if agents.is_empty() {
-        store
-            .read_async("runtime-server/account_registry", move |db| {
-                has_image_workspace_recovery(db, &account)
-            })
-            .await
-    } else {
-        Ok(false)
-    }?;
-    Ok((image_agents, agents, image_recovery))
+        .collect();
+    let _ = account;
+    Ok((legacy_agents, agents, false))
 }
 
 /// Accounts whose pending or recovery work can have changed with these rows. A row that no
@@ -1947,94 +1929,6 @@ fn event_time() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
-}
-
-/// Keep the durable event pending while exposing the unavailable workspace executor on its agent.
-async fn hold_image_workspace_agents(
-    store: &RuntimeStore,
-    agents: &std::collections::BTreeSet<String>,
-) -> Result<(), WorkerError> {
-    if agents.is_empty() {
-        return Ok(());
-    }
-    let agents = agents.clone();
-    store
-        .transaction_with(move |tx| {
-            for id in agents {
-                let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
-                    continue;
-                };
-                if agent
-                    .extra
-                    .get("workspaceMode")
-                    .and_then(|mode| mode.as_str())
-                    != Some("image")
-                {
-                    continue;
-                }
-                if agent.status == AgentStatus::Paused
-                    && agent.extra.get("error").and_then(|value| value.as_str())
-                        == Some(IMAGE_EXECUTION_DEPENDENCY)
-                    && agent
-                        .extra
-                        .get("nativeFailureHold")
-                        .and_then(|value| value.as_bool())
-                        == Some(true)
-                {
-                    continue;
-                }
-                agent.status = AgentStatus::Paused;
-                agent
-                    .extra
-                    .insert("autoWake".into(), serde_json::json!(false));
-                agent
-                    .extra
-                    .insert("inFlight".into(), serde_json::json!(false));
-                agent
-                    .extra
-                    .insert("nativeFailureHold".into(), serde_json::json!(true));
-                agent.extra.insert(
-                    "error".into(),
-                    serde_json::json!(IMAGE_EXECUTION_DEPENDENCY),
-                );
-                agent.extra.insert(
-                    "startOutcomeHold".into(),
-                    serde_json::json!({"stage":"held","reason":IMAGE_EXECUTION_DEPENDENCY}),
-                );
-                AgentRepository::put(tx, &agent)?;
-            }
-            Ok::<_, WorkerError>(())
-        })
-        .await
-}
-
-fn has_image_workspace_recovery(
-    db: &rusqlite::Connection,
-    account: &str,
-) -> Result<bool, WorkerError> {
-    Ok(db.query_row(
-        "SELECT EXISTS(
-          SELECT 1 FROM runtime_agents a
-          WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1
-            AND json_extract(a.record,'$.workspaceMode')='image'
-            AND json_extract(a.record,'$.deletedAt') IS NULL
-            AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0
-            AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0
-            AND ((COALESCE(json_extract(a.record,'$.provider'),'codex')='codex'
-                  AND json_extract(a.record,'$.startAttempt.submitted')=1
-                  AND json_extract(a.record,'$.startAttempt.connectionGeneration') IS NOT NULL
-                  AND json_extract(a.record,'$.status') IN ('starting','running','waiting','paused','interrupted'))
-              OR (json_type(a.record,'$.disconnectRecovery')='object' AND (
-                  COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
-                  OR json_extract(a.record,'$.disconnectRecovery.stage') IS NOT NULL))
-              OR (json_type(a.record,'$.restartRecovery')='object' AND (
-                  COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
-                  OR COALESCE(json_extract(a.record,'$.restartRecovery.stage'),'')
-                     NOT IN ('finished','continued','reattached','input_restored'))))
-        )",
-        [account],
-        |row| row.get(0),
-    )?)
 }
 
 /// Load the host project snapshot and recheck its paths for one radio write.

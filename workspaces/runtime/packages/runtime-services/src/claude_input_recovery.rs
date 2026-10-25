@@ -31,8 +31,6 @@ const SOURCE_FIELDS: &[&str] = &[
     "nativeEffort",
     "fastMode",
     "yoloMode",
-    "imageWorkspace",
-    "imageWorkspaceReady",
     "compactions",
 ];
 

@@ -28,6 +28,7 @@ export type ProjectServerChoice = {
   disabled?: boolean;
   serverId?: string;
   system?: string;
+  hasStudioVm?: boolean;
   connection?: StudioServer;
 };
 export function projectServerChoices(

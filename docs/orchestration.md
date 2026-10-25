@@ -792,34 +792,19 @@ agents in the team. `CODEX_CANVAS_CONCURRENCY` sets the server-wide cap, default
 maximum 64. Lead turns have priority when a slot becomes free.
 Lowering a limit does not interrupt existing turns.
 
-Chat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.
-A new lead chat on a Mac server defaults to `layr`. A top-level task agent from
-`POST /api/agents` defaults to `worktree`. Linux servers support `worktree` only.
+Chat creation selects `workspaceMode`: `layr-native`, `layr`, or `worktree`.
+New lead chats default to native Layr on macOS and Linux.
+`Layr VM` appears only when the server has the Studio Linux VM.
+`WT` selects a Git worktree.
 
-| Chat mode  | Environment                         | Worker workspace         |
-| ---------- | ----------------------------------- | ------------------------ |
-| `layr`     | Studio Linux VM, including the lead | Separate owned layr line |
-| `image`    | Native macOS                        | ASIF image               |
-| `worktree` | Native host                         | Git worktree             |
+Workers inherit the chat mode. Native Layr workers use separate owned lines.
+Worktrees use a committed Git base. Shared workers use the selected folder.
+Reviewers keep read-only access.
+Use `server` and an absolute remote `cwd` for work on a paired machine.
 
-Workers inherit the chat mode. `orchestration_spawn` accepts `cwd` within the
-lead's workspace. Native workers can select `workspace: "image"`, `"worktree"`,
-or deliberate `"shared"` edits. Images require macOS and include uncommitted
-changes. Worktrees use a committed Git base. Linux image requests fall back to
-worktrees with a clear message. Native reviewers use the selected folder with
-read-only access. Layr reviewers use separate read-only lines.
-Use `server` and an absolute remote `cwd` for native work on a paired machine.
-
-The first layr chat imports the source once. Later chats reuse the VM main line.
-The Mac folder stays separate. Studio saves a state after each agent turn.
-Workers submit an exact layr state ID. Acceptance merges that state with
-`layr merge <line> --expect <state>`. Archive removes the worker line.
-The host keeps credential refresh. Guest profiles receive access credentials only.
-See [layr VM chats](docs/linux-vm-workspaces.md) and
-[macOS images](docs/workspace-images.md) for their lifecycle and checks.
-
-The chat badge shows `LAYR`, `ASIF`, or `WT` for the selected mode.
-Native shared workers show `SHARED`. Hover or focus the badge for its path.
+The chat badge shows `Layr`, `Layr VM`, or `WT`.
+Shared workers show `SHARED`. Hover or focus the badge for its path.
+See [VM chats](linux-vm-workspaces.md).
 
 On a real Mac, default-config agent start took 2.610 s at 50,000 files and 10.104 s at
 200,000 files with no staged source change. After source `git add`, it took 3.757 s and

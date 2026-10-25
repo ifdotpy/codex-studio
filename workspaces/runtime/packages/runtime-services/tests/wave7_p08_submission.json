@@ -187,8 +187,6 @@
       "nativeEffort": null,
       "fastMode": null,
       "yoloMode": false,
-      "imageWorkspace": null,
-      "imageWorkspaceReady": null,
       "compactions": 0
     },
     {

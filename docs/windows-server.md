@@ -130,7 +130,7 @@ Keep their private writes under the same Windows ACL policy.
 
 `codex_workspace_images.py` uses image and mount helpers and is not a Windows
 workspace backend. Select the existing Git worktree fallback for native Windows
-workers. Image workspaces require macOS ASIF. Linux servers use Git worktrees.
+workers. macOS and Linux servers support native Layr and Git worktrees.
 
 Apple Virtualization Framework stay unsupported on Windows. Audit the import
 graph so a native Windows server does not import these modules at startup.
