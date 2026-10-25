@@ -278,7 +278,54 @@ if (!existsSync("/proc/self/cwd"))
     }
   });
 
-test("parallel modules keep ordered output and aggregate failures and skips", () => {
+function moduleExecutor(folder, broken = false) {
+  const script = `
+import importlib.util, multiprocessing, sys
+from pathlib import Path
+source, directory = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("guest_suite_fixture", source)
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+class Executor:
+ def __init__(self, *, max_workers, mp_context, initializer, initargs):
+  assert max_workers == 2
+  assert mp_context.get_start_method() == "spawn"
+  assert initializer is runner.prepare
+  assert initargs == (str(Path(directory).resolve()),)
+  assert not multiprocessing.active_children()
+ def __enter__(self): return self
+ def __exit__(self, *error):
+  assert not multiprocessing.active_children()
+  print("fixture executor closed", file=sys.stderr)
+ def map(self, function, names):
+  assert function is runner.run_module
+  assert names == ${broken ? '["test_a", "test_crash", "test_z"]' : '["test_a", "test_b"]'}
+  ${broken ? 'def crashed():\n   yield function("test_a")\n   raise runner.BrokenProcessPool("fixture worker exit")\n  return crashed()' : "return map(function, names)"}
+sys.argv = [source, directory]
+sys.exit(runner.main(executor_factory=Executor))
+`;
+  return spawnSync(
+    process.env.STUDIO_GUEST_PYTHON || "python3",
+    [
+      "-B",
+      "-c",
+      script,
+      fileURLToPath(new URL("guest_suite.py", import.meta.url)),
+      folder,
+    ],
+    {
+      encoding: "utf8",
+      timeout: 10000,
+      env: {
+        ...process.env,
+        STUDIO_GUEST_WORKERS: "2",
+        LAYR_E2E_ROOT: "/not-for-contracts",
+      },
+    },
+  );
+}
+
+test("the module executor keeps ordered output and aggregates failures and skips", () => {
   const folder = mkdtempSync(path.join(os.tmpdir(), "guest-modules-"));
   try {
     writeFileSync(
@@ -289,43 +336,46 @@ test("parallel modules keep ordered output and aggregate failures and skips", ()
       path.join(folder, "test_b.py"),
       "import os,sys,unittest\nclass B(unittest.TestCase):\n @unittest.skip('fixture')\n def test_skip(self): pass\n def test_pass(self):\n  self.assertNotIn('LAYR_E2E_ROOT',os.environ)\n  with self.assertRaisesRegex(RuntimeError,'privileged command forbidden'):\n   sys.audit('subprocess.Popen','/usr/sbin/groupadd',[],None,None)\n",
     );
-    const run = spawnSync(
-      process.env.STUDIO_GUEST_PYTHON || "python3",
-      ["-B", fileURLToPath(new URL("guest_suite.py", import.meta.url)), folder],
-      {
-        encoding: "utf8",
-        timeout: 10000,
-        env: {
-          ...process.env,
-          STUDIO_GUEST_WORKERS: "2",
-          LAYR_E2E_ROOT: "/not-for-contracts",
-        },
-      },
+    const run = moduleExecutor(folder);
+    assert.equal(
+      run.status,
+      1,
+      `${run.error?.stack ?? ""}\n${run.signal ?? ""}\n${run.stderr}`,
     );
-    assert.equal(run.status, 1, run.stderr);
     assert.match(run.stderr, /module failure/);
     assert.ok(run.stderr.indexOf("test_a:") < run.stderr.indexOf("test_b:"));
     assert.match(run.stderr, /Ran 3 tests in /);
     assert.match(run.stderr, /FAILED \(failures=1, errors=0, skipped=1\)/);
+    assert.equal(run.stderr.match(/fixture executor closed/g)?.length, 1);
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
 });
 
-test("a crashed module names unfinished modules and fails the run", () => {
+test("a broken executor closes its pool and names unfinished modules", () => {
   const folder = mkdtempSync(path.join(os.tmpdir(), "guest-crash-"));
   try {
+    for (const name of ["test_a", "test_z"])
+      writeFileSync(
+        path.join(folder, `${name}.py`),
+        "import unittest\nclass Complete(unittest.TestCase):\n def test_pass(self): pass\n",
+      );
     writeFileSync(
       path.join(folder, "test_crash.py"),
-      "import os,unittest\nclass Crash(unittest.TestCase):\n def test_crash(self): os._exit(7)\n",
+      "import unittest\nclass Crash(unittest.TestCase):\n def test_crash(self): pass\n",
     );
-    const run = spawnSync(
-      process.env.STUDIO_GUEST_PYTHON || "python3",
-      ["-B", fileURLToPath(new URL("guest_suite.py", import.meta.url)), folder],
-      { encoding: "utf8", timeout: 10000 },
+    const run = moduleExecutor(folder, true);
+    assert.equal(
+      run.status,
+      1,
+      `${run.error?.stack ?? ""}\n${run.signal ?? ""}\n${run.stderr}`,
     );
-    assert.equal(run.status, 1, run.stderr);
-    assert.match(run.stderr, /module worker crashed; unfinished: test_crash/);
+    assert.match(run.stderr, /test_a: 1 tests in /);
+    assert.match(
+      run.stderr,
+      /module worker crashed; unfinished: test_crash, test_z/,
+    );
+    assert.equal(run.stderr.match(/fixture executor closed/g)?.length, 1);
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }

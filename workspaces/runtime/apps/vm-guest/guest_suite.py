@@ -50,7 +50,7 @@ def modules(suite):
             yield entry.__class__.__module__
 
 
-def main():
+def main(*, executor_factory=ProcessPoolExecutor):
     directory = str(Path(sys.argv[1]).resolve()) if len(sys.argv) > 1 else str(Path(__file__).parent)
     workers = int(os.environ.get("STUDIO_GUEST_WORKERS", min(MAX_WORKERS, os.cpu_count() or 1)))
     if not 1 <= workers <= MAX_WORKERS:
@@ -62,8 +62,8 @@ def main():
     names = sorted(set(modules(suite)))
     total = failures = errors = skipped = 0
     started = time.monotonic()
-    with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
-                             initializer=prepare, initargs=(directory,)) as pool:
+    with executor_factory(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+                          initializer=prepare, initargs=(directory,)) as pool:
         # map preserves discovery order; each module has isolated globals and buffered output.
         results = pool.map(run_module, names)
         for index, module in enumerate(names):

@@ -180,3 +180,7 @@ test-native-webview:
     @pnpm --filter codex-agents-web run build
     @cargo build -p studio-native-client --features native-check --locked
     @node workspaces/client/apps/native/check-native.mjs
+
+[doc("Manual check: run real guest module worker aggregation and crash scenarios.")]
+test-guest-runner-processes:
+    @node --test workspaces/runtime/apps/vm-guest/run-guest-suite-processes.test.mjs
