@@ -5520,6 +5520,7 @@ dependencies = [
 name = "studio-process-supervisor"
 version = "0.1.0"
 dependencies = [
+ "notify",
  "rusqlite",
  "rustix",
  "serde_json",
