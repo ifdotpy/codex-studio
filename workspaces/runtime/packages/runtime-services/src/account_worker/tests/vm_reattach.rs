@@ -323,7 +323,7 @@ async fn existing_actor(paused: bool) -> (State, Arc<ExistingGuest>) {
             AgentRepository::put(tx,&record)?;
             studio_runtime_store::ExecutionHistoryRepository::record(tx,&record)?;
             tx.execute("UPDATE runtime_events SET status='delivered',turn_id='vm-turn' WHERE agent=?1",[&actor])?;
-            let members:usize = tx.query_row(
+            let members:i64 = tx.query_row(
                 "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND epoch=?2 \
                  AND id IN (SELECT value FROM json_each(?3)) \
                  AND status='delivered' AND turn_id='vm-turn'",
