@@ -1,5 +1,6 @@
 // Real bridge protocol with SDK-declared fixtures; no model requests.
 import { afterEach, expect, test } from "vitest";
+import { once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { waitForFile } from "./testing/file-signals.mjs";
@@ -571,6 +572,32 @@ for (const scenario of [
       ]);
     },
   );
+
+test("harness close reaps a signal-killed bridge and repeats safely", async () => {
+  const b = await startBridge(sdk, "claude-usage-harness-signal-", {
+    clock: true,
+  });
+  bridges.push(b);
+  const child = b.process;
+  const exited = once(child, "exit");
+  child.kill("SIGKILL");
+  await exited;
+  await b.close();
+  await b.close();
+});
+
+test("harness close reaps a bridge whose virtual clock cannot be driven", async () => {
+  const b = await startBridge(sdk, "claude-usage-harness-disconnect-", {
+    clock: true,
+  });
+  bridges.push(b);
+  await start(b, "shutdown-deferred");
+  await b.note((n) => n.method === "provider/generationStarted");
+  const child = b.process;
+  child.disconnect();
+  await b.close();
+  expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+});
 
 test("unexpected SDK end still publishes one failed completion", async () => {
   const b = await setup();

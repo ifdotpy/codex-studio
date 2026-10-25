@@ -68,6 +68,9 @@ export async function startBridge(
       },
     );
   let child;
+  // One exit observation per launched child, registered at spawn so cleanup can
+  // never miss an exit that already happened (including a signal exit).
+  let exited;
   let stderr = "";
   const notes = [];
   const waiting = new Map();
@@ -75,6 +78,7 @@ export async function startBridge(
   const attach = () => {
     child = launch();
     const attached = child;
+    exited = new Promise((resolve) => attached.once("exit", resolve));
     child.stderr.on("data", (chunk) => (stderr += chunk));
     child.once("close", () => {
       if (child !== attached) return;
@@ -94,6 +98,9 @@ export async function startBridge(
   const bridge = {
     root,
     notes,
+    get process() {
+      return child;
+    },
     async writeSignal(name, content = "") {
       const file = path.join(root, name);
       const temporary = path.join(root, `.signal-${++signalSequence}.tmp`);
@@ -201,8 +208,7 @@ export async function startBridge(
     },
     async restart() {
       child.stdin.end();
-      if (child.exitCode === null)
-        await new Promise((resolve) => child.once("exit", resolve));
+      await exited;
       notes.length = 0;
       waiting.clear();
       stderr = "";
@@ -210,17 +216,21 @@ export async function startBridge(
       await bridge.call("thread/resume", { threadId: bridge.thread });
     },
     async close() {
-      const exited =
-        child.exitCode === null ? once(child, "exit") : Promise.resolve();
       child.stdin.end();
       // A failed virtual-clock scenario can leave teardown waiting on a frozen timer.
       // Always reap this fixture's child, including when the test itself timed out.
       const guard = setTimeout(() => child.kill("SIGKILL"), HANG_GUARD_MS);
       try {
         // Bounded shutdown timers run on the virtual clock; advance it until exit.
+        // A clock that can no longer be driven cannot finish the child: reap it.
         if (clock)
           while (child.exitCode === null && child.signalCode === null)
-            await bridge.advanceTime(VIRTUAL_STEP_MS);
+            try {
+              await bridge.advanceTime(VIRTUAL_STEP_MS);
+            } catch {
+              child.kill("SIGKILL");
+              break;
+            }
         await exited;
       } finally {
         clearTimeout(guard);
