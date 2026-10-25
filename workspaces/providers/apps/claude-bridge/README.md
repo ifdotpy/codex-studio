@@ -43,6 +43,8 @@ unexpected final-save failure emits one failed completion and closes the query;
 retries observe that failure without repeating finalization or usage publication.
 The existing disk-full deferral remains available. Shutdown stops admitting new
 finalizers through that shared path and cancels turn timers before closing the SDK.
+It also disposes the tool watchdog; recovery already waiting on a save or deadline
+stops without further notices, interrupts or terminal effects.
 
 Rollback and fork boundaries use every native part of a composite input in
 order, beginning at its earliest part. Forked history remaps every retained input

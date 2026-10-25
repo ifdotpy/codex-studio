@@ -1312,7 +1312,7 @@ async function reconcileClosedSteers(s, turn, unapplied) {
 async function recoverStall(s, active, found) {
   const turn = active.turn;
   const item = active.tools.get(found.id);
-  if (!turn || active.stall || finishingTurns.has(turn)) return;
+  if (closing || !turn || active.stall || finishingTurns.has(turn)) return;
   const message = found.stop
     ? "Studio stopped this turn: Claude Code did not end the turn after Stop."
     : stallMessage({ ...found, tool: item?.tool || found.tool });
@@ -1356,10 +1356,13 @@ async function recoverStall(s, active, found) {
   try {
     await persist(s);
   } catch (error) {
-    process.stderr.write(
-      "Claude stall: persist failed: " + error.message + "\n",
-    );
+    if (!closing)
+      process.stderr.write(
+        "Claude stall: persist failed: " + error.message + "\n",
+      );
   }
+  // A save already in flight may settle after shutdown closes the query.
+  if (closing) return;
   let timer;
   const deadline = new Promise(
     (resolve) =>
@@ -1368,7 +1371,9 @@ async function recoverStall(s, active, found) {
   // An interrupt keeps queued steers: Claude Code runs them next.
   if (!found.stop)
     Promise.resolve()
-      .then(() => active.q?.interrupt())
+      .then(() => {
+        if (!closing) return active.q?.interrupt();
+      })
       .catch((error) =>
         process.stderr.write(
           "Claude stall: interrupt failed: " + error.message + "\n",
@@ -1377,6 +1382,7 @@ async function recoverStall(s, active, found) {
   await Promise.race([finished, deadline]);
   clearTimeout(timer);
   if (
+    closing ||
     active.turn !== turn ||
     finishingTurns.has(turn) ||
     queries.get(s.id) !== active
@@ -1398,7 +1404,7 @@ async function recoverStall(s, active, found) {
   // Closing normally ends the SDK stream, and its owner finishes the turn.
   // If the stream still has not ended, finish it here and drop the query.
   await new Promise((resolve) => setImmediate(resolve));
-  if (active.turn !== turn || finishingTurns.has(turn)) return;
+  if (closing || active.turn !== turn || finishingTurns.has(turn)) return;
   await finishTurn(
     s,
     active,
@@ -3177,6 +3183,7 @@ lines.on("line", (line) => {
 let closing;
 function shutdown() {
   if (closing) return closing;
+  armStallWatch.dispose();
   closing = (async () => {
     const activeQueries = [...queries.entries()];
     // Maximum graceful shutdown drain, in milliseconds; never wait for the
