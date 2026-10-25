@@ -74,7 +74,8 @@ pub fn global_entity_collections_json() -> &'static str {
 mod tests {
     #[test]
     fn root_only_scope_matches_canonical_dto_predicates() {
-        let document: serde_json::Value = serde_json::from_slice(crate::OPENAPI).unwrap();
+        let document: serde_json::Value =
+            serde_json::from_slice(crate::OPENAPI).expect("committed OpenAPI document");
         let schemas = &document["components"]["schemas"];
         for scope in super::subscription_entity_scopes()
             .values()
@@ -84,10 +85,18 @@ mod tests {
                 let payload_ref = schemas["SyncEntityPayload"]["discriminator"]["mapping"]
                     [collection]
                     .as_str()
-                    .unwrap();
-                let payload = &schemas[payload_ref.rsplit('/').next().unwrap()];
-                let value_ref = payload["properties"]["value"]["$ref"].as_str().unwrap();
-                let dto = &schemas[value_ref.rsplit('/').next().unwrap()];
+                    .expect("payload discriminator reference");
+                let payload = &schemas[payload_ref
+                    .rsplit('/')
+                    .next()
+                    .expect("payload schema reference name")];
+                let value_ref = payload["properties"]["value"]["$ref"]
+                    .as_str()
+                    .expect("canonical value schema reference");
+                let dto = &schemas[value_ref
+                    .rsplit('/')
+                    .next()
+                    .expect("canonical value schema name")];
                 assert!(
                     dto["properties"].get("rootId").is_some(),
                     "root-only DTO needs rootId: {collection}"

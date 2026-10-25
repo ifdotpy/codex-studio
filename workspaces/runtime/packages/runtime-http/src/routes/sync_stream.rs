@@ -1,7 +1,6 @@
 //! HTTP adapter for the versioned sync event stream.
 
-#[path = "entity_transfer.rs"]
-mod entity_transfer;
+use super::entity_transfer;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
@@ -1114,12 +1113,14 @@ async fn next_subscription_change(
 
 async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChange) -> Option<()> {
     state.resources = update.resources;
-    state.scoped_sequences.retain(|key, _| {
-        state
-            .resources
-            .iter()
-            .any(|resource| resource.to_string() == *key)
-    });
+    let retained_scopes = state
+        .resources
+        .iter()
+        .map(Value::to_string)
+        .collect::<BTreeSet<_>>();
+    state
+        .scoped_sequences
+        .retain(|key, _| retained_scopes.contains(key));
     let readiness_interest = state
         .resources
         .iter()

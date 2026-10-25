@@ -992,10 +992,10 @@ mod tests {
                 include_str!("../sync_schema.sql")
                     .split("-- section: runtime_events")
                     .next()
-                    .unwrap(),
+                    .expect("common sync schema section"),
             )
-            .unwrap();
-        let tx = connection.transaction().unwrap();
+            .expect("bootstrap scope fixture schema");
+        let tx = connection.transaction().expect("scope fixture transaction");
         for (id, root) in [("a", "alpha"), ("b", "beta")] {
             SyncDocumentsRepository::put_entity(
                 &tx,
@@ -1004,10 +1004,10 @@ mod tests {
                 json!({"id":id,"rootId":root}),
                 false,
             )
-            .unwrap();
+            .expect("publish team membership");
         }
         SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({"agent":"a"}), false)
-            .unwrap();
+            .expect("publish original task owner");
         let fence = || {
             SyncDocumentsRepository::entity_scope_visibility_revision(
                 &tx,
@@ -1015,13 +1015,14 @@ mod tests {
                 "alpha",
                 true,
             )
-            .unwrap()
+            .expect("read alpha visibility fence")
         };
         let baseline = fence();
-        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({}), true).unwrap();
+        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({}), true)
+            .expect("tombstone original task owner");
         assert_eq!(fence(), baseline, "ordinary deletion stays incremental");
         SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({"agent":"b"}), false)
-            .unwrap();
+            .expect("restore under beta owner");
         assert!(
             fence() > baseline,
             "coalesced delete/restore must retain old ownership"
@@ -1033,7 +1034,7 @@ mod tests {
             json!({"rootId":"alpha"}),
             false,
         )
-        .unwrap();
+        .expect("publish root-only work record");
         let work_fence = || {
             SyncDocumentsRepository::entity_scope_visibility_revision(
                 &tx,
@@ -1041,7 +1042,7 @@ mod tests {
                 "alpha",
                 false,
             )
-            .unwrap()
+            .expect("read root-only work fence")
         };
         let baseline = work_fence();
         SyncDocumentsRepository::put_entity(
@@ -1051,7 +1052,7 @@ mod tests {
             json!({"rootId":"alpha"}),
             false,
         )
-        .unwrap();
+        .expect("publish new team child");
         assert_eq!(
             work_fence(),
             baseline,
@@ -1064,7 +1065,7 @@ mod tests {
             json!({"rootId":"beta","agent":"alpha"}),
             false,
         )
-        .unwrap();
+        .expect("publish out-of-scope work record");
         let selected = SyncDocumentsRepository::resume_entity_scope(
             &tx,
             None,
@@ -1074,7 +1075,7 @@ mod tests {
             false,
             512,
         )
-        .unwrap();
+        .expect("read root-only work selection");
         assert_eq!(
             selected
                 .rows
@@ -1090,34 +1091,38 @@ mod tests {
                 [],
                 |row| row.get::<_, i64>(0),
             )
-            .unwrap()
+            .expect("count retained tombstone provenance")
         };
         assert_eq!(provenance_count(), 0, "restoration consumes provenance");
-        tx.execute_batch("SAVEPOINT deleted_owner").unwrap();
-        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({}), true).unwrap();
+        tx.execute_batch("SAVEPOINT deleted_owner")
+            .expect("create provenance savepoint");
+        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({}), true)
+            .expect("tombstone within savepoint");
         assert_eq!(provenance_count(), 1);
         tx.execute_batch("ROLLBACK TO deleted_owner; RELEASE deleted_owner")
-            .unwrap();
+            .expect("rollback source and provenance");
         assert_eq!(
             provenance_count(),
             0,
             "rollback retains source/provenance atomicity"
         );
-        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({}), true).unwrap();
+        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({}), true)
+            .expect("tombstone before same-owner restore");
         let restored_fence = fence();
         SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({"agent":"b"}), false)
-            .unwrap();
+            .expect("restore same task owner");
         assert_eq!(
             fence(),
             restored_fence,
             "same-owner restore stays incremental"
         );
-        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({}), true).unwrap();
+        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({}), true)
+            .expect("tombstone before physical prune");
         tx.execute(
             "DELETE FROM sync_entities WHERE collection='task' AND id='moved'",
             [],
         )
-        .unwrap();
+        .expect("physically prune retained tombstone");
         assert_eq!(
             provenance_count(),
             0,

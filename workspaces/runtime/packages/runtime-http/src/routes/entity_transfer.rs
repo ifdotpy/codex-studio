@@ -30,7 +30,11 @@ impl TransferReader {
             return Ok(None);
         }
         let value: Value = serde_json::from_str(&line).map_err(|_| ApiError::internal())?;
-        Ok(Some(super::sse_event("entity-transfer", None, value)))
+        Ok(Some(super::sync_stream::sse_event(
+            "entity-transfer",
+            None,
+            value,
+        )))
     }
 }
 
@@ -137,7 +141,7 @@ async fn prepare(
         loop {
             let checkpoint = page.checkpoint;
             let final_sql_page = checkpoint == through;
-            let documents = page.rows.iter().filter(|row| !snapshot || !row.deleted).map(super::super::sync_documents::entity_document).collect::<Option<Vec<_>>>().ok_or_else(ApiError::internal)?;
+            let documents = page.rows.iter().filter(|row| !snapshot || !row.deleted).map(super::sync_documents::entity_document).collect::<Option<Vec<_>>>().ok_or_else(ApiError::internal)?;
             let batches = byte_pages(after, checkpoint, documents)?;
             for (index, batch) in batches.iter().enumerate() {
                 let complete = final_sql_page && index + 1 == batches.len();
@@ -393,35 +397,37 @@ mod tests {
     #[tokio::test]
     async fn restored_ownership_replaces_the_old_scope_and_delivers_the_new_scope() {
         let (_directory, state) = fixture().await;
-        let store = state.store.as_ref().unwrap();
-        store.transaction(|tx| { SyncDocumentsRepository::put_entity(tx,"task","restored",json!({"id":"restored","agent":"alpha","kind":"command","status":"running","created":1}),false)?; Ok(()) }).await.unwrap();
-        let alpha: ResourceRef =
-            serde_json::from_value(json!({"kind":"tasks","agentId":"alpha"})).unwrap();
-        let beta: ResourceRef =
-            serde_json::from_value(json!({"kind":"tasks","agentId":"beta"})).unwrap();
+        let store = state.store.as_ref().expect("fixture store");
+        store.transaction(|tx| { SyncDocumentsRepository::put_entity(tx,"task","restored",json!({"id":"restored","agent":"alpha","kind":"command","status":"running","created":1}),false)?; Ok(()) }).await.expect("publish initial task owner");
+        let alpha: ResourceRef = serde_json::from_value(json!({"kind":"tasks","agentId":"alpha"}))
+            .expect("alpha task resource");
+        let beta: ResourceRef = serde_json::from_value(json!({"kind":"tasks","agentId":"beta"}))
+            .expect("beta task resource");
         let (_, _, baseline) = prepare(&state, &event(&state), alpha.clone(), None)
             .await
-            .unwrap();
+            .expect("initial owner baseline");
         store.transaction(|tx| {
             SyncDocumentsRepository::put_entity(tx,"task","restored",json!({}),true)?;
             SyncDocumentsRepository::put_entity(tx,"task","restored",json!({"id":"restored","agent":"beta","kind":"command","status":"running","created":1}),false)?;
             Ok(())
-        }).await.unwrap();
+        }).await.expect("delete and restore under new owner");
         let (old, _, _) = prepare(&state, &event(&state), alpha, Some(baseline.clone()))
             .await
-            .unwrap();
-        let old = serde_json::to_value(old.unwrap()).unwrap();
+            .expect("old scope replacement");
+        let old = serde_json::to_value(old.expect("inline old scope entry"))
+            .expect("serialize old scope replacement");
         assert_eq!(old["replyKind"], "snapshot");
         assert!(
             old["entityChanges"]["documents"]
                 .as_array()
-                .unwrap()
+                .expect("old scope replacement documents")
                 .is_empty()
         );
         let (new, _, _) = prepare(&state, &event(&state), beta, Some(baseline))
             .await
-            .unwrap();
-        let new = serde_json::to_value(new.unwrap()).unwrap();
+            .expect("new owner interval");
+        let new = serde_json::to_value(new.expect("inline new owner entry"))
+            .expect("serialize new owner interval");
         assert_eq!(
             new["entityChanges"]["documents"][0]["value"]["agent"],
             "beta"
@@ -598,5 +604,13 @@ mod tests {
             "entity_transfer_fixture snapshot_records={records} pages={pages} maximum_wire_bytes={maximum_wire_bytes} delta_records={}",
             batch.documents.len()
         );
+    }
+}
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "entity_transfer",
+        routes: None,
+        dependencies: &[],
     }
 }

@@ -613,7 +613,9 @@ mod tests {
         assert_eq!(
             documents
                 .iter()
-                .map(|row| row["collection"].as_str().unwrap())
+                .map(|row| row["collection"]
+                    .as_str()
+                    .expect("work entity collection name"))
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from(["workDetail", "workResult"])
         );
@@ -628,7 +630,12 @@ mod tests {
             .find(|row| row["collection"] == "workResult")
             .expect("history");
         assert_eq!(result["value"]["value"]["text"], "Existing evidence");
-        assert!(serde_json::to_vec(&baseline).unwrap().len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+        assert!(
+            serde_json::to_vec(&baseline)
+                .expect("encode work baseline for byte bound")
+                .len()
+                <= SYNC_STREAM_EVENT_MAX_BYTES
+        );
         let cursor = serde_json::from_value(baseline["cursor"].clone()).expect("work cursor");
         store.transaction_with(|tx| {
             tx.execute("UPDATE runtime_work SET record=json_set(record,'$.status','review','$.updated',2,'$.version',2) WHERE id='assignment'",[])?;
@@ -646,13 +653,19 @@ mod tests {
         assert_eq!(changed.len(), 1, "ordinary status must not replay history");
         assert_eq!(changed[0]["collection"], "workDetail");
         assert_eq!(changed[0]["value"]["status"], "review");
-        assert!(serde_json::to_vec(&live).unwrap().len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+        assert!(
+            serde_json::to_vec(&live)
+                .expect("encode work delta for byte bound")
+                .len()
+                <= SYNC_STREAM_EVENT_MAX_BYTES
+        );
         let mut event:crate::generated::ResourceChangeEvent=serde_json::from_value(json!({"protocol":studio_runtime_schema::SYNC_PROTOCOL_VERSION,"workspaceId":state.workspace_id,"epoch":"epoch","revision":2,"reason":"change","resources":[work],"resourceVersions":[{"revision":2}]})).expect("work notification");
         attach_view_snapshots(Some(&state), &mut event).await;
         assert!(
-            serde_json::to_value(event).unwrap()["resourceVersions"][0]
-                .get("viewSnapshot")
-                .is_none(),
+            serde_json::to_value(event).expect("serialize work notification")["resourceVersions"]
+                [0]
+            .get("viewSnapshot")
+            .is_none(),
             "legacy full-view helper must not reattach work history"
         );
         let resource: ResourceRef =
