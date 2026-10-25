@@ -1020,16 +1020,7 @@ export function useMessages(
     setItems(next.items);
     setBefore(next.before);
     setNotice("");
-    setConnection(roomSubscription.status === "live" ? "live" : "reconnecting");
-  }, [
-    id,
-    enabled,
-    kind,
-    scope,
-    roomSubscription.data,
-    roomSubscription.status,
-    roomSubscription.error,
-  ]);
+  }, [id, enabled, kind, scope, roomSubscription.data, roomSubscription.error]);
   useEffect(() => {
     const updateConnection = (next: string) => {
       if (

@@ -4,6 +4,11 @@ const h = vi.hoisted(() => ({
   cells: [] as any[],
   effects: [] as Array<() => void>,
   data: new Map<string, unknown>(),
+  statuses: new Map<string, string>(),
+  watchConnection: vi.fn((accept: (status: string) => void) => {
+    accept("live");
+    return () => {};
+  }),
   get: vi.fn(async () => ({})),
   storage: {},
   writes: [] as string[],
@@ -61,7 +66,7 @@ vi.mock("react", async (original) => {
 vi.mock("../sync/subscriptions", () => ({
   useSubscription: (ref: any) => ({
     data: ref ? h.data.get(ref.kind) : undefined,
-    status: "live",
+    status: ref ? (h.statuses.get(ref.kind) ?? "live") : "stale",
     error: null,
   }),
 }));
@@ -76,7 +81,7 @@ vi.mock("../servers/ServerServicesContext", () => ({
   useServerStorage: () => h.storage,
   useServerServices: () => ({ owner: { id: "local" } }),
   useServerSync: () => ({}),
-  useServerResources: () => ({}),
+  useServerResources: () => ({ watchResourceConnection: h.watchConnection }),
   useServerTranscripts: () => ({ peekTranscript: () => undefined }),
 }));
 vi.mock("@xterm/xterm", () => ({
@@ -119,6 +124,8 @@ afterEach(() => {
   h.cells = [];
   h.effects = [];
   h.data.clear();
+  h.statuses.clear();
+  h.watchConnection.mockClear();
   h.get.mockClear();
   h.writes = [];
   h.nullRefs = 0;
@@ -215,6 +222,23 @@ it.each(["agent", "room"] as const)(
     expect(h.get).not.toHaveBeenCalled();
   },
 );
+it("keeps live agent transport after visiting a stale room in the same component", () => {
+  h.nullRefs = 100;
+  h.data.set("room", { messages: [], room: { id: "team" } });
+  h.statuses.set("room", "stale");
+  const agent = () =>
+    useMessages("lead", "agent", true, "workspace", "workspace");
+  const room = () =>
+    useMessages("team", "room", true, "workspace", "workspace");
+  render(agent);
+  expect(render(agent).connection).toBe("live");
+  render(room);
+  expect(render(room).connection).toBe("");
+  render(agent);
+  expect(render(agent).connection).toBe("live");
+  expect(h.watchConnection).toHaveBeenCalledTimes(2);
+  expect(h.get).not.toHaveBeenCalled();
+});
 it("terminal hints apply Unicode appends without GET /api/terminals/output", async () => {
   vi.stubGlobal(
     "ResizeObserver",
