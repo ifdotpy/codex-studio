@@ -4,11 +4,14 @@ use std::{io::Write, sync::Arc};
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_store::{RuntimeStore, SyncDocumentsRepository};
 
-#[tokio::main]
+// This fixture tests asynchronous HTTP and SQLite ownership, not runtime thread count.
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
+    let started = std::time::Instant::now();
     // Vitest owns the directory so even forced fixture cleanup removes state.
     let directory = std::path::PathBuf::from(std::env::args_os().nth(1).expect("state directory"));
     let store = Arc::new(RuntimeStore::open(Some(&directory)).await.expect("store"));
+    eprintln!("draft fixture: store ready after {:?}", started.elapsed());
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../client/contracts/draft-replication.json"
     ))
@@ -47,6 +50,7 @@ async fn main() {
         None,
     );
     let app = router(state).expect("real router");
+    eprintln!("draft fixture: HTTP ready after {:?}", started.elapsed());
     println!(
         "{}",
         serde_json::json!({"port": address.port(), "workspaceId": workspace_id})

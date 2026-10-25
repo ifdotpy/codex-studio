@@ -251,7 +251,7 @@ mod tests {
             ("requestId", json!("")),
             ("requestId", json!(1)),
             ("url", json!("https://user:secret@example.com")),
-            ("url", json!("file:///tmp/a")),
+            ("url", json!("file:///not-a-sign-in-page")),
         ] {
             let mut invalid = params();
             invalid["value"][key] = bad;
