@@ -1245,6 +1245,50 @@ test("note proof rejects shell flags, metacharacters and split arguments", async
     );
 });
 
+test("note proof accepts Codex's single-quoted shell wrapper only for the exact cat", async () => {
+  const { scenarioEvidence, NOTES_FILE, NOTES_MARKER } =
+    await import("../usage.mjs");
+  const root = path.join(os.tmpdir(), "quoted-note-fixture");
+  const file = path.join(root, NOTES_FILE);
+  const make = (command) => [
+    {
+      role: "user",
+      text: `This is turn 2 of a usage check. Read ${NOTES_FILE}.`,
+    },
+    { role: "assistant", text: "Before" },
+    {
+      role: "output",
+      toolStatus: "completed",
+      turnId: "long",
+      text: JSON.stringify({
+        type: "commandExecution",
+        command,
+        cwd: root,
+        exitCode: 0,
+        aggregatedOutput: NOTES_MARKER,
+      }),
+    },
+    { role: "assistant", text: "After" },
+    { role: "user", text: "Turn 3: reply with exactly FINAL" },
+  ];
+  // The live Codex 0.164 transcript form.
+  assert.equal(
+    scenarioEvidence(make(`/bin/bash -lc 'cat ${file}'`), "codex", root)
+      .assistantResponses,
+    2,
+  );
+  for (const command of [
+    `/bin/bash -lc 'cat ${file}; true'`,
+    `/bin/bash -lc 'cat ${file}' extra`,
+    `/bin/bash -lc 'cat ${file}`,
+  ])
+    assert.throws(
+      () => scenarioEvidence(make(command), "codex", root),
+      /note read/,
+      command,
+    );
+});
+
 test("failed analytics collection persists its latency before a provider row exists", async () => {
   const { Smoke, analyticsRoute } = await import("../smoke.mjs");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-timeout-test-"));
