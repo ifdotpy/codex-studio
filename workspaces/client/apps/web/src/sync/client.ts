@@ -729,6 +729,157 @@ export function createSyncClient(options: SyncClientOptions) {
     return true;
   }
 
+  /** Staging already proved the entire interval. Keep pages bounded and publish
+   * the durable cursor only after all writes and snapshot pruning succeed. */
+  async function persistStagedEntityTransfer(
+    interval: import("./entityTransfer").StagedEntityInterval,
+    isCurrent: () => boolean,
+  ) {
+    if (!canSerializeEntityProjectionWrites())
+      throw new Error("Entity transfer requires the projection write lock");
+    const { db, workspaceId } = await syncDatabase();
+    if (!isCurrent() || workspaceId !== interval.workspaceId) return;
+    const scopes: Record<
+      string,
+      {
+        collections: readonly string[];
+        idField: string | null;
+        agentField: string | null;
+      }
+    > = SUBSCRIPTION_ENTITY_SCOPES;
+    const resource = interval.resource;
+    const scope = scopes[resource.kind];
+    if (!scope) throw new Error("Unknown staged entity scope");
+    const selector = resource as unknown as Record<string, unknown>;
+    const selectedAgent = scope.agentField
+      ? selector[scope.agentField]
+      : undefined;
+    const selectedAgents = new Set([selectedAgent]);
+    await withEntityProjectionWrite(db.projections.database.name, async () => {
+      const applied = await readSubscriptionCursor(resource);
+      if (!isCurrent() || (applied && applied.seq >= interval.cursor.seq))
+        return;
+      if (
+        interval.replyKind === "delta" &&
+        (!applied || applied.seq < interval.after)
+      )
+        throw new Error("Staged subscription delta has no applied base");
+      if (selectedAgent) {
+        let after = "entity:agentSummary:";
+        for (;;) {
+          const summaries = await db.projections
+            .find({
+              selector: { id: { $gt: after, $lt: "entity:agentSummary;" } },
+              limit: SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+            })
+            .exec();
+          for (const doc of summaries) {
+            const row = doc.toJSON();
+            const entity = row.entity;
+            if (
+              entity?.collection === "agentSummary" &&
+              entity.value.rootId === selectedAgent
+            )
+              selectedAgents.add(entity.id);
+            after = row.id;
+          }
+          if (summaries.length < SYNC_ENTITY_STREAM_MAX_DOCUMENTS) break;
+        }
+      }
+      const belongs = (entity: {
+        collection: string;
+        id: string;
+        value?: unknown;
+      }) => {
+        if (!scope.collections.includes(entity.collection)) return false;
+        if (scope.idField && entity.id !== selector[scope.idField])
+          return false;
+        if (selectedAgent && entity.value) {
+          const value = entity.value as { agent?: string; rootId?: string };
+          if (
+            !selectedAgents.has(value.agent) &&
+            value.rootId !== selectedAgent
+          )
+            return false;
+        }
+        return true;
+      };
+      // Verify every page's scope before applying the first page. These reads
+      // touch temporary local staging only; the server source is never reread.
+      for await (const page of interval.pages()) {
+        if (!isCurrent()) return;
+        if (page.documents.some((row) => !belongs(row)))
+          throw new Error("Entity outside staged subscription scope");
+      }
+      for await (const page of interval.pages()) {
+        if (!isCurrent()) return;
+        await persistProjectionBatch(
+          db.projections,
+          page.documents.map(entityCacheRow),
+          isCurrent,
+        );
+      }
+      if (interval.replyKind === "snapshot") {
+        for (const collection of scope.collections) {
+          let after = `entity:${collection}:`;
+          for (;;) {
+            if (!isCurrent()) return;
+            const existing = await db.projections
+              .find({
+                selector: { id: { $gt: after, $lt: `entity:${collection};` } },
+                limit: SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+              })
+              .exec();
+            const removed: SyncDocument[] = [];
+            for (const doc of existing) {
+              const row = doc.toJSON();
+              after = row.id;
+              if (
+                row.entity &&
+                belongs(row.entity) &&
+                !(await interval.has(`${collection}:${row.entity.id}`))
+              )
+                removed.push({
+                  id: row.id,
+                  payload: "",
+                  seq: interval.cursor.seq,
+                  _deleted: true,
+                });
+            }
+            await persistProjectionBatch(db.projections, removed, isCurrent);
+            if (existing.length < SYNC_ENTITY_STREAM_MAX_DOCUMENTS) break;
+          }
+        }
+      }
+      if (!isCurrent()) return;
+      if (resource.kind === "state") {
+        await persistProjection(db.projections, {
+          id: "state:entities:checkpoint",
+          payload: "{}",
+          seq: interval.cursor.seq,
+        });
+        if (interval.replyKind === "snapshot") {
+          const [ready] =
+            await db.projections.storageInstance.findDocumentsById(
+              ["state:entities:ready"],
+              true,
+            );
+          await persistProjection(db.projections, {
+            id: "state:entities:complete",
+            payload: "complete",
+            seq: Date.now(),
+          });
+          await persistProjection(db.projections, {
+            id: "state:entities:ready",
+            payload: "ready",
+            seq: (ready?.seq ?? 0) + 1,
+          });
+        }
+      }
+      await persistSubscriptionCursor(resource, interval.cursor, isCurrent);
+    });
+  }
+
   async function persistResourceEntityChanges(
     event: import("./subscriptions/events").ResourceChangeEvent,
     isCurrent: () => boolean,
@@ -2856,6 +3007,7 @@ export function createSyncClient(options: SyncClientOptions) {
   return {
     syncDatabase,
     persistResourceEntityChanges,
+    persistStagedEntityTransfer,
     readSubscriptionCursor,
     watchSyncInvalidations,
     persistProjection,
@@ -2897,6 +3049,7 @@ const defaultSyncClient = createSyncClient({
 export const {
   syncDatabase,
   persistResourceEntityChanges,
+  persistStagedEntityTransfer,
   readSubscriptionCursor,
   watchSyncInvalidations,
   persistProjection,

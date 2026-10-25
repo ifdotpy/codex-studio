@@ -85,6 +85,8 @@ export default {
       "src/sync/client.dispatchGate.test.ts",
       "src/sync/client.entityReset.test.ts",
       "src/sync/resourceEntityDelivery.test.ts",
+      "src/sync/entityTransfer.test.ts",
+      "src/sync/entityTransfer.storage.test.ts",
       "src/sync/resourceEvents.test.ts",
       "src/servers/eventSource.test.ts",
       // Prevent duplicate entity pulls and preserve server storage and API ownership.

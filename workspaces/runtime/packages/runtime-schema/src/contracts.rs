@@ -60,6 +60,14 @@ fn shared_values_ts() -> String {
                 values::SYNC_TERMINAL_STREAM_MAX_CHARS.to_string(),
             ),
             (
+                "MAX_SYNC_RESOURCE_COUNT",
+                values::MAX_SYNC_RESOURCE_COUNT.to_string(),
+            ),
+            (
+                "SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS",
+                values::SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS.to_string(),
+            ),
+            (
                 "STUDIO_ERRORS_DISMISS_MAX_IDS",
                 values::STUDIO_ERRORS_DISMISS_MAX_IDS.to_string(),
             ),
@@ -410,6 +418,16 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         openapi,
         "/components/schemas/DraftChangeBatch/properties/documents/maxItems",
         values::SYNC_DRAFT_STREAM_MAX_DOCUMENTS,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/ResourceEntityTransferEvent/properties/transferId/maxLength",
+        values::SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS as i64,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/ResourceEntityTransferEvent/properties/data/maxLength",
+        values::SYNC_STREAM_EVENT_MAX_BYTES as i64,
     )?;
     expect_number(
         openapi,

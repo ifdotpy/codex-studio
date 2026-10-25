@@ -13,6 +13,36 @@ vi.mock("../usage/tokenRate", () => ({
 }));
 vi.mock("./resume", () => ({ onResume: () => () => {} }));
 
+vi.mock("./entityTransfer", async (original) => {
+  const module = await original<typeof import("./entityTransfer")>();
+  return {
+    ...module,
+    EntityTransferAssembler: class extends module.EntityTransferAssembler {
+      constructor() {
+        const rows = new Map<string, string>();
+        super({
+          async put(key, value) {
+            rows.set(key, value);
+          },
+          async putMany(values) {
+            for (const [key, value] of values) rows.set(key, value);
+          },
+          async get(key) {
+            return rows.get(key);
+          },
+          async remove(prefix) {
+            for (const key of rows.keys())
+              if (key.startsWith(prefix)) rows.delete(key);
+          },
+          async close() {
+            rows.clear();
+          },
+        });
+      }
+    },
+  };
+});
+
 class Source {
   listeners = new Map<string, (event: Event) => void>();
   onopen: (() => void) | null = null;
@@ -93,6 +123,7 @@ async function fixture(follower = false, session = true) {
   const get = vi.fn().mockResolvedValue({});
   const readCursor = vi.fn().mockResolvedValue(undefined);
   const persist = vi.fn().mockResolvedValue(undefined);
+  const staged = vi.fn().mockResolvedValue(undefined);
   const transport = createResourceEvents({
     api: {
       get,
@@ -106,6 +137,7 @@ async function fixture(follower = false, session = true) {
     sync: {
       syncDatabase: vi.fn().mockResolvedValue({ workspaceId: "workspace" }),
       persistResourceEntityChanges: persist,
+      persistStagedEntityTransfer: staged,
       readSubscriptionCursor: readCursor,
     },
     tokenRates: {
@@ -146,6 +178,7 @@ async function fixture(follower = false, session = true) {
     urls,
     post,
     persist,
+    staged,
     stopState,
     get,
     readCursor,
@@ -709,4 +742,70 @@ it("T28 recently viewed chat switching sends no subscription changes within grac
     "T28 subscription POST measurements",
     JSON.stringify(measurements),
   );
+});
+
+it("new-epoch entity fragments publish only after complete persisted staging and survive the next fragment without resetting", async () => {
+  const f = await fixture();
+  const listener = vi.fn();
+  f.transport.watchResourceChanges({ kind: "state" }, listener);
+  listener.mockClear();
+  const encoded = JSON.stringify({
+    after: 0,
+    through: 2,
+    documents: [
+      {
+        op: "upsert",
+        collection: "workspace",
+        id: "current",
+        seq: 2,
+        value: { stateDir: "fixture" },
+      },
+    ],
+  });
+  const frame = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "new-epoch",
+    revision: 2,
+    reason: "initial",
+    resource: { kind: "state" },
+    cursor: { workspaceId: "workspace", seq: 2 },
+    replyKind: "snapshot",
+    transferId: "new-baseline",
+    pageIndex: 0,
+    partCount: 2,
+  };
+  f.source.emit("entity-transfer", {
+    ...frame,
+    partIndex: 0,
+    complete: false,
+    data: encoded.slice(0, 40),
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.staged).not.toHaveBeenCalled();
+  expect(listener).not.toHaveBeenCalled();
+  let finish!: () => void;
+  f.staged.mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  f.source.emit("entity-transfer", {
+    ...frame,
+    partIndex: 1,
+    complete: true,
+    data: encoded.slice(40),
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.staged).toHaveBeenCalledOnce();
+  expect(listener).not.toHaveBeenCalled();
+  finish();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(listener).toHaveBeenCalledOnce();
+  expect(listener).toHaveBeenCalledWith(
+    expect.objectContaining({ cursor: { workspaceId: "workspace", seq: 2 } }),
+  );
+  expect(f.get).not.toHaveBeenCalled();
+  expect(f.sources).toHaveLength(1);
 });

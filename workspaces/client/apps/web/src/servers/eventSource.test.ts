@@ -94,3 +94,43 @@ it("cancels a rejected event response", async () => {
   expect(cancel).toHaveBeenCalledOnce();
   source.close();
 });
+it("backpressures reads while staging and close interrupts an unfinished hold", async () => {
+  vi.stubGlobal("location", { origin: "http://studio.test", search: "" });
+  const { SignedEventSource } = await import("./eventSource");
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const cancelled = Promise.withResolvers<void>();
+  const received = Promise.withResolvers<void>();
+  const source = new SignedEventSource(
+    "/api/sync/stream",
+    async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            stream = controller;
+          },
+          cancel() {
+            cancelled.resolve();
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+  );
+  const frames: string[] = [];
+  source.addEventListener("entity-transfer", (event) => {
+    frames.push((event as MessageEvent).data);
+    source.holdUntil(new Promise(() => {}));
+    received.resolve();
+  });
+  stream.enqueue(
+    new TextEncoder().encode("event: entity-transfer\ndata: first\n\n"),
+  );
+  await received.promise;
+  stream.enqueue(
+    new TextEncoder().encode("event: entity-transfer\ndata: second\n\n"),
+  );
+  await Promise.resolve();
+  expect(frames).toEqual(["first"]);
+  source.close();
+  await cancelled.promise;
+  expect(frames).toEqual(["first"]);
+});

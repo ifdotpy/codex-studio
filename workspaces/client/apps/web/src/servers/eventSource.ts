@@ -6,7 +6,9 @@ export type ServerEventSource = Pick<
   EventSource,
   "close" | "onopen" | "onerror"
 > &
-  Pick<EventTarget, "addEventListener">;
+  Pick<EventTarget, "addEventListener"> & {
+    holdUntil?(ready: Promise<unknown>): void;
+  };
 export class EventStreamParser {
   private buffer = "";
   private data: string[] = [];
@@ -56,6 +58,14 @@ export class SignedEventSource
   onerror: EventSource["onerror"] = null;
   private controller = new AbortController();
   private stopped = false;
+  private hold: Promise<unknown> = Promise.resolve();
+  private releaseClose!: () => void;
+  private readonly closed = new Promise<void>((resolve) => {
+    this.releaseClose = resolve;
+  });
+  holdUntil(ready: Promise<unknown>) {
+    this.hold = Promise.all([this.hold, ready]);
+  }
   constructor(url: string, fetchRequest = serverFetch) {
     super();
     void (async () => {
@@ -90,6 +100,7 @@ export class SignedEventSource
           const chunk = await reader.read();
           if (chunk.done) break;
           parser.push(decoder.decode(chunk.value, { stream: true }));
+          await Promise.race([this.hold, this.closed]);
         }
       } finally {
         await reader.cancel().catch(() => {});
@@ -103,11 +114,16 @@ export class SignedEventSource
   }
   close() {
     this.stopped = true;
+    this.releaseClose();
     this.controller.abort();
   }
 }
-export function openServerEvents(url: string): ServerEventSource {
-  return hasNativeClient() ||
+export function openServerEvents(
+  url: string,
+  options?: { backpressure?: boolean },
+): ServerEventSource {
+  return options?.backpressure ||
+    hasNativeClient() ||
     (serverViewId && (serverViewId !== "local" || isolatedServerView))
     ? new SignedEventSource(url)
     : new EventSource(url);

@@ -1,5 +1,8 @@
 //! HTTP adapter for the versioned sync event stream.
 
+#[path = "entity_transfer.rs"]
+mod entity_transfer;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
 use std::io::{self, Write};
@@ -336,6 +339,14 @@ async fn sync_stream(
     if let Err(error) = attach_initial_entries(&state, &mut initial_event, &since).await {
         return error.into_response();
     }
+    let mut scoped_sequences = BTreeMap::new();
+    let entity_transfers =
+        match entity_transfer::attach(&state, &mut initial_event, &since, &mut scoped_sequences)
+            .await
+        {
+            Ok(transfers) => transfers,
+            Err(error) => return error.into_response(),
+        };
     for (resource, entry) in initial_event
         .resources
         .iter()
@@ -409,6 +420,8 @@ async fn sync_stream(
         vault_readiness,
         subscription: Some(subscription),
         initial,
+        entity_transfers: entity_transfers.into(),
+        scoped_sequences,
         workspace_id: state.workspace_id,
         epoch: subscription_snapshot.epoch,
         last_revision: subscription_snapshot.revision,
@@ -615,6 +628,9 @@ async fn attach_initial_entries(
 ) -> Result<(), ApiError> {
     for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
         let value = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
+        if entity_transfer::owns(resource) {
+            continue;
+        }
         let cursor = since.get(&value.to_string()).cloned();
         let initial =
             super::subscriptions::initial_snapshot(state.clone(), resource.clone(), cursor).await?;
@@ -1049,6 +1065,8 @@ struct ResourceStream {
     http_state: Option<HttpState>,
     vault_readiness: Option<studio_runtime_services::vault::VaultReadinessWatcher>,
     initial: VecDeque<Event>,
+    entity_transfers: VecDeque<entity_transfer::TransferReader>,
+    scoped_sequences: BTreeMap<String, SubscriptionCursor>,
     workspace_id: String,
     epoch: String,
     last_revision: i64,
@@ -1082,6 +1100,12 @@ async fn next_subscription_change(
 
 async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChange) -> Option<()> {
     state.resources = update.resources;
+    state.scoped_sequences.retain(|key, _| {
+        state
+            .resources
+            .iter()
+            .any(|resource| resource.to_string() == *key)
+    });
     let readiness_interest = state
         .resources
         .iter()
@@ -1168,6 +1192,16 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         attach_initial_entries(http_state, &mut event, &update.since)
             .await
             .ok()?;
+        state.entity_transfers.extend(
+            entity_transfer::attach(
+                http_state,
+                &mut event,
+                &update.since,
+                &mut state.scoped_sequences,
+            )
+            .await
+            .ok()?,
+        );
         for (resource, entry) in event.resources.iter().zip(&event.resource_versions) {
             if matches!(resource, ResourceRef::StateResource(_)) && entry.cursor.is_some() {
                 state.entity_sequence = entry.revision;
@@ -1203,6 +1237,18 @@ async fn next_frame(
 ) -> Option<(Result<Event, Infallible>, ResourceStream)> {
     if let Some(event) = state.initial.pop_front() {
         return Some((Ok(event), state));
+    }
+    while let Some(transfer) = state.entity_transfers.front_mut() {
+        match transfer.next() {
+            Ok(Some(event)) => return Some((Ok(event), state)),
+            Ok(None) => {
+                state.entity_transfers.pop_front();
+            }
+            Err(error) => {
+                eprintln!("entity transfer read failed: {error:?}");
+                return None;
+            }
+        }
     }
 
     loop {
@@ -1266,17 +1312,22 @@ async fn next_frame(
         state.last_revision = view.cursor.revision;
         if !view.resources.is_empty() {
             state.consecutive_token_frames = 0;
-            let (sequence, batch) = match read_entity_changes(
-                state.store.clone(),
-                &view.resources,
-                (!view.overflow && !view.entity_reset).then_some(state.entity_sequence),
-            )
-            .await
-            {
-                Ok(update) => update,
-                Err(_) => {
-                    view.entity_reset = true;
-                    (state.entity_sequence, None)
+            let (sequence, batch) = if state.http_state.is_some() {
+                // Scoped delivery below owns the one source read, including state.
+                (state.entity_sequence, None)
+            } else {
+                match read_entity_changes(
+                    state.store.clone(),
+                    &view.resources,
+                    (!view.overflow && !view.entity_reset).then_some(state.entity_sequence),
+                )
+                .await
+                {
+                    Ok(update) => update,
+                    Err(_) => {
+                        view.entity_reset = true;
+                        (state.entity_sequence, None)
+                    }
                 }
             };
             state.entity_sequence = sequence;
@@ -1314,25 +1365,40 @@ async fn next_frame(
             )
             .ok()?;
             attach_transcript_changes(&mut event, transcript_updates);
-            super::subscription_entities::attach_scoped_entity_changes(
-                state.http_state.as_ref(),
-                &mut event,
-            )
-            .await;
+            if let Some(http) = &state.http_state {
+                state.entity_transfers.extend(
+                    entity_transfer::attach(
+                        http,
+                        &mut event,
+                        &BTreeMap::new(),
+                        &mut state.scoped_sequences,
+                    )
+                    .await
+                    .ok()?,
+                );
+                if let Some(cursor) = state.scoped_sequences.get(r#"{"kind":"state"}"#) {
+                    state.entity_sequence = cursor.seq;
+                }
+            }
             attach_transient_snapshots(
                 state.http_state.as_ref(),
                 &mut event,
                 &mut state.voice_sequences,
             )
             .await;
-            if event.resources.is_empty() {
+            if event.resources.is_empty() && state.entity_transfers.is_empty() {
                 continue;
             }
             state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
             if let Some(http) = &state.http_state {
                 append_progress_frames(http, &view, &mut state.initial).await;
             }
-            return Some((Ok(resource_sse_event(view.cursor.revision, event)), state));
+            state
+                .initial
+                .extend(initial_resource_sse_events(view.cursor.revision, event));
+            if let Some(event) = state.initial.pop_front() {
+                return Some((Ok(event), state));
+            }
         }
         if heartbeat {
             let event = json!({
@@ -1530,7 +1596,7 @@ fn resource_event(
     .expect("event serializes")
 }
 
-fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Event {
+pub(super) fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Event {
     // These stream DTOs contain only JSON-compatible fields and string map keys.
     let event = Event::default()
         .event(name)
@@ -1546,10 +1612,11 @@ fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Even
 /// crowded subscription set must not force normal windows into pull recovery.
 fn initial_resource_sse_events(revision: i64, payload: ResourceChangeEvent) -> Vec<Event> {
     if payload.resources.len() <= 1
-        || !payload
-            .resource_versions
-            .iter()
-            .any(|entry| entry.transcript_snapshot.is_some() || entry.view_snapshot.is_some())
+        || !payload.resource_versions.iter().any(|entry| {
+            entry.transcript_snapshot.is_some()
+                || entry.view_snapshot.is_some()
+                || entry.entity_changes.is_some()
+        })
     {
         return vec![resource_sse_event(revision, payload)];
     }
@@ -4345,6 +4412,8 @@ mod tests {
             vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
+            entity_transfers: VecDeque::new(),
+            scoped_sequences: BTreeMap::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
@@ -4394,6 +4463,8 @@ mod tests {
             vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
+            entity_transfers: VecDeque::new(),
+            scoped_sequences: BTreeMap::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
@@ -4681,6 +4752,8 @@ mod tests {
             vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
+            entity_transfers: VecDeque::new(),
+            scoped_sequences: BTreeMap::new(),
             workspace_id: "workspace".into(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
@@ -4899,6 +4972,8 @@ mod tests {
             vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
+            entity_transfers: VecDeque::new(),
+            scoped_sequences: BTreeMap::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,

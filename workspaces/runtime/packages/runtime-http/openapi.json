@@ -42239,6 +42239,99 @@
         "title": "ResourceChangeEvent",
         "type": "object"
       },
+      "ResourceEntityTransferEvent": {
+        "additionalProperties": false,
+        "description": "Bounded entity-transfer SSE fragment. Each completed page decodes to one canonical EntityChangeBatch; only complete=true commits the staged interval.",
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/components/schemas/SubscriptionCursor"
+          },
+          "data": {
+            "maxLength": 262144,
+            "type": "string"
+          },
+          "epoch": {
+            "minLength": 1,
+            "title": "Epoch",
+            "type": "string"
+          },
+          "pageIndex": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "partCount": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "partIndex": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "protocol": {
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
+            "title": "Protocol",
+            "type": "integer"
+          },
+          "reason": {
+            "enum": [
+              "initial",
+              "change",
+              "reconnect",
+              "overflow",
+              "workspace"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "replyKind": {
+            "$ref": "#/components/schemas/SubscriptionReplyKind"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/ResourceRef"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "transferId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspaceId": {
+            "minLength": 1,
+            "title": "Workspaceid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol",
+          "workspaceId",
+          "epoch",
+          "revision",
+          "reason",
+          "resource",
+          "cursor",
+          "replyKind",
+          "transferId",
+          "pageIndex",
+          "partIndex",
+          "partCount",
+          "complete",
+          "data"
+        ],
+        "type": "object"
+      },
       "ResourceHeartbeatEvent": {
         "additionalProperties": false,
         "description": "Named `heartbeat` SSE payload; it never requests a resource read.",

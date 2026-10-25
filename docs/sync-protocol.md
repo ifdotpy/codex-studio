@@ -68,6 +68,30 @@ diagnostic key. A parity witness requires exactly one handler and data contract
 for every generated resource kind. Business services publish domain changes
 without tracking sessions or subscribers.
 
+Large entity baselines and deltas use typed `entity-transfer` frames on the same
+connection. Each page is a canonical `EntityChangeBatch` within the shared
+[document and complete-event byte limits](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs).
+The server validates pages and spools the interval to an anonymous temporary file
+from one SQLite read snapshot. It splits at record boundaries first; serialization
+fragments preserve a single existing oversized record. A complete marker proves
+the final interval, without constructing a batch above the canonical document limit.
+
+The fetch stream waits for temporary IndexedDB staging before reading more data.
+Only a complete, validated interval enters the existing projection write lock;
+all scope checks finish before the first write, snapshot pruning follows complete
+staging, and the durable cursor is written last. Interrupted staging leaves the
+previous cache and cursor intact. A write failure retains the old cursor so replay
+can finish idempotently. Each temporary database holds its own lifetime Web Lock;
+close and cancellation remove it, and opening a new owner removes crash orphans
+only after acquiring their unused locks. The normal small event path stays direct,
+and per-scope cursors send only changed records after a baseline.
+
+Scoped durable cursor application retains its existing Web Locks requirement.
+Without that API the client reports the existing projection-write-lock error and
+does not apply a partial interval or cursor. Older browser HTTP recovery does not
+provide the typed stream's durable cursor proof. Supported lock-enabled clients
+need no fallback GET for large entity intervals.
+
 Entity change fingerprints cover every selected row, including rows beyond the
 stream's bounded initial page. The store hashes ordered identities and durable
 sequences using the same scope filter as delivery; unrelated view changes stay

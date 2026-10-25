@@ -28,12 +28,14 @@ import {
 
 import {
   persistResourceEntityChanges,
+  persistStagedEntityTransfer,
   readSubscriptionCursor,
   syncDatabase,
 } from "./client";
 import { subscriptionKey } from "./subscriptions/cursors";
 
 import { ResourceEntityDelivery } from "./resourceEntityDelivery";
+import { EntityTransferAssembler } from "./entityTransfer";
 
 import { onResume } from "./resume";
 
@@ -195,7 +197,7 @@ export type ResourceEventsOptions = {
     Partial<
       Pick<
         ReturnType<typeof import("./client").createSyncClient>,
-        "readSubscriptionCursor"
+        "readSubscriptionCursor" | "persistStagedEntityTransfer"
       >
     >;
   tokenRates: Pick<
@@ -804,6 +806,84 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     );
   }, dispatchEvent);
 
+  let transferAssembler: EntityTransferAssembler | undefined;
+  let transferEpoch: string | undefined;
+  let transferTail: Promise<void> = Promise.resolve();
+  let transferPending = 0;
+  function cancelEntityTransfers() {
+    const previous = transferAssembler;
+    transferAssembler = undefined;
+    transferEpoch = undefined;
+    transferTail = Promise.resolve();
+    transferPending = 0;
+    if (previous)
+      void previous
+        .invalidate()
+        .catch((error) =>
+          console.error("Entity staging cleanup failed", error),
+        );
+  }
+  function receiveEntityTransfer(value: unknown) {
+    if (!hasRevisionFrame(value) || value.workspaceId !== workspaceId)
+      throw new TypeError("Invalid entity transfer workspace");
+    const frame = value as components["schemas"]["ResourceEntityTransferEvent"];
+    const key = resourceKey(frame.resource);
+    if (!acceptedResources.has(key)) return;
+    if (transferEpoch && frame.epoch !== transferEpoch) cancelEntityTransfers();
+    transferEpoch = frame.epoch;
+    const assembler = (transferAssembler ??= new EntityTransferAssembler());
+    const generation = subscriptionGeneration;
+    const transferSource = source;
+    transferPending++;
+    const work = transferTail
+      .then(async () => {
+        if (
+          generation !== subscriptionGeneration ||
+          assembler !== transferAssembler
+        )
+          return;
+        const interval = await assembler.receive(frame);
+        refreshHeartbeatTimeout();
+        if (!interval) return;
+        const current = () =>
+          generation === subscriptionGeneration &&
+          assembler === transferAssembler &&
+          interval.workspaceId === workspaceId;
+        try {
+          if (!options.sync.persistStagedEntityTransfer)
+            throw new Error("Entity staging persistence unavailable");
+          await options.sync.persistStagedEntityTransfer(interval, current);
+          if (!current()) return;
+          dispatchEvent({
+            protocol: frame.protocol,
+            workspaceId: frame.workspaceId,
+            epoch: frame.epoch,
+            revision: frame.revision,
+            reason: frame.reason,
+            resources: [frame.resource],
+            resourceVersions: [
+              {
+                resource: frame.resource,
+                revision: frame.cursor.seq,
+                cursor: frame.cursor,
+                replyKind: "delta",
+              },
+            ],
+          });
+        } finally {
+          await interval.dispose();
+        }
+      })
+      .finally(() => {
+        if (generation === subscriptionGeneration) transferPending--;
+      });
+    transferTail = work.catch((error) => {
+      if (generation === subscriptionGeneration && source === transferSource)
+        frameFailed(error);
+    });
+    source?.holdUntil?.(transferTail);
+  }
+
   function receiveResourceProgress(value: unknown, fromPeer = false) {
     if (!hasRevisionFrame(value))
       throw new TypeError("Invalid resource progress frame");
@@ -898,7 +978,14 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       if (!fromPeer) reconnectNow();
       return;
     }
-    entityDelivery.receive(currentResourceEvent(event));
+    if (transferPending) {
+      const generation = subscriptionGeneration;
+      transferTail = transferTail.then(() => {
+        if (generation === subscriptionGeneration)
+          entityDelivery.receive(currentResourceEvent(event));
+      });
+      source?.holdUntil?.(transferTail);
+    } else entityDelivery.receive(currentResourceEvent(event));
   }
 
   function acceptHeartbeat(value: unknown, fromPeer = false) {
@@ -1116,6 +1203,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (removed) {
       blockedSelectors = [...blockedResources.values()];
       entityDelivery.invalidate();
+      cancelEntityTransfers();
     }
     const generation = ++streamUpdateGeneration;
     queueMicrotask(() => {
@@ -1161,6 +1249,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     subscriptionGeneration++;
     acceptedResources.clear();
     entityDelivery.invalidate();
+    cancelEntityTransfers();
     blockedResources.clear();
     blockedSelectors = [];
     clearTimeout(heartbeatTimeout);
@@ -1268,7 +1357,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           String(value),
         ]),
       );
-      const connected = openServerEvents(`/api/sync/stream?${query}`);
+      const connected = openServerEvents(`/api/sync/stream?${query}`, {
+        backpressure: true,
+      });
       reconnecting = false;
       source = connected;
       notifyConnectionListeners();
@@ -1406,6 +1497,14 @@ export function createResourceEvents(options: ResourceEventsOptions) {
               throw new TypeError("Invalid resource frame");
             receiveResourceEvent(parsed);
           },
+          false,
+          SYNC_STREAM_EVENT_MAX_BYTES,
+        );
+      });
+      connected.addEventListener("entity-transfer", (message: Event) => {
+        applyFrame(
+          message,
+          receiveEntityTransfer,
           false,
           SYNC_STREAM_EVENT_MAX_BYTES,
         );
@@ -1840,6 +1939,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         if (!owner && !independent) {
           subscriptionGeneration++;
           entityDelivery.invalidate();
+          cancelEntityTransfers();
         }
       }
       if (
@@ -1913,6 +2013,8 @@ const defaultResourceEvents = createResourceEvents({
   },
   sync: {
     readSubscriptionCursor: (resource) => readSubscriptionCursor(resource),
+    persistStagedEntityTransfer: (...args) =>
+      persistStagedEntityTransfer(...args),
     persistResourceEntityChanges: (
       ...args: Parameters<typeof persistResourceEntityChanges>
     ) => persistResourceEntityChanges(...args),

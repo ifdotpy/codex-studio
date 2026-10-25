@@ -28,6 +28,8 @@ export function createServerSubscriptions(options: ServerSubscriptionOptions) {
       persistResourceEntityChanges: (...args) =>
         sync().persistResourceEntityChanges(...args),
       readSubscriptionCursor: (ref) => sync().readSubscriptionCursor(ref),
+      persistStagedEntityTransfer: (...args) =>
+        sync().persistStagedEntityTransfer(...args),
     },
     openEvents: (url) =>
       new SignedEventSource(

@@ -45,7 +45,7 @@ vi.mock("../api", () => ({
   save: vi.fn(),
   setWorkspace: vi.fn(),
   isApiSchemaMismatch: () => false,
-  onMatchingApiSchemaResponse: () => () => {},
+  onMatchingApiSchemaResponse: () => () => false,
 }));
 vi.mock("./subscriptions/events", () => ({
   acknowledgeEntitySequences: vi.fn(),
@@ -132,9 +132,28 @@ async function request(path: string, body?: unknown) {
   return value;
 }
 
-async function* resourceFrames(
+class FixtureTransferStorage {
+  private rows = new Map<string, string>();
+  async put(key: string, value: string) {
+    this.rows.set(key, value);
+  }
+  async putMany(values: [string, string][]) {
+    for (const [key, value] of values) this.rows.set(key, value);
+  }
+  async get(key: string) {
+    return this.rows.get(key);
+  }
+  async remove(prefix: string) {
+    for (const key of this.rows.keys())
+      if (key.startsWith(prefix)) this.rows.delete(key);
+  }
+  async close() {
+    this.rows.clear();
+  }
+}
+async function* wireFrames(
   response: Response,
-): AsyncGenerator<ResourceChangeEvent> {
+): AsyncGenerator<{ name: string; value: unknown }> {
   const reader = response.body!.getReader();
   let buffer = "";
   const decoder = new TextDecoder();
@@ -147,17 +166,215 @@ async function* resourceFrames(
       while ((end = buffer.indexOf("\n\n")) >= 0) {
         const frame = buffer.slice(0, end);
         buffer = buffer.slice(end + 2);
-        if (!frame.includes("event: resources")) continue;
+        const name = frame
+          .split("\n")
+          .find((line) => line.startsWith("event: "))
+          ?.slice(7);
         const data = frame
           .split("\n")
           .find((line) => line.startsWith("data: "));
-        if (data) yield JSON.parse(data.slice(6));
+        if (name && data) yield { name, value: JSON.parse(data.slice(6)) };
       }
     }
   } finally {
     await reader.cancel().catch(() => {});
   }
 }
+async function* resourceFrames(
+  response: Response,
+): AsyncGenerator<ResourceChangeEvent> {
+  const { EntityTransferAssembler } = await import("./entityTransfer");
+  const client = await import("./client");
+  const assembler = new EntityTransferAssembler(new FixtureTransferStorage());
+  try {
+    for await (const frame of wireFrames(response)) {
+      if (frame.name === "resources") yield frame.value as ResourceChangeEvent;
+      if (frame.name !== "entity-transfer") continue;
+      const interval = await assembler.receive(frame.value);
+      if (!interval) continue;
+      await client.persistStagedEntityTransfer(interval, () => true);
+      yield {
+        protocol: interval.protocol,
+        workspaceId: interval.workspaceId,
+        epoch: interval.epoch,
+        revision: interval.revision,
+        reason: interval.reason,
+        resources: [interval.resource],
+        resourceVersions: [
+          {
+            resource: interval.resource,
+            revision: interval.cursor.seq,
+            cursor: interval.cursor,
+            replyKind: "delta",
+          },
+        ],
+      };
+      await interval.dispose();
+    }
+  } finally {
+    await assembler.invalidate();
+  }
+}
+
+it("stages a cold >512 entity SSE interval before projection deletion or cursor publication, then replays after a failed write", async () => {
+  vi.stubGlobal("window", {
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    matchMedia: vi.fn(() => ({ matches: false })),
+  });
+  vi.stubGlobal("document", { hidden: true });
+  vi.stubGlobal("navigator", {
+    onLine: true,
+    locks: {
+      request: (_key: string, write: () => Promise<unknown>) => write(),
+    },
+  });
+  mocks.syncGet.mockImplementation((path: string) => request(path));
+  const module = await import("./client");
+  const { createEntitySequenceScope } = await import("./entitySequence");
+  const { createTranscriptCache } = await import("./transcriptCache");
+  const { EntityTransferAssembler } = await import("./entityTransfer");
+  const client = module.createSyncClient({
+    api: {
+      syncGet: mocks.syncGet,
+      syncPost: vi.fn(),
+      saved: (_key, fallback) => fallback,
+      save: vi.fn(),
+      setWorkspace: vi.fn(),
+      isApiSchemaMismatch: () => false,
+      onMatchingApiSchemaResponse: () => () => false,
+    },
+    resources: {
+      watchResourceChanges: () => () => {},
+      watchResourceConnection: () => () => {},
+    },
+    sequences: createEntitySequenceScope(),
+    transcripts: createTranscriptCache(),
+    databaseSuffix: "coldtransfer",
+  });
+  const { db } = await client.syncDatabase();
+  await client.persistProjection(db.projections, {
+    id: "entity:agentSummary:stale",
+    payload: "",
+    seq: 0,
+    entity: {
+      collection: "agentSummary",
+      id: "stale",
+      value: { id: "stale", source: "managed", status: "idle" },
+    },
+  });
+  const assembler = new EntityTransferAssembler(new FixtureTransferStorage());
+  const controller = new AbortController();
+  const query = new URLSearchParams({
+    protocol: String(SYNC_PROTOCOL_VERSION),
+    resources: JSON.stringify([{ kind: "state" }]),
+    tokenRates: "false",
+  });
+  const response = await fetch(`${origin}/api/sync/stream?${query}`, {
+    headers,
+    signal: controller.signal,
+  });
+  let complete: import("./entityTransfer").StagedEntityInterval | undefined;
+  let stagedFrames = 0;
+  try {
+    for await (const frame of wireFrames(response)) {
+      if (frame.name !== "entity-transfer") continue;
+      stagedFrames++;
+      complete = await assembler.receive(frame.value);
+      if (!complete) {
+        expect(
+          await client.readSubscriptionCursor({ kind: "state" }),
+        ).toBeUndefined();
+        expect(
+          await db.projections.findOne("entity:agentSummary:stale").exec(),
+        ).not.toBeNull();
+      } else break;
+    }
+    expect(stagedFrames).toBeGreaterThan(1);
+    expect(complete).toBeDefined();
+    const interval = complete!;
+    const lockNavigator = navigator;
+    vi.stubGlobal("navigator", { onLine: true });
+    await expect(
+      client.persistStagedEntityTransfer(interval, () => true),
+    ).rejects.toThrow("projection write lock");
+    expect(
+      await client.readSubscriptionCursor({ kind: "state" }),
+    ).toBeUndefined();
+    vi.stubGlobal("navigator", lockNavigator);
+    const outsideScope = {
+      ...interval,
+      async *pages() {
+        for await (const page of interval.pages())
+          yield {
+            ...page,
+            documents: [
+              {
+                op: "upsert" as const,
+                collection: "agentDetail" as const,
+                id: "wrong-scope",
+                seq: page.through,
+                value: { id: "wrong-scope" },
+              },
+            ],
+          };
+      },
+    };
+    await expect(
+      client.persistStagedEntityTransfer(outsideScope, () => true),
+    ).rejects.toThrow("outside staged subscription scope");
+    expect(
+      await client.readSubscriptionCursor({ kind: "state" }),
+    ).toBeUndefined();
+    expect(
+      await db.projections.findOne("entity:agentSummary:stale").exec(),
+    ).not.toBeNull();
+    await client.persistStagedEntityTransfer(interval, () => false);
+    expect(
+      await client.readSubscriptionCursor({ kind: "state" }),
+    ).toBeUndefined();
+    const write = vi.spyOn(db.projections.storageInstance, "bulkWrite");
+    write.mockRejectedValueOnce(new Error("fixture staging write failure"));
+    await expect(
+      client.persistStagedEntityTransfer(interval, () => true),
+    ).rejects.toThrow("fixture staging write failure");
+    expect(
+      await client.readSubscriptionCursor({ kind: "state" }),
+    ).toBeUndefined();
+    expect(
+      await db.projections.findOne("entity:agentSummary:stale").exec(),
+    ).not.toBeNull();
+    await client.persistStagedEntityTransfer(interval, () => true);
+    expect((await client.readSubscriptionCursor({ kind: "state" }))?.seq).toBe(
+      interval.cursor.seq,
+    );
+    expect(
+      await db.projections.findOne("entity:agentSummary:stale").exec(),
+    ).toBeNull();
+    expect(
+      (
+        await db.projections
+          .find({
+            selector: {
+              id: { $gte: "entity:agentSummary:", $lt: "entity:agentSummary;" },
+            },
+          })
+          .exec()
+      ).length,
+    ).toBeGreaterThan(SYNC_ENTITY_STREAM_MAX_DOCUMENTS);
+    const calls = write.mock.calls.length;
+    await client.persistStagedEntityTransfer(interval, () => true);
+    expect(write.mock.calls.length).toBe(calls);
+    write.mockRestore();
+    expect(
+      mocks.syncGet.mock.calls.every(([path]) => path === "/api/sync/identity"),
+    ).toBe(true);
+    await interval.dispose();
+  } finally {
+    controller.abort();
+    await assembler.invalidate();
+  }
+});
 
 it("applies source commits beyond a full entity page through real SSE and RxDB without refresh reads", async () => {
   vi.stubGlobal("window", {

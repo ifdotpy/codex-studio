@@ -2,9 +2,7 @@
 //! identity filter; publication remains independent in runtime-services.
 
 use crate::error::ApiError;
-use crate::generated::{
-    ResourceChangeEvent, ResourceRef, ResourceRevisionEntry, SubscriptionCursor,
-};
+use crate::generated::{ResourceRef, ResourceRevisionEntry, SubscriptionCursor};
 use crate::router::HttpState;
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{
@@ -119,34 +117,6 @@ pub(super) async fn content_fingerprint(
         .await
         .ok()?;
     Some(fingerprint.to_vec())
-}
-
-/// Live panel frames carry a bounded replacement snapshot. This also conveys an
-/// empty result, allowing clients to remove the last row without an HTTP read.
-pub(super) async fn attach_scoped_entity_changes(
-    state: Option<&HttpState>,
-    event: &mut ResourceChangeEvent,
-) {
-    let Some(state) = state else { return };
-    for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
-        let reference = match serde_json::to_value(resource) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        if reference["kind"] == "state" {
-            continue;
-        }
-        if !reference["kind"]
-            .as_str()
-            .is_some_and(|kind| subscription_entity_scopes().contains_key(kind))
-        {
-            continue;
-        }
-        match initial_snapshot(state.clone(), resource.clone(), None).await {
-            Ok(snapshot) => *entry = snapshot,
-            Err(error) => eprintln!("scoped entity snapshot unavailable: {error:?}"),
-        }
-    }
 }
 
 inventory::submit! {
@@ -375,11 +345,12 @@ mod tests {
                 .expect("list fingerprint"),
             before
         );
-        let mut event: ResourceChangeEvent = serde_json::from_value(json!({"protocol":studio_runtime_schema::SYNC_PROTOCOL_VERSION,"workspaceId":state.workspace_id,"epoch":"epoch","revision":1,"reason":"change","resources":[detail_ref],"resourceVersions":[{"revision":1}]})).expect("event");
-        attach_scoped_entity_changes(Some(&state), &mut event).await;
+        let entry = initial_snapshot(state.clone(), detail_ref, None)
+            .await
+            .expect("changed detail");
         assert_eq!(
-            serde_json::to_value(event).expect("live frame")["resourceVersions"][0]["entityChanges"]
-                ["documents"][0]["value"]["lastAnswer"],
+            serde_json::to_value(entry).expect("typed entry")["entityChanges"]["documents"][0]["value"]
+                ["lastAnswer"],
             "Changed answer"
         );
     }

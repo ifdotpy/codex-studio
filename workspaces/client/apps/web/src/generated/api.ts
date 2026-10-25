@@ -18982,6 +18982,34 @@ export interface components {
       /** Workspaceid */
       workspaceId: string;
     };
+    /** @description Bounded entity-transfer SSE fragment. Each completed page decodes to one canonical EntityChangeBatch; only complete=true commits the staged interval. */
+    ResourceEntityTransferEvent: {
+      complete: boolean;
+      cursor: components["schemas"]["SubscriptionCursor"];
+      data: string;
+      /** Epoch */
+      epoch: string;
+      pageIndex: number;
+      partCount: number;
+      partIndex: number;
+      /**
+       * Protocol
+       * @constant
+       */
+      protocol: 4;
+      /**
+       * Reason
+       * @enum {string}
+       */
+      reason: "initial" | "change" | "reconnect" | "overflow" | "workspace";
+      replyKind: components["schemas"]["SubscriptionReplyKind"];
+      resource: components["schemas"]["ResourceRef"];
+      /** Revision */
+      revision: number;
+      transferId: string;
+      /** Workspaceid */
+      workspaceId: string;
+    };
     /**
      * ResourceHeartbeatEvent
      * @description Named `heartbeat` SSE payload; it never requests a resource read.
