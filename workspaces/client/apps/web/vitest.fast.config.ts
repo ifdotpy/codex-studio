@@ -42,6 +42,12 @@ export default {
       "src/components/accountDeleteRequests.test.ts",
       "src/components/Accounts.identity.test.ts",
       "src/components/StudioSettingsTabs.test.ts",
+      // Sign-in permission is captured before approval, with exact native intent ownership.
+      "src/components/questions/Requests.signIn.test.ts",
+      "src/components/questions/openSignIn.test.ts",
+      "src/native/signInProtocol.test.ts",
+      "src/native/frame.test.ts",
+      "src/native/externalLinks.test.ts",
       "src/api.test.ts",
       "src/startWait.test.ts",
       "src/apiSchema.test.ts",

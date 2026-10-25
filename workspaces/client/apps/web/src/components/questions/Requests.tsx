@@ -26,7 +26,7 @@ import {
   requestApprovalDetails,
   requestQuestions,
 } from "./requestData";
-import { openSignInPage } from "./openSignIn";
+import { approveSignInPage } from "./openSignIn";
 import SignInCard from "./SignInCard";
 
 type Props = {
@@ -380,22 +380,19 @@ function RequestCard({
     setSending(true);
     setRequestError("");
     try {
-      const result = await apiPost("/api/answer", { ...body, id: r.id });
-      // The server returns the link only for an accepted sign-in link, after it bound the
-      // loopback forward on this Mac. Open it now; nothing opened before the approval.
-      if (browserOpen && result.openUrl) {
-        try {
-          await openSignInPage(
-            result.openUrl,
-            result.forward,
-            services?.owner.id,
-          );
-        } catch (error) {
-          notify(
-            `Studio approved the link, but the browser did not open: ${errorText(error)}`,
-          );
-        }
-      }
+      const approve = () => apiPost("/api/answer", { ...body, id: r.id });
+      if (browserOpen && body.decision === "accept")
+        await approveSignInPage({
+          url: browserOpen.url,
+          requestId: r.id,
+          owner: services?.owner.id,
+          approve,
+          onOpenError: (error) =>
+            notify(
+              `Studio approved the link, but could not confirm that its page opened: ${errorText(error)}`,
+            ),
+        });
+      else await approve();
       answerDrafts.delete(draftKey);
       const storageError = writeLocalDraft(
         `studio-answer-draft:${draftKey}`,

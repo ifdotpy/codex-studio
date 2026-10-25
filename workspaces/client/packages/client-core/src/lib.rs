@@ -27,6 +27,7 @@ mod quick_look;
 pub mod rich_document;
 pub mod server_keys;
 pub mod server_transport;
+mod sign_in;
 pub mod speech;
 pub mod startup;
 pub mod store;

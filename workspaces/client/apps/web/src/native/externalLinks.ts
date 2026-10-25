@@ -1,4 +1,5 @@
 import { nativeRequest } from "./client";
+import { nativeSignInMethods } from "./signInProtocol";
 
 export async function openNativeLink(
   value: string,
@@ -13,7 +14,10 @@ export async function openNativeLink(
     throw new Error(
       "Only HTTP and HTTPS links without credentials are supported.",
     );
-  await nativeRequest(signIn ? "desktop.openSignIn" : "desktop.openExternal", {
-    value: url.href,
-  });
+  await nativeRequest(
+    signIn ? nativeSignInMethods.open : "desktop.openExternal",
+    {
+      value: url.href,
+    },
+  );
 }

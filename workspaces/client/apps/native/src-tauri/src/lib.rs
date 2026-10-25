@@ -71,9 +71,75 @@ fn trusted(window: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+/// Discard renderer provenance before deciding which native authority is required.
+fn native_action_needs_gesture(request: &mut Request, window: &str) -> Result<bool, String> {
+    if !request.method.starts_with("desktop.") {
+        return Ok(false);
+    }
+    let params = request
+        .params
+        .as_object_mut()
+        .ok_or("Invalid native action parameters.")?;
+    params.remove("permit");
+    params.remove("_nativeWindow");
+    if matches!(
+        request.method.as_str(),
+        studio_client_core::desktop::SIGN_IN_PREPARE_METHOD
+            | studio_client_core::desktop::SIGN_IN_OPEN_METHOD
+            | studio_client_core::desktop::SIGN_IN_CANCEL_METHOD
+    ) {
+        params.insert("_nativeWindow".into(), window.into());
+    }
+    let prepared_sign_in = request.method == studio_client_core::desktop::SIGN_IN_OPEN_METHOD
+        && params
+            .get("value")
+            .is_some_and(|value| value.get("preparation").is_some());
+    Ok(!prepared_sign_in
+        && matches!(
+            request.method.as_str(),
+            "desktop.fileAction"
+                | "desktop.revealPath"
+                | "desktop.showVaultKeys"
+                | "desktop.requestMicrophone"
+                | "desktop.prepareTranscription"
+                | "desktop.cancelTranscription"
+                | "desktop.saveBegin"
+                | "desktop.pickDirectory"
+                | "desktop.pickAttachments"
+                | "desktop.openExternal"
+                | studio_client_core::desktop::SIGN_IN_OPEN_METHOD
+                | studio_client_core::desktop::SIGN_IN_PREPARE_METHOD
+        ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::packaged_shell;
+    #[test]
+    fn sign_in_host_replaces_renderer_authority_and_keeps_preparation_private() {
+        use studio_client_core::protocol::Request;
+        let mut request = Request {
+            id: "native-sign-in".into(),
+            method: studio_client_core::desktop::SIGN_IN_PREPARE_METHOD.into(),
+            params: serde_json::json!({"permit":42,"_nativeWindow":"forged","value":{"url":"https://example.com", "requestId":"card"}}),
+        };
+        assert!(super::native_action_needs_gesture(&mut request, "main").unwrap());
+        assert!(request.params.get("permit").is_none());
+        assert_eq!(request.params["_nativeWindow"], "main");
+        request.method = studio_client_core::desktop::SIGN_IN_OPEN_METHOD.into();
+        assert!(super::native_action_needs_gesture(&mut request, "main").unwrap());
+        request.params["permit"] = 77.into();
+        request.params["value"]["preparation"] = "forged".into();
+        assert!(!super::native_action_needs_gesture(&mut request, "main").unwrap());
+        assert!(request.params.get("permit").is_none());
+        request.params["value"]["preparation"] = serde_json::Value::Null;
+        assert!(!super::native_action_needs_gesture(&mut request, "main").unwrap());
+        request.method = studio_client_core::desktop::SIGN_IN_CANCEL_METHOD.into();
+        assert!(!super::native_action_needs_gesture(&mut request, "main").unwrap());
+        request.method = "desktop.openExternal".into();
+        assert!(super::native_action_needs_gesture(&mut request, "main").unwrap());
+        assert!(request.params.get("_nativeWindow").is_none());
+    }
     #[test]
     fn drafts_require_a_verified_matching_workspace() {
         let params = serde_json::json!({"workspace":"workspace"});
@@ -325,7 +391,9 @@ async fn client_request(
             | "drafts.dismiss"
             | "drafts.refresh"
             | "desktop.openExternal"
-            | "desktop.openSignIn"
+            | studio_client_core::desktop::SIGN_IN_OPEN_METHOD
+            | studio_client_core::desktop::SIGN_IN_PREPARE_METHOD
+            | studio_client_core::desktop::SIGN_IN_CANCEL_METHOD
             | "desktop.pickDirectory"
             | "desktop.pickAttachments"
             | "desktop.fileAction"
@@ -363,26 +431,43 @@ async fn client_request(
     {
         return Err("This native subscription topic is unavailable.".into());
     }
-    if matches!(
-        request.method.as_str(),
-        "desktop.fileAction"
-            | "desktop.revealPath"
-            | "desktop.showVaultKeys"
-            | "desktop.requestMicrophone"
-            | "desktop.prepareTranscription"
-            | "desktop.cancelTranscription"
-            | "desktop.saveBegin"
-            | "desktop.pickDirectory"
-            | "desktop.pickAttachments"
-            | "desktop.openExternal"
-            | "desktop.openSignIn"
-    ) {
-        // Renderer-supplied permits never cross the privilege boundary.
+    let needs_gesture = native_action_needs_gesture(&mut request, window.label())?;
+    if request.method == studio_client_core::desktop::SIGN_IN_PREPARE_METHOD {
+        let mut params = request.params.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let requesting_window = window.clone();
+        window
+            .run_on_main_thread(move || {
+                let permit = if requesting_window.is_focused().unwrap_or(false) {
+                    studio_client_core::desktop::gesture_for_method(
+                        studio_client_core::desktop::SIGN_IN_PREPARE_METHOD,
+                    )
+                } else {
+                    0
+                };
+                params["permit"] = permit.into();
+                let result = studio_client_core::desktop::prepare_sign_in_intent(&params);
+                let _ = send.send(result);
+            })
+            .map_err(|error| error.to_string())?;
+        return Ok(
+            match receive
+                .await
+                .map_err(|_| "The native action was cancelled.")?
+            {
+                Ok(preparation) => Response::success(request.id, preparation),
+                Err(error) => Response::failure(request.id, "desktop_action", error),
+            },
+        );
+    }
+    if request.method == studio_client_core::desktop::SIGN_IN_CANCEL_METHOD {
+        return Ok(studio_client_core::desktop::dispatch(request, None, None, None).await);
+    }
+    if needs_gesture {
         let params = request
             .params
             .as_object_mut()
             .ok_or("Invalid native action parameters.")?;
-        params.remove("permit");
         let (send, receive) = tokio::sync::oneshot::channel();
         let method = request.method.clone();
         window
@@ -402,7 +487,7 @@ async fn client_request(
     if matches!(
         request.method.as_str(),
         "api.request" | "sync.open" | "drafts.refresh" | "desktop.fileAction"
-    ) || (request.method == "desktop.openSignIn"
+    ) || (request.method == studio_client_core::desktop::SIGN_IN_OPEN_METHOD
         && request.params["value"].get("forward").is_some())
         || (request.method == "view.subscribe" && request.params["topic"] == "sse")
     {
