@@ -805,10 +805,8 @@ fn catalog_source(record: &Value) -> Result<thread::CatalogSource, WorkerError> 
     )
 }
 
-/// The definitions an agent's tools come from (Python `Runtime.tool_definitions`):
-/// those of its catalog source, except that a VM agent always gets the
-/// current catalog, also on a thread that Python started with legacy tools.
-/// The legacy catalog lacks tools of VM agents, such as `orchestration_sign_in`.
+/// VM agents and providers that resend tools each turn use current definitions.
+/// Other agents retain their saved catalog source. Callers apply frozen overrides.
 fn catalog_definitions<'a>(
     resources: &'a PreparationResources,
     record: &Value,
@@ -816,6 +814,11 @@ fn catalog_definitions<'a>(
     Ok(
         if catalog_source(record)? == thread::CatalogSource::Legacy
             && record["executionMode"] != "vm"
+            && !crate::provider_adapter::adapter(
+                ProviderKind::of_record(record).map_err(|_| invalid("agent/provider"))?,
+            )
+            .capabilities()
+            .tools_on_every_turn
         {
             &resources.legacy_tools
         } else {
