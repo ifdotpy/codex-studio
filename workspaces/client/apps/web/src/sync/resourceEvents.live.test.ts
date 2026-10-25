@@ -293,6 +293,45 @@ it("promotes a same-revision recovery hint only after its applied receipt arrive
   expect(f.get).not.toHaveBeenCalled();
 });
 
+it("revokes historical same-revision proof when the current reconnect application fails", async () => {
+  const f = await fixture();
+  const baseline = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "initial",
+    resources: [{ kind: "state" }],
+    resourceVersions: [
+      {
+        revision: 2,
+        cursor: { workspaceId: "workspace", seq: 2 },
+        replyKind: "delta",
+      },
+    ],
+  };
+  f.source.emit("resources", baseline);
+  await vi.advanceTimersByTimeAsync(0);
+  const store = createSubscriptionStore(f.transport);
+  disposals.push(store.dispose);
+  store.watchResourceChanges({ kind: "state" }, () => {});
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot({ kind: "state" }).status).toBe("live");
+  f.source.onerror?.();
+  expect(store.getSnapshot({ kind: "state" }).status).toBe("stale");
+  await vi.advanceTimersByTimeAsync(1000);
+  const resumed = f.sources.at(-1)!;
+  resumed.emit("api-schema", { hash: API_SCHEMA_HASH });
+  f.persist.mockRejectedValueOnce(
+    new Error("the current local base is unavailable"),
+  );
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  resumed.emit("resources", { ...baseline, reason: "reconnect" });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot({ kind: "state" }).status).not.toBe("live");
+  error.mockRestore();
+});
+
 it("reports a deferred baseline listener failure through normal transport recovery", async () => {
   const f = await fixture();
   f.source.emit("resources", {

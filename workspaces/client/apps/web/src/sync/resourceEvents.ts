@@ -482,11 +482,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       previous.revision >= version.revision
     ) {
       if (previous.revision === version.revision) {
-        // A failed delivery retains its revision as a recovery hint. An
-        // applied reconnect at that same revision must replace the hint with
-        // its durable receipt, so readers can become ready without a change.
+        // Readiness follows the current application outcome, including at an
+        // unchanged revision. Promote a recovered receipt and revoke historical
+        // proof when the current delivery could not be applied.
         if (
-          !hasAppliedResourceBaseline(previous) &&
+          hasAppliedResourceBaseline(previous) !==
           hasAppliedResourceBaseline(version)
         ) {
           resourceValues.set(key, version);
