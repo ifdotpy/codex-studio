@@ -319,6 +319,7 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
     assert_eq!(status, 400, "invalid identities fail before a native write");
     assert_eq!(port.submitted.lock().expect("no second input").len(), 1);
 
+    let owner = case["before"]["agent"].as_str().expect("monitor owner");
     let epoch = case["actor"]["epoch"].as_i64().expect("actor epoch");
     let account = case["actor"]["accountKey"].as_str().unwrap_or("default");
     for (agent, account, epoch, found) in [

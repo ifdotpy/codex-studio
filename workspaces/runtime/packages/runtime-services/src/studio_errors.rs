@@ -206,6 +206,8 @@ pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
 struct Baseline {
     hidden_owners: BTreeSet<String>,
     dismissed: usize,
+    /// Published grouped monitor rows, bounded by MAX_ROWS.
+    monitor_groups: bool,
 }
 
 /// The list and its baseline.
@@ -454,6 +456,11 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Value, Baseline), StoreError
     let baseline = Baseline {
         hidden_owners,
         dismissed: dismissed.len(),
+        monitor_groups: rows.iter().any(|row| {
+            row["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with(MONITOR_GROUP_PREFIX))
+        }),
     };
     Ok((json!({"items":rows}), baseline))
 }
@@ -599,10 +606,23 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
     {
         return Ok(true);
     }
-    if sources.rows_removed && published_source_missing(tx)? {
+    let monitor_groups = BASELINE.with(|baseline| {
+        baseline
+            .borrow()
+            .as_ref()
+            .is_some_and(|baseline| baseline.monitor_groups)
+    });
+    // A deleted earlier member changes a group's count even when its final
+    // monitor remains. Deletions carry no source ID to check individually.
+    if sources.rows_removed && (monitor_groups || published_source_missing(tx)?) {
         return Ok(true);
     }
     for id in &sources.monitors {
+        if monitor_groups && tx.prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sync_entities e WHERE e.collection='studioError' AND e.deleted=0 AND (             json_extract(e.payload,'$.value.monitorId')=?1 OR              json_extract(e.payload,'$.value.ruleId')=(SELECT json_extract(m.record,'$.ruleId') FROM runtime_monitors m                  WHERE m.id=?1 AND json_extract(m.record,'$.status')='completed')))"
+        )?.query_row([id], |row| row.get::<_, bool>(0))? {
+            return Ok(true);
+        }
         if is_published(tx, &format!("monitor:{id}"))? {
             return Ok(true);
         }
@@ -826,26 +846,30 @@ mod tests {
         use studio_runtime_store::{
             AgentRecord, AgentRepository, MonitorRecord, RuntimeStore, Table,
         };
-        let root = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
-        crate::entity_publication::install(&store).await.unwrap();
-        let now = crate::event_write::unix_time().unwrap();
+        let root = tempfile::tempdir().expect("valid group publication fixture");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("valid group publication fixture");
+        crate::entity_publication::install(&store)
+            .await
+            .expect("valid group publication fixture");
+        let now = crate::event_write::unix_time().expect("valid group publication fixture");
         store.transaction(move |tx| {
             AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,"status":"idle","provider":"codex"}))?)?;
             Table::new(tx).put(&MonitorRecord::from_value(json!({"id":"failed","agent":"owner","ruleId":"rule","command":"check","created":now - 10.,"finished":now - 9.,"status":"failed","error":"No live provider session","exitCode":null}))?)?;
             Ok::<_, StoreError>(())
-        }).await.unwrap();
+        }).await.expect("valid group publication fixture");
         store.transaction(move |tx| {
             let count: i64 = tx.query_row("SELECT count(*) FROM sync_entities WHERE collection='studioError' AND deleted=0", [], |r| r.get(0))?;
             assert_eq!(count, 1, "the failure is published");
             Table::new(tx).put(&MonitorRecord::from_value(json!({"id":"success","agent":"owner","ruleId":"rule","command":"check","created":now,"finished":now,"status":"completed","exitCode":0}))?)?;
             Ok::<_, StoreError>(())
-        }).await.unwrap();
+        }).await.expect("valid group publication fixture");
         store.test_read_transaction(|tx| {
             let count: i64 = tx.query_row("SELECT count(*) FROM sync_entities WHERE collection='studioError' AND deleted=0", [], |r| r.get(0))?;
             assert_eq!(count, 0, "the success retires the group before the periodic refresh");
             Ok::<_, StoreError>(())
-        }).unwrap();
+        }).expect("valid group publication fixture");
     }
 
     #[test]
