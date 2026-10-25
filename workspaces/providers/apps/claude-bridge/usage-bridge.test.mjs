@@ -10,6 +10,8 @@ import {
   modelUsage,
   sdkResult,
   zeroResult,
+  assistant,
+  interruptedDelta,
 } from "./usage-fixtures.mjs";
 const bridges = [];
 afterEach(async () => {
@@ -21,7 +23,7 @@ export const tool=(name,description,schema,call)=>({name,description,schema,call
 export const createSdkMcpServer=value=>({...value});
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
 export const getSessionMessages=async()=>[];
-const events=${JSON.stringify(events)}, modelUsage=${JSON.stringify(modelUsage)},sdkResult=${JSON.stringify(sdkResult)},zeroResult=${JSON.stringify(zeroResult)};
+const events=${JSON.stringify(events)}, modelUsage=${JSON.stringify(modelUsage)},sdkResult=${JSON.stringify(sdkResult)},zeroResult=${JSON.stringify(zeroResult)},assistant=${JSON.stringify(assistant)},interruptedDelta=${JSON.stringify(interruptedDelta)};
 export function query({prompt,options}){
  const abort=new AbortController();let delayedClose=false,stuckClose=false,reportCloseTiming=false,closeAt,restoreAppend;
  process.once('exit',()=>{if(reportCloseTiming)process.stdout.write(JSON.stringify({method:'fixture/shutdownTiming',params:{durationMs:Date.now()-closeAt}})+'\\n');});
@@ -126,6 +128,18 @@ export function query({prompt,options}){
     yield stream(events[1],'background-tool');yield stream(events[2],'background-tool');
     yield {type:'assistant',parent_tool_use_id:'background-tool',uuid:'child-done',message:{id:'response-1',content:[{type:'text',text:'background-finished'}]}};
     continue;
+   }
+   if(text==='no-stream'||text==='no-stream-then-stream'){
+    yield assistant;yield assistant;
+    if(text==='no-stream-then-stream')for(const event of events)yield stream(event);
+    yield result();continue;
+   }
+   if(text==='null-stop'||text==='absent-stop'){
+    yield stream(events[0]);
+    const delta=structuredClone(interruptedDelta);
+    if(text==='absent-stop')delete delta.delta.stop_reason;
+    yield stream(delta);yield stream(events[2]);
+    yield assistant;yield result();continue;
    }
    if(text==='steer'){
     yield stream(events[0]);
@@ -706,5 +720,41 @@ for (const scenario of ["shutdown-watchdog", "shutdown-watchdog-inflight"])
           reason: "queryClosed",
         },
       ]);
+    },
+  );
+
+for (const scenario of [
+  "null-stop",
+  "absent-stop",
+  "no-stream",
+  "no-stream-then-stream",
+])
+  test(
+    scenario + " preserves finality at the bridge notification boundary",
+    async () => {
+      const b = await setup();
+      await done(b, await start(b, scenario));
+      const accounting = observations(b).filter((o) => o.kind !== "cumulative");
+      expect(accounting).toMatchObject([
+        {
+          kind: "gap",
+          responseId: "response-1",
+          reason: scenario.startsWith("no-stream")
+            ? "noStream"
+            : "unconfirmedStop",
+        },
+        ...(scenario === "no-stream-then-stream"
+          ? [
+              {
+                kind: "response",
+                responseId: "response-1",
+                tokens: { output: 720 },
+              },
+            ]
+          : []),
+      ]);
+      expect(accounting).toHaveLength(
+        scenario === "no-stream-then-stream" ? 2 : 1,
+      );
     },
   );

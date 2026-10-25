@@ -121,3 +121,41 @@ export const zeroResult = {
     output_tokens_details: { thinking_tokens: 0 },
   },
 };
+
+// CLI 2.1.310 Ka(e) synthesizes this nullable delta from e.stopReason/e.usage.
+/** @type {Extract<import('@anthropic-ai/claude-agent-sdk').SDKPartialAssistantMessage['event'], {type: 'message_delta'}>} */
+export const interruptedDelta = {
+  type: "message_delta",
+  delta: {
+    stop_reason: null,
+    stop_sequence: null,
+    stop_details: null,
+    container: null,
+  },
+  usage: {
+    output_tokens: 1,
+    input_tokens: null,
+    cache_creation_input_tokens: null,
+    cache_read_input_tokens: null,
+    server_tool_use: null,
+    iterations: null,
+    output_tokens_details: null,
+    fallback_credit: null,
+  },
+  context_management: null,
+};
+const startMessage = events.find((e) => e.type === "message_start");
+if (!startMessage) throw new Error("missing SDK message_start fixture");
+/** @type {import('@anthropic-ai/claude-agent-sdk').SDKAssistantMessage} */
+export const assistant = {
+  type: "assistant",
+  message: {
+    ...startMessage.message,
+    usage: { ...startMessage.message.usage, output_tokens: 720 },
+    stop_reason: "end_turn",
+    content: [{ type: "text", text: "answer", citations: null }],
+  },
+  parent_tool_use_id: null,
+  uuid: "11111111-1111-4111-8111-111111111111",
+  session_id: "session",
+};

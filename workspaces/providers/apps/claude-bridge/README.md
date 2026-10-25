@@ -133,9 +133,20 @@ Codex identity and the existing Claude `accountId` remain unchanged.
 The bridge emits `thread/tokenUsage/updated` observations using the
 [generated usage contract](usage-contract.generated.d.mts). The
 [SDK-typed normalizer](usage.mjs) finalizes response usage from stream events
-at `message_stop`, publishes cumulative model totals immediately on each SDK
-result, and reports unfinished responses as gaps. Assistant message usage is
-provisional and serves only the idle-compaction cache report.
+at `message_stop` only after a non-null `message_delta.delta.stop_reason` proves
+completion. Stops without that evidence produce an `unconfirmedStop` gap.
+Assistant messages without a preceding stream produce one `noStream` gap per
+response identity; a later complete stream may still supply the final response.
+The normalizer publishes cumulative model totals immediately on each SDK result
+and reports unfinished responses as gaps. Assistant message usage is provisional
+and serves only the idle-compaction cache report.
+
+The installed SDK exposes no general typed marker proving an assistant or stream
+message was generated without a provider call. Local synthetic messages, including
+hook messages, follow the same gap rules; response id prefixes never suppress
+accounting evidence. Gap reasons are owned by the runtime-schema
+[usage module](../../../runtime/packages/runtime-schema/src/usage.rs) and consumed
+through the generated contract.
 
 `pnpm --filter studio-claude-bridge run typecheck` checks the normalizer and its
 SDK fixtures with the [strict configuration](tsconfig.json). Package checks

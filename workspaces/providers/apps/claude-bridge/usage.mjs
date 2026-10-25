@@ -1,5 +1,7 @@
 // @ts-check
 /** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKPartialAssistantMessage} StreamMessage */
+/** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKAssistantMessage} AssistantMessage */
+/** @typedef {Extract<StreamEvent, {type: 'message_delta'}>['delta']['stop_reason']} StopReason */
 /** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKResultMessage} ResultMessage */
 /** @typedef {import('@anthropic-ai/claude-agent-sdk').ModelUsage} ModelUsage */
 /** @typedef {StreamMessage['event']} StreamEvent */
@@ -63,7 +65,7 @@ function mergeUsage(initial, delta) {
 
 /** One stream per parent tool (null is the main loop). SDK deltas carry no response id. */
 export class ResponseUsage {
-  /** @type {Map<StreamMessage['parent_tool_use_id'], {message: Message, turnId: string | undefined}>} */
+  /** @type {Map<StreamMessage['parent_tool_use_id'], {message: Message, stopReason: StopReason, turnId: string | undefined}>} */
   pending = new Map();
   /** @type {Map<string, string>} */
   parentTurns = new Map();
@@ -72,6 +74,11 @@ export class ResponseUsage {
   // Pricing aliases are candidates, never identities for exact model windows.
   /** @type {Map<string, Map<string, number>>} */
   aliasWindows = new Map();
+  // Query-scoped identities survive pending-stream removal and turn changes.
+  /** @type {Set<string>} */
+  started = new Set();
+  /** @type {Set<string>} */
+  noStream = new Set();
   closed = false;
 
   /** @param {string | null | undefined} parent @param {string | undefined} turnId */
@@ -123,17 +130,27 @@ export class ResponseUsage {
       const previous = this.pending.get(parent);
       if (previous) observations.push(this.gap(previous, "streamInterrupted"));
       if (parent !== null) this.registerTool(parent, turnId);
+      this.started.add(event.message.id);
       this.pending.set(parent, {
+        stopReason: null,
         message: structuredClone(event.message),
         turnId: this.turnFor(parent, turnId),
       });
     } else {
       const current = this.pending.get(parent);
       if (!current) return observations;
-      if (event.type === "message_delta")
+      if (event.type === "message_delta") {
         current.message.usage = mergeUsage(current.message.usage, event.usage);
+        // CLI aborts can synthesize a null delta followed by message_stop.
+        if (event.delta.stop_reason != null)
+          current.stopReason = event.delta.stop_reason;
+      }
       if (event.type === "message_stop") {
         this.pending.delete(parent);
+        if (current.stopReason == null) {
+          observations.push(this.gap(current, "unconfirmedStop"));
+          return observations;
+        }
         const modelContextWindow = this.contextWindowFor(current.message.model);
         observations.push({
           kind: "response",
@@ -148,6 +165,27 @@ export class ResponseUsage {
       }
     }
     return observations;
+  }
+
+  /** Assistant usage is provisional even when no stream was delivered.
+   * The SDK exposes no general typed marker proving local-only assistant messages.
+   * @param {AssistantMessage} frame @param {string | undefined} turnId
+   * @returns {UsageObservation[]}
+   */
+  observeAssistant(frame, turnId) {
+    const { id, model } = frame.message;
+    if (this.closed || this.started.has(id) || this.noStream.has(id)) return [];
+    this.noStream.add(id);
+    const ownerTurn = this.turnFor(frame.parent_tool_use_id, turnId);
+    return [
+      {
+        kind: "gap",
+        responseId: id,
+        model,
+        reason: "noStream",
+        ...(ownerTurn === undefined ? {} : { turnId: ownerTurn }),
+      },
+    ];
   }
 
   /** @param {{message:Message,turnId:string | undefined}} current
