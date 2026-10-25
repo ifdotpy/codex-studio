@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { RxDatabase } from "rxdb";
 import type { Snapshot } from "../types";
-import { SYNC_PROTOCOL_VERSION } from "../generated/api";
+import { SYNC_PROTOCOL_VERSION, type components } from "../generated/api";
 import type {
   ResourceChangeEvent,
   ResourceConnectionState,
@@ -388,6 +388,115 @@ it("does not use HTTP recovery to bypass a schema-mismatched stream", async () =
   expect(f.pulls()).toEqual([]);
   expect(f.snapshots).toEqual([]);
 });
+
+it.each([false, true])(
+  "snapshot staged=%s preserves a newer independently subscribed row and evicts only covered versions",
+  async (staged) => {
+    const f = await setup();
+    const tasks = { kind: "tasks", agentId: "lead" } as const;
+    const newer = { kind: "task", taskId: "newer" } as const;
+    const snapshot = (
+      resource: ResourceChangeEvent["resources"][number],
+      through: number,
+      documents: components["schemas"]["EntityChangeBatch"]["documents"],
+    ): ResourceChangeEvent => ({
+      ...f.frame(through),
+      resources: [resource],
+      resourceVersions: [
+        {
+          resource,
+          revision: through,
+          cursor: { workspaceId: f.workspaceId, seq: through },
+          replyKind: "snapshot",
+          entityChanges: { after: 0, through, documents },
+        },
+      ],
+    });
+    const row = (
+      id: string,
+      seq: number,
+    ): components["schemas"]["EntityChangeBatch"]["documents"][number] => ({
+      collection: "task",
+      op: "upsert",
+      id,
+      seq,
+      value: {
+        id,
+        agent: "lead",
+        kind: "command",
+        status: "running",
+        created: 1,
+      },
+    });
+    await f.client.persistResourceEntityChanges(
+      snapshot(tasks, 9, [row("older", 9)]),
+      () => true,
+    );
+    await f.client.persistResourceEntityChanges(
+      snapshot({ kind: "task", taskId: "equal" }, 10, [row("equal", 10)]),
+      () => true,
+    );
+    // This replacement was captured before the separate task scope committed 11.
+    // Its own applied cursor is still 9, so the same-ref stale guard cannot hide the race.
+    const captured = snapshot(tasks, 10, []);
+    const { EntityTransferAssembler } = await import("./entityTransfer");
+    const assembler = new EntityTransferAssembler();
+    let interval: Awaited<ReturnType<typeof assembler.receive>>;
+    try {
+      if (staged)
+        interval = await assembler.receive({
+          protocol: captured.protocol,
+          workspaceId: f.workspaceId,
+          epoch: captured.epoch,
+          revision: captured.revision,
+          reason: captured.reason,
+          resource: tasks,
+          cursor: { workspaceId: f.workspaceId, seq: 10 },
+          replyKind: "snapshot",
+          transferId: crypto.randomUUID(),
+          pageIndex: 0,
+          partIndex: 0,
+          partCount: 1,
+          complete: true,
+          data: JSON.stringify(captured.resourceVersions[0].entityChanges),
+        });
+      await f.client.persistResourceEntityChanges(
+        snapshot(newer, 11, [row("newer", 11)]),
+        () => true,
+      );
+      if (staged) {
+        expect(interval).toBeDefined();
+        await f.client.persistStagedEntityTransfer(interval!, () => true);
+      } else await f.client.persistResourceEntityChanges(captured, () => true);
+      expect(
+        (await f.db.projections.findOne("entity:task:newer").exec())?.toJSON(),
+      ).toMatchObject({ seq: 11, entity: { id: "newer" } });
+      expect(await f.client.readSubscriptionCursor(newer)).toEqual({
+        workspaceId: f.workspaceId,
+        seq: 11,
+      });
+      expect(await f.client.readSubscriptionCursor(tasks)).toEqual({
+        workspaceId: f.workspaceId,
+        seq: 10,
+      });
+      for (const [id, seq] of [
+        ["older", 9],
+        ["equal", 10],
+      ] as const) {
+        const [removed] =
+          await f.db.projections.storageInstance.findDocumentsById(
+            [`entity:task:${id}`],
+            true,
+          );
+        expect(removed).toMatchObject({ seq, _deleted: true, evicted: true });
+      }
+      expect(f.pulls()).toEqual([]);
+    } finally {
+      await interval?.dispose();
+      await assembler.invalidate();
+    }
+  },
+);
 
 it.each([
   { follower: false, staged: false, cancelled: false },

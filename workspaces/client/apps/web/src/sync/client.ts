@@ -697,7 +697,13 @@ export function createSyncClient(options: SyncClientOptions) {
             .exec();
           for (const doc of existing) {
             const row = doc.toJSON();
-            if (row.entity && belongs(row.entity) && !incoming.has(row.id))
+            // A different scope may have committed a source version beyond this snapshot.
+            if (
+              row.seq <= cursor.seq &&
+              row.entity &&
+              belongs(row.entity) &&
+              !incoming.has(row.id)
+            )
               rows.push({
                 id: row.id,
                 payload: "",
@@ -846,6 +852,7 @@ export function createSyncClient(options: SyncClientOptions) {
               const row = doc.toJSON();
               after = row.id;
               if (
+                row.seq <= interval.cursor.seq &&
                 row.entity &&
                 belongs(row.entity) &&
                 !(await interval.has(`${collection}:${row.entity.id}`))
