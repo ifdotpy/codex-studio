@@ -1270,7 +1270,8 @@ fn publish_rooms_of(
         match room_entity_view(&room, &context) {
             Some(view) => put_projection(transaction, "room", &id, view, false, validate)?,
             // Python retains a deleted team's broadcast view.
-            None if room.get("kind").and_then(Value::as_str) == Some("broadcast") => {}
+            None if room.get("kind").and_then(Value::as_str) == Some("broadcast")
+                && !studio_runtime_store::ProjectsRepository::room_retired(&room) => {}
             None => retire_if_live(transaction, "room", &id, validate)?,
         }
     }

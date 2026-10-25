@@ -493,6 +493,11 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         "/components/schemas/TranscriptResource/properties/tail/maximum",
         values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
     )?;
+    expect_number(
+        openapi,
+        "/components/schemas/ProjectDeleteRequest/properties/expected_project_seq/maximum",
+        values::MAX_SAFE_INTEGER,
+    )?;
     check_delivery_parity(openapi)?;
     let modes = serde_json::json!(crate::claude_permissions::PERMISSION_MODES);
     for path in [

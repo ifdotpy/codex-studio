@@ -1684,6 +1684,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/projects/delete": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Delete a registered project and all its chats
+     * @description One canvas transaction commits logical deletion, cancellation intents, room retirement, projections and a durable exact-request receipt. An identical request replays its committed reply before target existence checks. Conflicts require fresh SSE state and confirmation. No per-chat fallback or blind retry with a new identity.
+     */
+    post: operations["project_delete_api_projects_delete_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/questions": {
     parameters: {
       query?: never;
@@ -17201,6 +17221,81 @@ export interface components {
       projectId: string;
       /** Serverid */
       serverId: string;
+    };
+    /**
+     * ProjectDeleteErrorResponse
+     * @description Standard API error envelope with an optional first-problem location.
+     */
+    ProjectDeleteErrorResponse: {
+      /**
+       * Catalogpending
+       * @default null
+       */
+      catalogPending?: boolean | null;
+      code: components["schemas"]["ProjectDeleteFailureCode"];
+      /** Error */
+      error: string;
+      /**
+       * Location
+       * @default null
+       */
+      location?: string[] | null;
+      /**
+       * Metadata
+       * @default null
+       */
+      metadata?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
+      /**
+       * Outcome
+       * @default null
+       */
+      outcome?: "not_applied" | null;
+      /**
+       * Protocolversion
+       * @default null
+       */
+      protocolVersion?: number | null;
+      /**
+       * Supportedversions
+       * @default null
+       */
+      supportedVersions?: number[] | null;
+    };
+    /**
+     * ProjectDeleteFailureCode
+     * @enum {string}
+     */
+    ProjectDeleteFailureCode:
+      | "project_not_found"
+      | "project_workspace_conflict"
+      | "project_sequence_conflict"
+      | "project_request_conflict"
+      | "project_remote_scope"
+      | "project_membership_conflict"
+      | "project_lifecycle_unavailable";
+    /**
+     * ProjectDeleteRequest
+     * @description Delete one registered project lifetime and all owned chats atomically. Obtain expected_project_seq from the project SyncEntity seq (not the stream revision or global checkpoint), and expected_workspace_id from the same SSE entity baseline workspaceId. Retain this request_id and complete body across uncertain responses.
+     */
+    ProjectDeleteRequest: {
+      expected_project_seq: number;
+      expected_workspace_id: string;
+      id: string;
+      request_id: string;
+    };
+    /**
+     * ProjectDeleteResponse
+     * @description Committed logical deletion only. External stops and disposable workspace cleanup may remain pending. Retained histories and source directories are preserved. ID arrays are authoritative, sorted and unique.
+     */
+    ProjectDeleteResponse: {
+      deletedAgentIds: string[];
+      deletedRoomIds: string[];
+      id: string;
+      /** @constant */
+      outcome: "deleted";
+      request_id: string;
     };
     /** ProjectEntityDto */
     ProjectEntityDto: {
@@ -34412,6 +34507,92 @@ export interface operations {
       502: components["responses"]["ApiError502"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
+    };
+  };
+  project_delete_api_projects_delete_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProjectDeleteRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectDeleteResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectDeleteErrorResponse"];
+        };
+      };
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectDeleteErrorResponse"];
+        };
+      };
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectDeleteErrorResponse"];
+        };
+      };
     };
   };
   questions_api_questions_get: {

@@ -1187,6 +1187,16 @@ fn stop(
                 .or_default()
                 .push(LifecycleEffectKind::RemoteStop);
         }
+        if delete {
+            // Final deletion must revoke archive restoration while retaining
+            // any previously requested cleanup and its exact effect identity.
+            if let Some(archive) = object.remove("agentArchive") {
+                object.insert(
+                    crate::workspace_cleanup_runtime::DELETED_ARCHIVE_FIELD.to_owned(),
+                    archive,
+                );
+            }
+        }
         if delete && !agent.flag("deletedAt") {
             object.insert("deletedAt".to_owned(), json!(now));
         }
