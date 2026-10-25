@@ -2921,6 +2921,7 @@ export default function App({ active = true }: { active?: boolean }) {
               </div>
             ) : room?.radio ? (
               <RadioChat
+                visible={!(mobileClient && sidebar)}
                 key={room.id}
                 room={room}
                 data={data}

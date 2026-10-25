@@ -8,6 +8,7 @@ test("chat list uses summaries and detail interest follows the visible chat", as
   test.setTimeout(60_000);
   await page.setViewportSize({ width: 390, height: 844 });
   const additions = [];
+  let subscriptionPosts = 0;
   const removals = [];
   page.on("request", (request) => {
     if (
@@ -15,6 +16,7 @@ test("chat list uses summaries and detail interest follows the visible chat", as
       request.method() !== "POST"
     )
       return;
+    subscriptionPosts++;
     const body = request.postDataJSON();
     additions.push(...body.add.map((item) => item.resource));
     removals.push(...body.remove);
@@ -42,6 +44,20 @@ test("chat list uses summaries and detail interest follows the visible chat", as
     .poll(() => additions)
     .toContainEqual({ kind: "agentDetail", agentId });
   await page.clock.install();
+  await page.clock.fastForward(100);
+  const warmedPosts = subscriptionPosts;
+  for (let cycle = 0; cycle < 3; cycle++) {
+    await page
+      .getByRole("button", { name: "Back to chats", exact: true })
+      .click();
+    await row.click();
+    await page.clock.fastForward(100);
+  }
+  expect(subscriptionPosts - warmedPosts).toBe(0);
+  console.info(
+    "visible-chat grace browser subscription POSTs",
+    subscriptionPosts - warmedPosts,
+  );
   await page
     .getByRole("button", { name: "Back to chats", exact: true })
     .click();
@@ -51,4 +67,11 @@ test("chat list uses summaries and detail interest follows the visible chat", as
   await expect
     .poll(() => removals)
     .toContainEqual({ kind: "agentDetail", agentId });
+  await expect
+    .poll(() =>
+      removals.some(
+        (ref) => ref.kind === "transcript" && ref.agentId === agentId,
+      ),
+    )
+    .toBe(true);
 });
