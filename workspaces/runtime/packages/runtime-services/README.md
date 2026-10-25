@@ -308,9 +308,11 @@ restarts it. The prepared record is intent, not evidence of a provider write.
 `AdmissionUnknown` means the admission
 receipt was lost; never resubmit. Other admission errors mean no write was admitted.
 Accepted requests report Written, NotSent, or Unknown via `SessionOutcome::Write`.
-Keep each admission future pinned/owned across unrelated select outcomes. Dropping
-its owner before observing the result fences the session, including a buffered
-result; ordinary polling by mutable reference does not fence it.
+Keep each admission future pinned/owned across unrelated select outcomes. Once
+its command enters the bounded lane, dropping its owner before observing the
+result fences the session, including a buffered result. Dropping a submission
+still waiting for lane capacity leaves the shared session running; ordinary
+polling by mutable reference does not fence it.
 
 Written request outcomes include `recovery: Some(RecoveredRequest)` containing
 `ticket`, `operation_id`, `thread_id`, `lightweight`, `deadline_ms`, `unknown`, and
@@ -321,8 +323,15 @@ remote-to-local ID mapping after reattach. Supply these records through
 opening. Preserve the original deadline and update `unknown` when durable Unknown
 is reported. Recovery does not start a fresh timeout or repeat prior Unknown.
 Recovery restores serialized thread ownership; a lightweight request does not
-reserve its thread. Conflicting recovered serialized owners are refused before
-open. All 32 unresolved requests can be recovered; initialization has a separate
+reserve its thread. Multiple unresolved serialized requests can restore ownership
+of the same thread without replaying their writes. Fresh serialized work waits
+until every restored identity settles; an unknown deadline retains its reservation.
+Cancellation of an Unknown request is refused. A late reply or proven-unsent
+rejection can release its ownership. Retained recovery derives serialization from
+the persisted call's method and parameters using the shared method policy, so
+legacy lightweight flags cannot bypass ownership. Unreadable recovered policy
+parameters conservatively retain ownership; valid objects keep the normal
+parameter predicate. All 32 unresolved requests can be recovered; initialization has a separate
 record slot. Merge late Written evidence by request/operation identity, preserving
 any durable Unknown flag. A late write receipt must not resurrect a request already
 durably resolved; restore only unresolved records.

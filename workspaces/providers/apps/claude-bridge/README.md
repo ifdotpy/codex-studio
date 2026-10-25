@@ -93,3 +93,7 @@ terminal failure. The bridge integration tests
 and inline scripted SDK remain outside the strict TypeScript program because
 the shared bridge harness is untyped; SDK data fixtures and normalizer unit tests
 remain strictly checked.
+Per-thread operation ordering consumes `provider-method-policy.generated.mjs`,
+rendered by `studio-contracts` from the Rust
+[method policy](../../../runtime/packages/runtime-schema/src/provider_method_policy.rs).
+Refresh it with `pnpm run contracts:generate`; `pnpm run contracts:check` rejects drift.

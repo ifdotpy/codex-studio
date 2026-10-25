@@ -2233,7 +2233,7 @@ mod tests {
         PublicationContext, SubmittedInput, notification_content_signature, notification_payload,
         record_start_submission, record_user_submission, sha256_json,
     };
-    use studio_runtime_providers::{Frame, LineDecoder};
+    use studio_runtime_providers::Frame;
     use studio_runtime_store::{
         AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId, MessageRepository,
         NotificationDispatchRepository, QueueEvent, QueueEventId, QueueEventRepository,
@@ -2347,14 +2347,9 @@ mod tests {
 
     #[test]
     fn borrowed_notification_signature_matches_owned_payload_with_unknown_fields() {
-        let mut decoder = LineDecoder::new();
-        let frames = decoder
-            .push(
-                b"{\"method\":\"future/notice\",\"params\":{\"nested\":[1,2]},\"futureField\":{\"keep\":true}}\n",
-            )
-            .expect("unknown notification decodes");
-        decoder.finish().expect("fixture is complete");
-        let frame = &frames[0];
+        let frame = &frame(
+            &json!({"method":"future/notice","params":{"nested":[1,2]},"futureField":{"keep":true}}),
+        );
         let payload = notification_payload(frame);
         assert_eq!(
             payload,
@@ -2435,12 +2430,10 @@ mod tests {
     pub(super) fn frame(value: &Value) -> Frame {
         let mut bytes = serde_json::to_vec(value).expect("notification serializes");
         bytes.push(b'\n');
-        LineDecoder::new()
-            .push(&bytes)
-            .expect("notification decodes")
-            .into_iter()
-            .next()
-            .expect("one notification frame")
+        match studio_runtime_providers::decode_journal_entry(1, 1, bytes).payload {
+            studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame,
+            other => panic!("fixture must decode: {other:?}"),
+        }
     }
 
     fn identity(cursor: u64) -> ProviderDeliveryIdentity {

@@ -3309,9 +3309,8 @@ mod tests {
             dispatch_notification_with_effects, flush_notification_streams,
         };
         let streams = store.transaction_with(|tx| {
-            let mut decoder = studio_runtime_providers::LineDecoder::new();
-            let notification = decoder.push(b"{\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"thread\",\"turnId\":\"turn\",\"itemId\":\"answer\",\"delta\":\" streamed text\"}}\n")
-                .expect("real provider frame").remove(0);
+            let studio_runtime_providers::DecodedJournalPayload::Frame(notification) = studio_runtime_providers::decode_journal_entry_borrowed(1, 1, b"{\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"thread\",\"turnId\":\"turn\",\"itemId\":\"answer\",\"delta\":\" streamed text\"}}\n")
+                .payload else { panic!("real provider frame must decode"); };
             let result = dispatch_notification_with_effects(tx, "open", &PublicationContext::default(),
                 &NotificationStreamBuffer::default(), &ProviderDeliveryIdentity { provider_handle: "account:default".into(), generation: 1, cursor: 1 },
                 &notification, 2.0, &studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects)?;
