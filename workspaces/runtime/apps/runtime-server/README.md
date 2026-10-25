@@ -132,3 +132,8 @@ placing the release at `current`. It never unloads an existing job.
 Focused witness: `cargo test -p studio-runtime-server --test integration operator_cli::`.
 Tests use temporary HOME/XDG directories, poisoned Python configuration, and
 fake service managers. They never address the host service.
+
+Native Codex compatibility also compares the generated
+`ThreadTokenUsageUpdatedNotification` schema, including its referenced token types,
+with the CLI 0.164.0 usage fragment committed by `runtime-schema::usage`. A changed
+fragment refuses compatibility before a native provider starts.

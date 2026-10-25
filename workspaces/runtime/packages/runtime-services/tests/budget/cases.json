@@ -34,8 +34,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -47,8 +54,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -60,8 +74,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 21
-          }
+            "totalTokens": 21,
+            "inputTokens": 21,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -99,13 +120,20 @@
         "op": "capture",
         "at": 101,
         "params": {
-          "responseId": "\u03c0 \ud83d\ude00 , :",
+          "responseId": "π 😀 , :",
           "rawTokenUsageRecord": {
-            "response_id": "\u03c0 \ud83d\ude00 , :"
+            "response_id": "π 😀 , :"
           },
           "requestUsage": {
-            "totalTokens": 12
-          }
+            "totalTokens": 12,
+            "inputTokens": 12,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -114,13 +142,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 42
+              "totalTokens": 42,
+              "inputTokens": 42,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 42
+              "totalTokens": 42,
+              "inputTokens": 42,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
           },
-          "turnId": "\u03b4 , :"
+          "turnId": "δ , :",
+          "threadId": "thread"
         }
       }
     ]
@@ -160,8 +199,15 @@
             "response_id": "old"
           },
           "requestUsage": {
-            "totalTokens": 1000
-          }
+            "totalTokens": 1000,
+            "inputTokens": 1000,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -173,8 +219,15 @@
             "response_id": "new"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -186,8 +239,15 @@
             "response_id": "old-extra"
           },
           "requestUsage": {
-            "totalTokens": 50
-          }
+            "totalTokens": 50,
+            "inputTokens": 50,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -196,12 +256,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 1020
+              "totalTokens": 1020,
+              "inputTokens": 1020,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 20
+              "totalTokens": 20,
+              "inputTokens": 20,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
-          }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       }
     ]
@@ -238,12 +310,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 100
+              "totalTokens": 100,
+              "inputTokens": 100,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 100
+              "totalTokens": 100,
+              "inputTokens": 100,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
-          }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -252,41 +336,77 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 110
+              "totalTokens": 110,
+              "inputTokens": 110,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 10
-            }
-          }
-        }
-      },
-      {
-        "op": "capture",
-        "at": 103,
-        "params": {
-          "tokenUsage": {
-            "total": {
-              "totalTokens": 10
-            },
-            "last": {
-              "totalTokens": 10
-            }
-          }
-        }
-      },
-      {
-        "op": "capture",
-        "at": 103,
-        "params": {
-          "tokenUsage": {
-            "total": {
-              "totalTokens": 10
-            },
-            "last": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
           },
-          "responseId": "r"
+          "threadId": "thread",
+          "turnId": "fixture-turn"
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          },
+          "responseId": "r",
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       }
     ]
@@ -323,12 +443,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 100
+              "totalTokens": 100,
+              "inputTokens": 100,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 100
+              "totalTokens": 100,
+              "inputTokens": 100,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
-          }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -337,12 +469,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 120
+              "totalTokens": 120,
+              "inputTokens": 120,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 20
+              "totalTokens": 20,
+              "inputTokens": 20,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
-          }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -351,12 +495,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 110
+              "totalTokens": 110,
+              "inputTokens": 110,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
-          }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -365,13 +521,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 130
+              "totalTokens": 130,
+              "inputTokens": 130,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
           },
-          "threadId": "fork"
+          "threadId": "fork",
+          "turnId": "fixture-turn"
         }
       }
     ]
@@ -407,9 +574,24 @@
         "params": {
           "tokenUsage": {
             "last": {
-              "totalTokens": 7
+              "totalTokens": 7,
+              "inputTokens": 7,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "total": {
+              "totalTokens": 7,
+              "inputTokens": 7,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
-          }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       }
     ]
@@ -436,7 +618,8 @@
           "accountKey": "account",
           "submitted": false,
           "events": ["event"]
-        }
+        },
+        "provider": "claude"
       }
     ],
     "steps": [
@@ -484,9 +667,11 @@
       {
         "op": "capture",
         "params": {
-          "responseId": "r",
-          "rawTokenUsageRecord": {
-            "response_id": "r"
+          "threadId": "thread",
+          "studioUsage": {
+            "kind": "gap",
+            "responseId": "r",
+            "reason": "queryClosed"
           }
         }
       }
@@ -527,9 +712,16 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 30
+            "totalTokens": 30,
+            "inputTokens": 30,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
           },
-          "_analyticsTimestampSource": "fileModifiedEstimate"
+          "_analyticsTimestampSource": "fileModifiedEstimate",
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       }
     ]
@@ -569,8 +761,15 @@
             "response_id": "old"
           },
           "requestUsage": {
-            "totalTokens": 30
-          }
+            "totalTokens": 30,
+            "inputTokens": 30,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         },
         "source": "history"
       },
@@ -583,8 +782,15 @@
             "response_id": "new"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         },
         "source": "history"
       }
@@ -622,43 +828,79 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 10
-            }
-          }
-        },
-        "source": "history"
-      },
-      {
-        "op": "capture",
-        "at": 101,
-        "params": {
-          "tokenUsage": {
-            "total": {
-              "totalTokens": 20
-            },
-            "last": {
-              "totalTokens": 10
-            }
-          }
-        },
-        "source": "history"
-      },
-      {
-        "op": "capture",
-        "at": 101,
-        "params": {
-          "tokenUsage": {
-            "total": {
-              "totalTokens": 30
-            },
-            "last": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
           },
-          "responseId": "r"
+          "threadId": "thread",
+          "turnId": "fixture-turn"
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 20,
+              "inputTokens": 20,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 30,
+              "inputTokens": 30,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          },
+          "responseId": "r",
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         },
         "source": "history"
       }
@@ -699,8 +941,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -743,8 +992,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -787,8 +1043,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -831,8 +1094,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -875,8 +1145,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -919,8 +1196,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1068,8 +1352,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1131,8 +1422,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1181,8 +1479,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1239,8 +1544,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1297,8 +1609,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1355,8 +1674,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1418,8 +1744,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1481,8 +1814,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1542,8 +1882,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1605,8 +1952,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1668,8 +2022,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1731,8 +2092,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1794,8 +2162,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1857,8 +2232,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1920,8 +2302,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -1983,8 +2372,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -2964,8 +3360,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         },
         "historical_agent": {
           "id": "a",
@@ -3026,8 +3429,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -3046,8 +3456,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       }
     ]
@@ -3084,12 +3501,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
-          }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -3104,12 +3533,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
-          }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       }
     ]
@@ -4473,8 +4914,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 5
-          }
+            "totalTokens": 5,
+            "inputTokens": 5,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       }
     ]
@@ -4579,8 +5027,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 10
-          }
+            "totalTokens": 10,
+            "inputTokens": 10,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4624,8 +5079,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4637,8 +5099,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4650,8 +5119,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 21
-          }
+            "totalTokens": 21,
+            "inputTokens": 21,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4668,8 +5144,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4681,8 +5164,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4694,8 +5184,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 21
-          }
+            "totalTokens": 21,
+            "inputTokens": 21,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       }
     ]
@@ -4732,12 +5229,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 100
+              "totalTokens": 100,
+              "inputTokens": 100,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 100
+              "totalTokens": 100,
+              "inputTokens": 100,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
-          }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4746,41 +5255,77 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 110
+              "totalTokens": 110,
+              "inputTokens": 110,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 10
-            }
-          }
-        }
-      },
-      {
-        "op": "capture",
-        "at": 103,
-        "params": {
-          "tokenUsage": {
-            "total": {
-              "totalTokens": 10
-            },
-            "last": {
-              "totalTokens": 10
-            }
-          }
-        }
-      },
-      {
-        "op": "capture",
-        "at": 103,
-        "params": {
-          "tokenUsage": {
-            "total": {
-              "totalTokens": 10
-            },
-            "last": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
           },
-          "responseId": "r"
+          "threadId": "thread",
+          "turnId": "fixture-turn"
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          },
+          "responseId": "r",
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       }
     ],
@@ -4791,12 +5336,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 100
+              "totalTokens": 100,
+              "inputTokens": 100,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 100
+              "totalTokens": 100,
+              "inputTokens": 100,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
-          }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4805,41 +5362,77 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 110
+              "totalTokens": 110,
+              "inputTokens": 110,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 10
-            }
-          }
-        }
-      },
-      {
-        "op": "capture",
-        "at": 103,
-        "params": {
-          "tokenUsage": {
-            "total": {
-              "totalTokens": 10
-            },
-            "last": {
-              "totalTokens": 10
-            }
-          }
-        }
-      },
-      {
-        "op": "capture",
-        "at": 103,
-        "params": {
-          "tokenUsage": {
-            "total": {
-              "totalTokens": 10
-            },
-            "last": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
           },
-          "responseId": "r"
+          "threadId": "thread",
+          "turnId": "fixture-turn"
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          },
+          "responseId": "r",
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       }
     ]
@@ -4879,8 +5472,15 @@
             "response_id": "old"
           },
           "requestUsage": {
-            "totalTokens": 1000
-          }
+            "totalTokens": 1000,
+            "inputTokens": 1000,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4892,8 +5492,15 @@
             "response_id": "new"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4905,8 +5512,15 @@
             "response_id": "old-extra"
           },
           "requestUsage": {
-            "totalTokens": 50
-          }
+            "totalTokens": 50,
+            "inputTokens": 50,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4915,12 +5529,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 1020
+              "totalTokens": 1020,
+              "inputTokens": 1020,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 20
+              "totalTokens": 20,
+              "inputTokens": 20,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
-          }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       }
     ],
@@ -4934,8 +5560,15 @@
             "response_id": "old"
           },
           "requestUsage": {
-            "totalTokens": 1000
-          }
+            "totalTokens": 1000,
+            "inputTokens": 1000,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4947,8 +5580,15 @@
             "response_id": "new"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4960,8 +5600,15 @@
             "response_id": "old-extra"
           },
           "requestUsage": {
-            "totalTokens": 50
-          }
+            "totalTokens": 50,
+            "inputTokens": 50,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -4970,12 +5617,24 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 1020
+              "totalTokens": 1020,
+              "inputTokens": 1020,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 20
+              "totalTokens": 20,
+              "inputTokens": 20,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
-          }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       }
     ]
@@ -5012,43 +5671,79 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 10
-            }
-          }
-        },
-        "source": "history"
-      },
-      {
-        "op": "capture",
-        "at": 101,
-        "params": {
-          "tokenUsage": {
-            "total": {
-              "totalTokens": 20
-            },
-            "last": {
-              "totalTokens": 10
-            }
-          }
-        },
-        "source": "history"
-      },
-      {
-        "op": "capture",
-        "at": 101,
-        "params": {
-          "tokenUsage": {
-            "total": {
-              "totalTokens": 30
-            },
-            "last": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
           },
-          "responseId": "r"
+          "threadId": "thread",
+          "turnId": "fixture-turn"
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 20,
+              "inputTokens": 20,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 30,
+              "inputTokens": 30,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          },
+          "responseId": "r",
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         },
         "source": "history"
       }
@@ -5060,43 +5755,79 @@
         "params": {
           "tokenUsage": {
             "total": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             },
             "last": {
-              "totalTokens": 10
-            }
-          }
-        },
-        "source": "history"
-      },
-      {
-        "op": "capture",
-        "at": 101,
-        "params": {
-          "tokenUsage": {
-            "total": {
-              "totalTokens": 20
-            },
-            "last": {
-              "totalTokens": 10
-            }
-          }
-        },
-        "source": "history"
-      },
-      {
-        "op": "capture",
-        "at": 101,
-        "params": {
-          "tokenUsage": {
-            "total": {
-              "totalTokens": 30
-            },
-            "last": {
-              "totalTokens": 10
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
             }
           },
-          "responseId": "r"
+          "threadId": "thread",
+          "turnId": "fixture-turn"
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 20,
+              "inputTokens": 20,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 30,
+              "inputTokens": 30,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 10,
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 0,
+              "reasoningOutputTokens": 0
+            }
+          },
+          "responseId": "r",
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         },
         "source": "history"
       }
@@ -5136,8 +5867,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -5149,8 +5887,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -5162,8 +5907,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 21
-          }
+            "totalTokens": 21,
+            "inputTokens": 21,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -5200,8 +5952,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -5213,8 +5972,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -5226,8 +5992,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 21
-          }
+            "totalTokens": 21,
+            "inputTokens": 21,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -5255,8 +6028,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -5268,8 +6048,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 20
-          }
+            "totalTokens": 20,
+            "inputTokens": 20,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {
@@ -5281,8 +6068,15 @@
             "response_id": "r"
           },
           "requestUsage": {
-            "totalTokens": 21
-          }
+            "totalTokens": 21,
+            "inputTokens": 21,
+            "cachedInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 0,
+            "reasoningOutputTokens": 0
+          },
+          "threadId": "thread",
+          "turnId": "fixture-turn"
         }
       },
       {

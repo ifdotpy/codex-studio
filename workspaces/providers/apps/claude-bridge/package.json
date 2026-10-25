@@ -4,8 +4,9 @@
   "type": "module",
   "scripts": {
     "test": "vitest run --config vitest.config.mjs",
-    "check:focused": "vitest run --config vitest.config.mjs",
-    "test:fast": "vitest run --config vitest.fast.config.mjs --project fast"
+    "check:focused": "pnpm run typecheck && vitest run --config vitest.config.mjs",
+    "test:fast": "pnpm run typecheck && vitest run --config vitest.fast.config.mjs --project fast",
+    "typecheck": "tsc --project tsconfig.json --incremental --tsBuildInfoFile \"${STUDIO_TSC_CACHE:-${TMPDIR:-/tmp}}/codex-studio-claude-usage.tsbuildinfo\""
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.308",
@@ -13,6 +14,7 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@types/node": "26.6.5",
     "vitest": "5.0.5"
   },
   "codexStudioChecks": {

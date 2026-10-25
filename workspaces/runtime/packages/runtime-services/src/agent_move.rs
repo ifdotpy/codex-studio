@@ -372,19 +372,70 @@ impl MoveSnapshot {
         if self.fields.phase != Phase::Active || truthy(self.raw.get("firstTurnCache")) {
             return Ok(None);
         }
-        let usage = notification
-            .get("requestUsage")
-            .filter(|v| truthy(Some(v)))
-            .or_else(|| notification.pointer("/tokenUsage/last"));
-        let Some(cached) = usage
-            .and_then(|u| u.get("cachedInputTokens"))
-            .filter(|v| v.is_i64() || v.is_u64())
-        else {
+        use studio_runtime_schema::usage::{UsageObservation, UsageProvider, parse_token_usage};
+        let provider = if agent["provider"] == "claude" {
+            UsageProvider::Claude
+        } else {
+            UsageProvider::Codex
+        };
+        let observation = match parse_token_usage(provider, notification) {
+            Ok(observation) => observation,
+            Err(_) => {
+                studio_runtime_schema::usage::parse_legacy_totals(provider, notification)
+                    .map_err(|_| invalid("tokenUsage", "/usage"))?;
+                return Ok(None);
+            }
+        };
+        let tokens = match &observation {
+            UsageObservation::Response { tokens, .. } => Some(tokens),
+            UsageObservation::Cumulative { last, .. } => last.as_ref(),
+            UsageObservation::Gap { .. } => None,
+        };
+        let Some(tokens) = tokens else {
             return Ok(None);
         };
         timestamp(now)?;
         let mut row = self.raw.clone();
-        row["firstTurnCache"] = json!({"turnId":agent.get("turnId"),"cachedInputTokens":cached,"cacheWriteInputTokens":usage.and_then(|u|u.get("cacheWriteInputTokens")),"inputTokens":usage.and_then(|u|u.get("inputTokens")),"observedAt":now});
+        // Preserve the stored provider input convention while consuming disjoint counts.
+        let input = match provider {
+            UsageProvider::Claude => tokens.uncached_input,
+            UsageProvider::Codex => tokens
+                .uncached_input
+                .checked_add(tokens.cache_read_input)
+                .and_then(|n| n.checked_add(tokens.cache_write_input))
+                .ok_or_else(|| invalid("tokenUsage", "/inputOverflow"))?,
+        };
+        row["firstTurnCache"] = json!({"turnId":agent.get("turnId"),"cachedInputTokens":tokens.cache_read_input,"cacheWriteInputTokens":tokens.cache_write_input,"inputTokens":input,"observedAt":now});
         Ok(Some(row))
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    #[test]
+    fn typed_response_populates_first_turn_cache_without_legacy_keys() {
+        let snapshot = MoveSnapshot {
+            fields: Fields {
+                id: "move".into(),
+                side: Side::Source,
+                phase: Phase::Active,
+                created: 0.,
+                deadline: None,
+                uncertain_phase: None,
+            },
+            raw: json!({}),
+            agent: "agent".into(),
+        };
+        let agent = json!({"id":"agent","provider":"claude","turnId":"turn"});
+        let notification = json!({"studioUsage":{"kind":"response","responseId":"r","model":"claude","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":32,"cacheWriteInput":42,"output":720}}});
+        let row = snapshot
+            .observe_cache(&agent, &notification, 100.)
+            .expect("typed cache")
+            .expect("first observation");
+        assert_eq!(
+            row["firstTurnCache"],
+            json!({"turnId":"turn","inputTokens":12,"cachedInputTokens":32,"cacheWriteInputTokens":42,"observedAt":100.})
+        );
     }
 }

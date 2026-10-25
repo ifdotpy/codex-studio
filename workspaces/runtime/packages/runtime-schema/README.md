@@ -97,3 +97,8 @@ explicit. `studio-contracts` generates the observation JSON schema, named OpenAP
 components, and the Claude bridge's `usage-contract.generated.d.mts`. The committed
 Codex notification schema under `src/schemas/codex` comes from Codex CLI 0.164.0
 `app-server generate-json-schema`; a short-tier parity witness checks the Rust mirror.
+
+`parse_legacy_totals` is a transitional total-only projection for pre-contract
+Claude bridges and their journal replay. It never invents missing token categories,
+accepts no Codex input, and cannot bypass malformed `studioUsage`. Retire it once
+those bridges and the replay window have closed.
