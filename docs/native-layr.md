@@ -8,7 +8,8 @@ The chat selector calls this mode **Layr**.
 ## Store and installation
 
 Studio owns one host store at `<Studio state>/layr-native/store`.
-`NATIVE_LAYR_DIRECTORY` and `STORE_DIRECTORY` in `layr_native.rs` own this path.
+`NATIVE_LAYR_DIRECTORY` in `runtime-store/src/path.rs` owns the installation directory.
+`STORE_DIRECTORY` in `layr_native.rs` owns the store subdirectory.
 The state directory must stay outside project folders.
 The project ID is the SHA-256 of the canonical source folder path.
 Later chats for that folder reuse its main line.
