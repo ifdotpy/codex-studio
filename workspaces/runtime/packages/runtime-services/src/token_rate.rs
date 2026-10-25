@@ -974,6 +974,117 @@ mod tests {
         })
     }
 
+    fn response_usage(turn: &str, response: &str, output: u64) -> serde_json::Value {
+        json!({"turnId":turn,"responseId":response,"usageSource":"claudeResponse",
+            "requestUsage":{"inputTokens":0,"outputTokens":output},
+            "responseOutputTokens":output})
+    }
+
+    fn usage_at(projector: &mut RateProjector, cursor: u64, at: f64, params: serde_json::Value) {
+        let mut effect = usage_effect("agent", "provider", 1, cursor, "turn");
+        if let NotificationPostCommit::TokenRateUsage(observation) = &mut effect {
+            observation.method = "thread/tokenUsage/updated".into();
+            observation.params = SharedJson::new(params);
+            observation.observed_at = at;
+        }
+        assert!(observe(projector, &effect));
+    }
+
+    #[test]
+    fn repeated_response_usage_with_fresh_receipt_keeps_its_first_duration() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        usage_at(
+            &mut projector,
+            2,
+            11.0,
+            response_usage("turn", "response", 100),
+        );
+        assert_eq!(projector.snapshot().records[0].rate.0, 10.0);
+        usage_at(
+            &mut projector,
+            3,
+            12.0,
+            response_usage("turn", "response", 100),
+        );
+        assert_eq!(projector.snapshot().records[0].rate.0, 10.0);
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 100.0);
+    }
+
+    #[test]
+    fn old_turn_usage_cannot_change_the_live_turn() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        usage_at(
+            &mut projector,
+            2,
+            11.0,
+            response_usage("turn", "response", 100),
+        );
+        let current = projector.snapshot();
+        usage_at(
+            &mut projector,
+            3,
+            12.0,
+            response_usage("old-turn", "response", 999),
+        );
+        assert_eq!(projector.snapshot(), current);
+    }
+
+    #[test]
+    fn response_only_totals_survive_the_old_response_cache_bound() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        for index in 0..1025 {
+            usage_at(
+                &mut projector,
+                index + 2,
+                index as f64 + 2.0,
+                response_usage("turn", &format!("response-{index:04}"), 1),
+            );
+        }
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 1025.0);
+        usage_at(
+            &mut projector,
+            1027,
+            1027.0,
+            response_usage("turn", "response-0000", 1),
+        );
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 1025.0);
+    }
+
+    #[test]
+    fn final_cumulative_usage_does_not_replace_the_response_rate() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        usage_at(
+            &mut projector,
+            2,
+            11.0,
+            response_usage("turn", "response", 100),
+        );
+        usage_at(
+            &mut projector,
+            3,
+            12.0,
+            json!({"turnId":"turn","tokenUsage":{"total":{"outputTokens":100},"last":{"outputTokens":100}}}),
+        );
+        assert_eq!(projector.snapshot().records[0].rate.0, 10.0);
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 100.0);
+    }
+
     #[test]
     fn token_rate_projection_constants_keep_the_established_bounds() {
         assert_eq!(super::MAX_TOKEN_RATE, 1_000.0);
