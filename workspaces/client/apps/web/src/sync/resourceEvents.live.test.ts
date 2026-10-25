@@ -1278,7 +1278,7 @@ it("a late terminal follower consumes owner merged views without repeated recove
       epoch: "epoch",
       revision: 10,
       replyKind: "snapshot",
-      cursor: { workspaceId: "workspace", seq: merged.offset },
+      cursor: { workspaceId: "workspace", seq: 3 },
     }),
   );
   for (const revision of [11, 12]) {
@@ -1296,7 +1296,7 @@ it("a late terminal follower consumes owner merged views without repeated recove
         epoch: "epoch",
         revision,
         replyKind: "snapshot",
-        cursor: { workspaceId: "workspace", seq: merged.offset },
+        cursor: { workspaceId: "workspace", seq: revision - 7 },
       }),
     );
   }
