@@ -1382,7 +1382,7 @@ async fn outbound_final_write_failure_rolls_back_and_retries_after_restart() {
     let corpus = &Corpus::new();
     let (path, store) = corpus.store("rollback-outbound", false).await;
     let prior = rows(&store, "runtime_federation_rooms");
-    store.transaction(move |tx| {tx.execute_batch("CREATE TRIGGER fault AFTER INSERT ON runtime_federation_outbox BEGIN SELECT RAISE(ABORT,'fixture crash'); END")?;Ok(())})
+    store.transaction(move |tx| {tx.execute_batch("CREATE TRIGGER fault AFTER INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT,'fixture crash'); END")?;Ok(())})
             .await.expect("sender failpoint");
     assert!(
         delivery::send_message(
