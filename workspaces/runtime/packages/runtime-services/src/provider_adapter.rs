@@ -390,7 +390,7 @@ impl ProviderAdapter for ClaudeAdapter {
             .unwrap_or_default();
         for (key, value) in &s.guidance.thread_config {
             if let Some(name) = key.strip_prefix("shell_environment_policy.set.") {
-                if matches!(name, "LAYR_ROOT" | "LAYR_DIRECT" | "PATH" | "TMPDIR") {
+                if matches!(name, "LAYR_ROOT" | "LAYR_DIRECT" | "LAYR_SOCKET" | "PATH" | "TMPDIR") {
                     native_env.insert(name.into(), value.clone());
                 }
             }

@@ -39,7 +39,6 @@ pub fn run(state_dir: &Path, cwd: &Path, args: &[&str]) -> Result<String> {
     // APFS clonefile traversal refuses symlink ancestors, including macOS /var and /tmp.
     let state_dir = fs::canonicalize(state_dir)?;
     let binary = binary_path(&state_dir);
-    let root = store_path(&state_dir);
     let mut argv = vec![
         "-u",
         "LAYR_SOCKET",
@@ -50,10 +49,12 @@ pub fn run(state_dir: &Path, cwd: &Path, args: &[&str]) -> Result<String> {
         "-u",
         "LAYR_SESSION",
     ];
-    let root_env = format!("LAYR_ROOT={}", root.display());
+    let variables: Vec<String> = super::transport_environment(&state_dir, cfg!(target_os = "linux"))
+        .into_iter()
+        .map(|(name, value)| format!("{name}={}", value.as_str().unwrap_or_default()))
+        .collect();
+    argv.extend(variables.iter().map(String::as_str));
     argv.extend([
-        &root_env,
-        "LAYR_DIRECT=1",
         binary
             .to_str()
             .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 binary path".into()))?,

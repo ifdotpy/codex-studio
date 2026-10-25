@@ -16,6 +16,11 @@ pub fn binary_path(state_dir: &Path) -> PathBuf {
     state_dir.join(NATIVE_LAYR_DIRECTORY).join("bin/layr")
 }
 
+/// Dedicated Linux root-daemon socket for this Studio state directory.
+pub fn socket_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(NATIVE_LAYR_DIRECTORY).join("layr.sock")
+}
+
 pub fn is_native(record: &Value) -> bool {
     record["workspaceMode"] == "layr-native"
 }
@@ -93,17 +98,34 @@ pub fn thread_environment(state_root: &Path) -> serde_json::Map<String, Value> {
         bin.parent().unwrap_or(Path::new("/")).display(),
         std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
     );
-    serde_json::Map::from_iter([
+    let mut environment = transport_environment(state_root, cfg!(target_os = "linux"));
+    environment.insert("PATH".into(), json!(path));
+    environment
+}
+
+fn transport_environment(state_root: &Path, uses_service: bool) -> serde_json::Map<String, Value> {
+    let mut environment = serde_json::Map::from_iter([
         ("LAYR_ROOT".into(), json!(store_path(state_root))),
-        ("LAYR_DIRECT".into(), json!("1")),
-        ("PATH".into(), json!(path)),
-    ])
+        ("LAYR_DIRECT".into(), json!(if uses_service { "0" } else { "1" })),
+    ]);
+    if uses_service {
+        environment.insert("LAYR_SOCKET".into(), json!(socket_path(state_root)));
+    }
+    environment
 }
 pub mod migration;
 
 #[cfg(test)]
 mod receipt_tests {
     use super::*;
+
+    #[test]
+    fn linux_native_environment_selects_the_owned_privileged_service() {
+        let env = transport_environment(Path::new("/studio"), true);
+        assert_eq!(env["LAYR_ROOT"], "/studio/layr-native/store");
+        assert_eq!(env["LAYR_DIRECT"], "0");
+        assert_eq!(env["LAYR_SOCKET"], "/studio/layr-native/layr.sock");
+    }
 
     #[test]
     fn completed_operations_replay_without_repeating_the_effect() {
@@ -175,7 +197,7 @@ mod receipt_tests {
     fn native_environment_selects_the_managed_binary() {
         let env = thread_environment(Path::new("/studio"));
         assert_eq!(env["LAYR_ROOT"], "/studio/layr-native/store");
-        assert_eq!(env["LAYR_DIRECT"], "1");
+        assert_eq!(env["LAYR_DIRECT"], if cfg!(target_os = "linux") { "0" } else { "1" });
         assert!(
             env["PATH"]
                 .as_str()

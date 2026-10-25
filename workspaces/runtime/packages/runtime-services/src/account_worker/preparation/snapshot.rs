@@ -2233,7 +2233,7 @@ mod workspace_fence_tests {
                                 );
                             }
                             if mode == "layr-native" && provider == "claude" {
-                                assert_eq!(options["env"]["LAYR_DIRECT"], "1");
+                                assert_eq!(options["env"]["LAYR_DIRECT"], if cfg!(target_os = "linux") { "0" } else { "1" });
                                 assert!(options["env"]["LAYR_ROOT"].is_string());
                             }
                         }

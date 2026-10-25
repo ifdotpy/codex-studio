@@ -54,6 +54,7 @@ pub(super) fn run(args: &[String]) -> Result<ExitCode> {
             serde_json::json!({
                 "store":studio_runtime_services::layr_native::store_path(&state),
                 "binary":studio_runtime_services::layr_native::binary_path(&state),
+                "socket":studio_runtime_services::layr_native::socket_path(&state),
             })
         ),
         "migrate" => {

@@ -34,10 +34,26 @@ studio-runtime-server native-layr install --state /path/to/studio-state \
 ```
 
 The host must use APFS on macOS or btrfs on Linux.
-Commands run as the Studio user with `LAYR_ROOT` set to the owned store.
-`LAYR_DIRECT=1` selects the host backend without another service.
-A Linux store requires btrfs permissions for the Studio user.
-Studio does not modify mounts or install a root service for this mode.
+On macOS, commands run as the Studio user with `LAYR_ROOT` set to the owned store.
+`LAYR_DIRECT=1` selects the macOS backend without another service.
+On Linux, Layr requires a root daemon for btrfs operations.
+Studio sets `LAYR_DIRECT=0` and `LAYR_SOCKET=<Studio state>/layr-native/layr.sock` for Linux commands and agent shells.
+The daemon checks the Studio user's identity for each command.
+It uses the same Studio-owned store.
+Studio does not modify mounts or install the root service.
+
+Install the host binary first.
+On Linux, start its daemon with the paths from `native-layr paths`:
+
+```sh
+sudo env LAYR_ROOT=/path/to/studio-state/layr-native/store \
+  LAYR_SOCKET=/path/to/studio-state/layr-native/layr.sock \
+  /path/to/studio-state/layr-native/bin/layr daemon
+```
+
+The daemon must run before a native chat or migration on Linux.
+Version checks of an installed Linux binary also use this daemon.
+macOS does not require this step.
 
 ## First import
 
@@ -178,3 +194,4 @@ STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/studio-state/layr-native/bin/layr \
 The check uses a separate state directory and store.
 It verifies import exclusions, warm caches, exact-state merge, deletion, and retained state reads.
 It does not prove a live model turn or the HTTP path.
+On Linux, run this isolated check as root on btrfs.
