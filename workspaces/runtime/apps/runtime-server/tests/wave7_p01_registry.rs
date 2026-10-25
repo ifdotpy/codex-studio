@@ -1023,6 +1023,30 @@ async fn committed_input_reaches_one_retained_session_and_unknown_restart_does_n
 
 /// Legacy image rows remain stored and never start a provider after removal.
 #[tokio::test]
+async fn review_regression_legacy_pending_recovery_does_not_start_provider() {
+    let fixture = Fixture::new().await;
+    let id = fixture.agents[0]["id"].as_str().unwrap().to_owned();
+    fixture.store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode','image','$.status','interrupted','$.autoWake',json('false'),'$.restartRecovery',json(?2)) WHERE id=?1", rusqlite::params![id,json!({"stage":"pending","turnId":"old-turn"}).to_string()])?;
+        Ok(())
+    }).await.unwrap();
+    let (launcher, _writes) = scripted();
+    let mut registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
+    registry.reconcile(None).await.unwrap();
+    assert!(
+        launcher.opened.lock().unwrap().is_empty(),
+        "Legacy recovery must not start a provider"
+    );
+    registry.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn legacy_image_rows_finish_without_provider_launch_or_row_loss() {
     let fixture = Fixture::new().await;
     let agent_id = fixture.agents[0]["id"].as_str().unwrap().to_owned();

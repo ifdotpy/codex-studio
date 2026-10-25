@@ -3552,7 +3552,14 @@ async fn legacy_worker_archives_through_current_tool_without_losing_its_row() {
             record["cwd"] = json!("/legacy-workspace-no-longer-mounted/repo");
             record["threadId"] = json!("legacy-thread");
             record["lastCompletedTurn"] = Value::Null;
+            record["turnId"] = json!("legacy-turn");
+            record["startAttempt"] = json!({"turnId":"legacy-turn"});
+            record["restartRecovery"] = json!({"turnId":"legacy-turn","stage":"pending"});
             AgentRepository::put(tx, &AgentRecord::from_value(record)?)?;
+            crate::notification_dispatch::put_task_record(tx, &json!({
+                "id":"legacy-running-task", "agent":saved_id,"itemId":"item", "turnId":"legacy-turn",
+                "created":1.0, "kind":"command", "status":"running", "type":"commandExecution", "name":"commandExecution"
+            })).unwrap();
             Ok(())
         })
         .await

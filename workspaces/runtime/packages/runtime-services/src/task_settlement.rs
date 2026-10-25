@@ -128,7 +128,9 @@ fn write_task(tx: &Transaction<'_>, task: &Value) -> StoreResult<()> {
 }
 
 /// Close every running task of a settled turn of `agent_id` that is not a
-/// provider background command. Returns the number of closed tasks. The
+/// provider background command. A removed legacy executor also loses its
+/// background commands because their sessions cannot report an outcome.
+/// Returns the number of closed tasks. The
 /// caller's transaction also holds the turn's settlement, so a later item
 /// report cannot reopen the task: a finished task keeps its state.
 pub fn settle_agent_tasks(tx: &Transaction<'_>, agent_id: &str, at: f64) -> StoreResult<usize> {
@@ -138,17 +140,29 @@ pub fn settle_agent_tasks(tx: &Transaction<'_>, agent_id: &str, at: f64) -> Stor
     if !owner_settles(&agent) {
         return Ok(0);
     }
+    let legacy = agent["legacyWorkspaceFinished"] == true
+        && crate::legacy_image_workspace::is_legacy(&agent);
     let mut closed = 0;
     for task in running_tasks(tx, agent_id)? {
-        let Some(turn) = task["turnId"].as_str().filter(|turn| !turn.is_empty()) else {
+        let turn = task["turnId"].as_str().filter(|turn| !turn.is_empty());
+        if !legacy && (turn.is_none() || background_command(&task)) {
             continue;
-        };
-        if background_command(&task) || turn_live(&agent, turn, completed_turn(tx, agent_id, turn)?)
+        }
+        if let Some(turn) = turn
+            && turn_live(&agent, turn, completed_turn(tx, agent_id, turn)?)
         {
             continue;
         }
         let mut settled = task.clone();
-        settled["status"] = json!(SETTLED_TASK_STATUS);
+        let lost = legacy && background_command(&task);
+        settled["status"] = json!(if lost {
+            LOST_TASK_STATUS
+        } else {
+            SETTLED_TASK_STATUS
+        });
+        if lost {
+            settled["error"] = json!(LOST_COMMAND);
+        }
         settled["finished"] = json!(at);
         write_task(tx, &settled)?;
         closed += 1;

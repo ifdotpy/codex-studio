@@ -1054,23 +1054,15 @@ impl AccountRegistry {
             return Ok(AccountPageDispatch::Exhausted);
         }
         let page_was_full = pending_agents.len() == WAKE_PAGE;
-        let (image_agents, agents, image_recovery) =
+        let (image_agents, agents, account_has_work) =
             classify_pending_agents(self.store.clone(), account.to_owned(), pending_agents).await?;
         for agent_id in &image_agents {
             self.after_agent
                 .insert(account.to_owned(), agent_id.clone());
         }
-        // An image-only pending page must not start an account provider
-        // outside the workspace image's shared mount namespace.
-        if agents.is_empty()
-            && (!image_agents.is_empty() || image_recovery)
-            && !self.workers.contains_key(account)
-        {
-            if image_recovery {
-                studio_runtime_services::diagnostics::log_stderr(format_args!(
-                    "account registry refused recovery for account {account}: workspace-state/image-execution"
-                ));
-            }
+        // Legacy-only recovery can select an account before compatibility settlement.
+        // Recheck durable demand after settlement before starting a provider.
+        if agents.is_empty() && !account_has_work && !self.workers.contains_key(account) {
             return Ok(if page_was_full {
                 AccountPageDispatch::Continue
             } else {
@@ -1734,17 +1726,40 @@ async fn classify_pending_agents(
 ) -> Result<(std::collections::BTreeSet<String>, Vec<(String, i64)>, bool), WorkerError> {
     // Legacy workspaces remain visible but cannot execute after removal.
     studio_runtime_services::legacy_image_workspace::finish_stored_workspaces(&store).await?;
-    let legacy_agents = pending_agents
-        .iter()
-        .filter(|(_, _, mode)| mode.as_deref() == Some("image"))
-        .map(|(id, _, _)| id.clone())
-        .collect();
-    let agents = pending_agents
-        .into_iter()
-        .filter_map(|(id, epoch, mode)| (mode.as_deref() != Some("image")).then_some((id, epoch)))
-        .collect();
-    let _ = account;
-    Ok((legacy_agents, agents, false))
+    store
+        .read_async::<_, studio_runtime_store::StoreError>(
+            "account-registry/legacy-settlement",
+            move |db| {
+                let mut legacy_agents = BTreeSet::new();
+                let mut agents = Vec::new();
+                for (id, epoch, mode) in pending_agents {
+                    let legacy = mode.as_deref() == Some("image")
+                        || AgentRepository::get(db, &AgentId::from(id.as_str()))?.is_some_and(
+                            |agent| {
+                                studio_runtime_services::legacy_image_workspace::is_legacy(
+                                    &agent.value(),
+                                )
+                            },
+                        );
+                    if legacy {
+                        legacy_agents.insert(id);
+                    } else {
+                        agents.push((id, epoch));
+                    }
+                }
+                let account_has_work =
+                    studio_runtime_store::SchedulerRepository::account_wake_for_accounts(
+                        db,
+                        [account.as_str()],
+                        1,
+                        event_time(),
+                    )?
+                    .contains_key(&account);
+                Ok((legacy_agents, agents, account_has_work))
+            },
+        )
+        .await
+        .map_err(Into::into)
 }
 
 /// Accounts whose pending or recovery work can have changed with these rows. A row that no
