@@ -111,7 +111,7 @@ Base reports of continued work on an active worker, command, or automatic contin
 - Give every shared branch and every shared file one owner. State who may merge
   into an integration branch.
 - Give workers the folder that contains their task. Wait for workspace readiness before edits.
-  In both layr modes, assign owned lines and review exact saved states.
+  Give implementers owned lines in both layr modes. Review exact saved states.
   Acceptance merges with expect. The lead owns main.
   In worktree mode, ask workers to commit on a named branch.
   Inspect the branch in the returned workspace before integration.

@@ -61,8 +61,8 @@ Recover the saved receipt before deciding whether an uncertain operation needs a
 - For `worktree`, edit only that isolated workspace. Commit on a named Git branch.
 - For `layr-native` (Layr), edit only your owned host line.
 - For `layr` (Layr VM), edit only your owned VM line.
-- In both layr modes, save a named state and submit its full ID from `layr rev-parse head`.
-  Use [the layr task recipes](../layr/SKILL.md). Studio saves an automatic state after each turn.
+- In both layr modes, implementers save a named state and submit its full ID from `layr rev-parse head`.
+  Use [the layr task recipes](../layr/SKILL.md). Studio saves an automatic state after each lead or implementer turn.
   Read the workspace reference for [native Layr](../codex-workspace/references/layr-native.md)
   or [Layr VM](../codex-workspace/references/layr.md).
 - For `shared`, the lead assigned work in the selected source folder. Edit the

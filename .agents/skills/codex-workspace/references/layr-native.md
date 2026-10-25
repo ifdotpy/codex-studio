@@ -16,26 +16,32 @@ The original project folder is separate. Studio does not synchronize it with mai
 
 Use the assigned environment. Do not install over the user's layr binary or import the project again.
 
-| Role        | Folder and authority                                                                      |
-| ----------- | ----------------------------------------------------------------------------------------- |
-| Lead        | Main in the host store. The lead owns main.                                               |
-| Implementer | Its own `agent-<sha256(agent ID)>` line, with warm caches from main.                      |
-| Reviewer    | Main as the current folder, under a read-only sandbox. No worker line or turn-end writes. |
+| Role        | Folder and authority                                                                                 |
+| ----------- | ---------------------------------------------------------------------------------------------------- |
+| Lead        | Main in the host store. The lead owns main.                                                          |
+| Implementer | Its own `agent-<sha256(agent ID)>` line, with warm caches from main.                                 |
+| Reviewer    | Main stays read-only. The private `layrScratch` folder permits writes. No worker line or turn saves. |
+
+Read `layrReady: true` before you edit. The `cwd` field names the assigned line folder.
+The `layrProjectId`, `layrLine`, and `layrStateId` fields identify its project, line, and base state.
+A reviewer also receives its private `layrScratch` folder.
+The project ID comes from the canonical original host folder.
 
 ## Task recipes
 
-| Task                                          | Action                                                       |
-| --------------------------------------------- | ------------------------------------------------------------ |
-| Find your workspace                           | Read the assigned store, line, and readiness result.         |
-| Start implementation                          | Wait for readiness. Change only your assigned host line.     |
-| Create an implementer's line                  | Studio uses `layr line new <name> <base>`.                   |
-| Inspect another agent's result                | Read the exact submitted state with the runtime's read tool. |
-| Save a named result                           | Use `layr add <paths>` and `layr save -m "<message>"`.       |
-| Submit the task revision                      | Use the full named head state ID from `layr rev-parse head`. |
-| Check the exact result as lead or implementer | Use `layr try <state> -- <command>`.                         |
-| Accept an implementer's result                | Merge with `layr merge <line> --expect <state>`.             |
-| End a lead or implementer turn                | Studio repairs caches and saves an automatic state.          |
-| Archive a worker                              | Studio deletes its line. Its states remain.                  |
+| Task                                          | Action                                                                    |
+| --------------------------------------------- | ------------------------------------------------------------------------- |
+| Find your workspace                           | Read the assigned store, line, and readiness result.                      |
+| Start implementation                          | Wait for readiness. Change only your assigned host line.                  |
+| Create an implementer's line                  | Studio uses `layr line new <name> <base>`.                                |
+| Inspect another agent's result as reviewer    | Use `layr_read` to read the exact submitted state.                        |
+| Save a named result                           | Use `layr add <paths>` and `layr save -m "<message>"`.                    |
+| Submit the task revision                      | Use the full named head state ID from `layr rev-parse head`.              |
+| Check the exact result as lead or implementer | Use `layr try <state> -- <command>`.                                      |
+| Check the exact result as reviewer            | Call `layr_read` with `args: ["try", "<state>", "--", "<command>", ...]`. |
+| Accept an implementer's result                | Merge with `layr merge <line> --expect <state>`.                          |
+| End a lead or implementer turn                | Studio repairs caches and saves an automatic state.                       |
+| Archive a worker                              | Studio saves, then runs `layr line delete -D <line>`. Its states remain.  |
 
 Use [the layr task recipes](../../layr/SKILL.md) for recovery, checks, queues, probes, overlays, and warm caches.
 Save overlay edits as named states before the turn ends. Automatic states omit private overlay files.
@@ -45,16 +51,22 @@ Acceptance refuses when the source line no longer matches the reviewed state.
 Resolve conflicts in an owned task line before acceptance when main requires checks.
 Git is the remote bridge. Use it only when the task permits an export or push.
 
+## Reviewer checks
+
+Use `layr_read` for history and exact-state checks.
+Direct shell commands can need store writes that the reviewer's sandbox refuses.
+The try path uses a runtime sandbox wrapper inside the temporary state copy.
+It uses `sandbox-exec` on macOS and Bubblewrap on Linux.
+The command can write only to that copy and the private scratch folder. It has no network access.
+
 ## Open implementation facts
 
 The `layr-native-mode` worker owns this integration.
 These facts still require confirmation from that worker:
 
-| Fact                                          | Status                                       |
-| --------------------------------------------- | -------------------------------------------- |
-| Import and readiness result fields            | Open. Do not edit before readiness.          |
-| Native read tool name and reviewer try access | Open. Keep the reviewer's read-only sandbox. |
-| Worker workspace selection field              | Open. Read the current spawn schema.         |
-| Mode defaults and platform refusal rules      | Open. Read the chat's saved mode.            |
+| Fact                                     | Status                               |
+| ---------------------------------------- | ------------------------------------ |
+| Worker workspace selection field         | Open. Read the current spawn schema. |
+| Mode defaults and platform refusal rules | Open. Read the chat's saved mode.    |
 
 Existing sessions retain their saved role and tool contracts.

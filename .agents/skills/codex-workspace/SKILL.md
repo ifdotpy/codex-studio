@@ -369,7 +369,8 @@ Do not sign in again inside the VM.
 Use [the layr task recipes](../layr/SKILL.md) in both modes.
 The lead owns main. Each implementer changes only its assigned line.
 Review exact states before acceptance. Acceptance uses merge with expect.
-Save a named task result before submission. Studio saves an automatic state after each turn.
+Implementers save a named task result before submission.
+Studio saves an automatic state after each lead or implementer turn.
 Preserve exact request IDs after a disconnect. A disconnect does not prove failure.
 
 Existing sessions keep the frozen role and tool references loaded by the runtime.
