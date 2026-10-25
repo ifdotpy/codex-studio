@@ -30,12 +30,14 @@ impl UsageTokens {
             .checked_add(self.cache_write_input)?
             .checked_add(self.output)
     }
-    /// Whether any billable counter decreased; a new counter epoch is required.
+    /// Whether any known category counter decreased; a new counter epoch is required.
+    /// Reasoning participates only when both observations report it.
     pub fn decreased_from(&self, previous: &Self) -> bool {
         self.uncached_input < previous.uncached_input
             || self.cache_read_input < previous.cache_read_input
             || self.cache_write_input < previous.cache_write_input
             || self.output < previous.output
+            || matches!((self.reasoning_output, previous.reasoning_output), (Some(current), Some(old)) if current < old)
     }
 }
 /// Provenance of a final response; legacy observations may be provisional.
@@ -158,6 +160,80 @@ impl From<serde_json::Error> for UsageParseError {
 /// Codex CLI 0.164.0 generated notification schema; native compatibility owner.
 pub const CODEX_USAGE_SCHEMA: &str =
     include_str!("schemas/codex/ThreadTokenUsageUpdatedNotification.json");
+/// Whether a generated Codex schema preserves the fields our serde mirror reads.
+/// Documentation, format hints and additions outside the token breakdown are harmless.
+/// New breakdown properties may be billable categories and require an accounting update.
+/// The vendored Codex schema above owns consumed property types and requiredness.
+pub fn codex_usage_schema_compatible(candidate: &Value) -> bool {
+    let Ok(owner) = serde_json::from_str::<Value>(CODEX_USAGE_SCHEMA) else {
+        return false;
+    };
+    for pointer in [
+        "",
+        "/definitions/ThreadTokenUsage",
+        "/definitions/TokenUsageBreakdown",
+    ] {
+        let Some(expected) = owner.pointer(pointer) else {
+            return false;
+        };
+        let Some(actual) = candidate.pointer(pointer) else {
+            return false;
+        };
+        if actual.get("type") != expected.get("type") {
+            return false;
+        }
+        let Some(properties) = expected.get("properties").and_then(Value::as_object) else {
+            return false;
+        };
+        let Some(actual_properties) = actual.get("properties").and_then(Value::as_object) else {
+            return false;
+        };
+        if pointer == "/definitions/TokenUsageBreakdown"
+            && properties.keys().ne(actual_properties.keys())
+        {
+            return false;
+        }
+        if expected
+            .get("required")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|field| {
+                !actual
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .is_some_and(|fields| fields.contains(field))
+            })
+        {
+            return false;
+        }
+        for (name, property) in properties {
+            let Some(actual_property) = actual_properties.get(name) else {
+                return false;
+            };
+            if property.get("$ref") != actual_property.get("$ref") {
+                return false;
+            }
+            // JSON Schema type unions have no meaningful order.
+            let types = |value: &Value| -> Option<std::collections::BTreeSet<String>> {
+                match value.get("type") {
+                    Some(Value::String(kind)) => Some(std::iter::once(kind.clone()).collect()),
+                    Some(Value::Array(kinds)) => kinds
+                        .iter()
+                        .map(|kind| kind.as_str().map(str::to_owned))
+                        .collect(),
+                    None => Some(Default::default()),
+                    _ => None,
+                }
+            };
+            if types(property).is_none() || types(property) != types(actual_property) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Mirror of Codex's generated TokenUsageBreakdown (signed int64 on the wire).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

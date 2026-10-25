@@ -230,9 +230,7 @@ fn schema_check(directory: &Path) -> Result<Value, CompatibilityRefusal> {
         return Err(CompatibilityRefusal::ProtocolSchema);
     }
     let usage = read("v2/ThreadTokenUsageUpdatedNotification.json")?;
-    let expected: Value = serde_json::from_str(studio_runtime_schema::usage::CODEX_USAGE_SCHEMA)
-        .map_err(|_| CompatibilityRefusal::ProtocolSchema)?;
-    if usage != expected {
+    if !studio_runtime_schema::usage::codex_usage_schema_compatible(&usage) {
         return Err(CompatibilityRefusal::ProtocolSchema);
     }
     Ok(json!({"methods":required,"daybreak":true,"usage":true}))
@@ -569,20 +567,55 @@ mod tests {
             fs::write(path, value.to_string()).expect("schema file");
         }
         assert!(super::schema_check(directory.path()).is_ok());
-        let mut changed = usage;
-        changed["definitions"]["TokenUsageBreakdown"]["properties"]["inputTokens"]["type"] =
+        let path = directory
+            .path()
+            .join("v2/ThreadTokenUsageUpdatedNotification.json");
+        let mut description = usage.clone();
+        description["description"] = json!("Updated provider documentation");
+        let mut documented = description.clone();
+        documented["title"] = json!("New title");
+        documented["definitions"]["TokenUsageBreakdown"]["properties"]["inputTokens"]["format"] =
+            json!("new-format-hint");
+        documented["definitions"]["TokenUsageBreakdown"]["properties"]["cacheWriteInputTokens"]["default"] =
+            json!(99);
+        let mut extended = usage.clone();
+        extended["properties"]["futureNotification"] = json!({"type":"string"});
+        extended["definitions"]["ThreadTokenUsage"]["properties"]["futureContext"] =
+            json!({"type":"string"});
+        for compatible in [description, documented, extended] {
+            fs::write(&path, compatible.to_string()).expect("compatible schema");
+            assert!(
+                super::schema_check(directory.path()).is_ok(),
+                "documentation and unrelated additions are compatible"
+            );
+        }
+        let mut category = usage.clone();
+        category["definitions"]["TokenUsageBreakdown"]["properties"]["futureTokens"] =
+            json!({"type":"integer"});
+        let mut retyped = usage.clone();
+        retyped["definitions"]["TokenUsageBreakdown"]["properties"]["inputTokens"]["type"] =
             json!("number");
-        fs::write(
-            directory
-                .path()
-                .join("v2/ThreadTokenUsageUpdatedNotification.json"),
-            changed.to_string(),
-        )
-        .expect("changed schema");
-        assert!(matches!(
-            super::schema_check(directory.path()),
-            Err(studio_runtime_services::native_runtime::CompatibilityRefusal::ProtocolSchema)
-        ));
+        let mut optional = usage.clone();
+        optional["definitions"]["TokenUsageBreakdown"]["required"] = json!([
+            "cachedInputTokens",
+            "outputTokens",
+            "reasoningOutputTokens",
+            "totalTokens"
+        ]);
+        let mut missing = usage.clone();
+        missing["definitions"]["ThreadTokenUsage"]["properties"]
+            .as_object_mut()
+            .expect("properties")
+            .remove("last");
+        let mut notification_type = usage;
+        notification_type["properties"]["turnId"]["type"] = json!("integer");
+        for incompatible in [category, retyped, optional, missing, notification_type] {
+            fs::write(&path, incompatible.to_string()).expect("incompatible schema");
+            assert!(matches!(
+                super::schema_check(directory.path()),
+                Err(studio_runtime_services::native_runtime::CompatibilityRefusal::ProtocolSchema)
+            ));
+        }
     }
 
     #[test]

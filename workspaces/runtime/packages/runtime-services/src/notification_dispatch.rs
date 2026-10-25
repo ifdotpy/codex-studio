@@ -2241,6 +2241,216 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn typed_usage_dispatch_reaches_priced_cost_groups() {
+        use super::NotificationPostCommit;
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            for (agent, provider, model) in [("claude-agent", "claude", "claude-test"), ("codex-agent", "codex", "gpt-test")] {
+                AgentRepository::put(tx, &AgentRecord::from_value(json!({
+                    "id":agent,"rootId":"root","epoch":1,"status":"running","threadId":agent,
+                    "accountKey":provider,"provider":provider,"model":model,"turnId":"turn",
+                    "inFlight":true,"autoWake":false,"created":0,"activeTools":[],"events":0
+                })).unwrap())?;
+            }
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"root","rootId":"root","epoch":1,"status":"idle","accountKey":"codex","provider":"codex"})).unwrap())
+        }).await.unwrap();
+        let rates = crate::token_rate::TokenRateHub::new();
+        // The scheduler has already started this turn; seed its committed rate observation.
+        for (agent, provider) in [("claude-agent", "claude"), ("codex-agent", "codex")] {
+            rates
+                .publish_observation(NotificationPostCommit::TokenRateUsage(
+                    super::NotificationObservation {
+                        agent: Some(super::SharedJson::new(
+                            json!({"id":agent,"rootId":"root","turnId":"turn","provider":provider}),
+                        )),
+                        method: "turn/started".into(),
+                        params: super::SharedJson::new(json!({"turnId":"turn"})),
+                        delivery: ProviderDeliveryIdentity {
+                            provider_handle: format!("account:{provider}"),
+                            ..identity(1)
+                        },
+                        observed_at: 99.,
+                        provider_at: 99.,
+                    },
+                ))
+                .expect("active rate turn");
+        }
+        let response = |id, input, read, write, output| {
+            json!({"threadId":"claude-agent","turnId":"turn","studioUsage":{
+                "kind":"response","responseId":id,"turnId":"turn","model":"claude-test","evidence":"live",
+                "tokens":{"uncachedInput":input,"cacheReadInput":read,"cacheWriteInput":write,"output":output},"modelContextWindow":1000
+            }})
+        };
+        let native = json!({"inputTokens":40,"cachedInputTokens":5,"outputTokens":6,"reasoningOutputTokens":2,"totalTokens":46});
+        let frames = [
+            (
+                "claude-agent",
+                "thread/tokenUsage/updated",
+                response("first", 10, 3, 2, 4),
+            ),
+            (
+                "claude-agent",
+                "thread/tokenUsage/updated",
+                response("second", 20, 4, 1, 8),
+            ),
+            (
+                "codex-agent",
+                "thread/tokenUsage/updated",
+                json!({"threadId":"codex-agent","turnId":"turn","tokenUsage":{"total":native,"last":native,"modelContextWindow":2000}}),
+            ),
+        ];
+        for (index, (agent, method, params)) in frames.into_iter().enumerate() {
+            let result = store
+                .transaction_with(move |tx| {
+                    super::dispatch_notification_with_effects(
+                        tx,
+                        agent,
+                        &PublicationContext::default(),
+                        &NotificationStreamBuffer::default(),
+                        &ProviderDeliveryIdentity {
+                            provider_handle: format!(
+                                "account:{}",
+                                if agent == "claude-agent" {
+                                    "claude"
+                                } else {
+                                    "codex"
+                                }
+                            ),
+                            ..identity(index as u64 + 2)
+                        },
+                        &frame(&json!({"method":method,"params":params})),
+                        100. + index as f64,
+                        &crate::notification_runtime_effects::RuntimeNotificationEffects,
+                    )
+                })
+                .await
+                .expect("dispatch commits");
+            assert_eq!(result.outcome, DispatchOutcome::Written);
+            for effect in result.post_commit.effects {
+                match effect {
+                    NotificationPostCommit::Analytics { .. } => {
+                        store
+                            .analytics_transaction(move |tx, _| {
+                                crate::analytics_capture::capture_logged_effect(tx, &effect)
+                            })
+                            .await
+                            .expect("analytics projection");
+                    }
+                    NotificationPostCommit::TokenRateUsage(_) => {
+                        rates.publish_observation(effect).expect("rate projection")
+                    }
+                    _ => {}
+                }
+            }
+        }
+        rates.settled().await;
+        let rate_rows = rates.snapshot().to_value();
+        let db = store.test_reader().unwrap();
+        for (agent, spent, context, output) in
+            [("claude-agent", 52, 33, 12.), ("codex-agent", 46, 46, 6.)]
+        {
+            let row = studio_runtime_store::budget::BudgetRepository::agent(&db, agent).unwrap();
+            assert_eq!(row["tokensUsed"], spent);
+            assert_eq!(row["contextUsage"]["tokens"], context);
+            let rate = rate_rows["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["agentId"] == agent)
+                .expect("published rate");
+            assert_eq!(rate["outputTokens"], output);
+        }
+        let analytics = studio_runtime_store::AnalyticsRepository::new(store.root())
+            .open_read_only()
+            .unwrap();
+        let mut query = analytics
+            .prepare("SELECT record FROM analytics_usage ORDER BY agent,seq")
+            .unwrap();
+        let rows = query
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|row| serde_json::from_str::<Value>(&row.unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows.len(),
+            3,
+            "two immutable response rows and one native cumulative"
+        );
+        let responses = rows
+            .iter()
+            .filter(|row| row["agentId"] == "claude-agent")
+            .collect::<Vec<_>>();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["responseId"], "first");
+        assert_eq!(responses[1]["responseId"], "second");
+        assert_eq!(responses[0]["studioUsage"]["tokens"]["uncachedInput"], 10);
+        assert_eq!(responses[1]["studioUsage"]["tokens"]["output"], 8);
+        let groups = studio_runtime_store::cost_aggregate::cost_groups(
+            &analytics,
+            "root",
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(groups.iter().map(|group| group.count).sum::<u64>(), 2);
+        std::fs::create_dir_all(root.path().join("model-pricing")).unwrap();
+        std::fs::write(root.path().join("model-pricing/models-dev-v1.json"), json!({"version":1,"catalog":{"providers":{
+            "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2,"cache_read":0.5}}}},
+            "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2,"cache_read":0.5,"cache_write":1}}}}
+        }}}).to_string()).unwrap();
+        let cost =
+            crate::costs::session_cost_with_account_profiles(&store, "root", &Default::default())
+                .expect("priced dispatch observations");
+        assert_eq!(cost["pricedSamples"], 2);
+        // Claude: 30 base + 7*0.5 reads + 3 writes + 12*2 output = 60.5;
+        // Codex cumulative evidence is persisted but never priced as a response.
+        assert!(
+            groups
+                .iter()
+                .all(|group| group.model.as_deref() == Some("claude-test"))
+        );
+        let codex = rows
+            .iter()
+            .find(|row| row["agentId"] == "codex-agent")
+            .expect("native cumulative row");
+        assert_eq!(codex["studioUsage"]["kind"], "cumulative");
+        assert_eq!(codex["studioUsage"]["scope"], "codexThread");
+        assert!(codex["responseId"].is_null());
+        assert!((cost["totalUSD"].as_f64().unwrap() - 60.5 / 1_000_000.).abs() < 1e-12);
+        // Native Codex response records supply the billable evidence absent from live totals.
+        let mut rollout = crate::analytics_rollout::RolloutContext::from_record(
+            json!({"threadId":"codex-agent","turnId":"turn","model":"gpt-test"}),
+        )
+        .expect("rollout context");
+        let actions = rollout.actions(&json!({"type":"token_usage_record","payload":{"response_id":"codex-response","usage":{"input_tokens":40,"cached_input_tokens":5,"output_tokens":6,"reasoning_output_tokens":2,"total_tokens":46}}}), "native-response", 105.).expect("native import");
+        let agent =
+            studio_runtime_store::budget::BudgetRepository::agent(&db, "codex-agent").unwrap();
+        for action in actions {
+            let crate::analytics_rollout::RolloutAction::Event { method, params, at } = action
+            else {
+                panic!("usage event")
+            };
+            let prepared = crate::analytics_capture::PreparedCapture::event(
+                &agent,
+                &method,
+                &params,
+                at,
+                at,
+                crate::analytics_capture::CaptureSource::Rollout,
+            )
+            .expect("recovered usage");
+            crate::analytics_capture::capture(&store, prepared)
+                .await
+                .expect("capture native response");
+        }
+        let recovered_cost =
+            crate::costs::session_cost_with_account_profiles(&store, "root", &Default::default())
+                .expect("price recovered Codex response");
+        assert_eq!(recovered_cost["pricedSamples"], 3);
+        assert!((recovered_cost["totalUSD"].as_f64().unwrap() - 110. / 1_000_000.).abs() < 1e-12);
+    }
+
+    #[tokio::test]
     async fn typed_usage_conflict_keeps_first_charge_and_dispatches_context() {
         let root = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(root.path())).await.unwrap();
