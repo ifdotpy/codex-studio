@@ -1,3 +1,4 @@
+import { SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS } from "../../src/generated/sharedValues.ts";
 import {
   test,
   expect,
@@ -104,9 +105,17 @@ async function scrollFollow(page, full) {
     },
   });
   const transcripts = new Map([[chat.id, reset()]]);
-  const transcript = (id) => {
+  const transcript = (id, limit = SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS) => {
     const { agent, items } = transcripts.get(id);
-    return { agent, items, order: items.map((i) => i.id), replace: true };
+    const selected = items.slice(-limit);
+    return {
+      agent,
+      items: selected,
+      truncated: selected.length < items.length,
+      nextCursor: selected.length < items.length ? selected[0].id : null,
+      nextAfterCursor: null,
+      historyVersion: "scroll-follow",
+    };
   };
   let transcriptSeq = 1;
   const errors = [];
@@ -127,8 +136,22 @@ async function scrollFollow(page, full) {
     resourceVersions: resources.map((resource) => ({
       resource,
       revision: resource.kind === "transcript" ? transcriptSeq : 0,
-      ...(batch && resource.kind === "transcript"
-        ? { transcriptChanges: batch }
+      ...(resource.kind === "transcript" && transcripts.has(resource.agentId)
+        ? {
+            cursor: {
+              workspaceId: syncContract.identity.workspaceId,
+              seq: transcriptSeq,
+            },
+            replyKind: batch ? "delta" : "snapshot",
+            ...(batch
+              ? { transcriptChanges: batch }
+              : {
+                  transcriptSnapshot: transcript(
+                    resource.agentId,
+                    resource.tail,
+                  ),
+                }),
+          }
         : {}),
     })),
   });
@@ -258,6 +281,22 @@ async function scrollFollow(page, full) {
       json: transcripts.has(id) ? transcript(id) : { items: [] },
     });
   });
+  await page.route("**/api/transcript/page?*", (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    const live = transcripts.get(query.get("id"));
+    if (!live) return route.continue();
+    const end = live.items.findIndex((item) => item.id === query.get("before"));
+    const start = Math.max(0, end - Number(query.get("limit")));
+    return route.fulfill({
+      json: {
+        items: live.items.slice(start, end),
+        truncated: start > 0,
+        nextCursor: start > 0 ? live.items[start].id : null,
+        nextAfterCursor: live.items[end - 1]?.id || null,
+        historyVersion: "scroll-follow",
+      },
+    });
+  });
   const publishedItems = new Map();
   const notify = async (id) => {
     const after = transcriptSeq++;
@@ -294,11 +333,18 @@ async function scrollFollow(page, full) {
         response.write(
           protocol3SseEvent(
             "resources",
-            streamFrame([{ kind: "transcript", agentId: id }], "change", {
-              after,
-              through: transcriptSeq,
-              delta,
-            }),
+            streamFrame(
+              resources.filter(
+                (resource) =>
+                  resource.kind === "transcript" && resource.agentId === id,
+              ),
+              "change",
+              {
+                after,
+                through: transcriptSeq,
+                delta,
+              },
+            ),
           ),
         );
     }
@@ -352,6 +398,24 @@ async function scrollFollow(page, full) {
     await expect(chatRow).toBeVisible();
     await chatRow.click();
     await root.locator('[data-message="prompt-live"]').waitFor();
+    while (await page.locator("#earlier-messages").count()) {
+      const response = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/transcript/page",
+      );
+      await page.locator("#earlier-messages").click();
+      await response;
+      await expect
+        .poll(async () => {
+          const earlier = page.locator("#earlier-messages");
+          return (
+            !(await earlier.count()) ||
+            (await earlier.getAttribute("data-loading")) !== "true"
+          );
+        })
+        .toBe(true);
+    }
+    await latest.click();
     assert.ok(
       await root.evaluate((e) => !!e.querySelector("[data-history-window]")),
       `${width}px: the long transcript uses the windowed history`,
