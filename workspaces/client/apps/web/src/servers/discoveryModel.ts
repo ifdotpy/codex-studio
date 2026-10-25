@@ -30,6 +30,7 @@ export type DiscoveryActions = {
 import type { ServerAccessState, ServerIdentityAlert } from "./accessContract";
 import { serveOrigin } from "./registry";
 import type { PreferenceFields } from "../sync/uiPreferenceMerge";
+import type { components } from "../generated/api";
 
 export function effectiveDiscoveryAliases(
   aliases: Record<string, string> | undefined,
@@ -47,7 +48,7 @@ export function effectiveDiscoveryAliases(
 }
 
 export function discoverySnapshot(
-  state: ServerAccessState,
+  state: ServerAccessState | components["schemas"]["AccessSnapshot"],
 ): DiscoverySnapshot | null {
   if (!state.settings) return null;
   return {

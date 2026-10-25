@@ -268,7 +268,7 @@ mod tests {
             state_dir.path().to_string_lossy().into_owned(),
             12345,
             None,
-            Some(store),
+            Some(Arc::clone(&store)),
             None,
         );
         let forwarder = Arc::clone(
@@ -315,6 +315,7 @@ mod tests {
                 [127, 0, 0, 1],
                 54321,
             ))));
+        let generation = store.committed_change_generation();
         let response = app.oneshot(request).await.expect("HTTP response");
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), 4096)
@@ -322,6 +323,7 @@ mod tests {
             .expect("response body reads");
         let body: Value = serde_json::from_slice(&bytes).expect("error envelope parses");
         assert_eq!(body, json!({"status":"forwarding"}));
+        assert_eq!(store.committed_change_generation(), generation);
         assert!(
             forwarder
                 .close("0123456789abcdef0123456789abcdef")

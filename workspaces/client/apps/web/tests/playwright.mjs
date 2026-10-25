@@ -24,6 +24,7 @@ import {
 } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { fixtureStateDirectory as rustFixtureStateDirectory } from "./fixtures/rust-ui-fixture.mjs";
+import { readResourceBaselines } from "./fixtures/resource-baselines.mjs";
 import { choosePlaywrightScratchRoot } from "./scratch-root.mjs";
 import { browserExecutablePath } from "./browser-executable.mjs";
 import { waitForFixturePort } from "./fixture-readiness.mjs";
@@ -454,11 +455,13 @@ async function stopFixtureChild(child) {
  * apiSchemaFixtureHeaders: boolean;
  * apiSchemaFixtureHeaderSetup: void;
  * fixtureChildCleanup: void;
+ * readOnlyRust: { origin: string; open: (page: import("playwright").Page) => Promise<void> };
  * }} ClientTestFixtures
  */
 /** @typedef {import("@playwright/test").PlaywrightWorkerArgs & import("@playwright/test").PlaywrightWorkerOptions & {
  * apiSchemaFixtureBrowserSetup: void;
  * browserStageTiming: void;
+ * readOnlyRustOrigin: string;
  * }} ClientWorkerFixtures
  */
 /** @type {import("@playwright/test").Fixtures<
@@ -599,6 +602,108 @@ const sharedFixtures = {
     },
     { scope: "worker", auto: true },
   ],
+  // Opt in only for layout/navigation witnesses. Mutating integration tests keep
+  // their own backend, while these tests reuse one minimal seed per worker.
+  readOnlyRustOrigin: [
+    // oxlint-disable-next-line no-empty-pattern
+    async ({}, use, workerInfo) => {
+      const scope = { children: new Set(), scratchDirs: new Map(), errors: [] };
+      const root = mkdtempSync(join(playwrightScratch.root, "readonly-rust-"));
+      const child = spawnScopedFixture(
+        scope,
+        {
+          ...workerInfo,
+          titlePath: ["read-only Rust fixture"],
+          file: "",
+        },
+        process.execPath,
+        [rustUiFixture, root, "--workers", "0"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let diagnostics = "";
+      child.stderr.on("data", (chunk) => {
+        diagnostics += chunk;
+      });
+      try {
+        const port = await waitForFixturePort(child, {
+          diagnostics: () => diagnostics,
+        });
+        await use(`http://127.0.0.1:${port}`);
+      } finally {
+        await stopFixtureChild(child);
+        rmSync(root, { recursive: true, force: true });
+        rmSync(rustFixtureStateDirectory(root), {
+          recursive: true,
+          force: true,
+        });
+      }
+      if (scope.errors.length)
+        throw new AggregateError(
+          scope.errors,
+          "Read-only fixture cleanup failed",
+        );
+    },
+    { scope: "worker", timeout: 60_000 },
+  ],
+  readOnlyRust: async ({ readOnlyRustOrigin }, use) => {
+    const writes = [];
+    await use({
+      origin: readOnlyRustOrigin,
+      async open(page) {
+        // Browser storage and preference replies remain private to each context.
+        // Any other persistent mutation means this test needs an isolated server.
+        await page.context().route("**/api/**", (route) => {
+          const request = route.request();
+          const path = new URL(request.url()).pathname;
+          if (
+            request.method() === "GET" ||
+            request.method() === "HEAD" ||
+            path === "/api/sync/subscriptions"
+          )
+            return route.fallback();
+          if (path === "/api/sync/preferences")
+            return route.fulfill({
+              json: { fields: request.postDataJSON().fields },
+            });
+          if (path === "/api/organization") {
+            const body = request.postDataJSON();
+            if (
+              body.read_state &&
+              Object.keys(body).every(
+                (key) => key === "id" || key === "read_state",
+              )
+            ) {
+              const { thread_id, turn_id, read, expected_revision } =
+                body.read_state;
+              return route.fulfill({
+                json: {
+                  id: body.id,
+                  readState: {
+                    threadId: thread_id,
+                    turnId: turn_id,
+                    read,
+                    revision: expected_revision + 1,
+                  },
+                },
+              });
+            }
+          }
+          writes.push(`${request.method()} ${path}`);
+          return route.fulfill({
+            status: 405,
+            json: { error: "Read-only fixture" },
+          });
+        });
+        await page.goto(readOnlyRustOrigin);
+      },
+    });
+    expect(
+      writes,
+      "Read-only witnesses must not mutate the shared backend",
+    ).toEqual([]);
+  },
   fixtureChildCleanup: [
     // oxlint-disable-next-line no-empty-pattern
     async ({}, use, testInfo) => {
@@ -696,6 +801,10 @@ export function spawnFixture(command, args, options) {
       "spawnFixture is only available before test cleanup begins",
     );
 
+  return spawnScopedFixture(scope, testInfo, command, args, options);
+}
+
+function spawnScopedFixture(scope, testInfo, command, args, options) {
   const fixtureScratch = mkdtempSync(join(playwrightScratch.root, "fixture-"));
   const home = join(fixtureScratch, "home");
   const inheritedCodexHome = options?.env?.CODEX_HOME;
@@ -946,7 +1055,7 @@ export { browserExecutablePath, waitForFixturePort };
 /** @typedef {Pick<TaskEntityDto, "id" | "turnId" | "agent" | "kind" | "status" | "created" | "finished" | "name" | "command" | "query" | "cwd" | "processId" | "durationMs" | "timeout_ms" | "interactive" | "stdinClosed" | "stdinCloseRequested" | "stdinError" | "cancelRequested" | "exitCode" | "bytes" | "log" | "outputTruncated">} TestTask */
 /** @typedef {Pick<ProjectEntityDto, "homeServerId" | "locations" | "locationsRevision" | "projectAliases" | "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams" | "workerBaseRef" | "workerBaseRevision" | "workerEnvironment" | "workerEnvironmentRevision">} TestProject */
 /** @typedef {Pick<ComplaintEntityDto, "id" | "leadId" | "author" | "authorName" | "leadName" | "title" | "status" | "needsUserResponse" | "created" | "readAt" | "recipient" | "version">} TestComplaint */
-/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], rateLimits: AccountRateLimitsDto | null, rateLimitsByAccount: Record<string, AccountRateLimitsDto>, stateDir?: string }} TestRuntimeView */
+/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], accountsSummary?: import("../src/generated/api").components["schemas"]["AccountsSummaryDto"], desktop?: import("../src/generated/api").components["schemas"]["DesktopEntityDto"], accountCostsByAccount?: Record<string, import("../src/generated/api").components["schemas"]["AccountCostEntityDto"]>, sessionCostsByAgent?: Record<string, import("../src/generated/api").components["schemas"]["SessionCostEntityDto"]>, terminals?: import("../src/generated/api").components["schemas"]["TerminalEntityDto"][], studioErrors?: import("../src/generated/api").components["schemas"]["StudioError"][], rateLimits: AccountRateLimitsDto | null, queuesByAgent?: Record<string, import("../src/generated/api").components["schemas"]["QueueView"]>, rateLimitsByAccount: Record<string, AccountRateLimitsDto>, stateDir?: string }} TestRuntimeView */
 /** @typedef {{ token: string, stateDir?: string, chats: ChatEntityDto[], edges: EdgeEntityDto[], runtime: TestRuntimeView, threads: TestAgent[] }} TestStateView */
 /** @typedef {Omit<TestStateView, "token" | "threads">} EntityFixtureState */
 
@@ -962,7 +1071,9 @@ const RESOURCE_STREAM_PROTOCOL = SYNC_PROTOCOL_VERSION;
 
 async function readJson(response, path) {
   if (!response.ok)
-    throw new Error(`GET ${path} failed with HTTP ${response.status}`);
+    throw new Error(
+      `GET ${path} failed with HTTP ${response.status}: ${(await response.text()).slice(0, 1000)}`,
+    );
   return response.json();
 }
 
@@ -975,9 +1086,10 @@ function isJsonObject(value) {
  * Read the session token and current entity rows used by browser specs.
  * The returned API is deliberately collection based; it is not a snapshot copy.
  * @param {string} origin
+ * @param {{ agentDetails?: boolean }} [options]
  * @returns {Promise<TestStateView>}
  */
-export async function readTestState(origin) {
+export async function readTestState(origin, options = {}) {
   const sessionUrl = new URL("/api/session", origin);
   const firstPullUrl = new URL("/api/sync/pull", origin);
   firstPullUrl.searchParams.set("scope", "state:entities:v1");
@@ -1051,7 +1163,26 @@ export async function readTestState(origin) {
 
   // Materialize only the collections used by browser specs. Keeping these as
   // ordinary arrays also lets fixture specs adjust the data they serve.
-  const agents = /** @type {TestAgent[]} */ (list("agent"));
+  if (options.agentDetails) {
+    const baselines = await readResourceBaselines(
+      origin,
+      list("agentSummary").map((agent) => ({
+        kind: "agentDetail",
+        agentId: String(agent.id),
+      })),
+    );
+    const details = new Map();
+    for (const entry of baselines)
+      for (const document of entry.entityChanges?.documents || [])
+        if (document.op === "upsert") details.set(document.id, document.value);
+    entities.set("agentDetail", details);
+  }
+  const agents = /** @type {TestAgent[]} */ (
+    list("agentSummary").map((summary) => ({
+      ...get("agentDetail", String(summary.id)),
+      ...summary,
+    }))
+  );
   const rooms = /** @type {TestRoom[]} */ (list("room"));
   const tasks = /** @type {TestTask[]} */ (list("task"));
   const monitors = /** @type {MonitorEntityDto[]} */ (list("monitor"));
@@ -1333,8 +1464,29 @@ function entityValuesFromSnapshot(snapshot) {
   append("peerTeam", runtime.peerTeams);
   append("rule", runtime.rules);
   append("work", runtime.work);
+  append("studioError", runtime.studioErrors);
   append("chat", snapshot.chats);
   append("edge", snapshot.edges);
+  for (const [field, collection] of [
+    ["accountsSummary", "accounts"],
+    ["desktop", "desktop"],
+  ]) {
+    if (isJsonObject(runtime[field]))
+      values.push({ collection, id: "current", value: runtime[field] });
+  }
+  for (const [field, collection] of [
+    ["accountCostsByAccount", "accountCost"],
+    ["sessionCostsByAgent", "sessionCost"],
+  ]) {
+    if (isJsonObject(runtime[field]))
+      for (const [id, value] of Object.entries(runtime[field]))
+        if (isJsonObject(value)) values.push({ collection, id, value });
+  }
+  append("terminal", runtime.terminals);
+  if (isJsonObject(runtime.queuesByAgent)) {
+    for (const [id, value] of Object.entries(runtime.queuesByAgent))
+      if (isJsonObject(value)) values.push({ collection: "queue", id, value });
+  }
   const limits = isJsonObject(runtime.rateLimitsByAccount)
     ? runtime.rateLimitsByAccount
     : isJsonObject(runtime.rateLimits)
@@ -1538,7 +1690,7 @@ export function accountTileButton(page, label, accountName) {
  * Serve the same sync routes from a small Node HTTP fixture backend.
  * @param {import("node:http").IncomingMessage} request
  * @param {import("node:http").ServerResponse} response
- * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, versionedResources?: boolean, epoch?: string, onPull?: () => void, subscriptionUpdate?: import("../src/generated/api").components["schemas"]["SyncSubscriptionRequest"], onStreamReady?: (notify: (resources: ResourceRef[], reason?: "change" | "reconnect") => void, resources: ResourceRef[]) => (() => void) | void }} fixture
+ * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, versionedResources?: boolean, epoch?: string, onPull?: () => void, subscriptionUpdate?: import("../src/generated/api").components["schemas"]["SyncSubscriptionRequest"], progress?: (resource: ResourceRef) => (Pick<import("../src/generated/api").components["schemas"]["AuthProgressEvent"], "resource" | "value"> | Pick<import("../src/generated/api").components["schemas"]["VaultReadinessEvent"], "resource" | "value">) | undefined, onStreamReady?: (notify: (resources: ResourceRef[], reason?: "change" | "reconnect") => void, resources: ResourceRef[]) => (() => void) | void }} fixture
  * @returns {boolean} whether this was an /api/sync route
  */
 export function handleEntitySyncFixtureRequest(request, response, fixture) {
@@ -1624,6 +1776,19 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
         const key = JSON.stringify(resource);
         const next = (resourceRevisions.get(key) || 0) + (advance ? 1 : 0);
         resourceRevisions.set(key, next || 1);
+        if (resource.kind === "state") {
+          const documents = updateEntitySyncFixture(fixture.snapshot);
+          if (documents.length)
+            return {
+              resource,
+              revision: documents.at(-1).seq,
+              entities: {
+                after: documents[0].seq - 1,
+                through: documents.at(-1).seq,
+                documents,
+              },
+            };
+        }
         return { resource, revision: next || 1 };
       });
     response.writeHead(200, {
@@ -1636,12 +1801,32 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     const sessionId = randomUUID();
     response.write(protocol3SseEvent("session", { sessionId }));
     response.write(apiSchemaHandshakeSse());
-    /** @param {string} name @param {ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent | import("../src/generated/api").components["schemas"]["SyncSubscriptionAck"]} value */
+    /** @param {string} name @param {ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent | import("../src/generated/api").components["schemas"]["SyncSubscriptionAck"] | import("../src/generated/api").components["schemas"]["ResourceProgressEvent"]} value */
     const writeFrame = (name, value) => {
       eventId += 1;
       response.write(
         `event: ${name}\ndata: ${JSON.stringify(value)}\nid: ${eventId}\n\n`,
       );
+    };
+    const writeProgress = (resources) => {
+      for (const resource of resources) {
+        if (
+          !requestedResources.some(
+            (requested) =>
+              JSON.stringify(requested) === JSON.stringify(resource),
+          )
+        )
+          continue;
+        const progress = fixture.progress?.(resource);
+        if (!progress) continue;
+        writeFrame("resource-progress", {
+          protocol: RESOURCE_STREAM_PROTOCOL,
+          workspaceId: identity.workspaceId,
+          epoch,
+          revision,
+          ...progress,
+        });
+      }
     };
     /** @type {ResourceChangeEvent} */
     const initial = {
@@ -1668,6 +1853,7 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       workspaceId: identity.workspaceId,
     };
     writeFrame("token-rates", rates);
+    writeProgress(requestedResources);
     const heartbeat = () => {
       if (response.destroyed) return;
       /** @type {ResourceHeartbeatEvent} */
@@ -1693,7 +1879,8 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
         (resource) => !removed.has(JSON.stringify(resource)),
       );
       const keys = new Set(next.map((resource) => JSON.stringify(resource)));
-      for (const resource of update.add) {
+      const addedResources = update.add.map(({ resource }) => resource);
+      for (const resource of addedResources) {
         if (!keys.has(JSON.stringify(resource))) next.push(resource);
         keys.add(JSON.stringify(resource));
       }
@@ -1703,12 +1890,13 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       if (update.add.length)
         writeFrame("resources", {
           ...initial,
-          resources: update.add,
+          resources: addedResources,
           resourceVersions: fixture.versionedResources
-            ? withResourceVersions(update.add)
+            ? withResourceVersions(addedResources)
             : [],
           revision: ++revision,
         });
+      writeProgress(addedResources);
     });
     response.once("close", () => sessions.delete(sessionId));
     const cleanup = fixture.onStreamReady?.((resources, reason = "change") => {
@@ -1726,6 +1914,7 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
         workspaceId: identity.workspaceId,
       };
       writeFrame("resources", changed);
+      writeProgress(resources);
     }, requestedResources);
     if (cleanup !== undefined) {
       if (typeof cleanup !== "function") {

@@ -1,3 +1,4 @@
+import { watchServerName } from "./serverNames";
 import { createSessionCostCache } from "../usage/sessionCostCache";
 import { createUploads, UPLOAD_DATABASE_NAME } from "../sync/uploads";
 import { createServerAudio } from "../native/serverAudio";
@@ -14,7 +15,7 @@ import { serverStoragePrefix, createStorageEventKey } from "./storage";
 import { createChatCreationStore } from "../chatCreation";
 import { createFileActions } from "../fileActions";
 import { createFileDialogs } from "../native/fileDialogs";
-import { watchResourceReads } from "../components/watchResourceReads";
+import { watchResourceReads } from "../sync/subscriptions/reads";
 import { createAccountLimitsCache } from "../usage/accountUsage";
 import { createBrowserDrafts } from "../sync/drafts";
 import { createDraftJournal } from "../sync/draftJournal";
@@ -22,8 +23,7 @@ import { createDraftStorage } from "../sync/draftStorage";
 import { useNativeDrafts } from "../native/useNativeDrafts";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
-import { createResourceEvents } from "../sync/resourceEvents";
-import { SignedEventSource } from "./eventSource";
+import { createServerSubscriptions } from "../sync/subscriptions/server";
 import { createTranscriptCache } from "../sync/transcriptCache";
 import { createTokenRateCache } from "../usage/tokenRate";
 import { createEntitySequenceScope } from "../sync/entitySequence";
@@ -61,7 +61,6 @@ export function createServerServices(server: StudioServer) {
     ),
     beginMutation: createMutationJournal(transport.owner.id, storage),
     beginActivity: activity.beginServerActivity,
-    entityCheckpoint: sequences.getEntitySequenceCheckpointForWorkspace,
   });
   const audio = createServerAudio();
   const sessionCosts = createSessionCostCache(storage);
@@ -70,29 +69,18 @@ export function createServerServices(server: StudioServer) {
   let runtime:
     | {
         sync: ReturnType<typeof createSyncClient>;
-        resources: ReturnType<typeof createResourceEvents>;
+        resources: ReturnType<typeof createServerSubscriptions>;
       }
     | undefined;
+  let stopName = () => {};
   const synchronization = () => {
     if (runtime) return runtime;
     let sync!: ReturnType<typeof createSyncClient>;
-    const resources = createResourceEvents({
+    const resources = createServerSubscriptions({
       api,
       tokenRates,
-      sync: {
-        syncDatabase: () => sync.syncDatabase(),
-        persistResourceEntityChanges: (...args) =>
-          sync.persistResourceEntityChanges(...args),
-      },
-      openEvents: (url) =>
-        new SignedEventSource(
-          new URL(url, transport.owner.origin).href,
-          api.fetchApiRequest,
-        ),
-      storageName: (name) =>
-        transport.owner.id === "local"
-          ? name
-          : `${name}:server:${transport.owner.id}`,
+      sync: () => sync,
+      owner: transport.owner,
     });
     sync = createSyncClient({
       api,
@@ -108,6 +96,8 @@ export function createServerServices(server: StudioServer) {
             ).join(""),
     });
     runtime = { sync, resources };
+    if (transport.owner.id !== "local")
+      stopName = watchServerName(transport.owner, resources);
     return runtime;
   };
   const outbox = createOutbox({
@@ -203,6 +193,7 @@ export function createServerServices(server: StudioServer) {
     ready,
     close() {
       audio.close();
+      stopName();
       runtime?.resources.dispose();
       transport.close();
     },

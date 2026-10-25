@@ -12,7 +12,7 @@ import { onResume } from "../sync/resume";
 import {
   watchResourceChanges,
   watchResourceConnection,
-} from "../sync/resourceEvents";
+} from "../sync/subscriptions/events";
 import { nativeRequest } from "./client";
 import { guardNativeClose } from "./closeState";
 import { NativeDraftState, type DraftView } from "./draftState";

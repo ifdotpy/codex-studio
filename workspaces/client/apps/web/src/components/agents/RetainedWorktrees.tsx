@@ -3,9 +3,8 @@ import { Button } from "@mantine/core";
 import { errorText, type GetResult } from "../../api";
 import type { Agent } from "../../types";
 import {
-  useServerApi,
   useServerFileDialogs,
-  useServerResourceReads,
+  useServerSync,
 } from "../../servers/ServerServicesContext";
 import "./retained-worktrees.css";
 
@@ -57,37 +56,32 @@ export function RetainedWorktree({ agent }: { agent: Agent }) {
 
 /**
  * The retained folders of deleted workers of this team. Cleanup can end after a worker left
- * the live team list, so the server reads the stored records; a resource update reads again.
+ * the live team list; their source-published entities survive until cleanup settles.
  */
 export function useRetainedWorktrees(
   lead: Agent | undefined,
   members: Agent[],
 ): RetainedItem[] {
-  const { get } = useServerApi();
-  const watchResourceReads = useServerResourceReads();
+  const { subscribeStateProjection } = useServerSync();
   const [items, setItems] = useState<RetainedItem[]>([]);
-  const leadId = lead?.id;
+  const leadId = lead?.rootId || lead?.id;
   useEffect(() => {
     setItems([]);
     if (!leadId) return;
-    let current = true;
-    const stop = watchResourceReads(
-      { kind: "costs" },
-      async () => {
-        const value = await get("/api/retained-worktrees", {
-          query: { agent: leadId },
-        });
-        if (current) setItems(value.retainedWorktrees);
+    let source: unknown;
+    return subscribeStateProjection(
+      (snapshot) => {
+        if (!snapshot || source === snapshot.runtime.retainedWorktrees) return;
+        source = snapshot.runtime.retainedWorktrees;
+        setItems(
+          (snapshot.runtime.retainedWorktrees ?? []).filter(
+            (item) => item.rootId === leadId,
+          ),
+        );
       },
-      () => {
-        if (current) setItems([]);
-      },
+      () => {},
     );
-    return () => {
-      current = false;
-      stop();
-    };
-  }, [leadId, get, watchResourceReads]);
+  }, [leadId, subscribeStateProjection]);
   return items.filter(
     (item) => !members.some((member) => member.id === item.id),
   );

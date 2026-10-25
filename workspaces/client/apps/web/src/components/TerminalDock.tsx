@@ -1,5 +1,5 @@
 import { useScreenEnvironment } from "../servers/ScreenContext";
-import { useServerApi } from "../servers/ServerServicesContext";
+import { useServerApi, useServerSync } from "../servers/ServerServicesContext";
 import { Button, TextInput } from "@mantine/core";
 import {
   ChevronDown,
@@ -53,7 +53,7 @@ export default function TerminalDock({
     serverViewId,
   } = useScreenEnvironment();
   const shellTerminal = isServerView && !isClassicServerView && hasShell;
-  const watchResourceReads = useServerResourceReads();
+  const { subscribeStateProjection } = useServerSync();
   const { get, post, save, saved } = useServerApi();
 
   const [opened, setOpened] = useState(() =>
@@ -90,26 +90,21 @@ export default function TerminalDock({
       if (current()) throw error;
     }
   }, []);
-  useEffect(() => {
-    let active = true;
-    const stop = watchResourceReads(
-      { kind: "terminals" },
-      async () => {
-        try {
-          await load(() => active);
-        } catch (failure) {
-          if (active) setError(errorText(failure));
-        }
-      },
-      (failure) => {
-        if (active) setError(errorText(failure));
-      },
-    );
-    return () => {
-      active = false;
-      stop();
-    };
-  }, [load, watchResourceReads]);
+  useEffect(
+    () =>
+      subscribeStateProjection(
+        (snapshot) => {
+          if (snapshot?.runtime.terminals) {
+            setShells(snapshot.runtime.terminals);
+            setError("");
+          }
+        },
+        (failure) => {
+          if (failure) setError(errorText(failure));
+        },
+      ),
+    [subscribeStateProjection],
+  );
   // Page layout rules read this flag instead of #root:has(.terminal-dock).
   useLayoutEffect(() => {
     const root = document.documentElement;

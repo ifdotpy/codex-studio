@@ -86,6 +86,22 @@ impl AnalyticsCaptureRepository {
             [through],
         )?)
     }
+    /// Make the next Canvas log row get a sequence after `cursor`, the analytics
+    /// projection cursor. Commits are flushed to disk independently per database,
+    /// so an OS crash can roll Canvas back below a cursor analytics kept; without
+    /// this the projector would skip the rows that reuse those sequence numbers.
+    pub fn reserve_projected_sequence(canvas: &Connection, cursor: i64) -> StoreResult<()> {
+        canvas.execute(
+            "INSERT INTO sqlite_sequence(name,seq) SELECT 'runtime_analytics_projection',?1 \
+             WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='runtime_analytics_projection')",
+            [cursor],
+        )?;
+        canvas.execute(
+            "UPDATE sqlite_sequence SET seq=?1 WHERE name='runtime_analytics_projection' AND seq<?1",
+            [cursor],
+        )?;
+        Ok(())
+    }
     /// The last Canvas log sequence applied to analytics; 0 for a fresh analytics database.
     pub fn projection_cursor(analytics: &Connection) -> StoreResult<i64> {
         let raw: Option<String> = analytics
@@ -203,9 +219,9 @@ impl AnalyticsCaptureRepository {
 impl RuntimeStore {
     /// Run one analytics projection transaction on the blocking pool without
     /// Canvas writer admission: it locks only the analytics connection, and the
-    /// projector reads Canvas through a reader before it. The commit uses
-    /// [`crate::ANALYTICS_PROJECTION_SYNCHRONOUS`], so on success every analytics
-    /// commit up to this one is durable and the projected Canvas rows may be pruned.
+    /// projector reads Canvas through a reader before it. Like every commit it is
+    /// not synced to disk; Canvas may prune projected log rows only after
+    /// [`RuntimeStore::flush_analytics_wal`] reports a complete flush.
     pub async fn analytics_projection_transaction<T, E>(
         &self,
         operation: impl FnOnce(&Transaction<'_>) -> Result<T, E> + Send + 'static,
@@ -215,12 +231,11 @@ impl RuntimeStore {
         E: From<StoreError> + Send + 'static,
     {
         let analytics = std::sync::Arc::clone(&self.analytics);
-        let checkpoint_requested = std::sync::Arc::clone(&self.wal_checkpoint_requested);
+        let wal_flush = std::sync::Arc::clone(&self.wal_flush);
+        let notifiers = std::sync::Arc::clone(&self.analytics_commit_notifiers);
         crate::blocking_pool::spawn_blocking("analytics/projection", move || {
             let mut db = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
-            // SQLite refuses a synchronous change inside a transaction.
-            db.pragma_update(None, "synchronous", crate::ANALYTICS_PROJECTION_SYNCHRONOUS)
-                .map_err(StoreError::from)?;
+            let changed_before = db.total_changes();
             let outcome: Result<T, E> = (|| {
                 let tx = db
                     .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -229,10 +244,11 @@ impl RuntimeStore {
                 tx.commit().map_err(StoreError::commit_outcome_unknown)?;
                 Ok(value)
             })();
-            db.pragma_update(None, "synchronous", crate::ANALYTICS_SYNCHRONOUS)
-                .map_err(StoreError::from)?;
             if outcome.is_ok() {
-                checkpoint_requested.store(true, std::sync::atomic::Ordering::Release);
+                wal_flush.request();
+                if db.total_changes() != changed_before {
+                    crate::fire_commit_observers(&notifiers);
+                }
             }
             outcome
         })
@@ -289,9 +305,11 @@ impl RuntimeStore {
         let submitted = diagnostics_enabled.then(std::time::Instant::now);
         let origin = std::panic::Location::caller();
         let analytics = std::sync::Arc::clone(&self.analytics);
-        let checkpoint_requested = std::sync::Arc::clone(&self.wal_checkpoint_requested);
+        let wal_flush = std::sync::Arc::clone(&self.wal_flush);
+        let notifiers = std::sync::Arc::clone(&self.analytics_commit_notifiers);
         let transaction_job = move |canvas: &mut Connection| -> Result<Result<T, E>, StoreError> {
             let mut db = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+            let changed_before = db.total_changes();
             let tx = db
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(StoreError::from)?;
@@ -304,6 +322,9 @@ impl RuntimeStore {
                             database: crate::StoreDatabaseKind::Analytics,
                             elapsed: started.elapsed(),
                         });
+                    }
+                    if db.total_changes() != changed_before {
+                        crate::fire_commit_observers(&notifiers);
                     }
                     Ok(Ok(result))
                 }
@@ -331,7 +352,7 @@ impl RuntimeStore {
             .writer
             .call_admitted_with_completion(permit, operation, move |result, _disposition| {
                 if result.as_ref().is_ok_and(Result::is_ok) {
-                    checkpoint_requested.store(true, std::sync::atomic::Ordering::Release);
+                    wal_flush.request();
                 }
             })
             .await

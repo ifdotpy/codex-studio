@@ -29,6 +29,16 @@ From the repository root, start the selected backend and open
 Build output is local and ignored by Git. Rebuild it after a frontend change.
 The server reports a missing build instead of serving an older client.
 
+Every production Vite build runs [asset precompression](scripts/precompress-assets.ts)
+after the offline shell is finalized. It keeps smaller Brotli and gzip siblings
+for the server-owned [compressible extensions](../../../runtime/apps/runtime-server/src/web_asset_extensions.txt).
+Deploy the whole `dist/` directory, including these siblings. The Rust server
+negotiates `Accept-Encoding`, prefers Brotli, falls back to gzip or identity,
+and varies caches by encoding without compressing requests at runtime. A sibling
+older than its original file is ignored. Shell
+build IDs and service-worker URLs refer to original files. Fixtures that rewrite
+built files must rebuild or remove their compressed siblings too.
+
 ## Develop
 
 Keep the selected runtime server on port 4620. Start Vite in another terminal:
@@ -128,6 +138,17 @@ Model and reasoning fields retain accessible names without visible captions;
 model descriptions do not add lines below the list. Picker width is owned by
 `--studio-model-picker-size` in [`src/design/layout.css`](src/design/layout.css)
 and stays within the available width on phones.
+The composer model summary adapts to its own available width, including when a
+sidebar is open. Wide composers show all role names and models; medium composers
+keep the lead model and secondary provider marks; phones show the lead model and
+a compact count of the other roles. Open the summary for the full settings;
+its accessible name also retains every role, model, provider, and reasoning level.
+Account-move status appears above the input so it cannot crowd the send controls.
+On narrow composers, saved draft copies and then Stop move into the upper tools
+corner, preserving the lead name and the bottom-row send action.
+The container stages are owned by
+[`empty-chat-settings.css`](src/components/conversation/empty-chat-settings.css).
+
 The server's creation response opens the chat before the full list refreshes.
 An older list cannot remove that confirmed chat while synchronization catches up.
 The client retains the confirmed chat across reloads until the list includes it.

@@ -75,6 +75,15 @@ Chat creation selects `workspaceMode`.
 | `image`    | macOS           | Native agents in ASIF images                        |
 | `worktree` | macOS and Linux | Native agents in Git worktrees                      |
 
+A `worktree` worker gets its Git worktree at `<root>/codex-agents/<agent id>`.
+By default `<root>` is `.worktrees` in the worker's repository. To place the
+worktrees of every repository on another disk, write `worktree-root.json` in the
+server state directory, for example
+`{"root": "/mnt/data/studio-worktrees"}`. The root must be an existing
+absolute directory; an invalid file or missing directory refuses new worktrees
+instead of falling back. Each new worktree reads the file, so a change needs no
+restart. Archive and cleanup still manage worktrees under the previous root.
+
 The first layr chat imports the project once. Later chats reuse the VM main line.
 The Mac folder stays separate. Export a copy only on request.
 See [VM chats](linux-vm-workspaces.md) and [ASIF images](workspace-images.md).
@@ -482,14 +491,21 @@ Author icons are hidden by default. Use the composer picker to select the conver
 
 Prompt history is in the chat header; open **Conversation tools** when space is
 limited. Context usage, session cost, and account limits sit below the composer.
-An orange **Warnings** icon appears in the
-header when the current account or chat has notices. It opens their full details
-in a dialog; errors that block work remain visible in the conversation.
+The **Warnings** icon beside Studio settings in the sidebar opens two tabs.
+**Notices** preserves provider version notices and current conversation warnings.
+**App errors** lists work interrupted by Studio, with safe Open or Resume actions.
+Select individual errors or **Select all**, then **Delete selected** to remove only
+those entries from the error list. This does not delete chats, commands, or history.
+The server applies the selected dismissals atomically. If the response is lost,
+the selection stays available while Studio reads the current list; it does not
+automatically repeat the request. Errors that block work remain visible in the conversation.
 On narrow screens, **Chat actions** also opens Chat settings and Team. The agent
 mode switch is inside Chat settings on mobile. Mobile input text stays at least
 16px; larger selected text sizes apply normally.
 **Chat actions** contains agent tasks, your tasks, changes, plan, rules, search, and background tasks.
-**Search chats** searches full history. **Filter projects and chats** filters the sidebar list.
+The **Search chats** icon beside Studio settings searches full history; Ctrl+K / ⌘K also opens it.
+**New chat** and **New shared chat** sit beside **Add project** in the Projects heading.
+**Filter projects and chats** filters the sidebar list.
 The search control above the transcript searches the current chat.
 **Edit** and **Another answer** prepare a draft in a new branch. They do not send it automatically.
 

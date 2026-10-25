@@ -283,6 +283,13 @@ pub(crate) async fn diagnostics_http_timing(request: Request<Body>, next: Next) 
         .map(|path| path.as_str().to_owned());
     let started = std::time::Instant::now();
     let response = next.run(request).await;
+    if route.as_deref() == Some("/api/sync/subscriptions")
+        && matches!(response.status().as_u16(), 409 | 410)
+    {
+        studio_runtime_services::diagnostics::record_sync_recovery(
+            studio_runtime_services::diagnostics::SyncRecoveryKind::SubscriptionRejected,
+        );
+    }
     if let Some(route) = route {
         let response_bytes = response
             .body()
@@ -295,6 +302,7 @@ pub(crate) async fn diagnostics_http_timing(request: Request<Body>, next: Next) 
             &route,
             started.elapsed(),
             response_bytes,
+            response.status().as_u16(),
         );
     }
     response

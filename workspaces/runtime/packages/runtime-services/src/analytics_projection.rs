@@ -7,6 +7,11 @@
 //! replay after any crash starts exactly after the last durable analytics
 //! commit. It locks only the analytics connection and reads Canvas through a
 //! reader; it never holds the Canvas writer except for a rare log prune.
+//!
+//! Commits use `synchronous=NORMAL` (`studio_runtime_store::sqlite_durability`),
+//! so a commit reaches the disk only with a later flush. A prune therefore
+//! first flushes analytics, and `RuntimeStore::open` keeps new log sequence
+//! numbers after the analytics cursor when an OS crash rolled Canvas back.
 use crate::analytics_capture::{CaptureError, capture_logged_effect, record_capture_errors};
 use crate::notification_dispatch::NotificationPostCommit;
 use rusqlite::Connection;
@@ -17,8 +22,8 @@ use studio_runtime_store::{ObservedTable, RuntimeStore, StoreError};
 
 /// Canvas log rows one projector analytics transaction applies. Unit: rows.
 const PROJECTION_BATCH_ROWS: usize = 256;
-/// Durably projected log rows after which the projector deletes them from
-/// Canvas in one writer transaction. Unit: rows (Canvas log sequence numbers).
+/// Projected log rows after which the projector flushes analytics and deletes
+/// them from Canvas in one writer transaction. Unit: rows (Canvas log sequence numbers).
 const PROJECTION_PRUNE_ROWS: i64 = 4096;
 /// Wait before a failed projection pass is retried. Unit: time.
 const PROJECTION_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -157,11 +162,17 @@ fn is_transient(error: &CaptureError) -> bool {
     )
 }
 
-/// Delete Canvas log rows through `through`, which analytics holds durably.
-pub async fn prune(store: &RuntimeStore, through: i64) -> Result<usize, StoreError> {
+/// Flush analytics, then delete Canvas log rows through `through`, the cursor
+/// of an analytics commit made before this call. Returns `None` without a
+/// prune when a reader kept the flush incomplete; a later pass retries.
+pub async fn prune(store: &RuntimeStore, through: i64) -> Result<Option<usize>, StoreError> {
+    if !store.flush_analytics_wal().await? {
+        return Ok(None);
+    }
     store
         .transaction(move |tx| Repo::prune_projection(tx, through))
         .await
+        .map(Some)
 }
 
 /// Catch up from the durable cursor, then project after every Canvas commit
@@ -181,7 +192,8 @@ pub async fn run(store: Arc<RuntimeStore>, mut shutdown: tokio::sync::watch::Rec
             Ok(cursor) => {
                 if pruned.is_none_or(|pruned| cursor - pruned >= PROJECTION_PRUNE_ROWS) {
                     match prune(&store, cursor).await {
-                        Ok(_) => pruned = Some(cursor),
+                        Ok(Some(_)) => pruned = Some(cursor),
+                        Ok(None) => {}
                         Err(error) => eprintln!("analytics projection prune failed: {error}"),
                     }
                 }
@@ -505,7 +517,7 @@ mod tests {
         seed_agent(&store).await;
         journal(&store, 1, turn_mix()).await;
         let cursor = project_pending(&store).await.expect("project");
-        assert_eq!(prune(&store, cursor).await.expect("prune"), 7);
+        assert_eq!(prune(&store, cursor).await.expect("prune"), Some(7));
         assert_eq!(log_rows(&store), 0);
         journal(
             &store,
@@ -524,5 +536,83 @@ mod tests {
                 .map(Vec::len),
             Some(2)
         );
+    }
+
+    // With synchronous=NORMAL an OS crash can roll Canvas back below the
+    // analytics cursor: the last log rows and their AUTOINCREMENT high-water
+    // mark are lost while analytics kept their projection. New log rows must
+    // still get sequence numbers after the cursor, or the projector skips them.
+    #[tokio::test]
+    async fn rows_logged_after_a_canvas_rollback_below_the_cursor_still_project() {
+        let state = tempfile::tempdir().expect("state");
+        let store = open(state.path()).await;
+        seed_agent(&store).await;
+        journal(&store, 1, turn_mix()).await;
+        assert_eq!(project_pending(&store).await.expect("project"), 7);
+        drop(store);
+        // Simulate the lost Canvas tail: no log rows and a reset sequence.
+        let canvas = Connection::open(state.path().join("canvas.sqlite3")).expect("canvas DB");
+        canvas
+            .execute_batch(
+                "DELETE FROM runtime_analytics_projection; \
+                 UPDATE sqlite_sequence SET seq=0 WHERE name='runtime_analytics_projection';",
+            )
+            .expect("simulate Canvas rollback");
+        drop(canvas);
+
+        let store = open(state.path()).await;
+        journal(
+            &store,
+            2,
+            vec![effect(
+                8,
+                "turn/started",
+                json!({"threadId":"thread","turn":{"id":"after-rollback"}}),
+            )],
+        )
+        .await;
+        assert_eq!(project_pending(&store).await.expect("project new row"), 8);
+        assert_eq!(
+            dump(state.path())["analytics_turns"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+    }
+
+    // Analytics commits are not synced on commit, so Canvas may delete
+    // projected log rows only after a complete analytics flush; while a reader
+    // keeps the flush incomplete the prune waits and deletes nothing.
+    #[tokio::test]
+    async fn a_prune_waits_for_a_complete_analytics_flush() {
+        let state = tempfile::tempdir().expect("state");
+        let store = open(state.path()).await;
+        seed_agent(&store).await;
+        journal(&store, 1, turn_mix()).await;
+        project_pending(&store).await.expect("project");
+        let reader = Connection::open(state.path().join("analytics.sqlite3")).expect("reader");
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM analytics_meta;")
+            .expect("hold an old analytics snapshot");
+        journal(
+            &store,
+            2,
+            vec![effect(
+                8,
+                "turn/started",
+                json!({"threadId":"thread","turn":{"id":"next"}}),
+            )],
+        )
+        .await;
+        let cursor = project_pending(&store)
+            .await
+            .expect("project after the snapshot");
+        assert_eq!(prune(&store, cursor).await.expect("deferred prune"), None);
+        assert_eq!(log_rows(&store), 8);
+        reader
+            .execute_batch("COMMIT")
+            .expect("release the snapshot");
+        assert_eq!(prune(&store, cursor).await.expect("prune"), Some(8));
+        assert_eq!(log_rows(&store), 0);
     }
 }

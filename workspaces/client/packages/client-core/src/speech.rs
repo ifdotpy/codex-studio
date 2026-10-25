@@ -464,7 +464,7 @@ mod tests {
              en-US) echo '{\"type\":\"progress\",\"completed\":0,\"total\":1}' >&2; echo '{\"type\":\"progress\",\"completed\":1,\"total\":1}' >&2; echo '{\"text\":\"Привет 🦀\",\"provider\":\"macOS Speech\",\"onDevice\":true}';;\n\
              de-DE) echo '{\"error\":\"On-device speech is unavailable.\"}'; exit 1;;\n\
              fr-FR) echo 'not json'; exit 1;;\n\
-             *) sleep 30;;\nesac\n",
+             *) mkfifo \"$1\"; echo '{\"type\":\"progress\",\"completed\":0,\"total\":1}' >&2; exec cat \"$1\";;\nesac\n",
         )
         .unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -496,15 +496,30 @@ mod tests {
                 .starts_with("Native transcription failed")
         );
         let (stop, stopped) = tokio::sync::watch::channel(false);
-        let started = Instant::now();
         let task = tokio::spawn({
             let (script, file) = (script.clone(), file.clone());
             async move { run(&script, &file, "ja-JP", "four", stopped).await }
         });
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event["id"] == "four" {
+                    assert_eq!(event["completed"], 0);
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("helper reports readiness before cancellation");
         stop.send(true).unwrap();
-        assert_eq!(task.await.unwrap().unwrap_err(), CANCELLED);
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .expect("cancellation stops the helper")
+                .unwrap()
+                .unwrap_err(),
+            CANCELLED
+        );
         assert!(
             run(
                 &directory.path().join("missing"),

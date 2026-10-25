@@ -114,7 +114,7 @@ test("Models whitelist filters every execution role and preserves the current mo
     await page.keyboard.press("Escape");
     const openNewChat = async () => {
       await page
-        .locator(".sidebar-nav")
+        .locator("#sidebar .projects-heading")
         .getByRole("button", { name: "New chat", exact: true })
         .click();
       return page.getByRole("dialog", { name: "New chat", exact: true });

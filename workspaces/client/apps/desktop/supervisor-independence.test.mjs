@@ -12,11 +12,14 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  existsSync,
+  watch,
 } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { pythonResources } from "./python-resources.mjs";
 
 const root = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -39,19 +42,43 @@ function status(state) {
   );
 }
 
-function waitFor(check, message, timeoutMs = 5000) {
-  const deadline = Date.now() + timeoutMs;
+// Observe first, then inspect; passing paths advance only on fixture events.
+function waitForChange(emitter, event, check, message) {
   return new Promise((resolve, reject) => {
-    const poll = () => {
+    const cleanup = () => {
+      clearTimeout(deadline);
+      emitter.off(event, changed);
+    };
+    const deadline = setTimeout(() => {
+      cleanup();
+      reject(new Error(message));
+    }, 5_000);
+    function changed() {
       try {
         const value = check();
-        if (value) return resolve(value);
-      } catch {}
-      if (Date.now() >= deadline) return reject(new Error(message));
-      setTimeout(poll, 25);
-    };
-    poll();
+        if (value) {
+          cleanup();
+          resolve(value);
+        }
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    }
+    emitter.on(event, changed);
+    changed();
   });
+}
+
+async function stateChange(state, check, message, action = () => {}) {
+  const watcher = watch(state);
+  try {
+    const changed = waitForChange(watcher, "change", check, message);
+    action();
+    return await changed;
+  } finally {
+    watcher.close();
+  }
 }
 
 test.skipIf(!supervisorBinary)(
@@ -70,10 +97,15 @@ test.skipIf(!supervisorBinary)(
       path.join(resources, "bin/codex-process-supervisor"),
     );
     symlinkSync(
-      "/usr/bin/true",
+      process.execPath,
       path.join(resources, "bin/studio-runtime-server"),
     );
-    writeFileSync(updatedRecoveryScript, "fixture v2");
+    for (const file of pythonResources)
+      writeFileSync(
+        path.join(resources, file),
+        readFileSync(path.join(desktopSource, file)),
+      );
+    writeFileSync(updatedRecoveryScript, readFileSync(recoveryScript));
     writeFileSync(path.join(resources, "web/dist/index.html"), "fixture");
 
     let owner;
@@ -90,8 +122,9 @@ test.skipIf(!supervisorBinary)(
           CODEX_AGENTS_SUPERVISOR_MODE: "1",
         },
       });
-      const initialHealth = await waitFor(
-        () => status(state),
+      const initialHealth = await stateChange(
+        state,
+        () => existsSync(path.join(state, "supervisor.sock")) && status(state),
         "owner did not start",
       );
       const ownerPid = JSON.parse(
@@ -124,18 +157,25 @@ test.skipIf(!supervisorBinary)(
       });
       socket.write(
         `${JSON.stringify({
-          protocol: 1,
+          protocol: initialHealth.protocol,
           stateDir: state,
           backendId: "private-fixture-backend",
         })}\n`,
       );
-      assert.equal((await nextMessage()).ok, true);
+      assert.deepEqual(await nextMessage(), {
+        ok: true,
+        protocol: initialHealth.protocol,
+      });
       socket.write(
         `${JSON.stringify({
           requestId: 1,
           handle: "fixture:live-child",
           action: "open",
-          command: ["/bin/cat"],
+          command: [
+            process.execPath,
+            "-e",
+            "process.stdin.pipe(process.stdout)",
+          ],
           env: { ...process.env },
           cwd: fixture,
         })}\n`,
@@ -169,7 +209,7 @@ test.skipIf(!supervisorBinary)(
       const env = {
         CODEX_AGENTS_STATE_DIR: state,
         CODEX_AGENTS_SUPERVISOR_MODE: "1",
-        CODEX_BIN: "/usr/bin/true",
+        CODEX_BIN: process.execPath,
         PATH: process.env.PATH,
       };
       backendServer = createServer((_request, response) => {
@@ -223,26 +263,6 @@ test.skipIf(!supervisorBinary)(
       );
 
       const recoveryConfig = path.join(state, "background-recovery.json");
-      const savedConfig = JSON.parse(readFileSync(recoveryConfig, "utf8"));
-      let probeDiagnostic = "status probe succeeded";
-      try {
-        execFileSync(
-          python,
-          ["-B", recoveryScript, "--supervisor-health", "--state", state],
-          {
-            encoding: "utf8",
-            env: {
-              ...process.env,
-              ...savedConfig.environment,
-              CODEX_AGENTS_STATE_DIR: state,
-              CODEX_BIN: savedConfig.codex,
-              CODEX_AGENTS_SUPERVISOR_MODE: "1",
-            },
-          },
-        );
-      } catch (error) {
-        probeDiagnostic = error.stderr?.toString() || error.message;
-      }
       recoveryProcess = spawn(
         python,
         [
@@ -261,7 +281,9 @@ test.skipIf(!supervisorBinary)(
         recoveryOutput += chunk.toString();
       });
       try {
-        await waitFor(
+        await waitForChange(
+          recoveryProcess.stdout,
+          "data",
           () => recoveryOutput.includes("supervisor ready"),
           "recovery did not attach to the independent owner",
         );
@@ -274,7 +296,7 @@ test.skipIf(!supervisorBinary)(
           );
         } catch {}
         throw new Error(
-          `${error.message}; exit=${recoveryProcess.exitCode}; stdout/stderr=${recoveryOutput}; log=${log}; probe=${probeDiagnostic}`,
+          `${error.message}; exit=${recoveryProcess.exitCode}; stdout/stderr=${recoveryOutput}; log=${log}`,
         );
       }
       // A launchctl kickstart -k replaces only the recovery job process.
@@ -309,22 +331,29 @@ test.skipIf(!supervisorBinary)(
       }
       if (backendServer)
         await new Promise((resolve) => backendServer.close(resolve));
-      socket?.destroy();
       if (childPid) {
-        try {
-          process.kill(childPid, "SIGTERM");
-        } catch {}
-        await waitFor(() => {
-          try {
-            execFileSync("/bin/ps", ["-p", String(childPid)], {
-              stdio: "ignore",
-            });
-            return false;
-          } catch {
-            return true;
-          }
-        }, "fake child did not exit");
+        await stateChange(
+          state,
+          () => {
+            try {
+              process.kill(childPid, 0);
+              return false;
+            } catch (error) {
+              if (error.code === "ESRCH") return true;
+              throw error;
+            }
+          },
+          "fake child did not exit",
+          () => {
+            try {
+              process.kill(childPid, "SIGTERM");
+            } catch (error) {
+              if (error.code !== "ESRCH") throw error;
+            }
+          },
+        );
       }
+      socket?.destroy();
       if (owner && owner.exitCode === null) {
         owner.kill("SIGTERM");
         await new Promise((resolve) => owner.once("exit", resolve));

@@ -32,7 +32,7 @@ export function query({prompt,options}){
    yield {type:'system',subtype:'task_progress',task_id:'native-1',description:'Watch the build',summary:'Build still running',uuid:'s-2'};
    yield {type:'system',subtype:'task_updated',task_id:'native-1',patch:{description:'Build almost done',status:'running'},uuid:'s-3'};
    yield {type:'result',subtype:'success',usage,result:'Task started'};
-   while(!fs.existsSync(cwd+'/.finish')&&!abort.signal.aborted)await new Promise(r=>setTimeout(r,5));
+   await waitForFile(cwd+'/.finish',{signal:abort.signal}).catch(()=>{});
    if(abort.signal.aborted)return;
    const status=fs.readFileSync(cwd+'/.finish','utf8');
    // A state patch can precede the notification that supplies the final output.
@@ -79,7 +79,7 @@ test.each(["completed", "failed", "killed", "stopped"])(
       taskEvents()[2].params.item.arguments.description,
       "Build almost done",
     );
-    // The SDK polls for .finish, so publish it only after its status is complete.
+    // Publish the marker only after its status is complete.
     const pending = path.join(bridge.root, ".finish-pending");
     await fs.writeFile(pending, status);
     await fs.rename(pending, path.join(bridge.root, ".finish"));

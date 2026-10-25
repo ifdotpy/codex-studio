@@ -16,6 +16,7 @@ import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import App from "./App";
+import { SidebarWarningsProvider } from "./components/SidebarWarnings";
 import MultiServerApp from "./servers/MultiServerApp";
 import { isServerView } from "./servers/environment";
 import { isRemoteServerView } from "./servers/environment";
@@ -60,7 +61,9 @@ async function mount() {
     createRoot(container).render(
       <UIErrorBoundary label="Studio" fullPage>
         <MantineProvider theme={theme} defaultColorScheme="auto">
-          {isServerView ? <App /> : <MultiServerApp />}
+          <SidebarWarningsProvider>
+            {isServerView ? <App /> : <MultiServerApp />}
+          </SidebarWarningsProvider>
         </MantineProvider>
       </UIErrorBoundary>,
     );

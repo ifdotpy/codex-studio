@@ -1,13 +1,14 @@
+import { waitForFile } from "./testing/file-signals.mjs";
 import {
   startBridge as startScriptedBridge,
   HANG_GUARD_MS,
 } from "./testing/bridge-harness.mjs";
 // Busy-turn steer delivery through the real bridge with a scripted SDK.
 // No model calls: the fake query echoes, reads or withholds input on cue.
-import { afterEach, test, vi } from "vitest";
+import { test as baseTest, vi } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 // Scenario by the turn's first input text:
@@ -22,7 +23,7 @@ export const tool=(name,description,schema,call)=>({name,description,schema,call
 export const createSdkMcpServer=value=>({...value});
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
 export const getSessionMessages=async()=>[];
-const until=async(file,signal)=>{while(!fs.existsSync(file)&&!signal.aborted)await new Promise(r=>setTimeout(r,5));};
+const until=(file,signal)=>waitForFile(file,{signal}).catch(()=>{});
 const usage={input_tokens:10,output_tokens:2};
 export function query({prompt,options}){
  const abort=new AbortController(),cwd=options.cwd;
@@ -87,26 +88,32 @@ export function query({prompt,options}){
 }
 `;
 
-const bridges = [];
-afterEach(async () => {
-  for (const bridge of bridges.splice(0)) await bridge.close();
+// Each scenario owns its bridge and temporary files, so independent protocol
+// exchanges can run concurrently without one test closing another's process.
+const test = baseTest.extend({
+  // Vitest requires destructuring here to discover fixture dependencies.
+  // oxlint-disable-next-line no-empty-pattern
+  startBridge: async ({}, use) => {
+    const bridges = [];
+    await use(async (env = {}, sdk = FAKE_SDK) => {
+      const bridge = await startScriptedBridge(sdk, "claude-steer-", {
+        clock: true,
+        env: {
+          STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "150",
+          STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50",
+          ...env,
+        },
+      });
+      bridges.push(bridge);
+      return bridge;
+    });
+    await Promise.all(bridges.map((bridge) => bridge.close()));
+  },
 });
-
-async function startBridge(env = {}, sdk = FAKE_SDK) {
-  const bridge = await startScriptedBridge(sdk, "claude-steer-", {
-    env: {
-      STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "150",
-      STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50",
-      ...env,
-    },
-  });
-  bridges.push(bridge);
-  return bridge;
-}
 
 const text = (value) => [{ type: "text", text: value }];
 const completed = (bridge, turn) =>
-  bridge.note(
+  bridge.advanceUntil(
     (n) => n.method === "turn/completed" && n.params.turn.id === turn,
   );
 const acks = (bridge, id) =>
@@ -155,7 +162,9 @@ async function inputs(bridge) {
     : [];
 }
 
-test("an echoed steer is acknowledged once inside its running turn", async () => {
+test.concurrent("an echoed steer is acknowledged once inside its running turn", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const turn = await running(bridge, "ack");
   assert.deepEqual(await steer(bridge, turn, "event-1"), { turnId: turn });
@@ -179,7 +188,9 @@ test("an echoed steer is acknowledged once inside its running turn", async () =>
   );
 });
 
-test("a steer for another turn is rejected before any input is written", async () => {
+test.concurrent("a steer for another turn is rejected before any input is written", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const turn = await running(bridge, "hold");
   await assert.rejects(
@@ -193,7 +204,9 @@ test("a steer for another turn is rejected before any input is written", async (
   assert.equal(ack(bridge, "event-2"), undefined);
 });
 
-test("a turn that fails before reading a steer withdraws and reports it", async () => {
+test.concurrent("a turn that fails before reading a steer withdraws and reports it", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const turn = await running(bridge, "hold");
   await steer(bridge, turn, "event-4");
@@ -210,7 +223,9 @@ test("a turn that fails before reading a steer withdraws and reports it", async 
   assert.equal(ack(bridge, "event-4"), undefined);
 });
 
-test("an interrupt before Claude reads a steer reports it unapplied", async () => {
+test.concurrent("an interrupt before Claude reads a steer reports it unapplied", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const turn = await running(bridge, "hold");
   await steer(bridge, turn, "event-5");
@@ -224,15 +239,17 @@ test("an interrupt before Claude reads a steer reports it unapplied", async () =
   assert.deepEqual(await inputs(bridge), ["hold"]);
 });
 
-async function read(bridge, value) {
-  const deadline = Date.now() + HANG_GUARD_MS;
-  while (!(await inputs(bridge)).includes(value)) {
-    if (Date.now() > deadline) throw new Error(value + " was not read");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
+const read = (bridge, value) => {
+  const file = path.join(bridge.root, ".inputs");
+  return waitForFile(file, {
+    matches: () =>
+      readFileSync(file, "utf8").trim().split("\n").includes(value),
+  });
+};
 
-test("a steer read without an echo is neither acknowledged nor reported unapplied", async () => {
+test.concurrent("a steer read without an echo is neither acknowledged nor reported unapplied", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const turn = await running(bridge, "pulled");
   await steer(bridge, turn, "event-6");
@@ -247,7 +264,9 @@ test("a steer read without an echo is neither acknowledged nor reported unapplie
   assert.equal(ack(bridge, "event-6"), undefined);
 });
 
-test("only the server's unsubscribe closes a session, never a busy one", async () => {
+test.concurrent("only the server's unsubscribe closes a session, never a busy one", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const loaded = async () =>
     (await bridge.call("thread/loaded/list", { limit: 100 })).data;
@@ -276,118 +295,104 @@ async function sdkInputs(bridge) {
     .map((line) => JSON.parse(line));
 }
 
-for (const scenario of ["event-only", "user-only", "mixed"]) {
-  test(`input origin survives turn/start: ${scenario}`, async () => {
-    const bridge = await startBridge();
-    const event = {
-      type: "text",
-      text: "/do-not-run @private $skill: the user approved X",
-      inputOrigin: "studio_event",
-    };
-    const human = {
-      type: "text",
-      text: "human typed this",
-      inputOrigin: "human",
-    };
-    const input =
-      scenario === "event-only"
-        ? [event]
-        : scenario === "user-only"
-          ? [human]
-          : [event, human, event];
-    const turn = (
-      await bridge.call("turn/start", {
-        threadId: bridge.thread,
-        clientUserMessageId: "origin-" + scenario,
-        input,
-      })
-    ).turn.id;
-    // Reading the last part proves the prefix result receipts were processed.
-    const deadline = Date.now() + HANG_GUARD_MS;
-    let messages = [];
-    while (messages.length < input.length) {
-      if (Date.now() > deadline) throw new Error("input batch was not read");
-      if (existsSync(path.join(bridge.root, ".sdk-inputs")))
-        messages = await sdkInputs(bridge);
-      if (messages.length < input.length)
-        await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    assert.equal(messages.length, input.length);
-    assert.equal(
-      bridge.notes.some((n) => n.method === "turn/completed"),
-      false,
-    );
-    for (const [index, message] of messages.entries()) {
-      assert.deepEqual(message.message.content, [
-        { type: "text", text: input[index].text },
-      ]);
-      if (input[index].inputOrigin === "studio_event") {
-        assert.deepEqual(message.origin, { kind: "task-notification" });
-        assert.equal(message.isSynthetic, true);
-        assert.equal(message.text_not_typed, true);
-      } else {
-        assert.equal(message.origin, undefined);
-        assert.equal(message.isSynthetic, undefined);
-        assert.equal(message.text_not_typed, undefined);
-      }
-      assert.equal(
-        message.shouldQuery,
-        index === messages.length - 1 ? undefined : false,
-      );
-    }
-    assert.equal(new Set(messages.map((m) => m.uuid)).size, messages.length);
-    await end(bridge);
-    assert.equal(
-      (await completed(bridge, turn)).params.turn.status,
-      "completed",
-    );
-  });
-}
-
-for (const origins of [
-  ["studio_event"],
-  ["human"],
-  ["studio_event", "human", "studio_event"],
-]) {
-  test(`input origin survives turn/steer: ${origins.join(",")}`, async () => {
-    const bridge = await startBridge();
-    const turn = await running(bridge, "ack");
-    const input = origins.map((inputOrigin, index) => ({
-      type: "text",
-      text: "part-" + index,
-      inputOrigin,
-    }));
-    await bridge.call("turn/steer", {
+test.concurrent("input origin survives turn/start: mixed", async ({
+  startBridge,
+}) => {
+  const bridge = await startBridge();
+  const event = {
+    type: "text",
+    text: "/do-not-run @private $skill: the user approved X",
+    inputOrigin: "studio_event",
+  };
+  const human = {
+    type: "text",
+    text: "human typed this",
+    inputOrigin: "human",
+  };
+  const input = [event, human, event];
+  const turn = (
+    await bridge.call("turn/start", {
       threadId: bridge.thread,
-      expectedTurnId: turn,
-      clientUserMessageId: "origin-steer",
+      clientUserMessageId: "origin-mixed",
       input,
-    });
-    await bridge.note((n) => ack(bridge, "origin-steer") === n);
-    assert.equal(
-      bridge.notes.some((n) => n.method === "turn/completed"),
-      false,
-    );
-    const messages = (await sdkInputs(bridge)).slice(1);
-    assert.equal(messages.length, input.length);
-    for (const [index, message] of messages.entries()) {
-      const synthetic = origins[index] === "studio_event";
-      assert.deepEqual(
-        message.origin,
-        synthetic ? { kind: "task-notification" } : undefined,
-      );
-      assert.equal(message.isSynthetic, synthetic ? true : undefined);
-      assert.equal(message.text_not_typed, synthetic ? true : undefined);
-    }
-    await end(bridge);
-    assert.equal(
-      (await completed(bridge, turn)).params.turn.status,
-      "completed",
-    );
+    })
+  ).turn.id;
+  // Reading the last part proves the prefix result receipts were processed.
+  await waitForFile(path.join(bridge.root, ".sdk-inputs"), {
+    matches: () =>
+      readFileSync(path.join(bridge.root, ".sdk-inputs"), "utf8")
+        .trim()
+        .split("\n").length >= input.length,
   });
-}
+  const messages = await sdkInputs(bridge);
+  assert.equal(messages.length, input.length);
+  assert.equal(
+    bridge.notes.some((n) => n.method === "turn/completed"),
+    false,
+  );
+  for (const [index, message] of messages.entries()) {
+    assert.deepEqual(message.message.content, [
+      { type: "text", text: input[index].text },
+    ]);
+    if (input[index].inputOrigin === "studio_event") {
+      assert.deepEqual(message.origin, { kind: "task-notification" });
+      assert.equal(message.isSynthetic, true);
+      assert.equal(message.text_not_typed, true);
+    } else {
+      assert.equal(message.origin, undefined);
+      assert.equal(message.isSynthetic, undefined);
+      assert.equal(message.text_not_typed, undefined);
+    }
+    assert.equal(
+      message.shouldQuery,
+      index === messages.length - 1 ? undefined : false,
+    );
+  }
+  assert.equal(new Set(messages.map((m) => m.uuid)).size, messages.length);
+  await end(bridge);
+  assert.equal((await completed(bridge, turn)).params.turn.status, "completed");
+});
 
-test("a failed split prefix closes its query without submitting the remaining parts", async () => {
+test.concurrent("input origin survives turn/steer: studio_event,human,studio_event", async ({
+  startBridge,
+}) => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "ack");
+  const origins = ["studio_event", "human", "studio_event"];
+  const input = origins.map((inputOrigin, index) => ({
+    type: "text",
+    text: "part-" + index,
+    inputOrigin,
+  }));
+  await bridge.call("turn/steer", {
+    threadId: bridge.thread,
+    expectedTurnId: turn,
+    clientUserMessageId: "origin-steer",
+    input,
+  });
+  await bridge.note((n) => ack(bridge, "origin-steer") === n);
+  assert.equal(
+    bridge.notes.some((n) => n.method === "turn/completed"),
+    false,
+  );
+  const messages = (await sdkInputs(bridge)).slice(1);
+  assert.equal(messages.length, input.length);
+  for (const [index, message] of messages.entries()) {
+    const synthetic = origins[index] === "studio_event";
+    assert.deepEqual(
+      message.origin,
+      synthetic ? { kind: "task-notification" } : undefined,
+    );
+    assert.equal(message.isSynthetic, synthetic ? true : undefined);
+    assert.equal(message.text_not_typed, synthetic ? true : undefined);
+  }
+  await end(bridge);
+  assert.equal((await completed(bridge, turn)).params.turn.status, "completed");
+});
+
+test.concurrent("a failed split prefix closes its query without submitting the remaining parts", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const turn = (
     await bridge.call("turn/start", {
@@ -405,16 +410,11 @@ test("a failed split prefix closes its query without submitting the remaining pa
   assert.equal(messages[0].message.content[0].text, "prefix-fail");
 });
 
-async function nativeQueued(bridge) {
-  const deadline = Date.now() + HANG_GUARD_MS;
-  while (!existsSync(path.join(bridge.root, ".native-queued"))) {
-    if (Date.now() > deadline)
-      throw new Error("Native queue did not receive input");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
+const nativeQueued = (bridge) => marker(bridge, ".native-queued");
 
-test("Stop cancels input held in Claude's native queue without closing the query", async () => {
+test.concurrent("Stop cancels input held in Claude's native queue without closing the query", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const turn = await running(bridge, "native-queue");
   await steer(bridge, turn, "studio:correction");
@@ -445,7 +445,9 @@ test("Stop cancels input held in Claude's native queue without closing the query
   assert.equal(ack(bridge, "studio:correction"), undefined);
 });
 
-test("Stop returns surviving native input with its exact Studio identity", async () => {
+test.concurrent("Stop returns surviving native input with its exact Studio identity", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const turn = await running(bridge, "native-survivor");
   await steer(bridge, turn, "studio:survivor");
@@ -462,7 +464,9 @@ test("Stop returns surviving native input with its exact Studio identity", async
   assert.equal(existsSync(path.join(bridge.root, ".stopped-tasks")), false);
 });
 
-test("Stop without an active turn leaves the query unchanged", async () => {
+test.concurrent("Stop without an active turn leaves the query unchanged", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const turn = await running(bridge, "hold");
   await end(bridge);
@@ -477,7 +481,9 @@ test("Stop without an active turn leaves the query unchanged", async () => {
   assert.deepEqual(await inputs(bridge), ["hold", "probe"]);
 });
 
-test("a background task error preserves the successful queue cancellation receipt", async () => {
+test.concurrent("a background task error preserves the successful queue cancellation receipt", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const turn = await running(bridge, "native-queue");
   await steer(bridge, turn, "studio:cancel-with-task-error");
@@ -501,7 +507,9 @@ for (const scenario of [
   "native-split-tail",
   "native-split-survivor",
 ]) {
-  test(`Stop settles a mixed input atomically: ${scenario}`, async () => {
+  test.concurrent(`Stop settles a mixed input atomically: ${scenario}`, async ({
+    startBridge,
+  }) => {
     const bridge = await startBridge();
     const turn = await running(bridge, scenario);
     const identity = "studio:mixed-stop";
@@ -556,13 +564,8 @@ for (const scenario of [
   });
 }
 
-async function marker(bridge, name) {
-  const deadline = Date.now() + HANG_GUARD_MS;
-  while (!existsSync(path.join(bridge.root, name))) {
-    if (Date.now() > deadline) throw new Error(name + " missing");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
+const marker = (bridge, name) =>
+  bridge.advanceUntil(() => existsSync(path.join(bridge.root, name)));
 const release = (bridge, name) =>
   fs.writeFile(path.join(bridge.root, name), "");
 const turnItems = async (bridge, turn) =>
@@ -573,7 +576,9 @@ const turnItems = async (bridge, turn) =>
     })
   ).thread.turns.find((t) => t.id === turn).items;
 
-test("a successful result without a steer echo completes without resending unknown input", async () => {
+test.concurrent("a successful result without a steer echo completes without resending unknown input", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const turn = await running(bridge, "pulled");
   await steer(bridge, turn, "missing-echo");
@@ -595,7 +600,9 @@ test("a successful result without a steer echo completes without resending unkno
   assert.equal(ack(bridge, "missing-echo"), undefined);
 });
 
-test("Stop finalizes an idle Claude turn with a deferred successful result", async () => {
+test.concurrent("Stop finalizes an idle Claude turn with a deferred successful result", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge({
     STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "60000",
   });
@@ -604,16 +611,19 @@ test("Stop finalizes an idle Claude turn with a deferred successful result", asy
   await read(bridge, "steer text");
   await end(bridge);
   await marker(bridge, ".result-sent");
-  await bridge.call("turn/interrupt", {
+  const stopping = bridge.call("turn/interrupt", {
     threadId: bridge.thread,
     turnId: turn,
   });
   const done = await completed(bridge, turn);
+  await stopping;
   assert.equal(done.params.turn.status, "interrupted");
   assert.equal(done.params.turn.unappliedSteers, undefined);
 });
 
-test("an echo inside the grace keeps its continuation in the same turn", async () => {
+test.concurrent("an echo inside the grace keeps its continuation in the same turn", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge({
     STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "60000",
   });
@@ -632,7 +642,9 @@ test("an echo inside the grace keeps its continuation in the same turn", async (
   );
 });
 
-test("a successful result withdraws unread steer once for original-identity redelivery", async () => {
+test.concurrent("a successful result withdraws unread steer once for original-identity redelivery", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   const turn = await running(bridge, "unread-result");
   await steer(bridge, turn, "unread-steer");
@@ -666,7 +678,9 @@ test("a successful result withdraws unread steer once for original-identity rede
   );
 });
 
-test("Stop during a blocked final save cannot disable the next turn's Stop deadline", async () => {
+test.concurrent("Stop during a blocked final save cannot disable the next turn's Stop deadline", async ({
+  startBridge,
+}) => {
   const sdk = FAKE_SDK.replace(
     "import fs from 'node:fs';",
     String.raw`
@@ -677,7 +691,7 @@ fsp.appendFile = async(file, data, ...args) => {
  const value = await append(file, data, ...args), cwd = process.cwd();
  if(fs.existsSync(cwd+'/.hold-final-save') && String(data).includes('completed') && !fs.existsSync(cwd+'/.final-save-held')) {
   fs.writeFileSync(cwd+'/.final-save-held','');
-  while(!fs.existsSync(cwd+'/.release-final-save'))await new Promise(r=>setTimeout(r,5));
+  await waitForFile(cwd+'/.release-final-save');
  }
  return value;
 };`,
@@ -712,7 +726,7 @@ fsp.appendFile = async(file, data, ...args) => {
   await completed(bridge, turn);
   await release(bridge, ".release");
   // Let the first turn's stale deadline expire before starting another turn.
-  await new Promise((resolve) => setTimeout(resolve, 250));
+  await bridge.advanceTime(250);
   await release(bridge, ".ignore-interrupt");
   const next = await running(bridge, "running-ignore");
   await read(bridge, "running-ignore");
@@ -753,7 +767,9 @@ function historySdk(mode) {
     );
 }
 
-test("grace closes an unconfirmed CLI before a new start can inherit its late result", async () => {
+test.concurrent("grace closes an unconfirmed CLI before a new start can inherit its late result", async ({
+  startBridge,
+}) => {
   const sdk = FAKE_SDK.replace(
     "close(){abort.abort();}",
     "close(){fs.writeFileSync(cwd+'/.closed','');abort.abort();}",
@@ -804,7 +820,9 @@ test("grace closes an unconfirmed CLI before a new start can inherit its late re
 });
 
 for (const mode of ["empty", "partial", "all"]) {
-  test(`settings succeeds after grace-close settles a partially read batch: history=${mode}`, async () => {
+  test.concurrent(`settings succeeds after grace-close settles a partially read batch: history=${mode}`, async ({
+    startBridge,
+  }) => {
     const sdk = historySdk(mode)
       .replace(
         "if(text==='pulled')await read();",
@@ -885,7 +903,9 @@ for (const mode of ["empty", "partial", "all"]) {
 }
 
 for (const echoed of [false, true]) {
-  test(`turn/start retry preserves a completed auto-steer receipt: echoed=${echoed}`, async () => {
+  test.concurrent(`turn/start retry preserves a completed auto-steer receipt: echoed=${echoed}`, async ({
+    startBridge,
+  }) => {
     const bridge = await startBridge();
     const turn = await running(bridge, echoed ? "ack" : "pulled");
     const request = {
@@ -914,7 +934,9 @@ for (const echoed of [false, true]) {
   });
 }
 
-test("backpressured output waits for the prior turn's final save", async () => {
+test.concurrent("backpressured output waits for the prior turn's final save", async ({
+  startBridge,
+}) => {
   const sdk = FAKE_SDK.replace(
     "import fs from 'node:fs';",
     String.raw`
@@ -925,7 +947,7 @@ fsp.appendFile = async(file, data, ...args) => {
  const value = await append(file, data, ...args), cwd = process.cwd();
  if(fs.existsSync(cwd+'/.hold-final-save') && String(data).includes('completed') && !fs.existsSync(cwd+'/.final-save-held')) {
   fs.writeFileSync(cwd+'/.final-save-held','');
-  while(!fs.existsSync(cwd+'/.release-final-save'))await new Promise(r=>setTimeout(r,5));
+  await waitForFile(cwd+'/.release-final-save');
  }
  return value;
 };
@@ -964,7 +986,9 @@ Object.defineProperty(process.stdout, 'writableLength', {configurable:true, get(
   await completed(bridge, answer.params.turnId);
 });
 
-test("a throwing CLI close still completes the turn and preserves unknown input", async () => {
+test.concurrent("a throwing CLI close still completes the turn and preserves unknown input", async ({
+  startBridge,
+}) => {
   const sdk = FAKE_SDK.replace(
     "close(){abort.abort();}",
     "close(){if(fs.existsSync(cwd+'/.throw-close')&&!fs.existsSync(cwd+'/.close-thrown')){fs.writeFileSync(cwd+'/.close-thrown','');throw Error('injected close failure');}abort.abort();}",
@@ -993,7 +1017,9 @@ test("a throwing CLI close still completes the turn and preserves unknown input"
   );
 });
 
-test("bridge request and notification guards are disposed after settlement", async () => {
+test("bridge request and notification guards are disposed after settlement", async ({
+  startBridge,
+}) => {
   const bridge = await startBridge();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {

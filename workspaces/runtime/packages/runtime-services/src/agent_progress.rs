@@ -165,7 +165,7 @@ pub(crate) fn assignments(connection: &Connection, agent_id: &str) -> StoreResul
 
 /// Publish the owner after a managed-command write, including output-only updates.
 pub(crate) fn publish_owner(transaction: &Transaction<'_>, agent_id: &str) -> StoreResult<()> {
-    use studio_runtime_store::{AgentId, AgentRepository, SyncDocumentsRepository};
+    use studio_runtime_store::{AgentId, AgentRepository};
     let Some(agent) = AgentRepository::get(transaction, &AgentId::from(agent_id))? else {
         return Ok(());
     };
@@ -174,7 +174,13 @@ pub(crate) fn publish_owner(transaction: &Transaction<'_>, agent_id: &str) -> St
     let context =
         crate::sync_entity_context::agent_view_context(transaction, &record, server_id.as_deref())?;
     if let Some(view) = crate::sync_views::agent_entity_view(&record, &context) {
-        SyncDocumentsRepository::put_entity(transaction, "agent", agent_id, view, false)?;
+        crate::sync_policy::publish_agent_projection(
+            transaction,
+            agent_id,
+            view,
+            false,
+            &|_, _, _, _| true,
+        )?;
     }
     Ok(())
 }

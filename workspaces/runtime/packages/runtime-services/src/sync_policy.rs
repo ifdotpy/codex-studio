@@ -42,6 +42,9 @@ pub const EVENT_WINDOW_ROWS: usize = 200;
 const SYNC_SEEDED_MARKER: &str = "seeded";
 const AGENT_ORGANIZATION_FIELDS_MARKER: &str = "agent_organization_fields";
 const AGENT_ORGANIZATION_FIELDS_VERSION: i64 = 3;
+use studio_runtime_store::{
+    AGENT_PROJECTIONS_SEED_MARKER, CONVERSATION_DETAILS_SEED_MARKER, SUMMARY_ENTITIES_SEED_MARKER,
+};
 
 /// Whether Python's durable seed and entity-view upgrade markers prove the
 /// persisted sync projection is complete. Legacy behavior: codex_sync_entities.seed.
@@ -67,6 +70,21 @@ pub fn has_complete_entity_seed(connection: &Connection) -> StoreResult<bool> {
     if !complete {
         return Ok(false);
     }
+    complete &= connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
+        [SUMMARY_ENTITIES_SEED_MARKER],
+        |row| row.get::<_, bool>(0),
+    )?;
+    complete &= connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
+        [CONVERSATION_DETAILS_SEED_MARKER],
+        |row| row.get::<_, bool>(0),
+    )?;
+    complete &= connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
+        [AGENT_PROJECTIONS_SEED_MARKER],
+        |row| row.get::<_, bool>(0),
+    )?;
     let table_exists = |name: &str| {
         connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
@@ -85,6 +103,11 @@ pub fn has_complete_entity_seed(connection: &Connection) -> StoreResult<bool> {
         complete &= task_window.as_deref() == Some("1");
     }
     if table_exists("runtime_events")? {
+        if table_exists("runtime_agents")? {
+            complete &= !connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_agents a WHERE a.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM sync_entities q WHERE q.collection='queue' AND q.id=a.id AND q.deleted=0))", [], |row| row.get::<_, bool>(0),
+            )?;
+        }
         let event_window = connection
             .query_row(
                 "SELECT value FROM sync_entity_meta WHERE key='event_window_seq'",
@@ -335,6 +358,16 @@ pub fn maintain_entity_projections_with_server_id(
             &validate_projection,
         )
     })?;
+    if table_exists(transaction, "user_terminals")? {
+        for terminal in studio_runtime_store::TerminalsRepository::list(transaction)? {
+            if let Some(id) = terminal.get("id").and_then(Value::as_str) {
+                crate::terminal_driver::publish_terminal(transaction, id)?;
+            }
+        }
+    }
+    for (id, _) in peer_agents {
+        crate::queue_write::publish_queue(transaction, id)?;
+    }
     let mut current_rooms = BTreeSet::new();
     crate::diagnostics::measure_runtime_stage("projection.direct_entities", || {
         for (table, collection) in [
@@ -433,6 +466,15 @@ pub fn maintain_entity_projections_with_server_id(
     crate::diagnostics::measure_runtime_stage("projection.event_window", || {
         maintain_event_window(transaction, &validate_projection)
     })?;
+    transaction.execute(
+        "INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES(?1,'1')",
+        [AGENT_PROJECTIONS_SEED_MARKER],
+    )?;
+    seed_summary_entities(transaction)?;
+    transaction.execute(
+        "INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES(?1,'1')",
+        [CONVERSATION_DETAILS_SEED_MARKER],
+    )?;
     crate::diagnostics::measure_runtime_stage("projection.canvas_chat_entities", || {
         maintain_canvas_chat_entities(transaction, &validate_projection)
     })?;
@@ -615,6 +657,150 @@ pub fn publish_entity_changes(
     Ok(())
 }
 
+/// Publish bounded receipt, plan and annotation DTOs at their source commit.
+/// Receipt materialization has the same owner as the explicit recovery read.
+pub(crate) fn publish_summary_changes(
+    transaction: &Transaction<'_>,
+    pending: &studio_runtime_store::PendingEntities,
+) -> StoreResult<()> {
+    for (id, raw) in records_by_id(transaction, "runtime_tasks", &pending.tasks)? {
+        let task: Value = serde_json::from_str(&raw)?;
+        let prior: Option<String> = transaction
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='task' AND id=?1 AND deleted=0",
+                [&id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let prior = prior
+            .map(|raw| serde_json::from_str::<Value>(&raw))
+            .transpose()?;
+        maintain_task_window_after_write(
+            transaction,
+            prior.as_ref().and_then(|payload| payload.get("value")),
+            &task,
+            &|_, _, _, _| true,
+        )?;
+    }
+    for (collection, table, ids) in [
+        ("plan", "runtime_plans", &pending.plans),
+        ("annotation", "runtime_annotations", &pending.annotations),
+    ] {
+        for (id, raw) in records_by_id(transaction, table, ids)? {
+            publish_direct(transaction, collection, &id, &raw, &|_, _, _, _| true)?;
+        }
+    }
+    let mut events = pending.receipt_events.clone();
+    for id in &pending.receipt_items {
+        let Some(item) = studio_runtime_store::system_reads::get(transaction, "runtime_items", id)?
+        else {
+            continue;
+        };
+        let agent: String =
+            transaction.query_row("SELECT agent FROM runtime_items WHERE id=?1", [id], |row| {
+                row.get(0)
+            })?;
+        if let Some(event_id) = id.strip_prefix(&format!("{agent}:")) {
+            events.insert(event_id.to_owned());
+        }
+        for input in item
+            .get("inputs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if input["kind"] == "user"
+                && let Some(id) = input["id"].as_str()
+            {
+                events.insert(id.to_owned());
+            }
+        }
+        let mut statement = transaction.prepare_cached(
+            "SELECT id FROM runtime_event_meta WHERE json_extract(record,'$.transcriptItemId')=?1",
+        )?;
+        for event in statement.query_map([id], |row| row.get::<_, String>(0))? {
+            events.insert(event?);
+        }
+    }
+    if events.is_empty() {
+        return Ok(());
+    }
+    for table in ["runtime_agents", "runtime_event_meta", "runtime_items"] {
+        if !table_exists(transaction, table)? {
+            return Ok(());
+        }
+    }
+    for id in events {
+        let agent = transaction
+            .query_row(
+                "SELECT e.agent FROM runtime_events e JOIN runtime_agents a ON a.id=e.agent \
+             WHERE e.id=?1 AND e.kind='user' AND a.deleted_at IS NULL",
+                [&id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(agent) = agent else {
+            continue;
+        };
+        let response = crate::coordination_reads::delivery_receipts(
+            transaction,
+            &agent,
+            std::slice::from_ref(&id),
+        )
+        .map_err(|_| StoreError::RecordContract("message receipt projection failed"))?;
+        for mut receipt in response["items"].as_array().into_iter().flatten().cloned() {
+            receipt["agent"] = json!(agent);
+            if let Some(projected) = project_persisted_record("messageReceipt", &receipt) {
+                put_projection(
+                    transaction,
+                    "messageReceipt",
+                    &id,
+                    projected,
+                    false,
+                    &|_, _, _, _| true,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Seed pre-existing rows once after the summary contract is installed. Normal
+/// pulls and unrelated writes never reconstruct these collections.
+fn seed_summary_entities(transaction: &Transaction<'_>) -> StoreResult<()> {
+    if transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
+        [SUMMARY_ENTITIES_SEED_MARKER],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Ok(());
+    }
+    let mut pending = studio_runtime_store::PendingEntities::default();
+    for (table, ids) in [
+        ("runtime_plans", &mut pending.plans),
+        ("runtime_annotations", &mut pending.annotations),
+    ] {
+        if table_exists(transaction, table)? {
+            for (id, _) in stored_record_rows(transaction, table)? {
+                ids.insert(id);
+            }
+        }
+    }
+    if table_exists(transaction, "runtime_events")? {
+        let mut statement =
+            transaction.prepare("SELECT id FROM runtime_events WHERE kind='user'")?;
+        for id in statement.query_map([], |r| r.get::<_, String>(0))? {
+            pending.receipt_events.insert(id?);
+        }
+    }
+    publish_summary_changes(transaction, &pending)?;
+    transaction.execute(
+        "INSERT INTO sync_entity_meta(key,value) VALUES(?1,'1')",
+        [SUMMARY_ENTITIES_SEED_MARKER],
+    )?;
+    Ok(())
+}
+
 /// The writer-local agent record generation, advanced by runtime_agents triggers.
 pub(crate) fn agent_record_generation(transaction: &Transaction<'_>) -> StoreResult<i64> {
     Ok(transaction.query_row(
@@ -706,18 +892,54 @@ fn publish_agents(
     )?
     .0;
     for &(id, record) in agents {
+        match crate::sync_views::retained_worktree_entity(record) {
+            Some(value) => {
+                put_projection(transaction, "retainedWorktree", id, value, false, validate)?
+            }
+            None => retire_if_live(transaction, "retainedWorktree", id, validate)?,
+        }
         if truthy(record.get("deletedAt")) {
-            retire_if_live(transaction, "agent", id, validate)?;
+            for collection in ["agentSummary", "agentDetail", "agent"] {
+                retire_if_live(transaction, collection, id, validate)?;
+            }
             continue;
         }
         let context = contexts.get(id).ok_or(StoreError::RecordContract(
             "agent projection context snapshot is incomplete",
         ))?;
         if let Some(projected) = agent_entity_view(record, context) {
-            put_projection(transaction, "agent", id, projected, false, validate)?;
+            publish_agent_projection(transaction, id, projected, false, validate)?;
         }
     }
     Ok(())
+}
+
+/// The single publication owner for the list and open-chat projections. Both
+/// writes share the source transaction. The legacy DTO remains for explicit
+/// mutation envelopes until their consumers migrate; view-scoped streams exclude it.
+pub(crate) fn publish_agent_projection(
+    transaction: &Transaction<'_>,
+    id: &str,
+    view: Value,
+    deleted: bool,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    for collection in ["agentSummary", "agentDetail"] {
+        let projected = if deleted {
+            json!({})
+        } else {
+            project_persisted_record(collection, &view)
+                .ok_or(StoreError::RecordContract("agent projection has no id"))?
+        };
+        put_projection(transaction, collection, id, projected, deleted, validate)?;
+    }
+    let mut compatibility = view;
+    if let Some(fields) = compatibility.as_object_mut() {
+        for field in crate::sync_views::AGENT_SUMMARY_ATTENTION_FIELDS {
+            fields.remove(field);
+        }
+    }
+    put_projection(transaction, "agent", id, compatibility, deleted, validate)
 }
 
 /// Publish one request, rule or work row; only pending requests stay live.
@@ -729,6 +951,16 @@ fn publish_direct(
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
     let record = serde_json::from_str::<Value>(raw)?;
+    if collection == "request" {
+        let question = crate::questions_reads::question_history_entity(raw)
+            .map_err(|_| StoreError::RecordContract("invalid question history entity"))?;
+        match question {
+            Some(value) => {
+                put_projection(transaction, "questionHistory", id, value, false, validate)?
+            }
+            None => retire_if_live(transaction, "questionHistory", id, validate)?,
+        }
+    }
     if collection == "request" && record.get("status").and_then(Value::as_str) != Some("pending") {
         return retire_if_live(transaction, collection, id, validate);
     }
@@ -3019,6 +3251,20 @@ mod tests {
         let (_root, store) = task_window_store().await;
         store
             .transaction(|transaction| {
+                // Start at the production history boundary so every completed insert
+                // exercises eviction, without hundreds of below-boundary rebuilds.
+                for index in 0..TASK_WINDOW_HISTORY_ROWS {
+                    let id = format!("history-{index}");
+                    transaction.execute(
+                        "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
+                        rusqlite::params![
+                            id,
+                            json!({"id":id,"agent":"a","status":"completed","created":index})
+                                .to_string()
+                        ],
+                    )?;
+                }
+                maintain_task_window(transaction, &|_, _, _, _| true)?;
                 // Deterministic xorshift sequence; `created` is unique per task.
                 let mut state = 0x9E37_79B9_7F4A_7C15_u64;
                 let mut next = move |bound: u64| {
@@ -3028,10 +3274,11 @@ mod tests {
                     state % bound
                 };
                 let mut created = BTreeMap::<u64, u64>::new();
-                // This fixed stream crosses the history window at write 274.
-                for step in 0..300_u64 {
-                    let index = next(170);
-                    let created = *created.entry(index).or_insert_with(|| step * 7 + 1);
+                for step in 0..32_u64 {
+                    let index = next(12);
+                    let created = *created
+                        .entry(index)
+                        .or_insert_with(|| TASK_WINDOW_HISTORY_ROWS as u64 + step * 7 + 1);
                     let status = ["running", "completed", "failed", "completed"][next(4) as usize];
                     let agent = ["a", "b"][next(2) as usize];
                     let task = json!({
@@ -3044,6 +3291,10 @@ mod tests {
                     let full = live_task_projection(transaction);
                     assert_eq!(full, incremental, "step {step} write {task}");
                 }
+                assert!(
+                    !live_task_projection(transaction).contains_key("history-0"),
+                    "random completed writes evict the oldest history row"
+                );
                 Ok(())
             })
             .await

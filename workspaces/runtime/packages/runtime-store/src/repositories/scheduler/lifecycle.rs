@@ -2296,10 +2296,13 @@ pub(super) fn disconnect_agent(
             .and_then(Value::as_str)
             .is_some_and(|v| !v.is_empty())
         && restart_input_events_valid(transaction, &agent.id.0, epoch, &attempt["events"])?;
+    // `supervisor` is the attempt's supervisor identity, or null when it has
+    // none. The connection generation stays in `startAttempt`, which recovery
+    // scope matching reads; a generation alone identifies no supervisor.
     let receipt = json!({"epoch":epoch,"accountKey":agent.extra.get("accountKey").unwrap_or(&json!("default")),
         "threadId":agent.extra.get("threadId"),"turnId":turn,"startAttempt":attempt,
         "connectionId":agent.extra.get("connectionId"),"autoWake":agent.extra.get("autoWake"),
-        "supervisor":attempt.get("supervisorIdentity").cloned().unwrap_or_else(||json!({"generation":attempt["connectionGeneration"]})),"at":at});
+        "supervisor":attempt["supervisorIdentity"],"at":at});
     if !agent
         .extra
         .get("disconnectRecovery")
@@ -3047,13 +3050,9 @@ mod tests;
 #[cfg(test)]
 mod account_scope_tests {
     /// Account-scoped agent reads search the account index instead of scanning agents.
-    #[tokio::test]
-    async fn account_agents_search_the_account_scope_index() {
-        let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = crate::RuntimeStore::open(Some(directory.path()))
-            .await
-            .expect("open runtime store");
-        let reader = store.test_reader().expect("reader");
+    #[test]
+    fn account_agents_search_the_account_scope_index() {
+        let reader = crate::fresh_state::test_canvas();
         let plan = reader
             .prepare(&format!(
                 "EXPLAIN QUERY PLAN {}",

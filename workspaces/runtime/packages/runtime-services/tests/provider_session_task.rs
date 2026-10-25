@@ -432,6 +432,87 @@ done"#
     });
 }
 
+/// A requested shutdown keeps the provider's whole exit tail even when the
+/// account has stopped consuming events and every bounded lane is full. In the
+/// live incident streamed deltas filled the lanes and the bridge's final
+/// `turn/completed`, written on stdin EOF, was lost behind them.
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_keeps_the_stdout_tail_beyond_full_lanes_in_order() {
+    use studio_runtime_process::provider_stdio::StdioProviderTaskFactory;
+
+    const HANG_GUARD: Duration = Duration::from_secs(10);
+    // Exceed the session's unsettled horizon and both bounded lanes.
+    const DELTAS: usize = MAX_UNSETTLED + 2 * LANE_CAPACITY + 1;
+    let root = tempfile::tempdir().unwrap();
+    let script = format!(
+        r#"IFS= read -r initialize
+printf '{{"id":"attachment-1:1","result":{{}}}}\n'
+IFS= read -r initialized
+index=0
+while [ "$index" -lt {DELTAS} ]; do
+    printf '{{"method":"fixture/delta","index":%s}}\n' "$index"
+    index=$((index + 1))
+done
+cat >/dev/null
+printf '{{"method":"fixture/completed"}}\n'"#
+    );
+    tokio::time::timeout(HANG_GUARD, async {
+        let factory = Arc::new(StdioProviderTaskFactory {
+            deadline: None,
+            max_frame_bytes: 1024,
+            max_output_bytes: None,
+            stderr_log: None,
+        });
+        let mut opts = options();
+        opts.launch = ProviderLaunchSpec::new(
+            vec!["/bin/sh".into(), "-c".into(), script],
+            BTreeMap::new(),
+            root.path().to_path_buf(),
+        );
+        let mut cfg = config();
+        cfg.timeout_ms = HANG_GUARD.as_millis() as u64;
+        let mut session = SessionHandle::open(
+            factory,
+            ProviderHandle::for_account("stdio-shutdown-tail"),
+            opts,
+            cfg,
+        )
+        .await
+        .unwrap();
+        status(&mut session, InitializationStatus::Ready).await;
+        // Nothing consumes or settles events, like the stopped account worker.
+        let exit = session.shutdown().await;
+        let mut retained = vec![];
+        while let Ok(event) = session.events.try_recv() {
+            retained.extend(event.journal);
+        }
+        for event in exit.undelivered {
+            retained.extend(event.journal);
+        }
+        assert_eq!(retained.len(), DELTAS + 2, "every frame is retained");
+        for (index, entry) in retained.iter().enumerate() {
+            assert_eq!(entry.cursor, EventCursor(index as u64 + 1));
+        }
+        for (index, entry) in retained[1..=DELTAS].iter().enumerate() {
+            let JournalPayload::Frame(Frame::UnknownMethod(frame)) = &entry.payload else {
+                panic!("expected a delta fixture notification");
+            };
+            assert_eq!(frame.fields.get("index"), Some(&json!(index)));
+        }
+        let JournalPayload::Frame(Frame::UnknownMethod(last)) = &retained[DELTAS + 1].payload
+        else {
+            panic!("expected the completed fixture notification");
+        };
+        assert_eq!(last.method, "fixture/completed");
+        let adapter = exit.adapter.expect("real stdio adapter completion");
+        assert!(adapter.result.is_ok(), "{:?}", adapter.result);
+        assert!(adapter.cleanup_error.is_none());
+    })
+    .await
+    .expect("stdio shutdown tail hang guard");
+}
+
 #[tokio::test(start_paused = true)]
 async fn initialization_requires_reply_and_written_notification_receipt() {
     let (mut session, mut peer) = open().await;
@@ -1414,6 +1495,61 @@ async fn review_shutdown_retains_adapter_buffered_journal() {
         16,
         "shutdown discarded buffered journal envelopes"
     );
+}
+
+/// A request reply that only reaches the shutdown tail still resolves its
+/// request, and the exit does not also report the request as unknown. Before
+/// this, the tail's `turn/started` was applied while its `turn/start` reply
+/// was not: the start was neither accepted nor unknown, and the restart that
+/// followed left the in-flight turn interrupted without auto-wake.
+#[tokio::test(start_paused = true)]
+async fn shutdown_tail_reply_resolves_its_request_instead_of_unknown() {
+    let (mut session, mut peer) = open().await;
+    ready(&mut session, &mut peer).await;
+    let ticket = session
+        .control
+        .submit(session.control.prepare(spec(2, 60_000)).await.unwrap())
+        .await
+        .unwrap();
+    written(write(&mut peer).await);
+    session.events.recv().await.unwrap();
+    // The consumer stopped reading: the session lane and its pending slot
+    // fill, so the reply stays in the attachment journal until shutdown.
+    for cursor in 1..=(LANE_CAPACITY as u64 + 1) {
+        peer.events
+            .send(entry(cursor, 0, JournalPayload::Stderr(json!({}))))
+            .await
+            .unwrap();
+    }
+    let reply_cursor = LANE_CAPACITY as u64 + 2;
+    peer.events
+        .send(entry(
+            reply_cursor,
+            0,
+            JournalPayload::Frame(reply(ticket.id.clone())),
+        ))
+        .await
+        .unwrap();
+    let exit = session.checked_shutdown().await;
+    let tail = exit
+        .undelivered
+        .iter()
+        .find(|event| {
+            event
+                .journal
+                .as_ref()
+                .is_some_and(|journal| journal.cursor == EventCursor(reply_cursor))
+        })
+        .expect("the reply is part of the shutdown tail");
+    assert!(tail.outcomes.iter().any(|outcome| matches!(
+        outcome,
+        SessionOutcome::Resolved { ticket: seen, outcome: RequestOutcome::Reply { late: false, .. } }
+            if *seen == ticket
+    )));
+    assert!(!exit.outcomes.iter().any(|outcome| matches!(
+        outcome,
+        SessionOutcome::Resolved { ticket: seen, .. } if *seen == ticket
+    )));
 }
 
 #[tokio::test(start_paused = true)]

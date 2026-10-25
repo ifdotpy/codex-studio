@@ -39,6 +39,7 @@ export default function RadioChat({
   setDraft,
   refresh,
   notify,
+  visible = true,
 }: {
   room: Room;
   data: Snapshot;
@@ -47,6 +48,7 @@ export default function RadioChat({
   setDraft: (text: string) => void;
   refresh: () => Promise<void>;
   notify: (message: string) => void;
+  visible?: boolean;
 }) {
   const { post, save, saved } = useServerApi();
 
@@ -63,7 +65,14 @@ export default function RadioChat({
   const members = (room.members || [])
     .map((id) => data.threads.find((a) => a.id === id))
     .filter((a) => !!a);
-  const messages = useMessages(room.id, "room", false, data.stateDir);
+  const messages = useMessages(
+    room.id,
+    "room",
+    false,
+    data.stateDir,
+    "",
+    visible,
+  );
   const { scroll, content, onScroll } = useConversationScroll(
     room.id,
     messages.loaded,

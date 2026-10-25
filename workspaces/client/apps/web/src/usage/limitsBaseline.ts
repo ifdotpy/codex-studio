@@ -1,4 +1,4 @@
-import type { ResourceVersion } from "../sync/resourceEvents";
+import type { ResourceVersion } from "../sync/subscriptions/events";
 import { limitsHydrationSucceeded } from "./accountUsage";
 import type { AccountLimitsSnapshot } from "./accountUsage";
 

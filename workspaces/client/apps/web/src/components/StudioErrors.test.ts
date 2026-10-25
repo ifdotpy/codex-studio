@@ -5,6 +5,8 @@ import { expect, test } from "vitest";
 import {
   StudioErrorList,
   actionLabel,
+  StudioErrorsProvider,
+  useStudioErrors,
   type StudioErrorItem,
 } from "./StudioErrors";
 
@@ -43,7 +45,10 @@ function render(items: StudioErrorItem[]) {
         items,
         busy: null,
         onAction: () => undefined,
-        onDismiss: () => undefined,
+        selected: new Set<string>(),
+        onSelect: () => undefined,
+        onSelectAll: () => undefined,
+        onDelete: () => undefined,
       }),
     ),
   );
@@ -55,7 +60,7 @@ test("each row shows its reason and one safe action", () => {
   expect(markup).toContain("Studio does not run it again.");
   expect(markup).toContain("cargo test");
   expect(markup).toContain('data-kind="monitor_outcome_lost"');
-  expect(markup).toContain("Dismiss");
+  expect(markup).toContain("Delete selected");
   expect(actionLabel(lost)).toBe("Open");
   expect(actionLabel(disconnected)).toBe("Resume");
 });
@@ -64,4 +69,31 @@ test("an empty list says that nothing needs the owner", () => {
   expect(render([])).toContain(
     "No agent work ended because of a Studio error.",
   );
+});
+
+test("rows provide named checkboxes and bulk controls", () => {
+  const markup = render([lost, disconnected]);
+  expect(markup).toContain('type="checkbox"');
+  expect(markup).toContain(`Select error ${lost.id} for Fixture worker`);
+  expect(markup).toContain("Select all");
+  expect(markup).toMatch(/<button[^>]*disabled[^>]*>[^]*?Delete selected/);
+});
+
+// The warning owner must start from the stream projection, with no HTTP hydration.
+test("the server-scoped warning owner consumes streamed error rows", () => {
+  function Count() {
+    return createElement(
+      "span",
+      null,
+      `Streamed errors: ${useStudioErrors().items.length}`,
+    );
+  }
+  const markup = renderToStaticMarkup(
+    createElement(
+      StudioErrorsProvider,
+      { items: [lost, disconnected] },
+      createElement(Count),
+    ),
+  );
+  expect(markup).toContain("Streamed errors: 2");
 });

@@ -3,11 +3,16 @@
 /**
  * Resolve the port printed by a fixture server, with shared timeout and exit handling.
  * @param {FixtureChild} child
- * @param {{ timeoutMs?: number; label?: string; diagnostics?: () => string }} [options]
+ * @param {{ timeoutMs?: number; label?: string; diagnostics?: () => string; portPattern?: RegExp }} [options]
  */
 export function waitForFixturePort(
   child,
-  { timeoutMs = 30_000, label = "Fixture", diagnostics = () => "" } = {},
+  {
+    timeoutMs = 30_000,
+    label = "Fixture",
+    diagnostics = () => "",
+    portPattern = /^(\d+)$/,
+  } = {},
 ) {
   if (!child.stdout) throw new Error(`${label} fixture has no stdout stream`);
   return new Promise((resolve, reject) => {
@@ -27,7 +32,7 @@ export function waitForFixturePort(
       const newline = output.indexOf("\n");
       if (newline < 0) return;
       const line = output.slice(0, newline).trim();
-      const port = Number(line);
+      const port = Number(line.match(portPattern)?.[1]);
       if (!Number.isInteger(port) || port < 1 || port > 65_535) {
         fail(new Error(`${label} fixture printed an invalid port: ${line}`));
         return;

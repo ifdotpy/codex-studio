@@ -1,3 +1,5 @@
+import { useSubscription } from "./sync/subscriptions";
+import { SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS } from "./generated/sharedValues";
 import {
   useServerApi,
   useServerSync,
@@ -27,8 +29,7 @@ import {
   PROJECTION_DATABASE_RELOAD_MESSAGE,
 } from "./sync/entityCacheStorage";
 import "./sync/transcriptCache";
-import { onResume } from "./sync/resume";
-import { retryableReadError } from "./sync/readRetry";
+import { ReadRecoveryBudget, retryableReadError } from "./sync/readRetry";
 import { agentChatMessages } from "./hooks/agentChatMessages";
 import { drainRoomUpdates } from "./hooks/roomUpdates";
 import {
@@ -209,12 +210,26 @@ export function useSnapshot(
   const credentialRetry = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
-  const credentialFailures = useRef(0);
+  const startupExhausted = useRef(false);
+  const credentialRecovery = useRef(new ReadRecoveryBudget());
+  const retryInitialization = useRef<(() => Promise<void>) | undefined>(
+    undefined,
+  );
   const refresh = useCallback(
     async (
       credentialsOnly = replicated.current,
       onProjection?: (projection: Snapshot, workspaceId: string) => void,
+      resetRecovery = true,
     ): Promise<void> => {
+      if (resetRecovery) {
+        startupExhausted.current = false;
+        credentialRecovery.current = new ReadRecoveryBudget();
+        if (retryInitialization.current) {
+          await retryInitialization.current();
+          return;
+        }
+      }
+      if (credentialRecovery.current.exhaustedError) return;
       clearTimeout(credentialRetry.current);
       credentialRetry.current = undefined;
       const request = ++generation.current;
@@ -243,22 +258,29 @@ export function useSnapshot(
           setData({ ...projection, token: session.token });
         }
         if (request !== generation.current) return;
-        credentialFailures.current = 0;
+        startupExhausted.current = false;
         dispatchProjectionStatus({ type: "startup-recovered" });
       } catch (e) {
         if (request !== generation.current) return;
+        let reported = e;
+        let delay: number | undefined;
+        if (retryableReadError(e)) {
+          try {
+            delay = credentialRecovery.current.nextDelay(e);
+          } catch (exhausted) {
+            reported = exhausted;
+            startupExhausted.current = true;
+          }
+        }
         dispatchProjectionStatus({
           type: "startup-failed",
-          error: errorText(e),
+          error: errorText(reported),
         });
-        // Retry this read without waiting for the healthy 30-second poll. Writes
-        // retain their own receipt rules and never use this retry.
-        const transient = retryableReadError(e);
-        if (transient && !document.hidden && navigator.onLine !== false) {
-          const delay = Math.min(
-            500 * 2 ** Math.min(credentialFailures.current++, 4),
-            8000,
-          );
+        if (
+          delay !== undefined &&
+          !document.hidden &&
+          navigator.onLine !== false
+        ) {
           credentialRetry.current = setTimeout(() => {
             credentialRetry.current = undefined;
             if (
@@ -266,7 +288,7 @@ export function useSnapshot(
               !document.hidden &&
               navigator.onLine !== false
             )
-              void refresh(credentialsOnly);
+              void refresh(credentialsOnly, undefined, false);
           }, delay);
         }
       }
@@ -275,32 +297,42 @@ export function useSnapshot(
   );
   useEffect(() => {
     let stopped = false;
-    let failures = 0;
+    let recovery = new ReadRecoveryBudget();
+    let initialized = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
     const initialize = async () => {
+      if (stopped || recovery.exhaustedError) return;
       let storage: Awaited<ReturnType<typeof syncDatabase>>;
       try {
         storage = await syncDatabase();
       } catch (error) {
         if (stopped) return;
+        let reported = error;
+        let delay: number | undefined;
+        if (retryableReadError(error)) {
+          try {
+            delay = recovery.nextDelay(error);
+          } catch (exhausted) {
+            reported = exhausted;
+            startupExhausted.current = true;
+          }
+        }
         dispatchProjectionStatus({
           type: "startup-failed",
-          error: isProjectionDatabaseClosedError(error)
+          error: isProjectionDatabaseClosedError(reported)
             ? PROJECTION_DATABASE_RELOAD_MESSAGE
-            : errorText(error),
+            : errorText(reported),
         });
-        // Attachments and drafts need the workspace identity. Without a retry, one
-        // failed read at startup kept them refused until the window restarted.
-        retry = setTimeout(
-          () => void initialize(),
-          Math.min(500 * 2 ** Math.min(failures++, 4), 8000),
-        );
+        if (delay !== undefined)
+          retry = setTimeout(() => void initialize(), delay);
         return;
       }
       if (stopped) return;
+      initialized = true;
+      retryInitialization.current = undefined;
       setWorkspaceId(storage.workspaceId);
       try {
-        await refresh(true);
+        await refresh(true, undefined, false);
       } catch (error) {
         if (stopped) return;
         dispatchProjectionStatus({
@@ -318,7 +350,32 @@ export function useSnapshot(
       });
     window.addEventListener("offline", offline);
     if (navigator.onLine === false) offline();
-    const stopResume = onResume(() => void refresh(true));
+    const restart = async () => {
+      clearTimeout(retry);
+      recovery = new ReadRecoveryBudget();
+      startupExhausted.current = false;
+      credentialRecovery.current = new ReadRecoveryBudget();
+      if (initialized) await refresh(true, undefined, false);
+      else await initialize();
+    };
+    retryInitialization.current = restart;
+    let interrupted = false;
+    const stopConnection = watchResourceConnection((status) => {
+      dispatchProjectionStatus({
+        type: "transport-changed",
+        error:
+          status === "degraded"
+            ? "Live updates are reconnecting."
+            : status === "offline"
+              ? "Offline. Live updates will resume when connected."
+              : "",
+      });
+      if (status === "degraded" || status === "offline") interrupted = true;
+      if (status === "live" && interrupted) {
+        interrupted = false;
+        void restart();
+      }
+    });
     void initialize();
     return () => {
       stopped = true;
@@ -326,32 +383,22 @@ export function useSnapshot(
       generation.current++;
       clearTimeout(credentialRetry.current);
       credentialRetry.current = undefined;
-      stopResume();
+      retryInitialization.current = undefined;
+      stopConnection();
       window.removeEventListener("offline", offline);
     };
   }, [refresh]);
-  useEffect(
-    () =>
-      watchResourceConnection((status) => {
-        dispatchProjectionStatus({
-          type: "transport-changed",
-          error:
-            status === "degraded"
-              ? "Live updates are reconnecting."
-              : status === "offline"
-                ? "Offline. Live updates will resume when connected."
-                : "",
-        });
-      }),
-    [],
-  );
   useEffect(
     () =>
       subscribeStateProjection(
         (next) => {
           if (next) {
             replicated.current = true;
-            dispatchProjectionStatus({ type: "data-received" });
+            dispatchProjectionStatus({
+              type: startupExhausted.current
+                ? "projection-recovered"
+                : "data-received",
+            });
             setData({ ...next, token: sessionToken.current });
           }
         },
@@ -473,11 +520,20 @@ export function useMessages(
   managed = false,
   workspace = "",
   syncWorkspaceId = "",
+  enabled = true,
 ) {
   const { syncGet } = useServerApi();
-  const { subscribeTranscriptProjection } = useServerSync();
   const { watchResourceChanges } = useServerResources();
-  const { peekTranscript, subscribeTranscript } = useServerTranscripts();
+  const { peekTranscript } = useServerTranscripts();
+  const transcript = useSubscription(
+    enabled && managed && kind === "agent" && id
+      ? {
+          kind: "transcript",
+          agentId: id,
+          tail: SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS,
+        }
+      : null,
+  );
 
   const scope = JSON.stringify([workspace, syncWorkspaceId, kind, managed, id]);
   const history = useRef(
@@ -878,8 +934,8 @@ export function useMessages(
       return;
     }
     let stopped = false;
-    if (!id) return;
-    if (managed && kind === "agent" && syncWorkspaceId) return;
+    if (!id || !enabled) return;
+    if (managed && kind === "agent") return;
     const resource =
       kind === "room"
         ? ({ kind: "room", roomId: id } as const)
@@ -892,49 +948,37 @@ export function useMessages(
       stopped = true;
       stopWatch();
     };
-  }, [load, id, kind, managed, accept, syncId, scope, syncWorkspaceId]);
+  }, [
+    load,
+    id,
+    kind,
+    managed,
+    accept,
+    syncId,
+    scope,
+    syncWorkspaceId,
+    enabled,
+  ]);
   useEffect(() => {
-    if (!id || kind !== "agent" || !managed) return;
-    let seen = false;
-    return subscribeTranscriptProjection(
-      `transcript:${id}`,
-      (next) => {
-        if (active.current !== scope) return;
-        if (next) {
-          seen = true;
-          syncActive.current = scope;
-          setSyncId(scope);
-          // The shared cache subscription owns transcript updates in this workspace.
-          if (!syncWorkspaceId) accept(next);
-        } else if (seen && !syncWorkspaceId) {
-          accept({
-            items: [],
-            unavailable: "This session is no longer available.",
-            truncated: false,
-          });
-        }
-      },
-      (error) => {
-        if (active.current === scope && seen)
-          setConnection(error === null ? "live" : "reconnecting");
-      },
-    );
-  }, [id, kind, managed, accept, scope, syncWorkspaceId]);
-  useEffect(() => {
-    if (!id || !managed || kind !== "agent" || !syncWorkspaceId) return;
-    return subscribeTranscript(syncWorkspaceId, id, (entry) => {
-      if (active.current !== scope) return;
+    if (!id || !managed || kind !== "agent") return;
+    if (transcript.data !== undefined) {
       syncActive.current = scope;
       setSyncId(scope);
-      accept(
-        entry.payload || {
-          items: [],
-          unavailable: "This session is no longer available.",
-        },
-        entry.seq,
-      );
-    });
-  }, [id, managed, kind, syncWorkspaceId, scope, accept]);
+      accept(transcript.data, peekTranscript(syncWorkspaceId, id)?.seq);
+    }
+    setConnection(transcript.status === "live" ? "live" : "reconnecting");
+    if (transcript.error) setNotice(errorText(transcript.error));
+  }, [
+    id,
+    managed,
+    kind,
+    syncWorkspaceId,
+    scope,
+    accept,
+    transcript.data,
+    transcript.status,
+    transcript.error,
+  ]);
   const fetchPage = async (query: {
     before?: string;
     after?: string;
@@ -955,6 +999,7 @@ export function useMessages(
       const result = await syncGet("/api/transcript/page", {
         query: {
           id,
+          limit: SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS,
           ...(query.before ? { before: query.before } : {}),
           ...(query.after ? { after: query.after } : {}),
           ...(query.around ? { around: query.around } : {}),

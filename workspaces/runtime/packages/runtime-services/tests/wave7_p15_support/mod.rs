@@ -17,8 +17,6 @@ pub struct Port {
     pub probes: Mutex<Vec<(String, i64, String)>>,
     pub starts: Mutex<Vec<(String, f64)>>,
     pub fail_ack: Mutex<bool>,
-    pub fail_ack_gate:
-        Mutex<Option<(Arc<tokio::sync::Notify>, tokio::sync::oneshot::Receiver<()>)>>,
     pub acknowledged: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     pub unknown: Mutex<bool>,
     pub not_sent: Mutex<bool>,
@@ -115,11 +113,6 @@ impl MonitorPort for Port {
         _: &'a Delivery,
     ) -> futures_util::future::BoxFuture<'a, Result<(), MonitorError>> {
         Box::pin(async move {
-            let gate = self.fail_ack_gate.lock().expect("ack gate").take();
-            if let Some((entered, release)) = gate {
-                entered.notify_one();
-                release.await.expect("test releases failed ACK barrier");
-            }
             if std::mem::take(&mut *self.fail_ack.lock().expect("ack")) {
                 return Err(MonitorError::Refused("injected ACK loss"));
             }

@@ -450,6 +450,8 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
   const webDist = join(state, "web-dist");
   await cp(join(root, "workspaces/client/apps/web/dist"), webDist, {
     recursive: true,
+    // This fixture rewrites index.html; stale encoded siblings must not win negotiation.
+    filter: (source) => !/\.(?:br|gz)$/.test(source),
   });
   const indexPath = join(webDist, "index.html");
   const originalIndex = await readFile(indexPath, "utf8");

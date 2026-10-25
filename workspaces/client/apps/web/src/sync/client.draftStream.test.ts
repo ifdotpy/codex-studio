@@ -1,6 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { RxDatabase } from "rxdb";
-import type { ResourceChangeEvent, ResourceVersion } from "./resourceEvents";
+import { firstValueFrom, filter } from "rxjs";
+import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+import type {
+  ResourceChangeEvent,
+  ResourceVersion,
+} from "./subscriptions/events";
 
 const mocks = vi.hoisted(() => ({
   databases: [] as RxDatabase[],
@@ -12,6 +17,8 @@ const mocks = vi.hoisted(() => ({
       _options: unknown,
     ): Promise<import("./client").SyncDocument[]> => [],
   ),
+  pushWait: undefined as (() => void) | undefined,
+  replication: undefined as { awaitInSync: () => Promise<unknown> } | undefined,
   invalidate: undefined as ((version?: ResourceVersion) => void) | undefined,
 }));
 vi.mock("rxdb", async (original) => {
@@ -34,6 +41,28 @@ vi.mock("rxdb/plugins/storage-dexie", async () => ({
   getRxStorageDexie: (await import("rxdb/plugins/storage-memory"))
     .getRxStorageMemory,
 }));
+vi.mock("rxdb/plugins/replication", async (original) => {
+  const actual = await original<typeof import("rxdb/plugins/replication")>();
+  return {
+    ...actual,
+    replicateRxCollection: (
+      ...args: Parameters<typeof actual.replicateRxCollection>
+    ) => {
+      const options = args[0];
+      const waitBeforePersist = options.push?.waitBeforePersist;
+      if (options.push && waitBeforePersist)
+        options.push.waitBeforePersist = () => {
+          const pending = waitBeforePersist();
+          mocks.pushWait?.();
+          return pending;
+        };
+      const replication = actual.replicateRxCollection(...args);
+      mocks.replication = replication;
+      return replication;
+    },
+  };
+});
+
 vi.mock("../api", () => ({
   syncGet: mocks.syncGet,
   syncPost: mocks.syncPost,
@@ -42,9 +71,8 @@ vi.mock("../api", () => ({
   setWorkspace: vi.fn(),
   isApiSchemaMismatch: () => false,
   onMatchingApiSchemaResponse: () => () => {},
-  registerSyncEntityPersister: vi.fn(),
 }));
-vi.mock("./resourceEvents", () => ({
+vi.mock("./subscriptions/events", () => ({
   acknowledgeEntitySequences: vi.fn(),
   watchResourceConnection: () => () => {},
   watchResourceChanges: (
@@ -58,11 +86,19 @@ vi.mock("./resourceEvents", () => ({
 vi.mock("./resume", () => ({ onResume: () => () => {} }));
 
 let stop: (() => Promise<void>) | undefined;
+let releasePendingPush: (() => void) | undefined;
 afterEach(async () => {
-  await stop?.();
+  releasePendingPush?.();
+  releasePendingPush = undefined;
+  const closing = stop?.();
+  if (vi.isFakeTimers()) await vi.runOnlyPendingTimersAsync();
+  await closing;
+  vi.useRealTimers();
   stop = undefined;
   await Promise.all(mocks.databases.map((db) => db.close()));
   mocks.databases = [];
+  mocks.replication = undefined;
+  mocks.pushWait = undefined;
   mocks.syncGet.mockReset();
   mocks.syncPost.mockClear();
   vi.unstubAllGlobals();
@@ -85,11 +121,10 @@ async function setup() {
   stop = await client.startDraftReplication(() => {});
   const { db } = await client.syncDatabase();
   mocks.invalidate?.({ epoch: "one", revision: 0, reason: "initial" });
-  await vi.waitFor(() =>
-    expect(
-      mocks.syncGet.mock.calls.filter(([path]) => path === "/api/sync/pull"),
-    ).toHaveLength(1),
-  );
+  await mocks.replication!.awaitInSync();
+  expect(
+    mocks.syncGet.mock.calls.filter(([path]) => path === "/api/sync/pull"),
+  ).toHaveLength(1);
   const event = (
     after: number,
     through: number,
@@ -120,13 +155,14 @@ async function setup() {
       },
     ],
   });
-  const deliver = async (frame: ResourceChangeEvent) => {
+  const deliver = async (frame: ResourceChangeEvent, wait = true) => {
     mocks.invalidate?.({
       epoch: frame.epoch,
       revision: frame.resourceVersions[0].revision,
       reason: frame.reason,
       draftChanges: frame.resourceVersions[0].draftChanges ?? undefined,
     });
+    if (wait) await mocks.replication!.awaitInSync();
   };
   const pulls = () =>
     mocks.syncGet.mock.calls.filter(([path]) => path === "/api/sync/pull");
@@ -136,30 +172,28 @@ async function setup() {
 it("applies real RxDB draft stream edits and tombstones without pulls, then recovers gaps and reconnects", async () => {
   const { db, event, deliver, pulls } = await setup();
   await deliver(event(0, 1));
-  await vi.waitFor(async () =>
-    expect((await db.drafts.findOne("phone:chat").exec())?.payload).toContain(
-      '"updated":1.5',
-    ),
+  expect((await db.drafts.findOne("phone:chat").exec())?.payload).toContain(
+    '"updated":1.5',
+  );
+  const deleted = firstValueFrom(
+    db.drafts.findOne("phone:chat").$.pipe(filter((doc) => doc === null)),
   );
   await deliver(event(1, 2, true));
-  await vi.waitFor(async () =>
-    expect(!!(await db.drafts.findOne("phone:chat").exec())).toBe(false),
-  );
+  await deleted;
+  expect(!!(await db.drafts.findOne("phone:chat").exec())).toBe(false);
   expect(pulls()).toHaveLength(1);
   await deliver(event(3, 4));
-  await vi.waitFor(() => expect(pulls()).toHaveLength(2));
+  expect(pulls()).toHaveLength(2);
   await deliver({ ...event(0, 2), reason: "reconnect" });
-  await vi.waitFor(() => expect(pulls()).toHaveLength(3));
+  expect(pulls()).toHaveLength(3);
   await deliver({ ...event(0, 2), epoch: "two" });
-  await vi.waitFor(() => expect(pulls()).toHaveLength(4));
+  expect(pulls()).toHaveLength(4);
 });
 
 it("recovers an accepted draft from the durable RxDB checkpoint after persistence fails", async () => {
   const { db, event, deliver, pulls, workspaceId } = await setup();
   await deliver(event(0, 1));
-  await vi.waitFor(async () =>
-    expect(!!(await db.drafts.findOne("phone:chat").exec())).toBe(true),
-  );
+  expect(!!(await db.drafts.findOne("phone:chat").exec())).toBe(true);
   const changed = event(1, 2);
   const documents = changed.resourceVersions[0].draftChanges!.documents;
   documents[0].payload = documents[0].payload.replace("remote", "recovered");
@@ -176,12 +210,16 @@ it("recovers an accepted draft from the durable RxDB checkpoint after persistenc
   const write = vi
     .spyOn(db.drafts.storageInstance, "bulkWrite")
     .mockRejectedValueOnce(new Error("injected stream persistence failure"));
+  const recovered = firstValueFrom(
+    db.drafts
+      .findOne("phone:chat")
+      .$.pipe(filter((doc) => !!doc?.payload.includes("recovered"))),
+  );
   await deliver(changed);
-  await vi.waitFor(() => expect(pulls()).toHaveLength(2));
-  await vi.waitFor(async () =>
-    expect((await db.drafts.findOne("phone:chat").exec())?.payload).toContain(
-      "recovered",
-    ),
+  await recovered;
+  expect(pulls()).toHaveLength(2);
+  expect((await db.drafts.findOne("phone:chat").exec())?.payload).toContain(
+    "recovered",
   );
   expect(pulls()[1][1]).toMatchObject({ query: { scope: "drafts", after: 1 } });
   write.mockRestore();
@@ -190,9 +228,7 @@ it("recovers an accepted draft from the durable RxDB checkpoint after persistenc
 it("admits streamed changes during a pending push and keeps both conflicting texts without pulling", async () => {
   const { db, event, deliver, pulls } = await setup();
   await deliver(event(0, 1));
-  await vi.waitFor(async () =>
-    expect(!!(await db.drafts.findOne("phone:chat").exec())).toBe(true),
-  );
+  expect(!!(await db.drafts.findOne("phone:chat").exec())).toBe(true);
   const remote = event(1, 2);
   const documents = remote.resourceVersions[0].draftChanges!.documents;
   documents[0].payload = JSON.stringify({
@@ -205,7 +241,20 @@ it("admits streamed changes during a pending push and keeps both conflicting tex
   const pendingPush = new Promise<typeof documents>((resolve) => {
     finish = resolve;
   });
-  mocks.syncPost.mockReturnValueOnce(pendingPush);
+  releasePendingPush = () => finish([]);
+  const pushStarted = Promise.withResolvers<void>();
+  const mergePushed = Promise.withResolvers<void>();
+  mocks.syncPost.mockImplementationOnce(() => {
+    pushStarted.resolve();
+    return pendingPush;
+  });
+  mocks.syncPost.mockImplementationOnce(async () => {
+    mergePushed.resolve();
+    return [];
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const firstDebounce = Promise.withResolvers<void>();
+  mocks.pushWait = firstDebounce.resolve;
   const local = await db.drafts.findOne("phone:chat").exec();
   await local!.incrementalPatch({
     payload: JSON.stringify({
@@ -215,11 +264,26 @@ it("admits streamed changes during a pending push and keeps both conflicting tex
       updated: 2,
     }),
   });
-  await vi.waitFor(() => expect(mocks.syncPost).toHaveBeenCalledOnce());
-  await deliver(remote);
+
+  await firstDebounce.promise;
+  await vi.advanceTimersByTimeAsync(DRAFT_SYNC_TIMING_MS.pushMaxWait);
+
+  await pushStarted.promise;
+  expect(mocks.syncPost).toHaveBeenCalledOnce();
+  await deliver(remote, false);
   expect(pulls()).toHaveLength(1);
+  const nextDebounce = Promise.withResolvers<void>();
+  mocks.pushWait = nextDebounce.resolve;
   finish(documents);
-  await vi.waitFor(() => expect(mocks.syncPost).toHaveBeenCalledTimes(2));
+
+  await nextDebounce.promise;
+  await vi.advanceTimersByTimeAsync(DRAFT_SYNC_TIMING_MS.pushMaxWait);
+
+  await mergePushed.promise;
+  vi.useRealTimers();
+
+  await mocks.replication!.awaitInSync();
+  expect(mocks.syncPost).toHaveBeenCalledTimes(2);
   const pushed = mocks.syncPost.mock.calls[1][1];
   const merged = pushed.rows[0].newDocumentState;
   expect(merged.payload).toContain("remote-new");
@@ -228,11 +292,20 @@ it("admits streamed changes during a pending push and keeps both conflicting tex
   const confirmed = event(2, 3);
   confirmed.resourceVersions[0].draftChanges!.documents[0].payload =
     merged.payload;
+  const confirmedWrite = firstValueFrom(
+    db.drafts
+      .findOne("phone:chat")
+      .$.pipe(
+        filter(
+          (doc) =>
+            !!doc?.payload.includes("remote-new") &&
+            doc.payload.includes("local-unsent"),
+        ),
+      ),
+  );
   await deliver(confirmed);
-  await vi.waitFor(async () => {
-    const payload = (await db.drafts.findOne("phone:chat").exec())?.payload;
-    expect(payload).toContain("remote-new");
-    expect(payload).toContain("local-unsent");
-  });
+  const payload = (await confirmedWrite)?.payload;
+  expect(payload).toContain("remote-new");
+  expect(payload).toContain("local-unsent");
   expect(pulls()).toHaveLength(1);
 });

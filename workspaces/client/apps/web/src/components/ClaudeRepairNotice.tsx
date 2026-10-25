@@ -22,12 +22,7 @@ export default function ClaudeRepairNotice({ agent }: { agent: Agent }) {
     agent.epoch,
     agent.accountKey,
   ]);
-  // A failed history read can create a repair report without changing the thread identity.
-  const revision = JSON.stringify([
-    agent.status,
-    agent.error,
-    agent.lastCompletedTurn,
-  ]);
+  const [refreshVersion, setRefreshVersion] = useState(0);
   useEffect(() => {
     let active = true;
     if (!agent.threadId) return;
@@ -45,7 +40,7 @@ export default function ClaudeRepairNotice({ agent }: { agent: Agent }) {
     return () => {
       active = false;
     };
-  }, [get, scope, revision, agent.id, agent.threadId]);
+  }, [get, scope, refreshVersion, agent.id, agent.threadId]);
   const current = result?.scope === scope ? result : undefined;
   const repairRequired =
     /CLAUDE_SESSION_REPAIR_REQUIRED|needs repair|journal.*repair/i.test(
@@ -76,6 +71,12 @@ export default function ClaudeRepairNotice({ agent }: { agent: Agent }) {
       </p>
       <details>
         <summary>Repair report</summary>
+        <button
+          type="button"
+          onClick={() => setRefreshVersion((value) => value + 1)}
+        >
+          Refresh saved report
+        </button>
         {report && report.status !== "none" ? (
           <>
             <p>

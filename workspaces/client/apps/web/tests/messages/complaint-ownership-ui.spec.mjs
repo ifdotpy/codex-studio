@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { join } from "node:path";
-import { test } from "../playwright.mjs";
+import {
+  test,
+  createFixtureViteServer as createServer,
+} from "../playwright.mjs";
 
 test("Complaint ownership", async ({ browser: testBrowser }) => {
   test.setTimeout(180_000);
@@ -11,10 +13,6 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
   );
   // Current message recipient, history, and response delivery through the real component.
   const repo = testRepo;
-  const require = createRequire(
-    join(repo, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
   const harness = `
   import React from 'react';
   import {createRoot} from 'react-dom/client';

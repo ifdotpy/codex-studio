@@ -29,6 +29,8 @@ const DIAGNOSTICS_RESPONSE_FIELDS: &[&str] = &[
     "executions",
     "sqliteContention",
     "httpRequestMetrics",
+    "runtimeStageMetrics",
+    "syncRecoveryCounters",
     "analyticsCapture",
     "migrations",
     "searchMigrationError",
@@ -317,6 +319,8 @@ async fn diagnostics(
             "executions": executions,
             "sqliteContention": studio_runtime_services::diagnostics::sqlite_contention(),
             "httpRequestMetrics": studio_runtime_services::diagnostics::http_request_metrics(),
+            "runtimeStageMetrics": studio_runtime_services::diagnostics::runtime_stage_metrics(),
+            "syncRecoveryCounters": studio_runtime_services::diagnostics::sync_recovery_counters(),
             "analyticsCapture": analytics_capture,
             "migrations": migrations,
             "searchMigrationError": null,
@@ -748,6 +752,46 @@ mod diagnostics_http_tests {
             .expect("read persisted attempt after projection");
         assert_eq!(stored_run, run.to_string());
         assert_eq!(stored_attempt, attempt.to_string());
+    }
+
+    /// Stored states that releases up to b6f1a646 wrote and that made
+    /// `/api/diagnostics` return 500 after a restart: a recovery receipt whose
+    /// `supervisor` holds only the start attempt's connection generation, and
+    /// request effects in the request statuses `uncertain` and `answering`.
+    /// The typed conversion, not only the schema walk, must accept them.
+    #[test]
+    fn diagnostics_accepts_stored_recovery_generations_and_request_statuses() {
+        let registry = Registry::compile(&[]).expect("stored diagnostics schema");
+        let effect = |id: &str, status: &str| {
+            json!({"id": id, "runId": "run-1", "kind": "requests",
+                "referenceId": id, "status": status})
+        };
+        let mut response = json!({"executions": {"limit": 25, "relatedLimit": 100, "runs": [{
+            "id": "run-1", "agent": "agent-1", "accountKey": "default",
+            "epoch": 1, "threadId": "thread", "turnId": "turn", "created": 1.0,
+            "status": "interrupted", "firstAttemptId": "attempt-1",
+            "rootAttemptId": "attempt-1", "latestAttemptId": "attempt-1",
+            "restartRecovery": {"stage": "pending", "supervisor": {"generation": 96}},
+            "disconnectRecovery": {"source": "restart", "supervisor": {"generation": null}},
+            "attempts": [], "nodes": [],
+            "effects": [effect("requests:a", "uncertain"), effect("requests:b", "answering")],
+            "attemptIds": [], "requestIds": [], "inputEventIds": []
+        }]}});
+        strip_diagnostics_execution_extras(&registry, &mut response);
+        let executions = response["executions"].clone();
+        assert!(registry.validate_stored("ExecutionLedger", &executions));
+        let typed: crate::generated::ExecutionLedger =
+            serde_json::from_value(executions.clone()).expect("typed execution ledger");
+        assert_eq!(
+            serde_json::to_value(typed).expect("ledger serializes")["runs"][0]["restartRecovery"]
+                ["supervisor"],
+            json!({"generation": 96})
+        );
+
+        // A partial identity of any other shape is still a contract break.
+        let mut malformed = executions;
+        malformed["runs"][0]["restartRecovery"]["supervisor"] = json!({"handle": "h"});
+        assert!(!registry.validate_stored("ExecutionLedger", &malformed));
     }
 
     #[test]

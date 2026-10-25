@@ -32,11 +32,55 @@ pub trait EntityPublisher: Send + Sync {
 pub struct PendingEntities {
     pub agents: BTreeSet<String>,
     pub requests: BTreeSet<String>,
+    pub receipt_events: BTreeSet<String>,
+    pub receipt_items: BTreeSet<String>,
+    pub plans: BTreeSet<String>,
+    pub annotations: BTreeSet<String>,
+    pub tasks: BTreeSet<String>,
+    /// Source rows of the derived Studio error list that changed.
+    pub studio_errors: StudioErrorSources,
+    pub queues: BTreeSet<String>,
+    pub terminals: BTreeSet<String>,
 }
 
 impl PendingEntities {
     pub fn is_empty(&self) -> bool {
-        self.agents.is_empty() && self.requests.is_empty()
+        self.agents.is_empty()
+            && self.requests.is_empty()
+            && self.receipt_events.is_empty()
+            && self.receipt_items.is_empty()
+            && self.plans.is_empty()
+            && self.annotations.is_empty()
+            && self.tasks.is_empty()
+            && self.studio_errors.is_empty()
+            && self.queues.is_empty()
+            && self.terminals.is_empty()
+    }
+}
+
+/// Ids of the changed rows that the Studio error list reads. The list owner
+/// (`studio_errors` in runtime-services) decides which of them can change it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StudioErrorSources {
+    pub agents: BTreeSet<String>,
+    pub monitors: BTreeSet<String>,
+    pub events: BTreeSet<String>,
+    /// `runtime_operation_receipts` ids, which include dismissals.
+    pub receipts: BTreeSet<String>,
+    /// An agent, monitor or event row was deleted; its id is gone.
+    pub rows_removed: bool,
+    /// A receipt row was deleted; its id is gone.
+    pub receipts_removed: bool,
+}
+
+impl StudioErrorSources {
+    pub fn is_empty(&self) -> bool {
+        self.agents.is_empty()
+            && self.monitors.is_empty()
+            && self.events.is_empty()
+            && self.receipts.is_empty()
+            && !self.rows_removed
+            && !self.receipts_removed
     }
 }
 
@@ -44,6 +88,18 @@ impl PendingEntities {
 enum Source {
     Agent,
     Request,
+    Event,
+    EventMeta,
+    Item,
+    Plan,
+    Annotation,
+    Task,
+    QueueAsset,
+    Terminal,
+    /// Read only by the Studio error list.
+    Monitor,
+    /// Read only by the Studio error list (dismissals).
+    Receipt,
 }
 
 impl Source {
@@ -51,6 +107,16 @@ impl Source {
         match table {
             "runtime_agents" => Some(Self::Agent),
             "runtime_requests" => Some(Self::Request),
+            "runtime_events" => Some(Self::Event),
+            "runtime_event_meta" => Some(Self::EventMeta),
+            "runtime_items" => Some(Self::Item),
+            "runtime_plans" => Some(Self::Plan),
+            "runtime_annotations" => Some(Self::Annotation),
+            "runtime_tasks" => Some(Self::Task),
+            "runtime_assets" => Some(Self::QueueAsset),
+            "user_terminals" => Some(Self::Terminal),
+            "runtime_monitors" => Some(Self::Monitor),
+            "runtime_operation_receipts" => Some(Self::Receipt),
             _ => None,
         }
     }
@@ -59,6 +125,9 @@ impl Source {
         match collection {
             "agent" => Some(Self::Agent),
             "request" => Some(Self::Request),
+            "plan" => Some(Self::Plan),
+            "annotation" => Some(Self::Annotation),
+            "task" => Some(Self::Task),
             _ => None,
         }
     }
@@ -67,6 +136,16 @@ impl Source {
         match self {
             Self::Agent => "runtime_agents",
             Self::Request => "runtime_requests",
+            Self::Event => "runtime_events",
+            Self::EventMeta => "runtime_event_meta",
+            Self::Item => "runtime_items",
+            Self::Plan => "runtime_plans",
+            Self::Annotation => "runtime_annotations",
+            Self::Task => "runtime_tasks",
+            Self::QueueAsset => "runtime_assets",
+            Self::Terminal => "user_terminals",
+            Self::Monitor => "runtime_monitors",
+            Self::Receipt => "runtime_operation_receipts",
         }
     }
 }
@@ -147,12 +226,104 @@ pub(crate) fn pending(
             // A deleted row has no id left; its writer owns the entity removal.
             let id = transaction
                 .query_row(
-                    &format!("SELECT id FROM {} WHERE rowid=?1", source.table()),
+                    &match source {
+                        Source::QueueAsset => "SELECT json_extract(record,'$.agent') FROM runtime_assets WHERE rowid=?1".to_owned(),
+                        _ => format!("SELECT id FROM {} WHERE rowid=?1", source.table()),
+                    },
                     [row_id],
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?;
             ids.insert((*source, *row_id), id);
+        }
+    }
+    let mut pending = PendingEntities::default();
+    for ((source, _), id) in &ids {
+        if matches!(
+            source,
+            Source::Agent | Source::Event | Source::EventMeta | Source::QueueAsset
+        ) {
+            let owner = match (source, id) {
+                (Source::Event | Source::EventMeta, Some(id)) => transaction
+                    .query_row(
+                        "SELECT agent FROM runtime_events WHERE id=?1",
+                        [id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?,
+                (_, id) => id.clone(),
+            };
+            if let Some(id) = owner {
+                pending.queues.insert(id);
+            } else {
+                // Deleted source rows no longer carry their owner. Recheck only
+                // existing queue views; this path never scans event history.
+                let mut statement = transaction.prepare(
+                    "SELECT id FROM sync_entities WHERE collection='queue' AND deleted=0",
+                )?;
+                for id in statement.query_map([], |row| row.get::<_, String>(0))? {
+                    pending.queues.insert(id?);
+                }
+            }
+        }
+    }
+    for ((source, _), id) in &ids {
+        if *source == Source::Terminal {
+            if let Some(id) = id {
+                pending.terminals.insert(id.clone());
+            } else {
+                let mut statement = transaction.prepare(
+                    "SELECT id FROM sync_entities WHERE collection='terminal' AND deleted=0",
+                )?;
+                for id in statement.query_map([], |row| row.get::<_, String>(0))? {
+                    pending.terminals.insert(id?);
+                }
+            }
+        }
+    }
+    for ((source, _), id) in &ids {
+        let studio_errors = &mut pending.studio_errors;
+        match (source, id) {
+            (Source::Agent, Some(id)) => studio_errors.agents.insert(id.clone()),
+            (Source::Monitor, Some(id)) => studio_errors.monitors.insert(id.clone()),
+            (Source::Event, Some(id)) => studio_errors.events.insert(id.clone()),
+            (Source::Receipt, Some(id)) => studio_errors.receipts.insert(id.clone()),
+            (Source::Agent | Source::Monitor | Source::Event, None) => {
+                studio_errors.rows_removed = true;
+                false
+            }
+            (Source::Receipt, None) => {
+                studio_errors.receipts_removed = true;
+                false
+            }
+            _ => false,
+        };
+    }
+    // Request attention belongs in summaries even when an explicit request
+    // publisher has already consumed the card's own pending publication.
+    for ((source, _), id) in &ids {
+        if *source != Source::Request {
+            continue;
+        }
+        if let Some(id) = id {
+            if let Some(agent) = transaction
+                .query_row(
+                    "SELECT json_extract(record,'$.agent') FROM runtime_requests WHERE id=?1",
+                    [id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten()
+            {
+                pending.agents.insert(agent);
+            }
+        } else {
+            let mut statement = transaction.prepare(
+                "SELECT id FROM sync_entities WHERE collection='agentSummary' AND deleted=0",
+            )?;
+            for row in statement.query_map([], |row| row.get::<_, String>(0))? {
+                pending.agents.insert(row?);
+            }
         }
     }
     let mut changed: BTreeMap<(Source, String), usize> = BTreeMap::new();
@@ -172,7 +343,6 @@ pub(crate) fn pending(
             }
         }
     }
-    let mut pending = PendingEntities::default();
     for ((source, id), index) in changed {
         if published
             .get(&(source, id.clone()))
@@ -183,6 +353,12 @@ pub(crate) fn pending(
         match source {
             Source::Agent => pending.agents.insert(id),
             Source::Request => pending.requests.insert(id),
+            Source::Event | Source::EventMeta => pending.receipt_events.insert(id),
+            Source::Item => pending.receipt_items.insert(id),
+            Source::Plan => pending.plans.insert(id),
+            Source::Annotation => pending.annotations.insert(id),
+            Source::Task => pending.tasks.insert(id),
+            Source::QueueAsset | Source::Terminal | Source::Monitor | Source::Receipt => false,
         };
     }
     Ok(pending)

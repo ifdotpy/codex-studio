@@ -8,15 +8,16 @@ import path from "node:path";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { createServer } from "node:net";
 import { stopSuiteProcesses, suiteProcesses } from "./run-guest-suite.mjs";
 
-const WAIT = "process.send('ready'); setTimeout(() => {}, 60000)";
+const WAIT = "process.stdin.resume(); process.send('ready')";
 
 async function start(args, cwd) {
   const child = spawn(process.execPath, args, {
     cwd,
     detached: true,
-    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    stdio: ["pipe", "ignore", "ignore", "ipc"],
   });
   child.exited = once(child, "exit");
   await once(child, "message");
@@ -82,41 +83,64 @@ test(
   },
 );
 
-test("parallel modules keep ordered output and aggregate failures and skips", () => {
+test("cases within one module overlap and keep ordered output, failures and skips", async (t) => {
   const folder = mkdtempSync(path.join(os.tmpdir(), "guest-modules-"));
-  try {
-    writeFileSync(
-      path.join(folder, "test_a.py"),
-      "import unittest\nclass A(unittest.TestCase):\n def test_fail(self): self.fail('module failure')\n",
-    );
-    writeFileSync(
-      path.join(folder, "test_b.py"),
-      "import os,sys,unittest\nclass B(unittest.TestCase):\n @unittest.skip('fixture')\n def test_skip(self): pass\n def test_pass(self):\n  self.assertNotIn('LAYR_E2E_ROOT',os.environ)\n  with self.assertRaisesRegex(RuntimeError,'privileged command forbidden'):\n   sys.audit('subprocess.Popen','/usr/sbin/groupadd',[],None,None)\n",
-    );
-    const run = spawnSync(
-      process.env.STUDIO_GUEST_PYTHON || "python3",
-      ["-B", fileURLToPath(new URL("guest_suite.py", import.meta.url)), folder],
-      {
-        encoding: "utf8",
-        timeout: 10000,
-        env: {
-          ...process.env,
-          STUDIO_GUEST_WORKERS: "2",
-          LAYR_E2E_ROOT: "/not-for-contracts",
-        },
-      },
-    );
-    assert.equal(run.status, 1, run.stderr);
-    assert.match(run.stderr, /module failure/);
-    assert.ok(run.stderr.indexOf("test_a:") < run.stderr.indexOf("test_b:"));
-    assert.match(run.stderr, /Ran 3 tests in /);
-    assert.match(run.stderr, /FAILED \(failures=1, errors=0, skipped=1\)/);
-  } finally {
+  const peers = [];
+  const barrier = createServer((peer) => {
+    peers.push(peer);
+    if (peers.length === 2) peers.forEach((socket) => socket.end("ready"));
+  });
+  barrier.listen(0, "127.0.0.1");
+  await once(barrier, "listening");
+  t.after(() => {
+    peers.forEach((peer) => peer.destroy());
+    barrier.close();
     rmSync(folder, { recursive: true, force: true });
-  }
+  });
+  writeFileSync(
+    path.join(folder, "test_a.py"),
+    `import os,socket,sys,unittest
+class A(unittest.TestCase):
+ def setUp(self):
+  with socket.create_connection(('127.0.0.1',${barrier.address().port}),timeout=5) as peer:
+   self.assertEqual(peer.recv(5),b'ready')
+ def test_fail(self): self.fail('case failure')
+ @unittest.skip('fixture')
+ def test_skip(self): pass
+ def test_pass(self):
+  self.assertNotIn('LAYR_E2E_ROOT',os.environ)
+  with self.assertRaisesRegex(RuntimeError,'privileged command forbidden'):
+   sys.audit('subprocess.Popen','/usr/sbin/groupadd',[],None,None)
+`,
+  );
+  const run = spawn(
+    process.env.STUDIO_GUEST_PYTHON || "python3",
+    ["-B", fileURLToPath(new URL("guest_suite.py", import.meta.url)), folder],
+    {
+      timeout: 10000,
+      env: {
+        ...process.env,
+        STUDIO_GUEST_WORKERS: "2",
+        LAYR_E2E_ROOT: "/not-for-contracts",
+      },
+    },
+  );
+  let stderr = "";
+  run.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const [code] = await once(run, "close");
+  assert.equal(code, 1, stderr);
+  assert.match(stderr, /case failure/);
+  assert.ok(
+    stderr.indexOf("test_a.A.test_fail:") <
+      stderr.indexOf("test_a.A.test_pass:"),
+  );
+  assert.match(stderr, /Ran 3 tests in /);
+  assert.match(stderr, /FAILED \(failures=1, errors=0, skipped=1\)/);
 });
 
-test("a crashed module names unfinished modules and fails the run", () => {
+test("a crashed case names unfinished cases and fails the run", () => {
   const folder = mkdtempSync(path.join(os.tmpdir(), "guest-crash-"));
   try {
     writeFileSync(
@@ -129,7 +153,10 @@ test("a crashed module names unfinished modules and fails the run", () => {
       { encoding: "utf8", timeout: 10000 },
     );
     assert.equal(run.status, 1, run.stderr);
-    assert.match(run.stderr, /module worker crashed; unfinished: test_crash/);
+    assert.match(
+      run.stderr,
+      /test worker crashed; unfinished: test_crash.Crash.test_crash/,
+    );
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }

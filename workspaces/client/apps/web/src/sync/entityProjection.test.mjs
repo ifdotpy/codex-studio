@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { applyEntityRows, emptyEntityProjection } from "./entityProjection.ts";
+import {
+  applyEntityChanges,
+  applyEntityRows,
+  emptyEntityProjection,
+} from "./entityProjection.ts";
 import {
   boundTranscriptItems,
   trimTranscriptPageCache,
@@ -10,6 +14,108 @@ import {
 } from "../components/turnHistoryModel.ts";
 
 import { it } from "vitest";
+
+it("renders the list from summaries and adds detail without losing unread state", () => {
+  const state = emptyEntityProjection();
+  const summary = {
+    id: "a",
+    name: "Current",
+    kind: "agent",
+    source: "managed",
+    status: "completed",
+    threadId: "thread",
+    lastCompletedTurn: "turn",
+    lastCompletedTurnStatus: "completed",
+    readState: { threadId: "thread", turnId: "turn", read: false, revision: 1 },
+  };
+  const change = (collection, value, seq) => ({
+    id: `entity:${collection}:a`,
+    seq,
+    payload: "",
+    entity: { collection, id: "a", value },
+  });
+  const first = applyEntityRows(
+    state,
+    [change("agentSummary", summary, 1)],
+    true,
+  );
+  assert.equal(first.threads[0].name, "Current");
+  assert.equal(first.threads[0].lastAnswer, undefined);
+  assert.equal(first.threads[0].readState.read, false);
+  const open = applyEntityChanges(
+    state,
+    [change("agentDetail", { id: "a", lastAnswer: "Answer" }, 2)],
+    true,
+  );
+  assert.equal(open.threads[0].lastAnswer, "Answer");
+  assert.equal(open.threads[0].readState.read, false);
+  const updated = applyEntityChanges(
+    state,
+    [change("agentSummary", { ...summary, name: "Renamed" }, 3)],
+    true,
+  );
+  assert.equal(updated.threads[0].name, "Renamed");
+  assert.equal(updated.threads[0].lastAnswer, "Answer");
+  const closed = applyEntityChanges(
+    state,
+    [{ id: "entity:agentDetail:a", seq: 4, payload: "", _deleted: true }],
+    true,
+  );
+  assert.equal(closed.threads[0].lastAnswer, undefined);
+  assert.equal(closed.threads[0].name, "Renamed");
+});
+
+it("projects bounded workspace summaries and receipts with deletes", () => {
+  const state = emptyEntityProjection();
+  const row = (collection, id, value, seq) => ({
+    id: `entity:${collection}:${id}`,
+    seq,
+    payload: "",
+    entity: { collection, id, value },
+  });
+  const first = applyEntityRows(
+    state,
+    [
+      row(
+        "messageReceipt",
+        "m",
+        { id: "m", agent: "a", status: "pending", materialized: false },
+        1,
+      ),
+      row(
+        "plan",
+        "a",
+        { id: "a", rootId: "a", text: "Plan", version: 1, updated: 1 },
+        2,
+      ),
+      row(
+        "annotation",
+        "n",
+        {
+          id: "n",
+          agent: "a",
+          rootId: "a",
+          path: "a.rs",
+          line: 1,
+          text: "Comment",
+          created: 1,
+        },
+        3,
+      ),
+    ],
+    true,
+  );
+  assert.equal(first.runtime.messageReceipts[0].status, "pending");
+  assert.equal(first.runtime.plans[0].text, "Plan");
+  assert.equal(first.runtime.annotations[0].text, "Comment");
+  const next = applyEntityChanges(
+    state,
+    [{ id: "entity:annotation:n", seq: 4, payload: "", _deleted: true }],
+    true,
+  );
+  assert.equal(next.runtime.annotations.length, 0);
+  assert.equal(next.runtime.messageReceipts, first.runtime.messageReceipts);
+});
 
 it("reuses unchanged entity data and bounds transcript and history caches", () => {
   const row = (collection, id, value, seq, deleted = false) => ({
@@ -1156,3 +1262,128 @@ it("projects independent account limits and preserves them across workspace upda
   assert.equal(withoutAlpha.runtime.rateLimitsByAccount.alpha, undefined);
   assert.equal(withoutAlpha.runtime.rateLimits.accountKey, "default");
 });
+
+it("projects Studio error entities and removes dismissed rows by tombstone", () => {
+  const row = (id, value, seq) => ({
+    id: `entity:studioError:${id}`,
+    payload: "",
+    entity: { collection: "studioError", id, value },
+    seq,
+  });
+  const state = emptyEntityProjection();
+  const item = {
+    id: "agent:worker:turn-1",
+    kind: "turn_disconnected",
+    reason: "The provider connection ended during the turn.",
+    action: "resume",
+    agentId: "worker",
+    agentName: "Worker",
+    detail: "disconnected",
+    subject: "",
+    at: 100,
+  };
+  const initial = applyEntityRows(
+    state,
+    [
+      {
+        id: "entity:workspace:current",
+        payload: "",
+        entity: {
+          collection: "workspace",
+          id: "current",
+          value: { stateDir: "fixture" },
+        },
+        seq: 1,
+      },
+      row(item.id, item, 2),
+    ],
+    true,
+  );
+  assert.deepEqual(initial.runtime.studioErrors, [item]);
+  const removed = applyEntityRows(
+    state,
+    [
+      {
+        id: "entity:workspace:current",
+        payload: "",
+        entity: {
+          collection: "workspace",
+          id: "current",
+          value: { stateDir: "fixture" },
+        },
+        seq: 1,
+      },
+      {
+        id: `entity:studioError:${item.id}`,
+        seq: 3,
+        payload: "{}",
+        _deleted: true,
+      },
+    ],
+    true,
+  );
+  assert.deepEqual(removed.runtime.studioErrors, []);
+});
+it("projects queue stream upserts and deletion without endpoint reads", () => {
+  const state = emptyEntityProjection();
+  const value = {
+    items: [{ id: "q", text: "Queued" }],
+    revision: "one",
+    capabilities: { reorder: true, receipts: true },
+  };
+  const row = {
+    id: "entity:queue:chat",
+    seq: 1,
+    payload: "",
+    entity: { collection: "queue", id: "chat", value },
+  };
+  const initial = applyEntityRows(state, [row], true);
+  assert.deepEqual(initial.runtime.queuesByAgent.chat, value);
+  const next = applyEntityRows(
+    state,
+    [row, { id: "entity:queue:chat", seq: 2, payload: "{}", _deleted: true }],
+    true,
+  );
+  assert.equal(next.runtime.queuesByAgent.chat, undefined);
+});
+
+for (const [collection, field, singleton] of [
+  ["accounts", "accountsSummary", true],
+  ["accountCost", "accountCostsByAccount", false],
+  ["sessionCost", "sessionCostsByAgent", false],
+  ["desktop", "desktop", true],
+  ["terminal", "terminals", false],
+])
+  it(`projects ${collection} source entities and deletion`, () => {
+    const state = emptyEntityProjection();
+    const value = { id: "record", marker: collection };
+    const id = singleton ? "current" : "record";
+    const row = {
+      id: `entity:${collection}:${id}`,
+      seq: 1,
+      payload: "",
+      entity: { collection, id, value },
+    };
+    const initial = applyEntityRows(state, [row], true);
+    assert.deepEqual(
+      singleton
+        ? initial.runtime[field]
+        : collection === "terminal"
+          ? initial.runtime[field][0]
+          : initial.runtime[field][id],
+      value,
+    );
+    const next = applyEntityRows(
+      state,
+      [row, { id: row.id, seq: 2, payload: "{}", _deleted: true }],
+      true,
+    );
+    assert.equal(
+      singleton
+        ? next.runtime[field]
+        : collection === "terminal"
+          ? next.runtime[field][0]
+          : next.runtime[field][id],
+      undefined,
+    );
+  });

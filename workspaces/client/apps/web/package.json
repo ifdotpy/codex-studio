@@ -33,7 +33,7 @@
     "test:skill-autocomplete": "pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=client --project=performance skill-autocomplete-ui.spec.mjs",
     "test:prompt-composer": "pnpm run build && node src/components/prompt-composer/verify.mjs",
     "benchmark:prompt-composer": "pnpm run build && node src/components/prompt-composer/benchmark.mjs",
-    "test:diagnostics": "pnpm run test:unit && pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=client --project=performance http-error-diagnostics-browser.spec.mjs account-settings-errors-browser.spec.mjs structured-operational-errors-ui.spec.mjs native-error-ui.spec.mjs",
+    "test:diagnostics": "pnpm run test:unit && pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=client --project=performance account-settings-errors-browser.spec.mjs structured-operational-errors-ui.spec.mjs native-error-ui.spec.mjs",
     "test:responsiveness": "pnpm run test:unit && pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=client --project=performance draft-render-performance-browser.spec.mjs transcript-render-performance-browser.spec.mjs completed-markdown-cache-browser.spec.mjs scroll-restart-browser.spec.mjs ui-responsiveness-browser.spec.mjs",
     "storybook": "pnpm run build:wasm && STORYBOOK_DISABLE_TELEMETRY=1 storybook dev --config-dir .storybook --disable-telemetry --host 127.0.0.1 --no-open",
     "build-storybook": "pnpm run build:wasm && STORYBOOK_DISABLE_TELEMETRY=1 storybook build --config-dir .storybook --disable-telemetry",
@@ -44,7 +44,7 @@
     "test:wasm": "pnpm run build:wasm && node scripts/check-client-wasm.mjs",
     "test:unit:prepared": "vitest run --config vitest.unit.config.ts",
     "build:bundle:prepared": "vite build",
-    "test:browser:smoke:prepared": "node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client --grep \"execution settings ui|Mobile composer 320px setup renders the settled action row|Message receipt pagination browser|a real built renderer uses a new projection cache and preserves drafts|accounts settings show per-server state and provider choices|direct screens keep overlapping chat drafts and sends with their owner|direct screens automatically include paired servers on phones|a scrolled-up reader keeps its place while the agent streams|Sign-in card at phone width uses paste mode and the device code|Claude unconfirmed turn and journal repair\""
+    "test:browser:smoke:prepared": "node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client --grep \"execution settings ui|Mobile composer 320px setup renders the settled action row|Message receipt pagination browser|a real built renderer uses a new projection cache and preserves drafts|accounts settings show per-server state and provider choices|direct screens keep overlapping chat drafts and sends with their owner|direct screens automatically include paired servers on phones|a scrolled-up reader keeps its place while the agent streams|Sign-in card at phone width uses paste mode and the device code|Claude unconfirmed turn and journal repair|transient (vault|auth) progress has zero (idle HTTP|job receipt) reads|bounded entities render initial and live changes with zero resource GETs|rename (applied|failed) uses one POST and saved servers stay idle without status reads\""
   },
   "dependencies": {
     "@mantine/core": "9.7.3",

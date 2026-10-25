@@ -169,10 +169,6 @@ mod tests {
         Json(json!({"typed": params.typed_value("value")}))
     }
 
-    async fn action_handler(ApiJson(_body): ApiJson<CountBody>) -> Json<Value> {
-        Json(json!({"ok": true}))
-    }
-
     async fn response(router: Router, request: Request<Body>) -> (StatusCode, Value) {
         let response = router.oneshot(request).await.expect("router responds");
         let status = response.status();
@@ -211,7 +207,7 @@ mod tests {
                 ..ValidatedRequest::default()
             },
         );
-        let (status, value) = response(app, request("/items?value=1", Body::empty())).await;
+        let (status, value) = response(app, request("/items?value=999", Body::empty())).await;
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(value, json!({"typed":1}));
@@ -220,7 +216,7 @@ mod tests {
             Router::new().route("/items", get(query_handler)),
             ValidatedRequest::default(),
         );
-        let (status, value) = response(app, request("/items", Body::empty())).await;
+        let (status, value) = response(app, request("/items?value=999", Body::empty())).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(value, json!({"typed":null}));
     }
@@ -244,23 +240,6 @@ mod tests {
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(value["error"], "Invalid request");
-        assert_eq!(value["location"], json!(["body", "count"]));
-
-        let app = with_validated(
-            Router::new().route("/api/action", post(action_handler)),
-            ValidatedRequest {
-                body: Some(json!({"count":"wrong"})),
-                ..ValidatedRequest::default()
-            },
-        );
-        let request = Request::builder()
-            .method("POST")
-            .uri("/api/action")
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"count":"wrong"}"#))
-            .expect("request builds");
-        let (status, value) = response(app, request).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(value["location"], json!(["body", "count"]));
     }
 }

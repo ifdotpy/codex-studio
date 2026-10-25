@@ -1,169 +1,261 @@
 import { useServerApi } from "../servers/ServerServicesContext";
-import { useCallback, useEffect, useState } from "react";
-import { Badge, Button, Group, Modal, Stack, Text } from "@mantine/core";
-import { TriangleAlert } from "lucide-react";
+import {
+  createContext,
+  useContext,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { Button, Checkbox, Group, Stack, Text } from "@mantine/core";
 import { errorText, type GetResult } from "../api";
+import { STUDIO_ERRORS_DISMISS_MAX_IDS } from "../generated/sharedValues";
 
 export type StudioErrorItem = GetResult<"/api/studio-errors">["items"][number];
+const EMPTY_ERRORS: StudioErrorItem[] = [];
 
-/** How often the sidebar count is read again while the app is open. Unit: ms. */
-const REFRESH_MS = 120_000;
-
-/** The label of a row's safe action. */
 export function actionLabel(item: StudioErrorItem) {
   return item.action === "resume" ? "Resume" : "Open";
 }
-
 function when(at: number) {
   return at > 0 ? new Date(at * 1000).toLocaleString() : "";
 }
 
-/** The rows with their reason and one safe action each. */
 export function StudioErrorList({
   items,
   busy,
+  selected,
+  onSelect,
+  onSelectAll,
+  onDelete,
   onAction,
-  onDismiss,
 }: {
   items: StudioErrorItem[];
   busy: string | null;
+  selected: ReadonlySet<string>;
+  onSelect: (id: string, checked: boolean) => void;
+  onSelectAll: () => void;
+  onDelete: () => void;
   onAction: (item: StudioErrorItem) => void;
-  onDismiss: (item: StudioErrorItem) => void;
 }) {
-  if (items.length === 0) {
-    return (
-      <Text size="sm">No agent work ended because of a Studio error.</Text>
-    );
-  }
   return (
-    <Stack gap="sm" aria-label="Studio errors">
-      {items.map((item) => (
-        <div className="studio-error-row" key={item.id} data-kind={item.kind}>
-          <Text fw={600} size="sm">
-            {item.agentName}
-          </Text>
-          <Text size="sm">{item.reason}</Text>
-          {item.subject && (
-            <Text size="xs" c="dimmed" lineClamp={2}>
-              {item.subject}
-            </Text>
-          )}
-          {item.detail && (
-            <Text size="xs" c="dimmed" lineClamp={2}>
-              {item.detail}
-            </Text>
-          )}
-          <Group gap="xs" mt={4}>
-            {when(item.at) && (
-              <Text size="xs" c="dimmed">
-                {when(item.at)}
-              </Text>
-            )}
-            <Button
-              size="xs"
-              variant="light"
-              loading={busy === item.id}
-              disabled={busy !== null && busy !== item.id}
-              onClick={() => onAction(item)}
+    <Stack gap="sm">
+      <Group gap="xs">
+        <Button
+          size="xs"
+          variant="default"
+          disabled={busy !== null || items.length === 0}
+          onClick={onSelectAll}
+        >
+          Select all
+        </Button>
+        <Button
+          size="xs"
+          color="red"
+          variant="light"
+          disabled={busy !== null || selected.size === 0}
+          onClick={onDelete}
+        >
+          Delete selected
+        </Button>
+        <Text size="xs" c="dimmed" role="status">
+          {selected.size} selected
+        </Text>
+      </Group>
+      <Text size="xs" c="dimmed">
+        Only selected errors are removed from this list. Chats, commands, and
+        history are kept.
+      </Text>
+      {items.length === 0 ? (
+        <Text size="sm">No agent work ended because of a Studio error.</Text>
+      ) : (
+        <Stack gap="sm" aria-label="Studio errors">
+          {items.map((item) => (
+            <article
+              className="studio-error-row"
+              key={item.id}
+              data-kind={item.kind}
             >
-              {actionLabel(item)}
-            </Button>
-            <Button
-              size="xs"
-              variant="subtle"
-              disabled={busy !== null}
-              onClick={() => onDismiss(item)}
-            >
-              Dismiss
-            </Button>
-          </Group>
-        </div>
-      ))}
+              <Checkbox
+                label={item.agentName}
+                aria-label={`Select error ${item.id} for ${item.agentName}`}
+                checked={selected.has(item.id)}
+                disabled={
+                  busy !== null ||
+                  (!selected.has(item.id) &&
+                    selected.size >= STUDIO_ERRORS_DISMISS_MAX_IDS)
+                }
+                onChange={(event) =>
+                  onSelect(item.id, event.currentTarget.checked)
+                }
+              />
+              <Text size="sm">{item.reason}</Text>
+              {item.subject && (
+                <Text size="xs" c="dimmed" lineClamp={2}>
+                  {item.subject}
+                </Text>
+              )}
+              {item.detail && (
+                <Text size="xs" c="dimmed" lineClamp={2}>
+                  {item.detail}
+                </Text>
+              )}
+              <Group gap="xs" mt="xs">
+                {when(item.at) && (
+                  <Text size="xs" c="dimmed">
+                    {when(item.at)}
+                  </Text>
+                )}
+                <Button
+                  size="xs"
+                  variant="light"
+                  loading={busy === item.id}
+                  disabled={busy !== null}
+                  onClick={() => onAction(item)}
+                >
+                  {actionLabel(item)}
+                </Button>
+              </Group>
+            </article>
+          ))}
+        </Stack>
+      )}
     </Stack>
   );
 }
 
-/**
- * The sidebar entry for agent work that ended because of a Studio error. It
- * shows the count, and its list offers only safe actions: Resume runs
- * connection recovery, which never sends uncertain input again, and Open shows
- * the agent. Nothing here runs a command or sends input.
- */
-export function StudioErrorsButton({ open }: { open: (id: string) => void }) {
+/** Reads and mutations stay on the active server, including when the trigger is portalled. */
+export function useStudioErrorsState(
+  sourceItems: StudioErrorItem[] = EMPTY_ERRORS,
+) {
   const { get, post } = useServerApi();
-  const [items, setItems] = useState<StudioErrorItem[]>([]);
-  const [opened, setOpened] = useState(false);
+  const [items, setItems] = useState<StudioErrorItem[]>(sourceItems);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const refresh = useCallback(() => {
-    void get("/api/studio-errors").then(
-      (value) => setItems(value.items),
-      () => undefined,
-    );
+  const [notice, setNotice] = useState("");
+  const pending = useRef(false);
+  const generation = useRef(0);
+  const refresh = useCallback(async () => {
+    const read = ++generation.current;
+    const value = await get("/api/studio-errors");
+    if (read === generation.current) setItems(value.items);
   }, [get]);
   useEffect(() => {
-    refresh();
-    const timer = window.setInterval(refresh, REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
-  if (items.length === 0 && !opened) return null;
-  const act = (item: StudioErrorItem) => {
-    if (item.action !== "resume") {
-      setOpened(false);
-      open(item.agentId);
-      return;
+    // Complete entity batches own membership; HTTP readback is only for explicit actions.
+    generation.current++;
+    setItems(sourceItems);
+  }, [sourceItems]);
+  const select = (id: string, checked: boolean) => {
+    if (pending.current) return;
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (checked && next.size < STUDIO_ERRORS_DISMISS_MAX_IDS) next.add(id);
+      else if (!checked) next.delete(id);
+      return next;
+    });
+  };
+  const selectAll = () => {
+    if (!pending.current)
+      setSelected(
+        new Set(
+          items.slice(0, STUDIO_ERRORS_DISMISS_MAX_IDS).map((item) => item.id),
+        ),
+      );
+  };
+  const remove = async () => {
+    if (pending.current || !selected.size) return;
+    const ids = [...selected];
+    pending.current = true;
+    generation.current++;
+    setBusy("delete");
+    setError("");
+    setNotice("");
+    try {
+      const value = await post("/api/studio-errors/dismiss", { ids });
+      setItems(value.items);
+      setSelected(new Set());
+      if (value.unknownIds.length)
+        setNotice(
+          `${value.unknownIds.length} selected errors were already gone.`,
+        );
+    } catch (failure) {
+      setError(
+        `Could not confirm deletion of ${ids.join(", ")}: ${errorText(failure)}`,
+      );
+      // A lost response is not proof of failure. Keep selection and read back; never resend.
+      try {
+        await refresh();
+      } catch (readFailure) {
+        setError(
+          (message) =>
+            `${message}. Could not refresh: ${errorText(readFailure)}`,
+        );
+      }
+    } finally {
+      pending.current = false;
+      setBusy(null);
     }
+  };
+  const resume = async (item: StudioErrorItem) => {
+    if (pending.current) return;
+    pending.current = true;
+    generation.current++;
     setBusy(item.id);
     setError("");
-    void post("/api/connection-recovery", { id: item.agentId })
-      .then(
-        () => refresh(),
-        (failure) => setError(errorText(failure)),
-      )
-      .finally(() => setBusy(null));
+    try {
+      await post("/api/connection-recovery", { id: item.agentId });
+      await refresh();
+    } catch (failure) {
+      setError(errorText(failure));
+    } finally {
+      pending.current = false;
+      setBusy(null);
+    }
   };
-  const dismiss = (item: StudioErrorItem) => {
-    setBusy(item.id);
-    setError("");
-    void post("/api/studio-errors/dismiss", { id: item.id })
-      .then(
-        (value) => setItems(value.items),
-        (failure) => setError(errorText(failure)),
-      )
-      .finally(() => setBusy(null));
+  return {
+    items,
+    selected,
+    busy,
+    error,
+    notice,
+    refresh: () => {
+      if (!pending.current)
+        void refresh().catch((failure) => setError(errorText(failure)));
+    },
+    select,
+    selectAll,
+    remove,
+    resume,
   };
+}
+
+const StudioErrorsContext = createContext<ReturnType<
+  typeof useStudioErrorsState
+> | null>(null);
+
+export const StudioErrorsScope = StudioErrorsContext.Provider;
+
+/** One owner per server, above chat keys and sidebar portals, retains pending mutations. */
+export function StudioErrorsProvider({
+  children,
+  items = EMPTY_ERRORS,
+}: {
+  children?: ReactNode;
+  items?: StudioErrorItem[];
+}) {
+  const state = useStudioErrorsState(items);
   return (
-    <>
-      <Button
-        className="sidebar-nav-button sidebar-studio-errors"
-        title={`${items.length} agent work items ended because of a Studio error`}
-        leftSection={<TriangleAlert size={15} />}
-        onClick={() => {
-          setOpened(true);
-          refresh();
-        }}
-      >
-        Studio errors{" "}
-        {items.length > 0 && <Badge size="sm">{items.length}</Badge>}
-      </Button>
-      <Modal
-        opened={opened}
-        onClose={() => setOpened(false)}
-        title="Agent work that Studio interrupted"
-        size="lg"
-      >
-        {error && (
-          <Text c="red" size="sm" mb="sm">
-            {error}
-          </Text>
-        )}
-        <StudioErrorList
-          items={items}
-          busy={busy}
-          onAction={act}
-          onDismiss={dismiss}
-        />
-      </Modal>
-    </>
+    <StudioErrorsContext.Provider value={state}>
+      {children}
+    </StudioErrorsContext.Provider>
   );
+}
+
+export function useStudioErrors() {
+  const state = useContext(StudioErrorsContext);
+  if (!state)
+    throw new Error("Studio errors require their server-scoped provider.");
+  return state;
 }

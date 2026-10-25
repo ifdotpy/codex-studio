@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createResourceEvents } from "./resourceEvents";
+import { createSubscriptionStore } from "./subscriptions/store";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
@@ -89,10 +90,12 @@ async function fixture(follower = false, session = true) {
   const sources: Source[] = [];
   const urls: string[] = [];
   const post = vi.fn().mockResolvedValue({ gen: 1 });
+  const get = vi.fn().mockResolvedValue({});
+  const readCursor = vi.fn().mockResolvedValue(undefined);
   const persist = vi.fn().mockResolvedValue(undefined);
   const transport = createResourceEvents({
     api: {
-      get: vi.fn(),
+      get,
       post,
       clearSchemaUpdateAttemptAfterMatch: vi.fn(),
       isApiSchemaMismatch: () => false,
@@ -103,6 +106,7 @@ async function fixture(follower = false, session = true) {
     sync: {
       syncDatabase: vi.fn().mockResolvedValue({ workspaceId: "workspace" }),
       persistResourceEntityChanges: persist,
+      readSubscriptionCursor: readCursor,
     },
     tokenRates: {
       configureTokenRateStream: vi.fn(),
@@ -135,8 +139,107 @@ async function fixture(follower = false, session = true) {
     resourceVersions: [{ revision: 1 }],
   });
   await vi.advanceTimersByTimeAsync(25);
-  return { transport, source, sources, urls, post, persist, stopState };
+  return {
+    transport,
+    source,
+    sources,
+    urls,
+    post,
+    persist,
+    stopState,
+    get,
+    readCursor,
+  };
 }
+
+it("publishes each resource event without a listener flush timer", async () => {
+  const f = await fixture();
+  const listener = vi.fn();
+  f.transport.watchResourceChanges({ kind: "state" }, listener);
+  listener.mockClear();
+  for (const revision of [2, 3]) {
+    f.source.emit("resources", {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision,
+      reason: "change",
+      resources: [{ kind: "state" }],
+      resourceVersions: [{ revision }],
+    });
+    // Drain event persistence microtasks without advancing any timer.
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    expect(listener).toHaveBeenCalledTimes(revision - 1);
+    expect(listener).toHaveBeenLastCalledWith(
+      expect.objectContaining({ revision }),
+    );
+  }
+});
+
+it("delivers subscribed auth progress without sending its URL to the entity persister", async () => {
+  const f = await fixture();
+  const resource = { kind: "auth-progress", requestId: "login-one" } as const;
+  const listener = vi.fn();
+  f.transport.watchResourceChanges(resource, listener);
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 1 });
+  listener.mockClear();
+  f.persist.mockClear();
+  const value = {
+    requestId: "login-one",
+    accountKey: "claude-one",
+    status: "pending",
+    verificationUrl: "https://claude.com/cai/oauth/authorize?secret=fixture",
+  };
+  f.source.emit("resource-progress", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    resource,
+    value,
+  });
+  expect(listener).toHaveBeenCalledWith(
+    expect.objectContaining({ progress: { resource, value } }),
+  );
+  expect(f.persist).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(f.post).toHaveBeenCalledTimes(1);
+});
+
+it("delivers vault job codes only through transient subscribed frames", async () => {
+  const f = await fixture();
+  const resource = {
+    kind: "vault-job-progress",
+    requestId: "vault-one",
+    job: "login",
+  } as const;
+  const listener = vi.fn();
+  f.transport.watchResourceChanges(resource, listener);
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 1 });
+  f.persist.mockClear();
+  const value = {
+    requestId: "vault-one",
+    state: "running",
+    page: "https://device.example/transient",
+    code: "TEMP",
+  };
+  f.source.emit("resource-progress", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    resource,
+    value,
+  });
+  expect(listener).toHaveBeenCalledWith(
+    expect.objectContaining({ progress: { resource, value } }),
+  );
+  expect(f.persist).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(f.post).toHaveBeenCalledTimes(1);
+});
 
 it("coalesces chat switches into one POST without reopening the SSE stream", async () => {
   const f = await fixture();
@@ -157,7 +260,7 @@ it("coalesces chat switches into one POST without reopening the SSE stream", asy
   expect(f.post.mock.calls[0]?.[1]).toMatchObject({
     sessionId: "session-one",
     gen: 1,
-    add: [{ kind: "transcript", agentId: "chat-final" }],
+    add: [{ resource: { kind: "transcript", agentId: "chat-final" } }],
     remove: [],
   });
 });
@@ -468,3 +571,90 @@ it.each(["resources", "token-rates"])(
     }
   },
 );
+
+it("sends applied ref cursors on re-add and reconnect with zero pulls", async () => {
+  const f = await fixture();
+  const resource = { kind: "transcript", agentId: "recent" } as const;
+  const cursor = { workspaceId: "workspace", seq: 41 };
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "transcript" ? cursor : undefined,
+  );
+  const stop = f.transport.watchResourceChanges(resource, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  expect(f.post).toHaveBeenLastCalledWith(
+    "/api/sync/subscriptions",
+    expect.objectContaining({ add: [{ resource, since: cursor }] }),
+    expect.anything(),
+  );
+  f.source.emit("subscriptions", { gen: 1 });
+  stop();
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 2 });
+  f.transport.watchResourceChanges(resource, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  expect(f.post).toHaveBeenLastCalledWith(
+    "/api/sync/subscriptions",
+    expect.objectContaining({ add: [{ resource, since: cursor }] }),
+    expect.anything(),
+  );
+  f.source.onerror?.();
+  await vi.advanceTimersByTimeAsync(10000);
+  const url = new URL(f.urls.at(-1)!, "http://studio.test");
+  expect(JSON.parse(url.searchParams.get("since")!)).toContainEqual({
+    resource,
+    since: cursor,
+  });
+  expect(
+    f.get.mock.calls.some(([path]) => String(path).includes("/api/sync/pull")),
+  ).toBe(false);
+});
+
+it("T28 recently viewed chat switching sends no subscription changes within grace", async () => {
+  const measurements: {
+    mode: string;
+    switches: number;
+    subscriptionPosts: number;
+  }[] = [];
+  for (const mode of ["immediate", "grace"] as const) {
+    const f = await fixture();
+    const store = createSubscriptionStore(f.transport);
+    disposals.push(store.dispose);
+    const events = mode === "grace" ? store : f.transport;
+    const refs = ["chat-a", "chat-b"].map(
+      (agentId) => ({ kind: "transcript", agentId }) as const,
+    );
+    let acknowledgedGeneration = 0;
+    const settle = async () => {
+      await vi.advanceTimersByTimeAsync(50);
+      const request = f.post.mock.calls.at(-1)?.[1];
+      if (request && request.gen > acknowledgedGeneration) {
+        acknowledgedGeneration = request.gen;
+        f.source.emit("subscriptions", { gen: request.gen });
+      }
+      await vi.advanceTimersByTimeAsync(50);
+    };
+    let stop = events.watchResourceChanges(refs[0], () => {});
+    await settle();
+    stop();
+    stop = events.watchResourceChanges(refs[1], () => {});
+    await settle();
+    const baseline = f.post.mock.calls.length;
+    for (let step = 0; step < 10; step++) {
+      stop();
+      stop = events.watchResourceChanges(refs[step % refs.length], () => {});
+      await settle();
+    }
+    expect(f.sources).toHaveLength(1);
+    expect(f.source.closed).toBe(false);
+    const posts = f.post.mock.calls.length - baseline;
+    measurements.push({ mode, switches: 10, subscriptionPosts: posts });
+    expect(posts).toBe(mode === "grace" ? 0 : 10);
+    stop();
+    store.dispose();
+    f.transport.dispose();
+  }
+  console.info(
+    "T28 subscription POST measurements",
+    JSON.stringify(measurements),
+  );
+});

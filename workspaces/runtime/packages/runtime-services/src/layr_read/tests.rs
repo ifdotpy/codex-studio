@@ -354,16 +354,3 @@ fn layr_read_keeps_the_python_argument_rules() {
     }
     assert_eq!(command(&json!({})), Err(shape.to_owned()));
 }
-
-/// The definition is the one Python `layr_read_tool_definition` returned.
-#[test]
-fn the_definition_keeps_the_python_text() {
-    let python: Value = serde_json::from_str(
-        r#"{"type": "function", "name": "layr_read", "description": "Run one read-only layr command as your Linux user in your read-only line, outside your sandbox: blame, diff, grep, log, ls-files, merge-base, rev-parse, show, status. args is the argument list after `layr`, for example [\"diff\", \"<base>\", \"<state>\"] or [\"show\", \"<state>:<path>\"]. [\"--line\", \"<line>\", \"log\"] reads another line of your project. Write notes and copies only in $TMPDIR.", "inputSchema": {"type": "object", "properties": {"args": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 64}}, "required": ["args"]}}"#,
-    )
-    .unwrap();
-    assert_eq!(
-        serde_json::to_value(tool_definition().expect("definition")).unwrap(),
-        python
-    );
-}

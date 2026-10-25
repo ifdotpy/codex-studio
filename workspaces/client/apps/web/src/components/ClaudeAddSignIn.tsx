@@ -10,7 +10,9 @@ import {
   codeVerificationPending,
   currentClaudeLoginReadMatches,
 } from "./claudeCodeSubmission";
-import { useServerResourceReads } from "../servers/ServerServicesContext";
+import { useServerResources } from "../servers/ServerServicesContext";
+
+import { subscribeProgress } from "../sync/progressSubscription";
 
 type Receipt = PostResult<"/api/accounts/claude/login">;
 type SavedFlow = {
@@ -104,7 +106,7 @@ export default function ClaudeAddSignIn({
   onClose: () => void;
   onReady: () => unknown;
 }) {
-  const watchResourceReads = useServerResourceReads();
+  const resources = useServerResources();
   const { get, post, save, saved } = useServerApi();
 
   const storageKey = `claude-add-sign-in:${scope}`;
@@ -236,7 +238,31 @@ export default function ClaudeAddSignIn({
   useEffect(() => {
     if (!requestId || terminal(receipt?.status) || busy) return;
     let live = true;
-    const poll = async () => {
+    const applyProgress = (result: Receipt) => {
+      if (
+        !live ||
+        lock.current ||
+        result.requestId !== requestId ||
+        currentRequestId.current !== requestId
+      )
+        return;
+      setReceipt(result);
+      if (flow && codeSubmissionResolved(result)) {
+        persistFlow({
+          ...flow,
+          codeSubmissionUncertain: false,
+          codeRequestId:
+            result.codeSubmitted === true ? undefined : flow.codeRequestId,
+        });
+      }
+      if (result.status === "ready" && readyRequest.current !== requestId) {
+        readyRequest.current = requestId;
+        void Promise.resolve(onReady()).catch((failure) =>
+          setError(errorText(failure)),
+        );
+      }
+    };
+    const readStatus = async () => {
       if (lock.current) return;
       const readGeneration = statusReadGeneration.current;
       try {
@@ -255,21 +281,7 @@ export default function ClaudeAddSignIn({
           )
         )
           return;
-        setReceipt(result);
-        if (flow && codeSubmissionResolved(result)) {
-          persistFlow({
-            ...flow,
-            codeSubmissionUncertain: false,
-            codeRequestId:
-              result.codeSubmitted === true ? undefined : flow?.codeRequestId,
-          });
-        }
-        if (result.status === "ready" && readyRequest.current !== requestId) {
-          readyRequest.current = requestId;
-          void Promise.resolve(onReady()).catch((failure) =>
-            setError(errorText(failure)),
-          );
-        }
+        applyProgress(result);
       } catch (failure) {
         if (
           !live ||
@@ -283,12 +295,26 @@ export default function ClaudeAddSignIn({
         } else if (!isUnknownRequest(failure)) throw failure;
       }
     };
-    const stop = watchResourceReads({ kind: "accounts" }, poll, (failure) => {
-      if (live) setError(errorText(failure));
-    });
+    const stop = subscribeProgress(
+      resources,
+      { kind: "auth-progress", requestId },
+      (progress) => {
+        if (
+          progress.resource.kind === "auth-progress" &&
+          progress.value &&
+          typeof progress.value === "object"
+        ) {
+          statusReadGeneration.current += 1;
+          applyProgress(progress.value);
+        }
+      },
+      readStatus,
+      (failure) => {
+        if (live) setError(errorText(failure));
+      },
+    );
     const refresh = stop.refresh;
     refreshStatus.current = refresh;
-    refresh();
     return () => {
       live = false;
       stop();
@@ -300,7 +326,7 @@ export default function ClaudeAddSignIn({
     onReady,
     receipt?.status,
     requestId,
-    watchResourceReads,
+    resources,
   ]);
   useEffect(() => {
     if (!flow?.unknownSince || !requestId || receipt) return;

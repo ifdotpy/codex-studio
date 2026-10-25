@@ -50,43 +50,6 @@ fn outgoing(actions: &[Action]) -> Vec<Value> {
 }
 
 #[test]
-fn initialize_handshake_and_python_caller_request_shapes() {
-    let shapes = [
-        (Method::TurnStart, json!({"threadId":"thread","input":[]})),
-        (
-            Method::TurnInterrupt,
-            json!({"threadId":"thread","turnId":"turn"}),
-        ),
-        (Method::AccountRead, json!({"passive":true})),
-        (Method::ModelList, json!({"limit":100,"includeHidden":true})),
-    ];
-    for (method, params) in shapes {
-        let mut session = state(false);
-        let (ticket, actions) = session
-            .submit(method, params.clone(), 1, 10, None, false)
-            .expect("scripted test operation");
-        let request = &outgoing(&actions)[0];
-        assert_eq!(request["method"], method.as_str());
-        assert_eq!(request["id"], 2);
-        assert_eq!(request["params"], params);
-        let settled = session
-            .receive(Frame::Response {
-                id: ticket.id,
-                body: ResponseBody::Result(json!({"ok":true})),
-                fields: Default::default(),
-            })
-            .expect("scripted test operation");
-        assert!(matches!(
-            &settled[0],
-            Action::Resolve {
-                outcome: RequestOutcome::Reply { late: false, .. },
-                ..
-            }
-        ));
-    }
-}
-
-#[test]
 fn one_off_catalog_and_terminal_requests_are_correlated_and_resolved() {
     let shapes = [
         (
@@ -113,6 +76,7 @@ fn one_off_catalog_and_terminal_requests_are_correlated_and_resolved() {
             .expect("one-off request is admitted");
         let request = &outgoing(&actions)[0];
         assert_eq!(request["method"], method.as_str());
+        assert_eq!(request["id"], 2);
         assert_eq!(request["params"], params);
         let settled = session
             .receive(Frame::Response {
@@ -764,12 +728,8 @@ fn all_recorded_replay_fixture_frames_parse_through_the_session() {
         }
         let value: Value =
             serde_json::from_slice(&std::fs::read(&path).expect("fixture")).expect("JSON");
-        // RPC-only and raw SDK fixtures are exercised by their own callers below
-        // and by codec.rs; this witness admits protocol event fixtures only.
-        if path.file_name().expect("name") == "codex-rpc-replies.json"
-            || value["boundaryOnly"] == true && value.get("events").is_none()
-            || value.get("sdkEvents").is_some()
-        {
+        // RPC replies have a dedicated session witness below.
+        if path.file_name().expect("name") == "codex-rpc-replies.json" {
             continue;
         }
         let mut session = state(value["provider"] == "claude");
@@ -791,6 +751,15 @@ fn all_recorded_replay_fixture_frames_parse_through_the_session() {
                 .push(&bytes)
                 .expect("scripted test operation")
                 .remove(0);
+            assert_eq!(
+                serde_json::from_slice::<Value>(
+                    &studio_runtime_providers::encode_line(&frame).expect("frame encodes")
+                )
+                .expect("encoded frame is JSON"),
+                expected_frame,
+                "{}: wire round trip preserves the recorded frame",
+                path.display()
+            );
             let actions = session
                 .receive(frame.clone())
                 .expect("scripted test operation");

@@ -125,3 +125,210 @@ async fn studio_errors_list_studio_caused_endings_and_hide_a_dismissed_row() {
     let (_, body) = call(&app, "GET", "/api/studio-errors", None).await;
     assert_eq!(body["items"], json!([]));
 }
+
+async fn batch_fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, axum::Router) {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    let path = root.path().to_path_buf();
+    let now = studio_runtime_services::event_write::unix_time().unwrap();
+    store
+        .transaction(move |tx| {
+            AgentRepository::put(
+                tx,
+                &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,
+            "status":"waiting","autoWake":true,"cwd":path.to_string_lossy(),
+            "accountKey":"default","provider":"codex","name":"Fixture worker"}))?,
+            )?;
+            for id in ["one", "two", "three"] {
+                Table::new(tx).put(&MonitorRecord::from_value(monitor(
+                    &path,
+                    id,
+                    "lost",
+                    Value::Null,
+                    "Command outcome unknown after losing the provider result; not rerun.",
+                    now,
+                ))?)?;
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .unwrap();
+    let app = router(HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    ))
+    .unwrap();
+    (root, store, app)
+}
+
+#[tokio::test]
+async fn studio_errors_batch_exact_ids_unknown_and_idempotent_repeat() {
+    let (_root, _store, app) = batch_fixture().await;
+    let request = json!({"ids":["monitor:one", "missing", "monitor:three", "monitor:one"]});
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/studio-errors/dismiss",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body["dismissedIds"],
+        json!(["monitor:one", "monitor:three"])
+    );
+    assert_eq!(body["unknownIds"], json!(["missing"]));
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["items"][0]["id"], "monitor:two");
+    let (status, repeat) = call(&app, "POST", "/api/studio-errors/dismiss", Some(request)).await;
+    assert_eq!(status, 200, "{repeat}");
+    assert_eq!(repeat["dismissedIds"], json!([]));
+    assert_eq!(
+        repeat["unknownIds"],
+        json!(["monitor:one", "missing", "monitor:three"])
+    );
+    assert_eq!(repeat["items"], body["items"]);
+}
+
+#[tokio::test]
+async fn studio_errors_batch_rejects_oversize_without_dismissing_anything() {
+    let (_root, _store, app) = batch_fixture().await;
+    let ids = vec![
+        "monitor:one";
+        studio_runtime_schema::shared_values::STUDIO_ERRORS_DISMISS_MAX_IDS + 1
+    ];
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/studio-errors/dismiss",
+        Some(json!({"ids":ids})),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    let (_, body) = call(&app, "GET", "/api/studio-errors", None).await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn studio_errors_batch_rolls_back_all_receipts_if_one_write_fails() {
+    let (_root, store, app) = batch_fixture().await;
+    store
+        .transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER fail_second_dismissal BEFORE INSERT ON runtime_operation_receipts
+            WHEN NEW.id='studio-errors:dismissed:monitor:two'
+            BEGIN SELECT RAISE(ABORT, 'fixture dismissal failure'); END;",
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .unwrap();
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/studio-errors/dismiss",
+        Some(json!({"ids":["monitor:one", "monitor:two"]})),
+    )
+    .await;
+    assert_eq!(status, 500, "{body}");
+    let (_, body) = call(&app, "GET", "/api/studio-errors", None).await;
+    assert_eq!(
+        body["items"].as_array().unwrap().len(),
+        3,
+        "the first dismissal must roll back"
+    );
+}
+
+#[tokio::test]
+async fn startup_models_http_reports_pending_and_refuses_an_unknown_explicit_account() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    let registry = json!({"version":1,"defaultAccountKey":"default","accounts":{},"logins":{}});
+    let policy = studio_runtime_services::account_policy::AccountPolicyState::from_startup(
+        Some(&serde_json::to_vec(&registry).unwrap()),
+        [],
+    )
+    .unwrap();
+    let state = HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store),
+        Some(Arc::new(policy)),
+    );
+    let app = router(state).unwrap();
+    let (status, value) = call(&app, "GET", "/api/models", None).await;
+    assert_eq!(
+        status, 503,
+        "startup is pending, not an invalid request: {value}"
+    );
+    assert_eq!(value["catalogPending"], true);
+    let (status, value) = call(&app, "GET", "/api/models?account_key=unknown", None).await;
+    assert_eq!(
+        status, 400,
+        "explicit unknown accounts remain invalid: {value}"
+    );
+    assert_ne!(value["catalogPending"], true);
+}
+
+#[tokio::test]
+async fn studio_errors_sync_pull_carries_upserts_and_bulk_dismissal_tombstones() {
+    let (_root, store, app) = batch_fixture().await;
+    studio_runtime_services::entity_publication::install(&store)
+        .await
+        .unwrap();
+    let (status, page) = call(
+        &app,
+        "GET",
+        "/api/sync/pull?scope=state:entities:v1&after=0&fresh=1&limit=500",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "published errors must cross the HTTP boundary: {page}"
+    );
+    let rows: Vec<_> = page["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["collection"] == "studioError")
+        .collect();
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().all(|row| row["op"] == "upsert"));
+    let after = page["checkpoint"]["seq"].as_i64().unwrap();
+    let (status, result) = call(
+        &app,
+        "POST",
+        "/api/studio-errors/dismiss",
+        Some(json!({"ids":["monitor:one", "monitor:three"]})),
+    )
+    .await;
+    assert_eq!(status, 200, "{result}");
+    let (status, page) = call(
+        &app,
+        "GET",
+        &format!("/api/sync/pull?scope=state:entities:v1&after={after}&limit=500"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "dismissal tombstones must cross the HTTP boundary: {page}"
+    );
+    let rows: Vec<_> = page["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["collection"] == "studioError")
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["op"] == "delete"));
+}

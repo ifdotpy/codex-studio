@@ -9,7 +9,10 @@ const { resumeListeners, syncDatabase } = vi.hoisted(() => ({
   resumeListeners: new Set<() => void>(),
   syncDatabase: vi.fn(),
 }));
-vi.mock("./client", () => ({ syncDatabase }));
+vi.mock("./client", () => ({
+  syncDatabase,
+  readSubscriptionCursor: vi.fn(async () => undefined),
+}));
 vi.mock("../usage/tokenRate", async (original) => ({
   ...(await original<typeof import("../usage/tokenRate")>()),
   configureTokenRateStream: vi.fn(),
@@ -190,6 +193,89 @@ beforeEach(() => {
 });
 
 describe("shared resource event transport", () => {
+  it("delivers rename failure as transient progress for its exact agent and request", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const transport = await loadTransport();
+    const accept = vi.fn();
+    const resource = {
+      kind: "rename-progress" as const,
+      agentId: "agent",
+      requestId: "rename-one",
+    };
+    transport.watchResourceChanges(resource, accept);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(Source.instances).toHaveLength(1);
+    const value = {
+      id: "agent",
+      request_id: "rename-one",
+      status: "failed",
+      error: "No title",
+    };
+    Source.instances[0]!.emit("resource-progress", {
+      protocol: 4,
+      workspaceId,
+      epoch: "rename",
+      revision: 1,
+      resource,
+      value,
+    });
+    expect(accept).toHaveBeenCalledOnce();
+    expect(accept.mock.calls[0][0].progress).toEqual({ resource, value });
+  });
+
+  it("delivers transient discovery and cursor voice payloads without entity persistence", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "transient-tab" });
+    vi.stubGlobal("EventSource", Source);
+    const transport = await loadTransport();
+    const discovery = vi.fn();
+    const voice = vi.fn();
+    transport.watchResourceChanges({ kind: "multi-server" }, discovery);
+    transport.watchResourceChanges({ kind: "voice", agentId: "chat" }, voice);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(Source.instances).toHaveLength(1);
+    const snapshot = {
+      protocol: 1,
+      identity: { serverId: "owner" },
+      clients: [],
+      servers: [],
+      invites: [],
+    };
+    const batch = {
+      after: 0,
+      cursor: 1,
+      records: [{ id: "record" }],
+      session: null,
+    };
+    Source.instances[0]!.emit("resources", {
+      protocol: 4,
+      workspaceId,
+      epoch: "transient",
+      revision: 1,
+      reason: "initial",
+      resources: [{ kind: "multi-server" }, { kind: "voice", agentId: "chat" }],
+      resourceVersions: [
+        { revision: 1, discoverySnapshot: snapshot },
+        { revision: 1, voiceRecords: batch },
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(voice).toHaveBeenCalledOnce();
+    expect(discovery.mock.calls[0][0].discoverySnapshot).toEqual(snapshot);
+    expect(voice.mock.calls[0][0].voiceRecords).toEqual(batch);
+  });
+
   it("delivers consecutive draft batches without hint coalescing and retains reconnect recovery", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("crypto", { randomUUID: () => "draft-tab" });
@@ -261,7 +347,9 @@ describe("shared resource event transport", () => {
     await vi.advanceTimersByTimeAsync(0);
     const api = await import("../api");
     api.markApiSchemaMismatch();
-    await vi.advanceTimersByTimeAsync(1_000);
+    // Drain deferred coordinator shutdown without assuming a fixed timer deadline.
+    // The assertion still rejects recurring timers after cleanup.
+    await vi.runOnlyPendingTimersAsync();
     expect(vi.getTimerCount()).toBe(0);
     vi.resetModules();
     vi.restoreAllMocks();
@@ -367,7 +455,9 @@ describe("shared resource event transport", () => {
     );
     await vi.advanceTimersByTimeAsync(30);
     expect(subscriptionPosts).toHaveLength(1);
-    expect(subscriptionPosts[0]?.add).toEqual([{ kind: "accounts" }]);
+    expect(subscriptionPosts[0]?.add).toEqual([
+      { resource: { kind: "accounts" }, since: undefined },
+    ]);
     expect(Source.instances.filter((source) => !source.closed)).toHaveLength(1);
     const latestUrl = Source.instances[0]!.url;
     expect(latestUrl).toBe(initialUrl);
@@ -426,6 +516,75 @@ describe("shared resource event transport", () => {
     stopBaseline();
     stopFirst();
   });
+
+  it.each(["success", "failure", "pending"] as const)(
+    "delivers other writers' stream changes while a mutation is %s",
+    async (outcome) => {
+      syncDatabase.mockResolvedValue({ workspaceId });
+      const api = await import("../api");
+      // Keep the real mutation caller; loadTransport mocks subscription updates.
+      const post = api.post;
+      const transport = await loadTransport();
+      api.setToken("test-token");
+      api.setWorkspace(workspaceId);
+      let resolve!: (response: Response) => void;
+      let reject!: (error: Error) => void;
+      const fetch = vi.fn(
+        () =>
+          new Promise<Response>((done, fail) => {
+            resolve = done;
+            reject = fail;
+          }),
+      );
+      vi.stubGlobal("fetch", fetch);
+      const onChange = vi.fn();
+      const stop = transport.watchResourceChanges({ kind: "state" }, onChange);
+      await vi.advanceTimersByTimeAsync(20);
+      const emit = (revision: number, reason = "change") =>
+        Source.instances[0]!.emit("resources", {
+          protocol: 4,
+          workspaceId,
+          epoch: "mutation",
+          revision,
+          reason,
+          resources: [{ kind: "state" }],
+        });
+      emit(40, "initial");
+      await vi.advanceTimersByTimeAsync(20);
+      expect(onChange).toHaveBeenCalledOnce();
+      const pending = post("/api/stop" as never, { id: "chat" } as never).catch(
+        (error) => error,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetch).toHaveBeenCalledOnce();
+      // Both writers publish before the mutation response arrives.
+      emit(41);
+      await vi.advanceTimersByTimeAsync(5);
+      emit(42);
+      if (outcome === "failure") reject(new TypeError("response lost"));
+      else if (outcome === "success") resolve(Response.json({ ok: true }));
+      if (outcome !== "pending") await pending;
+      await vi.advanceTimersByTimeAsync(20);
+      expect(onChange.mock.calls.map(([version]) => version.revision)).toEqual([
+        40, 41, 42,
+      ]);
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ revision: 42 }),
+      );
+      await vi.advanceTimersByTimeAsync(20_000);
+      emit(43);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(onChange).toHaveBeenCalledTimes(4);
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ revision: 43 }),
+      );
+      if (outcome === "pending") {
+        resolve(Response.json({ ok: true }));
+        await pending;
+      }
+      stop();
+    },
+  );
 
   it("suppresses only the exact entity sequence batch applied from a response", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
@@ -785,6 +944,11 @@ describe("shared resource event transport", () => {
     expect(states).not.toContain("schema-mismatch");
     await vi.advanceTimersByTimeAsync(10_000);
     expect(Source.instances.length).toBeGreaterThan(1);
+    expect(
+      new URL(Source.instances[1]!.url, "http://studio.test").searchParams.get(
+        "reconnect",
+      ),
+    ).toBe("true");
     stop();
     stopStatus();
   });
@@ -1947,7 +2111,9 @@ describe("shared resource event transport", () => {
 
     await vi.advanceTimersByTimeAsync(30);
     expect(subscriptionPosts).toHaveLength(1);
-    expect(subscriptionPosts[0]?.add).toEqual([evictedRef]);
+    expect(subscriptionPosts[0]?.add).toEqual([
+      { resource: evictedRef, since: undefined },
+    ]);
     expect(Source.instances).toHaveLength(sourceCountBeforeLateSubscription);
     expect(
       ownerChannel.messages
@@ -1982,6 +2148,9 @@ describe("shared resource event transport", () => {
   });
 
   it("reconciles an unchanged owner baseline once after reconnect", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const fetch = vi.fn().mockRejectedValue(new TypeError("Unexpected fetch"));
+    vi.stubGlobal("fetch", fetch);
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("navigator", {
       onLine: true,
@@ -2011,13 +2180,18 @@ describe("shared resource event transport", () => {
       resources: [local],
       resourceVersions: [{ resource: local, revision: 7 }],
     };
+    // An established stream opens before delivering its baseline. Without this,
+    // onerror starts a real identity probe whose cleanup depends on network timing.
+    Source.instances[0]!.open();
     Source.instances[0]!.emit("resources", initial);
     await vi.advanceTimersByTimeAsync(20);
     expect(onChange).toHaveBeenCalledTimes(1);
 
     Source.instances[0]!.onerror?.();
-    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetch).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
     expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.open();
     Source.instances[1]!.emit("resources", {
       ...initial,
       reason: "reconnect",
@@ -2044,6 +2218,8 @@ describe("shared resource event transport", () => {
   });
 
   it("recovers from a replaced stream with a new server epoch", async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError("Unexpected fetch"));
+    vi.stubGlobal("fetch", fetch);
     vi.spyOn(Math, "random").mockReturnValue(0.5);
     syncDatabase.mockResolvedValue({ workspaceId });
 
@@ -2059,6 +2235,7 @@ describe("shared resource event transport", () => {
       await vi.advanceTimersByTimeAsync(20);
       expect(Source.instances).toHaveLength(1);
       const original = Source.instances[0]!;
+      original.open();
       original.emit("resources", {
         protocol: 4,
         workspaceId,
@@ -2071,8 +2248,10 @@ describe("shared resource event transport", () => {
       expect(states.at(-1)).toBe("live");
 
       original.onerror?.();
+      expect(fetch).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(500);
       expect(Source.instances).toHaveLength(2);
+      Source.instances[1]!.open();
       Source.instances[1]!.emit("resources", {
         protocol: 4,
         workspaceId,
@@ -2085,6 +2264,9 @@ describe("shared resource event transport", () => {
 
       expect(states.at(-1)).toBe("live");
       expect(onChange).toHaveBeenCalledTimes(2);
+      expect(onChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ epoch: "server-after-restart", revision: 1 }),
+      );
     } finally {
       stopChanges();
       stopStatus();
@@ -2175,6 +2357,9 @@ describe("shared resource event transport", () => {
   });
 
   it("drops a recovery marker when its last local subscriber leaves", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const fetch = vi.fn().mockRejectedValue(new TypeError("Unexpected fetch"));
+    vi.stubGlobal("fetch", fetch);
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("navigator", {
       onLine: true,
@@ -2211,15 +2396,20 @@ describe("shared resource event transport", () => {
         { resource: b, revision: 7 },
       ],
     };
+    // An established stream opens before its baseline; otherwise onerror starts
+    // a real identity probe whose cleanup timer depends on network timing.
+    Source.instances[0]!.open();
     Source.instances[0]!.emit("resources", baseline);
     await vi.advanceTimersByTimeAsync(20);
     expect(onA).toHaveBeenCalledTimes(1);
     expect(onB).toHaveBeenCalledTimes(1);
 
     Source.instances[0]!.onerror?.();
+    expect(fetch).not.toHaveBeenCalled();
     stopA();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.open();
     Source.instances[1]!.emit("resources", {
       ...baseline,
       reason: "reconnect",

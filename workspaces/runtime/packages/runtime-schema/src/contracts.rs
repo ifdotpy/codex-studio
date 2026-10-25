@@ -56,6 +56,14 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
+                "STUDIO_ERRORS_DISMISS_MAX_IDS",
+                values::STUDIO_ERRORS_DISMISS_MAX_IDS.to_string(),
+            ),
+            (
+                "SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS",
+                values::SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS.to_string(),
+            ),
+            (
                 "SYNC_TRANSCRIPT_STREAM_MAX_ITEMS",
                 values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS.to_string(),
             ),
@@ -391,6 +399,11 @@ fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
     expect_number(
         openapi,
+        "/components/schemas/StudioErrorsDismissRequest/properties/ids/maxItems",
+        values::STUDIO_ERRORS_DISMISS_MAX_IDS as i64,
+    )?;
+    expect_number(
+        openapi,
         "/components/schemas/DraftChangeBatch/properties/documents/maxItems",
         values::SYNC_DRAFT_STREAM_MAX_DOCUMENTS,
     )?;
@@ -398,6 +411,11 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         openapi,
         "/components/schemas/EntityChangeBatch/properties/documents/maxItems",
         values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/VoiceRecordBatch/properties/records/maxItems",
+        values::SYNC_VOICE_STREAM_MAX_RECORDS,
     )?;
     for field in ["items", "removed", "order"] {
         expect_number(
@@ -409,6 +427,16 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     expect_number(
         openapi,
         "/components/schemas/TranscriptStreamDelta/properties/itemRevisions/maxProperties",
+        values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/TranscriptResource/properties/tail/default",
+        values::SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS as i64,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/TranscriptResource/properties/tail/maximum",
         values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
     )?;
     check_delivery_parity(openapi)?;
@@ -521,6 +549,10 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         "ResourceChangeEvent",
         "ResourceHeartbeatEvent",
         "ResourceTokenRatesEvent",
+        "AuthProgressEvent",
+        "RenameProgressEvent",
+        "VaultReadinessEvent",
+        "VaultJobProgressEvent",
     ] {
         for bound in ["const", "minimum", "maximum"] {
             expect_number(
@@ -528,6 +560,19 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
                 &format!("/components/schemas/{owner}/properties/protocol/{bound}"),
                 version,
             )?;
+        }
+    }
+    for (owner, consumer) in [("id", "agentId"), ("request_id/anyOf/0", "requestId")] {
+        let source = openapi.pointer(&format!(
+            "/components/schemas/RenameRequest/properties/{owner}"
+        ));
+        let target = openapi.pointer(&format!(
+            "/components/schemas/RenameProgressResource/properties/{consumer}"
+        ));
+        if source != target {
+            return Err(format!(
+                "RenameRequest owns rename selector bounds; RenameProgressResource.{consumer} differs"
+            ));
         }
     }
     for owner in ["TokenRateSnapshot", "ResourceTokenRatesEvent"] {
@@ -663,6 +708,51 @@ fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, St
     Ok(body)
 }
 
+fn subscription_scopes_ts(
+    scopes: &std::collections::BTreeMap<String, crate::sync_protocol::SubscriptionEntityScope>,
+) -> String {
+    let mut text = format!("// {HEADER}\nexport const SUBSCRIPTION_ENTITY_SCOPES = {{\n");
+    for (kind, scope) in scopes {
+        let key = if kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            kind.clone()
+        } else {
+            json_string(kind)
+        };
+        writeln!(text, "  {key}: {{").expect("String write");
+        if scope.collections.len() == 1 {
+            writeln!(
+                text,
+                "    collections: [{}],",
+                json_string(&scope.collections[0])
+            )
+            .expect("String write");
+        } else {
+            text.push_str("    collections: [\n");
+            for collection in &scope.collections {
+                writeln!(text, "      {},", json_string(collection)).expect("String write");
+            }
+            text.push_str("    ],\n");
+        }
+        for (field, value) in [
+            ("idField", &scope.id_field),
+            ("agentField", &scope.agent_field),
+        ] {
+            writeln!(
+                text,
+                "    {field}: {},",
+                value
+                    .as_deref()
+                    .map(json_string)
+                    .unwrap_or_else(|| "null".into())
+            )
+            .expect("String write");
+        }
+        text.push_str("  },\n");
+    }
+    text.push_str("} as const;\n");
+    text
+}
+
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     let mut openapi = read_json(root, OPENAPI_PATH)?;
@@ -698,7 +788,12 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         }
     }
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
+    let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: web("subscriptionEntities.ts"),
+            text: subscription_scopes_ts(&scopes),
+        },
         Rendered {
             path: web("taskReview.ts"),
             text: format!(

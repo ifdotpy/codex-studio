@@ -72,7 +72,10 @@ import {
 import { useRemovedMessages } from "./removedMessages";
 import { isSendingMessage } from "./removeSendingMessages";
 
-import { useConversationScroll } from "./useConversationScroll";
+import {
+  useConversationScroll,
+  TRANSCRIPT_HISTORY_START_PX,
+} from "./useConversationScroll";
 import { useAttachmentDrafts } from "./useAttachmentDrafts";
 import { useUploadRecovery } from "./useUploadRecovery";
 import { useServerUploads } from "../servers/ServerServicesContext";
@@ -84,7 +87,6 @@ import {
   type Room,
 } from "../types";
 import Usage from "./Usage";
-import ConversationWarnings from "./ConversationWarnings";
 import type { UsageAccount } from "./Usage";
 import PromptNavigator from "./PromptNavigator";
 import { usePromptRecall } from "./usePromptRecall";
@@ -115,7 +117,7 @@ import { LiveAgentPhase } from "./agents/AgentPhase";
 import { UnifiedAgentSettings } from "./agents/UnifiedAgentSettings";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import { ExecutionSummaryTrigger } from "./agents/ExecutionSummaryTrigger";
-import type { useAccounts } from "./Accounts";
+import { AccountTransferChip, type useAccounts } from "./Accounts";
 import ComposerAttachments, {
   MessageAttachments,
   type Attachment,
@@ -223,6 +225,7 @@ function useCompactHeaderTools() {
 
 export default function Conversation(p: {
   id: string | null;
+  visible?: boolean;
   projectName?: string;
   recentChats?: RecentProjectChat[];
   syncWorkspaceId?: string;
@@ -375,6 +378,7 @@ export default function Conversation(p: {
     p.agent?.source === "managed",
     p.data.stateDir,
     p.syncWorkspaceId,
+    p.visible ?? true,
   );
   const outgoing = (p.outgoing || []).filter(
     (entry) => entry.body.room === p.id,
@@ -497,10 +501,24 @@ export default function Conversation(p: {
     setFollow,
     onScroll,
     hasRecentScrollInput,
+    consumeHistoryScrollInput,
     remember,
     revealRequest,
     getAnchorId,
   } = useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
+  const loadOlderAtStart = () => {
+    if (
+      !before ||
+      pageLoading ||
+      !scroll.current ||
+      scroll.current.scrollTop > TRANSCRIPT_HISTORY_START_PX ||
+      !consumeHistoryScrollInput()
+    )
+      return;
+    setFollow(false);
+    setPageAnchor(getAnchorId());
+    void older().catch((error) => p.notify(errorText(error)));
+  };
   const input = useRef<HTMLTextAreaElement>(null);
   const navigationAttempt = useRef(0);
   const handledJump = useRef("");
@@ -695,6 +713,7 @@ export default function Conversation(p: {
       >
         <UnifiedAgentSettings
           key={p.agent.id}
+          showTransferStatus={false}
           state={p.accountsState}
           notify={p.notify}
           agent={p.agent}
@@ -1533,19 +1552,6 @@ export default function Conversation(p: {
         />
       )}
       {headerTools &&
-        agent &&
-        !p.room &&
-        createPortal(
-          <ConversationWarnings
-            key={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
-            scope={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
-            notices={runtime?.nativeNotices ?? []}
-            accountKey={agent.accountKey || "default"}
-            messages={items}
-          />,
-          headerTools,
-        )}
-      {headerTools &&
         !p.room &&
         (p.id || managed) &&
         createPortal(
@@ -1613,6 +1619,10 @@ export default function Conversation(p: {
         onScroll={() => {
           onScroll();
           if (!getFollow()) setPageAnchor(getAnchorId());
+          loadOlderAtStart();
+        }}
+        onWheel={(event) => {
+          if (event.deltaY < 0) loadOlderAtStart();
         }}
       >
         <div ref={content} className="message-content">
@@ -1902,6 +1912,13 @@ export default function Conversation(p: {
                 );
               return (
                 <>
+                  {managed &&
+                    p.agent?.isLead &&
+                    p.agent.accountTransfer?.scope !== "subagents" && (
+                      <AccountTransferChip
+                        transfer={p.agent.accountTransfer ?? undefined}
+                      />
+                    )}
                   <PromptInput
                     value={draft}
                     session={p.id || "new"}
@@ -1979,18 +1996,20 @@ export default function Conversation(p: {
                     </div>
                   )}
                   <div className="composer-bar">
-                    <DraftVersions
-                      key={`drafts:${p.id || "new"}`}
-                      versions={p.draftConflicts || []}
-                      useVersion={(version, mode) =>
-                        p.setDraft((current) =>
-                          mode === "append" && current
-                            ? `${current}\n\n${version.text}`
-                            : version.text,
-                        )
-                      }
-                      dismiss={(version) => p.dismissDraft?.(version)}
-                    />
+                    <div className="composer-draft-control">
+                      <DraftVersions
+                        key={`drafts:${p.id || "new"}`}
+                        versions={p.draftConflicts || []}
+                        useVersion={(version, mode) =>
+                          p.setDraft((current) =>
+                            mode === "append" && current
+                              ? `${current}\n\n${version.text}`
+                              : version.text,
+                          )
+                        }
+                        dismiss={(version) => p.dismissDraft?.(version)}
+                      />
+                    </div>
                     <div className="composer-tools">
                       {attachTool}
                       <div className="composer-tools-inline">{voiceTool}</div>
@@ -2167,6 +2186,7 @@ export default function Conversation(p: {
             {agent?.source === "managed" && (
               <Usage
                 key={p.agent?.accountKey || "default"}
+                visible={p.visible ?? true}
                 agent={{
                   ...agent,
                   accountKey: p.agent?.accountKey || "default",

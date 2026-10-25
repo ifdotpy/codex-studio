@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+
+afterEach(() => vi.restoreAllMocks());
 
 test("skill discovery and frontmatter parsing", async () => {
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "claude-skills-contract-"),
   );
+  vi.spyOn(os, "homedir").mockReturnValue(root);
   const config = path.join(root, "config");
   const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = config;
@@ -79,6 +82,7 @@ test("skill discovery and frontmatter parsing", async () => {
 
 test("plugin skills use each project's install scope and local enable override", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-skill-scope-"));
+  vi.spyOn(os, "homedir").mockReturnValue(root);
   const previous = process.env.CLAUDE_CONFIG_DIR;
   const config = path.join(root, "config");
   process.env.CLAUDE_CONFIG_DIR = config;
@@ -167,6 +171,7 @@ test("plugin scope follows Git worktrees and reports malformed local policy", as
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "claude-worktree-skills-"),
   );
+  vi.spyOn(os, "homedir").mockReturnValue(root);
   const previous = process.env.CLAUDE_CONFIG_DIR;
   const config = path.join(root, "config"),
     repo = path.join(root, "repo"),

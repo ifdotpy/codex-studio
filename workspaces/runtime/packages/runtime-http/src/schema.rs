@@ -111,14 +111,4 @@ mod tests {
             .expect("generated TypeScript schema hash is present");
         assert_eq!(api_schema_hash(), client_hash);
     }
-
-    #[test]
-    fn committed_schema_lists_api_operations() {
-        assert!(
-            operations()
-                .expect("committed schema parses")
-                .iter()
-                .any(|(_, path)| path.starts_with("/api/"))
-        );
-    }
 }

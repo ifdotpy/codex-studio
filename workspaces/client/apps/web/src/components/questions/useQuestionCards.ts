@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useServerApi } from "../../servers/ServerServicesContext";
+import { useServerSync } from "../../servers/ServerServicesContext";
 import type { components } from "../../generated/api";
 import type { Message } from "../../types";
 import {
@@ -16,7 +16,7 @@ type RequestDto = components["schemas"]["RequestEntityDto"];
 
 /**
  * Question cards for one chat. Pending state comes from live request entities;
- * answers come from the question history, read again when a question changes.
+ * answers come from source-published question history entities.
  */
 export function useQuestionCards(
   agentId: string | undefined,
@@ -24,7 +24,7 @@ export function useQuestionCards(
   items: Message[],
   requests: RequestDto[],
 ) {
-  const { get } = useServerApi();
+  const { subscribeStateProjection } = useServerSync();
   const refreshKey = useMemo(
     () => questionRefreshKey(items, requests),
     [items, requests],
@@ -36,18 +36,36 @@ export function useQuestionCards(
   }>({ owner, entries: [] });
   useEffect(() => {
     if (!agentId) return;
-    let active = true;
-    get("/api/questions", { query: { agent: agentId } })
-      .then((data) => {
-        if (active) setHistory({ owner, entries: data.items });
-      })
-      .catch(() => {
-        /* Cards still render from the stored items; answers stay unknown. */
-      });
-    return () => {
-      active = false;
-    };
-  }, [owner, refreshKey]);
+    let source: unknown;
+    let familyKey = "";
+    return subscribeStateProjection(
+      (snapshot) => {
+        if (!snapshot) return;
+        const agent = snapshot.runtime.agents.find((row) => row.id === agentId);
+        const root = agent?.rootId || agentId;
+        const family = new Set(
+          snapshot.runtime.agents
+            .filter((row) => (row.rootId || row.id) === root)
+            .map((row) => row.id),
+        );
+        const nextFamily = JSON.stringify([...family].sort());
+        if (
+          source === snapshot.runtime.questionHistory &&
+          familyKey === nextFamily
+        )
+          return;
+        source = snapshot.runtime.questionHistory;
+        familyKey = nextFamily;
+        setHistory({
+          owner,
+          entries: (snapshot.runtime.questionHistory ?? []).filter((entry) =>
+            family.has(entry.agent),
+          ),
+        });
+      },
+      () => {},
+    );
+  }, [owner, subscribeStateProjection]);
   const entries = history.owner === owner ? history.entries : undefined;
   const lookup = useMemo<QuestionLookup>(
     () => ({

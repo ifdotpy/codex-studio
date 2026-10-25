@@ -70,6 +70,11 @@ leave detached generators. Results of ordinary checks taken while a load run was
 active are not valid evidence. See [docs/testing.md](docs/testing.md) for the
 manual-run rules.
 
+## Live data
+
+Server data reaches the client only as SSE events; the client never polls. See
+[the no-polling rule](docs/sync-protocol.md#rule-no-polling-only-sse-events).
+
 ## Code checks
 
 The repository root owns Oxlint and Oxfmt. Install their pinned dependencies with

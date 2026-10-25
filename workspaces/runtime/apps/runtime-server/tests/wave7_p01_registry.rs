@@ -163,9 +163,8 @@ async fn wait_for_durable_agent_status(fixture: &Fixture, agent_id: &str, expect
     .unwrap_or_else(|_| panic!("durable agent {agent_id} status {expected:?} hang guard"));
 }
 
-/// Used only by the Linux supervisor scenarios, as are the helpers below
-/// gated the same way.
-#[cfg(target_os = "linux")]
+/// File-backed provider observations wake the fixture without polling.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn watch_file_changes(
     path: &std::path::Path,
 ) -> (
@@ -1707,18 +1706,34 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
 
 async fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Vec<String> {
     let source = fixture.agents[0]["id"].as_str().unwrap().to_owned();
-    fixture.store.transaction(move |tx| {
-        // One recursive insert per table keeps this 4,100-record paging fixture
-        // from recompiling and executing two SQL statements for every row.
-        let sequence = "WITH RECURSIVE seq(i) AS (
+    fixture
+        .store
+        .transaction(move |tx| seed_backlog_rows(tx, &source, count, each_account))
+        .await
+        .unwrap()
+}
+
+fn seed_backlog_rows(
+    tx: &rusqlite::Transaction<'_>,
+    source: &str,
+    count: usize,
+    each_account: bool,
+) -> Result<Vec<String>, StoreError> {
+    // One recursive insert per table keeps this 4,100-record paging fixture
+    // from recompiling and executing two SQL statements for every row.
+    let sequence = "WITH RECURSIVE seq(i) AS (
                 SELECT 0 WHERE ?1 > 0
                 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1
             ), source(record) AS (
                 SELECT record FROM runtime_agents WHERE id = ?2
             )";
-        // Seed the current split storage format; migration is not under test.
-        let record: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [&source], |row| row.get(0))?;
-        tx.execute(
+    // Seed the current split storage format; migration is not under test.
+    let record: String = tx.query_row(
+        "SELECT record FROM runtime_agents WHERE id=?1",
+        [&source],
+        |row| row.get(0),
+    )?;
+    tx.execute(
             &format!("{sequence}
                 INSERT INTO runtime_agents(id, record)
                 SELECT printf('00000000-0000-4000-8000-%012d', seq.i),
@@ -1727,36 +1742,54 @@ async fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Ve
                                 '$.executionSettingsAccountKey', CASE WHEN ?3 THEN printf('page-%06d', seq.i) ELSE 'default' END,
                                 '$.contextRepairWait', 'blocked')
                 FROM seq CROSS JOIN source"),
-            (count as i64, source.as_str(), each_account, record),
+            (count as i64, source, each_account, record),
         )?;
-        let columns = studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
-            .map(|field| format!("\"{field}\"")).join(",");
-        tx.execute(
-            &format!("{sequence} INSERT INTO runtime_agent_volatile(id,{columns})
+    let columns = studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
+        .map(|field| format!("\"{field}\""))
+        .join(",");
+    tx.execute(
+        &format!(
+            "{sequence} INSERT INTO runtime_agent_volatile(id,{columns})
                 SELECT printf('00000000-0000-4000-8000-%012d', seq.i), {columns}
-                FROM seq CROSS JOIN runtime_agent_volatile WHERE id=?2"),
-            (count as i64, source.as_str()),
-        )?;
-        tx.execute(
-            &format!("{sequence}
+                FROM seq CROSS JOIN runtime_agent_volatile WHERE id=?2"
+        ),
+        (count as i64, source),
+    )?;
+    tx.execute(
+        &format!(
+            "{sequence}
                 INSERT INTO runtime_events(id, agent, kind, text, status, created, epoch)
                 SELECT printf('00000000-0000-4000-8000-%012d', seq.i),
                        printf('00000000-0000-4000-8000-%012d', seq.i),
                        'annotation', 'fixture', 'pending', 0, json_extract(source.record, '$.epoch')
-                FROM seq CROSS JOIN source"),
-            (count as i64, source.as_str()),
-        )?;
-        Ok((0..count)
-            .map(|i| format!("00000000-0000-4000-8000-{i:012}"))
-            .collect())
-    }).await.unwrap()
+                FROM seq CROSS JOIN source"
+        ),
+        (count as i64, source),
+    )?;
+    Ok((0..count)
+        .map(|i| format!("00000000-0000-4000-8000-{i:012}"))
+        .collect())
 }
 
-#[tokio::test]
-async fn pending_backlog_pages_traverse_and_wrap() {
-    let fixture = Fixture::new().await;
-    let expected = seed_backlog(&fixture, 65, false).await;
-    let db = fixture.store.test_reader().expect("reader");
+// Paging is a read query: use the production Canvas catalog without writer actors
+// or publishing thousands of agent entities unrelated to cursor selection.
+fn backlog_database(count: usize, each_account: bool) -> (rusqlite::Connection, Vec<String>) {
+    let mut db = studio_runtime_store::test_canvas();
+    let tx = db.transaction().unwrap();
+    let agent = studio_runtime_store::AgentRecord::from_value(json!({
+        "id":"source", "rootId":"source", "epoch":1, "status":"queued",
+        "autoWake":true, "accountKey":"default", "contextRepairWait":"blocked"
+    }))
+    .unwrap();
+    studio_runtime_store::AgentRepository::put(&tx, &agent).unwrap();
+    let ids = seed_backlog_rows(&tx, "source", count, each_account).unwrap();
+    tx.commit().unwrap();
+    (db, ids)
+}
+
+#[test]
+fn pending_backlog_pages_traverse_and_wrap() {
+    let (db, expected) = backlog_database(65, false);
     let mut after = BTreeMap::new();
     let mut actual = Vec::new();
     while actual.len() < expected.len() {
@@ -1782,11 +1815,9 @@ async fn pending_backlog_pages_traverse_and_wrap() {
     );
 }
 
-#[tokio::test]
-async fn pending_backlog_tail_beyond_the_historical_total_limit_is_reachable() {
-    let fixture = Fixture::new().await;
-    let expected = seed_backlog(&fixture, 4100, false).await;
-    let db = fixture.store.test_reader().expect("reader");
+#[test]
+fn pending_backlog_tail_beyond_the_historical_total_limit_is_reachable() {
+    let (db, expected) = backlog_database(4100, false);
     let page = account_registry::target_page(
         &db,
         "",
@@ -1802,11 +1833,9 @@ async fn pending_backlog_tail_beyond_the_historical_total_limit_is_reachable() {
     );
 }
 
-#[tokio::test]
-async fn account_backlog_pages_traverse_and_wrap() {
-    let fixture = Fixture::new().await;
-    seed_backlog(&fixture, 130, true).await;
-    let db = fixture.store.test_reader().expect("reader");
+#[test]
+fn account_backlog_pages_traverse_and_wrap() {
+    let (db, _) = backlog_database(130, true);
     let first = account_registry::target_page(&db, "", &BTreeMap::new()).unwrap();
     assert_eq!(first.len(), 128);
     let second =
@@ -3378,9 +3407,14 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .unwrap();
     let mut restart_changes = restarted_state.sync_changes_handle().subscribe();
     // Shutdown closes the bridge's query; whether the bridge persists the
-    // aborted turn as interrupted before it exits is a race. Either outcome
-    // is safe: an unknown turn is held, a confirmed interruption continues
-    // with a restart notice. Neither resends the interrupted input.
+    // aborted turn as interrupted before it exits is a race. An unknown input
+    // is held, a confirmed interruption continues with a restart notice, and
+    // an accepted turn without conclusive native history is paused. Shutdown
+    // also drains the bridge's stdout, so the `turn/start` reply can reach
+    // Studio before the exit; the start is then accepted, and a turn that
+    // native history shows as completed (this fixture's SDK finishes an
+    // aborted query successfully) is reconciled as finished. No outcome
+    // resends the interrupted input.
     let recovered = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = fixture
@@ -3401,10 +3435,27 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
                 && record["contextRepairWait"]["scope"] == "native"
                 && record["contextRepairWait"]["events"]
                     == json!(["a19e61c8-6156-4874-b8d8-9111b0a49fc4"]);
+            // A held input may also stop as interrupted without auto-wake when
+            // the restart notice reaches the agent before native repair starts.
+            let held_interrupted = record["status"] == "interrupted"
+                && record["autoWake"] == false
+                && record["inFlight"] != true
+                && record["restartRecovery"]["stage"] == "held";
             let continued = record["restartRecovery"]["stage"] == "continued"
                 && record["status"] == "completed"
                 && record["inFlight"] != true;
-            if held || continued {
+            let finished = record["restartRecovery"]["stage"] == "finished"
+                && record["status"] == "completed"
+                && record["autoWake"] == true
+                && record["inFlight"] != true
+                && record["connectionRecovery"]["outcome"] == "completed";
+            let unconfirmed = record["restartRecovery"]["stage"] == "finished"
+                && record["status"] == "paused"
+                && record["autoWake"] == false
+                && record["inFlight"] != true
+                && record["nativeFailureHold"] == true
+                && record["lastCompletedTurnStatus"] == "uncertain";
+            if held || held_interrupted || continued || finished || unconfirmed {
                 break record;
             }
             restart_changes.changed().await.unwrap();
@@ -3413,7 +3464,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .await
     .unwrap_or_else(|_| {
         panic!(
-            "in-flight Claude turn should be held or continued: {}",
+            "in-flight Claude turn should be held, continued, finished, or paused as unconfirmed: {}",
             direct_agent_debug(&fixture.store, &agent_id)
         )
     });
@@ -3434,6 +3485,20 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     if recovered["restartRecovery"]["stage"] == "held" {
         assert_eq!(second_event_status, "uncertain");
         assert_eq!(queries_started, 2, "restart must not resend the turn");
+    } else if recovered["restartRecovery"]["stage"] == "finished" {
+        assert_eq!(second_event_status, "delivered");
+        assert_eq!(queries_started, 2, "restart must not resend the turn");
+        if recovered["status"] == "paused" {
+            assert_eq!(
+                recovered["error"]["message"],
+                "Studio could not confirm the Claude turn outcome. Review the native transcript before continuing."
+            );
+            assert_eq!(
+                recovered["nativeTurnError"]["turnId"],
+                recovered["lastCompletedTurn"]
+            );
+            assert!(recovered["startAttempt"].is_null());
+        }
     } else {
         assert_eq!(second_event_status, "delivered");
         let continued_events = recovered["startAttempt"]["events"].as_array().unwrap();
@@ -4315,12 +4380,22 @@ fn restart_summary(agent: &Value) -> Value {
     })
 }
 
-/// Wait for `ready`, polling, or panic with `state` after the hang guard.
+/// Wait for committed store changes or provider file events, or report the hang guard.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-async fn restart_wait(label: &str, mut ready: impl FnMut() -> bool, state: impl Fn() -> String) {
+async fn restart_wait(
+    label: &str,
+    fixture: &Fixture,
+    mut ready: impl FnMut() -> bool,
+    state: impl Fn() -> String,
+) {
+    let (_watcher, mut files) = watch_file_changes(&fixture._root.path().join("requests.jsonl"));
+    let mut changes = fixture.changes.clone();
     let waited = tokio::time::timeout(TEST_HANG_GUARD, async {
         while !ready() {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            tokio::select! {
+                result = files.recv() => { result.expect("provider file watcher remains open"); }
+                result = changes.changed() => { result.expect("store observer remains open"); }
+            }
         }
     })
     .await;
@@ -4479,6 +4554,7 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
     .unwrap();
     restart_wait(
         "both turns start",
+        &fixture,
         || {
             restart_provider_count(&root, "turn/start", "fake-thread-0") == 1
                 && restart_provider_count(&root, "turn/start", "fake-thread-1") == 1
@@ -4545,6 +4621,7 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
     .unwrap();
     restart_wait(
         "the stopped turn gets its interrupt and command cleanup",
+        &fixture,
         || {
             restart_provider_count(&root, "turn/interrupt", "fake-thread-1") >= 1
                 && restart_provider_count(
@@ -4563,6 +4640,7 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
     std::fs::write(root.join("complete-fake-thread-0"), "1").unwrap();
     restart_wait(
         "A's continued turn completes",
+        &fixture,
         || restart_agent(&store, &a)["lastCompletedTurn"] == "turn-fake-thread-0",
         || state_text(&store, &root, &a, &b),
     )
@@ -4606,4 +4684,112 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
     .unwrap();
     drop(fixture);
     eprintln!("restart witness ran in {:?}", started.elapsed());
+}
+
+/// SQLite emits these receipts after the actual checkpoint, while a taken
+/// scheduling claim alone no longer proves that the WAL reached the database.
+async fn wait_for_wal_flush(
+    events: &mut mpsc::UnboundedReceiver<studio_runtime_store::StoreDiagnosticsEvent>,
+) -> bool {
+    use studio_runtime_store::{StoreDatabaseKind, StoreDiagnosticsEvent};
+    // SQLite runs on dedicated threads; their completion must not race an
+    // automatically advancing virtual hang guard.
+    tokio::time::resume();
+    let flushed = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, async {
+        for expected in [StoreDatabaseKind::Canvas, StoreDatabaseKind::Analytics] {
+            match events
+                .recv()
+                .await
+                .expect("checkpoint observer remains open")
+            {
+                StoreDiagnosticsEvent::WalCheckpoint {
+                    database,
+                    busy,
+                    log_frames,
+                    checkpointed_frames,
+                    ..
+                } => {
+                    assert_eq!(database, expected);
+                    assert_eq!(busy, 0);
+                    assert_eq!(checkpointed_frames, log_frames);
+                }
+                _ => unreachable!("observer sends only checkpoint events"),
+            }
+        }
+    })
+    .await
+    .is_ok();
+    tokio::time::pause();
+    flushed
+}
+
+// With synchronous=NORMAL the registry's checkpoint is the flush that makes
+// commits durable. A commit that wakes no scheduler (here a table nobody
+// observes) must still be flushed one interval later, every time.
+#[tokio::test(start_paused = true)]
+async fn a_commit_without_a_registry_wake_is_flushed_after_one_interval() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    static CHECKPOINTS: std::sync::OnceLock<
+        mpsc::UnboundedSender<studio_runtime_store::StoreDiagnosticsEvent>,
+    > = std::sync::OnceLock::new();
+    fn checkpointed(event: studio_runtime_store::StoreDiagnosticsEvent) {
+        if matches!(
+            event,
+            studio_runtime_store::StoreDiagnosticsEvent::WalCheckpoint { .. }
+        ) {
+            // A failed fixture may already have closed its receiver.
+            if let Some(sender) = CHECKPOINTS.get() {
+                let _closed = sender.send(event);
+            }
+        }
+    }
+    let (sender, mut checkpoints) = mpsc::unbounded_channel();
+    CHECKPOINTS.set(sender).unwrap();
+    store
+        .set_diagnostics_callback(Some(checkpointed))
+        .await
+        .unwrap();
+    let (launcher, _writes) = scripted_with_unknown_writes(false);
+    let registry = AccountRegistry::new(store.clone(), launcher, test_registry_config())
+        .await
+        .unwrap();
+    let stop = Shutdown::default();
+    let task = tokio::spawn(registry.run(
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        stop.clone(),
+    ));
+    let commit = |value: i64| {
+        let store = store.clone();
+        async move {
+            store
+                .transaction(move |tx| {
+                    tx.execute_batch("CREATE TABLE IF NOT EXISTS unobserved_flush(v INTEGER);")?;
+                    tx.execute("INSERT INTO unobserved_flush VALUES (?1)", [value])?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+    };
+    let interval = studio_runtime_store::WAL_FLUSH_INTERVAL;
+    for value in 0..2 {
+        commit(value).await;
+        assert!(store.wal_checkpoint_retry_after().unwrap().is_some());
+        tokio::time::sleep(interval).await;
+        assert!(
+            wait_for_wal_flush(&mut checkpoints).await,
+            "commit {value} was not flushed one interval later"
+        );
+    }
+    // Paused time would let the hang guard expire while shutdown awaits SQLite work.
+    tokio::time::resume();
+    stop.cancel();
+    tokio::time::timeout(TEST_HANG_GUARD, task)
+        .await
+        .expect("account registry shutdown hang guard")
+        .unwrap()
+        .unwrap();
+    store.set_diagnostics_callback(None).await.unwrap();
 }

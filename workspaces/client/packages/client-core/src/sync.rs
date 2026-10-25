@@ -384,8 +384,17 @@ async fn pull_entities(
 /// message. Refuse a payload that cannot fit, with the envelope reserve, so the
 /// UI gets one actionable error instead of a transport response_size error.
 pub fn projection_error(payload: &str) -> Option<CommandError> {
+    // Bytes reserved for the response envelope around the escaped projection payload.
+    const PROJECTION_ENVELOPE_RESERVE_BYTES: usize = 4096;
+    projection_error_with_limit(
+        payload,
+        crate::protocol::MAX_MESSAGE.saturating_sub(PROJECTION_ENVELOPE_RESERVE_BYTES),
+    )
+}
+
+fn projection_error_with_limit(payload: &str, limit: usize) -> Option<CommandError> {
     let encoded = serde_json::to_string(payload).map_or(usize::MAX, |text| text.len());
-    (encoded > crate::protocol::MAX_MESSAGE.saturating_sub(4096)).then(|| {
+    (encoded > limit).then(|| {
         error(
             "projection_too_large",
             "The workspace state is too large to open. Update the Studio server; it removes old background tasks from sync.",
@@ -488,13 +497,15 @@ mod tests {
 
     #[test]
     fn projection_limit_counts_json_escaping() {
-        // 17 MiB of quotes becomes 34 MiB after escaping in the UI message.
-        let payload = "\"".repeat(17 * 1024 * 1024);
+        // Quotes occupy two JSON bytes; plain text occupies one, plus delimiters.
         assert_eq!(
-            projection_error(&payload).unwrap().code,
+            projection_error_with_limit(&"\"".repeat(32), 63)
+                .unwrap()
+                .code,
             "projection_too_large"
         );
-        assert!(projection_error(&"x".repeat(17 * 1024 * 1024)).is_none());
+        assert!(projection_error_with_limit(&"x".repeat(61), 63).is_none());
+        assert!(projection_error_with_limit(&"x".repeat(62), 63).is_some());
     }
 
     #[tokio::test]

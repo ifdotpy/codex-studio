@@ -1,4 +1,4 @@
-import { Bot, Equal, ScanEye, UserRound } from "lucide-react";
+import { Equal } from "lucide-react";
 import type { Agent } from "../../types";
 import { ProviderMark } from "../AccountTiles";
 import type { ComponentProps } from "react";
@@ -81,13 +81,12 @@ export function ExecutionSummaryTrigger({
     {
       role: "lead",
       label: agent.isLead ? "Lead" : "Agent",
-      Icon: UserRound,
       value: lead,
     },
     ...(root.isLead
       ? [
-          { role: "worker", label: "Workers", Icon: Bot, value: worker },
-          { role: "review", label: "Review", Icon: ScanEye, value: review },
+          { role: "worker", label: "Workers", value: worker },
+          { role: "review", label: "Review", value: review },
         ]
       : []),
   ];
@@ -112,14 +111,13 @@ export function ExecutionSummaryTrigger({
       {...buttonProps}
     >
       <span className="execution-summary-segments" aria-hidden="true">
-        {entries.map(({ role, label, Icon, value }) => (
+        {entries.map(({ role, label, value }) => (
           <span
             className="execution-summary-segment"
             data-role={role}
             key={role}
           >
             <span className="execution-symbols">
-              <Icon className="execution-role-icon" />
               {value ? (
                 <span
                   className="execution-provider"
@@ -133,30 +131,15 @@ export function ExecutionSummaryTrigger({
             </span>
             <span className="execution-role">{label}</span>
             {value ? (
-              <>
-                <span className="execution-model">
-                  {role === "lead" ? (
-                    <>
-                      <span className="execution-model-full">{value.name}</span>
-                      <span className="execution-model-family">
-                        {value.name.trim().split(/\s+/)[0]}
-                      </span>
-                    </>
-                  ) : (
-                    value.name
-                  )}
-                </span>
-                <span className="execution-effort">{value.effort}</span>
-              </>
+              <span className="execution-model">{value.name}</span>
             ) : (
-              <>
-                <span className="execution-inherited-label">
-                  Same as caller
-                </span>
-              </>
+              <span className="execution-inherited-label">Same as caller</span>
             )}
           </span>
         ))}
+        {entries.length > 1 && (
+          <span className="execution-summary-more">+{entries.length - 1}</span>
+        )}
       </span>
     </ActionButton>
   );

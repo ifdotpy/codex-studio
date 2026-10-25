@@ -37,7 +37,6 @@ function scope(
     sessionStorage: storage,
     beginMutation: createMutationJournal(id, storage),
     beginActivity: () => () => {},
-    entityCheckpoint: () => undefined,
   });
 }
 const response = (value: unknown, hash = API_SCHEMA_HASH) =>
@@ -68,7 +67,7 @@ describe("concurrent servers in one interface", () => {
   });
 
   afterEach(() => vi.unstubAllGlobals());
-  it("keeps tokens, workspaces and late mutation persistence with their owner", async () => {
+  it("keeps tokens, workspaces and late mutation results with their owner", async () => {
     vi.stubGlobal("window", new EventTarget());
     const disk = memory();
     const requests: Request[] = [];
@@ -95,13 +94,6 @@ describe("concurrent servers in one interface", () => {
     a.setWorkspace("a-workspace");
     b.setToken("b-token");
     b.setWorkspace("b-workspace");
-    const persisted: string[] = [];
-    a.registerSyncEntityPersister(async (workspace) => {
-      persisted.push("a:" + workspace);
-    });
-    b.registerSyncEntityPersister(async (workspace) => {
-      persisted.push("b:" + workspace);
-    });
     const first = a.post(
       "/api/rename",
       { id: "same-id", name: "A" },
@@ -112,7 +104,7 @@ describe("concurrent servers in one interface", () => {
       { id: "same-id", name: "B" },
       { requestId: "write-b" },
     );
-    complete(response({ _syncEntities: [{ id: "entity" }] }));
+    complete(response({ id: "same-id", name: "A" }));
     await first;
     expect(
       requests.map((r) => [
@@ -125,7 +117,6 @@ describe("concurrent servers in one interface", () => {
       ["a.example", "a-token", "a-workspace", "write-a"],
       ["b.example", "b-token", "b-workspace", "write-b"],
     ]);
-    expect(persisted).toEqual(["a:a-workspace"]);
     a.save("draft", "A");
     b.save("draft", "B");
     expect(a.saved("draft", "")).toBe("A");

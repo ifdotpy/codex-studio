@@ -298,10 +298,9 @@ fn seed_python_lazy_markers(
     Ok(())
 }
 
-fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreResult<()> {
+fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreResult<Connection> {
     let mut connection = Connection::open(path)?;
-    connection.pragma_update(None, "journal_mode", "WAL")?;
-    connection.pragma_update(None, "synchronous", "FULL")?;
+    crate::sqlite_durability::configure_writer(&connection)?;
     let transaction = connection.transaction()?;
 
     let catalog =
@@ -349,7 +348,26 @@ fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreRes
         ))?;
     transaction.pragma_update(None, "user_version", version)?;
     transaction.commit()?;
-    Ok(())
+    Ok(connection)
+}
+
+/// Repository witnesses use the production catalog without files, fsyncs or writer actors.
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_canvas() -> Connection {
+    let snapshot = serde_json::from_str(SNAPSHOT).expect("fresh schema snapshot");
+    let mut connection = create_database(Path::new(":memory:"), &snapshot, "canvas.sqlite3")
+        .expect("in-memory canvas");
+    crate::schema::register_python_trigger_functions(&connection).expect("projection functions");
+    let tx = connection.transaction().expect("fixture transaction");
+    crate::agent_columns::prepare(&tx).expect("agent columns");
+    crate::bootstrap::prepare_sync_schema(&tx).expect("sync schema");
+    crate::bootstrap::prepare_runtime_event_indexes(&tx).expect("scheduler and event indexes");
+    crate::AgentRepository::prepare_change_journal(&tx).expect("change journal");
+    crate::agent_volatile::prepare(&tx).expect("volatile fields");
+    crate::feature_schema::prepare(&tx).expect("feature schema");
+    crate::AgentIndexedReads::prepare_index(&tx).expect("agent indexes");
+    tx.commit().expect("fixture commits");
+    connection
 }
 
 fn is_virtual_table_shadow(name: &str) -> bool {
@@ -396,6 +414,17 @@ fn seed_workspace(transaction: &rusqlite::Transaction<'_>, state_dir: &Path) -> 
         "INSERT OR IGNORE INTO sync_entity_meta(key,value) VALUES('task_window_migrated','1')",
         [],
     )?;
+    // New stores have no summary or conversation-detail source rows; their empty projections are complete.
+    for marker in [
+        crate::AGENT_PROJECTIONS_SEED_MARKER,
+        crate::SUMMARY_ENTITIES_SEED_MARKER,
+        crate::CONVERSATION_DETAILS_SEED_MARKER,
+    ] {
+        transaction.execute(
+            "INSERT OR IGNORE INTO sync_entity_meta(key,value) VALUES(?1,'1')",
+            [marker],
+        )?;
+    }
     Ok(())
 }
 
