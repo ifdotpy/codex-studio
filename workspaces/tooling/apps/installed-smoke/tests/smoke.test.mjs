@@ -386,3 +386,329 @@ test("base-rate price proof refuses a request crossing a published context tier"
     /base-rate/,
   );
 });
+
+test("an interrupt between turns prevents later paid submissions and cleanup handles a second signal", async () => {
+  const { Smoke } = await import("../smoke.mjs");
+  const smoke = new Smoke({
+    url: "http://127.0.0.1:1",
+    app: os.tmpdir(),
+    model: {},
+  });
+  const posts = [];
+  smoke.backend.post = async (...args) => {
+    posts.push(args);
+  };
+  smoke.answered = async () => {
+    smoke.cancel.abort(new Error("interrupted"));
+    return [];
+  };
+  await assert.rejects(
+    smoke.usageScenario({ id: "a" }, "codex"),
+    /interrupted/,
+  );
+  assert.equal(posts.length, 1);
+  for (const method of [
+    "preflight",
+    "build",
+    "renderer",
+    "accounts",
+    "session",
+    "ownerChatsUnchanged",
+  ])
+    smoke[method] = async () => "fixture";
+  smoke.makeRoot = () => {};
+  smoke.accountsByProvider = new Map([["codex", "account"]]);
+  smoke.turn = async () => {
+    process.emit("SIGINT");
+    return { id: "a" };
+  };
+  let cleanup = false;
+  smoke.cleanup = async () => {
+    assert.ok(process.listenerCount("SIGINT") > 0);
+    process.emit("SIGTERM");
+    cleanup = true;
+  };
+  await smoke.main(false);
+  assert.equal(cleanup, true);
+  assert.equal(process.listenerCount("SIGINT"), 0);
+  assert.equal(process.listenerCount("SIGTERM"), 0);
+});
+
+test("SSE connection establishment has a deadline", async () => {
+  const { LiveChanges } = await import("../smoke.mjs");
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, { signal }) =>
+    new Promise((_resolve, reject) =>
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      }),
+    );
+  try {
+    const stream = new LiveChanges({ url: "http://fixture" }, "a", 4, {
+      connectMs: 10,
+    });
+    await assert.rejects(stream.ready, /SSE connection/);
+    await stream.close();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("displayed cost must cover final usage generation and have ready finite pricing", async () => {
+  const { publicationReady } = await import("../usage.mjs");
+  const cost = {
+    rootId: "a",
+    generation: 4,
+    totalUSD: 0.1,
+    pricedSamples: 4,
+    pricingState: "ready",
+    refreshing: false,
+    unknownModels: [],
+  };
+  const analytics = {
+    timeline: [{ turnId: "final", delta: { outputTokens: 1 } }],
+  };
+  assert.equal(publicationReady(cost, cost, analytics, "final"), true);
+  assert.equal(
+    publicationReady({ ...cost, generation: 3 }, cost, analytics, "final"),
+    false,
+  );
+  assert.equal(
+    publicationReady(
+      { ...cost, totalUSD: null, pricingState: "loading" },
+      cost,
+      analytics,
+      "final",
+    ),
+    false,
+  );
+  assert.equal(
+    publicationReady(
+      cost,
+      cost,
+      { timeline: [{ turnId: "earlier" }] },
+      "final",
+    ),
+    false,
+  );
+});
+
+test("bridge provenance resolves packaged paths with spaces and requires the owning server", async () => {
+  const { bridgeProcessMatches } = await import("../usage.mjs");
+  const bridge =
+    "/Applications/Codex Studio.app/Contents/Resources/workspace/scripts/claude_bridge/bridge.mjs";
+  const root = "/Users/test/Library/Application Support/Studio";
+  const processes = [
+    {
+      pid: 40,
+      ppid: 10,
+      command: `/Applications/Node App/node ${bridge} ${root}`,
+    },
+    { pid: 41, ppid: 11, command: `/usr/bin/node ${bridge} ${root}` },
+  ];
+  assert.deepEqual(
+    bridgeProcessMatches(processes, [bridge], root, 10).map((row) => row.pid),
+    [40],
+  );
+  assert.equal(
+    bridgeProcessMatches(processes, [bridge], root + "-other", 10).length,
+    0,
+  );
+});
+
+test("steer proof rejects pending delivery and the wrong submitted identity", async () => {
+  const { validateSteer } = await import("../usage.mjs");
+  const item = {
+    id: "a:s",
+    role: "user",
+    at: 2,
+    inputs: [
+      {
+        id: "s",
+        requestedDelivery: "current_turn",
+        deliveryStatus: "delivered",
+        materialized: true,
+        pending: false,
+      },
+    ],
+  };
+  const receipt = { id: "s", status: "delivered", materialized: true };
+  assert.equal(
+    validateSteer(item, receipt, { id: "s", turnId: "long" }, "long", 1, 3).id,
+    "s",
+  );
+  assert.throws(
+    () =>
+      validateSteer(
+        item,
+        { ...receipt, status: "pending" },
+        { id: "s", turnId: "long" },
+        "long",
+        1,
+        3,
+      ),
+    /delivery/,
+  );
+  assert.throws(
+    () =>
+      validateSteer(
+        item,
+        receipt,
+        { id: "other", turnId: "long" },
+        "long",
+        1,
+        3,
+      ),
+    /identity/,
+  );
+  assert.throws(
+    () =>
+      validateSteer(item, receipt, { id: "s", turnId: "wrong" }, "long", 1, 3),
+    /turn/,
+  );
+});
+
+test("atomic checkpoint failure preserves the previous complete evidence", async () => {
+  const { atomicWriteJson, preserveProvenance } = await import("../usage.mjs");
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-evidence-test-"));
+  try {
+    const file = path.join(folder, "evidence.json");
+    atomicWriteJson(file, { original: true });
+    assert.throws(
+      () =>
+        atomicWriteJson(
+          file,
+          { replaced: true },
+          {
+            ...fs,
+            renameSync() {
+              throw new Error("rename fixture");
+            },
+          },
+        ),
+      /rename fixture/,
+    );
+    assert.deepEqual(JSON.parse(fs.readFileSync(file)), { original: true });
+    assert.deepEqual(fs.readdirSync(folder), ["evidence.json"]);
+    const evidence = { server: { binary: "original" } };
+    preserveProvenance(evidence, { binary: "observed" }, true);
+    assert.equal(evidence.server.binary, "original");
+    assert.equal(evidence.recoveryObservations[0].server.binary, "observed");
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("cleanup recovers project registration by the exact owned path after a lost create response", async () => {
+  const { Smoke } = await import("../smoke.mjs");
+  const smoke = new Smoke({
+    url: "http://127.0.0.1:1",
+    app: os.tmpdir(),
+    model: {},
+  });
+  smoke.makeRoot();
+  const root = smoke.root;
+  const posts = [];
+  smoke.backend.get = async (route) =>
+    route === "/api/projects"
+      ? { items: [{ path: root + "-owner" }, { locations: [{ path: root }] }] }
+      : { chats: [] };
+  smoke.backend.post = async (...args) => {
+    posts.push(args);
+    return {};
+  };
+  try {
+    await smoke.cleanup();
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0][0], "/api/projects");
+    assert.equal(posts[0][1].path, root);
+    assert.equal(posts[0][1].action, "remove");
+    assert.equal(fs.existsSync(root), false);
+  } finally {
+    if (fs.existsSync(root)) fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("collector waits for a matching final-turn cost publication through SSE", async () => {
+  const { Smoke } = await import("../smoke.mjs");
+  const smoke = new Smoke({
+    url: "http://fixture",
+    app: os.tmpdir(),
+    model: {},
+  });
+  const cost = {
+    rootId: "a",
+    generation: 4,
+    totalUSD: 0.1,
+    pricedSamples: 4,
+    pricingState: "ready",
+    refreshing: false,
+    unknownModels: [],
+  };
+  const analytics = {
+    agents: [{ id: "a" }],
+    timeline: [
+      { turnId: "final", responseId: "r", delta: { outputTokens: 1 } },
+    ],
+  };
+  let controller;
+  let updated = false;
+  const encoder = new TextEncoder();
+  const frame = (value) =>
+    encoder.encode(
+      `event: resources\ndata: ${JSON.stringify({
+        resourceVersions: [
+          {
+            entityChanges: {
+              documents: [
+                {
+                  collection: "agentDetail",
+                  id: "a",
+                  value: { id: "a", tokensUsed: 100 },
+                },
+                { collection: "sessionCost", id: "a", value },
+              ],
+            },
+          },
+        ],
+      })}\n\n`,
+    );
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, { signal }) =>
+    new Response(
+      new ReadableStream({
+        start(stream) {
+          controller = stream;
+          signal.addEventListener(
+            "abort",
+            () => {
+              stream.close();
+              controller = null;
+            },
+            { once: true },
+          );
+          stream.enqueue(frame({ ...cost, generation: 3 }));
+        },
+      }),
+    );
+  smoke.backend.get = async (route) => {
+    if (route === "/api/sync/protocol") return { protocolVersion: 4 };
+    if (route.startsWith("/api/session-cost")) {
+      if (!updated) {
+        updated = true;
+        controller.enqueue(frame(cost));
+      }
+      return cost;
+    }
+    return analytics;
+  };
+  try {
+    const result = await smoke.ownEntities("a", "final");
+    assert.equal(updated, true);
+    assert.equal(result.sessionCost.generation, 4);
+    assert.equal(result.publication.finalTurnId, "final");
+  } finally {
+    controller?.close();
+    globalThis.fetch = original;
+  }
+});

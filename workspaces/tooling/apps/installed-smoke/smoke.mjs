@@ -28,6 +28,11 @@ import {
   priceResponses,
   accountingEvidence,
   scenarioEvidence,
+  publicationReady,
+  bridgeProcessMatches,
+  validateSteer,
+  atomicWriteJson,
+  preserveProvenance,
 } from "./usage.mjs";
 
 const DEFAULT_APP =
@@ -355,7 +360,9 @@ class Backend {
       method,
       headers,
       redirect: "manual",
-      signal: AbortSignal.timeout(ms),
+      signal: this.signal
+        ? AbortSignal.any([this.signal, AbortSignal.timeout(ms)])
+        : AbortSignal.timeout(ms),
     };
     if (body !== undefined) {
       init.body = JSON.stringify(body);
@@ -390,9 +397,16 @@ class Backend {
 }
 
 /** SSE invalidations drive all usage-scenario reads; no interval fetches. */
-class LiveChanges {
-  constructor(backend, agent, protocol) {
+export class LiveChanges {
+  constructor(
+    backend,
+    agent,
+    protocol,
+    { signal, connectMs = REQUEST_MS } = {},
+  ) {
     this.controller = new AbortController();
+    this.signal = signal;
+    this.connectMs = connectMs;
     this.version = 0;
     this.consumed = 0;
     this.waiters = new Set();
@@ -408,13 +422,24 @@ class LiveChanges {
       { kind: "session-cost", agentId: agent },
       { kind: "monitors", agentId: agent },
     ];
-    const response = await fetch(
-      `${backend.url}/api/sync/stream?protocol=${protocol}&resources=${encodeURIComponent(JSON.stringify(resources))}`,
-      {
-        signal: this.controller.signal,
-        headers: { accept: "text/event-stream" },
-      },
+    const timer = setTimeout(
+      () => this.controller.abort(new CheckFailed("SSE connection timed out")),
+      this.connectMs,
     );
+    let response;
+    try {
+      response = await fetch(
+        `${backend.url}/api/sync/stream?protocol=${protocol}&resources=${encodeURIComponent(JSON.stringify(resources))}`,
+        {
+          signal: this.signal
+            ? AbortSignal.any([this.controller.signal, this.signal])
+            : this.controller.signal,
+          headers: { accept: "text/event-stream" },
+        },
+      );
+    } finally {
+      clearTimeout(timer);
+    }
     if (!response.ok) throw new CheckFailed(`SSE HTTP ${response.status}`);
     this.reader = this.consume(response.body);
   }
@@ -457,6 +482,7 @@ class LiveChanges {
   }
 
   async changed(ms) {
+    this.signal?.throwIfAborted();
     if (this.error) throw this.error;
     if (this.version > this.consumed) {
       this.consumed = this.version;
@@ -466,11 +492,14 @@ class LiveChanges {
       const wake = () => {
         clearTimeout(timer);
         this.waiters.delete(wake);
+        this.signal?.removeEventListener("abort", wake);
         resolve();
       };
       const timer = setTimeout(wake, Math.max(0, ms));
       this.waiters.add(wake);
+      this.signal?.addEventListener("abort", wake, { once: true });
     });
+    this.signal?.throwIfAborted();
     this.consumed = this.version;
     if (this.error) throw this.error;
   }
@@ -485,8 +514,9 @@ export function analyticsRoute(id) {
   return `/api/analytics?agent=${encodeURIComponent(id)}&scope=agent&limit=500`;
 }
 
-class Smoke {
+export class Smoke {
   constructor(options) {
+    this.cancel = new AbortController();
     this.app = options.app;
     this.usage = options.usage;
     this.usageEvidence = {
@@ -496,6 +526,7 @@ class Smoke {
       providers: [],
     };
     this.backend = new Backend(options.url);
+    this.backend.signal = this.cancel.signal;
     this.model = options.model;
     this.providers = options.providers;
     this.report = new Report();
@@ -510,6 +541,82 @@ class Smoke {
     this.ownerChats = new Map();
     this.desktop = null;
     this.state = null;
+  }
+
+  checkActive() {
+    this.cancel.signal.throwIfAborted();
+  }
+
+  async submitModel(route, body) {
+    this.checkActive();
+    if (this.usage && this.root) {
+      this.usageEvidence.submissions ??= [];
+      this.usageEvidence.submissions.push({
+        route,
+        id: body.id,
+        room: body.room,
+        at: new Date().toISOString(),
+      });
+      this.saveUsage();
+    }
+    return this.backend.post(route, body);
+  }
+
+  bridgeObservation(accountKey) {
+    const release = fs.realpathSync(this.workspace());
+    const releases = [this.workspace(), release];
+    if (process.platform === "linux") {
+      const parent = path.dirname(release);
+      for (const entry of fs.readdirSync(parent, { withFileTypes: true }))
+        if (entry.isDirectory()) releases.push(path.join(parent, entry.name));
+    }
+    const bridges = [
+      ...new Set(
+        releases.flatMap((root) => [
+          path.join(root, "workspaces/providers/apps/claude-bridge/bridge.mjs"),
+          path.join(root, "scripts/claude_bridge/bridge.mjs"),
+        ]),
+      ),
+    ];
+    const accountRoot =
+      accountKey === "default"
+        ? this.state
+        : path.join(this.state, "account-servers", accountKey);
+    const processes = command("/bin/ps", ["-axww", "-o", "pid=,ppid=,command="])
+      .split("\n")
+      .flatMap((line) => {
+        const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+        return match
+          ? [
+              {
+                pid: Number(match[1]),
+                ppid: Number(match[2]),
+                command: match[3],
+              },
+            ]
+          : [];
+      });
+    const matches = bridgeProcessMatches(
+      processes,
+      bridges,
+      accountRoot,
+      this.desktop.pid,
+    );
+    if (!matches.length)
+      throw new CheckFailed(
+        `No Claude bridge owned by server ${this.desktop.pid} for exact root ${accountRoot}`,
+      );
+    return matches.map((row) => ({
+      ...row,
+      observedAt: new Date().toISOString(),
+      release: row.bridge.endsWith("/scripts/claude_bridge/bridge.mjs")
+        ? row.bridge.slice(0, -"/scripts/claude_bridge/bridge.mjs".length)
+        : row.bridge.slice(
+            0,
+            -"/workspaces/providers/apps/claude-bridge/bridge.mjs".length,
+          ),
+      sha256: sha256File(row.bridge),
+    }));
   }
 
   workspace() {
@@ -733,6 +840,7 @@ class Smoke {
       `answer ${token}`,
       ms,
       async () => {
+        this.checkActive();
         const chat = await this.chatStatus(agent);
         const items = await this.transcript(agent);
         const answer = items.find(
@@ -762,12 +870,21 @@ class Smoke {
     this.chats.push(id);
     if (this.usage) this.saveUsage();
     const effort = lowestEffort(efforts);
+    this.checkActive();
     if (this.usage) {
+      if (provider === "claude") {
+        this.usageEvidence.servingBridges ??= {};
+        this.usageEvidence.servingBridges[account] ??=
+          this.bridgeObservation(account);
+        this.saveUsage();
+      }
       const protocol = await this.backend.get("/api/sync/protocol");
-      this.live = new LiveChanges(this.backend, id, protocol.protocolVersion);
+      this.live = new LiveChanges(this.backend, id, protocol.protocolVersion, {
+        signal: this.cancel.signal,
+      });
       await this.live.ready;
     }
-    await this.backend.post("/api/agents", {
+    await this.submitModel("/api/agents", {
       id,
       name: `Studio smoke ${this.runId} ${provider}`,
       prompt: `This is an automated Studio smoke check. Do not use tools. Reply with exactly ${token}.`,
@@ -789,10 +906,17 @@ class Smoke {
   }
 
   async usageScenario(chat, provider) {
+    this.checkActive();
     const { id } = chat;
     const token = `SMOKE_${this.runId}_${provider}_LONG`;
     const inputId = randomUUID();
-    await this.backend.post("/api/messages", {
+    const initialTurnId =
+      provider === "claude"
+        ? (await this.transcript(id))
+            .filter((item) => item.role === "assistant")
+            .at(-1)?.turnId
+        : null;
+    await this.submitModel("/api/messages", {
       id: inputId,
       room: id,
       delivery: "next_turn",
@@ -800,17 +924,33 @@ class Smoke {
     });
     let steer = null;
     if (provider === "claude") {
-      await until(
+      const activeTurnId = await until(
         "Claude turn 2 starts",
         TURN_MS,
         async () => {
+          this.checkActive();
           const status = await this.chatStatus(id);
-          return { done: status?.inFlight === true, note: status?.status };
+          const active = this.live.entities.get(`agentSummary:${id}`);
+          return {
+            done:
+              status?.inFlight === true &&
+              active?.turnId &&
+              active.turnId !== initialTurnId,
+            value: active?.turnId,
+            note: status?.status,
+          };
         },
         (ms) => this.live.changed(ms),
       );
-      steer = { id: randomUUID(), sentAt: new Date().toISOString() };
-      steer.receipt = await this.backend.post("/api/messages", {
+      steer = {
+        id: randomUUID(),
+        turnId: activeTurnId,
+        sentAt: new Date().toISOString(),
+      };
+      this.usageEvidence.scenarios ??= {};
+      this.usageEvidence.scenarios[id] = { steer, inputId };
+      this.saveUsage();
+      steer.receipt = await this.submitModel("/api/messages", {
         id: steer.id,
         room: id,
         delivery: "current_turn",
@@ -819,7 +959,7 @@ class Smoke {
     }
     const longItems = await this.answered(id, token, TURN_MS);
     const finalToken = `SMOKE_${this.runId}_${provider}_FINAL`;
-    await this.backend.post("/api/messages", {
+    await this.submitModel("/api/messages", {
       id: randomUUID(),
       room: id,
       delivery: "next_turn",
@@ -835,8 +975,13 @@ class Smoke {
   async collectUsage(chat, provider, scenario = {}) {
     const { id } = chat;
     console.log(`Collecting ${provider} usage for ${id}`);
-    const analytics = await this.backend.get(analyticsRoute(id));
-    const entities = await this.ownEntities(id);
+    const transcript = await this.transcript(id);
+    const finalTurnId = transcript
+      .filter((item) => item.role === "assistant")
+      .at(-1)?.turnId;
+    const entities =
+      scenario.entities ?? (await this.ownEntities(id, finalTurnId));
+    const analytics = entities.analytics;
     const stored = { agent: entities.agent, history: analytics.history ?? [] };
     const truth = nativeEvidence(
       this.state,
@@ -863,32 +1008,59 @@ class Smoke {
     } catch (error) {
       if (!error.message.includes("HTTP 404")) throw error;
     }
-    const displayedCost =
-      this.live?.entities.get(`sessionCost:${id}`) ?? entities.sessionCost;
-    const bridgeProcesses = command("/bin/ps", ["-axww", "-o", "pid=,command="])
-      .split("\n")
-      .filter(
-        (line) =>
-          line.includes("/claude-bridge/bridge.mjs") &&
-          line.trim().endsWith(chat.account),
-      )
-      .map((line) => {
-        const match =
-          /^\s*(\d+)\s+.*?node\s+(\S+\/workspaces\/providers\/apps\/claude-bridge\/bridge.mjs)\s+/.exec(
-            line,
-          );
-        return match
-          ? {
-              pid: Number(match[1]),
-              bridge: match[2],
-              release: match[2].split("/workspaces/providers/")[0],
-              sha256: sha256File(match[2]),
-            }
-          : { command: line.trim() };
-      });
-    const transcript = await this.transcript(id);
+    const displayedCost = entities.sessionCost;
+    const previous = this.usageEvidence.providers.find(
+      (row) => row.agentId === id,
+    );
+    const observedBridges =
+      provider === "claude" ? this.bridgeObservation(chat.account) : [];
+    const bridgeProcesses =
+      this.usageEvidence.servingBridges?.[chat.account] ??
+      previous?.bridgeProcesses ??
+      observedBridges;
+    const proof = scenarioEvidence(transcript, provider, this.root);
+    if (provider === "claude") {
+      const item = transcript.find((item) =>
+        item.inputs?.some((input) => input.text?.includes("usage-check steer")),
+      );
+      const input = item?.inputs?.find((input) =>
+        input.text?.includes("usage-check steer"),
+      );
+      const submitted = scenario.steer ??
+        this.usageEvidence.scenarios?.[id]?.steer ?? {
+          id: input?.id,
+          turnId: proof.longTurnId,
+          association:
+            "recovered from materialized current-turn input within turn-2 transcript window",
+        };
+      const receipts = await this.backend.get(
+        `/api/messages/receipts?agent=${encodeURIComponent(id)}&ids=${encodeURIComponent(JSON.stringify([submitted.id]))}`,
+      );
+      const receipt = receipts.items?.find(
+        (receipt) => receipt.id === submitted.id,
+      );
+      const startedAt = transcript.find(
+        (item) =>
+          item.role === "user" &&
+          item.text?.startsWith("This is turn 2 of a usage check."),
+      )?.at;
+      const endedAt = Math.max(
+        ...transcript
+          .filter((item) => item.turnId === proof.longTurnId)
+          .map((item) => item.at),
+      );
+      proof.steer = validateSteer(
+        item,
+        receipt,
+        submitted,
+        proof.longTurnId,
+        startedAt,
+        endedAt,
+      );
+    }
     const row = {
-      scenario: scenarioEvidence(transcript, provider, this.root),
+      publication: entities.publication,
+      scenario: proof,
       provider,
       agentId: id,
       chatId: id,
@@ -910,7 +1082,11 @@ class Smoke {
       displayedCost: displayedCost ?? null,
       reconciliation,
       bridgeProcesses,
+      bridgeObservationAtCollection: observedBridges,
     };
+    this.usageEvidence.providers = this.usageEvidence.providers.filter(
+      (previous) => previous.agentId !== id,
+    );
     this.usageEvidence.providers.push(row);
     this.saveUsage();
     if (!displayedCost)
@@ -926,31 +1102,61 @@ class Smoke {
     return `${id}: ${truth.responses.length} native responses, ${responses.length} recorded responses`;
   }
 
-  /** Read the same scoped entity snapshots as an open renderer chat. */
-  async ownEntities(id) {
-    const analytics = await this.backend.get(analyticsRoute(id));
-    const summary = (analytics.agents ?? []).find((row) => row.id === id);
-    if (!summary) throw new CheckFailed(`No analytics agent for ${id}`);
+  /** Match the UI publication to a fresh cost generation containing final-turn usage. */
+  async ownEntities(id, finalTurnId) {
     const protocol = await this.backend.get("/api/sync/protocol");
-    const stream =
-      this.live ?? new LiveChanges(this.backend, id, protocol.protocolVersion);
+    const stream = new LiveChanges(this.backend, id, protocol.protocolVersion, {
+      signal: this.cancel.signal,
+    });
     try {
       await stream.ready;
       return await until(
-        "scoped usage entities",
+        "final-turn usage publication",
         REQUEST_MS,
         async () => {
+          this.checkActive();
+          const analytics = await this.backend.get(analyticsRoute(id));
+          const summary = (analytics.agents ?? []).find((row) => row.id === id);
           const detail = stream.entities.get(`agentDetail:${id}`);
           const sessionCost = stream.entities.get(`sessionCost:${id}`);
+          const currentCost = await this.backend.get(
+            `/api/session-cost?agent=${id}`,
+          );
+          const final =
+            finalTurnId ??
+            (await this.transcript(id))
+              .filter((item) => item.role === "assistant")
+              .at(-1)?.turnId;
+          if (
+            !summary ||
+            !detail ||
+            !publicationReady(sessionCost, currentCost, analytics, final)
+          )
+            return {
+              done: false,
+              note: `cost generation ${sessionCost?.generation}/${currentCost.generation}, state ${sessionCost?.pricingState}`,
+            };
+          const after = await this.backend.get(analyticsRoute(id));
           return {
-            done: Boolean(detail && sessionCost),
-            value: { agent: { ...summary, ...detail }, sessionCost },
+            done:
+              JSON.stringify(after.timeline) ===
+              JSON.stringify(analytics.timeline),
+            value: {
+              analytics: after,
+              agent: { ...summary, ...detail },
+              sessionCost,
+              publication: {
+                finalTurnId: final,
+                currentCost,
+                capturedAt: new Date().toISOString(),
+              },
+            },
           };
         },
         (ms) => stream.changed(ms),
       );
     } finally {
-      if (stream !== this.live) await stream.close();
+      await stream.close();
     }
   }
 
@@ -976,19 +1182,31 @@ class Smoke {
       throw new CheckFailed(
         "Recovery requires the same backend build and state directory",
       );
+    preserveProvenance(
+      this.usageEvidence,
+      {
+        pid: this.desktop.pid,
+        sha256: this.desktop.backendBuild,
+        stateDir: this.state,
+        binary: fs.realpathSync(installationPaths(this.app).server),
+        release: fs.realpathSync(this.workspace()),
+      },
+      true,
+    );
     const accounts = await this.backend.get("/api/accounts");
     this.accountRecords = new Map(
       accounts.accounts.map((account) => [account.id, account]),
     );
     for (const id of this.chats) {
-      const { agent } = await this.ownEntities(id);
+      const entities = await this.ownEntities(id);
+      const { agent } = entities;
       if (!agent.name?.startsWith(`Studio smoke ${this.runId} `))
         throw new CheckFailed(`Chat ${id} is not owned by run ${this.runId}`);
-      if (this.usageEvidence.providers.some((row) => row.agentId === id))
-        continue;
+      this.checkActive();
       await this.collectUsage(
         { id, account: agent.accountKey, model: agent.model },
         agent.provider,
+        { entities },
       );
     }
     this.usageEvidence.recoveredAt = new Date().toISOString();
@@ -1002,22 +1220,18 @@ class Smoke {
     const directory = path.join(os.homedir(), ".cache/codex-studio/live-usage");
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.evidencePath = path.join(directory, `${this.runId}.json`);
-    this.usageEvidence.server = {
+    preserveProvenance(this.usageEvidence, {
       pid: this.desktop.pid,
       stateDir: this.state,
       binary: fs.realpathSync(installationPaths(this.app).server),
       sha256: this.desktop.backendBuild,
       release: fs.realpathSync(this.workspace()),
-    };
+    });
     if (this.report.rows.length) this.usageEvidence.checks = this.report.rows;
     this.usageEvidence.chatIds = this.chats;
     this.usageEvidence.runFolder = this.root;
     this.usageEvidence.updatedAt = new Date().toISOString();
-    fs.writeFileSync(
-      this.evidencePath,
-      JSON.stringify(this.usageEvidence, null, 2) + "\n",
-      { mode: 0o600 },
-    );
+    atomicWriteJson(this.evidencePath, this.usageEvidence);
   }
 
   async messageOnce(agent) {
@@ -1029,9 +1243,9 @@ class Smoke {
       text: `Reply with exactly ${token}. Do not use tools.`,
       delivery: "next_turn",
     };
-    await this.backend.post("/api/messages", message);
+    await this.submitModel("/api/messages", message);
     // An exact retry of the same id must not enqueue the message again.
-    await this.backend.post("/api/messages", message);
+    await this.submitModel("/api/messages", message);
     const items = await this.answered(agent, token, TURN_MS);
     const copies = messageItems(items, id);
     if (copies.length !== 1) {
@@ -1104,7 +1318,7 @@ class Smoke {
   async monitor(agent) {
     const after = await this.entitySeq();
     const token = `SMOKE_${this.runId}_MONITOR`;
-    await this.backend.post("/api/messages", {
+    await this.submitModel("/api/messages", {
       id: randomUUID(),
       room: agent,
       text:
@@ -1328,6 +1542,18 @@ class Smoke {
     } catch (error) {
       problems.push(error.message);
     }
+    if (!this.projectRegistered && this.root) {
+      try {
+        const projects = await this.backend.get("/api/projects");
+        this.projectRegistered = (projects.items ?? []).some(
+          (project) =>
+            project.path === this.root ||
+            project.locations?.some((location) => location.path === this.root),
+        );
+      } catch (error) {
+        problems.push(`recover project ${this.root}: ${error.message}`);
+      }
+    }
     if (this.projectRegistered) {
       try {
         await this.backend.post("/api/projects", {
@@ -1373,9 +1599,10 @@ class Smoke {
     }
     const stop = () => {
       this.interrupted = true;
+      this.cancel.abort(new CheckFailed("smoke interrupted"));
     };
-    process.once("SIGINT", stop);
-    process.once("SIGTERM", stop);
+    process.on("SIGINT", stop);
+    process.on("SIGTERM", stop);
     try {
       this.makeRoot();
       if (this.usage) this.saveUsage();
@@ -1416,16 +1643,22 @@ class Smoke {
         report.skip("chat scenarios", "no provider turn passed");
       }
     } finally {
-      await report.run("cleanup", () => this.cleanup());
-      await report.run("owner chats", () => this.ownerChatsUnchanged());
-      if (this.live) {
-        await this.live.close();
-        this.live = null;
-      }
-      if (this.usage) {
-        this.saveUsage();
-        console.table(usageTable(this.usageEvidence, "RUN"));
-        console.log(`Usage evidence: ${this.evidencePath}`);
+      this.backend.signal = undefined;
+      try {
+        await report.run("cleanup", () => this.cleanup());
+        await report.run("owner chats", () => this.ownerChatsUnchanged());
+        if (this.live) {
+          await this.live.close();
+          this.live = null;
+        }
+        if (this.usage) {
+          this.saveUsage();
+          console.table(usageTable(this.usageEvidence, "RUN"));
+          console.log(`Usage evidence: ${this.evidencePath}`);
+        }
+      } finally {
+        process.removeListener("SIGINT", stop);
+        process.removeListener("SIGTERM", stop);
       }
     }
     return report;

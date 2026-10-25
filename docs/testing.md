@@ -240,6 +240,14 @@ The optional usage reconciliation endpoint is included when available; only HTTP
 404 skips it. Python's standard-library SQLite reader opens the live database
 strictly read-only for the accounting label absent from the installed API.
 
+The collector waits for the scoped cost publication to match a fresh server cost
+generation containing final-turn usage, and rejects unavailable pricing. It checks
+the exact Claude steer receipt and its materialized current-turn input. Interrupts
+cancel model waits and prohibit further model submissions; cleanup continues under
+the same signal handlers. SSE connection establishment has a deadline. Server and
+bridge provenance captured before model submission stays immutable; recovery-time
+observations are recorded separately. Evidence checkpoints use an atomic rename.
+
 Evidence is written with private permissions below
 `~/.cache/codex-studio/live-usage/`. The run archives its chats and removes only its
 own project and marked folder; archived records remain available for comparison.

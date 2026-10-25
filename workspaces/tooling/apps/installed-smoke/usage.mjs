@@ -332,3 +332,102 @@ export function scenarioEvidence(items, provider, root) {
     steer: steer ? { id: steer.id, at: steer.at } : null,
   };
 }
+
+/** A displayed snapshot must match the fresh server computation covering final-turn usage. */
+export function publicationReady(displayed, current, analytics, finalTurnId) {
+  const ready = (cost) =>
+    cost?.pricingState === "ready" &&
+    Number.isFinite(cost.totalUSD) &&
+    cost.pricedSamples > 0 &&
+    !cost.refreshing &&
+    !cost.unknownModels?.length;
+  return Boolean(
+    ready(displayed) &&
+    ready(current) &&
+    displayed.rootId === current.rootId &&
+    displayed.generation === current.generation &&
+    displayed.totalUSD === current.totalUSD &&
+    displayed.pricedSamples === current.pricedSamples &&
+    analytics.timeline?.some((row) => row.turnId === finalTurnId),
+  );
+}
+
+/** Match known argv suffixes instead of splitting paths containing spaces. */
+export function bridgeProcessMatches(processes, bridges, root, serverPid) {
+  const parents = new Map(processes.map((row) => [row.pid, row.ppid]));
+  const owned = (row) => {
+    const seen = new Set();
+    let parent = row.ppid;
+    while (parent > 1 && !seen.has(parent)) {
+      if (parent === serverPid) return true;
+      seen.add(parent);
+      parent = parents.get(parent);
+    }
+    return false;
+  };
+  return processes.flatMap((row) => {
+    if (!owned(row)) return [];
+    for (const bridge of bridges) {
+      const suffix = ` ${bridge} ${root}`;
+      if (
+        row.command.endsWith(suffix) &&
+        path.basename(row.command.slice(0, -suffix.length)) === "node"
+      )
+        return [{ ...row, bridge, accountRoot: root }];
+    }
+    return [];
+  });
+}
+
+export function validateSteer(
+  item,
+  receipt,
+  submitted,
+  longTurnId,
+  startedAt,
+  endedAt,
+) {
+  const input = item?.inputs?.find((input) => input.id === submitted?.id);
+  if (!input || receipt?.id !== submitted?.id)
+    throw new Error("Steer identity does not match the submitted message");
+  if (
+    receipt.status !== "delivered" ||
+    !receipt.materialized ||
+    input.deliveryStatus !== "delivered" ||
+    input.pending ||
+    !input.materialized ||
+    input.requestedDelivery !== "current_turn"
+  )
+    throw new Error("Steer delivery is not materialized and successful");
+  if (
+    submitted.turnId !== longTurnId ||
+    item.at < startedAt ||
+    item.at > endedAt
+  )
+    throw new Error("Steer is not associated with turn 2");
+  return { id: submitted.id, turnId: longTurnId, receipt, input, at: item.at };
+}
+
+/** Persist a complete sibling, then replace the checkpoint in one rename. */
+export function atomicWriteJson(file, value, io = fs) {
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    io.writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", {
+      mode: 0o600,
+      flag: "wx",
+    });
+    io.renameSync(temporary, file);
+  } finally {
+    if (io.existsSync(temporary)) io.unlinkSync(temporary);
+  }
+}
+
+export function preserveProvenance(evidence, server, recovery = false) {
+  if (recovery) {
+    evidence.recoveryObservations ??= [];
+    evidence.recoveryObservations.push({
+      at: new Date().toISOString(),
+      server,
+    });
+  } else evidence.server ??= server;
+}
