@@ -16,5 +16,5 @@
     "typeRoots": ["../node_modules/@types"],
     "types": ["node"]
   },
-  "files": ["playwright.mjs"]
+  "files": ["playwright.mjs", "../src/vite-env.d.ts"]
 }
