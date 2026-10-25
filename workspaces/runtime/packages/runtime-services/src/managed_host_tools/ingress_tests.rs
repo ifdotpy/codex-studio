@@ -2215,6 +2215,389 @@ fn run_git_output(directory: &std::path::Path, arguments: &[&str]) -> String {
 }
 
 #[tokio::test]
+async fn managed_reviewer_defaults_reach_public_spawn_tool() {
+    let (_root, store, context) = fixture().await;
+    let actor_id = context.agent.clone();
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            let mut parent =
+                studio_runtime_store::AgentRepository::get(tx, &actor_id.as_str().into())?
+                    .unwrap()
+                    .value();
+            parent["model"] = json!("gpt-6.1-sol");
+            parent["effort"] = json!("medium");
+            parent["workerDefaults"]["model"] = json!("gpt-6-luna");
+            parent["workerDefaults"]["delegationDepth"] = json!(2);
+            parent["reviewDefaults"] = json!({"model":"gpt-6-astra","effort":"high"});
+            studio_runtime_store::AgentRepository::put(
+                tx,
+                &studio_runtime_store::AgentRecord::from_value(parent).unwrap(),
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let monitor = Arc::new(crate::monitor_runtime_wiring::MonitorRuntime::new(
+        Arc::clone(&store),
+        Arc::new(ScriptedRetainedMonitorPort {
+            certainty: crate::managed_host_tools::DeliveryCertainty::Written,
+            calls: AtomicUsize::new(0),
+            tickets: Mutex::new(Vec::new()),
+        }),
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    let runtime = crate::provider_callbacks::ManagedToolRuntime::with_creation(
+        monitor,
+        Arc::new(NoopLifecyclePorts),
+        Arc::new(CreationEnvironment),
+    );
+    let project = tempfile::tempdir().unwrap();
+    run_git_output(project.path(), &["init", "-q"]);
+    run_git_output(
+        project.path(),
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+    );
+    let worker_cwd = project.path().to_owned();
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            let mut worker = studio_runtime_store::AgentRepository::get(tx, &WORKER.into())?
+                .unwrap()
+                .value();
+            worker["cwd"] = json!(worker_cwd);
+            worker["role"] = json!("implementer");
+            worker["model"] = json!("gpt-6-luna");
+            worker["effort"] = json!("low");
+            // Nested callers must consult the root's current review settings.
+            worker["reviewDefaults"] = json!({"model":"gpt-6.1-sol","effort":"medium"});
+            studio_runtime_store::AgentRepository::put(
+                tx,
+                &studio_runtime_store::AgentRecord::from_value(worker).unwrap(),
+            )?;
+            for (id, effort) in [
+                ("review-model-profile", None),
+                (
+                    "review-effort-profile",
+                    Some(studio_runtime_store::ReasoningEffort::Low),
+                ),
+            ] {
+                studio_runtime_store::ProfileRepository::save(
+                    tx,
+                    &studio_runtime_store::ProfileRecord {
+                        id: id.into(),
+                        name: id.into(),
+                        role: studio_runtime_store::ProfileRole::Reviewer,
+                        model: "gpt-6-luna".into(),
+                        effort,
+                        instructions: "review profile".into(),
+                    },
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let configured = json!({"model":"gpt-6-astra","effort":"high"});
+    let cases = [
+        (
+            "configured",
+            json!({}),
+            configured.clone(),
+            "gpt-6-astra",
+            Some("high"),
+            true,
+        ),
+        (
+            "same-caller-model",
+            json!({"model":"gpt-6.1-sol"}),
+            configured.clone(),
+            "gpt-6.1-sol",
+            Some("medium"),
+            true,
+        ),
+        (
+            "same-review-model",
+            json!({"model":"gpt-6-astra"}),
+            configured.clone(),
+            "gpt-6-astra",
+            None,
+            true,
+        ),
+        (
+            "different-model",
+            json!({"model":"gpt-6-luna"}),
+            configured.clone(),
+            "gpt-6-luna",
+            None,
+            true,
+        ),
+        (
+            "effort-only",
+            json!({"effort":"low"}),
+            configured.clone(),
+            "gpt-6-astra",
+            Some("low"),
+            true,
+        ),
+        (
+            "model-and-effort",
+            json!({"model":"gpt-6.1-sol","effort":"high"}),
+            configured.clone(),
+            "gpt-6.1-sol",
+            Some("high"),
+            true,
+        ),
+        (
+            "null-effort",
+            json!({"effort":null}),
+            configured.clone(),
+            "gpt-6-astra",
+            None,
+            false,
+        ),
+        (
+            "profile-model",
+            json!({"profile_id":"review-model-profile"}),
+            configured.clone(),
+            "gpt-6-luna",
+            Some("high"),
+            false,
+        ),
+        (
+            "profile-effort",
+            json!({"profile_id":"review-effort-profile"}),
+            configured.clone(),
+            "gpt-6-luna",
+            Some("low"),
+            false,
+        ),
+        (
+            "profile-overridden",
+            json!({"profile_id":"review-effort-profile","model":"gpt-6-astra","effort":"medium"}),
+            configured.clone(),
+            "gpt-6-astra",
+            Some("medium"),
+            false,
+        ),
+        (
+            "profile-role",
+            json!({"profile_id":"review-model-profile","role":null}),
+            configured.clone(),
+            "gpt-6-luna",
+            Some("high"),
+            false,
+        ),
+        (
+            "missing-default",
+            json!({}),
+            Value::Null,
+            "gpt-6.1-sol",
+            Some("medium"),
+            true,
+        ),
+        (
+            "null-default",
+            json!({}),
+            json!({"model":null,"effort":null}),
+            "gpt-6.1-sol",
+            Some("medium"),
+            true,
+        ),
+        (
+            "null-default-effort",
+            json!({}),
+            json!({"model":"gpt-6-astra","effort":null}),
+            "gpt-6-astra",
+            None,
+            true,
+        ),
+        (
+            "implementer",
+            json!({"role":"implementer","workspace":"shared"}),
+            configured.clone(),
+            "gpt-6-luna",
+            Some("high"),
+            false,
+        ),
+        (
+            "implementer-explicit",
+            json!({"role":"implementer","workspace":"shared","model":"gpt-6.1-sol"}),
+            configured.clone(),
+            "gpt-6.1-sol",
+            Some("high"),
+            false,
+        ),
+        (
+            "nested-configured",
+            json!({}),
+            configured.clone(),
+            "gpt-6-astra",
+            Some("high"),
+            true,
+        ),
+        (
+            "nested-fallback",
+            json!({}),
+            Value::Null,
+            "gpt-6-luna",
+            Some("low"),
+            true,
+        ),
+        (
+            "provider",
+            json!({"model":"claude-opus-5-5"}),
+            configured,
+            "claude-opus-5-5",
+            None,
+            false,
+        ),
+    ];
+    for (label, options, defaults, model, effort, native_parity) in cases {
+        let actor_id = context.agent.clone();
+        let cwd = project.path().to_owned();
+        store
+            .transaction_with::<_, StoreError>(move |tx| {
+                let mut parent =
+                    studio_runtime_store::AgentRepository::get(tx, &actor_id.as_str().into())?
+                        .unwrap()
+                        .value();
+                parent["cwd"] = json!(cwd);
+                parent["workerDefaults"]["accountKey"] = json!("default");
+                parent["workerDefaults"]["fastMode"] = json!(true);
+                if defaults.is_null() {
+                    parent.as_object_mut().unwrap().remove("reviewDefaults");
+                } else {
+                    parent["reviewDefaults"] = defaults;
+                }
+                studio_runtime_store::AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(parent).unwrap(),
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let context = if label.starts_with("nested-") {
+            CallbackContext {
+                agent: WORKER.into(),
+                thread: "thread-1".into(),
+                turn: "turn-1".into(),
+                ..context.clone()
+            }
+        } else {
+            context.clone()
+        };
+        for tool in ["orchestration_spawn", "orchestration_review"] {
+            if tool == "orchestration_review" && !native_parity {
+                continue;
+            }
+            let key = format!("reviewer-defaults-{label}-{tool}");
+            let args = if tool == "orchestration_spawn" {
+                let mut spec =
+                    json!({"name":"Review", "prompt":"Review the changes", "role":"reviewer"});
+                spec.as_object_mut()
+                    .unwrap()
+                    .extend(options.as_object().unwrap().clone());
+                if spec["role"].is_null() {
+                    spec.as_object_mut().unwrap().remove("role");
+                }
+                json!({"request_id":key,"agents":[spec]})
+            } else {
+                let mut args = options.clone();
+                args["request_id"] = json!(key);
+                args
+            };
+            let frame = call(&context, &key, tool, args);
+            let ports = shared_ports(
+                crate::provider_callbacks::managed_tool_ports_with_bundle(
+                    &store,
+                    &context,
+                    &frame,
+                    Arc::new(tokio::sync::Notify::new()),
+                    Arc::new(tokio::sync::Notify::new()),
+                    Some(&runtime),
+                )
+                .await
+                .unwrap(),
+            );
+            let (success, result) = tool_reply(
+                dispatch_with_managed_tools(
+                    Arc::clone(&store),
+                    &context,
+                    &frame,
+                    20.0,
+                    ports.clone(),
+                )
+                .await
+                .unwrap(),
+            );
+            assert!(success, "{label}/{tool}: {result}");
+            let returned = &result["agents"][0];
+            assert_eq!(returned["model"], model, "{label}/{tool}");
+            assert_eq!(returned["effort"], json!(effort), "{label}/{tool}");
+            let child = studio_runtime_store::AgentRepository::get(
+                &store.test_reader().unwrap(),
+                &returned["id"].as_str().unwrap().into(),
+            )
+            .unwrap()
+            .unwrap()
+            .value();
+            assert_eq!(child["model"], model, "{label}/{tool}");
+            assert_eq!(child["effort"], json!(effort), "{label}/{tool}");
+            assert_eq!(
+                child["nativeEffort"],
+                effort.unwrap_or("low"),
+                "{label}/{tool}"
+            );
+            assert_eq!(
+                child["provider"],
+                crate::provider_adapter::model_provider(model)
+                    .unwrap()
+                    .key(),
+                "{label}/{tool}"
+            );
+            assert_eq!(child["accountKey"], "default", "{label}/{tool}");
+            if tool == "orchestration_spawn" {
+                assert_eq!(child["fastMode"], true, "{label}");
+                if options["profile_id"].is_string() {
+                    assert_eq!(child["profileId"], options["profile_id"]);
+                    assert_eq!(child["profileInstructions"], "review profile");
+                }
+            } else {
+                assert_eq!(result["reviewModel"], model);
+                assert_eq!(result["reviewEffort"], effort.unwrap_or("low"));
+            }
+            let count_before: i64 = store
+                .test_reader()
+                .unwrap()
+                .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+                .unwrap();
+            let replay = tool_reply(
+                dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports)
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(replay, (true, result), "{label}/{tool} replay");
+            let count_after: i64 = store
+                .test_reader()
+                .unwrap()
+                .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count_after, count_before, "{label}/{tool} duplicate child");
+        }
+    }
+}
+
+#[tokio::test]
 async fn managed_spawn_accepts_any_explicit_model_for_each_role() {
     let (_root, store, context) = fixture().await;
     let parent = studio_runtime_store::AgentRepository::get(
