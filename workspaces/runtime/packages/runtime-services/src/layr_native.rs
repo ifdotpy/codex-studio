@@ -390,7 +390,7 @@ mod turn_save_tests {
     async fn native_terminal_stages_a_save_without_resetting_a_completed_receipt() {
         let directory = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
-        store.transaction_with(|tx| {
+        store.transaction_with(|tx| -> Result<(), StoreError> {
             let record = json!({"id":"native-save-agent","rootId":"native-save-agent","epoch":0,
                 "status":"idle","autoWake":true,"workspaceMode":"layr-native","layrReady":true,"cwd":"/native/main"});
             AgentRepository::put(tx,&AgentRecord::from_value(record).map_err(StoreError::from)?)?;
