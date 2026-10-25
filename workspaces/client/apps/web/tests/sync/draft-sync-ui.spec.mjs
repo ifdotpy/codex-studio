@@ -142,8 +142,19 @@ test("Draft sync ui", async ({
       hasTouch: true,
     });
     const errors = [];
-    for (const page of [desktop, phone])
+    const pushedIds = new Set();
+    for (const page of [desktop, phone]) {
       page.on("pageerror", (error) => errors.push(error.message));
+      page.on("request", (request) => {
+        if (
+          new URL(request.url()).pathname !== "/api/sync/drafts" ||
+          request.method() !== "POST"
+        )
+          return;
+        for (const row of request.postDataJSON().rows)
+          pushedIds.add(row.newDocumentState.id);
+      });
+    }
     await desktop.goto(origin);
     await desktop.waitForFunction(() => window.__retiredDraftMap);
     assert.equal(
@@ -294,6 +305,11 @@ test("Draft sync ui", async ({
     assert.equal(
       await desktop.getByRole("button", { name: /^Other drafts/ }).count(),
       0,
+    );
+    assert.deepEqual(
+      [...pushedIds].filter((id) => id.startsWith("offline-")),
+      [],
+      "pulled remote branches must not echo back as local pushes",
     );
     assert.deepEqual(errors, []);
     console.log(
