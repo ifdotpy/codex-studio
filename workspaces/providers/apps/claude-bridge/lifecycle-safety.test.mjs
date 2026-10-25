@@ -946,3 +946,31 @@ test.each([false, true])(
     ).toBe(delivered ? "delivered" : "not_applied");
   },
 );
+
+test("an undefined command executor result becomes an explicit null bridge reply", async () => {
+  const bridge = await startBridge(
+    `export const query = () => { throw new Error("No SDK call expected"); };
+     export { query as tool, query as createSdkMcpServer, query as forkSession, query as getSessionMessages };`,
+    "claude-null-reply-",
+    { env: { CODEX_BIN: "./executor" } },
+  );
+  try {
+    const home = path.join(bridge.root, "state/command-executor");
+    await fs.mkdir(home, { recursive: true });
+    await fs.writeFile(
+      path.join(home, "executor"),
+      `#!${process.execPath}
+const { createInterface } = require("node:readline");
+createInterface({ input: process.stdin }).on("line", line => {
+  const message = JSON.parse(line);
+  if (message.id !== undefined)
+    process.stdout.write(JSON.stringify({ id: message.id }) + "\\n");
+});
+`,
+      { mode: 0o700 },
+    );
+    expect(await bridge.call("config/read", {})).toBeNull();
+  } finally {
+    await bridge.close();
+  }
+});

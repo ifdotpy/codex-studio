@@ -41,7 +41,10 @@ unread permits redelivery after that close; unavailable history stays uncertain.
 Finalization has one shared outcome for SDK, Stop, and timer callers. An
 unexpected final-save failure emits one failed completion and closes the query;
 retries observe that failure without repeating finalization or usage publication.
-The existing disk-full deferral remains available.
+The existing disk-full deferral remains available. Shutdown stops admitting new
+finalizers through that shared path and cancels turn timers before closing the SDK.
+It also disposes the tool watchdog; recovery already waiting on a save or deadline
+stops without further notices, interrupts or terminal effects.
 
 Rollback and fork boundaries use every native part of a composite input in
 order, beginning at its earliest part. Forked history remaps every retained input
@@ -109,7 +112,10 @@ window candidates remain unknown. A persisted query-wide window has unknown mode
 seed response accounting after a restart. Background responses retain the
 turn that created their parent tool, even after that turn completes. Shutdown
 waits for the SDK consumer within the short shutdown drain deadline, reports remaining gaps,
-and flushes queued notifications before exiting. Intentional shutdown leaves an
+and flushes queued notifications before exiting. Every query removal, including
+resume, rollback, settings changes, move import and unsubscribe, uses the same
+cleanup path to report unfinished responses exactly once, even if SDK close is
+stuck. Intentional shutdown leaves an
 unfinished turn in progress for restart reconciliation rather than publishing a
 terminal failure. The bridge integration tests
 and inline scripted SDK remain outside the strict TypeScript program because

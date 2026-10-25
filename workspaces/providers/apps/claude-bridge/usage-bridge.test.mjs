@@ -15,23 +15,81 @@ afterEach(async () => {
   for (const b of bridges.splice(0)) await b.close();
 });
 const sdk = `
+import fs from "node:fs/promises";
 export const tool=(name,description,schema,call)=>({name,description,schema,call});
 export const createSdkMcpServer=value=>({...value});
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
 export const getSessionMessages=async()=>[];
 const events=${JSON.stringify(events)}, modelUsage=${JSON.stringify(modelUsage)},sdkResult=${JSON.stringify(sdkResult)},zeroResult=${JSON.stringify(zeroResult)};
 export function query({prompt,options}){
- const abort=new AbortController();let delayedClose=false,stuckClose=false,reportCloseTiming=false,closeAt;
+ const abort=new AbortController();let delayedClose=false,stuckClose=false,reportCloseTiming=false,closeAt,restoreAppend;
  process.once('exit',()=>{if(reportCloseTiming)process.stdout.write(JSON.stringify({method:'fixture/shutdownTiming',params:{durationMs:Date.now()-closeAt}})+'\\n');});
  const result=(zero=false)=>zero?zeroResult:{...sdkResult,modelUsage:{'claude-opus-5-5':modelUsage}};
  const stream=(event,parent=null)=>({type:'stream_event',event,parent_tool_use_id:parent});
- return {mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),initializationResult:async()=>({commands:[]}),setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},setMcpServers:async()=>({added:[],removed:[],errors:{}}),close(){closeAt??=Date.now();if(stuckClose)return;if(delayedClose)setTimeout(()=>abort.abort(),20);else abort.abort();},interrupt:async()=>abort.abort(),
+ return {mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),initializationResult:async()=>({commands:[]}),setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},setMcpServers:async()=>({added:[],removed:[],errors:{}}),close(){restoreAppend?.();closeAt??=Date.now();if(stuckClose)return;if(delayedClose)setTimeout(()=>abort.abort(),20);else abort.abort();},interrupt:async()=>{process.stdout.write(JSON.stringify({method:'fixture/interrupt',params:{}})+'\\n');abort.abort();},
  async *[Symbol.asyncIterator](){
   while(!abort.signal.aborted){
    const input=await prompt.next();if(input.done)return;
    const text=input.value.message.content[0].text;
    yield {type:'user',isReplay:true,uuid:input.value.uuid};
    yield {type:'system',subtype:'init'};
+   if(text==='shutdown-watchdog'||text==='shutdown-watchdog-inflight'){
+    stuckClose=true;
+    if(text==='shutdown-watchdog-inflight'){
+     const append=fs.appendFile;let release;
+     const released=new Promise(resolve=>release=resolve);
+     restoreAppend=()=>{fs.appendFile=append;release();};
+     fs.appendFile=async(...args)=>{
+      if(String(args[1]).includes('stall:watch-tool')){
+       process.stdout.write(JSON.stringify({method:'fixture/stallSaveBlocked',params:{}})+'\\n');
+       await released;
+      }
+      return append(...args);
+     };
+    }
+    yield stream(events[0]);
+    yield {type:'assistant',uuid:'tool-frame',message:{id:'tool-frame',content:[{type:'tool_use',id:'watch-tool',name:'Read',input:{file_path:'x'}}]}};
+    await new Promise(()=>{});
+   }
+   if(text==='background-stuck'){
+    stuckClose=true;
+    yield stream(events[0],'background-tool');
+    yield result();
+    await new Promise(()=>{});
+   }
+   if(text==='shutdown-deferred'){
+    stuckClose=true;
+    yield stream(events[0]);
+    await waitForFile(options.cwd+'/.finish',{signal:abort.signal});
+    yield result();
+    await new Promise(()=>{});
+   }
+   if(text==='shutdown-error'||text==='shutdown-persist'){
+    yield stream(events[0]);
+    if(text==='shutdown-persist'){
+     const append=fs.appendFile,truncate=fs.truncate;
+     restoreAppend=()=>{fs.appendFile=append;fs.truncate=truncate;};
+     // The journal repair is the last asynchronous step before rejection.
+     // Its next check-phase callback runs after the entire rejection chain,
+     // including persistLater's failure recording, has settled.
+     fs.truncate=async(...args)=>{
+      const value=await truncate(...args);
+      setImmediate(()=>process.stdout.write(JSON.stringify({method:'fixture/persistFailureSettled',params:{}})+'\\n'));
+      return value;
+     };
+     fs.appendFile=async(...args)=>{
+      if(String(args[0]).includes('/state/sessions/')){
+       throw new Error('injected persist failure');
+      }
+      return append(...args);
+     };
+     yield {type:'assistant',uuid:'persist-trigger',message:{id:'persist-trigger',content:[{type:'text',text:'trigger save'}]}};
+    }
+    await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));
+    if(text==='shutdown-persist')throw new Error('closed after persist failure');
+    yield zeroResult;
+    return;
+   }
    if(text==='discard-stuck'){
     stuckClose=true;
     yield stream({...events[0],message:{...events[0].message,id:'main-response'}});
@@ -470,3 +528,143 @@ test("intentional shutdown preserves an unfinished turn for reconciliation inste
     { kind: "gap", reason: "queryClosed" },
   ]);
 });
+
+for (const scenario of [
+  "shutdown-error",
+  "shutdown-persist",
+  "shutdown-deferred",
+])
+  test(
+    scenario + " cannot finalize an intentionally closing turn",
+    async () => {
+      const b = await startBridge(sdk, "claude-usage-finalization-admission-", {
+        clock: true,
+      });
+      bridges.push(b);
+      const turn = await start(b, scenario);
+      await b.note((n) => n.method === "provider/generationStarted");
+      if (scenario === "shutdown-persist")
+        await b.note((n) => n.method === "fixture/persistFailureSettled");
+      if (scenario === "shutdown-deferred") {
+        await b.call("turn/steer", {
+          threadId: b.thread,
+          expectedTurnId: turn,
+          clientUserMessageId: "unread-steer",
+          input: [{ type: "text", text: "continue" }],
+        });
+        await fs.writeFile(path.join(b.root, ".finish"), "");
+        await b.note((n) => n.params?.studioUsage?.kind === "cumulative");
+        await b.advanceTime(2000);
+      }
+      await b.close();
+      expect(b.notes.filter((n) => n.method === "turn/completed")).toEqual([]);
+      expect(
+        observations(b).filter((o) => o.responseId === "response-1"),
+      ).toEqual([
+        {
+          kind: "gap",
+          responseId: "response-1",
+          model: "claude-opus-5-5",
+          turnId: turn,
+          reason: "queryClosed",
+        },
+      ]);
+    },
+  );
+
+test("unexpected SDK end still publishes one failed completion", async () => {
+  const b = await setup();
+  const turn = await start(b, "query-close");
+  await done(b, turn);
+  expect(b.notes.filter((n) => n.method === "turn/completed")).toMatchObject([
+    {
+      params: {
+        turn: {
+          id: turn,
+          status: "failed",
+          error: { message: "Claude ended without a completed turn" },
+        },
+      },
+    },
+  ]);
+});
+
+for (const method of ["thread/resume", "claude/settings", "thread/unsubscribe"])
+  test(
+    method +
+      " drains unfinished background usage before removing a stuck query",
+    async () => {
+      const b = await startBridge(sdk, "claude-usage-removal-", {
+        clock: true,
+      });
+      bridges.push(b);
+      const turn = await start(b, "background-stuck");
+      await done(b, turn);
+      expect(observations(b).some((o) => o.kind === "gap")).toBe(false);
+      await b.call(method, { threadId: b.thread, settings: {} });
+      expect((await b.call("thread/loaded/list", {})).data).toEqual([]);
+      const expected = [
+        {
+          kind: "gap",
+          responseId: "response-1",
+          model: "claude-opus-5-5",
+          turnId: turn,
+          reason: "queryClosed",
+        },
+      ];
+      expect(
+        observations(b).filter((o) => o.responseId === "response-1"),
+      ).toEqual(expected);
+      await b.close();
+      expect(
+        observations(b).filter((o) => o.responseId === "response-1"),
+      ).toEqual(expected);
+    },
+  );
+
+for (const scenario of ["shutdown-watchdog", "shutdown-watchdog-inflight"])
+  test(
+    scenario + " cannot recover a stalled tool during the shutdown drain",
+    async () => {
+      const b = await startBridge(sdk, "claude-shutdown-watchdog-", {
+        clock: true,
+        env: {
+          STUDIO_CLAUDE_TOOL_SILENCE_MS: "100",
+          STUDIO_CLAUDE_STALL_INTERRUPT_WAIT_MS: "100",
+        },
+      });
+      bridges.push(b);
+      const turn = await start(b, scenario);
+      await b.note(
+        (n) => n.method === "item/started" && n.params.item.id === "watch-tool",
+      );
+      if (scenario === "shutdown-watchdog-inflight") {
+        await b.advanceTime(100);
+        await b.note((n) => n.method === "fixture/stallSaveBlocked");
+      }
+      const before = b.notes.length;
+      await b.close();
+      expect(b.notes.some((n) => n.method === "fixture/interrupt")).toBe(false);
+      expect(
+        b.notes
+          .slice(before)
+          .filter(
+            (n) =>
+              n.method === "item/completed" &&
+              (n.params.item.stalled || n.params.item.studioNotice),
+          ),
+      ).toEqual([]);
+      expect(b.notes.filter((n) => n.method === "turn/completed")).toEqual([]);
+      expect(
+        observations(b).filter((o) => o.responseId === "response-1"),
+      ).toEqual([
+        {
+          kind: "gap",
+          responseId: "response-1",
+          model: "claude-opus-5-5",
+          turnId: turn,
+          reason: "queryClosed",
+        },
+      ]);
+    },
+  );

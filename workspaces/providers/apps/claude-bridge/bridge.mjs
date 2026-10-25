@@ -1067,6 +1067,9 @@ function finishTurn(s, active, result, error) {
   if (!turn) return active.finalization || Promise.resolve();
   const finishing = finishingTurns.get(turn);
   if (finishing) return finishing;
+  // Shutdown preserves unfinished turns for restart reconciliation. Every
+  // terminal caller shares this admission, including SDK errors and timers.
+  if (closing) return Promise.resolve();
   const state = { closed: false, stall: null, unappliedSteers: [] };
   // Install the shared outcome before finalization can await or throw.
   const operation = Promise.resolve().then(async () => {
@@ -1091,7 +1094,7 @@ function finishTurn(s, active, result, error) {
       catalogCache.activityChanged();
       active.pendingSteers.clear();
       active.assistantBlocks.clear();
-      if (state.closed) discardQuery(s, active);
+      if (state.closed) discardQuery(s.id, active);
       emit("turn/completed", {
         threadId: s.id,
         turn: {
@@ -1309,7 +1312,7 @@ async function reconcileClosedSteers(s, turn, unapplied) {
 async function recoverStall(s, active, found) {
   const turn = active.turn;
   const item = active.tools.get(found.id);
-  if (!turn || active.stall || finishingTurns.has(turn)) return;
+  if (closing || !turn || active.stall || finishingTurns.has(turn)) return;
   const message = found.stop
     ? "Studio stopped this turn: Claude Code did not end the turn after Stop."
     : stallMessage({ ...found, tool: item?.tool || found.tool });
@@ -1353,10 +1356,13 @@ async function recoverStall(s, active, found) {
   try {
     await persist(s);
   } catch (error) {
-    process.stderr.write(
-      "Claude stall: persist failed: " + error.message + "\n",
-    );
+    if (!closing)
+      process.stderr.write(
+        "Claude stall: persist failed: " + error.message + "\n",
+      );
   }
+  // A save already in flight may settle after shutdown closes the query.
+  if (closing) return;
   let timer;
   const deadline = new Promise(
     (resolve) =>
@@ -1365,7 +1371,9 @@ async function recoverStall(s, active, found) {
   // An interrupt keeps queued steers: Claude Code runs them next.
   if (!found.stop)
     Promise.resolve()
-      .then(() => active.q?.interrupt())
+      .then(() => {
+        if (!closing) return active.q?.interrupt();
+      })
       .catch((error) =>
         process.stderr.write(
           "Claude stall: interrupt failed: " + error.message + "\n",
@@ -1374,6 +1382,7 @@ async function recoverStall(s, active, found) {
   await Promise.race([finished, deadline]);
   clearTimeout(timer);
   if (
+    closing ||
     active.turn !== turn ||
     finishingTurns.has(turn) ||
     queries.get(s.id) !== active
@@ -1395,7 +1404,7 @@ async function recoverStall(s, active, found) {
   // Closing normally ends the SDK stream, and its owner finishes the turn.
   // If the stream still has not ended, finish it here and drop the query.
   await new Promise((resolve) => setImmediate(resolve));
-  if (active.turn !== turn || finishingTurns.has(turn)) return;
+  if (closing || active.turn !== turn || finishingTurns.has(turn)) return;
   await finishTurn(
     s,
     active,
@@ -2089,12 +2098,11 @@ async function startSession(s, active, p) {
       }
     }
     drainUsage(s.id, active);
-    if (active.turn && !closing)
-      throw new Error("Claude ended without a completed turn");
+    if (active.turn) throw new Error("Claude ended without a completed turn");
   } catch (error) {
     active.readyReject(error);
     drainUsage(s.id, active);
-    if (active.turn && !closing) {
+    if (active.turn) {
       try {
         await finishTurn(s, active, null, error);
       } catch (failure) {
@@ -2103,17 +2111,11 @@ async function startSession(s, active, p) {
     } else if (active.persistFailure)
       lifecycleFailure(s, active, active.persistFailure);
   } finally {
-    clearTurnTimers(active);
     allowed = false;
     admit();
-    active.input.close();
-    closeQuery(active);
-    if (queries.get(s.id) === active) {
-      queries.delete(s.id);
-      armStallWatch();
-      catalogCache.activityChanged();
-      void sessionStore.evict(s.id);
-    }
+    const owned = queries.get(s.id) === active;
+    discardQuery(s.id, active);
+    if (owned) void sessionStore.evict(s.id);
   }
 }
 // The SDK reports a closed or aborted Claude process with these messages.
@@ -2139,13 +2141,14 @@ function drainUsage(threadId, active) {
       studioUsage,
     });
 }
-function discardQuery(s, active) {
-  drainUsage(s.id, active);
+function discardQuery(threadId, active) {
+  if (!active) return;
+  drainUsage(threadId, active);
   clearTurnTimers(active);
   active.input.close();
   closeQuery(active);
-  if (queries.get(s.id) === active) {
-    queries.delete(s.id);
+  if (queries.get(threadId) === active) {
+    queries.delete(threadId);
     armStallWatch();
   }
   catalogCache.activityChanged();
@@ -2384,10 +2387,7 @@ async function handle(method, p) {
       throw new Error(
         "The effective target tool options changed before import",
       );
-    active?.input.close();
-    active?.q?.close();
-    queries.delete(p.session.id);
-    armStallWatch();
+    discardQuery(p.session.id, active);
     await publishNative(
       p.path,
       nativeDestination(s.nativeId || s.id, p.cwd),
@@ -2448,11 +2448,7 @@ async function handle(method, p) {
       active = queries.get(s.id);
     if (active && (active.turn || active.tasks.size || queryHasInput(active)))
       throw new Error("Pause Claude before changing these settings");
-    active?.input.close();
-    active?.q?.close();
-    queries.delete(s.id);
-    armStallWatch();
-    catalogCache.activityChanged();
+    discardQuery(s.id, active);
     s.claude = p.settings;
     await persist(s);
     return { settings: s.claude };
@@ -2462,11 +2458,7 @@ async function handle(method, p) {
       active = queries.get(s.id);
     if (active && (active.turn || active.tasks.size || queryHasInput(active)))
       throw new Error("Pause Claude before rollback");
-    active?.input.close();
-    active?.q?.close();
-    queries.delete(s.id);
-    armStallWatch();
-    catalogCache.activityChanged();
+    discardQuery(s.id, active);
     return rollbackSession(s, p, {
       persist,
       getSessionMessages,
@@ -2573,12 +2565,7 @@ async function handle(method, p) {
         !active ||
         (!active.turn && !active.tasks.size && !queryHasInput(active))
       ) {
-        if (active) clearTurnTimers(active);
-        active?.input.close();
-        active?.q?.close();
-        queries.delete(s.id);
-        armStallWatch();
-        catalogCache.activityChanged();
+        discardQuery(s.id, active);
         Object.assign(
           s,
           p,
@@ -2606,12 +2593,8 @@ async function handle(method, p) {
     const active = queries.get(p.threadId);
     if (active && queryBusy(p.threadId, active))
       throw new Error("Pause the Claude turn before detaching");
-    active?.input.close();
-    active?.q?.close();
-    queries.delete(p.threadId);
-    armStallWatch();
+    discardQuery(p.threadId, active);
     if (active) studioUnloaded.add(p.threadId);
-    catalogCache.activityChanged();
     await sessionStore.evict(p.threadId);
     return { status: active ? "unsubscribed" : "notLoaded" };
   }
@@ -2780,7 +2763,7 @@ async function handle(method, p) {
             !active.turn &&
             !active.tasks.size
           )
-            discardQuery(s, active);
+            discardQuery(s.id, active);
         },
         phase,
         startedAt,
@@ -2797,7 +2780,7 @@ async function handle(method, p) {
         await control(() => active.ready, "active_ready");
       } catch (error) {
         if (!deadQuery(error)) throw error;
-        discardQuery(s, active);
+        discardQuery(s.id, active);
         active = null;
       }
     }
@@ -2838,7 +2821,7 @@ async function handle(method, p) {
         );
       } catch (error) {
         if (!deadQuery(error) || active.turn || active.tasks.size) throw error;
-        discardQuery(s, active);
+        discardQuery(s.id, active);
         active = null;
       }
     }
@@ -3181,7 +3164,8 @@ lines.on("line", (line) => {
   }
   operation.then(
     (result) => {
-      if (message.id !== undefined) send({ id: message.id, result });
+      if (message.id !== undefined)
+        send({ id: message.id, result: result ?? null });
     },
     (error) => {
       if (message.id !== undefined)
@@ -3199,6 +3183,7 @@ lines.on("line", (line) => {
 let closing;
 function shutdown() {
   if (closing) return closing;
+  armStallWatch.dispose();
   closing = (async () => {
     const activeQueries = [...queries.entries()];
     // Maximum graceful shutdown drain, in milliseconds; never wait for the
@@ -3220,6 +3205,7 @@ function shutdown() {
       }
     };
     for (const [, active] of activeQueries) {
+      clearTurnTimers(active);
       active.input.close();
       closeQuery(active);
     }

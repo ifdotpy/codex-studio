@@ -101,9 +101,11 @@ const MAX_STALL_TIMER_DELAY_MS = 2_147_483_647;
 export function watchStalls(queries, studioWaits, limits, recoverStall) {
   let timer;
   let armedAt = Infinity;
+  let disposed = false;
   const eligible = (id, active) =>
     active.turn && !active.stall && active.session && !studioWaits.get(id);
   function arm() {
+    if (disposed) return;
     let nearest = Infinity;
     for (const [id, active] of queries) {
       if (!eligible(id, active)) continue;
@@ -137,6 +139,13 @@ export function watchStalls(queries, studioWaits, limits, recoverStall) {
     );
     timer.unref();
   }
+  // Shutdown keeps the query snapshot available for usage draining, but no
+  // later stream progress may rearm tool recovery.
+  arm.dispose = () => {
+    disposed = true;
+    clearTimeout(timer);
+    armedAt = Infinity;
+  };
   return arm;
 }
 
