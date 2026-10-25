@@ -38,7 +38,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 export function query({prompt,options}){
  const abort=new AbortController(),cwd=options.cwd;
  const session=options.sessionId||options.resume;
- const history=path.join(process.env.CLAUDE_CONFIG_DIR,'projects','fake',session+'.jsonl');
+ const history=path.join(process.env.CLAUDE_CONFIG_DIR,'projects',cwd.replace(/[^a-zA-Z0-9]/g,'-'),session+'.jsonl');
  let interrupted=null,wedged=false,deaf=false;
  const interrupt=new Promise(r=>(interrupted=r));
  const queued=[];
@@ -51,7 +51,7 @@ export function query({prompt,options}){
  const hold=value=>{
   queued.push(value);
   if(value.message.content[0].text.includes('recorded'))
-   fs.appendFileSync(history,JSON.stringify({type:'attachment',attachment:{type:'queued_command',source_uuid:value.uuid}})+'\n');
+   fs.appendFileSync(history,JSON.stringify({type:'attachment',sessionId:session,cwd,isSidechain:false,attachment:{type:'queued_command',source_uuid:value.uuid}})+'\n');
  };
  return {
   mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
@@ -68,6 +68,8 @@ export function query({prompt,options}){
     const input=await read();
     if(input.done)return;
     const text=input.value.message.content[0].text;
+    fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,sessionId:session,cwd,isSidechain:false})+'\n');
+    if(text==='stall')fs.appendFileSync(history,'broken native row\n');
     yield {type:'user',isReplay:true,uuid:input.value.uuid};
     yield {type:'system',subtype:'init'};
     yield {type:'stream_event',event:{type:'message_start',message:{id:'message-'+text}}};
@@ -421,7 +423,6 @@ test("the stall rule needs both an elapsed budget and silence", () => {
           attachment: { type: "queued_command", source_uuid: "u2" },
         }),
         JSON.stringify({ type: "queue-operation", operation: "enqueue" }),
-        "not json",
       ]),
     ],
     ["u1", "u2"],

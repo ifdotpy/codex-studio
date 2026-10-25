@@ -165,7 +165,8 @@ export function stallMessage(stall) {
 
 // Native input ids that Claude Code wrote into its conversation history: user
 // messages, and queued messages it absorbed into a turn. `lines` is the
-// session's JSONL transcript.
+// session's JSONL transcript. Damaged evidence returns null, never an empty
+// set that could be mistaken for proven absence.
 export function recordedInputIds(lines) {
   const ids = new Set();
   for (const line of lines) {
@@ -173,8 +174,12 @@ export function recordedInputIds(lines) {
     try {
       entry = JSON.parse(line);
     } catch {
+      // A missing UUID in damaged evidence cannot authorize redelivery.
+      if (line.trim()) return null;
       continue;
     }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry))
+      return null;
     if (entry?.type === "user" && typeof entry.uuid === "string")
       ids.add(entry.uuid);
     const attachment = entry?.attachment;
