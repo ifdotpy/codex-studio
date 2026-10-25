@@ -871,6 +871,10 @@ it.each(["overflow", "inline removal", "staged removal"])(
       finish = resolve;
     });
     stops.push(finish);
+    // Keep the held storage write independent of wall-clock scheduling.
+    // The test controls cancellation and reconnect, not the persistence timeout.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const started = Promise.withResolvers<void>();
     const staged = cause === "staged removal";
     const originalInline = f.client.persistResourceEntityChanges;
     const originalStaged = f.client.persistStagedEntityTransfer;
@@ -878,12 +882,14 @@ it.each(["overflow", "inline removal", "staged removal"])(
       ? vi
           .spyOn(f.client, "persistStagedEntityTransfer")
           .mockImplementationOnce(async (...args) => {
+            started.resolve();
             await gate;
             return originalStaged(...args);
           })
       : vi
           .spyOn(f.client, "persistResourceEntityChanges")
           .mockImplementationOnce(async (...args) => {
+            started.resolve();
             await gate;
             return originalInline(...args);
           });
@@ -924,65 +930,80 @@ it.each(["overflow", "inline removal", "staged removal"])(
         },
       ],
     };
-    if (staged)
-      source.emit("entity-transfer", {
-        protocol: frame.protocol,
-        workspaceId: f.workspaceId,
-        epoch: frame.epoch,
-        revision: 5,
-        reason: "initial",
-        resource: ref,
-        cursor: { workspaceId: f.workspaceId, seq: 5 },
-        replyKind: "snapshot",
-        transferId: "quiet-work",
-        pageIndex: 0,
-        partIndex: 0,
-        partCount: 1,
-        complete: true,
-        data: JSON.stringify(frame.resourceVersions[0].entityChanges),
-      });
-    else source.emit("resources", frame);
-    await vi.waitFor(() => expect(held).toHaveBeenCalledOnce());
-    if (cause === "overflow") {
-      for (const [index, other] of others.entries())
-        source.emit("resources", {
+    try {
+      if (staged)
+        source.emit("entity-transfer", {
           protocol: frame.protocol,
           workspaceId: f.workspaceId,
           epoch: frame.epoch,
-          revision: 6 + index,
+          revision: 5,
           reason: "initial",
-          resources: [other],
-          resourceVersions: [
-            {
-              resource: other,
-              revision: 6 + index,
-              cursor: { workspaceId: f.workspaceId, seq: 6 + index },
-              replyKind: "snapshot",
-              entityChanges: { after: 0, through: 6 + index, documents: [] },
-            },
-          ],
+          resource: ref,
+          cursor: { workspaceId: f.workspaceId, seq: 5 },
+          replyKind: "snapshot",
+          transferId: "quiet-work",
+          pageIndex: 0,
+          partIndex: 0,
+          partCount: 1,
+          complete: true,
+          data: JSON.stringify(frame.resourceVersions[0].entityChanges),
         });
-    } else stopOthers[0]();
-    expect(source.closed).toBe(true);
-    finish();
-    await vi.waitFor(() => expect(mocks.sources).toHaveLength(2), {
-      timeout: 2500,
-    });
-    expect(await f.client.readSubscriptionCursor(ref)).toBeUndefined();
-    const replacement = mocks.sources[1];
-    replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
-    replacement.emit("resources", structuredClone(frame));
-    await vi.waitFor(() =>
-      expect(subscriptions.getSnapshot(ref)).toMatchObject({
-        status: "live",
-        data: {
-          items: [expect.objectContaining({ title: "Quiet assignment" })],
-        },
-      }),
-    );
-    expect(f.pulls()).toEqual([]);
-    expect(
-      mocks.syncGet.mock.calls.every(([path]) => path === "/api/sync/identity"),
-    ).toBe(true);
+      else source.emit("resources", frame);
+      await started.promise;
+      expect(held).toHaveBeenCalledOnce();
+      if (cause === "overflow") {
+        for (const [index, other] of others.entries())
+          source.emit("resources", {
+            protocol: frame.protocol,
+            workspaceId: f.workspaceId,
+            epoch: frame.epoch,
+            revision: 6 + index,
+            reason: "initial",
+            resources: [other],
+            resourceVersions: [
+              {
+                resource: other,
+                revision: 6 + index,
+                cursor: { workspaceId: f.workspaceId, seq: 6 + index },
+                replyKind: "snapshot",
+                entityChanges: { after: 0, through: 6 + index, documents: [] },
+              },
+            ],
+          });
+      } else stopOthers[0]();
+      expect(source.closed).toBe(true);
+      finish();
+      // A replacement stream must not race the canceled write still owning RxDB.
+      await held.mock.results[0].value;
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(mocks.sources).toHaveLength(2), {
+        timeout: 2500,
+      });
+      expect(await f.client.readSubscriptionCursor(ref)).toBeUndefined();
+      const replacement = mocks.sources[1];
+      replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
+      replacement.emit("resources", structuredClone(frame));
+      await vi.waitFor(() =>
+        expect(subscriptions.getSnapshot(ref)).toMatchObject({
+          status: "live",
+          data: {
+            items: [expect.objectContaining({ title: "Quiet assignment" })],
+          },
+        }),
+      );
+      expect(f.pulls()).toEqual([]);
+      expect(
+        mocks.syncGet.mock.calls.every(
+          ([path]) => path === "/api/sync/identity",
+        ),
+      ).toBe(true);
+    } finally {
+      subscriptions.dispose();
+      finish();
+      await Promise.allSettled(held.mock.results.map((result) => result.value));
+      await vi.advanceTimersByTimeAsync(0);
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   },
 );

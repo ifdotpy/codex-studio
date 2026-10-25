@@ -87,6 +87,11 @@ test.describe("legacy schema mismatch", () => {
     let pullFailureCount = 0;
     const rendererHashes = [];
     const apiRequests = [];
+    const streamDiagnostics = [];
+    page.on("console", (message) => {
+      if (message.type() === "error")
+        streamDiagnostics.push({ error: message.text() });
+    });
     const statePulls = [];
     let validProjectionDatabaseNames = [];
     const entityChangePages = new WeakSet();
@@ -140,6 +145,12 @@ test.describe("legacy schema mismatch", () => {
         requestUrl.pathname === "/api/sync/pull" &&
         requestUrl.searchParams.get("scope") === "state:entities:v1"
       ) {
+        streamDiagnostics.push({
+          pull: requestUrl.search,
+          page: oldBuildPages.has(route.request().frame().page())
+            ? "old"
+            : "new",
+        });
         statePulls.push({
           page: route.request().frame().page(),
           after: requestUrl.searchParams.get("after"),
@@ -152,10 +163,22 @@ test.describe("legacy schema mismatch", () => {
         const resources = JSON.parse(
           requestUrl.searchParams.get("resources") || "[]",
         );
+        const since = JSON.parse(requestUrl.searchParams.get("since") || "[]");
+        const stateCursor = since.find(
+          ({ resource }) => resource.kind === "state",
+        )?.since;
+        streamDiagnostics.push({
+          resources,
+          since: requestUrl.searchParams.get("since"),
+        });
         const initialResources = resources.filter((resource) => {
           // Detail can be cancelled when selection changes before its first
           // frame is persisted; every reconnect must replay that view's baseline.
           if (resource.kind === "agentDetail") return true;
+          // An unchanged build reconnects with an applied state baseline. A
+          // revision-only hint explicitly requests recovery and cannot model
+          // a cached reload with zero additional entity reads.
+          if (resource.kind === "state" && streamHash === oldHash) return true;
           const key = `${streamHash}:${JSON.stringify(resource)}`;
           if (confirmedResources.has(key)) return false;
           confirmedResources.add(key);
@@ -164,12 +187,20 @@ test.describe("legacy schema mismatch", () => {
         let body = "";
         let workspaceId;
         if (initialResources.length > 0) {
-          const identity = await fetch(
-            new URL("/api/sync/identity", backendOrigin),
-          );
-          ({ workspaceId } = await identity.json());
+          if (streamHash === oldHash && stateCursor)
+            workspaceId = stateCursor.workspaceId;
+          else {
+            const identity = await fetch(
+              new URL("/api/sync/identity", backendOrigin),
+            );
+            ({ workspaceId } = await identity.json());
+          }
           const details = initialResources.filter(
-            (resource) => resource.kind === "agentDetail",
+            (resource) =>
+              resource.kind === "agentDetail" ||
+              (resource.kind === "state" &&
+                streamHash === oldHash &&
+                !stateCursor),
           );
           const detailVersions = await readResourceBaselines(
             backendOrigin,
@@ -177,12 +208,35 @@ test.describe("legacy schema mismatch", () => {
           );
           const resourceVersions = initialResources.map(
             (resource) =>
+              // This phase models an unchanged source across a same-build
+              // reload. Echo its durable cursor as an empty applied delta;
+              // later phases explicitly inject source changes and recovery.
+              (resource.kind === "state" &&
+              streamHash === oldHash &&
+              stateCursor
+                ? {
+                    resource,
+                    revision: stateCursor.seq,
+                    cursor: stateCursor,
+                    replyKind: "delta",
+                  }
+                : undefined) ||
               detailVersions.find(
                 (entry) =>
                   entry.resource?.kind === resource.kind &&
                   entry.resource?.agentId === resource.agentId,
               ) || { resource, revision: 1 },
           );
+          streamDiagnostics.push({
+            baselines: resourceVersions.map(
+              ({ resource, revision, cursor, replyKind }) => ({
+                resource,
+                revision,
+                cursor,
+                replyKind,
+              }),
+            ),
+          });
           body = protocol3SseEvent("resources", {
             protocol: 4,
             workspaceId,
@@ -222,6 +276,8 @@ test.describe("legacy schema mismatch", () => {
                 {
                   resource: { kind: "state" },
                   revision: entityChanges.through,
+                  cursor: { workspaceId, seq: entityChanges.through },
+                  replyKind: "delta",
                   entityChanges,
                 },
               ],
@@ -360,6 +416,11 @@ test.describe("legacy schema mismatch", () => {
             request.includes("scope=state%3Aentities%3Av1"),
         ).length;
       const initialStatePullCount = statePullCount();
+      assert.equal(
+        initialStatePullCount,
+        0,
+        "the applied SSE baseline needs no entity pull",
+      );
       await page.reload();
       await expect(leadChat(page)).toBeVisible({ timeout: 30_000 });
       await leadChat(page).click();
@@ -736,6 +797,12 @@ test.describe("legacy schema mismatch", () => {
         "0",
         "the new schema cache's main-client bootstrap starts at zero",
       );
+    } catch (error) {
+      console.log(
+        "Schema cache stream diagnostics:",
+        JSON.stringify(streamDiagnostics),
+      );
+      throw error;
     } finally {
       fixture.kill();
       await context.close();
