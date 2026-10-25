@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Ask the person, through Studio, to open a link in the browser of the Mac.
+"""Ask the person, through Studio, to open a link in the browser on this computer.
 
 The VM installs this file as /usr/local/bin/studio-browser and links /usr/local/bin/xdg-open
 to it. Agent processes have BROWSER=/usr/local/bin/studio-browser. A sign-in command such as
@@ -23,7 +23,7 @@ def main(arguments: list[str]) -> int:
         print("studio-browser: give exactly one URL", file=sys.stderr)
         return 2
     path = os.environ.get("STUDIO_BROWSER_SOCKET") or SOCKET
-    # A VM chat names itself with LAYR_SESSION; a native chat on the Mac with its session.
+    # A VM chat names itself with LAYR_SESSION; a native chat with its session.
     session = os.environ.get("LAYR_SESSION") or os.environ.get("STUDIO_BROWSER_SESSION")
     request = {"v": 1, "url": arguments[0], "session": session}
     try:
@@ -50,7 +50,7 @@ def main(arguments: list[str]) -> int:
               "This command waits on that card; Studio tells this chat when the sign-in ends.", file=sys.stderr)
         return 0
     print(f"studio-browser: Studio asks the person to open {reply.get('host')}. "
-          "The sign-in continues in the browser on the Mac after the approval.", file=sys.stderr)
+          "The sign-in continues in the browser on this computer after the approval.", file=sys.stderr)
     return 0
 
 
