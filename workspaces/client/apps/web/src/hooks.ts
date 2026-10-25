@@ -1048,16 +1048,10 @@ export function useMessages(
     // Subscription freshness also covers loading, errors and hidden screens.
     // Only transport loss means that the chat is reconnecting.
     return watchResourceConnection((status) => {
-      const previous =
-        connectionRef.current.source === watchResourceConnection
-          ? connectionRef.current.value
-          : "";
       updateConnection(
         status === "live"
           ? "live"
-          : status === "degraded" ||
-              status === "offline" ||
-              (status === "connecting" && previous !== "")
+          : status === "degraded" || status === "offline"
             ? "reconnecting"
             : "",
       );

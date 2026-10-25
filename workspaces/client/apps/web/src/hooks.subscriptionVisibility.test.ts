@@ -112,7 +112,7 @@ it("tracks actual transport loss and recovery independently of transcript freshn
   expect(h.writes.at(-1)).toBe("live");
   h.connection?.("degraded");
   expect(h.writes.at(-1)).toBe("reconnecting");
-  h.connection?.("connecting");
+  h.connection?.("degraded");
   expect(h.writes.at(-1)).toBe("reconnecting");
   h.connection?.("live");
   expect(h.writes.at(-1)).toBe("live");

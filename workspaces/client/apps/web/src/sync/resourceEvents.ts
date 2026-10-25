@@ -1244,7 +1244,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     wireResources = resources;
     wireTokenRates = tokenRates;
     acceptedResources = new Set(resources.map(resourceKey));
-    setStatus("connecting");
+    // Opening a retry does not recover the lost stream. Keep that server-wide
+    // state until a valid frame arrives, including for newly visible chats.
+    setStatus(
+      currentStatus === "degraded" || currentStatus === "offline"
+        ? "degraded"
+        : "connecting",
+    );
     try {
       const subscription: NonNullable<
         operations["sync_stream_api_sync_stream_get"]["parameters"]["query"]

@@ -203,6 +203,8 @@ An inactive transcript subscription, initial loading, or a projection error does
 not mean the connection was lost. Hidden conversations drop their connection
 listener and read the current transport state when shown again. Provider retry
 messages remain part of the agent's runtime phase, independently of transport.
+Opening a retry keeps the server transport degraded until a valid live frame
+arrives, so switching chats during that retry preserves the reconnect notice.
 
 Draft recovery journal and local record writes happen synchronously on each
 edit. RxDB coalesces upstream draft pushes according to the wait policy in

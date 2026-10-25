@@ -616,6 +616,8 @@ it.each([false, true])(
     const store = createSubscriptionStore(f.transport);
     disposals.push(store.dispose);
     const resource = { kind: "transcript", agentId: "recovered-chat" } as const;
+    const status = vi.fn();
+    const stopStatus = f.transport.watchResourceConnection(status);
     const cursor = { workspaceId: "workspace", seq: 41 };
     f.readCursor.mockResolvedValue(cursor);
     let stop = store.watchResourceChanges(resource, vi.fn());
@@ -639,6 +641,9 @@ it.each([false, true])(
     await vi.advanceTimersByTimeAsync(1000);
     const resumed = f.sources.at(-1)!;
     expect(resumed).not.toBe(f.source);
+    const lateStatus = vi.fn();
+    const stopLateStatus = f.transport.watchResourceConnection(lateStatus);
+    expect(lateStatus).toHaveBeenLastCalledWith("degraded", "connecting");
     resumed.emit("api-schema", { hash: API_SCHEMA_HASH });
     resumed.emit("resources", { ...baseline, reason: "reconnect" });
     await vi.advanceTimersByTimeAsync(0);
@@ -651,6 +656,8 @@ it.each([false, true])(
       "/api/sync/identity",
     ]);
     stop();
+    stopStatus();
+    stopLateStatus();
   },
 );
 

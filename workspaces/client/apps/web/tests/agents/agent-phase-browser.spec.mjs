@@ -39,27 +39,63 @@ import {useMessages} from '/src/hooks.ts';
 import AgentPhase from '/src/components/agents/AgentPhase.tsx';
 import {ServerServicesProvider} from '/src/servers/ServerServicesContext.tsx';
 import {createSubscriptions} from '/src/sync/subscriptions/module.ts';
+import {createResourceEvents} from '/src/sync/resourceEvents.ts';
+import {API_SCHEMA_HASH} from '/src/generated/apiSchema.ts';
+import {SYNC_PROTOCOL_VERSION} from '/src/generated/api.ts';
 import {SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS} from '/src/generated/sharedValues.ts';
-const connections = new Set();
-let transport = 'live';
 const refs = Object.fromEntries(['first','second'].map(agentId => [agentId, {kind:'transcript',agentId,tail:SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS}]));
 const payloads = Object.fromEntries(['first','second'].map(id => [id, {items:[],agent:{id,status:'running',activity:{phase:'writing'}}}]));
-const resources = createSubscriptions({
-  watchResourceChanges: () => () => {},
-  watchResourceConnection: accept => { connections.add(accept); accept(transport, 'open'); return () => connections.delete(accept); },
-}, (ref,accept) => { accept(payloads[ref.agentId]); return () => {}; });
-window.setConnection = value => { transport = value; for (const accept of connections) accept(value, 'open'); };
-window.phase = (id,phase) => { payloads[id] = {...payloads[id],agent:{...payloads[id].agent,activity:{phase}}}; resources.publish(refs[id],payloads[id]); };
 window.reads = [];
 window.renders = {first:0,second:0};
-window.connectionListeners = () => connections.size;
-const services = {owner:{id:'fixture',origin:location.origin},resources,api:{syncGet: (...args) => {window.reads.push(args); throw new Error('Unexpected read');}},transcripts:{peekTranscript:()=>undefined}};
-const otherConnections = new Set();
-const otherResources = createSubscriptions({
-  watchResourceChanges: () => () => {},
-  watchResourceConnection: accept => { otherConnections.add(accept); accept('connecting', 'opening'); return () => otherConnections.delete(accept); },
-}, (ref,accept) => { accept(payloads[ref.agentId]); return () => {}; });
-const otherServices = {...services,owner:{id:'other-server',origin:location.origin},resources:otherResources};
+function scope(ownerId, hold = false) {
+  const connections = new Set(), sources = [];
+  let revision = 0, retryReady;
+  class Source {
+    listeners = new Map(); closed = false;
+    constructor(url) { this.resources = JSON.parse(new URL(url,location.origin).searchParams.get('resources')); }
+    addEventListener(name,accept) { this.listeners.set(name,accept); }
+    emit(name,value) { this.listeners.get(name)?.({data:JSON.stringify(value)}); }
+    close() { this.closed = true; }
+    baseline() { this.emit('resources',{protocol:SYNC_PROTOCOL_VERSION,workspaceId:ownerId,epoch:'fixture-epoch',revision:++revision,reason:'initial',resources:this.resources,resourceVersions:this.resources.map(resource=>({resource,revision,cursor:{workspaceId:ownerId,seq:revision},replyKind:'delta'}))}); }
+  }
+  const transport = createResourceEvents({
+    api: {
+      get: (...args) => { window.reads.push(args); throw new Error('Unexpected transport read'); },
+      post: async (_path,body) => {
+        const source = sources.at(-1);
+        source.resources = [...source.resources.filter(ref => !body.remove.some(removed => JSON.stringify(removed)===JSON.stringify(ref))), ...body.add.map(item=>item.resource)];
+        queueMicrotask(()=>{source.emit('subscriptions',{gen:body.gen}); if(!hold) source.baseline();});
+        return {gen:body.gen};
+      },
+      isApiSchemaMismatch:()=>false,onApiSchemaMismatch:()=>()=>{},matchingApiSchemaResponseGeneration:()=>0,clearSchemaUpdateAttemptAfterMatch:()=>{},markApiSchemaMismatch:()=>{throw new Error('Unexpected schema mismatch');},
+    },
+    sync:{syncDatabase:async()=>({workspaceId:ownerId}),persistResourceEntityChanges:async()=>{},readSubscriptionCursor:async()=>undefined},
+    tokenRates:{configureTokenRateStream:()=>{},receiveResourceTokenRates:()=>true,getWorkspaceTokenRates:()=>({records:[]})},
+    storageName:name=>ownerId+':'+name,
+    openEvents: url => {
+      const source = new Source(url); sources.push(source);
+      queueMicrotask(()=>{source.onopen?.(); source.emit('api-schema',{hash:API_SCHEMA_HASH}); source.emit('session',{sessionId:ownerId+sources.length}); if(!hold)source.baseline(); retryReady?.(); retryReady=undefined;});
+      return source;
+    },
+  });
+  const resources = createSubscriptions({...transport,watchResourceConnection:accept=>{connections.add(accept);const stop=transport.watchResourceConnection(accept);return()=>{connections.delete(accept);stop();};}}, (ref,accept)=>{accept(payloads[ref.agentId]);return()=>{};});
+  return {
+    resources,
+    connections,
+    services:{owner:{id:ownerId,origin:location.origin},resources,api:{syncGet:(...args)=>{window.reads.push(args);throw new Error('Unexpected read');}},transcripts:{peekTranscript:()=>undefined}},
+    setConnection(value) {
+      if(value==='offline'){hold=true;sources.at(-1).onerror?.();}
+      else if(value==='connecting'){if(sources.at(-1).closed)return new Promise(resolve=>{retryReady=resolve;});}
+      else if(value==='live'){hold=false;sources.at(-1).baseline();}
+    },
+  };
+}
+const firstScope = scope('fixture'), otherScope = scope('other-server',true);
+const services = firstScope.services, otherServices = otherScope.services;
+window.setConnection = value => firstScope.setConnection(value);
+window.connectionListeners = () => firstScope.connections.size;
+window.repeatLive = () => {for(const accept of firstScope.connections) accept('live','open');};
+window.phase = (id,phase) => {payloads[id]={...payloads[id],agent:{...payloads[id].agent,activity:{phase}}}; firstScope.resources.publish(refs[id],payloads[id]);};
 function Chat({id,visible}) {
   window.renders[id]++;
   const messages = useMessages(id,'agent',true,'fixture','fixture',visible);
@@ -92,10 +128,20 @@ createRoot(document.getElementById('root')).render(<Harness/>);`;
     await expect(second).toHaveAttribute("data-connection", "");
     await page.evaluate(() => window.setConnection("offline"));
     await expect(first).toContainText("Connection lost. Reconnecting…");
+    await page.evaluate(() => window.setConnection("connecting"));
+    await expect(first).toContainText("Connection lost. Reconnecting…");
     await page.evaluate(() => window.selectChat("second"));
     await expect(second).toContainText("Connection lost. Reconnecting…");
     await expect(first).toHaveAttribute("data-connection", "");
+    await page.evaluate(() => window.selectChat("first"));
+    await expect(first).toContainText("Connection lost. Reconnecting…");
+    await page.evaluate(() => window.selectChat("second"));
     await page.evaluate(() => window.setConnection("connecting"));
+    await expect(second).toContainText("Connection lost. Reconnecting…");
+    await page.evaluate(() => window.selectServer(true));
+    await expect(second).toHaveAttribute("data-connection", "");
+    await expect(second).not.toContainText("Connection lost.");
+    await page.evaluate(() => window.selectServer(false));
     await expect(second).toContainText("Connection lost. Reconnecting…");
     await page.evaluate(() => window.setConnection("live"));
     await expect(second).toHaveAttribute("data-connection", "live");
@@ -112,8 +158,7 @@ createRoot(document.getElementById('root')).render(<Harness/>);`;
     expect(await page.evaluate(() => window.connectionListeners())).toBe(2);
     const beforeRepeatedStatus = await page.evaluate(() => window.renders);
     await page.evaluate(async () => {
-      for (let repeated = 0; repeated < 20; repeated++)
-        window.setConnection("live");
+      for (let repeated = 0; repeated < 20; repeated++) window.repeatLive();
       await new Promise((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(resolve)),
       );
@@ -121,16 +166,6 @@ createRoot(document.getElementById('root')).render(<Harness/>);`;
     expect(await page.evaluate(() => window.renders)).toEqual(
       beforeRepeatedStatus,
     );
-    expect(await page.evaluate(() => window.connectionListeners())).toBe(2);
-    await page.evaluate(() => window.setConnection("offline"));
-    await expect(first).toContainText("Connection lost. Reconnecting…");
-    await page.evaluate(() => window.selectServer(true));
-    await expect(first).toHaveAttribute("data-connection", "");
-    await expect(first).not.toContainText("Connection lost.");
-    await page.evaluate(() => window.selectServer(false));
-    await expect(first).toContainText("Connection lost. Reconnecting…");
-    await page.evaluate(() => window.setConnection("live"));
-    await expect(first).toHaveAttribute("data-connection", "live");
     expect(await page.evaluate(() => window.connectionListeners())).toBe(2);
     expect(await page.evaluate(() => window.reads)).toEqual([]);
     expect(requests).toEqual([]);
