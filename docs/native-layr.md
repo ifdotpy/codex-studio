@@ -156,10 +156,19 @@ Arguments after `--` keep their original bytes.
 The wrapper preserves the command's output and exit status. It does not retry failed reads.
 
 Layr 0.2.1 returns state IDs for commit identities and supports porcelain v1 only.
-These formats use the real Git executable against the Layr-managed `.git` directory.
+The proxy uses Layr only for a small set of verified argument forms.
+Other reads use the real Git executable against the Layr-managed `.git` directory.
 This fallback also serves read commands that Layr does not implement, including `describe` and `cat-file`.
 Git commit IDs therefore match the exported head, including `git rev-parse HEAD` and build stamps.
 The fallback disables optional Git index refreshes.
+Git owns path quoting for porcelain and `ls-files` without `-z`, all grep forms, and unverified history formats.
+The only proxied history format is `log -1 --format=%ct`.
+Flagged revision queries use Git unless the complete form has a verified Layr equivalent.
+
+The managed Git index describes the exported head. It does not follow `layr add`.
+The proxy refuses Git `diff --cached`, `diff --staged`, and porcelain v2 instead of reporting that index as Layr's stage.
+Use `layr diff --cached` and `layr status --porcelain` for these reads.
+Other real Git index reads describe the exported head, including `ls-files` without `-z`.
 
 Git writes remain refused with a Layr command hint.
 Read commands with `--output` also fail because that option writes a file.
@@ -168,6 +177,13 @@ Explicit Git configuration and repository selectors use the real Git read path.
 
 Tools that use libgit2 or gix read `.git` directly and do not call this wrapper.
 They require the Layr-managed `.git` directory and its Git object store.
+
+The guard prevents agent mistakes. It is not a security boundary.
+It resolves a relative `GIT_DIR` environment value before any later `-C` option.
+Git can resolve that value against a different final directory.
+The guard does not check every `GIT_*` destination, including `GIT_INDEX_FILE`.
+Git can run configured helpers, including `diff.external` and filesystem monitors.
+These helpers can write files or run other commands.
 
 ## Reviewers
 

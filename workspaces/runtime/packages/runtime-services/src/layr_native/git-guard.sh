@@ -42,62 +42,66 @@ resolve_candidate() {
 }
 takes_value() {
     case "$1" in
-        --format|--pretty|--grep|--author|--since|--after|--until|--before|--date|-n|--max-count|--skip|-U|--unified|--stat-width|-e|-A|-B|-C|--after-context|--before-context|--context) return 0 ;;
+        --grep|--author|--since|--after|--until|--before|--date|-n|--max-count|--skip|-U|--unified|--stat-width|-e|-A|-B|-C|--after-context|--before-context|--context) return 0 ;;
         *) return 1 ;;
     esac
 }
-# This table owns both the read allowlist and the choice of backend. Layr 0.2.1
-# prints state IDs in history and v1 for every porcelain version. Keep Git's
-# commit formats on the managed .git until Layr has those output contracts.
+read_hint() {
+    printf 'Git %s is unavailable inside a native Layr line. Use %s.\n' "$command" "$1" >&2
+    return 1
+}
+# This table owns the read allowlist, exact Layr forms and revision policy.
+# Other allowed reads use Git's parser and the exported head's .git index.
 read_route() {
     route=git
     translate_revisions=0
     command=$1; shift
     case "$command" in
-        diff) route=layr; translate_revisions=1 ;;
-        ls-files) route=layr ;;
-        grep)
-            route=layr
-            # HEAD may be a pattern, a revision or a path. Keep Git's parser.
-            for arg do case "$arg" in HEAD|HEAD[~^:@.]* ) route=git ;; esac; done ;;
-        status)
+        diff)
             for arg do
                 [ "$arg" != -- ] || break
-                case "$arg" in -s|--short|--porcelain|--porcelain=1|--porcelain=v1) route=layr ;; esac
-            done
-            for arg do case "$arg" in --porcelain=2|--porcelain=v2|-b|--branch) route=git ;; esac; done ;;
-        rev-parse)
-            route=layr
-            translate_revisions=1
+                case "$arg" in --cached|--staged) read_hint 'layr diff --cached'; return 1 ;; esac
+            done ;;
+        status)
+            nul=0; porcelain=0; compatible=1
             for arg do
                 case "$arg" in
-                    --show-toplevel|--show-prefix|--show-cdup|--is-inside-work-tree|--is-inside-git-dir|--is-bare-repository|--absolute-git-dir|--git-common-dir|--abbrev-ref|--abbrev-ref=*|--symbolic-full-name|--verify|-q|--quiet|--short|--short=*) ;;
-                    *:*) ;;
-                    *'^{tree}') ;;
-                    *) route=git ;;
+                    --porcelain=2|--porcelain=v2) read_hint 'layr status --porcelain'; return 1 ;;
+                    -z) nul=1 ;;
+                    --porcelain|--porcelain=1|--porcelain=v1) porcelain=1 ;;
+                    --untracked-files=no|--untracked-files=all|--untracked-files=normal) ;;
+                    --) compatible=0; break ;;
+                    *) compatible=0 ;;
                 esac
             done
-            # A managed Git head may be detached. Preserve Git's ref names.
-            for arg do case "$arg" in --abbrev-ref|--abbrev-ref=*|--symbolic-full-name|--git-common-dir) route=git ;; esac; done ;;
-        log|show)
-            translate_revisions=1
-            # Only explicit formats without state identity fields match Git.
+            if [ "$compatible:$nul:$porcelain" = 1:1:1 ]; then route=layr; fi ;;
+        ls-files)
+            nul=0; compatible=1
             for arg do
-                [ "$arg" != -- ] || break
-                case "$arg" in --format=*|--pretty=*)
-                    case "$arg" in *%H*|*%h*|*%P*|*%p*|*%d*|*%D*) route=git ;; *%*) route=layr ;; *) route=git ;; esac ;;
-                esac
+                case "$arg" in -z) nul=1 ;; -s|--stage|-c|--cached|--full-name) ;; *) compatible=0 ;; esac
             done
-            if [ "$command" = show ]; then
-                for arg do
-                    [ "$arg" != -- ] || break
-                    case "$arg" in -*) ;; *:*) route=layr ;; esac
-                done
+            if [ "$compatible:$nul" = 1:1 ]; then route=layr; fi ;;
+        rev-parse)
+            if [ "$#" -eq 1 ]; then
+                case "$1" in
+                    --show-toplevel|--show-prefix|--show-cdup|--is-inside-work-tree) route=layr ;;
+                    -*) ;;
+                    *:*|*'^{tree}') route=layr; translate_revisions=1 ;;
+                esac
+            fi ;;
+        log)
+            if [ "$#" -eq 2 ] && [ "$1" = -1 ] && [ "$2" = --format=%ct ]; then route=layr; fi ;;
+        show)
+            if [ "$#" -eq 1 ]; then
+                case "$1" in HEAD:?*)
+                    if [ -f "$here/${1#*:}" ]; then route=layr; translate_revisions=1; fi ;;
+                esac
             fi ;;
         merge-base)
-            translate_revisions=1
-            for arg do [ "$arg" != --is-ancestor ] || route=layr; done ;;
-        blame|cat-file|describe|for-each-ref|rev-list|ls-tree|show-ref|name-rev|diff-tree|diff-files|diff-index|check-ignore|check-attr|help) ;;
+            if [ "$#" -eq 3 ] && [ "$1" = --is-ancestor ]; then
+                case "$2:$3" in -*|*:-*) ;; *) route=layr; translate_revisions=1 ;; esac
+            fi ;;
+        grep|blame|cat-file|describe|for-each-ref|rev-list|ls-tree|show-ref|name-rev|diff-tree|diff-files|diff-index|check-ignore|check-attr|help) ;;
         config)
             case "$#:$1" in 2:--get|2:--get-all|2:--get-regexp|1:--list) return 0 ;; esac
             refuse "$command"; return 1 ;;
@@ -121,26 +125,26 @@ read_route() {
         [ "$arg" != -- ] || break
         case "$arg" in
             --o|--o=*|--ou|--ou=*|--out|--out=*|--outp|--outp=*|--outpu|--outpu=*|--output|--output=*) refuse "$command"; return 1 ;;
-            # Layr accepts some Git flags without implementing their format.
-            --raw|--summary|--full-index|--binary|--numstat|-M*|--find-renames*|--no-index|--word-diff*|--src-prefix=*|--dst-prefix=*|-w|-b|--ignore-all-space|--ignore-space-change|--minimal|--patience|--histogram|--relative*) route=git ;;
         esac
-        case "$command:$arg" in diff:-z|diff:--no-prefix) route=git ;; esac
+        # Existing paths need Git's revision/path disambiguation, even HEAD.
+        if [ "$translate_revisions" -eq 1 ] && { [ -e "$here/$arg" ] || [ -L "$here/$arg" ]; }; then route=git; fi
         if takes_value "$arg"; then value=1; fi
     done
 }
 check() {
     here=$(/bin/pwd -P) || return 1
     guarded=0
+    env_guarded=0
     proxy=1
     route=git
-    in_line "$here" && guarded=1
+    git_dir_target=''; work_tree_target=''
+    # Known limit: relative environment selectors precede any later -C.
     for candidate in "${GIT_DIR-}" "${GIT_WORK_TREE-}" "${GIT_COMMON_DIR-}"; do
         [ -n "$candidate" ] || continue
         proxy=0
         case "$candidate" in /*) ;; *) candidate="$here/$candidate" ;; esac
-        in_line "$candidate" && guarded=1
         resolve_candidate || continue
-        in_line "$candidate" && guarded=1
+        in_line "$candidate" && env_guarded=1
     done
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -151,41 +155,42 @@ check() {
                     /*) here=$(cd "$2" 2>/dev/null && /bin/pwd -P) || return 0 ;;
                     *) here=$(cd "$here/$2" 2>/dev/null && /bin/pwd -P) || return 0 ;;
                 esac
-                in_line "$here" && guarded=1
                 shift 2 ;;
             --git-dir|--work-tree)
                 proxy=0
                 [ "$#" -ge 2 ] || return 0
-                candidate=$2
-                case "$candidate" in /*) ;; *) candidate="$here/$candidate" ;; esac
-                in_line "$candidate" && guarded=1
-                resolve_candidate || candidate=$here
-                in_line "$candidate" && guarded=1
+                case "$1" in --git-dir) git_dir_target=$2 ;; *) work_tree_target=$2 ;; esac
                 shift 2 ;;
-            --git-dir=*|--work-tree=*)
-                proxy=0
-                candidate=${1#*=}
-                case "$candidate" in /*) ;; *) candidate="$here/$candidate" ;; esac
-                in_line "$candidate" && guarded=1
-                resolve_candidate || candidate=$here
-                in_line "$candidate" && guarded=1
-                shift ;;
-            -c|--config-env) proxy=0; [ "$#" -ge 2 ] || return 0; shift 2 ;;
-            --no-pager|--no-optional-locks) shift ;;
-            --config-env=*|--paginate|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs) proxy=0; shift ;;
+            --git-dir=*) proxy=0; git_dir_target=${1#*=}; shift ;;
+            --work-tree=*) proxy=0; work_tree_target=${1#*=}; shift ;;
+            -c|--config-env|--namespace|--super-prefix)
+                proxy=0; [ "$#" -ge 2 ] || return 0; shift 2 ;;
+            --no-pager|-P|--no-optional-locks) shift ;;
             --version|--help) return 0 ;;
+            --) shift; break ;;
+            # Unknown flags cannot hide a later repository selector. Disable
+            # proxying; real Git retains option validation and outside behavior.
+            -*) proxy=0; shift ;;
             *) break ;;
         esac
+    done
+    guarded=$env_guarded
+    in_line "$here" && guarded=1
+    for candidate in "$git_dir_target" "$work_tree_target"; do
+        [ -n "$candidate" ] || continue
+        case "$candidate" in /*) ;; *) candidate="$here/$candidate" ;; esac
+        resolve_candidate || continue
+        in_line "$candidate" && guarded=1
     done
     [ "$guarded" -eq 1 ] || return 0
     [ "$#" -gt 0 ] || return 0
     read_route "$@" || return 1
     if [ "$proxy" -eq 1 ] && in_line "$here" && [ "$route" = layr ]; then
-        # Strip only the global arguments accepted for the Layr route.
         proxy_read "$@"
         exit $?
     fi
 }
+
 proxy_read() {
     cd "$here" || return 1
     paths=0
@@ -194,8 +199,8 @@ proxy_read() {
     for arg do
         shift
         if [ "$paths" -eq 0 ] && [ "$value" -eq 0 ] && [ "$translate_revisions" -eq 1 ]; then
-            case "$arg" in HEAD|HEAD[~^:@.]* ) arg="head${arg#HEAD}" ;; esac
-            case "$arg" in *..HEAD|*..HEAD[~^:@.]* ) arg="${arg%%..HEAD*}..head${arg#*..HEAD}" ;; esac
+            case "$arg" in HEAD|HEAD[~^:@]*|HEAD..* ) arg="head${arg#HEAD}" ;; esac
+            case "$arg" in *..HEAD|*..HEAD[~^:@]* ) arg="${arg%%..HEAD*}..head${arg#*..HEAD}" ;; esac
         fi
         if [ "$value" -eq 1 ]; then value=0
         else
