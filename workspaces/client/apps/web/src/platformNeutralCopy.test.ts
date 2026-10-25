@@ -12,7 +12,7 @@ import {
 
 test("disk recovery, folder sync, workspaces and sign-in use platform-neutral product words", () => {
   expect(nativeErrorView("ENOSPC: no space left on device").hint).toBe(
-    "Free disk space on this computer. Queued work starts again on its own.",
+    "Free disk space on the server. Queued work starts again on its own.",
   );
   expect(
     layrSyncText({

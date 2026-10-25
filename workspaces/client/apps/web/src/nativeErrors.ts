@@ -12,7 +12,7 @@ export const DISK_FULL_TITLE = "Disk is full";
 const DISK_FULL_MESSAGE =
   "Studio holds this agent and resumes it when free space returns.";
 const DISK_FULL_HINT =
-  "Free disk space on this computer. Queued work starts again on its own.";
+  "Free disk space on the server. Queued work starts again on its own.";
 
 // Codex 0.153.4 CodexErrorInfo, including unknown future variants.
 export const nativeErrorHints: Record<string, string> = {
