@@ -1,3 +1,4 @@
+import { SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS } from "../../src/generated/sharedValues.ts";
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import {
   API_SCHEMA_HASH_HEADER,
@@ -16,6 +17,9 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+/** Later rows that move the accepted input outside the live window, in items. */
+const LATER_TRANSCRIPT_ITEMS = 225;
 
 async function runMessageReceiptScenario(
   { browser: testBrowser, context: runnerContext },
@@ -166,8 +170,8 @@ async function runMessageReceiptScenario(
           const now = Date.now() / 1000;
           // Both aggregate event and transcript windows now omit the original.
           // The exact durable receipt remains available by its primary key.
-          for (let number = 0; number < 225; number++) {
-            const last = number === 224;
+          for (let number = 0; number < LATER_TRANSCRIPT_ITEMS; number++) {
+            const last = number === LATER_TRANSCRIPT_ITEMS - 1;
             putItem({
               id: agent + ":later-" + number,
               role: last ? "assistant" : "tool",
@@ -730,12 +734,42 @@ async function runMessageReceiptScenario(
     await page
       .getByRole("button", { name: "Earlier messages", exact: true })
       .waitFor({ state: "visible" });
-    await page
-      .getByRole("button", { name: "Earlier messages", exact: true })
-      .click();
+    const maximumPages = Math.ceil(
+      LATER_TRANSCRIPT_ITEMS / SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS,
+    );
+    for (
+      let index = 0;
+      index < maximumPages && !(await bubble(text).count());
+      index++
+    ) {
+      const received = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/transcript/page",
+      );
+      const earlier = page.getByRole("button", {
+        name: "Earlier messages",
+        exact: true,
+      });
+      await earlier.click();
+      const response = await received;
+      assert.equal(
+        Number(new URL(response.url()).searchParams.get("limit")),
+        SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS,
+      );
+      assert.ok(
+        (await response.json()).items.length <=
+          SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS,
+      );
+      await until(
+        async () =>
+          !(await earlier.count()) ||
+          (await earlier.getAttribute("data-loading")) !== "true",
+        "The bounded history page did not settle",
+      );
+    }
     await until(
       async () => (await bubble(text).count()) === 1,
-      "The saved original is missing from its history page",
+      "The saved original is missing from its bounded history pages",
     );
     assert.equal(await bubble(text).count(), 1);
     assert.equal(
