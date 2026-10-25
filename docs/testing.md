@@ -198,7 +198,9 @@ installed-build evidence.
 ## Installed scenario smoke
 
 `just smoke-installed` checks the main user scenarios on the app that is installed
-on this Mac, against its live backend. Run it after an install. The
+on this host, against its live backend. On Linux it checks the `codex-studio`
+user service and the delivered release under
+`~/.local/share/codex-studio/server/current`; macOS keeps the application bundle layout. Run it after an install. The
 [script](../workspaces/tooling/apps/installed-smoke/smoke.mjs) owns the steps and
 their time limits:
 
@@ -225,6 +227,56 @@ The smoke sends small real model requests and never changes the owner's chats.
 `--no-model` runs only the read-only steps; `--provider` and `--model
 provider=id` narrow the scenarios. A pending card raises an approval alert in a
 build without the 10 s alert grace.
+
+For usage accounting acceptance, announce and run `just smoke-installed --usage`.
+It uses both providers' cheapest offered models, with three turns each: short,
+about 300 words with one read of a script-created `notes.txt`, then short.
+The chats are first created idle with YOLO disabled; the script verifies their
+returned settings before sending a model message. Codex uses workspace-write
+restricted to the disposable run folder with approvals enabled. The verifier
+normalizes stored policy objects, rejects unknown/bypass policies, and checks the
+folder's captured realpath/device/inode identity. Claude uses
+default permission mode. Read-only Codex leads require a server API change and
+are outside this verifier. Claude also receives a steer during the second turn.
+Older evidence retains its original harmless `pwd` step. Usage waits follow SSE invalidations. The evidence
+contains final native Claude journal usage per message id, Codex rollout response
+usage, recorded response rows, budget tokens and accounting, the `sessionCost`
+entities sent to the renderer, independent base-rate price arithmetic from the
+installed pricing artifact, and server/Claude bridge binary and release identity.
+The optional usage reconciliation endpoint is included when available; only HTTP
+404 skips it. Python's standard-library SQLite reader opens the live database
+strictly read-only for the accounting label absent from the installed API.
+
+The collector waits for the scoped cost publication to match a fresh server cost
+generation containing final-turn usage, and rejects unavailable pricing. It checks
+the exact Claude steer receipt and its materialized current-turn input. Interrupts
+cancel model waits and prohibit further model submissions; cleanup continues under
+the same signal handlers. SSE connection establishment has a deadline. Server and
+bridge provenance captured before model submission stays immutable; recovery-time
+observations are recorded separately. Direct-child ancestry or the backend's
+authoritative supervisor account handle and matching native process-start
+identity identify a bridge. Recovery retains
+saved serving provenance when a current bridge is unavailable. Evidence
+checkpoints use an atomic rename, and recovery resumes completed snapshots.
+
+Evidence is written with private permissions below
+`~/.cache/codex-studio/live-usage/`. The run archives its chats and removes only its
+own project and marked folder; archived records remain available for comparison.
+After installing the new build, run the same usage scenario and compare with
+`just smoke-installed --compare <old.json> <new.json>`. The table reports token
+categories, recorded/truth ratio, budget, native-evidence price, displayed price,
+and reconciliation costs when present. Differences are evidence, not an automatic
+pass: inspect response identities and category differences as well as the totals.
+If collection fails after the model turns, `--collect <run.json>` recovers the
+same run's evidence without another paid request or mutation of its chats; it
+requires the original server build and state directory. It preserves the failed
+checks in the artifact rather than turning the original run into a passing run.
+Explicitly approved recovery can add `--sqlite-ro-agent <owned-Claude-id>` when
+that run's analytics endpoint is unavailable. This reads only bounded rows for
+that exact run with SQLite read-only mode, query-only transactions and a short
+busy timeout; costs remain SSE entities and receipts remain API reads. The
+artifact marks the analytics source `sqlite-ro`. Normal runs measure analytics
+request latency so OLD/NEW comparison also shows successful or timed-out reads.
 
 ## Add or move a test
 
