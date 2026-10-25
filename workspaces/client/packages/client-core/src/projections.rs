@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn agent_summary_renders_without_detail_and_owns_list_fields() {
         let summary = json!({"op":"upsert","collection":"agentSummary","id":"a","value":{"id":"a","name":"Current","status":"completed","lastCompletedTurn":"turn","readState":{"threadId":"thread","turnId":"turn","read":false,"revision":1}}});
-        let snapshot = entity_snapshot(&[summary.clone()]);
+        let snapshot = entity_snapshot(std::slice::from_ref(&summary));
         assert_eq!(snapshot["threads"][0]["name"], "Current");
         assert!(snapshot["threads"][0].get("lastAnswer").is_none());
         let detail = json!({"op":"upsert","collection":"agentDetail","id":"a","value":{"id":"a","lastAnswer":"Answer"}});

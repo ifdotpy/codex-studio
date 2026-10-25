@@ -513,6 +513,26 @@ impl RoomDirectory {
     }
 }
 
+/// Pending input flags are list data, independent of whether a chat is visible.
+fn pending_attention(
+    transaction: &Transaction<'_>,
+    id: &str,
+    record: &Value,
+) -> StoreResult<(bool, bool)> {
+    if !table_exists(transaction, "runtime_requests")? {
+        return Ok((false, false));
+    }
+    let epoch = record
+        .get("epoch")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    transaction.query_row_cached(
+        "SELECT EXISTS(SELECT 1 FROM runtime_requests WHERE json_valid(record) AND json_extract(record,'$.agent')=?1 AND (json_extract(record,'$.epoch') IS NULL OR json_extract(record,'$.epoch')=?2) AND COALESCE(json_extract(record,'$.status'),'pending')='pending' AND COALESCE(json_extract(record,'$.deferred'),0)=0 AND json_extract(record,'$.method') IN ('item/tool/requestUserInput','mcpServer/elicitation/request')), \
+                EXISTS(SELECT 1 FROM runtime_requests WHERE json_valid(record) AND json_extract(record,'$.agent')=?1 AND (json_extract(record,'$.epoch') IS NULL OR json_extract(record,'$.epoch')=?2) AND COALESCE(json_extract(record,'$.status'),'pending')='pending' AND COALESCE(json_extract(record,'$.deferred'),0)=0 AND COALESCE(json_extract(record,'$.method'),'') NOT IN ('item/tool/requestUserInput','mcpServer/elicitation/request'))",
+        rusqlite::params![id, epoch], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(Into::into)
+}
+
 #[cfg(test)]
 mod room_preparation_tests {
     use super::*;
@@ -755,24 +775,4 @@ mod room_preparation_tests {
         assert!(!contexts["lead-busy"].empty_lead);
         assert!(contexts["lead-empty"].empty_lead);
     }
-}
-
-/// Pending input flags are list data, independent of whether a chat is visible.
-fn pending_attention(
-    transaction: &Transaction<'_>,
-    id: &str,
-    record: &Value,
-) -> StoreResult<(bool, bool)> {
-    if !table_exists(transaction, "runtime_requests")? {
-        return Ok((false, false));
-    }
-    let epoch = record
-        .get("epoch")
-        .and_then(Value::as_i64)
-        .unwrap_or_default();
-    transaction.query_row_cached(
-        "SELECT EXISTS(SELECT 1 FROM runtime_requests WHERE json_valid(record) AND json_extract(record,'$.agent')=?1 AND (json_extract(record,'$.epoch') IS NULL OR json_extract(record,'$.epoch')=?2) AND COALESCE(json_extract(record,'$.status'),'pending')='pending' AND COALESCE(json_extract(record,'$.deferred'),0)=0 AND json_extract(record,'$.method') IN ('item/tool/requestUserInput','mcpServer/elicitation/request')), \
-                EXISTS(SELECT 1 FROM runtime_requests WHERE json_valid(record) AND json_extract(record,'$.agent')=?1 AND (json_extract(record,'$.epoch') IS NULL OR json_extract(record,'$.epoch')=?2) AND COALESCE(json_extract(record,'$.status'),'pending')='pending' AND COALESCE(json_extract(record,'$.deferred'),0)=0 AND COALESCE(json_extract(record,'$.method'),'') NOT IN ('item/tool/requestUserInput','mcpServer/elicitation/request'))",
-        rusqlite::params![id, epoch], |row| Ok((row.get(0)?, row.get(1)?)),
-    ).map_err(Into::into)
 }
