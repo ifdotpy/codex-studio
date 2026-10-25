@@ -21,6 +21,12 @@ export async function startBridge(
   prefix = "claude-bridge-",
   { env = {}, thread = {}, clock = false, temporaryBase = os.tmpdir() } = {},
 ) {
+  // SDK init always carries a native session id. Keep older scripted fixtures
+  // faithful to that declaration; an explicit session_id still takes precedence.
+  fakeSdk = fakeSdk.replace(
+    /subtype:\s*(["'])init\1/g,
+    "subtype:'init',session_id:options.resume||options.sessionId",
+  );
   const root = await fs.realpath(
     await fs.mkdtemp(path.join(temporaryBase, prefix)),
   );

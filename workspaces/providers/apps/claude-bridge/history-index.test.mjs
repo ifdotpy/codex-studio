@@ -205,3 +205,107 @@ test("post-clear controls use current native turns while preserving earlier mirr
   expect(f.session.turns).toEqual([earlier, clear]);
   expect(f.session.started).toBe(false);
 });
+
+for (const [kind, change] of [
+  ["unknown system subtype", { type: "system", subtype: "future-input" }],
+  ["malformed auxiliary", { type: "queue-operation", operation: 42 }],
+  [
+    "malformed content block",
+    {
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: 42 }] },
+    },
+  ],
+  [
+    "unknown content block",
+    {
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "future-input", text: "instruction" }],
+      },
+    },
+  ],
+])
+  test(`unsupported structure cannot prove absence: ${kind}`, async () => {
+    const f = await fixture();
+    const rows = f.rows.slice(0, 3);
+    rows.push({
+      ...f.rows[2],
+      uuid: randomUUID(),
+      parentUuid: f.ids[2],
+      ...change,
+    });
+    await fs.writeFile(f.file, rows.map(JSON.stringify).join("\n") + "\n");
+    const index = await readHistoryIndex(f.session);
+    expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
+      "unknown",
+    );
+  });
+
+test("installed alpha import retains exact ordered meta provenance", async () => {
+  const f = await fixture();
+  const entries = [];
+  const keys = [];
+  const result = await sdk.importSessionToStore(
+    f.session.nativeId,
+    {
+      append: async (key, batch) => {
+        keys.push(key);
+        entries.push(...batch);
+      },
+      load: async () => null,
+    },
+    { dir: f.cwd, includeSubagents: false },
+  );
+  expect(result).toBeUndefined();
+  expect(keys.length).toBeGreaterThan(0);
+  expect(
+    keys.every(
+      (key) =>
+        key.sessionId === f.session.nativeId &&
+        key.projectKey === f.cwd.replace(/[^a-zA-Z0-9]/g, "-") &&
+        key.subpath === undefined,
+    ),
+  ).toBe(true);
+  expect(entries).toEqual(f.rows);
+  expect(entries.filter((row) => row.isMeta).map((row) => row.uuid)).toEqual([
+    f.ids[0],
+    f.ids[3],
+  ]);
+});
+for (const behavior of [
+  "throws",
+  "unexpected result",
+  "unexpected project key",
+  "missing batch",
+])
+  test(`alpha import fails closed: ${behavior}`, async () => {
+    const f = await fixture();
+    const sessionApi = {
+      ...sdk,
+      importSessionToStore: async (id, store, options) => {
+        if (behavior === "throws") throw new Error("alpha API changed");
+        if (behavior === "missing batch") return;
+        if (behavior === "unexpected project key")
+          return store.append(
+            { sessionId: id, projectKey: "unexpected" },
+            f.rows,
+          );
+        await sdk.importSessionToStore(id, store, options);
+        return { newShape: true };
+      },
+    };
+    expect(await readHistoryIndex(f.session, { sessionApi })).toBeNull();
+  });
+
+test("bridge sources have no absolute host import dependencies", async () => {
+  const directory = new URL(".", import.meta.url);
+  for (const name of await fs.readdir(directory)) {
+    if (!/\.(?:mjs|mts)$/.test(name)) continue;
+    const source = await fs.readFile(new URL(name, directory), "utf8");
+    expect(source, name).not.toMatch(
+      /(?:from\s*|import\s*\()['"]\/(?:work|home|Users|tmp)\//,
+    );
+  }
+});

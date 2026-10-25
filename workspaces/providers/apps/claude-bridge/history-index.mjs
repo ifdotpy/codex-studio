@@ -1,5 +1,6 @@
 // @ts-check
 import * as sdk from "@anthropic-ai/claude-agent-sdk";
+import { supportedHistoryRecord } from "./history-records.mjs";
 import { isDeepStrictEqual } from "node:util";
 import {
   readNativeHistory,
@@ -59,32 +60,6 @@ export function messageIndex(messages) {
 // records. A stable, complete, strictly recognized file is required before any
 // absence or branch can be trusted. Unknown CLI formats fail closed.
 const CHAIN_TYPES = new Set(["user", "assistant", "attachment", "system"]);
-const ATTACHMENT_TYPES = new Set([
-  "queued_command",
-  "environment",
-  "model",
-  "total_tokens_reminder",
-  "session_context",
-  "date",
-  "prompt_snapshot",
-]);
-const AUXILIARY_TYPES = new Set([
-  "progress",
-  "file-history-snapshot",
-  "queue-operation",
-  "last-prompt",
-  "custom-title",
-  "agent-name",
-  "agent-color",
-  "tag",
-  "mode",
-  "pr-link",
-  "atis-latch",
-  "api-request-shape",
-  "api-request-blob",
-  "api-request",
-  "cost-state",
-]);
 /** @param {sdk.SessionStoreEntry[]} rows @param {string} sessionId @param {string} cwd */
 function verifiedChain(rows, sessionId, cwd) {
   /** @type {sdk.SessionStoreEntry[]} */
@@ -99,8 +74,7 @@ function verifiedChain(rows, sessionId, cwd) {
       typeof row.type !== "string"
     )
       return null;
-    if (!CHAIN_TYPES.has(row.type) && !AUXILIARY_TYPES.has(row.type))
-      return null;
+    if (!supportedHistoryRecord(row)) return null;
     if (row.uuid !== undefined) {
       if (!nativeUuid(row.uuid) || seen.has(row.uuid)) return null;
       seen.add(row.uuid);
@@ -112,22 +86,13 @@ function verifiedChain(rows, sessionId, cwd) {
     )
       return null;
     if (row.isSidechain === true) continue;
-    if (AUXILIARY_TYPES.has(row.type)) continue;
+    if (!CHAIN_TYPES.has(row.type)) continue;
     if (
       !nativeUuid(row.uuid) ||
       row.sessionId !== sessionId ||
       row.cwd !== cwd ||
       row.isSidechain !== false ||
       row.parentUuid !== previous
-    )
-      return null;
-    if (
-      row.type === "attachment" &&
-      (!row.attachment ||
-        typeof row.attachment !== "object" ||
-        !("type" in row.attachment) ||
-        typeof row.attachment.type !== "string" ||
-        !ATTACHMENT_TYPES.has(row.attachment.type))
     )
       return null;
     previous = row.uuid;
@@ -196,16 +161,22 @@ export async function readHistoryIndex(session, options = {}) {
       /** @type {sdk.SessionStore} */
       const store = {
         append: async (key, batch) => {
-          if (key.sessionId !== sessionId || key.subpath)
+          if (
+            key.sessionId !== sessionId ||
+            key.subpath !== undefined ||
+            key.projectKey !== dir.replace(/[^a-zA-Z0-9]/g, "-") ||
+            !Array.isArray(batch)
+          )
             throw new Error("Unexpected Claude history scope");
           entries.push(...batch);
         },
         load: async () => null,
       };
-      await api.importSessionToStore(sessionId, store, {
+      const imported = await api.importSessionToStore(sessionId, store, {
         dir,
         includeSubagents: false,
       });
+      if (imported !== undefined) return null;
       if (!isDeepStrictEqual(entries, guarded)) return null;
       const chain = verifiedChain(entries, sessionId, dir);
       if (!chain) return null;

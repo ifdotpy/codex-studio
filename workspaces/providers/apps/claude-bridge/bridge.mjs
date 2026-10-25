@@ -18,7 +18,11 @@ import {
 import { createAccountCheck } from "./account-identity.mjs";
 import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.mjs";
 import {
-  transitionNativeSession,
+  persistNativeSession,
+  guardNativeSessionInput,
+  cancelNativeSessionInput,
+  guardNativeSessionStart,
+  assertNativeSessionReady,
   sessionStartHook,
 } from "./session-identity.mjs";
 import {
@@ -1172,6 +1176,8 @@ async function finalizeTurn(s, active, turn, result, error, state) {
     // InputQueue removes the message before yielding it to the SDK.
     turn.startOutcome = "not_applied";
   }
+  if (turn.startOutcome === "not_applied")
+    cancelNativeSessionInput(s, turn.clientUserMessageId || turn.id);
   turn.status = turn.interrupted
     ? "interrupted"
     : error || result?.is_error || result?.subtype !== "success"
@@ -1448,6 +1454,7 @@ async function startSession(s, active, p) {
     const externalMcpServers = await movedExternalConfigs(s);
     const titleOptions = ephemeralSessionOptions(s);
     const mode = titleOptions.permissionMode || permissionMode(s, p);
+    await guardNativeSessionStart(s, persist);
     const q = query({
       prompt: prompt(),
       options: {
@@ -1603,11 +1610,18 @@ async function startSession(s, active, p) {
       if (active.turn && finishingTurns.has(active.turn))
         await finishingTurns.get(active.turn);
       if (active.persistFailure) throw active.persistFailure;
+      assertNativeSessionReady(s);
       if (queries.get(s.id) !== active) break;
       active.lastEventAt = Date.now();
       armStallWatch();
       if (m.type === "system" && m.subtype === "init") {
-        transitionNativeSession(s, m.session_id, "init", active.turn);
+        await persistNativeSession(
+          s,
+          m.session_id,
+          "init",
+          active.turn,
+          persist,
+        );
         s.started = true;
         s.claudeVersion = m.claude_code_version;
         active.commands = m.slash_commands || [];
@@ -2181,6 +2195,7 @@ function newActive(turn) {
 }
 function userMessage(s, turn, groups, id) {
   turn.nativeSessionId = s.nativeId || s.id;
+  guardNativeSessionInput(s, groups, id || turn.id);
   const messages = sdkInputMessages(
     s.nativeId || s.id,
     id || turn.id,
@@ -2200,6 +2215,17 @@ function userMessage(s, turn, groups, id) {
 }
 
 async function handle(method, p) {
+  if (
+    p.threadId &&
+    [
+      "turn/start",
+      "turn/steer",
+      "thread/fork",
+      "thread/rollback",
+      "thread/compact/start",
+    ].includes(method)
+  )
+    assertNativeSessionReady(await session(p.threadId));
   if (commandMethods.has(method)) return commands.handle(method, p);
   if (
     p.threadId &&
@@ -2431,6 +2457,12 @@ async function handle(method, p) {
       tasks: [...(active?.tasks.values() || [])],
       version: s.claudeVersion,
       nativeId: s.nativeId || s.id,
+      ...(s.nativeSessionTransitionError
+        ? {
+            nativeSessionOutcome: "unknown",
+            nativeSessionError: s.nativeSessionTransitionError,
+          }
+        : {}),
       contextWindow: s.contextWindow,
       totalTokens: s.totalTokens,
     };

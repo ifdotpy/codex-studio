@@ -15,6 +15,7 @@ export const getSessionMessages=async()=>[];
 export function query({prompt,options}) {
   const abort=new AbortController();
   fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume,sessionId:options.sessionId})+'\\n');
+  process.stdout.write(JSON.stringify({method:'fixture/query',params:{resume:options.resume,sessionId:options.sessionId}})+'\\n');
   return {
     accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
     supportedModels:async()=>[], initializationResult:async()=>({commands:[]}),
@@ -64,6 +65,11 @@ for (const source of ["init", "hook", "fork", "both"])
         threadId: bridge.thread,
         input: [{ type: "text", text: "after clear" }],
       });
+      await bridge.note(
+        (note) =>
+          note.method === "fixture/query" &&
+          (note.params.resume || note.params.sessionId),
+      );
       const queries = (
         await fs.readFile(path.join(bridge.root, ".queries"), "utf8")
       )
@@ -76,3 +82,169 @@ for (const source of ["init", "hook", "fork", "both"])
       await bridge.close();
     }
   });
+
+for (const phase of [
+  "before",
+  "after",
+  "committed",
+  "missing target",
+  "unsolicited",
+])
+  test(`clear crash ${phase} transition save never resumes the old native session`, async () => {
+    const crashSdk = fake
+      .replace(
+        "import fs from 'node:fs';",
+        `
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+let fixtureCwd;
+const append=fsp.appendFile;
+fsp.appendFile=async(file,data,...args)=>{
+  const text=String(data);
+  const transition=String(file).includes('/sessions/')&&text.includes('${NEW}')&&(text.includes('nativeId')||text.includes('pendingNativeSession'));
+  const crash=fixtureCwd&&transition&&!fs.existsSync(fixtureCwd+'/.crashed')&&('${phase}'!=='committed'||text.includes('"nativeId"'));
+  const kill=async()=>{fs.writeFileSync(fixtureCwd+'/.crashed','${phase}');await new Promise(resolve=>process.stdout.write(JSON.stringify({method:'fixture/crash',params:{}})+'\\n',resolve));process.kill(process.pid,'SIGKILL');};
+  if(crash&&'${phase}'==='before')await kill();
+  const result=await append(file,data,...args);
+  if(crash&&'${phase}'!=='before'){if('${phase}'==='missing target'){const dir=path.join(process.env.CLAUDE_CONFIG_DIR,'projects',fixtureCwd.replace(/[^a-zA-Z0-9]/g,'-'));fs.rmSync(path.join(dir,'${NEW}.jsonl'),{force:true});}await kill();}
+  return result;
+};
+`,
+      )
+      .replace(
+        "  const abort=new AbortController();",
+        "  const abort=new AbortController();fixtureCwd=options.cwd;",
+      )
+      .replace(
+        "      yield {type:'system',subtype:'conversation_reset'",
+        `
+      yield {type:'system',subtype:'init',session_id:options.resume||options.sessionId};
+      const file=path.join(process.env.CLAUDE_CONFIG_DIR,'projects',options.cwd.replace(/[^a-zA-Z0-9]/g,'-'),'${NEW}.jsonl');
+      fs.mkdirSync(path.dirname(file),{recursive:true});
+      fs.writeFileSync(file,JSON.stringify({type:'user',uuid:'44444444-4444-4444-8444-444444444444',parentUuid:null,sessionId:'${NEW}',cwd:options.cwd,isSidechain:false,timestamp:new Date().toISOString(),message:{role:'user',content:'new session anchor'}})+'\\n');
+      yield {type:'system',subtype:'conversation_reset'`,
+      );
+    const base = path.join(
+      os.homedir(),
+      ".cache/codex-studio/pivot1-v5-history",
+    );
+    await fs.mkdir(base, { recursive: true });
+    const bridge = await startBridge(crashSdk, "clear-crash-", {
+      temporaryBase: base,
+      env: { IDENTITY_SOURCE: phase === "unsolicited" ? "fork" : "both" },
+    });
+    try {
+      const first = bridge
+        .call("turn/start", {
+          threadId: bridge.thread,
+          input: [
+            {
+              type: "text",
+              text: phase === "unsolicited" ? "continue normally" : "/clear",
+            },
+          ],
+        })
+        .catch(() => null);
+      await bridge.note((note) => note.method === "fixture/crash");
+      await first;
+      await bridge.restart();
+      let rejected;
+      try {
+        await bridge.call("turn/start", {
+          threadId: bridge.thread,
+          input: [{ type: "text", text: "after crash" }],
+        });
+      } catch (error) {
+        rejected = error;
+      }
+      if (rejected)
+        expect(rejected.message).toMatch(
+          /native session.*unknown|transition.*unknown/i,
+        );
+      if (!rejected)
+        await bridge.note(
+          (note) =>
+            note.method === "fixture/query" &&
+            (note.params.resume || note.params.sessionId),
+        );
+      const queries = (
+        await fs.readFile(path.join(bridge.root, ".queries"), "utf8")
+      )
+        .trim()
+        .split("\n")
+        .map(JSON.parse);
+      expect(
+        queries.slice(1).some((query) => query.resume === bridge.thread),
+      ).toBe(false);
+      if (phase === "after" || phase === "committed" || phase === "unsolicited")
+        expect(
+          (await bridge.call("claude/state", { threadId: bridge.thread }))
+            .nativeId,
+        ).toBe(NEW);
+      else expect(rejected).toBeDefined();
+    } finally {
+      await bridge.close();
+    }
+  });
+
+test("a rejected write-ahead save blocks live resume with an unknown transition", async () => {
+  const { sessionStartHook, assertNativeSessionReady } =
+    await import("./session-identity.mjs");
+  const session = {
+    id: "11111111-1111-4111-8111-111111111111",
+    cwd: "/fixture",
+    turns: [],
+    pendingNativeSession: {
+      from: "11111111-1111-4111-8111-111111111111",
+      source: "input",
+      status: "pending",
+    },
+  };
+  const hook = sessionStartHook(
+    session,
+    () => undefined,
+    async () => {
+      throw new Error("save denied");
+    },
+  );
+  await expect(
+    hook(
+      { hook_event_name: "SessionStart", source: "clear", session_id: NEW },
+      undefined,
+      { signal: new AbortController().signal },
+    ),
+  ).rejects.toThrow("save denied");
+  expect(() => assertNativeSessionReady(session)).toThrow(
+    /transition.*unknown/i,
+  );
+  expect(session.nativeId).toBeUndefined();
+});
+
+test("another new-session source durably saves target and identity before hook return", async () => {
+  const { sessionStartHook } = await import("./session-identity.mjs");
+  const OLD = "11111111-1111-4111-8111-111111111111";
+  const session = { id: OLD, nativeId: OLD, cwd: "/fixture", turns: [] };
+  const snapshots = [];
+  let completedWrites = 0;
+  const hook = sessionStartHook(
+    session,
+    () => undefined,
+    async (state) => {
+      snapshots.push(structuredClone(state));
+      await Promise.resolve();
+      completedWrites++;
+    },
+  );
+  await hook(
+    { hook_event_name: "SessionStart", source: "compact", session_id: NEW },
+    undefined,
+    { signal: new AbortController().signal },
+  );
+  expect(snapshots).toHaveLength(2);
+  expect(snapshots[0].nativeId).toBe(OLD);
+  expect(snapshots[0].pendingNativeSession.target).toBe(NEW);
+  expect(snapshots[1].nativeId).toBe(NEW);
+  expect(snapshots[1].pendingNativeSession).toBeUndefined();
+  expect(completedWrites).toBe(2);
+});

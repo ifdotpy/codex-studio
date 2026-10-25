@@ -1,7 +1,11 @@
 // @ts-check
+import { readHistoryIndex } from "./history-index.mjs";
+import { HUMAN_INPUT } from "./input-origin.generated.mjs";
 import { nativeUuid } from "./native-history.mjs";
 
-/** @typedef {{ id: string, nativeId?: string, cwd: string, nativeHistoryCwd?: string, started?: boolean, nativeSessionTransitions?: {from: string, to: string, source: string}[], turns: {nativeSessionId?: string, fileCheckpointMessageId?: string, fileCheckpointSource?: unknown, nativeHistoryDetached?: boolean}[] }} NativeSession */
+/** @typedef {"init" | import("@anthropic-ai/claude-agent-sdk").SessionStartHookInput["source"]} TransitionSource */
+/** @typedef {{from: string, target?: string, source: TransitionSource | "input", status: "pending" | "unknown", inputId?: string}} PendingTransition */
+/** @typedef {{ id: string, nativeId?: string, cwd: string, nativeHistoryCwd?: string, started?: boolean, pendingNativeSession?: PendingTransition, nativeSessionTransitionError?: string, nativeSessionTransitions?: {from: string, to: string, source: string}[], turns: {nativeSessionId?: string, fileCheckpointMessageId?: string, fileCheckpointSource?: unknown, nativeHistoryDetached?: boolean}[] }} NativeSession */
 /** @typedef {{nativeSessionId?: string, nativeHistoryDetached?: boolean}} NativeTurn */
 
 /** Persisted native identity comes only from init or the typed SessionStart hook.
@@ -11,7 +15,7 @@ import { nativeUuid } from "./native-history.mjs";
  * @param {"init" | import("@anthropic-ai/claude-agent-sdk").SessionStartHookInput["source"]} source
  * @param {NativeTurn | undefined} turn
  */
-export function transitionNativeSession(session, nativeId, source, turn) {
+function transitionNativeSession(session, nativeId, source, turn) {
   // Some older SDK fixtures omit init identity. They supply no transition.
   if (nativeId === undefined) return;
   if (!nativeUuid(nativeId))
@@ -39,6 +43,185 @@ export function transitionNativeSession(session, nativeId, source, turn) {
   if (turn) turn.nativeSessionId = nativeId;
 }
 
+/** An input that can clear/fork the native session must have a durable guard
+ * in the existing pre-input save, before any part reaches the SDK.
+ * @param {NativeSession} session
+ * @param {{origin: string, blocks: {type: string, text?: string}[]}[]} groups
+ * @param {string} inputId
+ */
+export function guardNativeSessionInput(session, groups, inputId) {
+  if (
+    groups.some(
+      (group) =>
+        group.origin === HUMAN_INPUT &&
+        /^\s*\/(?:clear|reset|new|fork)(?:\s|$)/.test(
+          group.blocks
+            .filter((block) => block.type === "text")
+            .map((block) => block.text || "")
+            .join("\n"),
+        ),
+    )
+  ) {
+    session.pendingNativeSession = {
+      from: session.nativeId || session.id,
+      source: "input",
+      status: "pending",
+      inputId,
+    };
+  }
+}
+
+/** A confirmed unread input cannot have executed a native transition.
+ * @param {NativeSession} session @param {string} inputId
+ */
+export function cancelNativeSessionInput(session, inputId) {
+  const pending = session.pendingNativeSession;
+  if (
+    pending &&
+    !pending.target &&
+    (pending.source === "init" || pending.inputId === inputId)
+  ) {
+    delete session.pendingNativeSession;
+    delete session.nativeSessionTransitionError;
+  }
+}
+
+/** Guard the native process initialization before spawning it.
+ * @param {NativeSession} session
+ * @param {(session: NativeSession) => Promise<unknown>} persist
+ */
+export async function guardNativeSessionStart(session, persist) {
+  session.pendingNativeSession ||= {
+    from: session.nativeId || session.id,
+    source: "init",
+    status: "pending",
+  };
+  await persist(session);
+}
+
+const UNKNOWN_NATIVE_TRANSITION =
+  "Claude native session transition outcome unknown; resume is blocked until native history confirms it.";
+/** @param {NativeSession} session @param {PendingTransition} intent */
+function unknownTransition(session, intent) {
+  session.pendingNativeSession = { ...intent, status: "unknown" };
+  session.nativeSessionTransitionError = UNKNOWN_NATIVE_TRANSITION;
+}
+
+/** Save intent before mutating identity, then atomically save the transition.
+ * A pre-input/start guard survives a crash before this first save can append.
+ * @param {NativeSession} session
+ * @param {string | undefined} nativeId
+ * @param {TransitionSource} source
+ * @param {NativeTurn | undefined} turn
+ * @param {(session: NativeSession) => Promise<unknown>} persist
+ */
+export async function persistNativeSession(
+  session,
+  nativeId,
+  source,
+  turn,
+  persist,
+) {
+  if (!nativeUuid(nativeId))
+    throw new Error("Claude returned an invalid native session identity");
+  const previous = session.nativeId || session.id;
+  const pending = session.pendingNativeSession;
+  if (nativeId !== previous) {
+    session.pendingNativeSession = {
+      from: previous,
+      target: nativeId,
+      source,
+      status: "pending",
+      ...(pending?.inputId ? { inputId: pending.inputId } : {}),
+    };
+    try {
+      await persist(session);
+    } catch (error) {
+      unknownTransition(session, session.pendingNativeSession);
+      throw error;
+    }
+  }
+  const intent = session.pendingNativeSession;
+  transitionNativeSession(session, nativeId, source, turn);
+  // An initial init for the old session does not settle a queued /clear.
+  if (
+    !(nativeId === previous && pending?.source === "input" && !pending.target)
+  ) {
+    delete session.pendingNativeSession;
+    delete session.nativeSessionTransitionError;
+  }
+  try {
+    await persist(session);
+  } catch (error) {
+    if (intent) session.pendingNativeSession = { ...intent, status: "unknown" };
+    session.nativeSessionTransitionError = UNKNOWN_NATIVE_TRANSITION;
+    throw error;
+  }
+}
+
+/** Resolve only a target whose complete SDK history proves its identity.
+ * A target-less intent cannot be guessed from project/session names.
+ * @param {NativeSession} session
+ * @param {import("./history-index.mjs").HistoryReadOptions} [options]
+ */
+export async function reconcileNativeSession(session, options) {
+  const pending = session.pendingNativeSession;
+  if (!pending) return false;
+  const valid =
+    nativeUuid(pending.from) &&
+    pending.from === (session.nativeId || session.id) &&
+    ["init", "input", "startup", "resume", "clear", "compact", "fork"].includes(
+      pending.source,
+    ) &&
+    ["pending", "unknown"].includes(pending.status) &&
+    (pending.inputId === undefined || typeof pending.inputId === "string");
+  if (!valid) {
+    unknownTransition(session, {
+      from: session.nativeId || session.id,
+      source: "init",
+      status: "unknown",
+    });
+    return false;
+  }
+  if (
+    nativeUuid(pending.target) &&
+    pending.target !== pending.from &&
+    pending.source !== "input"
+  ) {
+    const index = await readHistoryIndex(
+      { ...session, nativeId: pending.target, nativeHistoryCwd: session.cwd },
+      options,
+    );
+    if (index) {
+      transitionNativeSession(
+        session,
+        pending.target,
+        pending.source,
+        undefined,
+      );
+      delete session.pendingNativeSession;
+      delete session.nativeSessionTransitionError;
+      return true;
+    }
+  }
+  unknownTransition(session, pending);
+  return false;
+}
+
+/** @param {NativeSession} session */
+export function assertNativeSessionReady(session) {
+  if (session.pendingNativeSession?.status === "unknown")
+    throw Object.assign(
+      new Error(
+        session.nativeSessionTransitionError ||
+          "Claude native session transition outcome unknown",
+      ),
+      {
+        data: { turnStartOutcome: "unknown", nativeSessionOutcome: "unknown" },
+      },
+    );
+}
+
 /** @param {NativeSession} session
  * @param {() => NativeTurn | undefined} currentTurn
  * @param {(session: NativeSession) => Promise<unknown>} persist
@@ -48,15 +231,17 @@ export function sessionStartHook(session, currentTurn, persist) {
   return async (input) => {
     if (
       input.hook_event_name === "SessionStart" &&
-      (input.source === "clear" || input.source === "fork")
+      (input.source === "clear" ||
+        input.source === "fork" ||
+        input.session_id !== (session.nativeId || session.id))
     ) {
-      transitionNativeSession(
+      await persistNativeSession(
         session,
         input.session_id,
         input.source,
         currentTurn(),
+        persist,
       );
-      await persist(session);
     }
     return {};
   };

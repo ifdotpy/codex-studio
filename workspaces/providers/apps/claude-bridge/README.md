@@ -62,6 +62,8 @@ metadata and conversation APIs, and the SDK's typed transcript-store import.
 The import preserves hidden service parts that the conversation API omits;
 each part keeps its original SDK UUID and prompt framing. A pinned complete
 file read guards against the SDK silently skipping malformed or unknown rows.
+The [record schemas](history-records.mjs) validate supported record types, system
+subtypes, auxiliary payloads and content blocks before an absence proof.
 Missing sessions, unsupported structures, torn or changed files, broken ancestry,
 and files outside the [reader's coverage](native-history.mjs) remain unknown.
 Only complete authoritative absence permits redelivery. Each snapshot builds
@@ -94,9 +96,23 @@ native fork is submitted. Legacy delivered inputs without supported provenance
 require recovery instead of creating an unvalidated native branch.
 
 `system/init` and the typed `SessionStart` clear/fork hook own native session
-transitions. The bridge persists the new native ID before continuing; conversation
+transitions. A durable guard precedes transition-capable input submission and
+query initialization. Every new-ID SessionStart hook awaits both the durable
+target intent and identity save before returning, including unsolicited
+transitions; the CLI awaits the hook before continuing work.
+The bridge saves target intent before changing identity,
+then persists the new native ID before continuing; conversation
 reset IDs are never used for resume. Checkpoints from the previous session are
-invalidated. Earlier mirror turns remain visible, while new native history
+invalidated. Restart verifies an unresolved target against the SDK history before
+resuming it. A missing or unproven target stays visibly unknown and blocks native
+input/history operations; the old session is never silently resumed. A proven
+unread input releases its guard without submitting it. There is no query-lifetime
+guard: an unclean ordinary restart still uses the last confirmed session. If an
+unsolicited transition crashes before its hook reaches Studio, that last
+persisted session remains the fallback; the new session has not continued work
+after the awaited hook. Once the target intent is saved, restart verifies or
+blocks that target and never silently substitutes the old session.
+Earlier mirror turns remain visible, while new native history
 controls use only turns belonging to the current session. A local clear command
 has no native input boundary and cannot be selected for a history operation.
 
@@ -105,6 +121,14 @@ SDK/CLI witness. It uses disposable configuration below the user's cache and a
 local HTTP provider fixture, verifies both composite orders through fork,
 rollback and recovery, and proves clear/resume with three distinct identities.
 It makes no real model request and prints its retained evidence directory.
+
+The pinned SDK exposes hidden-part provenance only through the alpha
+`importSessionToStore` API. The ordinary non-alpha conversation API filters it
+out, as the installed-SDK fast witness demonstrates. Every import checks the
+return value, batch and project/session scope against the pinned file; a throw,
+changed shape or incomplete import stays unknown. The fast suite pins exact
+ordered meta-part retention against the installed SDK so an incompatible SDK
+upgrade fails verification.
 
 ## Restart recovery
 

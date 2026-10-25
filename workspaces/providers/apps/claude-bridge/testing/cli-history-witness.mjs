@@ -16,7 +16,9 @@ import { forkAtTurn, rollbackSession } from "../controls.mjs";
 import { forkSession } from "@anthropic-ai/claude-agent-sdk";
 import { InputQueue } from "../features.mjs";
 import {
-  transitionNativeSession,
+  persistNativeSession,
+  guardNativeSessionInput,
+  guardNativeSessionStart,
   sessionStartHook,
 } from "../session-identity.mjs";
 
@@ -243,6 +245,7 @@ try {
     });
     return id;
   };
+  await guardNativeSessionStart(session, persist);
   const originalInput = push("before clear");
   const frames = [];
   let stage = 0,
@@ -265,8 +268,13 @@ try {
     for await (const frame of q) {
       frames.push(frame);
       if (frame.type === "system" && frame.subtype === "init") {
-        transitionNativeSession(session, frame.session_id, "init", undefined);
-        await persist();
+        await persistNativeSession(
+          session,
+          frame.session_id,
+          "init",
+          undefined,
+          persist,
+        );
       }
       if (frame.type === "conversation_reset")
         conversationId = frame.new_conversation_id;
@@ -274,6 +282,12 @@ try {
         assert(!frame.is_error, "clear fixture must not fail");
         if (stage === 0) {
           stage++;
+          guardNativeSessionInput(
+            session,
+            [{ origin: "human", blocks: [{ type: "text", text: "/clear" }] }],
+            "clear-input",
+          );
+          await persist();
           push("/clear");
         } else if (stage === 1) {
           stage++;

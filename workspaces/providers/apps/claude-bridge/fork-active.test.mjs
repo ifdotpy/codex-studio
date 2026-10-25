@@ -12,7 +12,7 @@ export const tool=(name,description,schema,call)=>({name,description,schema,call
 export const createSdkMcpServer=value=>({...value});
 const histories=new Map();
 export const getSessionMessages=async(id)=>structuredClone(histories.get(id)||[]);
-export {forkSession} from '/work/ssd2/codex-studio-worktrees/codex-agents/5269c8f9-af99-5aff-8786-a7080305c924/node_modules/.pnpm/@anthropic-ai+claude-agent-sdk@0.3.308_@anthropic-ai+sdk@0.127.0_zod@4.6.7__@modelconte_1598676d9451b27b85e0eccec6565510/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs';
+export {forkSession} from '@anthropic-ai/claude-agent-sdk';
 export function query({prompt,options}){
  const abort=new AbortController(),id=options.resume||options.sessionId;
  const history=path.join(process.env.CLAUDE_CONFIG_DIR,'projects',options.cwd.replace(/[^a-zA-Z0-9]/g,'-'),id+'.jsonl');

@@ -32,6 +32,9 @@ export function query({prompt,options}) {
    if(damage==='all')for(const part of parts)record(part);
    if(damage==='partial')record(parts[0]);
    if(damage==='malformed uuid'||damage==='unknown record')fs.appendFileSync(file,JSON.stringify({type:damage==='unknown record'?'future-input':'assistant',uuid:damage==='malformed uuid'?'malformed':randomUUID(),parentUuid:parent,sessionId,cwd,isSidechain:false,message:{role:'assistant',content:[]}})+'\n');
+   if(damage==='unknown system')fs.appendFileSync(file,JSON.stringify({type:'system',subtype:'future-input',uuid:randomUUID(),parentUuid:parent,sessionId,cwd,isSidechain:false})+'\n');
+   if(damage==='malformed auxiliary')fs.appendFileSync(file,JSON.stringify({type:'queue-operation',operation:42,sessionId})+'\n');
+   if(damage==='invalid block')fs.appendFileSync(file,JSON.stringify({type:'user',uuid:randomUUID(),parentUuid:parent,sessionId,cwd,isSidechain:false,message:{role:'user',content:[{type:'text',text:42}]}})+'\n');
    if(damage==='torn')fs.appendFileSync(file,'{"type":');
    if(damage==='truncated')fs.writeFileSync(file,JSON.stringify({type:'user',uuid:randomUUID(),parentUuid:parent,sessionId,cwd,isSidechain:false,message:{role:'user',content:'tail without root'}})+'\n');
    if(damage==='missing')fs.rmSync(file);
@@ -47,6 +50,9 @@ for (const serviceFirst of [true, false])
     "partial",
     "malformed uuid",
     "unknown record",
+    "unknown system",
+    "malformed auxiliary",
+    "invalid block",
     "torn",
     "truncated",
     "missing",
