@@ -20,16 +20,41 @@ export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222
 export const getSessionMessages=async()=>[];
 const events=${JSON.stringify(events)}, modelUsage=${JSON.stringify(modelUsage)},sdkResult=${JSON.stringify(sdkResult)},zeroResult=${JSON.stringify(zeroResult)};
 export function query({prompt,options}){
- const abort=new AbortController();
+ const abort=new AbortController();let delayedClose=false,stuckClose=false;
  const result=(zero=false)=>zero?zeroResult:{...sdkResult,modelUsage:{'claude-opus-5-5':modelUsage}};
  const stream=(event,parent=null)=>({type:'stream_event',event,parent_tool_use_id:parent});
- return {mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),initializationResult:async()=>({commands:[]}),setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},setMcpServers:async()=>({added:[],removed:[],errors:{}}),close(){abort.abort();},interrupt:async()=>abort.abort(),
+ return {mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),initializationResult:async()=>({commands:[]}),setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},setMcpServers:async()=>({added:[],removed:[],errors:{}}),close(){if(stuckClose)return;if(delayedClose)setTimeout(()=>abort.abort(),20);else abort.abort();},interrupt:async()=>abort.abort(),
  async *[Symbol.asyncIterator](){
   while(!abort.signal.aborted){
    const input=await prompt.next();if(input.done)return;
    const text=input.value.message.content[0].text;
    yield {type:'user',isReplay:true,uuid:input.value.uuid};
    yield {type:'system',subtype:'init'};
+   if(text==='discard-stuck'){
+    stuckClose=true;
+    yield stream({...events[0],message:{...events[0].message,id:'main-response'}});
+    yield stream(events[0],'stuck-parent');
+    yield {type:'assistant',parent_tool_use_id:'stuck-parent',uuid:'child-started',message:{id:'child-started',content:[{type:'text',text:'child-started'}]}};
+    await new Promise(()=>{});
+   }
+   if(text==='shutdown'||text==='shutdown-stuck'||text==='interrupt'){
+    delayedClose=text==='shutdown';stuckClose=text==='shutdown-stuck';
+    yield stream(events[0]);
+    await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));
+    if(text==='interrupt')yield zeroResult;
+    return;
+   }
+   if(text==='background-owner'){
+    yield {type:'assistant',uuid:'tool-owner',message:{id:'owner',model:'claude-opus-5-5',content:[{type:'tool_use',id:'background-tool',name:'Task',input:{description:'background'}}]}};
+    yield result();continue;
+   }
+   if(text==='background-next'){
+    for(const event of events)yield stream(event,'background-tool');
+    yield result();continue;
+   }
+   if(text==='windows'){
+    yield {...sdkResult,modelUsage:{'claude-opus-5-5':modelUsage,'other-model':{...modelUsage,contextWindow:1000000}}};continue;
+   }
    if(text==='background'){
     yield stream(events[0],'background-tool');
     yield result();
@@ -61,8 +86,8 @@ export function query({prompt,options}){
   }
  }};
 }`;
-async function setup(thread = {}) {
-  const b = await startBridge(sdk, "claude-usage-", { thread });
+async function setup(thread = {}, env = {}) {
+  const b = await startBridge(sdk, "claude-usage-", { thread, env });
   bridges.push(b);
   return b;
 }
@@ -201,7 +226,7 @@ test("background subagent final usage survives completion of its owning Studio t
   expect(observations(b).filter((o) => o.kind === "gap")).toEqual([]);
 });
 test("response usage includes the known model context window before result", async () => {
-  const b = await setup({ contextWindow: 200000 });
+  const b = await setup({ model: "claude-opus-5-5", contextWindow: 200000 });
   const turn = await start(b, "normal");
   await done(b, turn);
   expect(observations(b).find((o) => o.kind === "response")).toHaveProperty(
@@ -220,7 +245,7 @@ test("emitted notifications match the shared Rust dispatch golden fixture", asyn
       "utf8",
     ),
   );
-  const b = await setup({ contextWindow: 200000 });
+  const b = await setup({ model: "claude-opus-5-5", contextWindow: 200000 });
   await done(b, await start(b, "normal"));
   await done(b, await start(b, "interrupted"));
   const notes = b.notes.filter((n) => n.method === "thread/tokenUsage/updated");
@@ -236,4 +261,135 @@ test("emitted notifications match the shared Rust dispatch golden fixture", asyn
     studioUsage: { ...n.params.studioUsage, turnId: "turn" },
   }));
   expect(normalized).toEqual(golden);
+});
+
+test("background response starts retain the tool originating turn across Studio turns", async () => {
+  const b = await setup();
+  const owner = await start(b, "background-owner");
+  await done(b, owner);
+  const next = await start(b, "background-next");
+  await done(b, next);
+  const note = b.notes.find((n) => n.params?.studioUsage?.kind === "response");
+  expect(note.params.studioUsage).toMatchObject({
+    turnId: owner,
+    parentToolUseId: "background-tool",
+  });
+  expect(note.params.turnId).toBe(owner);
+});
+test("shutdown waits for delayed SDK close and flushes one unfinished response gap", async () => {
+  const b = await setup();
+  const turn = await start(b, "shutdown");
+  await b.note((n) => n.method === "provider/generationStarted");
+  await b.close();
+  expect(observations(b)).toEqual([
+    {
+      kind: "gap",
+      responseId: "response-1",
+      model: "claude-opus-5-5",
+      turnId: turn,
+      reason: "queryClosed",
+    },
+  ]);
+});
+test("response context windows follow their own model rather than the query maximum", async () => {
+  const b = await setup();
+  await done(b, await start(b, "windows"));
+  await done(b, await start(b, "normal"));
+  expect(observations(b).find((o) => o.kind === "response")).toHaveProperty(
+    "modelContextWindow",
+    200000,
+  );
+});
+test("turn interrupt reports unfinished usage as a gap rather than zero tokens", async () => {
+  const b = await setup();
+  const turn = await start(b, "interrupt");
+  await b.note((n) => n.method === "provider/generationStarted");
+  await b.call("turn/interrupt", { threadId: b.thread, turnId: turn });
+  await done(b, turn);
+  expect(observations(b)).toEqual([
+    {
+      kind: "gap",
+      responseId: "response-1",
+      model: "claude-opus-5-5",
+      turnId: turn,
+      reason: "streamInterrupted",
+    },
+  ]);
+});
+
+test("shutdown bounds a stuck SDK consumer and still reports its gap once", async () => {
+  const b = await setup({}, { STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50" });
+  const turn = await start(b, "shutdown-stuck");
+  await b.note((n) => n.method === "provider/generationStarted");
+  await b.close();
+  expect(observations(b)).toEqual([
+    {
+      kind: "gap",
+      responseId: "response-1",
+      model: "claude-opus-5-5",
+      turnId: turn,
+      reason: "queryClosed",
+    },
+  ]);
+});
+test("an unknown response model never borrows another model context window", async () => {
+  const b = await setup({ model: "other-model", contextWindow: 1000000 });
+  await done(b, await start(b, "normal"));
+  expect(observations(b).find((o) => o.kind === "response")).not.toHaveProperty(
+    "modelContextWindow",
+  );
+});
+
+test("virtual-clock harness advances the bounded shutdown of a stuck SDK", async () => {
+  const b = await startBridge(sdk, "claude-usage-clock-", {
+    clock: true,
+    env: { STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50" },
+  });
+  bridges.push(b);
+  const turn = await start(b, "shutdown-stuck");
+  await b.note((n) => n.method === "provider/generationStarted");
+  await b.close();
+  expect(observations(b)).toEqual([
+    {
+      kind: "gap",
+      responseId: "response-1",
+      model: "claude-opus-5-5",
+      turnId: turn,
+      reason: "queryClosed",
+    },
+  ]);
+});
+
+test("discarding a stuck query drains unfinished subagent usage exactly once", async () => {
+  const b = await startBridge(sdk, "claude-usage-discard-", {
+    clock: true,
+    env: {
+      STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50",
+      STUDIO_CLAUDE_STALL_INTERRUPT_WAIT_MS: "50",
+    },
+  });
+  bridges.push(b);
+  const turn = await start(b, "discard-stuck");
+  await b.note(
+    (n) =>
+      n.method === "item/completed" &&
+      n.params.item.text === "Subagent: child-started",
+  );
+  await b.call("turn/interrupt", { threadId: b.thread, turnId: turn });
+  await b.advanceUntil(
+    (n) => n.method === "turn/completed" && n.params.turn.id === turn,
+  );
+  expect(observations(b).filter((o) => o.responseId === "response-1")).toEqual([
+    {
+      kind: "gap",
+      responseId: "response-1",
+      model: "claude-opus-5-5",
+      turnId: turn,
+      reason: "queryClosed",
+    },
+  ]);
+  await b.close();
+  expect(
+    observations(b).filter((o) => o.responseId === "response-1"),
+  ).toHaveLength(1);
 });

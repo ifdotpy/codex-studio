@@ -80,3 +80,11 @@ provisional and serves only the idle-compaction cache report.
 `pnpm --filter studio-claude-bridge run typecheck` checks the normalizer and its
 SDK fixtures with the [strict configuration](tsconfig.json). Package checks
 and the short tier run this check before their Vitest witnesses.
+
+Response context windows are resolved per model. Background responses retain the
+turn that created their parent tool, even after that turn completes. Shutdown
+waits for the SDK consumer within the CLI-exit deadline, reports remaining gaps,
+and flushes queued notifications before exiting. The bridge integration tests
+and inline scripted SDK remain outside the strict TypeScript program because
+the shared bridge harness is untyped; SDK data fixtures and normalizer unit tests
+remain strictly checked.

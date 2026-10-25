@@ -1735,6 +1735,7 @@ async function startSession(s, active, p) {
         continue;
       }
       if (m.type === "result") {
+        active.usage.recordModels(m.modelUsage);
         const studioUsage = cumulativeUsage(m, turn?.id);
         if (studioUsage) {
           if (studioUsage.modelContextWindow)
@@ -1748,16 +1749,19 @@ async function startSession(s, active, p) {
       }
       if (!turn) continue;
       if (m.type === "stream_event")
-        for (const studioUsage of active.usage.observe(
-          m,
-          turn.id,
-          s.contextWindow,
-        ))
+        for (const studioUsage of active.usage.observe(m, turn.id))
           emit("thread/tokenUsage/updated", {
             threadId: s.id,
             turnId: studioUsage.turnId,
             studioUsage,
           });
+      if (m.type === "assistant")
+        for (const block of m.message.content || [])
+          if (block.type === "tool_use")
+            active.usage.registerTool(
+              block.id,
+              active.usage.turnFor(m.parent_tool_use_id, turn.id),
+            );
       if (m.parent_tool_use_id) {
         if (m.type === "assistant")
           for (const [index, block] of (m.message.content || []).entries()) {
@@ -2030,21 +2034,11 @@ async function startSession(s, active, p) {
         await finishTurn(s, active, m);
       }
     }
-    for (const studioUsage of active.usage.finish("queryClosed"))
-      emit("thread/tokenUsage/updated", {
-        threadId: s.id,
-        turnId: studioUsage.turnId,
-        studioUsage,
-      });
+    drainUsage(s.id, active);
     if (active.turn) throw new Error("Claude ended without a completed turn");
   } catch (error) {
     active.readyReject(error);
-    for (const studioUsage of active.usage.finish("queryClosed"))
-      emit("thread/tokenUsage/updated", {
-        threadId: s.id,
-        turnId: studioUsage.turnId,
-        studioUsage,
-      });
+    drainUsage(s.id, active);
     if (active.turn) await finishTurn(s, active, null, error);
   } finally {
     clearTurnTimers(active);
@@ -2074,7 +2068,17 @@ function closeQuery(active) {
     return error;
   }
 }
+// One query-close accounting owner; a late SDK unwind cannot publish it twice.
+function drainUsage(threadId, active) {
+  for (const studioUsage of active.usage.finish("queryClosed"))
+    emit("thread/tokenUsage/updated", {
+      threadId,
+      turnId: studioUsage.turnId,
+      studioUsage,
+    });
+}
 function discardQuery(s, active) {
+  drainUsage(s.id, active);
   clearTurnTimers(active);
   active.input.close();
   closeQuery(active);
@@ -2084,7 +2088,7 @@ function discardQuery(s, active) {
   }
   catalogCache.activityChanged();
 }
-function newActive(turn) {
+function newActive(turn, s) {
   const active = {
     turn,
     input: new InputQueue(),
@@ -2093,7 +2097,7 @@ function newActive(turn) {
     tools: new Map(),
     pendingSteers: new Set(),
     assistantBlocks: new Map(),
-    usage: new ResponseUsage(),
+    usage: new ResponseUsage(s.model, s.contextWindow),
     idleRequestStartedAt: Date.now(),
     // Stall watchdog state: the newest CLI message time, the running tool
     // calls of the current turn, and the recovery of a stalled turn.
@@ -2822,9 +2826,14 @@ async function handle(method, p) {
         });
       }
     } else {
-      active = newActive(turn);
+      active = newActive(turn, s);
       queries.set(s.id, active);
-      setImmediate(() => void startSession(s, active, p));
+      active.consumer = new Promise((resolve, reject) => {
+        setImmediate(() => startSession(s, active, p).then(resolve, reject));
+      });
+      active.consumer.catch((error) =>
+        process.stderr.write("Claude consumer: " + error.message + "\n"),
+      );
     }
     catalogCache.activityChanged();
     emit("turn/started", {
@@ -3141,16 +3150,46 @@ let closing;
 function shutdown() {
   if (closing) return closing;
   closing = (async () => {
-    for (const { q, input } of queries.values()) {
+    const activeQueries = [...queries.entries()];
+    // The existing CLI-exit limit bounds teardown, including a stuck consumer.
+    const deadline = Date.now() + limits.exitWaitMs;
+    const bounded = async (operation) => {
+      let timer;
       try {
-        input.close();
-        q?.close();
-      } catch (error) {
-        process.stderr.write("Claude shutdown: " + error.message + "\n");
+        await Promise.race([
+          operation,
+          new Promise((resolve) => {
+            timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
       }
+    };
+    for (const [, active] of activeQueries) {
+      active.input.close();
+      closeQuery(active);
     }
-    await commands.close();
-    await sessionStore.drain();
+    await bounded(
+      Promise.allSettled(activeQueries.map(([, active]) => active.consumer)),
+    );
+    // If the SDK did not settle, final accounting remains explicitly unknown.
+    for (const [threadId, active] of activeQueries)
+      drainUsage(threadId, active);
+    await bounded(commands.close());
+    await bounded(sessionStore.drain());
+    await bounded(
+      (async () => {
+        while (stdoutLines.length || stdoutDraining) {
+          if (stdoutDraining)
+            await new Promise((resolve) =>
+              process.stdout.once("drain", resolve),
+            );
+          flushStdout();
+        }
+        await new Promise((resolve) => process.stdout.write("", resolve));
+      })(),
+    );
     process.exit(0);
   })();
   return closing;
