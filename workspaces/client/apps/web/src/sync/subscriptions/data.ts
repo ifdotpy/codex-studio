@@ -17,7 +17,10 @@ export function createDataObserver(
 ): ObserveSubscriptionData {
   return <R extends ResourceRef>(
     ref: R,
-    accept: (data: ResourceData<R> | undefined) => void,
+    accept: (
+      data: ResourceData<R> | undefined,
+      appliedVersion?: ResourceVersion,
+    ) => void,
     failed: (error: unknown) => void,
   ) => {
     if (ref.kind === "transcript") {
@@ -56,10 +59,10 @@ export function createDataObserver(
         ref,
         async (version) => {
           const value = viewValue(version) ?? (await recoverView(ref));
-          if (!stopped) accept(value as ResourceData<R>);
+          if (!stopped) accept(value as ResourceData<R>, version);
         },
         failed,
-        { events, waitForBaseline: true },
+        { events, waitForBaseline: true, reapplyInlineView: true },
       );
       return () => {
         stopped = true;
@@ -69,7 +72,7 @@ export function createDataObserver(
     const transient = (version?: ResourceVersion) => {
       const viewData = viewValue(version);
       if (viewData !== undefined) {
-        accept(viewData as ResourceData<R>);
+        accept(viewData as ResourceData<R>, version);
         return;
       }
       const data =

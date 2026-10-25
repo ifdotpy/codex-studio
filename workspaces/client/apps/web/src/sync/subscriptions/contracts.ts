@@ -20,14 +20,27 @@ export const MAX_INACTIVE_SUBSCRIPTION_CACHE_ENTRIES = 128;
 
 /** Durable receipts or inline transient values prove this ref was applied.
  * Revision-only hints never establish authoritative resource readiness. */
-export function hasAppliedResourceBaseline(version?: ResourceVersion): boolean {
+export function hasAppliedResourceBaseline(
+  version?: ResourceVersion,
+  appliedView?: ResourceRef,
+): boolean {
+  // Cursorless views are authoritative only after the matching data adapter
+  // applies them. Durable room/terminal payloads still require their receipt.
+  const view = version?.viewSnapshot;
+  const inlineViewApplied =
+    (appliedView?.kind === "processes" && view?.processes !== undefined) ||
+    (appliedView?.kind === "complaint" && view?.complaint !== undefined) ||
+    (appliedView?.kind === "room" &&
+      appliedView.legacy === true &&
+      view?.legacyMessages !== undefined);
   return (
     !!version &&
     ((!!version.cursor && !!version.replyKind) ||
       !!version.progress ||
       !!version.discoverySnapshot ||
       !!version.voiceRecords ||
-      !!version.draftChanges)
+      !!version.draftChanges ||
+      inlineViewApplied)
   );
 }
 

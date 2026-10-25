@@ -12,6 +12,7 @@ export default {
       "src/sync/subscriptions/viewData.test.ts",
       "src/sync/subscriptions/terminalOutput.test.ts",
       "src/sync/subscriptions/server.test.ts",
+      "src/sync/subscriptions/server.readiness.test.ts",
       "src/sync/subscriptions/entityData.test.ts",
       // Preserve newly landed safety witnesses, including the real Rust draft-route fixture.
       "src/sync/entityProjection.test.mjs",

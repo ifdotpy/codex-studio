@@ -187,8 +187,16 @@ export function createSubscriptionStore(transport: SubscriptionTransport) {
         entry.observers.delete(accept);
       };
     },
-    publish<R extends ResourceRef>(ref: R, data: ResourceData<R> | undefined) {
+    publish<R extends ResourceRef>(
+      ref: R,
+      data: ResourceData<R> | undefined,
+      appliedVersion?: ResourceVersion,
+    ) {
       const entry = entryFor(ref);
+      // An asynchronous view read cannot confirm or overwrite a newer frame.
+      if (appliedVersion && appliedVersion !== entry.version) return;
+      if (appliedVersion && connection === "live" && entry.consumers.size)
+        entry.confirmed = hasAppliedResourceBaseline(appliedVersion, ref);
       entry.state = { ...entry.state, data, error: null };
       status(entry);
       notify(entry);

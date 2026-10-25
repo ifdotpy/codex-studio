@@ -43,8 +43,16 @@ it.each([
     await vi.waitFor(() => expect(accept).toHaveBeenCalledTimes(1));
     receive({ epoch: "server", revision: 2, viewSnapshot: { [field]: value } });
     await vi.waitFor(() => expect(accept).toHaveBeenCalledTimes(2));
-    expect(accept).toHaveBeenNthCalledWith(1, value);
-    expect(accept).toHaveBeenNthCalledWith(2, value);
+    expect(accept).toHaveBeenNthCalledWith(
+      1,
+      value,
+      expect.objectContaining({ epoch: "server", revision: 1 }),
+    );
+    expect(accept).toHaveBeenNthCalledWith(
+      2,
+      value,
+      expect.objectContaining({ epoch: "server", revision: 2 }),
+    );
     expect(get).not.toHaveBeenCalled();
     dispose();
     expect(stop).toHaveBeenCalledOnce();
