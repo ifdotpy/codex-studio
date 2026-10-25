@@ -324,6 +324,14 @@ async fn content_fingerprint(state: HttpState, resource: ResourceRef) -> Option<
     }
 }
 
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "subscriptions",
+        routes: None,
+        dependencies: &[],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

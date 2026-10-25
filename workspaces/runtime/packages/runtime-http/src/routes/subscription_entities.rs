@@ -143,6 +143,14 @@ pub(super) async fn attach_scoped_entity_changes(
     }
 }
 
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "subscription_entities",
+        routes: None,
+        dependencies: &[],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
