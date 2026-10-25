@@ -5,6 +5,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { ActionButtonProps } from "../components/ui/primitives";
 import type { ServerAccount } from "./navigation";
 import ServerAccountsPanel, { accountSources } from "./ServerAccountsPanel";
+import { serverAccountRows } from "./serverAccountRows";
 
 const controls = vi.hoisted(() => [] as ActionButtonProps[]);
 vi.mock("../components/ui/primitives", async (original) => {
@@ -59,6 +60,38 @@ const render = (
 };
 beforeEach(() => {
   controls.length = 0;
+});
+
+it("marks only the exact restored account action for the dialog focus owner", () => {
+  const personal = { ...account, accountKey: "personal", label: "Personal" };
+  const team = { ...account, accountKey: "team", label: "Team" };
+  const byServer = { local: [personal, team] };
+  const rows = serverAccountRows([local], byServer);
+  const onInitialFocus = vi.fn();
+  const { html } = render({
+    servers: [local],
+    accountsByServer: byServer,
+    initialFocusIdentity: rows[1].key,
+    onInitialFocus,
+  });
+  const personalStart = html.indexOf('title="Personal"');
+  const teamStart = html.indexOf('title="Team"');
+  expect(personalStart).toBeGreaterThan(0);
+  expect(teamStart).toBeGreaterThan(personalStart);
+  expect(html.slice(personalStart, teamStart)).not.toContain("data-autofocus");
+  expect(html.slice(teamStart)).toContain('data-autofocus="true"');
+  expect(html.match(/data-autofocus=/g)).toHaveLength(1);
+  const target = controls.find(
+    (button) => Reflect.get(button, "data-autofocus") === true,
+  );
+  if (target?.onFocus) Reflect.apply(target.onFocus, null, []);
+  expect(onInitialFocus).toHaveBeenCalledOnce();
+  for (const button of controls) {
+    if (button !== target && button.onFocus)
+      Reflect.apply(button.onFocus, null, []);
+  }
+  expect(onInitialFocus).toHaveBeenCalledOnce();
+  expect(render().html).not.toContain("data-autofocus");
 });
 
 it("does not treat a local fallback record as a remote account source", () => {

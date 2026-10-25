@@ -148,7 +148,6 @@ function MultiServerShell({
   };
   const restoreManagerAfterAccountDialog = useRef(false);
   const restoreAccountActionFocus = useRef<string | null>(null);
-  const accountSettingsPanel = useRef<HTMLDivElement>(null);
   const discovery = useServerDiscovery(
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
     (server) => add(server, false),
@@ -754,21 +753,6 @@ function MultiServerShell({
       accountsByServer={accountsByServer}
     />
   );
-  const restoreAccountFocus = () => {
-    const identity = restoreAccountActionFocus.current;
-    if (!identity || managerTab !== "accounts") return;
-    restoreAccountActionFocus.current = null;
-    requestAnimationFrame(() => {
-      const row = [
-        ...(accountSettingsPanel.current?.querySelectorAll<HTMLElement>(
-          "[data-account-identity]",
-        ) || []),
-      ].find((candidate) => candidate.dataset.accountIdentity === identity);
-      row
-        ?.querySelector<HTMLButtonElement>('[aria-label^="Actions for "]')
-        ?.focus({ preventScroll: true });
-    });
-  };
   const rememberAccountFocus = (
     serverId: string,
     command: Extract<
@@ -789,17 +773,15 @@ function MultiServerShell({
     <Modal
       opened={manager}
       transitionProps={{ duration: 0 }}
-      onClose={() => setManager(false)}
+      onClose={() => {
+        restoreAccountActionFocus.current = null;
+        setManager(false);
+      }}
       size={modalSizes.settings}
       title="Studio settings"
       classNames={{ body: "studio-settings-body" }}
-      onEnterTransitionEnd={restoreAccountFocus}
     >
-      <div
-        ref={accountSettingsPanel}
-        className="studio-settings-panel"
-        data-testid="studio-settings"
-      >
+      <div className="studio-settings-panel" data-testid="studio-settings">
         <StudioSettingsLayout
           value={managerTab}
           initialDetail={!!restoreAccountActionFocus.current}
@@ -814,6 +796,12 @@ function MultiServerShell({
           <Tabs.Panel value="accounts" pt="md">
             {discovery.error && <p role="alert">{discovery.error}</p>}
             <ServerAccountsPanel
+              initialFocusIdentity={
+                restoreAccountActionFocus.current || undefined
+              }
+              onInitialFocus={() => {
+                restoreAccountActionFocus.current = null;
+              }}
               servicesFor={(id) => services.get(id)}
               servers={accountsServers}
               accountsByServer={accountsByServer}

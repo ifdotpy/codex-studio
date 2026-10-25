@@ -157,9 +157,48 @@ test("collapsed account sign-in keeps exact ownership at phone and desktop width
     await expect(profile).toContainText("Claude profile saved.");
     expect(profilePosts).toHaveLength(1);
     expect(profilePosts[0].account_key).toBe("exact-claude-profile");
+    await page.evaluate(() => {
+      window.__accountReturnFocus = [];
+      document.addEventListener("focusin", (event) => {
+        const node = event.target;
+        window.__accountReturnFocus.push({
+          tag: node.tagName,
+          label: node.getAttribute("aria-label"),
+          text: node.textContent?.slice(0, 80),
+          row: node.closest("[data-account-identity]")?.dataset.accountIdentity,
+          dialog: node.closest('[role="dialog"]')?.id,
+        });
+      });
+    });
     await profile.getByRole("button", { name: "Close", exact: true }).click();
     await expect(settings).toBeVisible();
-    await expect(actions).toBeFocused();
+    try {
+      await expect(actions).toBeFocused();
+    } catch (failure) {
+      console.log(
+        "Account return focus",
+        await page.evaluate(() => ({
+          events: window.__accountReturnFocus,
+          active: {
+            tag: document.activeElement?.tagName,
+            label: document.activeElement?.getAttribute("aria-label"),
+            text: document.activeElement?.textContent?.slice(0, 80),
+            dialog: document.activeElement?.closest('[role="dialog"]')?.id,
+          },
+          dialogs: [...document.querySelectorAll('[role="dialog"]')].map(
+            (node) => ({
+              id: node.id,
+              label: node.getAttribute("aria-labelledby"),
+              visible: !!node.getClientRects().length,
+              rows: [...node.querySelectorAll("[data-account-identity]")].map(
+                (row) => row.dataset.accountIdentity,
+              ),
+            }),
+          ),
+        })),
+      );
+      throw failure;
+    }
     expect(posts).toHaveLength(0);
     await login.click();
     const dialog = page.getByRole("dialog", { name: /Sign in to Claude/ });
