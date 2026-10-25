@@ -1413,7 +1413,16 @@ async fn public_probe(fixture: Fixture, action: &str, expectation: &str) -> Fixt
         id,
         repo,
     } = fixture;
+    let search_path = std::env::var_os("PATH").expect("executable search path");
+    let real_git = std::env::split_paths(&search_path)
+        .map(|directory| directory.join("git"))
+        .find(|path| path.is_file())
+        .expect("Git fixture executable");
     let bin = root.path().join("bin");
+    let probe_path = std::env::join_paths(
+        std::iter::once(bin.clone()).chain(std::env::split_paths(&search_path)),
+    )
+    .expect("probe executable search path");
     std::fs::create_dir(&bin).expect("wrapper directory");
     if !action.is_empty() {
         let node = Command::new("node")
@@ -1431,10 +1440,10 @@ const {{DatabaseSync}} = require('node:sqlite');
 const root = process.env.WORKSPACE_PROBE_ROOT;
 const repo = path.join(root, 'repo');
 const args = process.argv.slice(2);
-const result = spawnSync('/usr/bin/git', args);
+const result = spawnSync(process.env.WORKSPACE_REAL_GIT, args);
 if (result.error) throw result.error;
 const marker = path.join(root, 'probe-executed');
-const observation = spawnSync('/usr/bin/git', ['-C', repo, 'for-each-ref', '--format=%(refname)', 'refs/codex-agents/checkpoints/'], {{encoding:'utf8'}});
+const observation = spawnSync(process.env.WORKSPACE_REAL_GIT, ['-C', repo, 'for-each-ref', '--format=%(refname)', 'refs/codex-agents/checkpoints/'], {{encoding:'utf8'}});
 if (observation.error) throw observation.error;
 const refs = observation.stdout.trim().split('\n').filter(Boolean);
 {action}
@@ -1455,7 +1464,7 @@ process.exitCode = result.status;
             r#"#!/bin/sh
 case " $* " in
   *" diff --cached "*|*" for-each-ref "*) exec "$0.probe" "$@" ;;
-  *) exec /usr/bin/git "$@" ;;
+  *) exec "$WORKSPACE_REAL_GIT" "$@" ;;
 esac
 "#,
         )
@@ -1475,7 +1484,8 @@ esac
         .env("WORKSPACE_PROBE_ID", &id)
         .env("WORKSPACE_PROBE_EXPECT", expectation)
         .env("FIXTURE_FILTER_KEY", "present")
-        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("PATH", probe_path)
+        .env("WORKSPACE_REAL_GIT", real_git)
         .output()
         .expect("probe subprocess");
     assert!(
@@ -1626,7 +1636,7 @@ async fn exact_checkpoint_replay_atomically_rejects_ref_changed_after_read() {
         fixture,
         r#"
 if (args.includes('for-each-ref') && args.some(a => a.startsWith('refs/codex-agents/checkpoints/')) && result.stdout.toString().trim() && !fs.existsSync(marker)) {
-    const update = spawnSync('/usr/bin/git', ['-C', repo, 'update-ref', refs[0], fs.readFileSync(path.join(root, 'other-oid'), 'utf8')]);
+    const update = spawnSync(process.env.WORKSPACE_REAL_GIT, ['-C', repo, 'update-ref', refs[0], fs.readFileSync(path.join(root, 'other-oid'), 'utf8')]);
     if (update.error) throw update.error;
     if (update.status !== 0) throw new Error(update.stderr.toString());
     fs.writeFileSync(marker, 'ref changed after read');
