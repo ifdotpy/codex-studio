@@ -788,3 +788,161 @@ test.each(
     expect(forkSession).not.toHaveBeenCalled();
   },
 );
+
+test.each([null, 42, "", "not-a-uuid"])(
+  "a damaged queued receipt cannot authorize steer redelivery: %s",
+  (source_uuid) => {
+    const rows = [
+      {
+        type: "user",
+        uuid: inputId,
+        parentUuid: null,
+        sessionId,
+        cwd: "/project",
+        isSidechain: false,
+      },
+      {
+        type: "attachment",
+        uuid: replyId,
+        parentUuid: inputId,
+        sessionId,
+        cwd: "/project",
+        isSidechain: false,
+        attachment: { type: "queued_command", source_uuid },
+      },
+    ];
+    expect(
+      inputHistoryOutcome(rows, {
+        sessionId,
+        cwd: "/project",
+        anchorIds: [inputId],
+        inputIds: [steerId],
+      }),
+    ).toBe("unknown");
+  },
+);
+
+test.each(["total_tokens_reminder", "prompt_snapshot"])(
+  "native main-session %s attachments remain valid anchor ancestors",
+  (type) => {
+    // Claude Code 2.1.x persists main-session attachment records in parentUuid
+    // chains. The user anchor's direct parent can be an attachment, not a reply.
+    const rows = [
+      {
+        type: "user",
+        uuid: replyId,
+        parentUuid: null,
+        sessionId,
+        cwd: "/project",
+        isSidechain: false,
+        message: { role: "user", content: "earlier input" },
+      },
+      {
+        type: "attachment",
+        uuid: "55555555-5555-4555-8555-555555555555",
+        parentUuid: replyId,
+        sessionId,
+        cwd: "/project",
+        isSidechain: false,
+        gitBranch: "fixture",
+        userType: "external",
+        entrypoint: "cli",
+        version: "2.1.304",
+        timestamp: "2026-10-25T00:00:00.000Z",
+        ...(type === "prompt_snapshot"
+          ? {
+              session_id: sessionId,
+              attachment: {
+                type,
+                contextRendering: "fixture",
+                echoWireToolInputs: false,
+                reminderFold: false,
+                systemPrompt: ["fixture"],
+              },
+            }
+          : {
+              rendered: [{ content: "fixture" }],
+              renderedRole: "user",
+              attachment: { type, text: "fixture" },
+            }),
+      },
+      {
+        type: "user",
+        uuid: inputId,
+        parentUuid: "55555555-5555-4555-8555-555555555555",
+        sessionId,
+        cwd: "/project",
+        isSidechain: false,
+        message: { role: "user", content: "current input" },
+      },
+    ];
+    expect(
+      inputHistoryOutcome(rows, {
+        sessionId,
+        cwd: "/project",
+        anchorIds: [inputId],
+        inputIds: [steerId],
+      }),
+    ).toBe("not_applied");
+  },
+);
+
+test.each([false, true])(
+  "a complete large native tool result preserves steer evidence: delivered=%s",
+  async (delivered) => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-large-history-"));
+    const rootId = "66666666-6666-4666-8666-666666666666";
+    const resultId = "55555555-5555-4555-8555-555555555555";
+    const row = (type, uuid, parentUuid, content) => ({
+      type,
+      uuid,
+      parentUuid,
+      sessionId,
+      cwd: root,
+      isSidechain: false,
+      message: { role: type, content },
+    });
+    const rows = [
+      row("user", rootId, null, "Run the tool"),
+      row("assistant", replyId, rootId, [
+        {
+          type: "tool_use",
+          id: "call-large",
+          name: "Bash",
+          input: { command: "produce output" },
+        },
+      ]),
+      row("user", resultId, replyId, [
+        {
+          type: "tool_result",
+          tool_use_id: "call-large",
+          content: "x".repeat(70 * 1024),
+        },
+      ]),
+      row("user", inputId, resultId, "Current input"),
+      ...(delivered ? [row("user", steerId, inputId, "Recorded steer")] : []),
+    ];
+    const configDir = path.join(root, "config");
+    const file = path.join(
+      configDir,
+      "projects",
+      root.replace(/[^a-zA-Z0-9]/g, "-"),
+      sessionId + ".jsonl",
+    );
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      rows.map((row) => JSON.stringify(row) + "\n").join(""),
+    );
+    const records = await readNativeHistory(
+      { id: sessionId, cwd: root },
+      { configDir },
+    );
+    expect(
+      inputHistoryOutcome(
+        records?.map(({ row }) => row),
+        { sessionId, cwd: root, anchorIds: [inputId], inputIds: [steerId] },
+      ),
+    ).toBe(delivered ? "delivered" : "not_applied");
+  },
+);

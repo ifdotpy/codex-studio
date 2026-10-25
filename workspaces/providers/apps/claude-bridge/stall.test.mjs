@@ -28,6 +28,7 @@ const GRACE_MS = 300;
 const FAKE_SDK = String.raw`
 export const resolveSettings=async()=>({effective:{}});
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 export const tool=(name,description,schema,call)=>({name,description,schema,call});
 export const createSdkMcpServer=value=>({...value});
@@ -39,7 +40,7 @@ export function query({prompt,options}){
  const abort=new AbortController(),cwd=options.cwd;
  const session=options.sessionId||options.resume;
  const history=path.join(process.env.CLAUDE_CONFIG_DIR,'projects',cwd.replace(/[^a-zA-Z0-9]/g,'-'),session+'.jsonl');
- let interrupted=null,wedged=false,deaf=false;
+ let interrupted=null,wedged=false,deaf=false,historyParent=null;
  const interrupt=new Promise(r=>(interrupted=r));
  const queued=[];
  let reading=null;
@@ -50,8 +51,11 @@ export function query({prompt,options}){
  // Hold a steer like the CLI queue: no echo until the turn ends.
  const hold=value=>{
   queued.push(value);
-  if(value.message.content[0].text.includes('recorded'))
-   fs.appendFileSync(history,JSON.stringify({type:'attachment',sessionId:session,cwd,isSidechain:false,attachment:{type:'queued_command',source_uuid:value.uuid}})+'\n');
+  if(value.message.content[0].text.includes('recorded')){
+   const uuid=randomUUID();
+   fs.appendFileSync(history,JSON.stringify({type:'attachment',uuid,parentUuid:historyParent,sessionId:session,cwd,isSidechain:false,attachment:{type:'queued_command',source_uuid:value.uuid}})+'\n');
+   historyParent=uuid;
+  }
  };
  return {
   mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
@@ -68,7 +72,8 @@ export function query({prompt,options}){
     const input=await read();
     if(input.done)return;
     const text=input.value.message.content[0].text;
-    fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:null,sessionId:session,cwd,isSidechain:false})+'\n');
+    fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:historyParent,sessionId:session,cwd,isSidechain:false})+'\n');
+    historyParent=input.value.uuid;
     if(text==='stall')fs.appendFileSync(history,'broken native row\n');
     yield {type:'user',isReplay:true,uuid:input.value.uuid};
     yield {type:'system',subtype:'init'};
@@ -420,12 +425,15 @@ test("the stall rule needs both an elapsed budget and silence", () => {
         JSON.stringify({ type: "user", uuid: "u1" }),
         JSON.stringify({
           type: "attachment",
-          attachment: { type: "queued_command", source_uuid: "u2" },
+          attachment: {
+            type: "queued_command",
+            source_uuid: "22222222-2222-4222-8222-222222222222",
+          },
         }),
         JSON.stringify({ type: "queue-operation", operation: "enqueue" }),
       ]),
     ],
-    ["u1", "u2"],
+    ["u1", "22222222-2222-4222-8222-222222222222"],
   );
 });
 

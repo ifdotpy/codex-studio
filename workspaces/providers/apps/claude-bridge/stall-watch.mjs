@@ -1,3 +1,4 @@
+import { nativeUuid } from "./native-history.mjs";
 import { nativeInputIds } from "./input-messages.mjs";
 
 // Studio's watchdog for a Claude tool call that never returns.
@@ -185,12 +186,10 @@ export function recordedInputIds(lines) {
     if (entry?.type === "user" && typeof entry.uuid === "string")
       ids.add(entry.uuid);
     const attachment = entry?.attachment;
-    if (
-      entry?.type === "attachment" &&
-      attachment?.type === "queued_command" &&
-      typeof attachment.source_uuid === "string"
-    )
+    if (entry?.type === "attachment" && attachment?.type === "queued_command") {
+      if (!nativeUuid(attachment.source_uuid)) return null;
       ids.add(attachment.source_uuid);
+    }
   }
   return ids;
 }
@@ -258,7 +257,7 @@ export function inputHistoryOutcome(
     const row = rows[ancestorIndex];
     if (
       !main(row) ||
-      !["user", "assistant"].includes(row.type) ||
+      !["user", "assistant", "attachment"].includes(row.type) ||
       ancestry.has(row.uuid)
     )
       return "unknown";
@@ -277,7 +276,7 @@ export function inputHistoryOutcome(
   for (const row of rows.slice(anchors[0] + 1)) {
     if (row.isSidechain === true) continue;
     if (row.parentUuid != null && !seen.has(row.parentUuid)) return "unknown";
-    if (["user", "assistant"].includes(row.type)) {
+    if (["user", "assistant", "attachment"].includes(row.type)) {
       if (
         !main(row) ||
         typeof row.uuid !== "string" ||

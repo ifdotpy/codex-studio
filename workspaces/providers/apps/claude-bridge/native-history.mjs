@@ -5,7 +5,6 @@ import path from "node:path";
 
 // Maximum bytes read from one native transcript during recovery.
 export const NATIVE_HISTORY_TAIL_BYTES = 8 * 1024 * 1024;
-const RECORD_BYTES = 64 * 1024;
 export const nativeUuid = (value) =>
   typeof value === "string" &&
   /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(value);
@@ -39,7 +38,7 @@ export async function nativeHistoryRows(tail) {
   let yielded = start;
   while (start < tail.raw.length) {
     const end = tail.raw.indexOf(10, start);
-    if (end < 0 || end - start > RECORD_BYTES)
+    if (end < 0 || end - start > NATIVE_HISTORY_TAIL_BYTES)
       throw new Error("Invalid native history record");
     const row = JSON.parse(tail.raw.subarray(start, end).toString("utf8"));
     if (!row || typeof row !== "object" || Array.isArray(row))
