@@ -452,26 +452,42 @@ fn supervisor_journal_lifecycle_failpoints_preserve_all_rows() {
 
 #[test]
 fn supervisor_backend_admission_rejection_never_releases_the_owner() {
-    use studio_runtime_providers::supervisor_protocol::Ownership;
+    use studio_runtime_providers::supervisor_protocol::{ConnectionIdentity, Ownership};
     let mut ownership = Ownership::default();
     let root = std::path::Path::new("/fixture");
     assert_eq!(
         ownership
-            .attach(root, Some("one"), false, root)
+            .attach(root, ConnectionIdentity::Backend("one"), root)
             .unwrap()
-            .as_deref(),
+            .backend_owner(),
         Some("one")
     );
-    assert!(ownership.attach(root, Some("two"), false, root).is_err());
-    ownership.detach(None);
-    assert!(ownership.attach(root, Some("two"), false, root).is_err());
     assert!(
         ownership
-            .attach(root, Some("one"), false, std::path::Path::new("/wrong"))
+            .attach(root, ConnectionIdentity::Backend("two"), root)
+            .is_err()
+    );
+    ownership.detach(None);
+    assert!(
+        ownership
+            .attach(root, ConnectionIdentity::Backend("two"), root)
+            .is_err()
+    );
+    assert!(
+        ownership
+            .attach(
+                root,
+                ConnectionIdentity::Backend("one"),
+                std::path::Path::new("/wrong")
+            )
             .is_err()
     );
     ownership.detach(Some("one"));
-    assert!(ownership.attach(root, Some("two"), false, root).is_ok());
+    assert!(
+        ownership
+            .attach(root, ConnectionIdentity::Backend("two"), root)
+            .is_ok()
+    );
 }
 
 #[test]
