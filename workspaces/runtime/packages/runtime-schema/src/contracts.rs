@@ -270,6 +270,10 @@ fn shared_values_ts() -> String {
                 "VM_PROVIDER_DISCONNECTED_TURN_ERROR",
                 values::VM_PROVIDER_DISCONNECTED_TURN_ERROR,
             ),
+            (
+                "LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR",
+                values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+            ),
             ("DISK_FULL_ERROR_PATTERN", values::DISK_FULL_ERROR_PATTERN),
         ],
     );

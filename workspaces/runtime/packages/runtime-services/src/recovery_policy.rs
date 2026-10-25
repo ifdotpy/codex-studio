@@ -3,6 +3,7 @@ use crate::event_write::truthy;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use studio_runtime_schema::shared_values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR;
 use studio_runtime_store::{
     BACKEND_RESTARTED_TURN_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
     VM_PROVIDER_DISCONNECTED_TURN_ERROR,
@@ -308,6 +309,7 @@ fn eligibility(a: &Value) -> Eligibility {
             &[
                 PROVIDER_DISCONNECTED_TURN_ERROR,
                 VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+                LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
             ],
         )
         && has(d, "autoWake")
@@ -433,6 +435,7 @@ fn eligibility(a: &Value) -> Eligibility {
             &[
                 PROVIDER_DISCONNECTED_TURN_ERROR,
                 VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+                LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
             ],
         )
         && clear(a)
@@ -472,6 +475,7 @@ fn eligibility(a: &Value) -> Eligibility {
                 &[
                     PROVIDER_DISCONNECTED_TURN_ERROR,
                     VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+                    LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
                     BACKEND_RESTARTED_TURN_ERROR,
                 ],
             )
@@ -594,6 +598,12 @@ mod disconnect_text_tests {
     fn a_vm_provider_disconnect_has_the_manual_connection_check() {
         assert!(eligibility(&interrupted(PROVIDER_DISCONNECTED_TURN_ERROR)).connection);
         assert!(eligibility(&interrupted(VM_PROVIDER_DISCONNECTED_TURN_ERROR)).connection);
+        assert!(
+            eligibility(&interrupted(
+                super::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR
+            ))
+            .connection
+        );
         assert!(!eligibility(&interrupted("Some other failure")).connection);
     }
 }
