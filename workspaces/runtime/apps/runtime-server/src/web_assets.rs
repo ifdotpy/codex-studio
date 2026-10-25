@@ -195,10 +195,15 @@ async fn read_asset(
     studio_runtime_process::blocking_pool::spawn_blocking("runtime-server/web_assets", move || {
         // Resolve the original first: an orphan sibling cannot create a new URL.
         let original = resolve_asset(&root, &relative)?;
-        if is_compressible(&relative) {
+        if is_compressible(&relative)
+            && let Ok(original_modified) = fs::metadata(&original).and_then(|metadata| metadata.modified())
+        {
             for (allowed, suffix, encoding) in [(brotli, "br", "br"), (gzip, "gz", "gzip")] {
                 if allowed
                     && let Ok(path) = resolve_asset(&root, &format!("{relative}.{suffix}"))
+                    // A rewritten original must not be shadowed by an older representation.
+                    && let Ok(sibling_modified) = fs::metadata(&path).and_then(|metadata| metadata.modified())
+                    && sibling_modified >= original_modified
                     && let Ok(bytes) = fs::read(path)
                 {
                     return Ok(EncodedAsset {
@@ -677,6 +682,58 @@ mod tests {
             .await
             .expect("response");
         assert_eq!(orphan.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn stale_siblings_fall_back_to_fresh_gzip_or_identity() {
+        let (directory, assets) = fixture();
+        let original = directory.path().join("index.html");
+        let br = directory.path().join("index.html.br");
+        let gz = directory.path().join("index.html.gz");
+        fs::write(&br, b"stale brotli").expect("br");
+        fs::write(&gz, b"fresh gzip").expect("gzip");
+        let set_modified = |path: &Path, seconds| {
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .expect("fixture file")
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+                .expect("fixture modification time");
+        };
+        set_modified(&original, 20);
+        set_modified(&br, 10);
+        set_modified(&gz, 20);
+        let app = router(assets);
+        for (gzip_time, encoding, body) in [
+            (20, Some("gzip"), b"fresh gzip".as_slice()),
+            (10, None, b"<html>ok</html>".as_slice()),
+        ] {
+            set_modified(&gz, gzip_time);
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get("/")
+                        .header(header::ACCEPT_ENCODING, "br, gzip")
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_ENCODING)
+                    .map(|value| value.to_str().expect("encoding")),
+                encoding
+            );
+            assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+            assert_eq!(
+                to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body"),
+                body
+            );
+        }
     }
 
     #[cfg(unix)]

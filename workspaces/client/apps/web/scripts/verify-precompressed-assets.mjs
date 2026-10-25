@@ -2,7 +2,14 @@
 // and renderer first, then set CODEX_STUDIO_RUNTIME_SERVER to that exact binary.
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +50,7 @@ const expected = new Map(
 let backend;
 let browser;
 try {
+  await mkdir(join(root, "state"));
   backend = await startRustBackend(join(root, "state"));
   assert.notEqual(backend.port, 4620);
   browser = await chromium.launch({
@@ -51,14 +59,17 @@ try {
   });
   const runs = [];
   for (const mode of ["identity", "br"]) {
-    const context = await browser.newContext({ serviceWorkers: "block" });
+    const context = await browser.newContext({
+      serviceWorkers: "block",
+      ...(mode === "identity"
+        ? { extraHTTPHeaders: { "Accept-Encoding": "identity" } }
+        : {}),
+    });
     try {
       const page = await context.newPage();
       const cdp = await context.newCDPSession(page);
       await cdp.send("Network.enable");
       await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
-      if (mode === "identity")
-        await cdp.send("Network.setAcceptedEncodings", { encodings: [] });
       const errors = [];
       page.on("pageerror", (error) => errors.push(String(error)));
       await page.goto(backend.origin, { waitUntil: "load" });

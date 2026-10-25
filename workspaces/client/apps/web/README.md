@@ -34,7 +34,8 @@ after the offline shell is finalized. It keeps smaller Brotli and gzip siblings
 for the server-owned [compressible extensions](../../../runtime/apps/runtime-server/src/web_asset_extensions.txt).
 Deploy the whole `dist/` directory, including these siblings. The Rust server
 negotiates `Accept-Encoding`, prefers Brotli, falls back to gzip or identity,
-and varies caches by encoding without compressing requests at runtime. Shell
+and varies caches by encoding without compressing requests at runtime. A sibling
+older than its original file is ignored. Shell
 build IDs and service-worker URLs refer to original files. Fixtures that rewrite
 built files must rebuild or remove their compressed siblings too.
 
