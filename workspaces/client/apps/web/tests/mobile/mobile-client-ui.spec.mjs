@@ -620,6 +620,9 @@ async function setupMobile320Composer(testBrowser) {
       await usage
         .getByRole("button", { name: "Account limits", exact: true })
         .waitFor({ state: "visible" });
+      await expect(usage.locator(".session-cost-summary")).toContainText(
+        "$2.00",
+      );
       const interest = page.waitForResponse(
         (response) =>
           new URL(response.url()).pathname === "/api/costs/interest" &&
