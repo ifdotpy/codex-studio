@@ -537,7 +537,7 @@ async fn full_journal_lane_keeps_ack_commands_live_while_next_event_waits() {
                     generation: Generation(1),
                     kind: EventKind::Stdout,
                     payload: serde_json::value::RawValue::from_string(
-                        r#"{"id":"initialized"}"#.into(),
+                        r#"{"id":"initialized","result":{}}"#.into(),
                     )
                     .unwrap(),
                 },
