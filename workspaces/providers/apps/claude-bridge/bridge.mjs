@@ -392,6 +392,23 @@ function diskFullInputError(error) {
 async function session(id) {
   return sessionStore.get(id);
 }
+function nativeReviewerEnvironment(s) {
+  if (!s.claude?.nativeReviewerEnvironment) return undefined;
+  const environment = { ...s.claude.nativeReviewerEnvironment };
+  // The account driver selects these values. Ambient server credentials stay excluded.
+  for (const name of [
+    "CLAUDE_CONFIG_DIR",
+    "STUDIO_CLAUDE_ACCOUNT",
+    "STUDIO_CLAUDE_CREDENTIAL_IDENTITY",
+    "STUDIO_CLAUDE_BIN",
+  ]) {
+    if (typeof process.env[name] === "string")
+      environment[name] = process.env[name];
+  }
+  // Preserve the provider home for account authentication. Try commands still use scratch HOME.
+  if (process.env.HOME) environment.HOME = process.env.HOME;
+  return environment;
+}
 const settings = (s) =>
   fileCheckpointOptions({
     cwd: s.cwd,
@@ -404,7 +421,7 @@ const settings = (s) =>
     // A managed worker runs without the user's MCP servers (Studio sends userMcp: false).
     ...(s.userMcp === false ? { strictMcpConfig: true } : {}),
     includePartialMessages: true,
-    env: {
+    env: nativeReviewerEnvironment(s) ?? {
       ...process.env,
       ...(typeof s.claude?.env?.LAYR_ROOT === "string"
         ? {

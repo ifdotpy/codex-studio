@@ -206,3 +206,87 @@ test("native reviewers keep the main store outside their writable sandbox", asyn
     sandbox,
   );
 });
+
+test("native reviewer sessions retain account selectors with a filtered environment", async () => {
+  const sdk = FAKE_SDK.replace(
+    "account:options.env.STUDIO_CLAUDE_ACCOUNT,",
+    "account:options.env.STUDIO_CLAUDE_ACCOUNT, environment:options.env,",
+  );
+  const bridge = await startBridge(sdk, "claude-reviewer-env-", {
+    env: {
+      STUDIO_REVIEW_TEST_SECRET: "fixture-only-secret",
+      STUDIO_CLAUDE_BIN: "fixture-cli",
+      STUDIO_CLAUDE_CREDENTIAL_IDENTITY: "claude:test@example.test",
+    },
+  });
+  bridges.push(bridge);
+  const scratch = path.join(bridge.root, "scratch");
+  await fs.mkdir(scratch);
+  const environment = {
+    PATH: process.env.PATH,
+    HOME: scratch,
+    TMPDIR: scratch,
+    LANG: "C",
+    TERM: "dumb",
+  };
+  const id = (
+    await bridge.call("thread/start", {
+      cwd: scratch,
+      claude: {
+        permissionMode: "plan",
+        nativeReviewerEnvironment: environment,
+      },
+    })
+  ).thread.id;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt)
+      await bridge.call("thread/resume", {
+        threadId: id,
+        cwd: scratch,
+        claude: {
+          permissionMode: "plan",
+          nativeReviewerEnvironment: environment,
+        },
+      });
+    const turn = (
+      await bridge.call("turn/start", {
+        threadId: id,
+        clientUserMessageId: `review-env-${attempt}`,
+        input: [{ type: "text", text: "Inspect environment" }],
+      })
+    ).turn.id;
+    await bridge.note(
+      (n) => n.method === "turn/completed" && n.params.turn.id === turn,
+    );
+    const actual = JSON.parse(
+      await fs.readFile(path.join(scratch, "sdk-env.json"), "utf8"),
+    ).environment;
+    assert.equal(
+      actual.CLAUDE_CONFIG_DIR,
+      path.join(bridge.root, "native-config"),
+    );
+    assert.equal(actual.STUDIO_CLAUDE_ACCOUNT, "test@example.test");
+    assert.equal(actual.STUDIO_CLAUDE_BIN, "fixture-cli");
+    assert.equal(
+      actual.STUDIO_CLAUDE_CREDENTIAL_IDENTITY,
+      "claude:test@example.test",
+    );
+    assert.deepEqual(
+      Object.keys(actual).sort(),
+      [
+        ...Object.keys(environment),
+        "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
+        "CLAUDE_CONFIG_DIR",
+        "STUDIO_CLAUDE_ACCOUNT",
+        "STUDIO_CLAUDE_BIN",
+        "STUDIO_CLAUDE_CREDENTIAL_IDENTITY",
+      ].sort(),
+    );
+    assert.equal(actual.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING, "true");
+    for (const key of Object.keys(environment))
+      assert.equal(
+        actual[key],
+        key === "HOME" ? process.env.HOME : environment[key],
+      );
+  }
+});

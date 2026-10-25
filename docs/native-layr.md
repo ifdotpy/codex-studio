@@ -14,7 +14,7 @@ The state directory must stay outside project folders.
 The project ID is the SHA-256 of the canonical source folder path.
 Later chats for that folder reuse its main line.
 
-Studio installs Layr 0.2.0 at `<Studio state>/layr-native/bin/layr`.
+Studio installs Layr 0.2.1 at `<Studio state>/layr-native/bin/layr`.
 It never selects `~/.cargo/bin/layr` for runtime operations.
 The installer verifies the vendored source manifest and runs Cargo with the lock file and four jobs.
 Build output stays below the Studio state directory.
@@ -166,6 +166,20 @@ The Studio state directory and daemon socket stay hidden.
 The check has no network access.
 The check cannot change main or the worker lines.
 
+Reviewer checks receive an explicit environment allowlist.
+It contains `PATH`, `LANG`, `TERM`, and available Rust toolchain selectors.
+For try commands, `HOME` and `TMPDIR` point to scratch.
+Claude reviewer sessions also retain Studio's provider account selectors, including `CLAUDE_CONFIG_DIR` when configured.
+Claude keeps its provider `HOME` for authentication. Try commands keep scratch `HOME`.
+Lead and implementer environments keep their existing rules.
+
+Linux reviewer checks cannot use Git alternates that point into the hidden store.
+For these states, `git log` in a try copy can fail. Use `layr_read` history commands instead.
+The sandbox does not expose the store to repair these Git paths.
+Linux still mounts broad `/usr` and `/opt` toolchain directories read-only.
+Native reviewers can also access the browser server through `node_repl`, as current WT reviewers can.
+These limits remain outside the current reviewer isolation changes.
+
 ## Migration
 
 The migration keeps the original project and its Git worktrees.
@@ -215,7 +229,7 @@ Run the focused Rust tests:
 cargo test -j 4 -p studio-runtime-services --lib layr_native
 ```
 
-Run the real host lifecycle check with a Studio-built Layr 0.2.0 binary:
+Run the real host lifecycle check with a Studio-built Layr 0.2.1 binary:
 
 ```sh
 STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/studio-state/layr-native/bin/layr \

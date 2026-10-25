@@ -1068,6 +1068,7 @@ fn native_claude_options(record:&Value,state_root:&Path)->Result<serde_json::Map
         options.insert("sandbox".into(),json!({"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,
             "filesystem":{"allowWrite":[scratch],"denyWrite":[crate::layr_native::store_path(state_root)]},
             "network":{"allowedDomains":[],"strictAllowlist":true,"allowUnixSockets":[],"allowAllUnixSockets":false}}));
+        options.insert("nativeReviewerEnvironment".into(),Value::Object(crate::layr_native::reviewer_environment(state_root,scratch)));
     }
     Ok(options)
 }
@@ -2252,6 +2253,8 @@ mod workspace_fence_tests {
                                     assert_eq!(options["sandbox"]["failIfUnavailable"],true);
                                     assert_eq!(options["sandbox"]["filesystem"]["allowWrite"],json!(["/private/reviewer-scratch"]));
                                     assert_eq!(options["sandbox"]["filesystem"]["denyWrite"],json!([crate::layr_native::store_path(Path::new("/state"))]));
+                                    assert_eq!(options["nativeReviewerEnvironment"]["TMPDIR"],"/private/reviewer-scratch");
+                                    assert!(options["nativeReviewerEnvironment"].get("LAYR_ROOT").is_none());
                                 }
                             }
                         }

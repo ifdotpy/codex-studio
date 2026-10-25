@@ -11,7 +11,11 @@ pub(super) fn unpack(archive: &Path, destination: &Path) -> Result<(), NativeLay
 }
 
 pub(super) fn validate(archive: &Path, destination: &Path) -> Result<(), NativeLayrError> {
-    validate_case_policy(archive, case_sensitive(destination)?)
+    validate_case_policy(
+        archive,
+        case_sensitive(destination)?,
+        cfg!(target_os = "macos"),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -58,8 +62,12 @@ fn case_key(path: &str) -> String {
     normalizer.normalize(&folded).into_owned()
 }
 
-fn validate_case_policy(archive: &Path, case_sensitive: bool) -> Result<(), NativeLayrError> {
-    if case_sensitive {
+fn validate_case_policy(
+    archive: &Path,
+    case_sensitive: bool,
+    unicode_normalizing: bool,
+) -> Result<(), NativeLayrError> {
+    if case_sensitive && !unicode_normalizing {
         return Ok(());
     }
     let mut seen: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -75,9 +83,14 @@ fn validate_case_policy(archive: &Path, case_sensitive: bool) -> Result<(), Nati
                 prefix.push('/')
             }
             prefix.push_str(component);
-            seen.entry(case_key(&prefix))
-                .or_default()
-                .insert(prefix.clone());
+            let key = if case_sensitive {
+                icu_normalizer::DecomposingNormalizerBorrowed::new_nfd()
+                    .normalize(&prefix)
+                    .into_owned()
+            } else {
+                case_key(&prefix)
+            };
+            seen.entry(key).or_default().insert(prefix.clone());
         }
     }
     let collisions: Vec<String> = seen
@@ -99,7 +112,7 @@ fn unpack_with_case_policy(
     destination: &Path,
     case_sensitive: bool,
 ) -> Result<(), NativeLayrError> {
-    validate_case_policy(archive, case_sensitive)?;
+    validate_case_policy(archive, case_sensitive, cfg!(target_os = "macos"))?;
     tar::Archive::new(flate2::read::GzDecoder::new(File::open(archive)?)).unpack(destination)?;
     Ok(())
 }
@@ -107,6 +120,26 @@ fn unpack_with_case_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_import_always_rejects_unicode_aliases_on_apfs() {
+        let archive = tempfile::NamedTempFile::new().unwrap();
+        let gzip = flate2::write::GzEncoder::new(
+            File::create(archive.path()).unwrap(),
+            flate2::Compression::default(),
+        );
+        let mut builder = tar::Builder::new(gzip);
+        for name in ["café", "cafe\u{301}"] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, name, &b""[..]).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+        assert!(validate_case_policy(archive.path(), true, true).is_err());
+        assert!(validate_case_policy(archive.path(), true, false).is_ok());
+    }
 
     #[test]
     fn native_layr_import_refuses_case_and_unicode_collisions_before_any_write() {

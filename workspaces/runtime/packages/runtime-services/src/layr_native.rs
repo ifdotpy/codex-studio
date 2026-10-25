@@ -314,6 +314,25 @@ mod receipt_tests {
             "printf local > review-check; printf note > \"$TMPDIR/note\"; if printf forbidden > \"$1/code.txt\"; then exit 7; fi".into(),
             "review-check".into(),main.to_string_lossy().into_owned()];
         reviewer_try(state.path(), &reviewer, &args).unwrap();
+        let environment = reviewer_try(
+            state.path(),
+            &reviewer,
+            &[
+                "try".into(),
+                state_id.clone(),
+                "--".into(),
+                "/usr/bin/env".into(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            !environment
+                .lines()
+                .any(|line| line.starts_with("LAYR_ROOT=")
+                    || line.starts_with("LAYR_DIRECT=")
+                    || line.starts_with("LAYR_SOCKET=")),
+            "Reviewer check inherited the runtime store environment"
+        );
         assert_eq!(
             fs::read_to_string(main.join("code.txt")).unwrap(),
             "worker result\n"
@@ -368,6 +387,42 @@ mod receipt_tests {
     }
 }
 
+/// One allowlist for review checks and native Claude reviewer sessions.
+pub(crate) fn reviewer_environment(
+    state_dir: &Path,
+    scratch: &str,
+) -> serde_json::Map<String, Value> {
+    let mut environment = serde_json::Map::new();
+    environment.insert("PATH".into(), thread_environment(state_dir)["PATH"].clone());
+    environment.insert("HOME".into(), json!(scratch));
+    environment.insert("TMPDIR".into(), json!(scratch));
+    environment.insert(
+        "LANG".into(),
+        json!(std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into())),
+    );
+    environment.insert(
+        "TERM".into(),
+        json!(std::env::var("TERM").unwrap_or_else(|_| "dumb".into())),
+    );
+    for name in ["CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"] {
+        let value = std::env::var(name).ok().or_else(|| {
+            let suffix = match name {
+                "CARGO_HOME" => ".cargo",
+                "RUSTUP_HOME" => ".rustup",
+                _ => return None,
+            };
+            let folder = PathBuf::from(std::env::var_os("HOME")?).join(suffix);
+            folder
+                .is_dir()
+                .then(|| folder.to_string_lossy().into_owned())
+        });
+        if let Some(value) = value {
+            environment.insert(name.into(), json!(value));
+        }
+    }
+    environment
+}
+
 /// A review check may change only its temporary copy and private scratch folder.
 pub fn reviewer_try(
     state_dir: &Path,
@@ -395,10 +450,13 @@ pub fn reviewer_try(
     let state = state
         .to_str()
         .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 state path".into()))?;
-    let mut args = vec![
-        "try",
-        argv[1].as_str(),
-        "--",
+    let environment: Vec<String> = reviewer_environment(state_dir, scratch)
+        .into_iter()
+        .map(|(key, value)| format!("{key}={}", value.as_str().unwrap_or_default()))
+        .collect();
+    let mut args = vec!["try", argv[1].as_str(), "--", "/usr/bin/env", "-i"];
+    args.extend(environment.iter().map(String::as_str));
+    args.extend([
         "/bin/sh",
         "-c",
         wrapper,
@@ -406,7 +464,7 @@ pub fn reviewer_try(
         scratch,
         profile,
         state,
-    ];
+    ]);
     args.extend(argv[3..].iter().map(String::as_str));
     run(state_dir, &cwd, &args)
 }
@@ -426,12 +484,18 @@ pub(crate) fn reviewer_read_cwd(
 #[cfg(any(not(target_os = "macos"), test))]
 fn linux_reviewer_wrapper() -> &'static str {
     r#"scratch=$1; state=$3; shift 3
-set -- --tmpfs "$state" --bind "$PWD" /workspace --bind "$scratch" /scratch --proc /proc --dev /dev --chdir /workspace --setenv TMPDIR /scratch --setenv HOME /scratch --setenv PATH /usr/local/bin:/usr/bin:/bin --unsetenv LAYR_SOCKET --unsetenv LAYR_ROOT --unsetenv LAYR_PROJECT --unsetenv LAYR_LINE --unsetenv LAYR_SESSION --unsetenv LAYR_DIRECT --remount-ro / -- "$@"
+set -- --tmpfs "$state" --bind "$PWD" /workspace --bind "$scratch" /scratch --proc /proc --dev /dev --chdir /workspace --setenv TMPDIR /scratch --setenv HOME /scratch --setenv PATH "$PATH" --unsetenv LAYR_SOCKET --unsetenv LAYR_ROOT --unsetenv LAYR_PROJECT --unsetenv LAYR_LINE --unsetenv LAYR_SESSION --unsetenv LAYR_DIRECT --remount-ro / -- "$@"
 for root in /usr /bin /sbin /lib /lib64 /opt; do
   if [ -e "$root" ]; then set -- --ro-bind "$root" "$root" "$@"; fi
 done
 for file in /etc/ld.so.cache /etc/ld.so.conf /etc/passwd /etc/group /etc/nsswitch.conf /etc/localtime; do
   if [ -f "$file" ]; then set -- --ro-bind "$file" "$file" "$@"; fi
+done
+for root in "${CARGO_HOME:-}" "${RUSTUP_HOME:-}"; do
+  case "$root" in /*) ;; *) continue ;; esac
+  case "$root/" in "$state/"*) continue ;; esac
+  case "$state/" in "$root/"*) continue ;; esac
+  if [ -d "$root" ]; then set -- --ro-bind "$root" "$root" "$@"; fi
 done
 exec bwrap --unshare-all --die-with-parent --new-session --tmpfs / "$@""#
 }
