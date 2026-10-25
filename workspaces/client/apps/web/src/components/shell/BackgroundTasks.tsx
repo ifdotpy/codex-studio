@@ -80,6 +80,10 @@ export const backgroundProcessGroups = [
 export const responseStopIdentity = (
   target: ProcessResponseTarget | null | undefined,
 ) => (target ? { responseTarget: target } : {});
+export const responseStopDisabled = (
+  target: ProcessResponseTarget | null | undefined,
+  pending: boolean,
+) => !target || pending;
 export const responseOwnerIdentityKey = (
   owner:
     | {
@@ -602,9 +606,7 @@ export default function BackgroundTasks({
             color="red"
             leftSection={<Square size={12} />}
             loading={controlPending}
-            disabled={
-              !scopeOwner?.inFlight || !responseTarget || !!pendingControl
-            }
+            disabled={responseStopDisabled(responseTarget, !!pendingControl)}
             onClick={() => runProcessControl("stop_response")}
           >
             Stop response

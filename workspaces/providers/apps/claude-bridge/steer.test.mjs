@@ -565,6 +565,35 @@ test("Stop without an active turn leaves the query unchanged", async () => {
   assert.deepEqual(await inputs(bridge), ["hold", "probe"]);
 });
 
+test("a compact active read never permits Stop to interrupt a replacement turn", async () => {
+  const bridge = await startBridge();
+  const previous = await running(bridge, "previous");
+  await end(bridge);
+  await completed(bridge, previous);
+  const current = await running(bridge, "replacement");
+  const snapshot = await bridge.call("thread/read", {
+    threadId: bridge.thread,
+    includeTurns: false,
+  });
+  assert.equal(snapshot.thread.status.type, "active");
+  assert.deepEqual(snapshot.thread.turns, []);
+  await assert.rejects(
+    bridge.call("turn/interrupt", {
+      threadId: bridge.thread,
+      turnId: previous,
+      stopBackgroundTasks: false,
+    }),
+    /different Claude turn/,
+  );
+  await end(bridge);
+  assert.equal(
+    (await completed(bridge, current)).params.turn.status,
+    "completed",
+  );
+  assert.deepEqual(await inputs(bridge), ["previous", "replacement"]);
+  assert.equal(existsSync(path.join(bridge.root, ".stopped-tasks")), false);
+});
+
 test("a background task error preserves the successful queue cancellation receipt", async () => {
   const bridge = await startBridge();
   const turn = await running(bridge, "native-queue");

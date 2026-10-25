@@ -20,9 +20,15 @@ struct Port {
     scope: ConnectionScope,
     behavior: &'static str,
     calls: Mutex<Vec<String>>,
+    interrupts: Mutex<usize>,
 }
 impl AccountSessionPort for Port {
     fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+        if self.behavior == "claude_held_scope_changed" && !self.calls.lock().unwrap().is_empty() {
+            let mut scope = self.scope.clone();
+            scope.generation += 1;
+            return Some(scope);
+        }
         if self.behavior.starts_with("transferred") && account == "target" {
             return Some(ConnectionScope {
                 account: account.into(),
@@ -64,12 +70,30 @@ impl AccountSessionPort for Port {
                     r.get(0)
                 })
                 .unwrap();
-            assert_eq!(count, 1, "persist uncertainty before any native effect");
             let method = request.method.as_str();
+            if method != "thread/read" {
+                assert_eq!(count, 1, "persist uncertainty before any native effect");
+            }
             self.calls.lock().unwrap().push(method.into());
             let mut certainty = RequestCertainty::Written;
             let mut rejected = false;
             let value = match method {
+                "thread/read" => {
+                    assert_eq!(
+                        request.params,
+                        json!({"threadId":"thread","includeTurns":false})
+                    );
+                    if self.behavior == "claude_held_unknown" {
+                        certainty = RequestCertainty::Unknown;
+                    }
+                    if self.behavior == "claude_held_changed" {
+                        self.store.transaction_with(|tx| {
+                            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',2) WHERE id='owner'",[])?;
+                            Ok::<_,StoreError>(())
+                        }).await.unwrap();
+                    }
+                    json!({"thread":{"id":if self.behavior == "claude_held_wrong_thread" {"other"} else {"thread"},"status":{"type":if self.behavior == "claude_held_idle" {"idle"} else {"active"}}}})
+                }
                 "thread/commandExecution/background" => {
                     assert_eq!(
                         request.params,
@@ -108,12 +132,27 @@ impl AccountSessionPort for Port {
                     } else {
                         assert!(request.params.get("stopBackgroundTasks").is_none());
                     }
+                    if self.behavior == "claude_held_replacement" {
+                        // The native adapter rejects the old exact turn before effects.
+                        rejected = true;
+                    } else {
+                        *self.interrupts.lock().unwrap() += 1;
+                    }
+                    if self.behavior == "claude_held_lost" {
+                        certainty = RequestCertainty::Unknown;
+                    }
                     json!({})
                 }
                 _ => panic!("unexpected native method: {method}"),
             };
             Ok(SessionReceipt {
-                scope: self.scope.clone(),
+                scope: if self.behavior == "claude_held_wrong_receipt" {
+                    let mut scope = self.scope.clone();
+                    scope.generation += 1;
+                    scope
+                } else {
+                    self.scope.clone()
+                },
                 operation: request.operation,
                 ticket: None,
                 certainty,
@@ -440,9 +479,21 @@ async fn fixture(behavior: &'static str) -> (tempfile::TempDir, axum::Router, Ar
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
     store.transaction_with(move |tx| {
-        let owner=json!({"id":"owner","rootId":"owner","epoch":1,"status":"running",
+        let mut owner=json!({"id":"owner","rootId":"owner","epoch":1,"status":"running",
             "accountKey":"default","provider":if behavior.starts_with("claude") {"claude"} else {"codex"},
             "threadId":"thread","turnId":"turn","inFlight":true,"autoWake":true});
+        if behavior.starts_with("claude_held") {
+            owner["status"] = json!("interrupted");
+            owner["inFlight"] = json!(false);
+            owner["autoWake"] = json!(false);
+            owner["nativeResponseTurn"] = json!("turn");
+            owner["restartRecovery"] = json!({"stage":"held","epoch":1,"accountKey":"default","threadId":"thread","turnId":null});
+            owner["disconnectRecovery"] = json!({"source":"restart","epoch":1,"accountKey":"default","threadId":"thread"});
+            owner["connectionCheck"] = json!({"nativeState":"active","epoch":1,"accountKey":"default","threadId":"thread","turnId":"turn"});
+            if behavior == "claude_held_no_check" {
+                owner.as_object_mut().unwrap().remove("connectionCheck");
+            }
+        }
         let task=json!({"id":"owner:command","agent":"owner","kind":"command","itemId":"command",
             "processId":"42","status":"running","ownerEpoch":1,"sourceAccountKey":"default",
             "sourceConnectionId":"actual-uuid","sourceThreadId":"thread","turnId":"turn","created":1});
@@ -459,6 +510,7 @@ async fn fixture(behavior: &'static str) -> (tempfile::TempDir, axum::Router, Ar
         },
         behavior,
         calls: Mutex::new(vec![]),
+        interrupts: Mutex::new(0),
     });
     let mut state = HttpState::new(
         "fixture-token".into(),
@@ -471,6 +523,159 @@ async fn fixture(behavior: &'static str) -> (tempfile::TempDir, axum::Router, Ar
     );
     state.account_session = Some(port.clone());
     (root, router(state).unwrap(), port)
+}
+#[tokio::test]
+async fn held_claude_response_stop_is_exact_and_replays_without_another_read() {
+    for (behavior, expected, effects) in [
+        ("claude_held", "requested", 1),
+        ("claude_held_no_check", "requested", 1),
+        ("claude_held_lost", "uncertain", 1),
+        ("claude_held_replacement", "uncertain", 0),
+    ] {
+        let (_root, app, port) = fixture(behavior).await;
+        let before: String = port
+            .store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id='owner'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let (status, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
+        assert_eq!(status, 200, "{list}");
+        assert!(!list["responseTarget"].is_null(), "{behavior}: {list}");
+        let body = json!({"action":"stop_response","requestId":"held-stop","agent":"owner","accountKey":"default","epoch":1,"responseTarget":list["responseTarget"]});
+        let mut background = body.clone();
+        background["action"] = json!("background_command");
+        background["requestId"] = json!("held-background");
+        background["itemId"] = json!("toolu-1");
+        assert_eq!(
+            call(&app, "POST", "/api/processes/action", background)
+                .await
+                .0,
+            400
+        );
+        let (status, result) = call(&app, "POST", "/api/processes/action", body.clone()).await;
+        assert_eq!(status, 200, "{result}");
+        assert_eq!(result["response"]["status"], expected, "{result}");
+        let calls = port.calls.lock().unwrap().clone();
+        assert_eq!(calls, ["thread/read", "thread/read", "turn/interrupt"]);
+        assert_eq!(*port.interrupts.lock().unwrap(), effects);
+        assert_eq!(
+            call(&app, "POST", "/api/processes/action", body.clone())
+                .await
+                .1,
+            result
+        );
+        assert_eq!(*port.calls.lock().unwrap(), calls);
+        let mut changed = body;
+        changed["responseTarget"]["turnId"] = json!("other");
+        assert_eq!(
+            call(&app, "POST", "/api/processes/action", changed).await.0,
+            400
+        );
+        assert_eq!(*port.calls.lock().unwrap(), calls);
+        let after: String = port
+            .store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id='owner'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "Stop must not reactivate or settle the actor"
+        );
+    }
+}
+
+#[tokio::test]
+async fn held_claude_response_stop_requires_fresh_current_proof() {
+    for behavior in [
+        "claude_held_idle",
+        "claude_held_unknown",
+        "claude_held_changed",
+        "claude_held_scope_changed",
+        "claude_held_wrong_thread",
+        "claude_held_wrong_receipt",
+    ] {
+        let (_root, app, port) = fixture(behavior).await;
+        let (status, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
+        assert_eq!(status, 200, "{list}");
+        assert!(list["responseTarget"].is_null(), "{behavior}: {list}");
+        assert_eq!(*port.interrupts.lock().unwrap(), 0);
+        let (_root, app, port) = fixture(behavior).await;
+        let body = json!({"action":"stop_response","requestId":"held-stop","agent":"owner","accountKey":"default","epoch":1,"responseTarget":{"agent":"owner","accountKey":"default","epoch":1,"connectionId":"actual-uuid","threadId":"thread","turnId":"turn"}});
+        assert_eq!(
+            call(&app, "POST", "/api/processes/action", body).await.0,
+            400
+        );
+        assert_eq!(*port.interrupts.lock().unwrap(), 0);
+    }
+}
+
+#[tokio::test]
+async fn held_claude_response_stop_refuses_foreign_or_ineligible_owners_without_native_reads() {
+    for patch in [
+        json!({"deleted":true}),
+        json!({"accountTransferId":"transfer"}),
+        json!({"executionMove":{"id":"move"}}),
+        json!({"executionMode":"vm"}),
+        json!({"provider":"codex"}),
+        json!({"status":"completed"}),
+        json!({"autoWake":true}),
+        json!({"nativeResponseTurn":"other"}),
+        json!({"turnId":""}),
+        json!({"threadId":""}),
+        json!({"restartRecovery":{"stage":"pending"}}),
+        json!({"restartRecovery":{"epoch":2}}),
+        json!({"disconnectRecovery":{"accountKey":"other"}}),
+        json!({"disconnectRecovery":{"threadId":"other"}}),
+        json!({"disconnectRecovery":{"source":"disconnect"}}),
+    ] {
+        let (_root, app, port) = fixture("claude_held").await;
+        let diagnostic = patch.clone();
+        port.store
+            .transaction_with(move |tx| {
+                let raw: String = tx.query_row(
+                    "SELECT record FROM runtime_agents WHERE id='owner'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let mut owner: Value = serde_json::from_str(&raw)?;
+                for (key, value) in patch.as_object().unwrap() {
+                    if let Some(fields) = value.as_object() {
+                        for (field, value) in fields {
+                            owner[key][field] = value.clone();
+                        }
+                    } else {
+                        owner[key] = value.clone();
+                    }
+                }
+                tx.execute(
+                    "UPDATE runtime_agents SET record=? WHERE id='owner'",
+                    [owner.to_string()],
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .unwrap();
+        let (status, list) = call(&app, "GET", "/api/processes?agent=owner", Value::Null).await;
+        assert_eq!(status, 200, "{diagnostic}: {list}");
+        assert!(list["responseTarget"].is_null(), "{diagnostic}: {list}");
+        let body = json!({"action":"stop_response","requestId":"held-stop","agent":"owner","accountKey":"default","epoch":1,"responseTarget":{"agent":"owner","accountKey":"default","epoch":1,"connectionId":"actual-uuid","threadId":"thread","turnId":"turn"}});
+        assert_eq!(
+            call(&app, "POST", "/api/processes/action", body).await.0,
+            400,
+            "{diagnostic}"
+        );
+        assert!(port.calls.lock().unwrap().is_empty(), "{diagnostic}");
+    }
 }
 #[tokio::test]
 async fn exact_process_stop_and_lost_reply_never_repeat_the_native_effect() {

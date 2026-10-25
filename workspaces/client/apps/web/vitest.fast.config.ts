@@ -30,6 +30,7 @@ export default {
       "src/servers/monitorInputJournal.test.ts",
       "src/servers/monitorInputStore.test.ts",
       "src/components/shell/BackgroundTasks.input.test.ts",
+      "src/components/shell/BackgroundTasks.test.ts",
       "src/components/Usage.eligibility.test.ts",
       "src/api.test.ts",
       "src/startWait.test.ts",

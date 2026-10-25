@@ -21,12 +21,16 @@ pub enum Error {
 pub struct Connections {
     owners: BTreeMap<String, String>,
     sources: BTreeMap<String, ConnectionScope>,
+    scopes: BTreeMap<String, ConnectionScope>,
+    responses: BTreeMap<String, HeldResponseProof>,
 }
 impl FromIterator<(String, String)> for Connections {
     fn from_iter<T: IntoIterator<Item = (String, String)>>(iter: T) -> Self {
         Self {
             owners: iter.into_iter().collect(),
             sources: BTreeMap::new(),
+            scopes: BTreeMap::new(),
+            responses: BTreeMap::new(),
         }
     }
 }
@@ -41,6 +45,63 @@ impl Connections {
     }
     pub fn observe_source(&mut self, scope: ConnectionScope) {
         self.sources.insert(scope.account.clone(), scope);
+    }
+    pub fn observe_owner(&mut self, owner: String, scope: ConnectionScope) {
+        self.owners.insert(owner.clone(), scope.connection.clone());
+        self.scopes.insert(owner, scope);
+    }
+    pub fn observe_response(&mut self, proof: HeldResponseProof) {
+        self.responses
+            .insert(text(&proof.owner, "id", "").into(), proof);
+    }
+}
+
+/// Candidate metadata is not native proof. Only a fresh, exact-scope compact
+/// thread read can authorize Stop, and its turn remains conditional at native dispatch.
+pub fn held_response_candidate(owner: &Value) -> bool {
+    owner["provider"] == "claude"
+        && owner["executionMode"] != "vm"
+        && owner["status"] == "interrupted"
+        && owner["inFlight"] == false
+        && owner["autoWake"] == false
+        && owner["deleted"] != true
+        && !studio_runtime_store::truthy(owner.get("deletedAt"))
+        && owner["archived"] != true
+        && !studio_runtime_store::truthy(owner.get("archivedAt"))
+        && owner["accountTransferId"].is_null()
+        && owner["executionMove"].is_null()
+        && owner["epoch"].as_u64().is_some()
+        && !text(owner, "id", "").is_empty()
+        && !text(owner, "threadId", "").is_empty()
+        && !text(owner, "turnId", "").is_empty()
+        && owner["nativeResponseTurn"] == owner["turnId"]
+        && owner["restartRecovery"]["stage"] == "held"
+        && owner["disconnectRecovery"]["source"] == "restart"
+        && ["restartRecovery", "disconnectRecovery"].iter().all(|key| {
+            owner[key]["epoch"] == owner["epoch"]
+                && owner[key]["accountKey"] == text(owner, "accountKey", "default")
+                && owner[key]["threadId"] == owner["threadId"]
+        })
+}
+
+/// Ephemeral observation, never a stored lifecycle transition or delivery permit.
+/// Revalidation binds the unchanged actor and complete current native scope.
+#[derive(Clone)]
+pub struct HeldResponseProof {
+    owner: Value,
+    scope: ConnectionScope,
+}
+impl HeldResponseProof {
+    pub fn observe(owner: Value, scope: ConnectionScope, reply: &Value) -> Option<Self> {
+        (held_response_candidate(&owner)
+            && scope.account == text(&owner, "accountKey", "default")
+            && !scope.connection.is_empty()
+            && reply["thread"]["id"] == owner["threadId"]
+            && reply["thread"]["status"]["type"] == "active")
+            .then_some(Self { owner, scope })
+    }
+    fn matches(&self, owner: &Value, scope: &ConnectionScope) -> bool {
+        self.owner == *owner && self.scope == *scope && held_response_candidate(owner)
     }
 }
 
@@ -148,12 +209,16 @@ fn raw(connection: &Connection, table: &str, id: &str) -> Result<Option<Value>, 
     })
     .transpose()
 }
-pub fn owners(connection: &Connection, scope: &str) -> Result<Vec<Value>, Error> {
+pub fn owner(connection: &Connection, scope: &str) -> Result<Value, Error> {
     let root =
         raw(connection, "runtime_agents", scope)?.ok_or(Error::Invalid("Unknown process owner"))?;
     if studio_runtime_store::truthy(root.get("deletedAt")) {
         return Err(Error::Invalid("This process owner was deleted"));
     }
+    Ok(root)
+}
+pub fn owners(connection: &Connection, scope: &str) -> Result<Vec<Value>, Error> {
+    let root = owner(connection, scope)?;
     let mut statement = connection
         .prepare(
             "SELECT record FROM runtime_agents WHERE json_extract(record,'$.deletedAt') IS NULL",
@@ -442,10 +507,26 @@ pub fn response_target(owner: &Value, connection: Option<&str>) -> Value {
         && !text(owner, "threadId", "").is_empty()
         && !text(owner, "turnId", "").is_empty()
     {
-        json!({"agent":owner["id"],"accountKey":text(owner,"accountKey","default"),"epoch":owner["epoch"],"connectionId":connection,"threadId":owner["threadId"],"turnId":owner["turnId"]})
+        response_identity(owner, connection.unwrap_or_default())
     } else {
         Value::Null
     }
+}
+fn stop_target(owner: &Value, connections: &Connections) -> Value {
+    let id = text(owner, "id", "");
+    let active = response_target(owner, connections.get(id).map(String::as_str));
+    if !active.is_null() {
+        return active;
+    }
+    match (connections.responses.get(id), connections.scopes.get(id)) {
+        (Some(proof), Some(scope)) if proof.matches(owner, scope) => {
+            response_identity(owner, &scope.connection)
+        }
+        _ => Value::Null,
+    }
+}
+fn response_identity(owner: &Value, connection: &str) -> Value {
+    json!({"agent":owner["id"],"accountKey":text(owner,"accountKey","default"),"epoch":owner["epoch"],"connectionId":connection,"threadId":owner["threadId"],"turnId":owner["turnId"]})
 }
 pub fn listing(
     connection: &Transaction<'_>,
@@ -458,9 +539,7 @@ pub fn listing(
             .expect("process object")
             .retain(|k, _| !k.starts_with('_'));
     }
-    Ok(
-        json!({"responseTarget":response_target(&owners[0],connections.get(scope).map(String::as_str)),"processes":processes}),
-    )
+    Ok(json!({"responseTarget":stop_target(&owners[0],connections),"processes":processes}))
 }
 pub fn matches(process: &Value, identity: &Value) -> bool {
     ["key", "generation", "agent", "accountKey", "epoch"]
@@ -469,6 +548,17 @@ pub fn matches(process: &Value, identity: &Value) -> bool {
 }
 pub fn validate_response(owner: &Value, target: &Value, connection: Option<&str>) -> bool {
     !target.is_null() && response_target(owner, connection) == *target
+}
+pub fn validate_stop_response(
+    owner: &Value,
+    target: &Value,
+    scope: &ConnectionScope,
+    proof: Option<&HeldResponseProof>,
+) -> bool {
+    validate_response(owner, target, Some(&scope.connection))
+        || proof.is_some_and(|proof| {
+            proof.matches(owner, scope) && response_identity(owner, &scope.connection) == *target
+        })
 }
 
 pub enum Claim {
@@ -481,25 +571,11 @@ pub fn claim(
     connections: &Connections,
     now: f64,
 ) -> Result<Claim, Error> {
+    if let Some(result) = replay(tx, request)? {
+        return Ok(Claim::Replay(result));
+    }
     let id = text(request, "requestId", "");
     let signature = digest(request);
-    let prior: Option<(String, String)> = tx
-        .query_row(
-            "SELECT signature,record FROM runtime_process_actions WHERE id=?",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(StoreError::from)?;
-    if let Some((old, raw)) = prior {
-        if old != signature {
-            return Err(Error::Invalid(
-                "This process action ID has different content",
-            ));
-        }
-        let record: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
-        return Ok(Claim::Replay(record["result"].clone()));
-    }
     let scope = text(request, "agent", "");
     let (owners, processes) = processes(tx, scope, connections)?;
     let owner = &owners[0];
@@ -514,11 +590,17 @@ pub fn claim(
     let mut targets = Vec::new();
     let mut entries = Vec::new();
     let response = if matches!(action, "stop_response" | "background_command") {
-        if !validate_response(
-            owner,
-            &request["responseTarget"],
-            connections.get(scope).map(String::as_str),
-        ) {
+        let valid = if action == "stop_response" {
+            !request["responseTarget"].is_null()
+                && stop_target(owner, connections) == request["responseTarget"]
+        } else {
+            validate_response(
+                owner,
+                &request["responseTarget"],
+                connections.get(scope).map(String::as_str),
+            )
+        };
+        if !valid {
             return Err(Error::Invalid(
                 "The response changed. Refresh the process list",
             ));
@@ -561,6 +643,28 @@ pub fn claim(
     )
     .map_err(StoreError::from)?;
     Ok(Claim::New { record, targets })
+}
+/// Reuse a durable action before any fresh native observation. Changed content
+/// under the same request ID remains an error, including after a lost response.
+pub fn replay(tx: &Transaction<'_>, request: &Value) -> Result<Option<Value>, Error> {
+    let prior: Option<(String, String)> = tx
+        .query_row(
+            "SELECT signature,record FROM runtime_process_actions WHERE id=?",
+            [text(request, "requestId", "")],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(StoreError::from)?;
+    let Some((signature, raw)) = prior else {
+        return Ok(None);
+    };
+    if signature != digest(request) {
+        return Err(Error::Invalid(
+            "This process action ID has different content",
+        ));
+    }
+    let record: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
+    Ok(Some(record["result"].clone()))
 }
 pub fn save(tx: &Transaction<'_>, record: &Value) -> Result<(), Error> {
     tx.execute(
