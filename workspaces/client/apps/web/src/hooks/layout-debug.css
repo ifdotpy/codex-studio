@@ -1,0 +1,21 @@
+.layout-debug {
+  position: fixed;
+  top: max(8px, env(safe-area-inset-top, 0px));
+  left: max(8px, env(safe-area-inset-left, 0px));
+  z-index: var(--layout-layers-app);
+  max-width: calc(100vw - 16px);
+  margin: 0;
+  padding: 8px;
+  overflow: hidden;
+  background: #000d;
+  color: #fff;
+  font: 10px/1.4 monospace;
+  pointer-events: none;
+}
+.layout-debug-probe {
+  position: fixed;
+  visibility: hidden;
+  pointer-events: none;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
