@@ -4,6 +4,30 @@ use super::{
 };
 use serde_json::Value;
 
+/// Reconstruct history notifications without interpreting legacy columns in consumers.
+/// Sparse Claude rows retain their known total for the legacy totals-only budget path.
+pub fn analytics_usage_notification(
+    provider: UsageProvider,
+    row: &Value,
+) -> Result<Value, UsageParseError> {
+    match parse_analytics_usage_row(provider, row) {
+        Ok(observation) => {
+            let mut notification = serde_json::json!({"threadId":row["threadId"],"turnId":row["turnId"],"studioUsage":observation});
+            if row.get("studioUsage").is_none() {
+                notification["tokenUsage"] =
+                    serde_json::json!({"total":row["total"],"last":row["last"]});
+            }
+            Ok(notification)
+        }
+        Err(_) if provider == UsageProvider::Claude && row.get("studioUsage").is_none() => Ok(
+            serde_json::json!({"threadId":row["threadId"],"turnId":row["turnId"],"responseId":row["responseId"],
+                "rawTokenUsageRecord":row["rawTokenUsageRecord"],"requestUsage":row["requestUsage"],
+                "usageSource":row["usageSource"],"tokenUsage":{"total":row["total"],"last":row["last"]}}),
+        ),
+        Err(error) => Err(error),
+    }
+}
+
 /// Decode canonical observations first, retaining legacy rows without rewriting them.
 /// Legacy response evidence remains provisional until native journal recovery replaces it.
 pub fn parse_analytics_usage_row(
@@ -109,6 +133,48 @@ fn tokens(value: &Value, provider: UsageProvider) -> Result<UsageTokens, UsagePa
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn legacy_history_notification_preserves_exact_counter_receipt_objects() {
+        let row = json!({"threadId":"thread","turnId":"turn",
+            "total":{"inputTokens":10,"cachedInputTokens":2,"outputTokens":3,"totalTokens":13,"legacyExtension":1},
+            "last":{"inputTokens":5,"outputTokens":1,"totalTokens":6}});
+        let notification =
+            analytics_usage_notification(UsageProvider::Codex, &row).expect("legacy notification");
+        assert_eq!(notification["studioUsage"]["kind"], "cumulative");
+        assert_eq!(
+            notification["tokenUsage"]["total"], row["total"],
+            "legacy receipt hashes include exact counter objects"
+        );
+        assert_eq!(notification["tokenUsage"]["last"], row["last"]);
+    }
+
+    #[test]
+    fn analytics_schema_copies_match_the_usage_owner() {
+        // Owner: runtime-schema::usage::{UsageObservation, UsageTokens}; schemas() is its renderer.
+        let expected: Value = serde_json::from_str(
+            &serde_json::to_string(&super::super::schemas())
+                .expect("owner schema")
+                .replace("#/components/schemas/", "#/$defs/"),
+        )
+        .expect("local references");
+        for text in [
+            include_str!("../schemas/analytics-usage.schema.json"),
+            include_str!("../schemas/analytics-notice.schema.json"),
+        ] {
+            let schema: Value = serde_json::from_str(text).expect("analytics schema");
+            assert_eq!(
+                schema["properties"]["studioUsage"],
+                json!({"$ref":"#/$defs/UsageObservation"})
+            );
+            for (name, value) in expected.as_object().expect("schemas") {
+                assert_eq!(
+                    &schema["$defs"][name], value,
+                    "analytics schema must consume usage owner: {name}"
+                );
+            }
+        }
+    }
     #[test]
     fn legacy_rows_preserve_delta_and_uncached_semantics() {
         for (uncached, expected) in [(false, 7), (true, 10)] {

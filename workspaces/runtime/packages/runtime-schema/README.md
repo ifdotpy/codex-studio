@@ -97,3 +97,10 @@ explicit. `studio-contracts` generates the observation JSON schema, named OpenAP
 components, and the Claude bridge's `usage-contract.generated.d.mts`. The committed
 Codex notification schema under `src/schemas/codex` comes from Codex CLI 0.164.0
 `app-server generate-json-schema`; a short-tier parity witness checks the Rust mirror.
+
+The [`usage/persisted.rs`](src/usage/persisted.rs) adapter owns legacy analytics
+usage column interpretation. It prefers canonical `studioUsage`, preserves
+uncached versus inclusive historical input semantics, and reconstructs sparse
+legacy Claude notifications for totals-only budget migration. Analytics notice
+and usage schema copies are checked against the usage owner's renderer by a
+short-tier parity witness.

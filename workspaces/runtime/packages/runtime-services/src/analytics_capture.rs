@@ -7,21 +7,16 @@ use crate::notification_dispatch::NotificationStreamMetrics;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
+use studio_runtime_schema::usage::{
+    UsageEvidence, UsageObservation, UsageParseError, UsageProvider, UsageScope, UsageTokens,
+    parse_analytics_usage_row, parse_token_usage,
+};
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
 use studio_runtime_store::{RuntimeStore, StoreError, python_json_compact, sha256_hex};
 use thiserror::Error;
 
 pub const MAX_CAPTURE_BYTES: usize = 64 * 1024 * 1024;
-pub(crate) const TOKEN_FIELDS: [&str; 6] = [
-    "inputTokens",
-    "cachedInputTokens",
-    "cacheWriteInputTokens",
-    "outputTokens",
-    "reasoningOutputTokens",
-    "totalTokens",
-];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureSource {
     Live,
@@ -46,6 +41,11 @@ pub enum CaptureError {
     #[error("analytics SQLite operation failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
 }
+impl From<UsageParseError> for CaptureError {
+    fn from(error: UsageParseError) -> Self {
+        Self::Store(StoreError::SchemaValidation(error.to_string()))
+    }
+}
 #[derive(Clone)]
 pub struct PreparedCapture {
     agent: Arc<Value>,
@@ -58,6 +58,7 @@ pub struct PreparedCapture {
     output: Value,
     stream: Value,
     model: bool,
+    usage: Option<UsageObservation>,
 }
 impl PreparedCapture {
     pub fn event(
@@ -130,6 +131,12 @@ impl PreparedCapture {
         {
             return Err(StoreError::SchemaValidation(format!("analytics_notice{pointer}")).into());
         }
+        let usage = if method == "thread/tokenUsage/updated" {
+            let provider = usage_provider(&agent);
+            Some(parse_token_usage(provider, params)?)
+        } else {
+            None
+        };
         let (input, output) = item_sizes(
             params["item"]["type"].as_str().unwrap_or(""),
             &params["item"],
@@ -145,6 +152,7 @@ impl PreparedCapture {
             output,
             stream: payload_size(&params["delta"]),
             model: false,
+            usage,
         })
     }
     pub fn model_payload(
@@ -243,6 +251,23 @@ impl PreparedCapture {
                 &a["turnId"],
             ])
         };
+        if let Some(
+            UsageObservation::Response {
+                turn_id: Some(turn),
+                ..
+            }
+            | UsageObservation::Cumulative {
+                turn_id: Some(turn),
+                ..
+            }
+            | UsageObservation::Gap {
+                turn_id: Some(turn),
+                ..
+            },
+        ) = &self.usage
+        {
+            meta["turnId"] = json!(turn);
+        }
         meta
     }
     fn item_key(&self, meta: &Value) -> Option<String> {
@@ -316,9 +341,15 @@ impl CaptureSnapshot {
             }
         }
         let meta = prepared.meta();
+        for row in [&rows.turn, &rows.item].into_iter().flatten() {
+            if row["agentId"] != meta["agentId"]
+                || row["threadId"] != meta["threadId"]
+                || row["rootId"] != meta["rootId"]
+            {
+                return Err(CaptureError::Invalid("/snapshot/row/identity"));
+            }
+        }
         for row in [
-            &rows.turn,
-            &rows.item,
             &rows.usage,
             &rows.collision_usage,
             &rows.exact_response,
@@ -327,10 +358,7 @@ impl CaptureSnapshot {
         .into_iter()
         .flatten()
         {
-            if row["agentId"] != meta["agentId"]
-                || row["threadId"] != meta["threadId"]
-                || row["rootId"] != meta["rootId"]
-            {
+            if row["agentId"] != meta["agentId"] {
                 return Err(CaptureError::Invalid("/snapshot/row/identity"));
             }
         }
@@ -367,30 +395,25 @@ impl CaptureSnapshot {
             item,
             ..CaptureRows::default()
         };
-        if prepared.method == "thread/tokenUsage/updated" {
-            let id = usage_key(&meta, &prepared.params);
+        if let Some(observation) = &prepared.usage {
+            let id = usage_key(&meta, observation);
             rows.usage = Repo::read(db, CaptureTable::Usage, &id)?;
-            let response = &prepared.params["responseId"];
-            if studio_runtime_store::truthy(Some(response)) {
-                rows.exact_response =
-                    Repo::usage_response(db, text(&meta["agentId"]), &meta["threadId"], response)?;
-            }
-            if rows.exact_response.is_none()
-                && rows.usage.as_ref().is_some_and(|v| {
-                    studio_runtime_store::truthy(Some(response))
-                        && studio_runtime_store::truthy(Some(&v["responseId"]))
-                        && v["responseId"] != *response
-                })
+            if let UsageObservation::Response { response_id, .. }
+            | UsageObservation::Gap { response_id, .. } = observation
             {
-                rows.collision_usage =
-                    Repo::read(db, CaptureTable::Usage, &format!("{id}:{}", text(response)))?;
+                let raw: Option<String> = db.query_row_cached(
+                    "SELECT record FROM analytics_usage WHERE agent=?1 AND json_extract(record,'$.responseId')=?2 ORDER BY CASE WHEN json_extract(record,'$.studioUsage.evidence') IN ('live','recovered') THEN 0 ELSE 1 END,seq LIMIT 1",
+                    params![text(&meta["agentId"]),response_id],|row|row.get(0)).optional()?;
+                rows.exact_response = raw
+                    .map(|raw| serde_json::from_str(&raw).map_err(StoreError::from))
+                    .transpose()?;
             }
             rows.prior_usage = Repo::usage_prior(
                 db,
                 text(&meta["agentId"]),
                 &meta["threadId"],
                 prepared.at,
-                domain(&prepared.params),
+                domain(observation),
             )?;
         }
         if prepared.method == "analytics/rateLimits" {
@@ -414,9 +437,19 @@ pub struct CaptureDecision {
     pub limit: Option<Value>,
     pub generation_roots: Vec<String>,
     pub response_rate: Option<ResponseRateAssociation>,
+    pub response_replay_conflict: bool,
 }
 impl CaptureDecision {
     pub fn apply(&self, tx: &Transaction<'_>) -> Result<(), CaptureError> {
+        if self.response_replay_conflict {
+            record_capture_errors(
+                tx,
+                1,
+                "analytics_usage",
+                "responseReplayConflict",
+                "Response replay changed final usage; first evidence retained",
+            )?;
+        }
         for (table, row) in &self.rows {
             Repo::write(tx, *table, row)?;
         }
@@ -835,6 +868,7 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
             output: q.output.clone(),
             stream: q.stream.clone(),
             model: q.model,
+            usage: q.usage.clone(),
         };
         let recursive = decide(CaptureSnapshot::from_records(
             std::sync::Arc::new(next),
@@ -1179,6 +1213,80 @@ mod usage_contract_tests {
     use super::*;
 
     #[test]
+    fn typed_usage_final_replay_is_immutable_and_legacy_is_recoverable() {
+        let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread","model":"claude"});
+        let observation = json!({"kind":"response","responseId":"response","model":"claude","evidence":"live","tokens":{"uncachedInput":10,"cacheReadInput":3,"cacheWriteInput":2,"output":7}});
+        let prepare = |observation| {
+            Arc::new(
+                PreparedCapture::event(
+                    &agent,
+                    "thread/tokenUsage/updated",
+                    &json!({"threadId":"thread","studioUsage":observation}),
+                    1.0,
+                    2.0,
+                    CaptureSource::Live,
+                )
+                .expect("input"),
+            )
+        };
+        let first = decide(
+            CaptureSnapshot::from_records(prepare(observation.clone()), CaptureRows::default())
+                .expect("snapshot"),
+        )
+        .expect("first");
+        let row = first
+            .rows
+            .into_iter()
+            .find(|(table, _)| *table == CaptureTable::Usage)
+            .expect("response")
+            .1;
+        let replay = |old: Value, new: Value| {
+            decide(
+                CaptureSnapshot::from_records(
+                    prepare(new),
+                    CaptureRows {
+                        exact_response: Some(old),
+                        ..Default::default()
+                    },
+                )
+                .expect("replay snapshot"),
+            )
+            .expect("replay")
+        };
+        let identical = replay(row.clone(), observation.clone());
+        assert!(!identical.response_replay_conflict);
+        assert!(
+            identical
+                .rows
+                .iter()
+                .all(|(table, _)| *table != CaptureTable::Usage)
+        );
+        let mut changed = observation.clone();
+        changed["tokens"]["output"] = json!(99);
+        let conflict = replay(row.clone(), changed.clone());
+        assert!(conflict.response_replay_conflict);
+        assert!(
+            conflict
+                .rows
+                .iter()
+                .all(|(table, _)| *table != CaptureTable::Usage)
+        );
+        let mut provisional = row;
+        provisional["studioUsage"]["evidence"] = json!("legacy");
+        changed["evidence"] = json!("recovered");
+        let recovered = replay(provisional, changed.clone());
+        assert_eq!(
+            recovered
+                .rows
+                .iter()
+                .find(|(table, _)| *table == CaptureTable::Usage)
+                .expect("replacement")
+                .1["studioUsage"],
+            changed
+        );
+    }
+
+    #[test]
     fn typed_usage_capture_persists_normalized_response() {
         let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread","model":"claude-sonnet-4-5"});
         let observation = json!({"kind":"response","responseId":"response","model":"claude-sonnet-4-5","evidence":"live","tokens":{"uncachedInput":10,"cacheReadInput":3,"cacheWriteInput":2,"output":7}});
@@ -1204,70 +1312,55 @@ mod usage_contract_tests {
         assert_eq!(row["responseId"], "response");
     }
 }
-fn domain(p: &Value) -> &str {
-    if studio_runtime_store::truthy(Some(&p["rawTokenUsageRecord"])) {
-        "response"
+fn usage_provider(agent: &Value) -> UsageProvider {
+    if agent["provider"] == "claude" {
+        UsageProvider::Claude
     } else {
-        "nativeNotice"
+        UsageProvider::Codex
     }
 }
-fn fingerprint(meta: &Value, p: &Value) -> String {
-    let total = &p["tokenUsage"]["total"];
-    hash(&json!([
-        meta["turnId"],
-        if number(&total["totalTokens"]).is_some() {
-            total["totalTokens"].clone()
-        } else {
-            total.clone()
-        }
-    ]))
+fn domain(observation: &UsageObservation) -> &'static str {
+    match observation {
+        UsageObservation::Response { .. } => "response",
+        UsageObservation::Cumulative {
+            scope: UsageScope::CodexThread,
+            ..
+        } => "codexThread",
+        UsageObservation::Cumulative {
+            scope: UsageScope::ClaudeQuery,
+            ..
+        } => "claudeQuery",
+        UsageObservation::Gap { .. } => "gap",
+    }
 }
-fn usage_key(meta: &Value, p: &Value) -> String {
-    if p["usageSource"] == "claudeResponse" {
-        hash(&json!([meta["agentId"], meta["threadId"], p["responseId"]]))
-    } else {
-        hash(&json!([
+fn fingerprint(observation: &UsageObservation) -> String {
+    hash(&json!(observation))
+}
+fn usage_key(meta: &Value, observation: &UsageObservation) -> String {
+    match observation {
+        UsageObservation::Response { response_id, .. } => {
+            hash(&json!([meta["agentId"], response_id]))
+        }
+        UsageObservation::Gap { response_id, .. } => {
+            hash(&json!([meta["agentId"], "gap", response_id]))
+        }
+        UsageObservation::Cumulative { .. } => hash(&json!([
             meta["agentId"],
             meta["threadId"],
-            fingerprint(meta, p)
-        ]))
+            fingerprint(observation)
+        ])),
     }
 }
-fn token_numbers(v: &Value) -> Value {
-    Value::Object(
-        TOKEN_FIELDS
-            .iter()
-            .map(|k| {
-                (
-                    (*k).into(),
-                    if number(&v[*k]).is_some() {
-                        v[*k].clone()
-                    } else {
-                        Value::Null
-                    },
-                )
-            })
-            .collect(),
-    )
+/// Compatibility presentation for existing analytics charts; accounting uses studioUsage.
+pub(crate) fn analytics_tokens(tokens: &UsageTokens) -> Value {
+    json!({"inputTokens": tokens.uncached_input.saturating_add(tokens.cache_read_input).saturating_add(tokens.cache_write_input),
+        "cachedInputTokens":tokens.cache_read_input,"cacheWriteInputTokens":tokens.cache_write_input,
+        "outputTokens":tokens.output,"reasoningOutputTokens":tokens.reasoning_output,"totalTokens":tokens.total()})
 }
 fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut CaptureDecision) {
-    let p = &q.params;
-    let raw = if p["tokenUsage"].is_object() {
-        p["tokenUsage"].clone()
-    } else {
-        json!({})
+    let Some(mut observation) = q.usage.clone() else {
+        return;
     };
-    let total = raw
-        .get("total")
-        .filter(|v| v.is_object())
-        .cloned()
-        .unwrap_or(json!({}));
-    let last = raw
-        .get("last")
-        .filter(|v| v.is_object())
-        .cloned()
-        .unwrap_or(json!({}));
-    let response = &p["responseId"];
     if let Some(turn) = &rows.turn
         && turn["accountKey"] == meta["accountKey"]
         && !turn["cyberAccessProgram"].is_null()
@@ -1275,142 +1368,131 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         meta["daybreakEnabled"] = turn["daybreakEnabled"].clone();
         meta["cyberAccessProgram"] = turn["cyberAccessProgram"].clone();
     }
-    if q.source == CaptureSource::Rollout && studio_runtime_store::truthy(Some(response)) {
-        let usage = p
-            .get("requestUsage")
-            .filter(|v| studio_runtime_store::truthy(Some(v)))
-            .unwrap_or(&last);
-        if let Some(n) = number(&usage["outputTokens"]) {
-            out.response_rate = Some(ResponseRateAssociation {
-                agent: text(&meta["agentId"]).into(),
-                thread: meta["threadId"].as_str().map(str::to_owned),
-                turn: meta["turnId"].as_str().map(str::to_owned),
-                response: text(response).into(),
-                output_tokens: n,
-            });
-        }
-    }
-    let mut id = rows
-        .usage
-        .as_ref()
-        .map(|v| text(&v["id"]).to_owned())
-        .unwrap_or_else(|| usage_key(meta, p));
-    let mut existing = rows.usage.clone();
-    if rows.exact_response.is_none()
-        && existing.as_ref().is_some_and(|r| {
-            studio_runtime_store::truthy(Some(response))
-                && studio_runtime_store::truthy(Some(&r["responseId"]))
-                && r["responseId"] != *response
-        })
+    if let UsageObservation::Response { model, .. } = &mut observation
+        && model.is_empty()
     {
-        id.push(':');
-        id.push_str(text(response));
-        existing = rows.collision_usage.clone();
+        *model = text(&meta["model"]).to_owned();
     }
-    if p["usageSource"] == "claudeResponse" {
-        if !studio_runtime_store::truthy(Some(response)) || !p["requestUsage"].is_object() {
-            return;
-        }
-        let usage = &p["requestUsage"];
-        let mut delta = token_numbers(usage);
-        delta["totalTokens"] = json!(
-            [
-                "inputTokens",
-                "cachedInputTokens",
-                "cacheWriteInputTokens",
-                "outputTokens"
-            ]
-            .iter()
-            .map(|k| number(&usage[*k]).unwrap_or(0.))
-            .sum::<f64>()
-        );
-        let mut row = merge(
-            meta,
-            json!({"id":id,"at":q.at,"recordedAt":q.recorded_at,"source":q.source.name(),"timestampSource":timestamp_source(q),"model":first(&[&p["model"],&meta["model"]]),"last":last,"total":total,"delta":delta,"inputTokensAreUncached":true,"raw":raw,"cumulativeDelta":token_numbers(&Value::Null),"counterDomain":"response","modelContextWindow":number(&raw["modelContextWindow"]),"reset":false,"baselineMissing":false,"fingerprint":hash(&json!([response,usage])),"responseId":response,"usageSource":"claudeResponse","requestUsage":usage}),
-        );
-        if let Some(previous) = existing.as_ref() {
-            if row["modelContextWindow"].is_null() {
-                row["modelContextWindow"] = json!(
-                    number(&previous["modelContextWindow"])
-                        .or_else(|| number(&previous["raw"]["modelContextWindow"]))
-                );
-                if !previous["raw"]["modelContextWindow"].is_null() {
-                    row["raw"]["modelContextWindow"] =
-                        previous["raw"]["modelContextWindow"].clone();
+    if q.source == CaptureSource::Rollout
+        && let UsageObservation::Response {
+            response_id,
+            turn_id,
+            tokens,
+            ..
+        } = &observation
+    {
+        out.response_rate = Some(ResponseRateAssociation {
+            agent: text(&meta["agentId"]).into(),
+            thread: meta["threadId"].as_str().map(str::to_owned),
+            turn: turn_id
+                .clone()
+                .or_else(|| meta["turnId"].as_str().map(str::to_owned)),
+            response: response_id.clone(),
+            output_tokens: tokens.output as f64,
+        });
+    }
+    let existing = rows.exact_response.as_ref().or(rows.usage.as_ref());
+    if let Some(previous) = existing {
+        match (
+            parse_analytics_usage_row(usage_provider(&q.agent), previous),
+            &observation,
+        ) {
+            (
+                Ok(UsageObservation::Response {
+                    tokens: old,
+                    evidence,
+                    ..
+                }),
+                UsageObservation::Response {
+                    tokens,
+                    evidence: incoming,
+                    ..
+                },
+            ) => {
+                if evidence != UsageEvidence::Legacy || *incoming == UsageEvidence::Legacy {
+                    out.response_replay_conflict = old != *tokens;
+                    if let Some(rate) = &mut out.response_rate {
+                        rate.output_tokens = old.output as f64;
+                    }
+                    return;
                 }
             }
-            if same_content(&response_content(previous), &response_content(&row)) {
-                return;
-            }
+            (Ok(UsageObservation::Response { .. }), UsageObservation::Gap { .. }) => return,
+            (Ok(old), incoming) if old == *incoming => return,
+            _ => {}
         }
-        mark_generation(meta, existing.as_ref(), out);
-        out.rows.push((CaptureTable::Usage, row));
-        return;
     }
-    if let Some(exact) = rows.exact_response.as_ref() {
-        if !studio_runtime_store::truthy(Some(&p["rawTokenUsageRecord"])) {
-            let mut row = exact.clone();
-            row["noticeTotal"] = total;
-            row["noticeLast"] = last;
-            row["noticeAt"] = json!(q.at);
-            if row["modelContextWindow"].is_null() {
-                row["modelContextWindow"] = json!(number(&raw["modelContextWindow"]));
-            }
-            out.rows.push((CaptureTable::Usage, row));
-            return;
-        }
-        existing = Some(exact.clone());
-        id = text(&exact["id"]).into();
-    }
-    if let Some(mut row) = existing {
-        if studio_runtime_store::truthy(Some(response))
-            && (!studio_runtime_store::truthy(Some(&row["responseId"]))
-                || studio_runtime_store::truthy(Some(&p["rawTokenUsageRecord"]))
-                    && !studio_runtime_store::truthy(Some(&row["rawTokenUsageRecord"])))
-        {
-            let extra = json!({"responseId":response,"source":q.source.name(),"at":q.at,"recordedAt":q.recorded_at,"rawTokenUsageRecord":p["rawTokenUsageRecord"],"turnUsage":p["turnUsage"],"requestUsage":p["requestUsage"],"model":first(&[&p["model"],&meta["model"]]),"last":last,"total":total,"delta":token_numbers(&last),"counterDomain":domain(p),"cumulativeDelta":token_numbers(&Value::Null),"reset":null,"baselineMissing":true});
-            row = merge(&row, extra);
-            out.rows.push((CaptureTable::Usage, row));
-            mark_generation(meta, None, out);
-        }
-        return;
-    }
-    if studio_runtime_store::truthy(Some(response))
-        && rows.usage.is_none()
-        && rows.exact_response.is_none()
-    { /* key collision checked by the indexed response lookup in load */
-    }
-    let prior = rows.prior_usage.as_ref();
-    let reset = prior.is_some_and(|r| {
-        TOKEN_FIELDS.iter().any(|k| {
-            number(&total[*k])
-                .zip(number(&r["total"][*k]))
-                .is_some_and(|(a, b)| a < b)
-        })
-    });
-    let cumulative: serde_json::Map<String, Value> = TOKEN_FIELDS
-        .iter()
-        .map(|k| {
-            (
-                (*k).into(),
-                json!(if reset {
-                    None
-                } else {
-                    prior.and_then(|r| {
-                        number(&total[*k])
-                            .zip(number(&r["total"][*k]))
-                            .map(|(a, b)| a - b)
-                    })
-                }),
-            )
-        })
-        .collect();
-    let row = merge(
+    let id = existing
+        .map(|row| text(&row["id"]).to_owned())
+        .unwrap_or_else(|| usage_key(meta, &observation));
+    let mut row = merge(
         meta,
-        json!({"id":id,"at":q.at,"recordedAt":q.recorded_at,"source":q.source.name(),"timestampSource":timestamp_source(q),"model":first(&[&p["model"],&meta["model"]]),"last":last,"total":total,"delta":token_numbers(&last),"raw":raw,"cumulativeDelta":cumulative,"counterDomain":domain(p),"modelContextWindow":number(&raw["modelContextWindow"]),"reset":reset,"baselineMissing":prior.is_none()||reset,"fingerprint":fingerprint(meta,p),"responseId":response,"rawTokenUsageRecord":p["rawTokenUsageRecord"],"turnUsage":p["turnUsage"],"requestUsage":p["requestUsage"]}),
+        json!({"id":id,"at":q.at,"recordedAt":q.recorded_at,"source":q.source.name(),
+        "timestampSource":timestamp_source(q),"counterDomain":domain(&observation),"fingerprint":fingerprint(&observation),
+        "last":{},"total":{},"delta":{},"studioUsage":observation}),
     );
+    match &observation {
+        UsageObservation::Response {
+            response_id,
+            turn_id,
+            model,
+            tokens,
+            model_context_window,
+            ..
+        } => {
+            row["responseId"] = json!(response_id);
+            row["model"] = json!(model);
+            if let Some(turn) = turn_id {
+                row["turnId"] = json!(turn);
+            }
+            row["last"] = analytics_tokens(tokens);
+            row["delta"] = analytics_tokens(tokens);
+            row["modelContextWindow"] = json!(model_context_window);
+        }
+        UsageObservation::Cumulative {
+            total,
+            last,
+            turn_id,
+            model_context_window,
+            ..
+        } => {
+            row["total"] = analytics_tokens(total);
+            if let Some(last) = last {
+                row["last"] = analytics_tokens(last);
+            }
+            if let Some(turn) = turn_id {
+                row["turnId"] = json!(turn);
+            }
+            row["modelContextWindow"] = json!(model_context_window);
+            let prior = rows
+                .prior_usage
+                .as_ref()
+                .and_then(|row| parse_analytics_usage_row(usage_provider(&q.agent), row).ok());
+            let previous = match prior {
+                Some(UsageObservation::Cumulative { total, .. }) => Some(total),
+                _ => None,
+            };
+            let reset = previous
+                .as_ref()
+                .is_some_and(|old| total.decreased_from(old));
+            row["reset"] = json!(reset);
+            row["baselineMissing"] = json!(previous.is_none() || reset);
+        }
+        UsageObservation::Gap {
+            response_id,
+            turn_id,
+            model,
+            ..
+        } => {
+            row["responseId"] = json!(response_id);
+            if let Some(turn) = turn_id {
+                row["turnId"] = json!(turn);
+            }
+            row["model"] = json!(model);
+        }
+    }
+    mark_generation(meta, existing, out);
     out.rows.push((CaptureTable::Usage, row));
-    mark_generation(meta, None, out);
 }
 fn mark_generation(meta: &Value, previous: Option<&Value>, out: &mut CaptureDecision) {
     let mut roots = vec![text(&meta["rootId"]).to_owned()];
@@ -1421,28 +1503,6 @@ fn mark_generation(meta: &Value, previous: Option<&Value>, out: &mut CaptureDeci
     }
     out.generation_roots = roots;
 }
-fn response_content(v: &Value) -> Value {
-    let mut value = v.clone();
-    if let Some(m) = value.as_object_mut() {
-        // Fingerprints describe content, not response identity. Keeping the
-        // persisted row on semantic replay also keeps legacy Python hashes.
-        for k in [
-            "at",
-            "recordedAt",
-            "noticeTotal",
-            "noticeLast",
-            "noticeAt",
-            "fingerprint",
-        ] {
-            m.remove(k);
-        }
-        if let Some(raw) = m.get_mut("raw").and_then(Value::as_object_mut) {
-            raw.remove("modelContextWindow");
-        }
-    }
-    value
-}
-
 /// The notification dispatcher can commit one bounded delta batch. Preparation
 /// remains outside the transaction; each item observes prior items in order.
 pub async fn capture_batch(
@@ -1489,28 +1549,4 @@ pub async fn capture_limit(
             Ok(())
         })
         .await
-}
-
-// JSON integer/float representations compare numerically, as Python does.
-fn same_content(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Number(a), Value::Number(b)) => {
-            a == b
-                || (a
-                    .as_f64()
-                    .is_some_and(|n| n.abs() <= MAX_SAFE_INTEGER as f64)
-                    && b.as_f64()
-                        .is_some_and(|n| n.abs() <= MAX_SAFE_INTEGER as f64)
-                    && a.as_f64() == b.as_f64())
-        }
-        (Value::Array(a), Value::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_content(a, b))
-        }
-        (Value::Object(a), Value::Object(b)) => {
-            a.len() == b.len()
-                && a.iter()
-                    .all(|(k, a)| b.get(k).is_some_and(|b| same_content(a, b)))
-        }
-        _ => left == right,
-    }
 }
