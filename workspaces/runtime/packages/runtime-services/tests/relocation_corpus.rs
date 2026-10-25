@@ -190,6 +190,7 @@ async fn python_location_and_move_corpus_through_consumers() {
                 "hold-exported-active",
                 "expire-importing",
                 "cache-first-observation",
+                "cache-boolean-not-integer",
                 "cache-wrong-turn",
                 "status-waiting",
                 "tool-applied",

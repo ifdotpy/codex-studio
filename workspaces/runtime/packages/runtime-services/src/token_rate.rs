@@ -1244,6 +1244,52 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_counter_decrease_resets_the_cumulative_rate_baseline() {
+        use studio_runtime_schema::usage::{UsageObservation, UsageScope, UsageTokens};
+        for (before, after, expected_output) in [
+            (Some(90), Some(20), 100.),
+            (Some(90), None, 150.),
+            (None, Some(20), 150.),
+        ] {
+            let mut projector = RateProjector::default();
+            assert!(observe(
+                &mut projector,
+                &usage_effect("agent", "provider", 1, 1, "turn")
+            ));
+            for (cursor, input, output, reasoning, last_output) in
+                [(2, 100, 100, before, 100), (3, 110, 150, after, 50)]
+            {
+                usage_at(
+                    &mut projector,
+                    cursor,
+                    cursor as f64,
+                    typed_usage(UsageObservation::Cumulative {
+                        scope: UsageScope::CodexThread,
+                        turn_id: Some("turn".into()),
+                        total: UsageTokens {
+                            uncached_input: input,
+                            output,
+                            reasoning_output: reasoning,
+                            ..Default::default()
+                        },
+                        last: Some(UsageTokens {
+                            output: last_output,
+                            ..Default::default()
+                        }),
+                        model_context_window: None,
+                        models: None,
+                    }),
+                );
+            }
+            assert_eq!(
+                projector.snapshot().records[0].output_tokens.0,
+                expected_output,
+                "known reasoning reset starts a new cumulative baseline"
+            );
+        }
+    }
+
+    #[test]
     fn cumulative_fallback_reconciles_queued_stream_estimates() {
         let mut projector = RateProjector::default();
         for (effect, bit) in provider_turn("provider", "agent", 0).into_iter().take(4) {

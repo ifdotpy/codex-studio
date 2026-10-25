@@ -336,6 +336,28 @@ mod tests {
     use rusqlite::Connection;
     use std::collections::BTreeSet;
 
+    #[tokio::test]
+    async fn budget_usage_schema_refuses_a_missing_tokens_column() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = crate::RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("store");
+        store
+            .transaction(|tx| {
+                tx.execute_batch("ALTER TABLE runtime_budget_usage DROP COLUMN tokens")?;
+                Ok(())
+            })
+            .await
+            .expect("missing-column fixture");
+        let error = store
+            .verify_schema()
+            .expect_err("all mandatory usage columns must be checked");
+        assert!(
+            error.to_string().contains("tokens"),
+            "report the missing column: {error}"
+        );
+    }
+
     #[test]
     fn budget_usage_breakdown_upgrade_preserves_legacy_rows_and_is_idempotent() {
         let mut db = crate::fresh_state::test_canvas();

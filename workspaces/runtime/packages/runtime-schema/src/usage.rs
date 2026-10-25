@@ -30,12 +30,14 @@ impl UsageTokens {
             .checked_add(self.cache_write_input)?
             .checked_add(self.output)
     }
-    /// Whether any billable counter decreased; a new counter epoch is required.
+    /// Whether any known category counter decreased; a new counter epoch is required.
+    /// Reasoning participates only when both observations report it.
     pub fn decreased_from(&self, previous: &Self) -> bool {
         self.uncached_input < previous.uncached_input
             || self.cache_read_input < previous.cache_read_input
             || self.cache_write_input < previous.cache_write_input
             || self.output < previous.output
+            || matches!((self.reasoning_output, previous.reasoning_output), (Some(current), Some(old)) if current < old)
     }
 }
 /// Provenance of a final response; legacy observations may be provisional.

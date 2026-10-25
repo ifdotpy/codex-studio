@@ -361,6 +361,42 @@ fn changed_response_replay_step(case: &Value) -> Option<usize> {
 }
 
 #[test]
+fn reasoning_counter_decrease_starts_a_new_budget_epoch() {
+    let (case, records) = fixture();
+    for (previous_reasoning, reasoning, expected) in [
+        (Some(90), Some(20), 460),
+        (Some(90), None, 260),
+        (None, Some(20), 260),
+    ] {
+        let mut connection = db(&records, &case);
+        for (input, output, reasoning, spent) in [
+            (100, 100, previous_reasoning, 200),
+            (110, 150, reasoning, expected),
+        ] {
+            let tx = connection.transaction().expect("capture transaction");
+            let mut agent =
+                studio_runtime_store::budget::BudgetRepository::agent(&tx, "a").expect("agent");
+            let tokens = json!({"uncachedInput":input,"cacheReadInput":0,"cacheWriteInput":0,"output":output,"reasoningOutput":reasoning});
+            let params = json!({"threadId":"thread","turnId":"fixture-turn","studioUsage":{"kind":"cumulative","scope":"codexThread","turnId":"fixture-turn","total":tokens,"last":tokens}});
+            assert_eq!(
+                budget_service::capture(
+                    &tx,
+                    &mut agent,
+                    &params,
+                    input as f64 + 1.,
+                    CaptureSource::Live,
+                    100.
+                )
+                .expect("public budget capture"),
+                spent,
+                "reasoning participates only when both counters know it"
+            );
+            tx.commit().expect("persist counter");
+        }
+    }
+}
+
+#[test]
 fn exact_response_replay_is_noop_and_conflicting_replay_records_fault() {
     let (case, records) = fixture();
     let mut connection = db(&records, &case);

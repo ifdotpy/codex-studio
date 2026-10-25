@@ -164,16 +164,10 @@ fn validate_usage(value: &Value) -> StoreResult<()> {
     })?;
     Ok(())
 }
-const TABLES: &[TableRequirement] = &[
-    TableRequirement {
-        name: "runtime_budget",
-        columns: &["id", "record"],
-    },
-    TableRequirement {
-        name: "runtime_budget_usage",
-        columns: &["id", "agent", "kind", "tokens", "at"],
-    },
-];
+const TABLES: &[TableRequirement] = &[TableRequirement {
+    name: "runtime_budget",
+    columns: &["id", "record"],
+}];
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
     conditional_tables: &[ConditionalTableRequirement {
@@ -185,7 +179,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     connection_functions: &[],
     bootstrap_tables: &[TableRequirement {
         name: "runtime_budget_usage",
-        columns: &["breakdown"],
+        columns: &["id", "agent", "kind", "tokens", "at", "breakdown"],
     }],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
