@@ -172,7 +172,7 @@ test("tool identity keeps its original turn across responses and nested tool own
   expect(usage.turnFor("nested", "current")).toBe("original");
 });
 test("context windows use the response model and its SDK canonical alias", () => {
-  const usage = new ResponseUsage("unrelated", 1000000);
+  const usage = new ResponseUsage();
   usage.recordModels({
     alias: { ...modelUsage, canonicalModel: "claude-opus-5-5" },
   });

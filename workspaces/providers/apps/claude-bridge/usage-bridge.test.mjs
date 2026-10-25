@@ -227,6 +227,7 @@ test("background subagent final usage survives completion of its owning Studio t
 });
 test("response usage includes the known model context window before result", async () => {
   const b = await setup({ model: "claude-opus-5-5", contextWindow: 200000 });
+  await done(b, await start(b, "result-only"));
   const turn = await start(b, "normal");
   await done(b, turn);
   expect(observations(b).find((o) => o.kind === "response")).toHaveProperty(
@@ -246,9 +247,13 @@ test("emitted notifications match the shared Rust dispatch golden fixture", asyn
     ),
   );
   const b = await setup({ model: "claude-opus-5-5", contextWindow: 200000 });
+  await done(b, await start(b, "result-only"));
+  const before = b.notes.length;
   await done(b, await start(b, "normal"));
   await done(b, await start(b, "interrupted"));
-  const notes = b.notes.filter((n) => n.method === "thread/tokenUsage/updated");
+  const notes = b.notes
+    .slice(before)
+    .filter((n) => n.method === "thread/tokenUsage/updated");
   const selected = [
     notes.find((n) => n.params.studioUsage.kind === "response"),
     notes.find((n) => n.params.studioUsage.kind === "cumulative"),
@@ -392,4 +397,14 @@ test("discarding a stuck query drains unfinished subagent usage exactly once", a
   expect(
     observations(b).filter((o) => o.responseId === "response-1"),
   ).toHaveLength(1);
+});
+
+test("restart never seeds a response from a persisted query-wide maximum window", async () => {
+  const b = await setup({ model: "claude-opus-5-5" });
+  await done(b, await start(b, "windows"));
+  await b.restart();
+  await done(b, await start(b, "normal"));
+  expect(observations(b).find((o) => o.kind === "response")).not.toHaveProperty(
+    "modelContextWindow",
+  );
 });

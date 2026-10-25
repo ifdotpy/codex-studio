@@ -81,7 +81,9 @@ provisional and serves only the idle-compaction cache report.
 SDK fixtures with the [strict configuration](tsconfig.json). Package checks
 and the short tier run this check before their Vitest witnesses.
 
-Response context windows are resolved per model. Background responses retain the
+Response context windows are resolved per model from the current SDK query.
+A persisted query-wide window has unknown model provenance and is not used to
+seed response accounting after a restart. Background responses retain the
 turn that created their parent tool, even after that turn completes. Shutdown
 waits for the SDK consumer within the CLI-exit deadline, reports remaining gaps,
 and flushes queued notifications before exiting. The bridge integration tests

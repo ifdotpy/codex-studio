@@ -67,12 +67,6 @@ export class ResponseUsage {
   modelWindows = new Map();
   closed = false;
 
-  /** @param {string | undefined} [model] @param {number | undefined} [window] */
-  constructor(model, window) {
-    if (model !== undefined && window !== undefined && window > 0)
-      this.modelWindows.set(model, window);
-  }
-
   /** @param {string | null | undefined} parent @param {string | undefined} turnId */
   turnFor(parent, turnId) {
     return parent == null ? turnId : (this.parentTurns.get(parent) ?? turnId);

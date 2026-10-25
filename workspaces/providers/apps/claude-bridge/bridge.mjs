@@ -2088,7 +2088,7 @@ function discardQuery(s, active) {
   }
   catalogCache.activityChanged();
 }
-function newActive(turn, s) {
+function newActive(turn) {
   const active = {
     turn,
     input: new InputQueue(),
@@ -2097,7 +2097,7 @@ function newActive(turn, s) {
     tools: new Map(),
     pendingSteers: new Set(),
     assistantBlocks: new Map(),
-    usage: new ResponseUsage(s.model, s.contextWindow),
+    usage: new ResponseUsage(),
     idleRequestStartedAt: Date.now(),
     // Stall watchdog state: the newest CLI message time, the running tool
     // calls of the current turn, and the recovery of a stalled turn.
@@ -2826,7 +2826,7 @@ async function handle(method, p) {
         });
       }
     } else {
-      active = newActive(turn, s);
+      active = newActive(turn);
       queries.set(s.id, active);
       active.consumer = new Promise((resolve, reject) => {
         setImmediate(() => startSession(s, active, p).then(resolve, reject));
