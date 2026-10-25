@@ -791,6 +791,24 @@ export const layoutTokens = {
     unit: "px",
     purpose: "Existing compact tasks drawer header minimum height",
   },
+  "keyboard.compactMaxHeight": {
+    value: 400,
+    unit: "px",
+    purpose:
+      "Visible viewport height below which keyboard layouts hide passive status and use a single attachment row",
+  },
+  "header.shortLandscapeMaxHeight": {
+    value: 700,
+    unit: "px",
+    purpose:
+      "Visible touch landscape height below which conversation and session activity share one row",
+  },
+  "header.compactHeight": {
+    value: 44,
+    unit: "px",
+    purpose:
+      "Conversation header and timeline row height in short touch landscape",
+  },
 } as const;
 export const layoutValues = {
   navigation: {
@@ -853,6 +871,7 @@ export const layoutValues = {
   },
   keyboard: {
     occlusionMin: 100,
+    compactMaxHeight: 400,
   },
   viewport: {
     zoomTolerance: 0.01,
@@ -1064,6 +1083,10 @@ export const layoutValues = {
   },
   legacy_main_workspace: {
     diffLineNumberWidth: 48,
+  },
+  header: {
+    shortLandscapeMaxHeight: 700,
+    compactHeight: 44,
   },
 } as const;
 export const layoutQueries = {

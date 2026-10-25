@@ -8,6 +8,26 @@
   height: auto;
   padding: 0 var(--chat-gutter);
 }
+
+.workspace-header[data-compact-landscape="true"] {
+  box-sizing: border-box;
+  height: var(--layout-header-compact-height);
+  min-height: var(--layout-header-compact-height);
+  max-height: var(--layout-header-compact-height);
+  padding-block: 0;
+}
+.workspace-header[data-compact-landscape="true"] .conversation-heading {
+  overflow: hidden;
+}
+.workspace-header[data-compact-landscape="true"]
+  :is(.conversation-meta, #conversation-header-tools) {
+  display: none;
+}
+.workspace-header[data-compact-landscape="true"] > button {
+  height: var(--layout-header-compact-height);
+  min-height: var(--layout-header-compact-height);
+  min-width: var(--layout-header-compact-height);
+}
 .conversation-heading {
   display: flex;
   align-items: center;

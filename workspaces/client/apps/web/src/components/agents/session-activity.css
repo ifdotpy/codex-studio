@@ -6,6 +6,27 @@
   background: var(--surface, #f6f7f9);
   font-size: 12px;
 }
+.session-activity[data-compact="true"] {
+  padding: 0;
+  border: 0;
+  flex: none;
+  min-width: 0;
+}
+.session-activity[data-compact="true"] .session-activity-row {
+  display: flex;
+  gap: var(--mantine-spacing-xs);
+  height: var(--layout-header-compact-height);
+  min-height: var(--layout-header-compact-height);
+  padding: 0;
+}
+.session-activity[data-compact="true"] .session-activity-copy {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .session-activity[data-expanded="false"] {
   display: flex;
   align-items: center;

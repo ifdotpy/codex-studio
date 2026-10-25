@@ -719,6 +719,21 @@
       "value": 64,
       "unit": "px",
       "purpose": "Existing compact tasks drawer header minimum height"
+    },
+    "keyboard.compactMaxHeight": {
+      "value": 400,
+      "unit": "px",
+      "purpose": "Visible viewport height below which keyboard layouts hide passive status and use a single attachment row"
+    },
+    "header.shortLandscapeMaxHeight": {
+      "value": 700,
+      "unit": "px",
+      "purpose": "Visible touch landscape height below which conversation and session activity share one row"
+    },
+    "header.compactHeight": {
+      "value": 44,
+      "unit": "px",
+      "purpose": "Conversation header and timeline row height in short touch landscape"
     }
   },
   "queries": {

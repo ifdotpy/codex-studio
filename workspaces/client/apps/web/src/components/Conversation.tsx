@@ -221,7 +221,7 @@ export default function Conversation(p: {
   id: string | null;
   visible?: boolean;
   projectName?: string;
-  railMode?: boolean;
+  headerToolsInMenu?: boolean;
   onRailToolsChange?: (tools: ReactNode) => void;
   transcriptHeading?: ReactNode;
   recentChats?: RecentProjectChat[];
@@ -290,9 +290,11 @@ export default function Conversation(p: {
   } | null>(null);
   useLayoutEffect(() => {
     setHeaderTools(
-      p.railMode ? null : document.getElementById("conversation-header-tools"),
+      p.headerToolsInMenu
+        ? null
+        : document.getElementById("conversation-header-tools"),
     );
-  }, [p.railMode]);
+  }, [p.headerToolsInMenu]);
   useEffect(() => {
     if (!compactHeaderTools) setToolsExpanded(false);
   }, [compactHeaderTools]);
@@ -1484,7 +1486,7 @@ export default function Conversation(p: {
       !p.room && p.id ? (
         <PromptNavigator
           compact
-          inMenu={p.railMode}
+          inMenu={p.headerToolsInMenu}
           key={p.id}
           messages={items}
           loadOlder={
@@ -1506,7 +1508,7 @@ export default function Conversation(p: {
     [
       p.room,
       p.id,
-      p.railMode,
+      p.headerToolsInMenu,
       items,
       before,
       pageLoading,
@@ -1521,8 +1523,8 @@ export default function Conversation(p: {
     ],
   );
   useLayoutEffect(() => {
-    p.onRailToolsChange?.(p.railMode ? promptNavigation : null);
-  }, [p.railMode, p.onRailToolsChange, promptNavigation]);
+    p.onRailToolsChange?.(p.headerToolsInMenu ? promptNavigation : null);
+  }, [p.headerToolsInMenu, p.onRailToolsChange, promptNavigation]);
   useLayoutEffect(
     () => () => p.onRailToolsChange?.(null),
     [p.onRailToolsChange],
@@ -1599,7 +1601,7 @@ export default function Conversation(p: {
           chooseChat={p.onChooseChat}
         />
       )}
-      {!p.railMode &&
+      {!p.headerToolsInMenu &&
         headerTools &&
         !p.room &&
         (p.id || managed) &&

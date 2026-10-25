@@ -2415,9 +2415,30 @@ export default function App({ active = true }: { active?: boolean }) {
       save("codex-team-open", !wideTeamOpen);
     }
   };
+  const compactHeader =
+    rowLayout.shortTouchLandscape && !railGeometry && !room?.radio;
+  const menuHeaderTools = !!railGeometry || compactHeader;
+  const sessionActivity = agent ? (
+    <SessionActivity
+      key={`${data.stateDir}:${agent.id}`}
+      compact={compactHeader}
+      activities={backgroundActivities(activities.get(agent.id) || [])}
+      onOpen={(activity) => {
+        if (activity.kind === "agent") open(activity.agentId);
+        else if (lead) {
+          setTaskFocus({
+            id: activity.id,
+            leadId: lead.id,
+            requestId: crypto.randomUUID(),
+          });
+          setTasksOpen(true);
+        }
+      }}
+    />
+  ) : null;
   const conversationTitle = (
     <ConversationTitle
-      passive={!!railGeometry}
+      passive={menuHeaderTools}
       projectName={railGeometry ? projectName : undefined}
       title={title}
       agent={agent}
@@ -2445,7 +2466,11 @@ export default function App({ active = true }: { active?: boolean }) {
       }
       onBack={
         // Only a worker chat links back; the lead and team rooms do not.
-        !railGeometry && lead && agent && !agent.isLead && agent.id !== lead.id
+        !menuHeaderTools &&
+        lead &&
+        agent &&
+        !agent.isLead &&
+        agent.id !== lead.id
           ? () => open(lead.id)
           : undefined
       }
@@ -2463,8 +2488,8 @@ export default function App({ active = true }: { active?: boolean }) {
   };
   const chatActionsMenu = (
     <>
-      {railGeometry && <ConversationMenuTools source={railTools} />}
-      {railGeometry &&
+      {menuHeaderTools && <ConversationMenuTools source={railTools} />}
+      {menuHeaderTools &&
         lead &&
         agent &&
         !agent.isLead &&
@@ -2519,7 +2544,7 @@ export default function App({ active = true }: { active?: boolean }) {
       >
         Background activity {taskCount || ""}
       </Menu.Item>
-      {railGeometry && !mobileClient && (
+      {menuHeaderTools && !mobileClient && (
         <Menu.Item
           aria-label="Terminals"
           leftSection={<Terminal size={14} />}
@@ -2727,7 +2752,10 @@ export default function App({ active = true }: { active?: boolean }) {
         >
           <SupervisorRecoveryNotice />
           {!railGeometry && (
-            <header className="workspace-header simple-workspace-header">
+            <header
+              className="workspace-header simple-workspace-header"
+              data-compact-landscape={compactHeader || undefined}
+            >
               {sidebarCompact ? (
                 <Button
                   id="sidebar-toggle"
@@ -2751,8 +2779,9 @@ export default function App({ active = true }: { active?: boolean }) {
                 </ActionIcon>
               )}
               {conversationTitle}
+              {compactHeader && sessionActivity}
               <div id="conversation-header-tools" />
-              {!railGeometry && !room?.radio && (
+              {!compactHeader && !room?.radio && (
                 <ActionIcon
                   id="chat-settings-toggle"
                   aria-label="Chat settings"
@@ -2762,7 +2791,7 @@ export default function App({ active = true }: { active?: boolean }) {
                   <Settings2 size={18} />
                 </ActionIcon>
               )}
-              {!railGeometry && hasTeam && (
+              {!compactHeader && hasTeam && (
                 <Button
                   leftSection={<Users size={16} />}
                   id="team-toggle"
@@ -2784,7 +2813,7 @@ export default function App({ active = true }: { active?: boolean }) {
                   )}
                 </Button>
               )}
-              {!railGeometry && !room?.radio && (
+              {!room?.radio && (!compactHeader || attentionCount > 0) && (
                 <Button
                   id="messages-toggle"
                   aria-label="Messages"
@@ -2808,7 +2837,11 @@ export default function App({ active = true }: { active?: boolean }) {
                 </Button>
               )}
               {!railGeometry && !room?.radio && (
-                <Menu position="bottom-end" withinPortal>
+                <Menu
+                  position="bottom-end"
+                  withinPortal
+                  withInitialFocusPlaceholder={!compactHeader}
+                >
                   <Menu.Target>
                     <ActionIcon
                       ref={chatActionsButton}
@@ -2849,23 +2882,7 @@ export default function App({ active = true }: { active?: boolean }) {
               </Button>
             </div>
           )}
-          {agent && (
-            <SessionActivity
-              key={`${data.stateDir}:${agent.id}`}
-              activities={backgroundActivities(activities.get(agent.id) || [])}
-              onOpen={(activity) => {
-                if (activity.kind === "agent") open(activity.agentId);
-                else if (lead) {
-                  setTaskFocus({
-                    id: activity.id,
-                    leadId: lead.id,
-                    requestId: crypto.randomUUID(),
-                  });
-                  setTasksOpen(true);
-                }
-              }}
-            />
-          )}
+          {!compactHeader && sessionActivity}
           {claudeLoginKey &&
             (accounts.data.accounts.some(
               (item) => item.id === claudeLoginKey,
@@ -3026,7 +3043,7 @@ export default function App({ active = true }: { active?: boolean }) {
               />
             ) : (
               <SelectedConversation
-                railMode={!!railGeometry}
+                headerToolsInMenu={menuHeaderTools}
                 onRailToolsChange={railTools.publish}
                 transcriptHeading={railGeometry ? conversationTitle : undefined}
                 visible={!(mobileClient && sidebar)}
