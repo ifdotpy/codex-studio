@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { bashTimeoutMs, findStall, recordedInputIds } from "./stall-watch.mjs";
+import { bashTimeoutMs, findStall } from "./stall-watch.mjs";
 
 const GRACE_MS = 300;
 
@@ -72,7 +72,7 @@ export function query({prompt,options}){
     const input=await read();
     if(input.done)return;
     const text=input.value.message.content[0].text;
-    fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:historyParent,sessionId:session,cwd,isSidechain:false})+'\n');
+    fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:historyParent,sessionId:session,cwd,isSidechain:false,message:input.value.message,timestamp:new Date().toISOString()})+'\n');
     historyParent=input.value.uuid;
     if(text==='stall')fs.appendFileSync(history,'broken native row\n');
     yield {type:'user',isReplay:true,uuid:input.value.uuid};
@@ -418,22 +418,6 @@ test("the stall rule needs both an elapsed budget and silence", () => {
   assert.equal(
     bashTimeoutMs({}, { BASH_DEFAULT_TIMEOUT_MS: "900000" }),
     900_000,
-  );
-  assert.deepEqual(
-    [
-      ...recordedInputIds([
-        JSON.stringify({ type: "user", uuid: "u1" }),
-        JSON.stringify({
-          type: "attachment",
-          attachment: {
-            type: "queued_command",
-            source_uuid: "22222222-2222-4222-8222-222222222222",
-          },
-        }),
-        JSON.stringify({ type: "queue-operation", operation: "enqueue" }),
-      ]),
-    ],
-    ["u1", "22222222-2222-4222-8222-222222222222"],
   );
 });
 

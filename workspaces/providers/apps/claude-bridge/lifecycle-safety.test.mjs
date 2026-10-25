@@ -4,10 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { rollbackBoundary, forkAtTurn, rollbackSession } from "./controls.mjs";
 import { nativeInputIds } from "./input-messages.mjs";
-import { recordedInputIds, inputHistoryOutcome } from "./stall-watch.mjs";
+import { inputHistoryOutcome } from "./history-index.mjs";
 import { readNativeHistory } from "./native-history.mjs";
 import { waitForFile } from "./testing/file-signals.mjs";
 import { startBridge } from "./testing/bridge-harness.mjs";
+import { fixtureSessionApi } from "./testing/history-fixture.mjs";
 import { createSessionStore } from "./session-store.mjs";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
@@ -142,6 +143,7 @@ test.each([
     sessionId,
     cwd: root,
     isSidechain: false,
+    message: { role: "user", content: "fixture input" },
   });
   let raw =
     JSON.stringify(row(kind === "absent anchor" ? replyId : inputId)) + "\n";
@@ -251,7 +253,7 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
       sessionId,
       cwd: root,
       isSidechain: false,
-      message: { id: uuid, content, stop_reason: "end_turn" },
+      message: { id: uuid, role: type, content, stop_reason: "end_turn" },
     });
     const rows = [
       row("user", inputId, null, "initial"),
@@ -297,7 +299,10 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
     const stateRoot = path.join(root, "state");
     await createSessionStore(stateRoot).persist(session);
     const store = createSessionStore(stateRoot, {
-      nativeHistory: { configDir },
+      nativeHistory: {
+        configDir,
+        sessionApi: fixtureSessionApi(rows, { sessionId, cwd: root }),
+      },
     });
     const restored = await store.get(sessionId);
     expect(restored.turns[0].startOutcome).toBe(
@@ -313,15 +318,6 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
     );
   },
 );
-
-test("a malformed native row cannot prove absent input", () => {
-  expect(
-    recordedInputIds([
-      JSON.stringify({ type: "user", uuid: inputId }),
-      "broken",
-    ]),
-  ).toBeNull();
-});
 
 test("rollback remaps every retained composite part and preserves checkpoint identity", async () => {
   const sourceTurns = turns();
@@ -565,6 +561,7 @@ test("an unresolved middle parent keeps absent steer history unknown", () => {
     sessionId,
     cwd: "/project",
     isSidechain: false,
+    message: { role: "user", content: "fixture input" },
   });
   expect(
     inputHistoryOutcome(

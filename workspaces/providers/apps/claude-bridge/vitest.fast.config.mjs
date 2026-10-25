@@ -15,6 +15,13 @@ export default {
       "journal-repair.test.mjs",
       // Check zero idle timers, exact deadline recovery, and rearming on progress, results and Studio waits.
       "stall-watch.test.mjs",
+      // SDK UUID coverage, composite history controls and authoritative session transitions.
+      "history-index.test.mjs",
+      "history-recovery.test.mjs",
+      "session-identity.test.mjs",
+      // Proven unread/cancelled transition inputs must release their guards.
+      "steer.test.mjs",
+      "stop-receipts.test.mjs",
       // Final stream accounting, deferred result totals and explicit unfinished-response gaps.
       "usage.test.mjs",
       "usage-bridge.test.mjs",

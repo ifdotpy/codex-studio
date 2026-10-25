@@ -11,5 +11,11 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["usage.mjs", "usage.test.mjs", "usage-fixtures.mjs"]
+  "include": [
+    "usage.mjs",
+    "usage.test.mjs",
+    "usage-fixtures.mjs",
+    "history-index.mjs",
+    "session-identity.mjs"
+  ]
 }
