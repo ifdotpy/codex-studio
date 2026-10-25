@@ -13,6 +13,7 @@ export function LayoutDebug() {
     if (!root) return;
     const primary = window.matchMedia("(pointer: coarse)");
     const any = touchPointerMedia();
+    const standalone = window.matchMedia("(display-mode: standalone)");
     const probe = document.createElement("div");
     probe.className = "layout-debug-probe";
     probe.setAttribute("aria-hidden", "true");
@@ -29,6 +30,9 @@ export function LayoutDebug() {
           `pointer coarse: ${primary.matches}`,
           `any-pointer coarse: ${any.matches}`,
           `maxTouchPoints: ${navigator.maxTouchPoints}`,
+          `innerWidth: ${window.innerWidth}px`,
+          `visualViewport.width: ${window.visualViewport ? `${window.visualViewport.width}px` : "unavailable"}`,
+          `display-mode: ${standalone.matches || (navigator as Navigator & { standalone?: boolean }).standalone ? "standalone" : "browser"}`,
           `root height: ${style.height}`,
           `root padding T/R/B/L: ${padding(style)}`,
           `safe-area T/R/B/L: ${padding(safe)}`,
@@ -43,6 +47,7 @@ export function LayoutDebug() {
     mutation.observe(root, { attributes: true });
     primary.addEventListener("change", update);
     any.addEventListener("change", update);
+    standalone.addEventListener("change", update);
     window.addEventListener("resize", update);
     window.visualViewport?.addEventListener("resize", update);
     update();
@@ -52,6 +57,7 @@ export function LayoutDebug() {
       probe.remove();
       primary.removeEventListener("change", update);
       any.removeEventListener("change", update);
+      standalone.removeEventListener("change", update);
       window.removeEventListener("resize", update);
       window.visualViewport?.removeEventListener("resize", update);
     };

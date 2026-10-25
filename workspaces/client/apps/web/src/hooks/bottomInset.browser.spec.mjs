@@ -120,6 +120,9 @@ test("Duo uses the bottom band for passive status and keeps every target above H
     await expect(debug).toContainText("pointer coarse: false");
     await expect(debug).toContainText("any-pointer coarse: false");
     await expect(debug).toContainText("maxTouchPoints: 5");
+    await expect(debug).toContainText("innerWidth: 951px");
+    await expect(debug).toContainText("visualViewport.width: 951px");
+    await expect(debug).toContainText("display-mode: browser");
     await expect(debug).toContainText("root height: 669px");
     await expect(debug).toContainText(
       "root padding T/R/B/L: 0px / 84px / 34px / 0px",
