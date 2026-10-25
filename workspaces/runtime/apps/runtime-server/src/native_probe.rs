@@ -229,7 +229,13 @@ fn schema_check(directory: &Path) -> Result<Value, CompatibilityRefusal> {
     {
         return Err(CompatibilityRefusal::ProtocolSchema);
     }
-    Ok(json!({"methods":required,"daybreak":true}))
+    let usage = read("v2/ThreadTokenUsageUpdatedNotification.json")?;
+    let expected: Value = serde_json::from_str(studio_runtime_schema::usage::CODEX_USAGE_SCHEMA)
+        .map_err(|_| CompatibilityRefusal::ProtocolSchema)?;
+    if usage != expected {
+        return Err(CompatibilityRefusal::ProtocolSchema);
+    }
+    Ok(json!({"methods":required,"daybreak":true,"usage":true}))
 }
 
 async fn smoke(executable: &Path, home: &Path) -> Result<(), ()> {
@@ -556,6 +562,11 @@ mod tests {
     fn compatibility_probe_checks_companion_schema_and_isolated_provider() {
         let directory = tempfile::tempdir().expect("temporary fixture directory");
         let bundle = directory.path().to_owned();
+        fs::write(
+            bundle.join("usage-schema.json"),
+            studio_runtime_schema::usage::CODEX_USAGE_SCHEMA,
+        )
+        .expect("usage fixture");
         let codex = bundle.join("codex");
         write_executable(
             &codex,
@@ -575,6 +586,7 @@ if (process.argv.includes('--version')) {
         'thread/settings/update', 'model/list'];
     const schemas = {
         'ClientRequest.json': {oneOf: methods.map(method => ({properties: {method: {enum: [method]}}}))},
+        'v2/ThreadTokenUsageUpdatedNotification.json': JSON.parse(fs.readFileSync(path.join(__dirname, 'usage-schema.json'), 'utf8')),
         'v2/TurnStartParams.json': {properties: {cyberAccessProgram: {}},
             definitions: {CyberAccessProgram: {enum: ['standard', 'daybreakBlue', 'daybreakRed']}}},
         'v2/ModelListResponse.json': {definitions: {Model: {properties: {availableAccessPrograms: {}}}}},

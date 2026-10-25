@@ -83,3 +83,16 @@ An email-only pin can gain UUIDs once. The bridge saves this evidence in
 returns usage. A restart preserves the pin. A changed or missing UUID then
 blocks the request. The Rust registry uses the same one-way upgrade rule.
 Codex identity and the existing Claude `accountId` remain unchanged.
+
+## Token usage
+
+The bridge emits `thread/tokenUsage/updated` observations using the
+[generated usage contract](usage-contract.generated.d.mts). The
+[SDK-typed normalizer](usage.mjs) finalizes response usage from stream events
+at `message_stop`, publishes cumulative model totals immediately on each SDK
+result, and reports unfinished responses as gaps. Assistant message usage is
+provisional and serves only the idle-compaction cache report.
+
+`pnpm --filter studio-claude-bridge run typecheck` checks the normalizer and its
+SDK fixtures with the [strict configuration](tsconfig.json). Package checks
+and the short tier run this check before their Vitest witnesses.

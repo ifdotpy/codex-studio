@@ -1,3 +1,4 @@
+import { ResponseUsage, cumulativeUsage } from "./usage.mjs";
 import {
   cacheReport,
   idleRefusal,
@@ -36,7 +37,6 @@ import {
   usageLimits,
   limitEvent,
   nativeItem,
-  usageTokens,
   overageAllowed,
   claudeErrorInfo,
   providerNotice,
@@ -941,12 +941,11 @@ async function content(input) {
   }
   return result;
 }
-function turnEvent(s, turn, method, item, tokenRateUsage, receiptTimes) {
+function turnEvent(s, turn, method, item, receiptTimes) {
   emit(method, {
     threadId: s.id,
     turnId: turn?.id,
     item,
-    ...(tokenRateUsage ? { tokenRateUsage } : {}),
     ...receiptTimes,
   });
 }
@@ -964,12 +963,12 @@ function submittedSteer(s, nativeId) {
   }
   return null;
 }
-function finishItem(s, turn, item, tokenRateUsage, receiptTimes) {
+function finishItem(s, turn, item, receiptTimes) {
   if (!turn) return;
   const i = turn.items.findIndex((old) => old.id === item.id);
   if (i < 0) turn.items.push(item);
   else turn.items[i] = item;
-  turnEvent(s, turn, "item/completed", item, tokenRateUsage, receiptTimes);
+  turnEvent(s, turn, "item/completed", item, receiptTimes);
 }
 function notice(s, turn, text, id = randomUUID()) {
   finishItem(s, turn, { id, type: "agentMessage", phase: "commentary", text });
@@ -1083,7 +1082,6 @@ function finishTurn(s, active, result, error) {
       catalogCache.activityChanged();
       active.pendingSteers.clear();
       active.assistantBlocks.clear();
-      active.responseUsages.clear();
       if (state.closed) discardQuery(s, active);
       emit("turn/completed", {
         threadId: s.id,
@@ -1240,76 +1238,12 @@ async function finalizeTurn(s, active, turn, result, error, state) {
     // A failed close cannot prove that the SDK stopped applying input.
     if (!closeError) await reconcileClosedSteers(s, turn, unappliedSteers);
   }
-  for (const response of active.responseUsages.values()) {
-    const total =
-      response.requestUsage.inputTokens +
-      response.requestUsage.cachedInputTokens +
-      response.requestUsage.cacheWriteInputTokens +
-      response.requestUsage.outputTokens;
+  for (const studioUsage of active.usage.finish("streamInterrupted", turn.id))
     emit("thread/tokenUsage/updated", {
       threadId: s.id,
       turnId: turn.id,
-      responseId: response.responseId,
-      responseOutputTokens: response.responseOutputTokens,
-      model: response.model,
-      usageSource: "claudeResponse",
-      requestUsage: response.requestUsage,
-      tokenUsage: {
-        total: { totalTokens: total },
-        last: response.usage,
-        modelContextWindow: s.contextWindow,
-      },
+      studioUsage,
     });
-  }
-  const usage = usageTokens(result?.usage);
-  if (usage) {
-    // SDK result usage is cumulative over a persistent query. Keep the delta.
-    const aggregate = Number.isFinite(result.usage.total_tokens)
-      ? result.usage.total_tokens
-      : usage.totalTokens;
-    const delta = Math.max(0, aggregate - active.reportedUsage);
-    active.reportedUsage = aggregate;
-    s.totalTokens = (s.totalTokens || 0) + delta;
-    const window =
-      Math.max(
-        0,
-        ...Object.values(result?.modelUsage || {}).map(
-          (m) => m.contextWindow || 0,
-        ),
-      ) || s.contextWindow;
-    s.contextWindow = window;
-    const output = result?.usage?.output_tokens;
-    const turnOutputDelta =
-      Number.isFinite(output) && output >= 0
-        ? Math.max(0, output - active.reportedOutput)
-        : undefined;
-    if (turnOutputDelta !== undefined) {
-      active.reportedOutput = output;
-      active.reportedTurnOutput += turnOutputDelta;
-    }
-    emit("thread/tokenUsage/updated", {
-      threadId: s.id,
-      ...(turnOutputDelta !== undefined
-        ? { turnOutputTokens: active.reportedTurnOutput }
-        : {}),
-      ...(Number.isFinite(active.lastUsage?.outputTokens) &&
-      active.lastUsage.outputTokens >= 0
-        ? { responseOutputTokens: active.lastUsage.outputTokens }
-        : {}),
-      turnId: turn.id,
-      model: active.lastModel,
-      responseId: active.lastMessageId,
-      ...(active.lastMessageId &&
-      Number.isFinite(active.lastUsage?.outputTokens)
-        ? { responseOutputTokens: active.lastUsage.outputTokens }
-        : {}),
-      tokenUsage: {
-        total: { totalTokens: s.totalTokens },
-        last: active.lastUsage || usage,
-        modelContextWindow: window,
-      },
-    });
-  }
   s.updatedAt = Math.floor(Date.now() / 1000);
   await persistLive(s, turn);
   // This save also covers any earlier background save of this turn.
@@ -1704,7 +1638,6 @@ async function startSession(s, active, p) {
           synthetic: true,
         };
         active.idleRequestStartedAt = Date.now();
-        active.reportedTurnOutput = 0;
         s.turns.push(active.turn);
         emit("turn/started", {
           threadId: s.id,
@@ -1746,7 +1679,6 @@ async function startSession(s, active, p) {
             compactionMetadata: m.compact_metadata,
           };
           finishItem(s, turn, item);
-          active.lastUsage = null;
           persistLater(s, active);
         } else if (
           m.subtype === "status" &&
@@ -1833,7 +1765,30 @@ async function startSession(s, active, p) {
           notice(s, turn, m.text || m.content || m.error || m.subtype, m.uuid);
         continue;
       }
+      if (m.type === "result") {
+        const studioUsage = cumulativeUsage(m, turn?.id);
+        if (studioUsage) {
+          if (studioUsage.modelContextWindow)
+            s.contextWindow = studioUsage.modelContextWindow;
+          emit("thread/tokenUsage/updated", {
+            threadId: s.id,
+            turnId: turn?.id,
+            studioUsage,
+          });
+        }
+      }
       if (!turn) continue;
+      if (m.type === "stream_event")
+        for (const studioUsage of active.usage.observe(
+          m,
+          turn.id,
+          s.contextWindow,
+        ))
+          emit("thread/tokenUsage/updated", {
+            threadId: s.id,
+            turnId: studioUsage.turnId,
+            studioUsage,
+          });
       if (m.parent_tool_use_id) {
         if (m.type === "assistant")
           for (const [index, block] of (m.message.content || []).entries()) {
@@ -1957,7 +1912,6 @@ async function startSession(s, active, p) {
             limitReached(s, turn, info);
         }
         active.lastModel = m.message.model || active.lastModel;
-        active.lastMessageId = m.message.id || active.lastMessageId;
         if (
           turn &&
           !turn.idleCompaction &&
@@ -1985,39 +1939,6 @@ async function startSession(s, active, p) {
           });
           persistLater(s, active);
         }
-        const responseUsage = usageTokens(m.message.usage);
-        active.lastUsage = responseUsage || active.lastUsage;
-        const output = m.message.usage?.output_tokens;
-        if (m.message.id && m.message.usage && responseUsage) {
-          const raw = m.message.usage;
-          const requestUsage = {
-            inputTokens: Number.isFinite(raw.input_tokens)
-              ? raw.input_tokens
-              : 0,
-            cachedInputTokens: Number.isFinite(raw.cache_read_input_tokens)
-              ? raw.cache_read_input_tokens
-              : 0,
-            cacheWriteInputTokens: Number.isFinite(
-              raw.cache_creation_input_tokens,
-            )
-              ? raw.cache_creation_input_tokens
-              : 0,
-            outputTokens: Number.isFinite(raw.output_tokens)
-              ? raw.output_tokens
-              : 0,
-          };
-          active.responseUsages.set(m.message.id, {
-            responseId: m.message.id,
-            responseOutputTokens: requestUsage.outputTokens,
-            model: active.lastModel,
-            requestUsage,
-            usage: responseUsage,
-          });
-        }
-        const tokenRateUsage =
-          m.message.id && Number.isFinite(output) && output >= 0
-            ? { responseId: m.message.id, outputTokens: output }
-            : undefined;
         const mergeBlocks = (kind, field) => {
           const state = assistantBlockState(active, m.message.id, kind);
           for (const [index, block] of m.message.content.entries()) {
@@ -2038,32 +1959,22 @@ async function startSession(s, active, p) {
         };
         const text = mergeBlocks("text", "text");
         if (text)
-          finishItem(
-            s,
-            turn,
-            {
-              id: m.message.id,
-              nativeId: m.uuid,
-              type: "agentMessage",
-              text,
-              phase: "commentary",
-            },
-            tokenRateUsage,
-          );
+          finishItem(s, turn, {
+            id: m.message.id,
+            nativeId: m.uuid,
+            type: "agentMessage",
+            text,
+            phase: "commentary",
+          });
         const thinking = mergeBlocks("thinking", "thinking");
         if (thinking)
-          finishItem(
-            s,
-            turn,
-            {
-              id: m.message.id + ":thinking",
-              nativeId: m.uuid,
-              type: "agentMessage",
-              text: thinking,
-              phase: "commentary",
-            },
-            tokenRateUsage,
-          );
+          finishItem(s, turn, {
+            id: m.message.id + ":thinking",
+            nativeId: m.uuid,
+            type: "agentMessage",
+            text: thinking,
+            phase: "commentary",
+          });
         for (const b of m.message.content.filter(
           (b) => b.type === "tool_use",
         )) {
@@ -2076,7 +1987,7 @@ async function startSession(s, active, p) {
           });
           armStallWatch();
           turn.items.push(item);
-          turnEvent(s, turn, "item/started", item, tokenRateUsage);
+          turnEvent(s, turn, "item/started", item);
           if (b.name === "TodoWrite")
             emit("turn/plan/updated", {
               threadId: s.id,
@@ -2150,9 +2061,21 @@ async function startSession(s, active, p) {
         await finishTurn(s, active, m);
       }
     }
+    for (const studioUsage of active.usage.finish("queryClosed"))
+      emit("thread/tokenUsage/updated", {
+        threadId: s.id,
+        turnId: studioUsage.turnId,
+        studioUsage,
+      });
     if (active.turn) throw new Error("Claude ended without a completed turn");
   } catch (error) {
     active.readyReject(error);
+    for (const studioUsage of active.usage.finish("queryClosed"))
+      emit("thread/tokenUsage/updated", {
+        threadId: s.id,
+        turnId: studioUsage.turnId,
+        studioUsage,
+      });
     if (active.turn) {
       try {
         await finishTurn(s, active, null, error);
@@ -2208,12 +2131,8 @@ function newActive(turn) {
     tools: new Map(),
     pendingSteers: new Set(),
     assistantBlocks: new Map(),
-    responseUsages: new Map(),
+    usage: new ResponseUsage(),
     idleRequestStartedAt: Date.now(),
-    reportedUsage: 0,
-    reportedOutput: 0,
-    reportedTurnOutput: 0,
-    lastUsage: null,
     // Stall watchdog state: the newest CLI message time, the running tool
     // calls of the current turn, and the recovery of a stalled turn.
     lastEventAt: Date.now(),
@@ -2617,8 +2536,7 @@ async function handle(method, p) {
       if (idle())
         await reconcileHistoricalBash(s, {
           isIdle: idle,
-          complete: (turn, item, times) =>
-            finishItem(s, turn, item, undefined, times),
+          complete: (turn, item, times) => finishItem(s, turn, item, times),
           persist,
         });
       // Reattach to a live query without changing its settings or background work.
@@ -2906,7 +2824,6 @@ async function handle(method, p) {
       active.turn = turn;
       active.finalization = null;
       active.idleRequestStartedAt = Date.now();
-      active.reportedTurnOutput = 0;
       active.reservingInput = true;
     }
     s.model = p.model || s.model;
@@ -2944,7 +2861,6 @@ async function handle(method, p) {
           data: { turnStartOutcome: "not_applied" },
         });
       }
-      active.lastUsage = null;
     } else {
       active = newActive(turn);
       queries.set(s.id, active);
