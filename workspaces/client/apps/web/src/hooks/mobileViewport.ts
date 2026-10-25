@@ -63,7 +63,7 @@ export function useMobileViewport(active: boolean, compact = false) {
       );
       // iOS can shrink innerHeight and pan the visual viewport at the same time.
       // Its offset remains relative to the layout viewport after that shrink.
-      const top = Math.max(0, viewport?.pageTop ?? viewport?.offsetTop ?? 0);
+      const top = Math.max(0, viewport?.offsetTop ?? 0);
       if (!Number.isFinite(height) || height <= 0 || !Number.isFinite(top))
         return;
       root.setAttribute("data-viewport-surface", "");

@@ -5,6 +5,11 @@ import {
   scope,
 } from "../sidebar/sidebar-parity-fixture.mjs";
 
+import {
+  keyboardSequences,
+  keyboardCycleFrames,
+} from "./keyboardSequences.mjs";
+
 test.use({ hasTouch: true });
 for (const count of [1, 8]) {
   test(`Duo keyboard keeps ${count} attachment chips inside the composer`, async ({
@@ -61,6 +66,17 @@ for (const count of [1, 8]) {
           configurable: true,
           value: viewport,
         });
+        window.keyboardVisualOrigin = false;
+        const nativeRect = Element.prototype.getBoundingClientRect;
+        Element.prototype.getBoundingClientRect = function () {
+          const r = nativeRect.call(this);
+          return new DOMRect(
+            r.x,
+            r.y - (window.keyboardVisualOrigin ? viewport.offsetTop : 0),
+            r.width,
+            r.height,
+          );
+        };
         window.resizeDuoViewport = (patch) => {
           innerHeight = patch.innerHeight ?? innerHeight;
           scrollY = patch.scrollY ?? scrollY;
@@ -259,6 +275,62 @@ for (const count of [1, 8]) {
         "34px",
       );
       await expect(page.locator(".session-cost-summary")).toBeVisible();
+      const frameRecords = [];
+      for (const [name, steps] of Object.entries(keyboardSequences)) {
+        await page.evaluate((name) => {
+          window.keyboardVisualOrigin =
+            name === "visual origin" || name === "device final";
+          document.querySelector("#root").style.transform =
+            name === "transformed root" ? "translateZ(0)" : "";
+        }, name);
+        const capture = (patch) =>
+          page.evaluate((patch) => {
+            window.resizeDuoViewport(patch);
+            const visibleTop = window.keyboardVisualOrigin
+              ? 0
+              : window.visualViewport.offsetTop;
+            const rect = (selector) => {
+              const r = document
+                .querySelector(selector)
+                .getBoundingClientRect();
+              return {
+                x: r.x,
+                y: r.y - visibleTop,
+                width: r.width,
+                height: r.height,
+              };
+            };
+            return {
+              sidebar: rect("#sidebar"),
+              header: rect(".workspace-header"),
+              composer: rect("#composer"),
+              visibleHeight: window.visualViewport.height,
+            };
+          }, patch);
+        const stable = await capture({});
+        for (const [index, patch] of keyboardCycleFrames(steps).entries()) {
+          const frame = await capture(patch);
+          frameRecords.push({ name, index, patch, frame });
+          expect(frame.sidebar, `${name} frame${index} sidebar`).toEqual(
+            stable.sidebar,
+          );
+          expect(frame.header, `${name} frame${index} header`).toEqual(
+            stable.header,
+          );
+          expect(frame.composer.y).toBeGreaterThanOrEqual(0);
+          expect(frame.composer.y + frame.composer.height).toBeLessThanOrEqual(
+            frame.visibleHeight,
+          );
+        }
+      }
+      await page.evaluate(() => {
+        window.keyboardVisualOrigin = false;
+        document.querySelector("#root").style.transform = "";
+      });
+      await test.info().attach("actual-app-keyboard-frames", {
+        body: JSON.stringify(frameRecords, null, 2),
+        contentType: "application/json",
+      });
       const header = page.locator(".workspace-header");
       await expect(header.locator("#messages-toggle")).toHaveCount(0);
       await header.locator("#sidebar-toggle").focus();

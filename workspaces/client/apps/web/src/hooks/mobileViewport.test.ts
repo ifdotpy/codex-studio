@@ -351,3 +351,14 @@ it("keeps the portrait viewport fallback outside short touch landscape", () => {
     "",
   );
 });
+
+it("does not move fixed chrome when document scroll precedes the visual offset", () => {
+  mount();
+  documentMock.activeElement = new Textarea();
+  windowMock.innerHeight = root.clientHeight = 323;
+  windowMock.scrollY = 346;
+  Object.assign(viewport, { height: 323, pageTop: 346, offsetTop: 0 });
+  viewport.dispatchEvent(new Event("resize"));
+  expect(root.style.get("--mobile-viewport-top")).toBe("0px");
+  expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+});

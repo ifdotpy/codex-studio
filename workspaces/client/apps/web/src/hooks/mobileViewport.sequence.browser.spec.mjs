@@ -5,46 +5,12 @@ import {
   createFixtureViteServer,
 } from "../../tests/playwright.mjs";
 
-const sequences = {
-  "shrink then pan": [
-    { height: 323, innerHeight: 323 },
-    { offsetTop: 346, pageTop: 346, scrollY: 346 },
-  ],
-  "pan then shrink": [
-    { offsetTop: 346, pageTop: 346, scrollY: 346 },
-    { height: 323, innerHeight: 323 },
-  ],
-  "document scroll before offset": [
-    { height: 323, innerHeight: 323 },
-    { pageTop: 346, scrollY: 346 },
-    { offsetTop: 346 },
-  ],
-  "offset before document scroll": [
-    { height: 323, innerHeight: 323 },
-    { pageTop: 346, offsetTop: 346 },
-    { scrollY: 346 },
-  ],
-  "zero offset": [{ height: 323, innerHeight: 323 }],
-  "transformed root": [
-    {
-      height: 323,
-      innerHeight: 323,
-      offsetTop: 346,
-      pageTop: 346,
-      scrollY: 346,
-    },
-  ],
-  "visual origin": [
-    {
-      height: 323,
-      innerHeight: 323,
-      offsetTop: 346,
-      pageTop: 346,
-      scrollY: 346,
-    },
-  ],
-};
-for (const [name, steps] of Object.entries(sequences))
+import {
+  keyboardSequences,
+  keyboardCycleFrames,
+} from "../../tests/layout/keyboardSequences.mjs";
+
+for (const [name, steps] of Object.entries(keyboardSequences))
   test(`keyboard frame stays pinned: ${name}`, async ({ browser }) => {
     const server = await createFixtureViteServer({
       configFile: false,
@@ -59,14 +25,14 @@ for (const [name, steps] of Object.entries(sequences))
           load(id) {
             if (id !== "\0sequence-entry") return;
             return `import React from 'react';import {createRoot} from 'react-dom/client';import {useMobileViewport} from '/src/hooks/mobileViewport.ts';import '/src/hooks/viewport-surface.css';import '/src/layout/layout-contract.generated.css';
- const e=React.createElement;function Fixture(){useMobileViewport(true);return e(React.Fragment,null,e('header',{style:{height:44,flex:'none'}},'Header'),e('main',{id:'conversation',style:{display:'flex',flex:1,minHeight:0,flexDirection:'column'}},e('div',{id:'messages',style:{flex:1,minHeight:0,overflow:'auto'}},'Transcript '.repeat(100)),e('form',{id:'composer',style:{height:120,flex:'none',margin:0}},e('textarea',{id:'message',defaultValue:'Draft'}))));}createRoot(document.querySelector('#root')).render(e(Fixture));`;
+ const e=React.createElement;function Fixture(){useMobileViewport(true);return e(React.Fragment,null,e('aside',{id:'sidebar',style:{width:226,height:'100%',flex:'none'}},'Chats'),e('section',{style:{height:'100%',flex:1,display:'flex',flexDirection:'column'}},e('header',{style:{height:44,flex:'none'}},'Header'),e('main',{id:'conversation',style:{display:'flex',flex:1,minHeight:0,flexDirection:'column'}},e('div',{id:'messages',style:{flex:1,minHeight:0,overflow:'auto'}},'Transcript '.repeat(100)),e('form',{id:'composer',style:{height:${name === "device final" ? 91 : 120},flex:'none',margin:0}},e('textarea',{id:'message',defaultValue:'Draft'})))));}createRoot(document.querySelector('#root')).render(e(Fixture));`;
           },
           configureServer(s) {
             s.middlewares.use((req, res, next) => {
               if (req.url !== "/sequence-check") return next();
               res.setHeader("Content-Type", "text/html");
               res.end(
-                '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>*{box-sizing:border-box}body{margin:0}#root{display:flex;flex-direction:column}#composer{background:white}textarea{font-size:16px}</style><div id="root"></div><script type="module" src="/sequence-entry"></script>',
+                '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>*{box-sizing:border-box}body{margin:0}#root{display:flex;flex-direction:row}#composer{background:white}textarea{font-size:16px}</style><div id="root"></div><script type="module" src="/sequence-entry"></script>',
               );
             });
           },
@@ -108,7 +74,7 @@ for (const [name, steps] of Object.entries(sequences))
               const r = rect.call(this);
               return new DOMRect(
                 r.x,
-                r.y - viewport.pageTop,
+                r.y - viewport.offsetTop,
                 r.width,
                 r.height,
               );
@@ -127,18 +93,39 @@ for (const [name, steps] of Object.entries(sequences))
               composer = document
                 .querySelector("#composer")
                 .getBoundingClientRect();
+            const visibleTop = visualOrigin ? 0 : viewport.offsetTop;
+            const screenRect = (selector) => {
+              const r = document
+                .querySelector(selector)
+                .getBoundingClientRect();
+              return {
+                x: r.x,
+                y: r.y - visibleTop,
+                width: r.width,
+                height: r.height,
+              };
+            };
             return {
+              sidebar: screenRect("#sidebar"),
+              header: screenRect("header"),
+              offsetTop: viewport.offsetTop,
+              pageTop: viewport.pageTop,
+              scrollY,
               top: root.top,
               rootHeight: root.height,
               composerTop: composer.top,
               composerBottom: composer.bottom,
-              visibleTop: visualOrigin ? 0 : viewport.pageTop,
+              visibleTop: visualOrigin ? 0 : viewport.offsetTop,
               visibleHeight: viewport.height,
             };
           };
         },
-        { visualOrigin: name === "visual origin" },
+        { visualOrigin: name === "visual origin" || name === "device final" },
       );
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+        insets: { top: 0, right: 0, bottom: 34, left: 0 },
+      });
       await page.goto(
         `http://127.0.0.1:${server.httpServer.address().port}/sequence-check`,
       );
@@ -151,11 +138,33 @@ for (const [name, steps] of Object.entries(sequences))
         await page.locator("#root").evaluate((n) => {
           n.style.transform = "translateZ(0)";
         });
-      for (const step of steps) {
+      const baseline = await page.evaluate(() => window.stepKeyboard({}));
+      const records = [];
+      const frames = keyboardCycleFrames(steps);
+      for (const [index, step] of frames.entries()) {
         const frame = await page.evaluate(
           (patch) => window.stepKeyboard(patch),
           step,
         );
+        records.push({ index, step, ...frame });
+        expect(frame.sidebar, `${name} frame ${index} sidebar`).toEqual(
+          baseline.sidebar,
+        );
+        expect(frame.header, `${name} frame ${index} header`).toEqual(
+          baseline.header,
+        );
+        if (
+          name === "device final" &&
+          step.height === 323 &&
+          step.offsetTop === 346
+        ) {
+          expect(frame.offsetTop).toBe(346);
+          expect(frame.pageTop).toBe(346);
+          expect(frame.scrollY).toBe(346);
+          expect(frame.top).toBe(0);
+          expect(frame.composerTop).toBe(232);
+          expect(frame.composerBottom).toBe(323);
+        }
         expect(frame.top).toBe(frame.visibleTop);
         expect(frame.rootHeight).toBe(669);
         expect(frame.composerTop).toBeGreaterThanOrEqual(frame.visibleTop);
@@ -163,6 +172,10 @@ for (const [name, steps] of Object.entries(sequences))
           frame.visibleTop + frame.visibleHeight,
         );
       }
+      await test.info().attach("keyboard-frames", {
+        body: JSON.stringify(records, null, 2),
+        contentType: "application/json",
+      });
     } finally {
       await page.close();
       await server.close();
