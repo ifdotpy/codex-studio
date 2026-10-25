@@ -1260,7 +1260,15 @@ it("a late terminal follower consumes owner merged views without repeated recove
     replyKind: "snapshot",
     viewSnapshot: { terminalOutput: { text: "old" } },
   });
-  expect(accept).toHaveBeenLastCalledWith(merged);
+  expect(accept).toHaveBeenLastCalledWith(
+    merged,
+    expect.objectContaining({
+      epoch: "epoch",
+      revision: 10,
+      replyKind: "snapshot",
+      cursor: { workspaceId: "workspace", seq: merged.offset },
+    }),
+  );
   for (const revision of [11, 12]) {
     owner.source.emit("resources", frame(revision, "!", revision - 7));
     await vi.advanceTimersByTimeAsync(0);
@@ -1270,7 +1278,15 @@ it("a late terminal follower consumes owner merged views without repeated recove
       viewSnapshot: { terminalOutput: merged },
     });
     await vi.advanceTimersByTimeAsync(0);
-    expect(accept).toHaveBeenLastCalledWith(merged);
+    expect(accept).toHaveBeenLastCalledWith(
+      merged,
+      expect.objectContaining({
+        epoch: "epoch",
+        revision,
+        replyKind: "snapshot",
+        cursor: { workspaceId: "workspace", seq: merged.offset },
+      }),
+    );
   }
   let finish!: () => void;
   const apply = owner.persist.getMockImplementation()!;
