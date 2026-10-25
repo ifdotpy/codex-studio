@@ -11235,7 +11235,7 @@ export interface components {
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
       /**
        * Workspacemode
-       * @default layr-native
+       * @default worktree
        * @enum {string}
        */
       workspaceMode?: "layr-native" | "layr" | "worktree" | "shared";

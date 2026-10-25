@@ -22884,7 +22884,7 @@
             "default": null
           },
           "workspaceMode": {
-            "default": "layr-native",
+            "default": "worktree",
             "enum": [
               "layr-native",
               "layr",
