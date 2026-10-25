@@ -588,3 +588,18 @@ complete store-boundary matrix. Its mutation manifest is
 [`tests/monitors/mutations.json`](tests/monitors/mutations.json), consumed by the
 shared `tests/turn_lifecycle/mutation_check.py` runner with `--manifest` and
 `--filter 'test(/^monitor_(corpus|recovery)::/)'`.
+
+Usage notifications pass through `runtime-schema::usage::parse_token_usage` before
+budget, context-gauge, and move-cache consumers run. Budget response rows retain the
+first total for each agent/response identity. An identical total replay is a no-op;
+a conflicting total records `responseReplayConflict` and leaves notification
+dispatch running. Gaps mark accounting provisional. Codex thread cumulative
+observations retain the existing reset detection and maximum-based settlement with
+response records. Canonical Claude query totals are informational and never charge
+budget, because continuity across query restarts is unknown.
+
+Pre-contract Claude bridges and their journal replay remain readable through the
+usage owner's transitional `parse_legacy_totals` projection. This old-total path
+retains its existing budget treatment for migration compatibility. It preserves unknown
+token categories as unknown; remove this path after those bridges and their replay
+window have retired. Codex live notifications use its generated native schema.

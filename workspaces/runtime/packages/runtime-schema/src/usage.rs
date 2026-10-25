@@ -336,6 +336,99 @@ pub fn parse_token_usage(
     })
 }
 
+/// Transitional totals from pre-contract Claude bridges. Remove after those
+/// bridges and their journal replay window have retired; these are not categories.
+#[derive(Clone, Debug)]
+pub struct LegacyUsageTotals {
+    pub response_id: Option<String>,
+    pub scope: UsageScope,
+    pub total_tokens: u64,
+    pub last_total_tokens: Option<u64>,
+    pub turn_id: Option<String>,
+    pub model: Option<String>,
+    pub model_context_window: Option<u64>,
+}
+/// Pre-contract totals retain their previous budget treatment for old-ledger and
+/// journal migration only; canonical claudeQuery observations never charge budget.
+/// Remove this exception after pre-contract bridges and their replay window retire.
+/// Read only pre-contract Claude total-only usage. A present studioUsage is
+/// authoritative: malformed typed observations never fall back to legacy input.
+pub fn parse_legacy_totals(
+    provider: UsageProvider,
+    params: &Value,
+) -> Result<LegacyUsageTotals, UsageParseError> {
+    let source = params.get("usageSource").and_then(Value::as_str);
+    if provider != UsageProvider::Claude
+        || params.get("studioUsage").is_some()
+        || source.is_some_and(|s| s != "claudeResponse")
+    {
+        return Err(UsageParseError("not legacy Claude usage".into()));
+    }
+    let usage = &params["tokenUsage"];
+    let response = source == Some("claudeResponse");
+    let total_tokens = count(
+        if response {
+            &params["requestUsage"]
+        } else {
+            &usage["total"]
+        },
+        "totalTokens",
+        false,
+    )?;
+    let last_total_tokens = if response {
+        Some(total_tokens)
+    } else {
+        usage
+            .get("last")
+            .and_then(|v| v.get("totalTokens"))
+            .filter(|v| !v.is_null())
+            .map(|_| count(&usage["last"], "totalTokens", false))
+            .transpose()?
+    };
+    let model_context_window = usage
+        .get("modelContextWindow")
+        .filter(|v| !v.is_null())
+        .map(|_| count(usage, "modelContextWindow", false))
+        .transpose()?;
+    Ok(LegacyUsageTotals {
+        response_id: if response {
+            Some(
+                optional_text(params, "responseId")?
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| UsageParseError("missing legacy responseId".into()))?,
+            )
+        } else {
+            None
+        },
+        scope: UsageScope::ClaudeQuery,
+        total_tokens,
+        last_total_tokens,
+        turn_id: optional_text(params, "turnId")?,
+        model: optional_text(params, "model")?,
+        model_context_window,
+    })
+}
+
+/// Exact pre-contract notice receipt preimage for native live/imported counters.
+/// Hash with the existing Python-compatible JSON and SHA-256 storage owners.
+/// Retained until committed history pages and old Claude journals cannot replay.
+pub fn legacy_notice_identity(
+    agent_id: &str,
+    account_key: &str,
+    turn_id: Option<&str>,
+    params: &Value,
+) -> Option<Value> {
+    let usage = params.get("tokenUsage")?.as_object()?;
+    Some(serde_json::json!([
+        agent_id,
+        account_key,
+        "notice",
+        turn_id,
+        usage.get("total").unwrap_or(&Value::Null),
+        usage.get("last").unwrap_or(&Value::Null)
+    ]))
+}
+
 /// OpenAPI fragments rendered from the accounting owner, including named leaf types.
 pub fn schemas() -> serde_json::Map<String, Value> {
     let mut generator = schemars::generate::SchemaSettings::draft2020_12()
@@ -474,5 +567,24 @@ mod tests {
             generated, vendor,
             "Rust mirror must match the Codex-generated schema owner"
         );
+    }
+}
+
+#[cfg(test)]
+mod legacy_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn old_claude_totals_do_not_invent_categories_or_accept_invalid_typed_usage() {
+        let params = json!({"tokenUsage":{"total":{"totalTokens":25},"last":{"totalTokens":5},"modelContextWindow":1000}});
+        assert!(parse_token_usage(UsageProvider::Claude, &params).is_err());
+        let total =
+            parse_legacy_totals(UsageProvider::Claude, &params).expect("pre-contract total");
+        assert_eq!(total.total_tokens, 25);
+        assert_eq!(total.last_total_tokens, Some(5));
+        assert!(parse_legacy_totals(UsageProvider::Codex, &params).is_err());
+        let mut invalid = params;
+        invalid["studioUsage"] = json!({"kind":"unknown"});
+        assert!(parse_legacy_totals(UsageProvider::Claude, &invalid).is_err());
     }
 }
