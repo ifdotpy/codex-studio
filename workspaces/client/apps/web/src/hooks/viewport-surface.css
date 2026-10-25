@@ -110,9 +110,11 @@ html[data-viewport-surface] body :is(input, textarea, select) {
 }
 
 /* Translation keeps the full conversation, sidebar, and panel layout in place. */
-html #composer[data-keyboard-floating] {
+html #composer[data-keyboard-floating],
+html[data-viewport-short-landscape] #composer {
   position: relative;
   transform: translateY(var(--keyboard-composer-shift, 0px));
+  will-change: transform;
   z-index: var(--layout-layers-app);
 }
 html[data-viewport-keyboard] #conversation #messages {

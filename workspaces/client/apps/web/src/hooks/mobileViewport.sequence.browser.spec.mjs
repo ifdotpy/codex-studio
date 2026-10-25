@@ -13,6 +13,9 @@ import {
 for (const [name, steps] of Object.entries({
   ...keyboardSequences,
   "smooth motion": keyboardSequences["device final"],
+  "silent native pan": keyboardSequences["device final"],
+  "product target": keyboardSequences["zero offset"],
+  "close on blur": keyboardSequences["zero offset"],
 }))
   test(`keyboard frame stays pinned: ${name}`, async ({ browser }) => {
     const server = await createFixtureViteServer({
@@ -28,7 +31,7 @@ for (const [name, steps] of Object.entries({
           load(id) {
             if (id !== "\0sequence-entry") return;
             return `import React from 'react';import {createRoot} from 'react-dom/client';import {useMobileViewport} from '/src/hooks/mobileViewport.ts';import '/src/hooks/viewport-surface.css';import '/src/layout/layout-contract.generated.css';
- const e=React.createElement;function Fixture(){useMobileViewport(true);return e(React.Fragment,null,e('aside',{id:'sidebar',style:{width:226,height:'100%',flex:'none'}},'Chats'),e('section',{style:{height:'100%',flex:1,display:'flex',flexDirection:'column'}},e('header',{style:{height:44,flex:'none'}},'Header'),e('main',{id:'conversation',style:{display:'flex',flex:1,minHeight:0,flexDirection:'column'}},e('div',{id:'messages',style:{flex:1,minHeight:0,overflow:'auto'}},'Transcript '.repeat(100)),e('form',{id:'composer',style:{height:${name === "device final" ? 91 : 120},flex:'none',margin:0}},e('textarea',{id:'message',defaultValue:'Draft'})))));}createRoot(document.querySelector('#root')).render(e(Fixture));`;
+ const e=React.createElement;function Fixture(){useMobileViewport(true);return e(React.Fragment,null,e('aside',{id:'sidebar',style:{width:226,height:'100%',flex:'none'}},'Chats'),e('section',{style:{height:'100%',flex:1,display:'flex',flexDirection:'column'}},e('header',{style:{height:44,flex:'none'}},'Header'),e('main',{id:'conversation',style:{display:'flex',flex:1,minHeight:0,flexDirection:'column'}},e('div',{id:'messages',style:{flex:1,minHeight:0,overflow:'auto'}},'Transcript '.repeat(100)),e('form',{id:'composer',style:{height:${["device final", "product target"].includes(name) ? 91 : 120},flex:'none',margin:0,marginBottom:${name === "product target" ? 24 : 0}}},e('textarea',{id:'message',defaultValue:'Draft'})))));}createRoot(document.querySelector('#root')).render(e(Fixture));`;
           },
           configureServer(s) {
             s.middlewares.use((req, res, next) => {
@@ -45,7 +48,13 @@ for (const [name, steps] of Object.entries({
     const page = await browser.newPage({
       viewport: { width: 867, height: 669 },
       hasTouch: true,
-      reducedMotion: name === "smooth motion" ? "no-preference" : "reduce",
+      reducedMotion: [
+        "smooth motion",
+        "product target",
+        "close on blur",
+      ].includes(name)
+        ? "no-preference"
+        : "reduce",
     });
     try {
       await server.listen();
@@ -84,13 +93,15 @@ for (const [name, steps] of Object.entries({
               );
             };
           }
-          window.stepKeyboard = (patch) => {
+          window.stepKeyboard = (patch, dispatch = true) => {
             innerHeight = patch.innerHeight ?? innerHeight;
             scrollY = patch.scrollY ?? scrollY;
             Object.assign(viewport, patch);
-            viewport.dispatchEvent(new Event("resize"));
-            viewport.dispatchEvent(new Event("scroll"));
-            window.dispatchEvent(new Event("scroll"));
+            if (dispatch) {
+              viewport.dispatchEvent(new Event("resize"));
+              viewport.dispatchEvent(new Event("scroll"));
+              window.dispatchEvent(new Event("scroll"));
+            }
             const root = document
                 .querySelector("#root")
                 .getBoundingClientRect(),
@@ -143,10 +154,101 @@ for (const [name, steps] of Object.entries({
           n.style.transform = "translateZ(0)";
         });
       const baseline = await page.evaluate(() => window.stepKeyboard({}));
+      if (name === "silent native pan") {
+        const rows = await page.evaluate(async () => {
+          const rows = [];
+          for (const offset of [3, 13, 33, 49, 87, 126, 199, 346]) {
+            window.stepKeyboard(
+              {
+                height: 323,
+                innerHeight: 323,
+                offsetTop: offset,
+                pageTop: offset,
+                scrollY: offset,
+              },
+              false,
+            );
+            await new Promise(requestAnimationFrame);
+            rows.push(window.stepKeyboard({}, false));
+          }
+          return rows;
+        });
+        for (const row of rows) {
+          expect(row.sidebar).toEqual(baseline.sidebar);
+          expect(row.header).toEqual(baseline.header);
+          expect(row.composerBottom).toBeLessThanOrEqual(row.visibleTop + 323);
+        }
+        return;
+      }
+      if (name === "product target") {
+        const result = await page.evaluate(() => {
+          const composer = document.querySelector("#composer");
+          window.stepKeyboard({ height: 337, innerHeight: 669 });
+          const animation = composer.getAnimations()[0];
+          animation.pause();
+          animation.currentTime = 50;
+          const computed = window.getComputedStyle;
+          // Model WebKit reporting an older transform than its presentation rectangle.
+          window.getComputedStyle = (node, pseudo) =>
+            node === composer
+              ? new Proxy(computed(node, pseudo), {
+                  get(style, key) {
+                    return key === "transform"
+                      ? "none"
+                      : Reflect.get(style, key);
+                  },
+                })
+              : computed(node, pseudo);
+          window.stepKeyboard({ height: 337, innerHeight: 669 });
+          window.getComputedStyle = computed;
+          composer.getAnimations().forEach((a) => a.finish());
+          const rect = composer.getBoundingClientRect();
+          return {
+            top: rect.top,
+            bottom: rect.bottom,
+            target: composer.style.getPropertyValue(
+              "--keyboard-composer-shift",
+            ),
+          };
+        });
+        expect(result.bottom).toBeCloseTo(337, 0);
+        expect(result.top).toBeCloseTo(246, 0);
+        return;
+      }
+      if (name === "close on blur") {
+        const targets = await page.evaluate(() => {
+          const composer = document.querySelector("#composer");
+          window.stepKeyboard({ height: 337, innerHeight: 669 });
+          composer.getAnimations().forEach((a) => a.finish());
+          document.querySelector("#message").blur();
+          const immediate = composer.style.getPropertyValue(
+            "--keyboard-composer-shift",
+          );
+          window.stepKeyboard({ height: 337, innerHeight: 669 });
+          return {
+            immediate,
+            afterEvent: composer.style.getPropertyValue(
+              "--keyboard-composer-shift",
+            ),
+          };
+        });
+        expect(targets.immediate).toBe("");
+        expect(targets.afterEvent).toBe("");
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await expect(page.locator("#composer")).toHaveCSS(
+          "transform",
+          "matrix(1, 0, 0, 1, 0, 0)",
+        );
+        await expect(page.locator("#composer")).toHaveCSS(
+          "will-change",
+          "transform",
+        );
+        return;
+      }
       if (name === "smooth motion") {
         await expect(page.locator("#composer")).toHaveCSS(
           "transition-duration",
-          "0s, 0.3s",
+          "0s, 0.4s",
         );
         const captures = await page.evaluate(async () => {
           const capture = (patch) => {
@@ -155,7 +257,7 @@ for (const [name, steps] of Object.entries({
             const animations = document.getAnimations();
             animations.forEach((a) => a.pause());
             const rows = [];
-            for (const ms of [0, 75, 150, 225, 300]) {
+            for (const ms of [0, 100, 200, 300, 400]) {
               animations.forEach((a) => (a.currentTime = ms));
               const rect = (selector) => {
                 const r = document
@@ -173,7 +275,7 @@ for (const [name, steps] of Object.entries({
                     .paddingBottom,
                 ),
               });
-              if (ms === 150) {
+              if (ms === 200) {
                 const before = rect("#composer").bottom;
                 window.stepKeyboard(patch);
                 const after = rect("#composer").bottom;

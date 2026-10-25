@@ -180,7 +180,7 @@ for (const count of [1, 8]) {
             .filter((a) => a.effect?.target?.matches?.("#composer,#messages"));
           animations.forEach((a) => a.pause());
           const frames = [];
-          for (const ms of [0, 75, 150, 225, 300]) {
+          for (const ms of [0, 100, 200, 300, 400]) {
             animations.forEach((a) => (a.currentTime = ms));
             await new Promise(requestAnimationFrame);
             await new Promise(requestAnimationFrame);

@@ -15,6 +15,11 @@ export function useMobileViewport(active: boolean, compact = false) {
     const root = document.documentElement;
     const coarsePointer = touchPointerMedia();
     let frame = 0;
+    let focusFrame = 0;
+    let focusDeadline = 0;
+    let hadComposerFocus = false;
+    let composerClosing = false;
+    let sampledGeometry = "";
     let interceptedTextarea: HTMLTextAreaElement | null = null;
     let gestureCount = 0;
     const previousFrame = fullFrames.get(document);
@@ -28,6 +33,8 @@ export function useMobileViewport(active: boolean, compact = false) {
       composer?.removeAttribute("data-keyboard-floating");
       composer?.style.removeProperty("--keyboard-composer-shift");
       messages?.style.removeProperty("--keyboard-scroll-clearance");
+      composer?.getBoundingClientRect();
+      messages?.getBoundingClientRect();
     };
     const clear = () => {
       resetComposer();
@@ -133,16 +140,30 @@ export function useMobileViewport(active: boolean, compact = false) {
             ?.querySelector<HTMLElement>("#messages") || null;
         if (composer) composerResize.observe(composer);
       }
-      if (overlay && composer) {
-        const bounds = composer.getBoundingClientRect();
-        const transform = getComputedStyle(composer).transform;
-        const translation =
-          transform === "none" ? 0 : new DOMMatrixReadOnly(transform).m42;
-        const naturalBottom = bounds.bottom - translation;
+      if (overlay && composer && !composerClosing) {
+        const appRoot = document.getElementById("root");
         // Both rectangles use the browser's coordinate origin. pageTop may use
         // a different origin while iOS pans its layout viewport.
-        const visibleTop =
-          document.getElementById("root")?.getBoundingClientRect().top ?? top;
+        const visibleTop = appRoot?.getBoundingClientRect().top ?? top;
+        // Layout offsets exclude the compositor's in-flight transform. Reading
+        // a presentation rectangle and a computed transform can mix two frames.
+        let naturalBottom = visibleTop + composer.offsetHeight;
+        for (
+          let node: HTMLElement | null = composer;
+          node && node !== appRoot;
+        ) {
+          naturalBottom += node.offsetTop;
+          node = node.offsetParent as HTMLElement | null;
+          if (node) naturalBottom += node.clientTop;
+        }
+        for (
+          let node = composer.parentElement;
+          node;
+          node = node.parentElement
+        ) {
+          naturalBottom -= node.scrollTop;
+          if (node === appRoot) break;
+        }
         const composerShift = Math.min(0, visibleTop + height - naturalBottom);
         const retainTarget = (
           node: HTMLElement,
@@ -163,10 +184,13 @@ export function useMobileViewport(active: boolean, compact = false) {
           const clearance = Math.max(
             0,
             messages.getBoundingClientRect().bottom -
-              (naturalBottom - bounds.height + composerShift),
+              (naturalBottom - composer.offsetHeight + composerShift),
           );
           retainTarget(messages, "--keyboard-scroll-clearance", clearance);
         }
+        // Resolve the CSS transition before WebKit suspends frame callbacks.
+        composer.getBoundingClientRect();
+        messages?.getBoundingClientRect();
       } else resetComposer();
       // Safari can retain a document scroll offset after it reveals a focused input.
       const activeElement = document.activeElement;
@@ -186,7 +210,57 @@ export function useMobileViewport(active: boolean, compact = false) {
       if (!composer?.isConnected) schedule();
     });
     content.observe(root, { childList: true, subtree: true });
+    const sampleNativePan = (time: number) => {
+      focusFrame = 0;
+      if (time > focusDeadline) return;
+      const geometry = [
+        viewport?.height,
+        viewport?.width,
+        viewport?.scale,
+        viewport?.offsetTop,
+        viewport?.pageTop,
+        window.innerHeight,
+        window.scrollX,
+        window.scrollY,
+      ].join("|");
+      if (geometry !== sampledGeometry) {
+        sampledGeometry = geometry;
+        update();
+      }
+      focusFrame = requestAnimationFrame(sampleNativePan);
+    };
+    const startFocusSampling = (focused: boolean) => {
+      if (
+        !viewport ||
+        (!compact &&
+          !hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints))
+      )
+        return;
+      cancelAnimationFrame(focusFrame);
+      sampledGeometry = "";
+      focusDeadline = focused
+        ? Infinity
+        : performance.now() + layoutValues.keyboard.focusSampleWindow;
+      focusFrame = requestAnimationFrame(sampleNativePan);
+    };
+    const sampleAfterFocus = () => {
+      const target = document.activeElement;
+      if (
+        !(target instanceof HTMLTextAreaElement) ||
+        !target.matches("#composer textarea")
+      )
+        return;
+      hadComposerFocus = true;
+      composerClosing = false;
+      startFocusSampling(true);
+    };
     const recoverAfterBlur = () => {
+      if (hadComposerFocus) {
+        hadComposerFocus = false;
+        composerClosing = true;
+        resetComposer();
+        startFocusSampling(false);
+      }
       if (!keyboardRecoveryPending || recoveryFrames.size) return;
       const next = (remaining: number) => {
         const id = requestAnimationFrame(() => {
@@ -260,8 +334,10 @@ export function useMobileViewport(active: boolean, compact = false) {
     ];
     for (const type of gestureEndEvents)
       document.addEventListener(type, endGesture, true);
+    document.addEventListener("focusin", sampleAfterFocus);
     document.addEventListener("focusout", recoverAfterBlur);
     update();
+    sampleAfterFocus();
     coarsePointer.addEventListener("change", schedule);
     viewport?.addEventListener("resize", update);
     viewport?.addEventListener("scroll", update);
@@ -270,6 +346,7 @@ export function useMobileViewport(active: boolean, compact = false) {
     window.addEventListener("scroll", update);
     return () => {
       cancelAnimationFrame(frame);
+      cancelAnimationFrame(focusFrame);
       recoveryFrames.forEach(cancelAnimationFrame);
       document.removeEventListener("pointerdown", focusWithoutNativePan, {
         capture: true,
@@ -279,6 +356,7 @@ export function useMobileViewport(active: boolean, compact = false) {
       });
       for (const type of gestureEndEvents)
         document.removeEventListener(type, endGesture, true);
+      document.removeEventListener("focusin", sampleAfterFocus);
       document.removeEventListener("focusout", recoverAfterBlur);
       composerResize.disconnect();
       content.disconnect();

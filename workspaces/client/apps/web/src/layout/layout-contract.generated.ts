@@ -810,7 +810,7 @@ export const layoutTokens = {
       "Conversation header and timeline row height in short touch landscape",
   },
   "keyboard.motionDuration": {
-    value: 300,
+    value: 400,
     unit: "ms",
     purpose:
       "Composer translation and transcript padding duration during the native keyboard animation",
@@ -820,6 +820,12 @@ export const layoutTokens = {
     unit: "px",
     purpose:
       "Maximum transform matrix serialization error when retaining the current keyboard animation target",
+  },
+  "keyboard.focusSampleWindow": {
+    value: 600,
+    unit: "ms",
+    purpose:
+      "Raw geometry sampling time after composer blur; focused composers continue sampling until blur",
   },
 } as const;
 export const layoutValues = {
@@ -884,8 +890,9 @@ export const layoutValues = {
   keyboard: {
     occlusionMin: 100,
     compactMaxHeight: 400,
-    motionDuration: 300,
+    motionDuration: 400,
     motionTargetTolerance: 0.1,
+    focusSampleWindow: 600,
   },
   viewport: {
     zoomTolerance: 0.01,

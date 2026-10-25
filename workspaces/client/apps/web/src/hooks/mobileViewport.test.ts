@@ -122,16 +122,17 @@ beforeEach(() => {
 afterEach(() => {
   cleanup?.();
   cleanup = undefined;
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 function mount(active = true, compact = false) {
   useMobileViewport(active, compact);
   cleanup = effect.run?.();
 }
-function flush() {
+function flush(time = 0) {
   const pending = [...frames.values()];
   frames.clear();
-  pending.forEach((callback) => callback(0));
+  pending.forEach((callback) => callback(time));
 }
 function resize(patch: Partial<Viewport>, event = "resize") {
   Object.assign(viewport, patch);
@@ -372,6 +373,76 @@ it("does not move fixed chrome when document scroll precedes the visual offset",
   viewport.dispatchEvent(new Event("resize"));
   expect(root.style.get("--mobile-viewport-top")).toBe("0px");
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+});
+
+it("samples a native focus pan before any viewport event, then stops after blur", () => {
+  vi.spyOn(performance, "now").mockReturnValue(0);
+  mount();
+  documentMock.activeElement = new Textarea();
+  documentMock.dispatchEvent(new Event("focusin"));
+  for (const [index, offset] of [3, 13, 33, 49, 87, 126, 199, 346].entries()) {
+    viewport.offsetTop = offset;
+    viewport.height = 323;
+    windowMock.innerHeight = 323;
+    windowMock.scrollY = offset;
+    flush((index + 1) * 16);
+    expect(root.style.get("--mobile-viewport-top")).toBe(`${offset}px`);
+    expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+  }
+  documentMock.activeElement = null;
+  documentMock.dispatchEvent(new Event("focusout"));
+  flush(601);
+  flush(602);
+  expect(frames.size).toBe(0);
+});
+
+it("cancels the native focus sampler when the viewport owner unmounts", () => {
+  mount();
+  documentMock.activeElement = new Textarea();
+  documentMock.dispatchEvent(new Event("focusin"));
+  expect(frames.size).toBeGreaterThan(0);
+  cleanup?.();
+  cleanup = undefined;
+  expect(frames.size).toBe(0);
+});
+
+it("samples the keyboard close without resize or scroll events", () => {
+  vi.spyOn(performance, "now").mockReturnValue(0);
+  mount();
+  documentMock.activeElement = new Textarea();
+  documentMock.dispatchEvent(new Event("focusin"));
+  viewport.height = 323;
+  viewport.offsetTop = 346;
+  windowMock.innerHeight = 323;
+  flush(16);
+  documentMock.activeElement = null;
+  documentMock.dispatchEvent(new Event("focusout"));
+  viewport.height = 669;
+  viewport.offsetTop = 0;
+  windowMock.innerHeight = 669;
+  flush(32);
+  expect(root.style.get("--mobile-viewport-top")).toBe("0px");
+  expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+});
+
+it("finds the first raw keyboard height loss after a long focus delay", () => {
+  const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+  mount();
+  documentMock.activeElement = new Textarea();
+  documentMock.dispatchEvent(new Event("focusin"));
+  flush(1000);
+  viewport.height = 337;
+  windowMock.innerHeight = 669;
+  flush(1519);
+  expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+  expect(root.setAttribute).toHaveBeenCalledWith("data-viewport-keyboard", "");
+  expect(frames.size).toBeGreaterThan(0);
+  clock.mockReturnValue(1600);
+  documentMock.activeElement = null;
+  documentMock.dispatchEvent(new Event("focusout"));
+  flush(2201);
+  flush(2202);
+  expect(frames.size).toBe(0);
 });
 
 function gesture(target: unknown, type = "pointerdown") {

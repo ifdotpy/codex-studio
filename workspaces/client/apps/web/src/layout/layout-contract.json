@@ -736,7 +736,7 @@
       "purpose": "Conversation header and timeline row height in short touch landscape"
     },
     "keyboard.motionDuration": {
-      "value": 300,
+      "value": 400,
       "unit": "ms",
       "purpose": "Composer translation and transcript padding duration during the native keyboard animation"
     },
@@ -744,6 +744,11 @@
       "value": 0.1,
       "unit": "px",
       "purpose": "Maximum transform matrix serialization error when retaining the current keyboard animation target"
+    },
+    "keyboard.focusSampleWindow": {
+      "value": 600,
+      "unit": "ms",
+      "purpose": "Raw geometry sampling time after composer blur; focused composers continue sampling until blur"
     }
   },
   "queries": {
