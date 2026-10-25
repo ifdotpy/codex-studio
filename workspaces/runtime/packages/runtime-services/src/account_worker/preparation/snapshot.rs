@@ -641,10 +641,12 @@ pub(super) fn guidance(
 ) -> Result<thread::GuidanceBundle, WorkerError> {
     let role = role_guidance(resources, record)?;
     let mut thread_config = resources.thread_config.clone();
-    // A managed worker (a child agent) runs without the user's MCP servers, so
-    // none of them is spawned per thread. The lead and root chats keep them.
+    // A managed host worker runs without the host account's user MCP servers.
+    // Isolated VM profiles do not inherit those transports.
     // (Claude workers get the same rule from the adapter's `userMcp` param.)
-    if record["parentId"].is_string() && ProviderKind::of_record(record) == Ok(ProviderKind::Codex)
+    if record["parentId"].is_string()
+        && ProviderKind::of_record(record) == Ok(ProviderKind::Codex)
+        && record["executionMode"] != "vm"
     {
         let servers: Map<String, Value> = resources
             .filesystem_inputs
@@ -1921,6 +1923,36 @@ mod resource_tests {
             servers(json!({"id":"c", "parentId":"lead", "provider":"claude"})),
             None
         );
+    }
+
+    #[test]
+    fn vm_codex_children_do_not_inherit_host_mcp_server_overrides() {
+        let crate::browser::BrowserHomes {
+            root,
+            shared,
+            account,
+            ..
+        } = crate::browser::browser_homes();
+        let mut resources = PreparationResources::bundled(
+            account.to_string_lossy().into_owned(),
+            ModelCatalogService::new(),
+        )
+        .expect("resources");
+        resources.shared_home = shared.to_string_lossy().into_owned();
+        for role in ["implementer", "reviewer"] {
+            let record = json!({"id":"vm-child", "parentId":"lead", "isLead":false,
+                "role":role, "provider":"codex", "executionMode":"vm"});
+            let bundle = guidance(&resources, &record, root.path()).expect("VM guidance");
+            assert_eq!(bundle.browser, None);
+            assert!(
+                !bundle
+                    .thread_config
+                    .keys()
+                    .any(|key| key == "mcp_servers" || key.starts_with("mcp_servers.")),
+                "VM {role} must not fabricate host MCP transports: {:?}",
+                bundle.thread_config
+            );
+        }
     }
 
     #[test]

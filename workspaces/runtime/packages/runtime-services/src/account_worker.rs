@@ -56,6 +56,10 @@ impl From<rusqlite::Error> for WorkerError {
 }
 
 pub const COMMAND_CAPACITY: usize = 16;
+/// Journal and receipt namespace of one VM actor within its owning account.
+pub(crate) fn vm_journal_scope(account: &str, actor: &str) -> String {
+    format!("{account}:vm:{actor}")
+}
 /// Canvas tables whose committed changes may alter idle-unload eligibility.
 const IDLE_STATE_OBSERVED_TABLES: [ObservedTable; 6] = [
     ObservedTable::Agents,
@@ -3453,7 +3457,7 @@ impl Worker {
     fn journal_scope(&self, actor_id: Option<&str>) -> String {
         actor_id.map_or_else(
             || self.account.clone(),
-            |actor| format!("{}:vm:{actor}", self.account),
+            |actor| vm_journal_scope(&self.account, actor),
         )
     }
     async fn journal_with_policy(

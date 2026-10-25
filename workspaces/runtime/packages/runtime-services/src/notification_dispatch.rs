@@ -64,11 +64,94 @@ pub struct NativeProcessSource {
 #[derive(Clone, Default)]
 pub struct PublicationContext {
     pub(crate) native_source: Option<NativeProcessSource>,
+    vm_journal: Option<VmJournalScope>,
 }
+
+/// Trusted actor binding, separate from the account used for authorization.
+#[derive(Clone)]
+struct VmJournalScope {
+    account: String,
+    actor: String,
+    epoch: i64,
+    provider_handle: String,
+}
+
 impl PublicationContext {
     pub fn with_native_source(mut self, source: Option<NativeProcessSource>) -> Self {
         self.native_source = source;
         self
+    }
+
+    /// Only the account journal owner supplies this exact VM namespace.
+    pub(crate) fn with_vm_journal(
+        mut self,
+        account: &str,
+        actor: &str,
+        epoch: i64,
+        journal_scope: &str,
+    ) -> Result<Self, NotificationDispatchError> {
+        if account.is_empty()
+            || actor.is_empty()
+            || epoch < 0
+            || journal_scope != crate::account_worker::vm_journal_scope(account, actor)
+        {
+            return Err(NotificationDispatchError::InvalidNotification);
+        }
+        self.vm_journal = Some(VmJournalScope {
+            account: account.into(),
+            actor: actor.into(),
+            epoch,
+            provider_handle: studio_runtime_process::ProviderHandle::for_account(journal_scope)
+                .as_str()
+                .into(),
+        });
+        Ok(self)
+    }
+
+    fn validate_actor(&self, agent: &Value, actor: &str) -> Result<(), NotificationDispatchError> {
+        let valid = match &self.vm_journal {
+            Some(scope) => {
+                agent["id"] == scope.actor
+                    && actor == scope.actor
+                    && agent["epoch"] == scope.epoch
+                    && agent["executionMode"] == "vm"
+                    && agent
+                        .get("accountKey")
+                        .and_then(Value::as_str)
+                        .unwrap_or("default")
+                        == scope.account
+            }
+            None => agent["executionMode"] != "vm",
+        };
+        if !valid {
+            return Err(NotificationDispatchError::InvalidNotification);
+        }
+        Ok(())
+    }
+
+    /// Keep cursor/observation identities scoped without granting another account.
+    fn scoped_delivery(
+        &self,
+        tx: &Transaction<'_>,
+        actor: &str,
+        authority: &ProviderDeliveryIdentity,
+    ) -> Result<Option<ProviderDeliveryIdentity>, NotificationDispatchError> {
+        let Some(scope) = &self.vm_journal else {
+            return Ok(None);
+        };
+        if authority.provider_handle
+            != studio_runtime_process::ProviderHandle::for_account(&scope.account).as_str()
+        {
+            return Err(NotificationDispatchError::InvalidNotification);
+        }
+        let agent = NotificationDispatchRepository::agent_record(tx, actor)?
+            .ok_or(NotificationDispatchError::InvalidNotification)?;
+        self.validate_actor(&agent, actor)?;
+        Ok(Some(ProviderDeliveryIdentity {
+            provider_handle: scope.provider_handle.clone(),
+            generation: authority.generation,
+            cursor: authority.cursor,
+        }))
     }
 }
 
@@ -388,6 +471,8 @@ pub fn dispatch_notification_with_effects(
     let mut post_commit = NotificationPublicationBatch::default();
     let mut command_output_monitor_present = None;
     let result = in_savepoint(transaction, || {
+        let scoped = publication.scoped_delivery(transaction, agent_id, identity)?;
+        let delivery = scoped.as_ref().unwrap_or(identity);
         let outcome = (|| {
             if !observed_at.is_finite()
                 || observed_at < 0.0
@@ -402,9 +487,9 @@ pub fn dispatch_notification_with_effects(
             }
             let content_signature = notification_content_signature(agent_id, notification)?;
             let identity_signature = sha256_json(&json!({
-                "providerHandle": identity.provider_handle,
-                "generation": identity.generation,
-                "cursor": identity.cursor,
+                "providerHandle": delivery.provider_handle,
+                "generation": delivery.generation,
+                "cursor": delivery.cursor,
             }))?;
             let receipt_id = format!("{DELIVERY_RECEIPT_PREFIX}{identity_signature}");
             if let Some(receipt) =
@@ -445,6 +530,7 @@ pub fn dispatch_notification_with_effects(
                         DispatchOutcome::Written,
                     );
                 };
+                publication.validate_actor(&agent, agent_id)?;
                 if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
                     return save_outcome(
                         transaction,
@@ -466,6 +552,7 @@ pub fn dispatch_notification_with_effects(
             }
             let mut agent = NotificationDispatchRepository::agent_record(transaction, agent_id)?
                 .ok_or_else(|| stored("runtime_agents", agent_id))?;
+            publication.validate_actor(&agent, agent_id)?;
             if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
                 return save_outcome(
                     transaction,
@@ -506,7 +593,7 @@ pub fn dispatch_notification_with_effects(
                     Some(&agent),
                     Some(&agent),
                     &notification_payload(notification),
-                    identity,
+                    delivery,
                     observed_at,
                     &DispatchOutcome::Written,
                 ) {
@@ -807,7 +894,7 @@ pub fn dispatch_notification_with_effects(
                 before.as_ref(),
                 after,
                 &notification_payload(notification),
-                identity,
+                delivery,
                 observed_at,
                 &outcome,
             );

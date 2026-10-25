@@ -1636,8 +1636,13 @@ pub(super) async fn journal_batch(
     let account_for_read = account.to_owned();
     let (publication, limits_observation) =
         crate::diagnostics::measure_runtime_stage_async("journal.snapshot", async {
-            let publication = crate::notification_dispatch::PublicationContext::default()
+            let mut publication = crate::notification_dispatch::PublicationContext::default()
                 .with_native_source(native_source);
+            if let Some((actor, epoch)) = expected_vm_actor {
+                publication = publication.with_vm_journal(account, actor, epoch, journal_scope)?;
+            } else if journal_scope != account {
+                return Err(invalid(journal_scope));
+            }
             let limits_observation = if needs_limits {
                 Some(
                     store
@@ -2235,7 +2240,7 @@ fn journal_one(
                                 false,
                             )?;
                             if let Some(turn) = turn {
-                                next.settle_turn(journal_scope, thread, turn);
+                                next.settle_turn(account, thread, turn);
                             }
                             effect = Some(Effect::Wake(identity.agent_id, identity.epoch));
                         }
@@ -2247,7 +2252,7 @@ fn journal_one(
                             publication,
                             streams,
                             &ProviderDeliveryIdentity {
-                                provider_handle: ProviderHandle::for_account(journal_scope)
+                                provider_handle: ProviderHandle::for_account(account)
                                     .as_str()
                                     .into(),
                                 generation: entry.generation.0,
