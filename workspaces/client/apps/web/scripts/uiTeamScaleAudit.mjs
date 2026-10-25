@@ -1,3 +1,6 @@
+import { RETAINED_INPUT_STATUSES } from "./scaleVerifierHelpers.mjs";
+import { readRetainedInputRows } from "./verify-rust-chat-scale.mjs";
+
 // Strict post-run audit of verify-ui-team-scale.mjs: pure functions over the
 // lead and worker transcripts, the lead's tool requests, the backend journal,
 // diagnostics snapshots and the observed worker timeline. Each check returns
@@ -52,8 +55,8 @@ export const DIAGNOSTICS_ZERO_DELTA_PATHS = Object.freeze([
   "/sqliteContention/slowTransactions/activeTracking/untrackedStarts",
   "/httpRequestMetrics/untrackedRoutes",
 ]);
-// Diagnostics gauges that must be zero once the team has finished.
-export const DIAGNOSTICS_ZERO_END_PATHS = Object.freeze([
+// Shared-server queue gauges are evidence only; owned snapshot rows decide pass.
+export const DIAGNOSTICS_QUEUE_GAUGE_PATHS = Object.freeze([
   "/queues/durableInputPending",
   "/queues/recoveryPending",
 ]);
@@ -69,15 +72,28 @@ export function pointer(value, path) {
 
 export function diagnosticsCounters(diagnostics) {
   return Object.fromEntries(
-    [...DIAGNOSTICS_ZERO_DELTA_PATHS, ...DIAGNOSTICS_ZERO_END_PATHS].map(
+    [...DIAGNOSTICS_ZERO_DELTA_PATHS, ...DIAGNOSTICS_QUEUE_GAUGE_PATHS].map(
       (path) => [path, pointer(diagnostics, path)],
     ),
   );
 }
 
-// Counter deltas and end gauges: a growing counter or a non-zero end gauge
-// fails the run; a counter missing from either snapshot is an anomaly.
-export function auditDiagnostics(before, after) {
+// The fenced snapshot publishes the same durable input status as diagnostics.
+// Keep only identities and status; never retain another chat's input content.
+export function pendingTeamInputs(events, agentIds) {
+  const owned = new Set(agentIds);
+  return events
+    .filter(
+      (event) =>
+        owned.has(event.agent) &&
+        RETAINED_INPUT_STATUSES.includes(event.status),
+    )
+    .map(({ id, agent, status }) => ({ id, agent, status }));
+}
+
+// Shared gauges cannot attribute growth. Only the complete snapshot of owned
+// pending inputs decides this audit, regardless of activity in other chats.
+export function auditDiagnostics(before, after, pendingInputs = []) {
   const failures = [];
   const anomalies = [];
   for (const path of DIAGNOSTICS_ZERO_DELTA_PATHS) {
@@ -88,14 +104,45 @@ export function auditDiagnostics(before, after) {
     else if (to > from)
       failures.push({ kind: "diagnosticsCounterGrew", path, from, to });
   }
-  for (const path of DIAGNOSTICS_ZERO_END_PATHS) {
-    const value = after?.[path] ?? null;
-    if (value === null)
-      anomalies.push({ kind: "diagnosticsCounterMissing", path });
-    else if (value !== 0)
-      failures.push({ kind: "diagnosticsGaugeNotZero", path, value });
-  }
-  return { failures, anomalies };
+  const queueGauges = DIAGNOSTICS_QUEUE_GAUGE_PATHS.map((path) => {
+    const from = before?.[path] ?? null;
+    const to = after?.[path] ?? null;
+    return {
+      path,
+      before: from,
+      after: to,
+      delta: from === null || to === null ? null : to - from,
+    };
+  });
+  if (pendingInputs.length)
+    failures.push({
+      kind: "teamInputsPending",
+      count: pendingInputs.length,
+      inputs: pendingInputs,
+    });
+  return { failures, anomalies, queueGauges };
+}
+
+// The final-audit caller uses this complete source, never bounded event SSE.
+export function auditTeamDiagnostics({
+  before,
+  after,
+  stateDir,
+  workspaceId,
+  agentIds,
+  deadlineAt,
+}) {
+  const pending = pendingTeamInputs(
+    readRetainedInputRows(stateDir, workspaceId, deadlineAt),
+    agentIds,
+  );
+  return {
+    ...auditDiagnostics(before, after, pending),
+    teamInputAudit: {
+      source: "readRetainedInputRows: fenced read-only runtime_events snapshot",
+      pending,
+    },
+  };
 }
 
 function parseJson(text) {
@@ -157,13 +204,60 @@ function repeated(values) {
   return [...counts].filter(([, count]) => count > 1).map(([value]) => value);
 }
 
-// One worker: exactly one turn, no failed turn, its task delivered once and
-// every tool call answered.
-export function auditWorker(id, items) {
+// One worker: one task turn plus any unique lead-message turns. Delivery
+// duplication, unexplained turns, failed turns and unanswered tools still fail.
+export function auditWorker(id, items, leadId) {
   const failures = [];
   const anomalies = [];
   const turns = turnsOf(items);
-  if (turns.size > 1)
+  const triggeringInputs = new Map();
+  for (const [index, item] of items.entries()) {
+    if (item.role !== "user") continue;
+    // Older transcript rows omit turnId on the user item; the following
+    // output identifies that input batch's turn, before the next user item.
+    const following = items.slice(index + 1);
+    const boundary = following.findIndex((next) => next.role === "user");
+    const nextTurn = (
+      boundary < 0 ? following : following.slice(0, boundary)
+    ).find((next) => next.turnId)?.turnId;
+    for (const input of item.inputs || []) {
+      const turn = input.turnId || item.turnId || nextTurn;
+      if (turn)
+        triggeringInputs.set(turn, [
+          ...(triggeringInputs.get(turn) || []),
+          input,
+        ]);
+    }
+  }
+  const duplicateIds = new Set(
+    repeated(inputsOf(items).map((input) => input.id)),
+  );
+  const leadTurns = new Set();
+  for (const turnId of [...turns].slice(1)) {
+    const inputs = triggeringInputs.get(turnId) || [];
+    if (
+      inputs.length &&
+      inputs.every(
+        (input) =>
+          input.id &&
+          !duplicateIds.has(input.id) &&
+          input.kind === "agent_message" &&
+          leadId &&
+          parseJson(input.text)?.sender === leadId,
+      )
+    ) {
+      leadTurns.add(turnId);
+      for (const input of inputs)
+        anomalies.push({
+          kind: "leadMessageTriggeredWorkerTurn",
+          agent: id,
+          turnId,
+          input: input.id,
+          text: parseJson(input.text).text ?? input.text,
+        });
+    }
+  }
+  if (turns.size - leadTurns.size > 1)
     failures.push({
       kind: "duplicateWorkerTurns",
       agent: id,
@@ -314,6 +408,31 @@ export function auditToolRequests(requests, calls) {
       });
   }
   return { failures, anomalies };
+}
+
+// journalctl --grep uses status 1 for an empty result as well as failures.
+export function auditJournalResult(result, unit) {
+  if (
+    result.status === 0 ||
+    (result.status === 1 &&
+      result.stdout === "" &&
+      result.stderr === "" &&
+      !result.error)
+  )
+    return auditJournal((result.stdout || "").split("\n"));
+  return {
+    failures: [],
+    anomalies: [
+      {
+        kind: "journalUnavailable",
+        unit,
+        error: String(result.error?.message ?? result.stderr ?? "").slice(
+          0,
+          300,
+        ),
+      },
+    ],
+  };
 }
 
 // Journal lines of the run window ("<iso time> <host> <unit>[pid]: text").

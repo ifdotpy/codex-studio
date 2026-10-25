@@ -1,9 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ECHO_LATENCY_LIMIT_MS,
   FRAME_GAP_LIMIT_MS,
   SPAWN_BATCH_MAX,
   buildLeadPrompt,
+  configureNewChat,
+  createEntityReader,
+  createEntityFrameReader,
+  openEntityStream,
+  cleanupVerified,
+  readTeamUiCounts,
+  approvedModelUiValues,
+  approvedStoredModel,
+  assertCreatedTeamProfiles,
+  OWNED_CLEANUP_VERIFIED_STATE,
+  summaryText,
   cpuDeltaMs,
   cpuPercent,
   createTeamTracker,
@@ -250,4 +261,523 @@ describe("ui team scale helpers", () => {
     expect(() => parseArgs(["--lead", "claude-haiku"], {})).toThrow(/--lead/);
     expect(() => parseArgs(["--bogus"], {})).toThrow(/Unknown option/);
   });
+});
+
+// A strict dialog driver rejects obsolete popovers and records user actions.
+// Only controls belonging to the selected role/provider exist in this fixture.
+function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
+  const actions = [];
+  let role = "Lead";
+  let provider = "Codex";
+  const locate = (scope, kind, { name, selected } = {}) => {
+    if (scope === "dialog") {
+      const prefix = role === "Lead" ? "Main agent" : "Default subagent";
+      const account =
+        role === "Lead" ? "Main agent account" : "Subagent account";
+      const names = {
+        radiogroup: [
+          "Agent role",
+          `${account} provider`,
+          `${prefix} reasoning`,
+        ],
+        group: [account],
+        listbox: [`${prefix} model`],
+        switch: ["Fast mode"],
+      };
+      expect(names[kind], `Unexpected control ${kind}:${name}`).toContain(name);
+    }
+    const path = `${scope}/${kind}:${name}`;
+    const node = {
+      getByRole: (kind, options) => locate(path, kind, options),
+      locator: (selector) => ({
+        click: async () => {
+          const name = /^label\[for="([^"]+)"\]$/.exec(selector)?.[1];
+          expect(name).toBeDefined();
+          actions.push(name);
+          if (
+            scope === "dialog" &&
+            kind === "radiogroup" &&
+            ["Lead", "Workers"].includes(name)
+          )
+            role = name;
+          else if (kind === "radiogroup" && ["Codex", "Claude"].includes(name))
+            provider = name;
+          else if (kind !== "radiogroup" || name !== "Low")
+            throw new Error(`Unexpected segment ${path}/${name}`);
+        },
+      }),
+      and: (selector) => {
+        expect(selector).toMatch(/^\[data-(?:account-key|value)=/);
+        return node;
+      },
+      first: () => node,
+      getAttribute: async () => (kind === "radio" ? name : selectedAccount),
+      count: async () => (fast ? 1 : 0),
+      setChecked: async (checked) => actions.push(`Fast mode ${checked}`),
+      click: async () => {
+        if (kind === "button") {
+          expect(name).toEqual(/^Select account /);
+          actions.push(`${role} account ${provider}`);
+        } else if (kind === "option") actions.push(`${role} model ${provider}`);
+        else throw new Error(`Unexpected click ${path}`);
+      },
+      waitFor: async (options) => {
+        if (kind === "option") expect(selected).toBe(true);
+        else if (kind === "radio") {
+          expect(name).toBeDefined();
+          expect(options).toEqual({ state: "attached" });
+        } else throw new Error(`Unexpected wait ${path}`);
+      },
+    };
+    return node;
+  };
+  return {
+    actions,
+    locator: (selector) => selector,
+    getByRole: (kind, options) => locate("dialog", kind, options),
+  };
+}
+
+describe("current New chat setup", () => {
+  const codex = {
+    profile: { provider: "codex", fastMode: false },
+    accountKey: "default",
+    uiModel: "gpt-6-luna",
+    effort: "low",
+  };
+  const claude = (model) => ({
+    profile: { provider: "claude", fastMode: false },
+    accountKey: "claude-local",
+    uiModel: model,
+    effort: "low",
+  });
+
+  it("configures Lead and Workers in place, including account, effort and Fast mode", async () => {
+    const dialog = setupDialog();
+    await configureNewChat(dialog, codex, codex);
+    expect(dialog.actions).toEqual([
+      "Lead",
+      "Codex",
+      "Lead account Codex",
+      "Lead model Codex",
+      "Low",
+      "Fast mode false",
+      "Workers",
+      "Codex",
+      "Workers account Codex",
+      "Workers model Codex",
+      "Low",
+      "Fast mode false",
+    ]);
+  });
+
+  it("switches both roles to Claude and accepts absent optional modes and a read-only selected account", async () => {
+    const dialog = setupDialog({
+      fast: false,
+      selectedAccount: "claude-local",
+    });
+    await configureNewChat(dialog, claude("sonnet"), claude("haiku"));
+    expect(dialog.actions).toEqual([
+      "Lead",
+      "Claude",
+      "Lead model Claude",
+      "Low",
+      "Workers",
+      "Claude",
+      "Workers model Claude",
+      "Low",
+    ]);
+  });
+});
+
+const resourceFrame = (documents) => ({
+  protocol: 4,
+  workspaceId: "workspace",
+  epoch: "epoch",
+  revision: 3,
+  reason: "change",
+  resources: [{ kind: "state" }],
+  resourceVersions: [
+    { revision: 3, entityChanges: { after: 1, through: 3, documents } },
+  ],
+});
+const upsert = (collection, id, value) => ({
+  collection,
+  id,
+  seq: 3,
+  op: "upsert",
+  value: { id, ...value },
+});
+
+it("merges current summary/detail streams for owned agents and observes input events and deletions", async () => {
+  const feeds = new Map();
+  const observed = [];
+  const events = [];
+  const close = vi.fn();
+  const pull = createEntityReader(
+    async (resource, receive) => {
+      feeds.set(JSON.stringify(resource), receive);
+      return { close };
+    },
+    (agent) => observed.push(agent),
+    (event) => events.push(event),
+  );
+  await pull();
+  const state = feeds.get(JSON.stringify({ kind: "state" }));
+  state(
+    "resources",
+    resourceFrame([
+      upsert("agentSummary", "foreign", { rootId: "other" }),
+      upsert("agentSummary", "lead", {
+        rootId: "lead",
+        model: "gpt-6-luna",
+        status: "running",
+      }),
+      upsert("event", "input", { agent: "lead", status: "pending" }),
+    ]),
+  );
+  expect(observed).toEqual([]);
+  pull.watch("lead");
+  await pull();
+  const lead = feeds.get(
+    JSON.stringify({ kind: "agentDetail", agentId: "lead" }),
+  );
+  lead(
+    "resources",
+    resourceFrame([
+      upsert("agentDetail", "lead", {
+        effort: "low",
+        fastMode: false,
+        workerDefaults: { model: "gpt-6-luna" },
+      }),
+    ]),
+  );
+  expect(observed.at(-1)).toMatchObject({
+    id: "lead",
+    model: "gpt-6-luna",
+    effort: "low",
+    fastMode: false,
+    status: "running",
+  });
+  state(
+    "resources",
+    resourceFrame([
+      upsert("agentSummary", "worker", { rootId: "lead", status: "running" }),
+    ]),
+  );
+  await pull();
+  const worker = feeds.get(
+    JSON.stringify({ kind: "agentDetail", agentId: "worker" }),
+  );
+  worker(
+    "resources",
+    resourceFrame([upsert("agentDetail", "worker", { lastAnswer: "TOKEN" })]),
+  );
+  expect(observed.at(-1)).toMatchObject({
+    id: "worker",
+    rootId: "lead",
+    lastAnswer: "TOKEN",
+  });
+  state(
+    "resources",
+    resourceFrame([
+      { collection: "agentSummary", id: "lead", seq: 4, op: "delete" },
+      { collection: "event", id: "input", seq: 4, op: "delete" },
+    ]),
+  );
+  expect(observed.at(-1)).toMatchObject({ id: "lead", deleted: true });
+  expect(events).toEqual([
+    { id: "input", agent: "lead", status: "pending" },
+    { id: "input", deleted: true },
+  ]);
+  expect(feeds.size).toBe(3);
+  await pull.close();
+  expect(close).toHaveBeenCalledTimes(3);
+});
+
+it("assembles the server's multipart entity-transfer envelope before applying documents", () => {
+  const accept = vi.fn();
+  const receive = createEntityFrameReader(accept);
+  const documents = [upsert("agentSummary", "lead", { model: "gpt-6-luna" })];
+  const data = JSON.stringify({ after: 1, through: 3, documents });
+  const frame = {
+    protocol: 4,
+    transferId: "transfer",
+    pageIndex: 0,
+    partCount: 2,
+  };
+  receive("entity-transfer", {
+    ...frame,
+    partIndex: 0,
+    data: data.slice(0, 20),
+  });
+  expect(accept).not.toHaveBeenCalled();
+  receive("entity-transfer", {
+    ...frame,
+    partIndex: 1,
+    complete: true,
+    data: data.slice(20),
+  });
+  expect(accept).toHaveBeenCalledWith(documents);
+  expect(() =>
+    receive("entity-transfer", { ...frame, partIndex: 1, data: "" }),
+  ).toThrow(/out of order/);
+});
+
+it("reads split SSE bytes through the advertised protocol and closes its owned connection", async () => {
+  const received = Promise.withResolvers();
+  const failed = vi.fn();
+  const documents = [upsert("agentDetail", "lead", { effort: "low" })];
+  const wire = `event: resources\ndata: ${JSON.stringify(resourceFrame(documents))}\n\n`;
+  const mock = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (url, options) => {
+      expect(url.searchParams.get("protocol")).toBe("4");
+      expect(JSON.parse(url.searchParams.get("resources"))).toEqual([
+        { kind: "agentDetail", agentId: "lead" },
+      ]);
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            options.signal.addEventListener("abort", () =>
+              controller.error(new Error("aborted")),
+            );
+            const bytes = new TextEncoder().encode(wire);
+            controller.enqueue(bytes.slice(0, 19));
+            controller.enqueue(bytes.slice(19));
+          },
+        }),
+      );
+    });
+  try {
+    const stream = await openEntityStream({
+      origin: "http://localhost",
+      token: "fixture",
+      protocol: { protocolVersion: 4, streamEndpoint: "/api/sync/stream" },
+      resource: { kind: "agentDetail", agentId: "lead" },
+      timeoutMs: 1000,
+      receive: (name, data) => received.resolve({ name, data }),
+      failed,
+    });
+    expect(await received.promise).toEqual({
+      name: "resources",
+      data: resourceFrame(documents),
+    });
+    await stream.close();
+    expect(failed).not.toHaveBeenCalled();
+  } finally {
+    mock.mockRestore();
+  }
+});
+
+it("checks owned cleanup while retaining unrelated loaded thread counts only as evidence", () => {
+  const clean = {
+    remaining: 0,
+    leakedProviderPids: [],
+    leakedProcesses: [],
+    loadedThreads: 20,
+    baselineLoadedThreads: 10,
+  };
+  expect(cleanupVerified(clean)).toBe(true);
+  expect(cleanupVerified({ ...clean, remaining: 1 })).toBe(false);
+  expect(cleanupVerified({ ...clean, leakedProviderPids: [1] })).toBe(false);
+  expect(cleanupVerified({ ...clean, leakedProcesses: [{ pid: 2 }] })).toBe(
+    false,
+  );
+});
+
+it("reads the current TeamSummary strong counts without summing All with its statuses", () => {
+  const selectors = [];
+  const document = {
+    querySelector: (selector) => {
+      selectors.push(selector);
+      if (selector === '#team [data-team-count="all"] strong')
+        return { textContent: "3" };
+      if (selector === '#team [data-team-count="completed"] strong')
+        return { textContent: "2" };
+      if (selector === '#team .worker-group [aria-expanded="false"]') return {};
+      return null;
+    },
+    querySelectorAll: (selector) =>
+      selector === "#team [data-worker]" ? [{}] : [],
+  };
+  expect(readTeamUiCounts(document)).toMatchObject({
+    teamCount: 3,
+    workerCards: 3,
+    teamPanelClosed: false,
+  });
+  expect(selectors).not.toContain("[data-team-count] dd");
+});
+
+it("accepts only catalogue aliases resolving to the approved paid-test model", () => {
+  const candidate = { model: "haiku", resolvedModel: "claude-haiku-5-5" };
+  expect(
+    approvedModelUiValues(
+      {
+        data: [
+          candidate,
+          { model: "default", resolvedModel: "claude-haiku-5-5" },
+          { model: "claude-haiku-5-5" },
+          { model: "opus", resolvedModel: "claude-opus-5-5" },
+        ],
+      },
+      candidate,
+    ),
+  ).toEqual(["haiku", "default", "claude-haiku-5-5"]);
+});
+
+it("stages several transfer pages until the final complete marker and rejects missing pages", () => {
+  const accept = vi.fn();
+  const receive = createEntityFrameReader(accept);
+  const page = (index, after, through, complete) => ({
+    transferId: "multi",
+    pageIndex: index,
+    partIndex: 0,
+    partCount: 1,
+    complete,
+    data: JSON.stringify({
+      after,
+      through,
+      documents: [upsert("agentSummary", `worker-${index}`, {})],
+    }),
+  });
+  receive("entity-transfer", page(0, 0, 1, false));
+  receive("entity-transfer", page(1, 1, 2, false));
+  expect(accept).not.toHaveBeenCalled();
+  expect(() => receive.assertComplete()).toThrow(/incomplete/);
+  receive("entity-transfer", page(2, 2, 3, true));
+  expect(accept).toHaveBeenCalledTimes(1);
+  expect(accept.mock.calls[0][0]).toHaveLength(3);
+  expect(() => receive.assertComplete()).not.toThrow();
+  const missing = createEntityFrameReader(vi.fn());
+  missing("entity-transfer", page(0, 0, 1, false));
+  expect(() => missing("entity-transfer", page(2, 2, 3, true))).toThrow(
+    /pages arrived out of order/,
+  );
+  expect(() => missing.assertComplete()).toThrow(/incomplete/);
+});
+
+it("cannot certify observations interrupted before a required transfer completes", async () => {
+  let receive;
+  let failed;
+  const pull = createEntityReader(async (_resource, accept, onError) => {
+    receive = accept;
+    failed = onError;
+    return { close: async () => {} };
+  }, vi.fn());
+  await pull();
+  receive("entity-transfer", {
+    transferId: "interrupted",
+    pageIndex: 0,
+    partIndex: 0,
+    partCount: 1,
+    complete: false,
+    data: JSON.stringify({ after: 0, through: 1, documents: [] }),
+  });
+  expect(() => pull.assertComplete()).toThrow(/incomplete/);
+  failed(new Error("stream interrupted"));
+  expect(() => pull.assertComplete()).toThrow(/stream interrupted/);
+  await pull.close();
+});
+
+it("states the unknown owned-thread cleanup boundary explicitly", () => {
+  expect(OWNED_CLEANUP_VERIFIED_STATE).toBe(
+    "agents and owned processes verified; owned loaded threads not verifiable (diagnostics expose counts only)",
+  );
+  const summary = summaryText({
+    runTag: "fixture",
+    result: { passed: true, failures: [] },
+    options: { workers: 3 },
+    metrics: {},
+    cleanup: { state: OWNED_CLEANUP_VERIFIED_STATE },
+  });
+  expect(summary).toContain(OWNED_CLEANUP_VERIFIED_STATE);
+  expect(summary).not.toMatch(/cleanup\s+verified/);
+});
+
+it("validates stored model aliases against only catalogue-proven approved identities", () => {
+  const role = {
+    model: "claude-sonnet-5-5",
+    uiModelValues: ["sonnet", "claude-sonnet-5-5"],
+  };
+  expect(approvedStoredModel("sonnet", role)).toBe("claude-sonnet-5-5");
+  expect(approvedStoredModel("claude-sonnet-5-5", role)).toBe(
+    "claude-sonnet-5-5",
+  );
+  expect(() => approvedStoredModel("default", role)).toThrow(/approved/);
+  expect(() => approvedStoredModel("opus", role)).toThrow(/approved/);
+  expect(() => approvedStoredModel(undefined, role)).toThrow(/approved/);
+});
+
+it("reports the evidence-only queue baseline, end and delta in the summary", () => {
+  const summary = summaryText({
+    runTag: "fixture",
+    result: { passed: true, failures: [] },
+    options: { workers: 3 },
+    metrics: {},
+    audit: {
+      failures: [],
+      anomalies: [],
+      queueGauges: [
+        {
+          path: "/queues/durableInputPending",
+          before: 13,
+          after: 14,
+          delta: 1,
+        },
+      ],
+    },
+  });
+  expect(summary).toContain("durableInputPending");
+  expect(summary).toContain("13 / 14 / 1");
+});
+
+it("validates the actual post-create lead and worker defaults through proven aliases", () => {
+  const lead = {
+    model: "claude-sonnet-5-5",
+    uiModelValues: ["sonnet", "claude-sonnet-5-5"],
+    effort: "low",
+    accountKey: "claude",
+    profile: { fastMode: false },
+  };
+  const worker = {
+    model: "claude-haiku-5-5",
+    uiModelValues: ["haiku", "default", "claude-haiku-5-5"],
+    effort: "low",
+  };
+  const entity = {
+    id: "lead",
+    model: "sonnet",
+    accountKey: "claude",
+    effort: "low",
+    fastMode: false,
+    workerDefaults: { model: "default", effort: "low" },
+  };
+  expect(() => assertCreatedTeamProfiles(entity, lead, worker)).not.toThrow();
+  expect(() =>
+    assertCreatedTeamProfiles(
+      {
+        ...entity,
+        workerDefaults: { ...entity.workerDefaults, model: "haiku" },
+      },
+      lead,
+      worker,
+    ),
+  ).not.toThrow();
+  expect(() =>
+    assertCreatedTeamProfiles({ ...entity, model: "opus" }, lead, worker),
+  ).toThrow(/approved/);
+  expect(() =>
+    assertCreatedTeamProfiles(
+      {
+        ...entity,
+        workerDefaults: { ...entity.workerDefaults, model: "opus" },
+      },
+      lead,
+      worker,
+    ),
+  ).toThrow(/approved/);
+  expect(() =>
+    assertCreatedTeamProfiles({ ...entity, fastMode: true }, lead, worker),
+  ).toThrow(/fastMode/);
 });
