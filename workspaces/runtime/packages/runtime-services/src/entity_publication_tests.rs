@@ -56,6 +56,18 @@ async fn work_metadata_skips_history_and_explicit_publication_is_not_repeated() 
         "unrelated owner updates must not reread owned task metadata"
     );
     assert_eq!(owner_update.history_entries, 0);
+    store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',json_extract(record,'$.epoch')+1) WHERE id=?1", [CHAT])?;
+        tx.execute("UPDATE runtime_work SET record=json_set(record,'$.title','Compound owner change') WHERE id=?1", [id])?;
+        Ok(())
+    }).await.expect("owner identity and task metadata change together");
+    let compound = work_publication_probe::take(id);
+    assert_eq!(
+        compound.metadata, 1,
+        "compound changes publish task metadata once"
+    );
+    assert_eq!(compound.history_entries, 0);
+    assert_eq!(compound.history_bytes, 0);
     store
         .transaction(move |tx| {
             tx.execute(

@@ -685,7 +685,17 @@ pub fn publish_entity_changes(
             let empty = Default::default();
             let source = source.get(id).unwrap_or(&empty);
             publish_work_history(transaction, id, &record, Some(source), validate)?;
-            publish_work_metadata(transaction, id, &record, source.refusal_changed(), validate)?;
+            let owner_changed = record
+                .get("owner")
+                .and_then(Value::as_str)
+                .is_some_and(|owner| changes.work_refusal_owners.contains(owner));
+            publish_work_metadata(
+                transaction,
+                id,
+                &record,
+                source.refusal_changed() || owner_changed,
+                validate,
+            )?;
             if let Some(summary) = project_persisted_record("work", &record) {
                 put_projection(transaction, "work", id, summary, false, validate)?;
             }

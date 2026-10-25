@@ -153,6 +153,7 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
             let mut worker = AgentRepository::get(tx, &"worker".into())?.unwrap();
             worker.epoch += 1;
             AgentRepository::put(tx, &worker)?;
+            tx.execute("UPDATE runtime_work SET record=json_set(record,'$.title','New attempt title') WHERE json_extract(record,'$.owner')='worker'", [])?;
             Ok(())
         })
         .await
