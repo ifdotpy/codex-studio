@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { isDeepStrictEqual } from "node:util";
 import { execFileSync } from "node:child_process";
 
 export const NOTES_FILE = "notes.txt";
@@ -46,12 +47,16 @@ export function sumTokens(rows) {
   return Object.fromEntries(
     TOKEN_CATEGORIES.map((key) => [
       key,
-      rows.reduce((sum, row) => sum + (row.tokens[key] ?? 0), 0),
+      rows.some((row) => row.tokens[key] == null)
+        ? null
+        : rows.reduce((sum, row) => sum + row.tokens[key], 0),
     ]),
   );
 }
 
 export function totalTokens(tokens) {
+  if (TOKEN_CATEGORIES.slice(0, 4).some((key) => tokens[key] == null))
+    return null;
   return (
     tokens.uncachedInput +
     tokens.cacheReadInput +
@@ -173,22 +178,75 @@ export function nativeEvidence(state, agent, account, history) {
   return { files: [...files], responses, tokens: sumTokens(responses) };
 }
 
-export function recordedResponses(analytics, provider) {
-  return (analytics.timeline ?? [])
-    .filter((row) => row.responseId)
-    .map((row) => ({
+/** Canonical observations take precedence, including identity and non-response kinds. */
+export function recordedUsage(analytics) {
+  const responses = [];
+  const gaps = [];
+  for (const row of analytics.timeline ?? []) {
+    if (Object.hasOwn(row, "studioUsage")) {
+      const observation = row.studioUsage;
+      if (observation?.kind === "response") {
+        responses.push({ ...observation, record: row });
+      } else if (observation?.kind === "gap") {
+        gaps.push({ ...observation, tokens: null, costUsd: null, record: row });
+      }
+      continue;
+    }
+    // Pre-contract persisted rows only: mirror runtime-schema/src/usage/persisted.rs.
+    // Retained for OLD evidence and bridges that started before typed usage delivery.
+    if (
+      !row.responseId ||
+      ["nativeNotice", "codexThread", "claudeQuery"].includes(row.counterDomain)
+    )
+      continue;
+    const known = (key) =>
+      Number.isSafeInteger(selected?.[key]) && selected[key] >= 0;
+    const selected =
+      row.delta?.inputTokens != null && row.delta?.outputTokens != null
+        ? row.delta
+        : row.requestUsage && typeof row.requestUsage === "object"
+          ? row.requestUsage
+          : row.last;
+    const input = known("inputTokens") ? selected.inputTokens : null;
+    const read = known("cachedInputTokens") ? selected.cachedInputTokens : null;
+    const write = known("cacheWriteInputTokens")
+      ? selected.cacheWriteInputTokens
+      : null;
+    const uncached =
+      row.inputTokensAreUncached === true ||
+      row.usageSource === "claudeResponse";
+    const cacheReadInput =
+      uncached || input == null || read == null ? read : Math.min(input, read);
+    const cacheWriteInput =
+      uncached || input == null || cacheReadInput == null || write == null
+        ? write
+        : Math.min(input - cacheReadInput, write);
+    responses.push({
       responseId: row.responseId,
       turnId: row.turnId,
       model: row.model,
-      tokens:
-        row.studioUsage?.tokens ??
-        row.tokens ??
-        nativeTokens(
-          row.requestUsage ?? row.delta ?? row.last,
-          row.inputTokensAreUncached ? "claude" : provider,
-        ),
+      tokens: {
+        uncachedInput: uncached
+          ? input
+          : [input, cacheReadInput, cacheWriteInput].includes(null)
+            ? null
+            : input - cacheReadInput - cacheWriteInput,
+        cacheReadInput,
+        cacheWriteInput,
+        output: known("outputTokens") ? selected.outputTokens : null,
+        reasoningOutput: known("reasoningOutputTokens")
+          ? selected.reasoningOutputTokens
+          : null,
+      },
+      evidence: "legacy",
       record: row,
-    }));
+    });
+  }
+  return { responses, gaps };
+}
+
+export function recordedResponses(analytics) {
+  return recordedUsage(analytics).responses;
 }
 
 export function usageTable(evidence, label) {
@@ -199,15 +257,36 @@ export function usageTable(evidence, label) {
     "truth input/read/write/output/reasoning": TOKEN_CATEGORIES.map(
       (key) => row.truth.tokens[key],
     ).join("/"),
-    "recorded input/read/write/output/reasoning": TOKEN_CATEGORIES.map(
-      (key) => row.recorded.tokens[key],
-    ).join("/"),
+    "recorded input/read/write/output/reasoning": row.recorded.gaps?.length
+      ? null
+      : TOKEN_CATEGORIES.map(
+          (key) => row.recorded.tokens[key] ?? "unknown",
+        ).join("/"),
+    "recorded total tokens": row.recorded.gaps?.length
+      ? null
+      : totalTokens(row.recorded.tokens),
+    "partial recorded input/read/write/output/reasoning": row.recorded.gaps
+      ?.length
+      ? TOKEN_CATEGORIES.map(
+          (key) => row.recorded.tokens[key] ?? "unknown",
+        ).join("/")
+      : null,
     "recorded/truth":
-      totalTokens(row.recorded.tokens) / totalTokens(row.truth.tokens),
+      row.recorded.gaps?.length ||
+      totalTokens(row.recorded.tokens) == null ||
+      !totalTokens(row.truth.tokens)
+        ? null
+        : totalTokens(row.recorded.tokens) / totalTokens(row.truth.tokens),
+    "unpriced gaps": row.recorded.gaps?.length ?? null,
+    "recorded projection": row.recorded.projection ?? "persisted-usage-v3",
     "budget tokens": row.budget.tokensUsed,
     accounting: row.budget.tokenUsageAccounting,
-    "truth priced USD": row.truth.costUsd ?? null,
-    "displayed USD": row.displayedCost?.totalUSD ?? null,
+    "ratio basis": "billed tokens; reasoning already included in output",
+    "pricing basis": evidence.pricingBasis ?? "not recomputed",
+    "recorded USD": row.recorded.recomputedCostUsd ?? null,
+    "truth USD": row.truth.recomputedCostUsd ?? null,
+    "saved truth USD": row.truth.costUsd ?? null,
+    "saved displayed USD": row.displayedCost?.totalUSD ?? null,
     "analytics latency":
       row.analyticsLatency
         ?.map(
@@ -215,15 +294,102 @@ export function usageTable(evidence, label) {
             `${timing.outcome}:${timing.elapsedMs ?? timing.timeoutMs}ms`,
         )
         .join(", ") ?? null,
-    "reconciled recorded USD":
+    "saved reconciled recorded USD":
       row.reconciliation?.totals?.recordedCostUsd ?? null,
-    "reconciled evidence USD":
+    "saved reconciled evidence USD":
       row.reconciliation?.totals?.evidenceCostUsd ?? null,
   }));
 }
 
+/** Re-project both saved runs without mutating snapshots or trusting old derived totals. */
 export function compareEvidence(oldEvidence, newEvidence) {
-  return [...usageTable(oldEvidence, "OLD"), ...usageTable(newEvidence, "NEW")];
+  // One common basis for both runs: OLD's saved per-response rates, joined to
+  // their native models. Missing or inconsistent rates cannot produce a price.
+  const modelsByProvider = new Map();
+  for (const row of oldEvidence.providers) {
+    const models = modelsByProvider.get(row.provider) ?? new Map();
+    modelsByProvider.set(row.provider, models);
+    for (const price of row.truth?.prices ?? []) {
+      const model = row.truth.responses?.find(
+        (response) => response.responseId === price.responseId,
+      )?.model;
+      if (!model || !price.rates) continue;
+      if (
+        models.has(model) &&
+        !isDeepStrictEqual(models.get(model), price.rates)
+      )
+        models.set(model, null);
+      else if (!models.has(model)) models.set(model, price.rates);
+    }
+  }
+  const reprice = (responses, provider) => {
+    if (
+      !Array.isArray(responses) ||
+      responses.some((row) =>
+        TOKEN_CATEGORIES.slice(0, 4).some(
+          (key) =>
+            !Number.isSafeInteger(row.tokens?.[key]) || row.tokens[key] < 0,
+        ),
+      )
+    )
+      return null;
+    const models = Object.fromEntries(
+      [...(modelsByProvider.get(provider) ?? [])].map(([model, cost]) => [
+        model,
+        { cost },
+      ]),
+    );
+    try {
+      return priceResponses(
+        responses,
+        {
+          catalog: {
+            providers: {
+              [provider === "claude" ? "anthropic" : "openai"]: { models },
+            },
+          },
+        },
+        provider,
+      ).costUsd;
+    } catch {
+      // Missing model/rate or out-of-base-tier usage is explicitly unpriced.
+      return null;
+    }
+  };
+  const project = (evidence) => ({
+    ...evidence,
+    pricingBasis:
+      "OLD truth.prices rates by native model; USD per million tokens; base tiers only; missing/conflicting rates or incomplete usage = null",
+    providers: evidence.providers.map((row) => {
+      const available = Array.isArray(row.analytics?.timeline);
+      const recorded = available ? recordedUsage(row.analytics) : null;
+      return {
+        ...row,
+        truth: {
+          ...row.truth,
+          recomputedCostUsd: reprice(row.truth?.responses, row.provider),
+        },
+        recorded: recorded
+          ? {
+              ...recorded,
+              tokens: sumTokens(recorded.responses),
+              recomputedCostUsd: recorded.gaps.length
+                ? null
+                : reprice(recorded.responses, row.provider),
+            }
+          : {
+              tokens: Object.fromEntries(
+                TOKEN_CATEGORIES.map((key) => [key, null]),
+              ),
+              projection: `unknown: raw analytics unavailable (saved format ${evidence.format ?? "unversioned"})`,
+            },
+      };
+    }),
+  });
+  return [
+    ...usageTable(project(oldEvidence), "OLD"),
+    ...usageTable(project(newEvidence), "NEW"),
+  ];
 }
 
 /** Independent base-rate arithmetic; refuse tiered requests rather than guess. */

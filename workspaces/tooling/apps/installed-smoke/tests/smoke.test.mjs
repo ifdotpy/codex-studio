@@ -1272,3 +1272,235 @@ test("failed analytics collection persists its latency before a provider row exi
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("recorded usage separates gaps and cumulative rows from responses", async () => {
+  const { recordedUsage, recordedResponses, sumTokens } =
+    await import("../usage.mjs");
+  const tokens = {
+    uncachedInput: 10,
+    cacheReadInput: 2,
+    cacheWriteInput: 0,
+    output: 3,
+  };
+  const response = {
+    kind: "response",
+    responseId: "typed",
+    model: "haiku",
+    tokens,
+  };
+  const gap = { kind: "gap", responseId: "gap", reason: "queryClosed" };
+  const analytics = {
+    timeline: [
+      { responseId: "stale", studioUsage: response },
+      { responseId: "gap", studioUsage: gap, last: {} },
+      {
+        responseId: "associated",
+        studioUsage: {
+          kind: "cumulative",
+          scope: "claudeQuery",
+          total: tokens,
+        },
+        last: {},
+      },
+      { responseId: "notice", counterDomain: "nativeNotice", last: {} },
+    ],
+  };
+  assert.equal(recordedResponses(analytics, "claude").length, 1);
+  const recorded = recordedUsage(analytics, "claude");
+  assert.equal(recorded.responses[0].responseId, "typed");
+  assert.deepEqual(recorded.gaps, [
+    { ...gap, tokens: null, costUsd: null, record: analytics.timeline[1] },
+  ]);
+  assert.equal(sumTokens(recorded.responses).output, 3);
+});
+
+test("legacy recorded categories stay unknown and use persisted adapter precedence", async () => {
+  const { recordedResponses, sumTokens, totalTokens } =
+    await import("../usage.mjs");
+  const complete = {
+    inputTokens: 10,
+    cachedInputTokens: 2,
+    cacheWriteInputTokens: 1,
+    outputTokens: 3,
+  };
+  for (const source of ["delta", "requestUsage", "last"]) {
+    for (const missing of [undefined, null]) {
+      const responses = recordedResponses(
+        {
+          timeline: [
+            {
+              responseId: "old",
+              last: complete,
+              [source]: { ...complete, cachedInputTokens: missing },
+            },
+          ],
+        },
+        "codex",
+      );
+      assert.equal(responses[0].tokens.cacheReadInput, null);
+      assert.equal(responses[0].tokens.uncachedInput, null);
+      assert.equal(sumTokens(responses).cacheReadInput, null);
+      assert.equal(totalTokens(sumTokens(responses)), null);
+    }
+  }
+  const [response] = recordedResponses(
+    {
+      timeline: [
+        {
+          responseId: "old",
+          usageSource: "claudeResponse",
+          last: complete,
+          requestUsage: { ...complete, inputTokens: 50 },
+          delta: complete,
+        },
+      ],
+    },
+    "claude",
+  );
+  assert.equal(response.tokens.uncachedInput, 10);
+});
+
+test("comparison reprojects old snapshots and preserves unknown categories and gaps", async () => {
+  const { compareEvidence } = await import("../usage.mjs");
+  const old = {
+    format: "old-fixture",
+    providers: [
+      {
+        provider: "claude",
+        agentId: "a",
+        truth: {
+          tokens: {
+            uncachedInput: 10,
+            cacheReadInput: 2,
+            cacheWriteInput: 1,
+            output: 4,
+            reasoningOutput: 0,
+          },
+        },
+        recorded: {
+          tokens: {
+            uncachedInput: 10,
+            cacheReadInput: 0,
+            cacheWriteInput: 0,
+            output: 2,
+            reasoningOutput: 0,
+          },
+        },
+        budget: { tokensUsed: 12 },
+        analytics: {
+          timeline: [
+            {
+              responseId: "r",
+              usageSource: "claudeResponse",
+              delta: {
+                inputTokens: 10,
+                cachedInputTokens: null,
+                cacheWriteInputTokens: 0,
+                outputTokens: 2,
+                reasoningOutputTokens: null,
+              },
+            },
+            {
+              responseId: "g",
+              studioUsage: {
+                kind: "gap",
+                responseId: "g",
+                reason: "queryClosed",
+              },
+            },
+          ],
+        },
+      },
+    ],
+  };
+  const original = structuredClone(old);
+  const compared = compareEvidence(old, old);
+  for (const row of compared) {
+    assert.equal(
+      row["partial recorded input/read/write/output/reasoning"],
+      "10/unknown/0/2/unknown",
+    );
+    assert.equal(row["recorded/truth"], null);
+    assert.equal(row["unpriced gaps"], 1);
+    assert.match(row["recorded projection"], /persisted-usage-v3/);
+  }
+  assert.deepEqual(old, original);
+  const withoutRaw = structuredClone(old);
+  delete withoutRaw.providers[0].analytics;
+  const [unavailable] = compareEvidence(withoutRaw, old);
+  assert.equal(
+    unavailable["recorded input/read/write/output/reasoning"],
+    "unknown/unknown/unknown/unknown/unknown",
+  );
+  assert.equal(unavailable["recorded/truth"], null);
+  assert.equal(unavailable["unpriced gaps"], null);
+  assert.match(unavailable["recorded projection"], /unknown.*old-fixture/);
+});
+
+test("comparison gaps make totals incomplete and prices use one explicit rate basis", async () => {
+  const { compareEvidence } = await import("../usage.mjs");
+  const tokens = {
+    uncachedInput: 10,
+    cacheReadInput: 0,
+    cacheWriteInput: 0,
+    output: 2,
+    reasoningOutput: 1,
+  };
+  const rates = { input: 1, cache_read: 0.1, cache_write: 1.25, output: 5 };
+  const make = (timeline, inputRate = 1) => ({
+    providers: [
+      {
+        provider: "claude",
+        agentId: "a",
+        budget: {},
+        analytics: { timeline },
+        recorded: { tokens },
+        truth: {
+          tokens,
+          costUsd: 99,
+          responses: [{ responseId: "r", model: "m", tokens }],
+          prices: [{ responseId: "r", rates: { ...rates, input: inputRate } }],
+        },
+        displayedCost: { totalUSD: 88 },
+      },
+    ],
+  });
+  const response = {
+    studioUsage: { kind: "response", responseId: "r", model: "m", tokens },
+  };
+  const gap = {
+    studioUsage: { kind: "gap", responseId: "g", reason: "queryClosed" },
+  };
+  for (const timeline of [[gap], [response, gap]]) {
+    const [row] = compareEvidence(make(timeline), make(timeline));
+    assert.equal(row["recorded input/read/write/output/reasoning"], null);
+    assert.equal(row["recorded total tokens"], null);
+    assert.equal(row["recorded/truth"], null);
+    assert.equal(row["recorded USD"], null);
+    assert.equal(
+      row["partial recorded input/read/write/output/reasoning"],
+      timeline.length === 1 ? "0/0/0/0/0" : "10/0/0/2/1",
+    );
+  }
+  const compared = compareEvidence(make([response]), make([response], 100));
+  for (const row of compared) {
+    assert.equal(row["recorded USD"], 0.00002);
+    assert.equal(row["truth USD"], 0.00002);
+    assert.equal(row["saved truth USD"], 99);
+    assert.equal(row["saved displayed USD"], 88);
+    assert.match(row["pricing basis"], /OLD.*USD.*million/);
+    assert.match(row["ratio basis"], /reasoning.*output/);
+  }
+  const unknown = structuredClone(response);
+  unknown.studioUsage.tokens.cacheReadInput = null;
+  assert.equal(
+    compareEvidence(make([unknown]), make([unknown]))[0]["recorded USD"],
+    null,
+  );
+  const unavailableRates = make([response]);
+  delete unavailableRates.providers[0].truth.prices;
+  for (const row of compareEvidence(unavailableRates, make([response]))) {
+    assert.equal(row["recorded USD"], null);
+    assert.equal(row["truth USD"], null);
+  }
+});

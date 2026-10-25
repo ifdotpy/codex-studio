@@ -23,7 +23,7 @@ import {
   compareEvidence,
   usageTable,
   nativeEvidence,
-  recordedResponses,
+  recordedUsage,
   sumTokens,
   priceResponses,
   accountingEvidence,
@@ -1134,7 +1134,7 @@ export class Smoke {
         provider,
       ),
     );
-    const responses = recordedResponses(analytics, provider);
+    const recorded = recordedUsage(analytics);
     let reconciliation = null;
     try {
       reconciliation = await this.backend.get(
@@ -1219,7 +1219,7 @@ export class Smoke {
       longTurn: scenario.longTurn ?? null,
       transcript,
       truth,
-      recorded: { responses, tokens: sumTokens(responses) },
+      recorded: { ...recorded, tokens: sumTokens(recorded.responses) },
       analytics,
       budget: {
         tokensUsed: stored.agent.tokensUsed,
