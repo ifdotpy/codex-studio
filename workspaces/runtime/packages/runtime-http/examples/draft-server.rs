@@ -27,6 +27,13 @@ async fn write_entity(
         if let Some(task) = body.get("task") {
             tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record", rusqlite::params![task["id"].as_str().expect("fixture task id"),task.to_string()])?;
         }
+        if body.get("appendWorkResult").and_then(serde_json::Value::as_bool) == Some(true) {
+            let result = serde_json::json!({"id":"appended","agent":"lead","text":"New evidence only","checks":"fixture","revision":"fixture","files":[],"created":2});
+            tx.execute("UPDATE runtime_work SET record=json_set(json_insert(record,'$.results[#]',json(?1)),'$.version',3,'$.updated',3) WHERE id='transfer-assignment'", [result.to_string()])?;
+        }
+        if let Some(status) = body.get("workStatus").and_then(serde_json::Value::as_str) {
+            tx.execute("UPDATE runtime_work SET record=json_set(record,'$.status',?1,'$.updated',2,'$.version',2) WHERE id='transfer-assignment'", [status])?;
+        }
         if let Some(project) = body.get("project") {
             studio_runtime_store::ProjectsRepository::put_project(tx, project)?;
         }
@@ -59,6 +66,14 @@ async fn main() {
             AgentRepository::put(tx, &AgentRecord::from_value(serde_json::json!({"id":"lead","rootId":"lead","epoch":1,"status":"idle","name":"Lead"}))?)?;
             Ok::<_, StoreError>(())
         }).await.expect("entity baseline");
+    }
+    if std::env::args().any(|argument| argument == "--entity-transfer-work") {
+        store.transaction_with(|tx| {
+            let results = (0..515).map(|index| serde_json::json!({"id":format!("result-{index}"),"agent":"lead","text":if index == 0 { "界".repeat(studio_runtime_schema::shared_values::SYNC_STREAM_EVENT_MAX_BYTES / 2) } else {format!("Evidence-{index}")},"checks":"fixture","revision":"fixture","files":[],"created":1})).collect::<Vec<_>>();
+            let work = serde_json::json!({"id":"transfer-assignment","rootId":"lead","title":"Large existing review","description":"Preserve all review history","status":"running","owner":null,"dependencies":[],"created":1,"updated":1,"version":1,"gate":null,"results":results,"decisions":[],"releases":[]});
+            tx.execute("INSERT INTO runtime_work(id,record) VALUES(?1,?2)",rusqlite::params!["transfer-assignment",work.to_string()])?;
+            Ok::<_, StoreError>(())
+        }).await.expect("large existing work source");
     }
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../client/contracts/draft-replication.json"

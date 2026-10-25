@@ -122,7 +122,10 @@ async fn prepare(
     let reason = event.reason.clone();
     let validators = state.validators.clone();
     state.store.as_ref().ok_or_else(ApiError::internal)?.read_async("runtime-http/entity-transfer", move |tx| {
-        let mut page = SyncDocumentsRepository::resume_entity_scope(tx, since.as_ref().map(|cursor| cursor.seq), Some(&collections), id.as_deref(), agent.as_deref(), SYNC_ENTITY_STREAM_MAX_DOCUMENTS).map_err(|_| ApiError::internal())?;
+        let after = since.as_ref().map(|cursor| cursor.seq);
+        let visibility = agent.as_deref().map(|agent| SyncDocumentsRepository::entity_scope_visibility_revision(tx, &collections, agent)).transpose().map_err(|_| ApiError::internal())?.unwrap_or(0);
+        let after = after.filter(|after| *after >= visibility);
+        let mut page = SyncDocumentsRepository::resume_entity_scope(tx, after, Some(&collections), id.as_deref(), agent.as_deref(), SYNC_ENTITY_STREAM_MAX_DOCUMENTS).map_err(|_| ApiError::internal())?;
         let through = page.max_sequence;
         let snapshot = page.reset;
         let mut after = if snapshot { 0 } else { since.as_ref().map_or(0, |cursor| cursor.seq) };
@@ -139,7 +142,7 @@ async fn prepare(
             for (index, batch) in batches.iter().enumerate() {
                 let complete = final_sql_page && index + 1 == batches.len();
                 let canonical = serde_json::to_value(batch).map_err(|_| ApiError::internal())?;
-                if !validators.validate_component("EntityChangeBatch", &canonical) { return Err(ApiError::internal()); }
+                if !validators.validate_component("EntityChangeBatch", &canonical) { eprintln!("entity transfer canonical page rejected: {:?}", studio_runtime_schema::first_error("EntityChangeBatch", &canonical)); return Err(ApiError::internal()); }
                 if page_index == 0 && complete {
                     let entry: ResourceRevisionEntry = serde_json::from_value(json!({"resource":resource,"revision":through,"cursor":cursor,"replyKind":if snapshot {"snapshot"}else{"delta"},"entityChanges":batch})).map_err(|_| ApiError::internal())?;
                     let ordinary = json!({"protocol":studio_runtime_schema::SYNC_PROTOCOL_VERSION,"workspaceId":workspace,"epoch":epoch,"revision":revision,"reason":reason,"resources":[resource],"resourceVersions":[entry]});
@@ -151,7 +154,7 @@ async fn prepare(
             }
             if final_sql_page { break; }
             after = checkpoint;
-            page = SyncDocumentsRepository::resume_entity_scope(tx, Some(checkpoint), Some(&collections), id.as_deref(), agent.as_deref(), SYNC_ENTITY_STREAM_MAX_DOCUMENTS).map_err(|_| ApiError::internal())?;
+            page = SyncDocumentsRepository::continue_entity_scope(tx, &page, Some(&collections), id.as_deref(), agent.as_deref(), SYNC_ENTITY_STREAM_MAX_DOCUMENTS).map_err(|_| ApiError::internal())?;
         }
         let mut file = spool.ok_or_else(ApiError::internal)?;
         file.rewind().map_err(|_| ApiError::internal())?;
@@ -305,6 +308,128 @@ mod tests {
             .expect("bounded frame")
             .to_vec()
     }
+    #[tokio::test]
+    async fn scoped_membership_swaps_and_reassignment_reset_but_unrelated_moves_and_appends_stay_delta()
+     {
+        let (_directory, state) = fixture().await;
+        let store = state.store.as_ref().expect("store");
+        store.transaction(|tx| {
+            for (id, agent) in [("a-task","a"),("b-task","b"),("latest","lead")] {
+                SyncDocumentsRepository::put_entity(tx,"task",id,json!({"id":id,"agent":agent,"kind":"command","status":"running","created":1}),false)?;
+            }
+            for (id, root) in [("a","lead"),("b","other")] { SyncDocumentsRepository::put_entity(tx,"agentSummary",id,json!({"id":id,"rootId":root,"status":"idle","source":"managed"}),false)?; }
+            Ok(())
+        }).await.expect("scope source");
+        let resource: ResourceRef =
+            serde_json::from_value(json!({"kind":"tasks","agentId":"lead"})).expect("resource");
+        let (_, _, before) = prepare(&state, &event(&state), resource.clone(), None)
+            .await
+            .expect("baseline");
+        store
+            .transaction(|tx| {
+                tx.execute("UPDATE sync_entities SET payload=json_set(payload,'$.value.rootId',CASE id WHEN 'a' THEN 'other' ELSE 'lead' END),seq=seq+100 WHERE collection='agentSummary'", [])?;
+                Ok(())
+            })
+            .await
+            .expect("equal-size team swap");
+        let (entry, _, swapped) = prepare(&state, &event(&state), resource.clone(), Some(before))
+            .await
+            .expect("swapped scope");
+        let entry = serde_json::to_value(entry.expect("small snapshot")).expect("entry");
+        assert_eq!(
+            entry["replyKind"], "snapshot",
+            "membership movement must not advance an empty delta past old selected rows"
+        );
+        assert_eq!(
+            entry["entityChanges"]["documents"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .map(|row| row["id"].as_str().expect("id"))
+                .collect::<Vec<_>>(),
+            ["b-task", "latest"]
+        );
+        store.transaction(|tx| { SyncDocumentsRepository::put_entity(tx,"task","b-task",json!({"id":"b-task","agent":"a","kind":"command","status":"running","created":1}),false)?; Ok(()) }).await.expect("existing task moved away");
+        let (entry, _, moved) = prepare(&state, &event(&state), resource.clone(), Some(swapped))
+            .await
+            .expect("moved scope");
+        let entry = serde_json::to_value(entry.expect("replacement")).expect("entry");
+        assert_eq!(entry["replyKind"], "snapshot");
+        assert_eq!(
+            entry["entityChanges"]["documents"]
+                .as_array()
+                .expect("rows")
+                .len(),
+            1
+        );
+        store.transaction(|tx| { SyncDocumentsRepository::put_entity(tx,"agentSummary","unrelated",json!({"id":"unrelated","rootId":"other","status":"idle","source":"managed"}),false)?; SyncDocumentsRepository::put_entity(tx,"task","latest",json!({"id":"latest","agent":"lead","kind":"command","status":"completed","created":1}),false)?; Ok(()) }).await.expect("other team and local content");
+        let (entry, _, current) = prepare(&state, &event(&state), resource.clone(), Some(moved))
+            .await
+            .expect("content delta");
+        let entry = serde_json::to_value(entry.expect("delta")).expect("entry");
+        assert_eq!(entry["replyKind"], "delta");
+        assert_eq!(
+            entry["entityChanges"]["documents"]
+                .as_array()
+                .expect("rows")
+                .len(),
+            1
+        );
+        store.transaction(|tx| { SyncDocumentsRepository::put_entity(tx,"task","new",json!({"id":"new","agent":"lead","kind":"command","status":"running","created":1}),false)?; Ok(()) }).await.expect("ordinary append");
+        let (entry, _, _) = prepare(&state, &event(&state), resource, Some(current))
+            .await
+            .expect("append delta");
+        let entry = serde_json::to_value(entry.expect("delta")).expect("entry");
+        assert_eq!(entry["replyKind"], "delta");
+        assert_eq!(
+            entry["entityChanges"]["documents"]
+                .as_array()
+                .expect("rows")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_continuation_below_tombstone_floor_makes_bounded_progress() {
+        let (_directory, state) = fixture().await;
+        let store = state.store.as_ref().expect("store");
+        store.transaction(|tx| {
+            for index in 0..513 { SyncDocumentsRepository::put_entity(tx, "workspace", &format!("old-{index}"), json!({"stateDir":"fixture"}), false)?; }
+            tx.execute("INSERT INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor','1000') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
+            Ok(())
+        }).await.expect("old live rows and a pruned tombstone floor");
+        store
+            .test_read_transaction(|tx| {
+                let first = SyncDocumentsRepository::resume_entity_scope(
+                    tx,
+                    None,
+                    Some(r#"["workspace"]"#),
+                    None,
+                    None,
+                    SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+                )?;
+                assert!(first.reset);
+                assert!(first.checkpoint < first.tombstone_floor);
+                // Exactly two reads: the regression must fail without starting an
+                // unbounded spool or relying on a timeout to stop repeated pages.
+                let next = SyncDocumentsRepository::continue_entity_scope(
+                    tx,
+                    &first,
+                    Some(r#"["workspace"]"#),
+                    None,
+                    None,
+                    SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+                )?;
+                assert!(
+                    next.checkpoint > first.checkpoint,
+                    "internal snapshot continuation must not re-evaluate expired external cursors"
+                );
+                Ok(())
+            })
+            .expect("bounded snapshot continuation");
+    }
+
     #[tokio::test]
     async fn scoped_transfer_preserves_large_snapshot_and_single_oversized_record_then_sends_only_delta()
      {

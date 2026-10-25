@@ -67,9 +67,11 @@ it.each(["", "&tokenRates=false", "&tokenRates=true"])(
     expect(frames).toEqual(["Привет 🦀"]);
     source.close();
     expect(fetchRequest.mock.calls[0][0].signal.aborted).toBe(true);
-    stream.enqueue(
-      new TextEncoder().encode("event: resources\ndata: ignored\n\n"),
-    );
+    expect(() =>
+      stream.enqueue(
+        new TextEncoder().encode("event: resources\ndata: ignored\n\n"),
+      ),
+    ).toThrow("closed");
     await cancelled.promise;
     expect(frames).toEqual(["Привет 🦀"]);
     expect(errors).not.toHaveBeenCalled();
@@ -133,4 +135,37 @@ it("backpressures reads while staging and close interrupts an unfinished hold", 
   source.close();
   await cancelled.promise;
   expect(frames).toEqual(["first"]);
+});
+it("settled staging holds retain no lifetime result chain", async () => {
+  vi.stubGlobal("location", { origin: "http://studio.test", search: "" });
+  const { SignedEventSource } = await import("./eventSource");
+  const source = new SignedEventSource(
+    "/api/sync/stream",
+    async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+  );
+  try {
+    for (let count = 0; count < 100; count++) {
+      source.holdUntil(Promise.resolve());
+      await (source as unknown as { hold: Promise<unknown> }).hold;
+    }
+    let result: unknown = await (
+      source as unknown as { hold: Promise<unknown> }
+    ).hold;
+    let retainedLevels = 0;
+    while (Array.isArray(result)) {
+      retainedLevels++;
+      result = result[0];
+    }
+    expect(retainedLevels).toBe(0);
+  } finally {
+    source.close();
+  }
 });

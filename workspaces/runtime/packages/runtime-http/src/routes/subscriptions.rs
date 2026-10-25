@@ -281,6 +281,7 @@ resource_handlers! {
     VaultJobProgressResourceHandler => VaultJobProgressResource, passive_initial;
     VaultReadinessResourceHandler => VaultReadinessResource, passive_initial;
     VoiceResourceHandler => VoiceResource, passive_initial;
+    WorkResourceHandler => WorkResource, entity_initial;
     WorkspaceResourceHandler => WorkspaceResource, passive_initial;
     WorkResourceHandler => WorkResource, entity_initial;
 }

@@ -84,7 +84,14 @@ previous cache and cursor intact. A write failure retains the old cursor so repl
 can finish idempotently. Each temporary database holds its own lifetime Web Lock;
 close and cancellation remove it, and opening a new owner removes crash orphans
 only after acquiring their unused locks. The normal small event path stays direct,
-and per-scope cursors send only changed records after a baseline.
+and per-scope cursors send only changed records after a baseline. Internal pages
+retain the initial SQLite snapshot's recovery decision even when their checkpoints
+predate the tombstone floor. Source-owned visibility fences in the existing
+[store bootstrap](../workspaces/runtime/packages/runtime-store/src/sync_schema.sql)
+record predicate-field movements for affected direct selectors and team roots.
+Only a relevant movement requests a replacement; status updates, ordinary history
+appends and tombstones retain row deltas. The indexed fence lookup does not scan
+selected histories.
 
 Scoped durable cursor application retains its existing Web Locks requirement.
 Without that API the client reports the existing projection-write-lock error and

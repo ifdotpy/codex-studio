@@ -17,6 +17,10 @@ pub const ENTITY_TOMBSTONE_LIMIT: i64 = 10_000;
 pub const ENTITY_TOMBSTONE_PRUNE_BATCH: i64 = 500;
 
 /// Selection shared by complete fingerprints and bounded subscription pages.
+/// Prefix of indexed scope visibility fence keys in sync_entity_meta. SQL
+/// bootstrap triggers consume this contract; a fast parity witness checks them.
+const ENTITY_SCOPE_VISIBILITY_KEY_PREFIX: &str = "entity_scope_visibility:";
+
 const ENTITY_SCOPE_PREDICATE: &str = "collection NOT LIKE 'transcript:%' \
      AND (:collections IS NULL OR collection IN (SELECT value FROM json_each(:collections))) \
      AND (:id IS NULL OR id=:id) \
@@ -58,6 +62,14 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[
     },
 ];
 const BOOTSTRAP_TRIGGERS: &[TriggerRequirement] = &[
+    TriggerRequirement {
+        name: "sync_entity_scope_visibility_insert",
+        table: "sync_entities",
+    },
+    TriggerRequirement {
+        name: "sync_entity_scope_visibility_update",
+        table: "sync_entities",
+    },
     TriggerRequirement {
         name: "sync_entity_tombstone_count_insert",
         table: "sync_entities",
@@ -328,6 +340,33 @@ impl SyncDocumentsRepository {
         let max_sequence = Self::entity_sequence(transaction)?.max(tombstone_floor);
         let reset = since.is_none_or(|seq| seq < tombstone_floor || seq > max_sequence || seq < 0);
         let after = if reset { 0 } else { since.unwrap_or(0) };
+        let interval = EntityPage {
+            rows: Vec::new(),
+            max_sequence,
+            tombstone_floor,
+            initial_high: if reset { max_sequence } else { 0 },
+            checkpoint: after,
+            reset,
+        };
+        Self::continue_entity_scope(transaction, &interval, collections_json, id, agent, limit)
+    }
+
+    /// Continue only inside the caller's original SQLite read transaction with
+    /// the same scope. Initial external-cursor recovery is already decided by
+    /// resume_entity_scope; a snapshot checkpoint may legitimately predate the
+    /// tombstone floor and must never restart the first page.
+    pub fn continue_entity_scope(
+        transaction: &Transaction<'_>,
+        interval: &EntityPage,
+        collections_json: Option<&str>,
+        id: Option<&str>,
+        agent: Option<&str>,
+        limit: i64,
+    ) -> StoreResult<EntityPage> {
+        let after = interval.checkpoint;
+        let max_sequence = interval.max_sequence;
+        let reset = interval.reset;
+        let tombstone_floor = interval.tombstone_floor;
         let limit = limit.clamp(1, SYNC_ENTITY_STREAM_MAX_DOCUMENTS);
         let mut statement = transaction.prepare_cached(&format!(
             "SELECT collection,id,seq,payload,deleted FROM sync_entities \
@@ -362,6 +401,21 @@ impl SyncDocumentsRepository {
             checkpoint,
             reset,
         })
+    }
+
+    /// Latest relevant predicate movement; this is a bounded indexed metadata
+    /// lookup, independent of selected history size. The SQL trigger owner records
+    /// old/new direct selectors and resolved roots in the same source transaction.
+    pub fn entity_scope_visibility_revision(
+        transaction: &Transaction<'_>,
+        collections_json: &str,
+        agent: &str,
+    ) -> StoreResult<i64> {
+        transaction.query_row_cached(&format!(
+            "SELECT COALESCE(MAX(CAST(value AS INTEGER)),0) FROM sync_entity_meta WHERE key IN \
+             (SELECT '{ENTITY_SCOPE_VISIBILITY_KEY_PREFIX}' || json_array(value,?2) FROM json_each(?1) \
+              UNION SELECT '{ENTITY_SCOPE_VISIBILITY_KEY_PREFIX}' || json_array('*',?2))"
+        ), params![collections_json,agent], |row| row.get(0)).map_err(StoreError::from)
     }
 
     /// Complete live selection, independent of the stream page bound. Stream
@@ -817,6 +871,96 @@ inventory::submit! {
 mod tests {
     use super::SyncDocumentsRepository;
     use rusqlite::Connection;
+
+    #[test]
+    fn scope_visibility_tracks_predicate_moves_atomically_without_replaying_appends() {
+        use serde_json::json;
+        let mut connection = Connection::open_in_memory().expect("memory SQLite");
+        connection
+            .execute_batch(
+                include_str!("../sync_schema.sql")
+                    .split("-- section: runtime_events")
+                    .next()
+                    .expect("common schema"),
+            )
+            .expect("bootstrap owner");
+        let tx = connection.transaction().expect("transaction");
+        for (id, root) in [("a", "alpha"), ("b", "beta")] {
+            SyncDocumentsRepository::put_entity(
+                &tx,
+                "agentSummary",
+                id,
+                json!({"id":id,"rootId":root}),
+                false,
+            )
+            .expect("member");
+        }
+        SyncDocumentsRepository::put_entity(
+            &tx,
+            "task",
+            "task",
+            json!({"agent":"a","status":"running"}),
+            false,
+        )
+        .expect("task");
+        let fence = |root| {
+            SyncDocumentsRepository::entity_scope_visibility_revision(&tx, r#"["task"]"#, root)
+                .expect("indexed fence")
+        };
+        let alpha = fence("alpha");
+        let beta = fence("beta");
+        SyncDocumentsRepository::put_entity(
+            &tx,
+            "task",
+            "task",
+            json!({"agent":"a","status":"completed"}),
+            false,
+        )
+        .expect("content only");
+        SyncDocumentsRepository::put_entity(&tx, "task", "append", json!({"agent":"a"}), false)
+            .expect("append");
+        SyncDocumentsRepository::put_entity(&tx, "task", "append", json!({}), true)
+            .expect("ordinary tombstone");
+        SyncDocumentsRepository::put_entity(
+            &tx,
+            "agentSummary",
+            "other",
+            json!({"id":"other","rootId":"unrelated"}),
+            false,
+        )
+        .expect("unrelated member");
+        assert_eq!(fence("alpha"), alpha);
+        assert_eq!(fence("beta"), beta);
+        tx.execute_batch("SAVEPOINT visibility_move;")
+            .expect("savepoint");
+        tx.execute("UPDATE sync_entities SET payload=json_set(payload,'$.value.agent','b'),seq=seq+1000 WHERE collection='task' AND id='task'",[]).expect("raw source reassignment");
+        assert!(fence("alpha") > alpha);
+        assert!(fence("beta") > beta);
+        assert!(fence("a") > 0);
+        assert!(fence("b") > 0);
+        tx.execute_batch("ROLLBACK TO visibility_move; RELEASE visibility_move;")
+            .expect("rollback source and fence together");
+        assert_eq!(fence("alpha"), alpha);
+        assert_eq!(fence("beta"), beta);
+        tx.execute("UPDATE sync_entities SET payload='{}',deleted=1,seq=seq+2000 WHERE collection='agentSummary' AND id='a'",[]).expect("retired member");
+        let retired = fence("alpha");
+        assert!(retired > alpha);
+        assert_eq!(fence("beta"), beta);
+        tx.execute("UPDATE sync_entities SET payload=json_object('value',json_object('rootId','alpha')),deleted=0,seq=seq+2000 WHERE collection='agentSummary' AND id='a'",[]).expect("restored member");
+        assert!(fence("alpha") > retired);
+    }
+
+    #[test]
+    fn scope_visibility_sql_keys_match_named_owner() {
+        let schema = include_str!("../sync_schema.sql");
+        assert_eq!(
+            schema
+                .matches(super::ENTITY_SCOPE_VISIBILITY_KEY_PREFIX)
+                .count(),
+            3,
+            "sync_documents::ENTITY_SCOPE_VISIBILITY_KEY_PREFIX owns every bootstrap fence key"
+        );
+    }
 
     #[test]
     fn resume_entities_fingerprint_tracks_membership_swaps_with_equal_count_and_maximum() {

@@ -74,9 +74,13 @@ beforeAll(async () => {
       ),
     );
   directory = await mkdtemp(join(tmpdir(), "studio-entity-live-"));
-  server = spawn(binary, [directory, "--entity-live"], {
-    stdio: ["pipe", "pipe", "inherit"],
-  });
+  server = spawn(
+    binary,
+    [directory, "--entity-live", "--entity-transfer-work"],
+    {
+      stdio: ["pipe", "pipe", "inherit"],
+    },
+  );
   const lines = createInterface({ input: server.stdout! });
   try {
     const [line] = await Promise.race([
@@ -375,6 +379,168 @@ it("stages a cold >512 entity SSE interval before projection deletion or cursor 
     await assembler.invalidate();
   }
 });
+
+it("preserves an existing oversized Work result and >512 history rows, then streams only changed task metadata", async () => {
+  vi.stubGlobal("window", {
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    matchMedia: vi.fn(() => ({ matches: false })),
+  });
+  vi.stubGlobal("document", { hidden: true });
+  vi.stubGlobal("navigator", {
+    onLine: true,
+    locks: {
+      request: (_key: string, write: () => Promise<unknown>) => write(),
+    },
+  });
+  mocks.syncGet.mockImplementation((path: string) => request(path));
+  const module = await import("./client");
+  const { createEntitySequenceScope } = await import("./entitySequence");
+  const { createTranscriptCache } = await import("./transcriptCache");
+  const { EntityTransferAssembler } = await import("./entityTransfer");
+  const { createTaskAssignmentSelector } =
+    await import("./subscriptions/workData");
+  const { SYNC_STREAM_EVENT_MAX_BYTES } =
+    await import("../generated/sharedValues");
+  const client = module.createSyncClient({
+    api: {
+      syncGet: mocks.syncGet,
+      syncPost: vi.fn(),
+      saved: (_key, fallback) => fallback,
+      save: vi.fn(),
+      setWorkspace: vi.fn(),
+      isApiSchemaMismatch: () => false,
+      onMatchingApiSchemaResponse: () => () => false,
+    },
+    resources: {
+      watchResourceChanges: () => () => {},
+      watchResourceConnection: () => () => {},
+    },
+    sequences: createEntitySequenceScope(),
+    transcripts: createTranscriptCache(),
+    databaseSuffix: "worktransfer",
+  });
+  const { db } = await client.syncDatabase();
+  const resource = { kind: "work", agentId: "lead" } as const;
+  const query = new URLSearchParams({
+    protocol: String(SYNC_PROTOCOL_VERSION),
+    resources: JSON.stringify([resource]),
+    tokenRates: "false",
+  });
+  const controller = new AbortController();
+  const response = await fetch(`${origin}/api/sync/stream?${query}`, {
+    headers,
+    signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
+  });
+  const frames = wireFrames(response)[Symbol.asyncIterator]();
+  const assembler = new EntityTransferAssembler(new FixtureTransferStorage());
+  let interval: import("./entityTransfer").StagedEntityInterval | undefined;
+  let transfers = 0;
+  try {
+    while (!interval) {
+      const frame = await frames.next();
+      if (frame.done)
+        throw new Error("Work source closed before its complete interval");
+      if (frame.value.name !== "entity-transfer") continue;
+      transfers++;
+      interval = await assembler.receive(frame.value.value);
+      if (!interval)
+        expect(await client.readSubscriptionCursor(resource)).toBeUndefined();
+    }
+    expect(transfers).toBeGreaterThan(2);
+    await client.persistStagedEntityTransfer(interval, () => true);
+    const rows = await db.projections
+      .find({ selector: { id: { $gte: "entity:work", $lt: "entity:workz" } } })
+      .exec();
+    const entities = rows.flatMap((row) => {
+      const value = row.toJSON();
+      return value.entity ? [value.entity] : [];
+    });
+    const tasks = createTaskAssignmentSelector()(entities, "lead");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.results).toHaveLength(515);
+    expect(tasks[0]?.results?.[0]?.text).toBe(
+      "界".repeat(SYNC_STREAM_EVENT_MAX_BYTES / 2),
+    );
+    const resultSequence = rows
+      .find((row) => row.id === "entity:workResult:transfer-assignment:0")!
+      .toJSON().seq;
+    const reads = mocks.syncGet.mock.calls.length;
+    await request("/fixture/entity", { workStatus: "review" });
+    let delta: ResourceChangeEvent | undefined;
+    while (!delta) {
+      const frame = await frames.next();
+      if (frame.done)
+        throw new Error("Work source closed before its metadata delta");
+      expect(frame.value.name).not.toBe("entity-transfer");
+      if (frame.value.name !== "resources") continue;
+      const candidate = frame.value.value as ResourceChangeEvent;
+      if (candidate.reason === "change") delta = candidate;
+    }
+    const changes = delta.resourceVersions.flatMap(
+      (entry) => entry.entityChanges?.documents ?? [],
+    );
+    expect(changes.map((row) => row.collection)).toEqual(["workDetail"]);
+    expect(new TextEncoder().encode(JSON.stringify(delta)).length).toBeLessThan(
+      SYNC_STREAM_EVENT_MAX_BYTES,
+    );
+    await client.persistResourceEntityChanges(delta, () => true);
+    expect(
+      (
+        await db.projections
+          .findOne("entity:workResult:transfer-assignment:0")
+          .exec()
+      )?.toJSON().seq,
+    ).toBe(resultSequence);
+    expect(
+      (
+        await db.projections
+          .findOne("entity:workDetail:transfer-assignment")
+          .exec()
+      )?.toJSON().entity?.value,
+    ).toMatchObject({ status: "review" });
+    expect(mocks.syncGet.mock.calls.length).toBe(reads);
+    await request("/fixture/entity", { appendWorkResult: true });
+    let append: ResourceChangeEvent | undefined;
+    while (!append) {
+      const frame = await frames.next();
+      if (frame.done)
+        throw new Error("Work source closed before its append delta");
+      expect(frame.value.name).not.toBe("entity-transfer");
+      if (
+        frame.value.name === "resources" &&
+        (frame.value.value as ResourceChangeEvent).reason === "change"
+      )
+        append = frame.value.value as ResourceChangeEvent;
+    }
+    const appended = append.resourceVersions.flatMap(
+      (entry) => entry.entityChanges?.documents ?? [],
+    );
+    expect(
+      appended
+        .filter((row) => row.collection === "workResult")
+        .map((row) => row.id),
+    ).toEqual(["transfer-assignment:515"]);
+    expect(appended).toHaveLength(2);
+    expect(
+      new TextEncoder().encode(JSON.stringify(append)).length,
+    ).toBeLessThan(SYNC_STREAM_EVENT_MAX_BYTES);
+    await client.persistResourceEntityChanges(append, () => true);
+    expect(
+      (
+        await db.projections
+          .findOne("entity:workResult:transfer-assignment:0")
+          .exec()
+      )?.toJSON().seq,
+    ).toBe(resultSequence);
+    expect(mocks.syncGet.mock.calls.length).toBe(reads);
+    await interval.dispose();
+  } finally {
+    controller.abort();
+    await frames.return(undefined);
+    await assembler.invalidate();
+  }
+}, 15000);
 
 it("applies source commits beyond a full entity page through real SSE and RxDB without refresh reads", async () => {
   vi.stubGlobal("window", {

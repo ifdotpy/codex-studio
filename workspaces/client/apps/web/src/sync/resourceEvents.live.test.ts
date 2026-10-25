@@ -809,3 +809,39 @@ it("new-epoch entity fragments publish only after complete persisted staging and
   expect(f.get).not.toHaveBeenCalled();
   expect(f.sources).toHaveLength(1);
 });
+it("a cancelled staging failure cannot close its replacement stream", async () => {
+  const f = await fixture();
+  let fail!: (error: Error) => void;
+  f.staged.mockImplementation(
+    () =>
+      new Promise<void>((_resolve, reject) => {
+        fail = reject;
+      }),
+  );
+  f.source.emit("entity-transfer", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "initial",
+    resource: { kind: "state" },
+    cursor: { workspaceId: "workspace", seq: 2 },
+    replyKind: "snapshot",
+    transferId: "cancelled",
+    pageIndex: 0,
+    partIndex: 0,
+    partCount: 1,
+    complete: true,
+    data: JSON.stringify({ after: 0, through: 2, documents: [] }),
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.staged).toHaveBeenCalledOnce();
+  f.source.onerror?.();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(f.sources).toHaveLength(2);
+  const replacement = f.sources[1]!;
+  fail(new Error("old staging failed after cancellation"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(replacement.closed).toBe(false);
+  expect(f.sources).toHaveLength(2);
+});
