@@ -216,6 +216,86 @@ impl AnalyticsCaptureRepository {
         Ok(())
     }
 }
+// Bound per-transaction scheduling hints; overflow keeps full reconciliation.
+const COST_ROOT_HINT_LIMIT: usize = 1024;
+
+struct CostRootHints(std::sync::Arc<std::sync::Mutex<Option<std::collections::BTreeSet<i64>>>>);
+impl CostRootHints {
+    fn install(db: &Connection) -> StoreResult<Self> {
+        let hints = std::sync::Arc::new(std::sync::Mutex::new(Some(
+            std::collections::BTreeSet::new(),
+        )));
+        let written = hints.clone();
+        db.update_hook(Some(
+            move |action: rusqlite::hooks::Action, database: &str, table: &str, rowid: i64| {
+                if database != "main"
+                    || !matches!(table, "analytics_usage_roots" | "analytics_agents")
+                {
+                    return;
+                }
+                let mut hints = written
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // Account history, thread and provider metadata also affect costs.
+                // Their old root is unavailable after mutation, so retain Full.
+                if table == "analytics_agents" || action == rusqlite::hooks::Action::SQLITE_DELETE {
+                    *hints = None;
+                }
+                if let Some(rows) = hints.as_mut() {
+                    rows.insert(rowid);
+                    if rows.len() > COST_ROOT_HINT_LIMIT {
+                        *hints = None;
+                    }
+                }
+            },
+        ))?;
+        let deleted = hints.clone();
+        db.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
+            if context.database_name == Some("main")
+                && matches!(
+                    context.action,
+                    rusqlite::hooks::AuthAction::Delete {
+                        table_name: "analytics_agents" | "analytics_usage_roots"
+                    }
+                )
+            {
+                // DELETE without WHERE may skip update_hook through SQLite's
+                // truncate optimization. Its scope is still explicitly unknown.
+                *deleted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            }
+            rusqlite::hooks::Authorization::Allow
+        }))?;
+        Ok(Self(hints))
+    }
+
+    fn committed(&self, db: &Connection) -> crate::ChangedRoots {
+        let hints = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(rows) = hints.as_ref().filter(|rows| !rows.is_empty()) else {
+            return crate::ChangedRoots::Full;
+        };
+        let mut roots = std::collections::BTreeSet::new();
+        for rowid in rows {
+            let root = db.query_row_cached(
+                "SELECT root FROM analytics_usage_roots WHERE rowid=?1",
+                [rowid],
+                |row| row.get::<_, String>(0),
+            );
+            match root {
+                Ok(root) if !root.is_empty() => {
+                    roots.insert(root);
+                }
+                _ => return crate::ChangedRoots::Full,
+            }
+        }
+        crate::ChangedRoots::Roots(roots)
+    }
+}
+
 impl RuntimeStore {
     /// Run one analytics projection transaction on the blocking pool without
     /// Canvas writer admission: it locks only the analytics connection, and the
@@ -235,19 +315,24 @@ impl RuntimeStore {
         let notifiers = std::sync::Arc::clone(&self.analytics_commit_notifiers);
         crate::blocking_pool::spawn_blocking("analytics/projection", move || {
             let mut db = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+            let root_hints = CostRootHints::install(&db)?;
             let changed_before = db.total_changes();
             let outcome: Result<T, E> = (|| {
                 let tx = db
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(StoreError::from)?;
                 let value = crate::sql_callback(|| operation(&tx))?;
-                tx.commit().map_err(StoreError::commit_outcome_unknown)?;
+                let commit = tx.commit();
+                if commit.is_err() {
+                    crate::fire_analytics_commit_observers(&notifiers, crate::ChangedRoots::Full);
+                }
+                commit.map_err(StoreError::commit_outcome_unknown)?;
                 Ok(value)
             })();
             if outcome.is_ok() {
                 wal_flush.request();
                 if db.total_changes() != changed_before {
-                    crate::fire_commit_observers(&notifiers);
+                    crate::fire_analytics_commit_observers(&notifiers, root_hints.committed(&db));
                 }
             }
             outcome
@@ -309,6 +394,7 @@ impl RuntimeStore {
         let notifiers = std::sync::Arc::clone(&self.analytics_commit_notifiers);
         let transaction_job = move |canvas: &mut Connection| -> Result<Result<T, E>, StoreError> {
             let mut db = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+            let root_hints = CostRootHints::install(&db)?;
             let changed_before = db.total_changes();
             let tx = db
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -316,7 +402,14 @@ impl RuntimeStore {
             match crate::sql_callback(|| operation(&tx, canvas)) {
                 Ok(result) => {
                     let commit_started = diagnostics_enabled.then(std::time::Instant::now);
-                    tx.commit().map_err(StoreError::commit_outcome_unknown)?;
+                    let commit = tx.commit();
+                    if commit.is_err() {
+                        crate::fire_analytics_commit_observers(
+                            &notifiers,
+                            crate::ChangedRoots::Full,
+                        );
+                    }
+                    commit.map_err(StoreError::commit_outcome_unknown)?;
                     if let Some(started) = commit_started {
                         crate::emit_diagnostic(crate::StoreDiagnosticsEvent::CommitDuration {
                             database: crate::StoreDatabaseKind::Analytics,
@@ -324,7 +417,10 @@ impl RuntimeStore {
                         });
                     }
                     if db.total_changes() != changed_before {
-                        crate::fire_commit_observers(&notifiers);
+                        crate::fire_analytics_commit_observers(
+                            &notifiers,
+                            root_hints.committed(&db),
+                        );
                     }
                     Ok(Ok(result))
                 }

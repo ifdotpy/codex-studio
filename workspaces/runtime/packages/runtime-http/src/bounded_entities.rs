@@ -1,18 +1,24 @@
 //! Source-driven publication of bounded summaries. Stream reads never rebuild them.
 
 use crate::router::HttpState;
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use studio_runtime_services::resource_notify::{self, BoundedSource};
 use studio_runtime_store::{ObservedTable, RuntimeStore, StoreError, SyncDocumentsRepository};
 use tokio::sync::mpsc;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+// Serialize cost snapshot publication and scan admission, never the scan itself.
+// A late interest cannot overwrite a scan's completed entity with older data.
+static COST_PUBLICATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum Publication {
     Accounts,
     Costs,
-    SessionCosts,
+    SessionCosts(Option<String>),
+    AgentRows(Vec<i64>),
     Desktop,
 }
 
@@ -24,19 +30,27 @@ pub(crate) async fn start(state: &HttpState) -> Result<(), StoreError> {
     };
     let runtime = tokio::runtime::Handle::current();
     let (sender, mut receiver) = mpsc::unbounded_channel();
-    for table in [ObservedTable::Agents, ObservedTable::UsageResumes] {
-        let sender = sender.clone();
-        store.add_table_change_observer(table, move || {
-            let _queued = sender.send(if table == ObservedTable::UsageResumes {
-                Publication::Accounts
-            } else {
-                Publication::SessionCosts
-            });
+    let usage_sender = sender.clone();
+    store.add_table_change_observer(ObservedTable::UsageResumes, move || {
+        let _queued = usage_sender.send(Publication::Accounts);
+    });
+    let agents = sender.clone();
+    store.add_table_row_change_observer(ObservedTable::Agents, move |change| {
+        let _queued = agents.send(match change {
+            studio_runtime_store::TableChange::Rows(rows) => Publication::AgentRows(rows.to_vec()),
+            studio_runtime_store::TableChange::Full => Publication::SessionCosts(None),
         });
-    }
+    });
     let analytics = sender.clone();
-    store.add_analytics_commit_observer(move || {
-        let _queued = analytics.send(Publication::SessionCosts);
+    store.add_analytics_root_change_observer(move |change| match change {
+        studio_runtime_store::ChangedRoots::Roots(roots) => {
+            for root in roots {
+                let _queued = analytics.send(Publication::SessionCosts(Some(root)));
+            }
+        }
+        studio_runtime_store::ChangedRoots::Full => {
+            let _queued = analytics.send(Publication::SessionCosts(None));
+        }
     });
     if let Some(driver) = &state.account_driver {
         let mut changes = driver.change_signal().subscribe();
@@ -46,7 +60,7 @@ pub(crate) async fn start(state: &HttpState) -> Result<(), StoreError> {
                 for publication in [
                     Publication::Accounts,
                     Publication::Costs,
-                    Publication::SessionCosts,
+                    Publication::SessionCosts(None),
                 ] {
                     if sender.send(publication).is_err() {
                         return;
@@ -71,11 +85,15 @@ pub(crate) async fn start(state: &HttpState) -> Result<(), StoreError> {
             let publication = match source.recv().await {
                 Ok(BoundedSource::Desktop) => Publication::Desktop,
                 Ok(BoundedSource::Costs) => {
-                    let _queued = source_sender.send(Publication::SessionCosts);
+                    let _queued = source_sender.send(Publication::SessionCosts(None));
                     Publication::Costs
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    for publication in [Publication::Desktop, Publication::Costs] {
+                    for publication in [
+                        Publication::Desktop,
+                        Publication::Costs,
+                        Publication::SessionCosts(None),
+                    ] {
                         let _queued = source_sender.send(publication);
                     }
                     continue;
@@ -89,23 +107,11 @@ pub(crate) async fn start(state: &HttpState) -> Result<(), StoreError> {
     });
     // Register the observers before seeding, and finish the initial projection
     // before the server admits requests. Router construction never owns writes.
+    let mut agent_roots = read_agent_roots(&store).await?;
     publish_accounts(state).await?;
     publish_costs(state).await?;
     publish_sessions(state).await?;
     publish_desktop(state).await?;
-    let refresh_sender = sender.clone();
-    runtime.spawn(async move {
-        let mut ticks = tokio::time::interval(std::time::Duration::from_secs_f64(
-            studio_runtime_services::usage::COST_REFRESH_SECONDS,
-        ));
-        ticks.tick().await;
-        loop {
-            ticks.tick().await;
-            if refresh_sender.send(Publication::Costs).is_err() {
-                return;
-            }
-        }
-    });
     let state = state.clone();
     runtime.spawn(async move {
         while let Some(first) = receiver.recv().await {
@@ -113,16 +119,48 @@ pub(crate) async fn start(state: &HttpState) -> Result<(), StoreError> {
             while let Ok(next) = receiver.try_recv() {
                 pending.insert(next);
             }
+            let mut roots = BTreeSet::new();
+            let mut full = pending.contains(&Publication::SessionCosts(None));
             for publication in pending {
                 let result = match publication {
                     Publication::Accounts => publish_accounts(&state).await,
                     Publication::Costs => publish_costs(&state).await,
-                    Publication::SessionCosts => publish_sessions(&state).await,
+                    Publication::SessionCosts(Some(root)) => {
+                        roots.insert(root);
+                        Ok(())
+                    }
+                    Publication::SessionCosts(None) => Ok(()),
+                    Publication::AgentRows(rows) => {
+                        match changed_agent_roots(&store, &mut agent_roots, rows).await {
+                            Ok(changed) => {
+                                roots.extend(changed);
+                            }
+                            Err(error) => {
+                                full = true;
+                                eprintln!("Could not resolve changed cost roots: {error}");
+                            }
+                        }
+                        Ok(())
+                    }
                     Publication::Desktop => publish_desktop(&state).await,
                 };
                 if let Err(error) = result {
-                    eprintln!("Could not publish {publication:?} entities: {error}");
+                    eprintln!("Could not publish bounded entities: {error}");
                 }
+            }
+            let result = if full {
+                match read_agent_roots(&store).await {
+                    Ok(current) => agent_roots = current,
+                    Err(error) => eprintln!("Could not rebuild cost root identities: {error}"),
+                }
+                publish_sessions(&state).await
+            } else if !roots.is_empty() {
+                publish_session_roots(&state, Some(roots)).await
+            } else {
+                Ok(())
+            };
+            if let Err(error) = result {
+                eprintln!("Could not publish session costs: {error}");
             }
         }
     });
@@ -163,10 +201,11 @@ async fn accounts(
     Ok(snapshot)
 }
 
-async fn put(
+async fn write_entities(
     store: &Arc<RuntimeStore>,
     collection: &'static str,
     rows: Vec<(String, Value)>,
+    deletions: Option<BTreeSet<String>>,
 ) -> Result<(), StoreError> {
     store
         .transaction_with(move |tx| {
@@ -188,20 +227,85 @@ async fn put(
                 }
                 SyncDocumentsRepository::put_entity(tx, collection, &id, value, false)?;
             }
-            let mut statement =
-                tx.prepare("SELECT id FROM sync_entities WHERE collection=?1 AND deleted=0")?;
-            let previous = statement
-                .query_map([collection], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            drop(statement);
-            for id in previous {
-                if !ids.contains(&id) {
-                    SyncDocumentsRepository::put_entity(tx, collection, &id, Value::Null, true)?;
+            let deleted = match deletions {
+                Some(ids) => ids,
+                None => {
+                    let mut statement = tx.prepare(
+                        "SELECT id FROM sync_entities WHERE collection=?1 AND deleted=0",
+                    )?;
+                    statement
+                        .query_map([collection], |row| row.get::<_, String>(0))?
+                        .collect::<rusqlite::Result<BTreeSet<_>>>()?
+                        .difference(&ids)
+                        .cloned()
+                        .collect()
                 }
+            };
+            for id in deleted {
+                SyncDocumentsRepository::put_entity(tx, collection, &id, Value::Null, true)?;
             }
             Ok(())
         })
         .await
+}
+
+async fn put(
+    store: &Arc<RuntimeStore>,
+    collection: &'static str,
+    rows: Vec<(String, Value)>,
+) -> Result<(), StoreError> {
+    write_entities(store, collection, rows, Some(BTreeSet::new())).await
+}
+
+async fn delete(
+    store: &Arc<RuntimeStore>,
+    collection: &'static str,
+    ids: BTreeSet<String>,
+) -> Result<(), StoreError> {
+    write_entities(store, collection, Vec::new(), Some(ids)).await
+}
+
+async fn replace(
+    store: &Arc<RuntimeStore>,
+    collection: &'static str,
+    rows: Vec<(String, Value)>,
+) -> Result<(), StoreError> {
+    write_entities(store, collection, rows, None).await
+}
+
+async fn read_agent_roots(store: &Arc<RuntimeStore>) -> Result<BTreeMap<i64, String>, StoreError> {
+    store
+        .read_async("bounded-entities/agent-roots", |tx| {
+            let mut statement = tx.prepare(
+                "SELECT rowid, COALESCE(json_extract(record,'$.rootId'),id) FROM runtime_agents",
+            )?;
+            Ok(statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+        .await
+}
+
+async fn changed_agent_roots(
+    store: &Arc<RuntimeStore>,
+    previous: &mut BTreeMap<i64, String>,
+    rows: Vec<i64>,
+) -> Result<BTreeSet<String>, StoreError> {
+    let current = store.read_async("bounded-entities/changed-agent-roots", move |tx| {
+        let mut statement = tx.prepare("SELECT COALESCE(json_extract(record,'$.rootId'),id) FROM runtime_agents WHERE rowid=?1")?;
+        rows.into_iter().map(|rowid| Ok((rowid, statement.query_row([rowid], |row| row.get::<_, String>(0)).optional()?))).collect::<Result<Vec<_>, StoreError>>()
+    }).await?;
+    let mut roots = BTreeSet::new();
+    for (rowid, root) in current {
+        if let Some(old) = previous.remove(&rowid) {
+            roots.insert(old);
+        }
+        if let Some(root) = root {
+            roots.insert(root.clone());
+            previous.insert(rowid, root);
+        }
+    }
+    Ok(roots)
 }
 
 async fn publish_accounts(state: &HttpState) -> Result<(), StoreError> {
@@ -209,7 +313,7 @@ async fn publish_accounts(state: &HttpState) -> Result<(), StoreError> {
     // Only this allowlisted DTO reaches sync_entities/RxDB. Login receipts,
     // URLs, device codes and credentials stay in the transient auth owner.
     let value = accounts_summary(snapshot);
-    put(
+    replace(
         state.store.as_ref().ok_or(StoreError::ReadTaskFailed)?,
         "accounts",
         vec![("current".into(), value)],
@@ -228,73 +332,206 @@ fn cost_summary(value: Value) -> Result<Value, StoreError> {
     Ok(serde_json::to_value(summary)?)
 }
 
+fn saved_cost(state_dir: &std::path::Path, key: &str, account: &Value) -> Value {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |time| time.as_secs_f64());
+    studio_runtime_services::usage::account_cost_snapshot(state_dir, key, account, now)
+        .unwrap_or_else(|error| json!({"accountKey":key,"at":null,"error":error.to_string(),"data":null,"refreshing":false,"stale":true}))
+}
+
 async fn publish_costs(state: &HttpState) -> Result<(), StoreError> {
+    let _publication = COST_PUBLICATION.lock().await;
     let snapshot = accounts(state).await?;
     let root = std::path::PathBuf::from(&state.state_dir);
-    let (rows, refreshes) = studio_runtime_process::blocking_pool::spawn_blocking(
+    let rows = studio_runtime_process::blocking_pool::spawn_blocking(
         "bounded-entities/costs",
         move || {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0.0, |time| time.as_secs_f64());
-            let mut rows = Vec::new();
-            let mut refreshes = Vec::new();
-            for account in snapshot.accounts {
-                let Some(key) = account.get("id").and_then(Value::as_str).map(str::to_owned) else {continue};
-                let mut value = studio_runtime_services::usage::account_cost_snapshot(&root, &key, &account, now)
-                    .unwrap_or_else(|error| json!({"accountKey":key,"at":null,"error":error.to_string(),"data":null,"refreshing":false,"stale":true}));
-                let due = value.get("_refreshDue").and_then(Value::as_bool) == Some(true);
-                if due && studio_runtime_services::usage::claim_cost_refresh_attempt(&key) {
-                    refreshes.push((key.clone(), account));
-                    value["refreshing"] = json!(true);
-                }
-                if let Some(fields) = value.as_object_mut() {fields.remove("_refreshDue");}
-                rows.push((key, cost_summary(value)?));
-            }
-            Ok::<_, StoreError>((rows, refreshes))
+            snapshot
+                .accounts
+                .into_iter()
+                .filter_map(|account| {
+                    let key = account.get("id")?.as_str()?.to_owned();
+                    Some(cost_summary(saved_cost(&root, &key, &account)).map(|value| (key, value)))
+                })
+                .collect::<Result<Vec<_>, StoreError>>()
         },
-    ).await.map_err(|_| StoreError::ReadTaskFailed)??;
-    put(
+    )
+    .await
+    .map_err(|_| StoreError::ReadTaskFailed)??;
+    replace(
         state.store.as_ref().ok_or(StoreError::ReadTaskFailed)?,
         "accountCost",
         rows,
     )
-    .await?;
-    for (key, account) in refreshes {
-        let state_dir = std::path::PathBuf::from(&state.state_dir);
-        let cancelled = state.cost_scan_cancellation_handle();
-        let worker = state.track_cost_refresh_worker();
-        tokio::spawn(async move {
-            let _worker = worker;
-            let result = studio_runtime_process::blocking_pool::spawn_blocking(
-                "bounded-entities/cost-scan",
-                move || {
-                    studio_runtime_services::usage::refresh_account_costs_report(
-                        &state_dir, &key, &account, &cancelled,
-                    )
-                },
-            )
-            .await;
-            match result {
-                Ok((_, Ok(())))
-                | Ok((_, Err(studio_runtime_services::usage::UsageError::ScannerCancelled))) => {}
-                Ok((_, Err(error))) => eprintln!("Local cost refresh failed: {error}"),
-                Err(error) => eprintln!("Local cost refresh worker failed: {error}"),
+    .await
+}
+
+/// A window-open interest admits work; publication and stream reads never do.
+/// An existing reservation joins its scan and receives the same entity result.
+pub(crate) async fn request_cost_refresh(state: &HttpState, key: &str) -> Result<(), StoreError> {
+    let _publication = COST_PUBLICATION.lock().await;
+    let account = accounts(state)
+        .await?
+        .accounts
+        .into_iter()
+        .find(|account| account.get("id").and_then(Value::as_str) == Some(key))
+        .ok_or(StoreError::RecordContract("unknown cost account"))?;
+    let root = std::path::PathBuf::from(&state.state_dir);
+    let key = key.to_owned();
+    let (account, key, value, reservation) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "bounded-entities/cost-interest",
+        move || {
+            let mut value = saved_cost(&root, &key, &account);
+            let due = value.get("_refreshDue").and_then(Value::as_bool) == Some(true);
+            let reservation = if due {
+                studio_runtime_services::usage::reserve_account_cost_refresh(&root, &key, &account)
+            } else {
+                None
+            };
+            if reservation.is_some() {
+                value["refreshing"] = json!(true);
             }
-        });
-    }
+            Ok::<_, StoreError>((account, key, cost_summary(value)?, reservation))
+        },
+    )
+    .await
+    .map_err(|_| StoreError::ReadTaskFailed)??;
+    let store = state.store.as_ref().ok_or(StoreError::ReadTaskFailed)?;
+    put(store, "accountCost", vec![(key.clone(), value)]).await?;
+    let Some(reservation) = reservation else {
+        return Ok(());
+    };
+    let state = state.clone();
+    let worker = state.track_cost_refresh_worker();
+    let cancelled = state.cost_scan_cancellation_handle();
+    tokio::spawn(async move {
+        let _worker = worker;
+        let root = std::path::PathBuf::from(&state.state_dir);
+        let scan_key = key.clone();
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "bounded-entities/cost-scan",
+            move || {
+                let (_, outcome) =
+                    studio_runtime_services::usage::refresh_reserved_account_costs_report(
+                        &root,
+                        &scan_key,
+                        &account,
+                        &cancelled,
+                        reservation,
+                    );
+                (root, scan_key, account, outcome)
+            },
+        )
+        .await;
+        let _publication = COST_PUBLICATION.lock().await;
+        let result = match result {
+            Ok((root, scan_key, account, outcome)) => {
+                let current = match accounts(&state).await {
+                    Ok(snapshot) => snapshot
+                        .accounts
+                        .into_iter()
+                        .find(|value| value.get("id").and_then(Value::as_str) == Some(&scan_key)),
+                    Err(error) => {
+                        eprintln!("Could not resolve refreshed account: {error}");
+                        if let Err(error) = settle_cost_worker_failure(&state, &key).await {
+                            eprintln!("Could not settle refreshed account: {error}");
+                        }
+                        return;
+                    }
+                };
+                let Some(current) = current else {
+                    if let Some(store) = &state.store
+                        && let Err(error) =
+                            delete(store, "accountCost", BTreeSet::from([key])).await
+                    {
+                        eprintln!("Could not retire removed cost account: {error}");
+                    }
+                    return;
+                };
+                let outcome = if current.get("home") == account.get("home")
+                    && current.get("accountId") == account.get("accountId")
+                {
+                    outcome
+                } else {
+                    Ok(())
+                };
+                let account = current;
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "bounded-entities/cost-result",
+                    move || {
+                        let mut value = saved_cost(&root, &scan_key, &account);
+                        if let Err(error) = outcome {
+                            value["error"] = json!(error.to_string());
+                            value["stale"] = json!(true);
+                        }
+                        value["refreshing"] = json!(false);
+                        cost_summary(value)
+                    },
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        let value = match result {
+            Ok(Ok(value)) => value,
+            error => {
+                eprintln!("Local cost refresh worker failed: {error:?}");
+                // Keep the durable saved data and settle its refresh state.
+                if let Err(error) = settle_cost_worker_failure(&state, &key).await {
+                    eprintln!("Could not settle local cost refresh: {error}");
+                }
+                return;
+            }
+        };
+        if let Some(store) = &state.store
+            && let Err(error) = put(store, "accountCost", vec![(key, value)]).await
+        {
+            eprintln!("Could not publish local cost refresh: {error}");
+        }
+    });
     Ok(())
 }
 
+async fn settle_cost_worker_failure(state: &HttpState, key: &str) -> Result<(), StoreError> {
+    let key = key.to_owned();
+    state.store.as_ref().ok_or(StoreError::ReadTaskFailed)?.transaction_with(move |tx| {
+        let raw: String = tx.query_row("SELECT payload FROM sync_entities WHERE collection='accountCost' AND id=?1 AND deleted=0", [&key], |row| row.get(0))?;
+        let mut value: Value = serde_json::from_str::<Value>(&raw)?["value"].clone();
+        value["refreshing"] = json!(false);
+        value["stale"] = json!(true);
+        value["error"] = json!("Local cost refresh worker failed");
+        SyncDocumentsRepository::put_entity(tx, "accountCost", &key, value, false)?;
+        Ok(())
+    }).await
+}
+
 async fn publish_sessions(state: &HttpState) -> Result<(), StoreError> {
+    publish_session_roots(state, None).await
+}
+
+async fn publish_session_roots(
+    state: &HttpState,
+    roots: Option<BTreeSet<String>>,
+) -> Result<(), StoreError> {
     let store = state
         .store
         .as_ref()
         .ok_or(StoreError::ReadTaskFailed)?
         .clone();
-    let ids=store.read_async("bounded-entities/session-roots",|tx| {
-        let mut statement=tx.prepare("SELECT id FROM runtime_agents WHERE deleted_at IS NULL AND json_extract(record,'$.isLead')=1")?;
-        Ok::<_,StoreError>(statement.query_map([],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
+    let selected = roots.clone();
+    let ids = store.read_async("bounded-entities/session-roots", move |tx| {
+        if let Some(roots) = selected {
+            let mut statement = tx.prepare("SELECT id FROM runtime_agents WHERE id=?1 AND deleted_at IS NULL AND json_extract(record,'$.isLead')=1")?;
+            let mut ids = Vec::new();
+            for root in roots {
+                if let Some(id) = statement.query_row([root], |row| row.get::<_, String>(0)).optional()? { ids.push(id); }
+            }
+            Ok::<_, StoreError>(ids)
+        } else {
+            let mut statement = tx.prepare("SELECT id FROM runtime_agents WHERE deleted_at IS NULL AND json_extract(record,'$.isLead')=1")?;
+            Ok(statement.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
+        }
     }).await?;
     let profiles = accounts(state)
         .await
@@ -312,7 +549,22 @@ async fn publish_sessions(state: &HttpState) -> Result<(), StoreError> {
         let value=studio_runtime_services::costs::session_cost_with_account_profiles(&source,&id,&profiles).unwrap_or_else(|error|json!({"rootId":id,"totalUSD":null,"pricedSamples":0,"breakdown":{"models":{},"providers":{}},"unknownModels":[],"estimated":true,"pricingState":"loading","cacheAgeSeconds":0,"refreshing":false,"method":error.to_string()}));
         (id,value)
     }).collect()).await.map_err(|_|StoreError::ReadTaskFailed)?;
-    put(&store, "sessionCost", rows).await
+    match roots {
+        None => replace(&store, "sessionCost", rows).await,
+        Some(roots) => {
+            let present = rows
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<BTreeSet<_>>();
+            put(&store, "sessionCost", rows).await?;
+            delete(
+                &store,
+                "sessionCost",
+                roots.difference(&present).cloned().collect(),
+            )
+            .await
+        }
+    }
 }
 
 async fn publish_desktop(state: &HttpState) -> Result<(), StoreError> {
@@ -322,7 +574,7 @@ async fn publish_desktop(state: &HttpState) -> Result<(), StoreError> {
     if let Some(fields) = value.as_object_mut() {
         fields.remove("backendKind");
     }
-    put(
+    replace(
         state.store.as_ref().ok_or(StoreError::ReadTaskFailed)?,
         "desktop",
         vec![("current".into(), value)],
@@ -366,6 +618,279 @@ mod tests {
                 Ok(serde_json::from_str::<Value>(&raw)?["value"].clone())
             })
             .expect("published source entity")
+    }
+
+    #[tokio::test]
+    async fn costs_publication_does_not_admit_a_scan_without_window_interest() {
+        let (root, mut state) = state().await;
+        let home = root.path().join("claude");
+        state.account_policy = Some(Arc::new(
+            studio_runtime_services::account_policy::AccountPolicyState::from_startup(
+                Some(json!({"version":1,"defaultAccountKey":"on-demand","accounts":{"on-demand":{"id":"on-demand","home":home,"label":"On demand","source":"fixture","provider":"claude","status":"ready"}},"logins":{}}).to_string().as_bytes()), [],
+            ).expect("ready account"),
+        ));
+        state
+            .cost_scan_cancellation_handle()
+            .store(true, std::sync::atomic::Ordering::Release);
+        publish_costs(&state).await.expect("saved cost publication");
+        assert_eq!(
+            entity(&state, "accountCost", "on-demand")["refreshing"],
+            false
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_upsert_keeps_other_teams_until_explicit_deletion() {
+        let (_root, state) = state().await;
+        let store = state.store.as_ref().expect("store");
+        let row = |id: &str| {
+            (
+                id.to_owned(),
+                json!({"accountKey":id,"at":null,"error":null,"data":null,"refreshing":false,"stale":true}),
+            )
+        };
+        put(store, "accountCost", vec![row("a"), row("b")])
+            .await
+            .expect("initial rows");
+        put(store, "accountCost", vec![row("a")])
+            .await
+            .expect("partial update");
+        assert_eq!(entity(&state, "accountCost", "b")["accountKey"], "b");
+    }
+
+    #[tokio::test]
+    async fn analytics_cost_roots_notify_after_commit_but_never_after_rollback() {
+        use studio_runtime_store::ChangedRoots;
+        use studio_runtime_store::analytics_capture::AnalyticsCaptureRepository as Repo;
+        let (_root, state) = state().await;
+        let store = state.store.as_ref().expect("store");
+        let changes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = changes.clone();
+        store.add_analytics_root_change_observer(move |roots| {
+            recorded.lock().expect("events").push(roots)
+        });
+        store
+            .analytics_transaction(|tx, _| Repo::generation(tx, &["a".into(), "b".into()]))
+            .await
+            .expect("commit");
+        assert_eq!(
+            *changes.lock().expect("events"),
+            vec![ChangedRoots::Roots(BTreeSet::from([
+                "a".into(),
+                "b".into()
+            ]))]
+        );
+        changes.lock().expect("events").clear();
+        let failed = store
+            .analytics_projection_transaction(|tx| {
+                Repo::generation(tx, &["rolled-back".into()])?;
+                Err::<(), _>(StoreError::RecordContract("rollback witness"))
+            })
+            .await;
+        assert!(failed.is_err());
+        assert!(changes.lock().expect("events").is_empty());
+        store
+            .analytics_projection_transaction(|tx| Repo::generation(tx, &["a".into()]))
+            .await
+            .expect("projection commit");
+        assert_eq!(
+            *changes.lock().expect("events"),
+            vec![ChangedRoots::Roots(BTreeSet::from(["a".into()]))]
+        );
+        changes.lock().expect("events").clear();
+        store
+            .analytics_projection_transaction(|tx| {
+                tx.execute("DELETE FROM analytics_usage_roots WHERE root='a'", [])?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("deleted root commits");
+        assert_eq!(*changes.lock().expect("events"), vec![ChangedRoots::Full]);
+    }
+
+    #[tokio::test]
+    async fn mixed_analytics_metadata_batch_keeps_unknown_cost_scope_full() {
+        use studio_runtime_store::ChangedRoots;
+        use studio_runtime_store::analytics_capture::AnalyticsCaptureRepository as Repo;
+        let (_root, state) = state().await;
+        let store = state.store.as_ref().expect("store");
+        let changes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = changes.clone();
+        store.add_analytics_root_change_observer(move |scope| {
+            recorded.lock().expect("events").push(scope)
+        });
+        store.analytics_projection_transaction(|tx| {
+            Repo::generation(tx, &["a".into()])?;
+            tx.execute("INSERT INTO analytics_agents(id,record) VALUES('b',?1)", [json!({"id":"b","rootId":"b","provider":"claude","accountKey":"changed-profile"}).to_string()])?;
+            Ok::<_, StoreError>(())
+        }).await.expect("mixed batch commits");
+        assert_eq!(*changes.lock().expect("events"), vec![ChangedRoots::Full]);
+    }
+
+    #[tokio::test]
+    async fn cost_interest_http_joins_reserved_scan_and_failure_keeps_saved_result() {
+        use axum::{
+            body::Body,
+            extract::ConnectInfo,
+            http::{Request, StatusCode},
+        };
+        use tower::ServiceExt;
+        let (root, mut state) = state().await;
+        let home = root.path().join("profile");
+        let account = json!({"id":"default","home":home,"label":"Fixture","source":"fixture","provider":"claude","status":"ready"});
+        state.account_policy = Some(Arc::new(studio_runtime_services::account_policy::AccountPolicyState::from_startup(
+            Some(json!({"version":1,"defaultAccountKey":"default","accounts":{"default":account},"logins":{}}).to_string().as_bytes()), []
+        ).expect("ready account")));
+        let cache =
+            root.path()
+                .join("account-costs/claude")
+                .join(studio_runtime_store::sha256_hex(
+                    format!("default{}", home.display()).as_bytes(),
+                ));
+        tokio::fs::create_dir_all(&cache)
+            .await
+            .expect("cache directory");
+        tokio::fs::write(
+            cache.join("claude-costs.json"),
+            json!({"config":home,"checked":1,"error":null,"data":{"todayUSD":2,"last30DaysUSD":3}})
+                .to_string(),
+        )
+        .await
+        .expect("saved estimate");
+        let reservation = studio_runtime_services::usage::reserve_account_cost_refresh(
+            root.path(),
+            "default",
+            &account,
+        )
+        .expect("scan reserved before dispatch");
+        let app = crate::router::router(state.clone()).expect("router");
+        for _ in 0..2 {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/api/costs/interest")
+                .header("host", "127.0.0.1:4321")
+                .header("content-type", "application/json")
+                .header("x-canvas-token", "token")
+                .header(
+                    crate::schema::API_SCHEMA_HASH_HEADER,
+                    crate::schema::api_schema_hash(),
+                )
+                .extension(ConnectInfo(
+                    "127.0.0.1:12345"
+                        .parse::<std::net::SocketAddr>()
+                        .expect("peer"),
+                ))
+                .body(Body::from(r#"{"account_key":"default"}"#))
+                .expect("request");
+            let response = app
+                .clone()
+                .oneshot(request)
+                .await
+                .expect("interest response");
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(entity(&state, "accountCost", "default")["refreshing"], true);
+        }
+        drop(reservation);
+        settle_cost_worker_failure(&state, "default")
+            .await
+            .expect("failed scan settles");
+        let saved = entity(&state, "accountCost", "default");
+        assert_eq!(saved["data"]["last30DaysUSD"], 3);
+        assert_eq!(saved["refreshing"], false);
+        assert_eq!(saved["stale"], true);
+        assert_eq!(saved["at"], 1);
+    }
+
+    #[tokio::test]
+    async fn scoped_session_cost_update_and_delete_preserve_an_unrelated_team() {
+        let (_root, state) = state().await;
+        let store = state.store.as_ref().expect("store");
+        store
+            .transaction(|tx| {
+                for id in ["a", "b"] {
+                    tx.execute(
+                        "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                        [id, &json!({"id":id,"rootId":id,"isLead":true}).to_string()],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("teams");
+        publish_sessions(&state).await.expect("full baseline");
+        let mut untouched = entity(&state, "sessionCost", "b");
+        untouched["method"] = json!("untouched team witness");
+        put(store, "sessionCost", vec![("b".into(), untouched.clone())])
+            .await
+            .expect("saved unrelated estimate");
+        publish_session_roots(&state, Some(BTreeSet::from(["a".into()])))
+            .await
+            .expect("scoped update");
+        assert_eq!(entity(&state, "sessionCost", "b"), untouched);
+        let mut roots = read_agent_roots(store).await.expect("root identities");
+        let rowid = *roots
+            .iter()
+            .find(|(_, root)| *root == "a")
+            .expect("a rowid")
+            .0;
+        store
+            .transaction(|tx| {
+                tx.execute("DELETE FROM runtime_agents WHERE id='a'", [])?;
+                Ok(())
+            })
+            .await
+            .expect("delete team");
+        let changed = changed_agent_roots(store, &mut roots, vec![rowid, rowid])
+            .await
+            .expect("old root retained after delete");
+        assert_eq!(changed, BTreeSet::from(["a".into()]));
+        publish_session_roots(&state, Some(changed))
+            .await
+            .expect("explicit scoped delete");
+        assert_eq!(entity(&state, "sessionCost", "b"), untouched);
+        assert!(
+            store
+                .test_read_transaction(|tx| Ok(tx.query_row(
+                    "SELECT deleted FROM sync_entities WHERE collection='sessionCost' AND id='a'",
+                    [],
+                    |row| row.get::<_, bool>(0)
+                )?))
+                .expect("a tombstone")
+        );
+    }
+
+    #[test]
+    fn failed_claude_refresh_preserves_the_saved_result_age() {
+        let root = tempfile::tempdir().expect("isolated cost state");
+        let home = root.path().join("missing-profile");
+        let account = json!({"home":home,"provider":"claude","status":"ready"});
+        let cache =
+            root.path()
+                .join("account-costs/claude")
+                .join(studio_runtime_store::sha256_hex(
+                    format!("age-witness{}", home.display()).as_bytes(),
+                ));
+        std::fs::create_dir_all(&cache).expect("cache directory");
+        std::fs::write(
+            cache.join("claude-costs.json"),
+            json!({"config":home,"checked":1,"error":null,"data":{"last30DaysUSD":3}}).to_string(),
+        )
+        .expect("saved estimate");
+        let (saved, result) = studio_runtime_services::usage::refresh_account_costs_report(
+            root.path(),
+            "age-witness",
+            &account,
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        assert!(saved);
+        result.expect("failure recorded in cache");
+        let value = saved_cost(root.path(), "age-witness", &account);
+        assert_eq!(value["data"]["last30DaysUSD"], 3);
+        assert_eq!(value["stale"], true);
+        assert_eq!(
+            value["at"], 1,
+            "a failed check must not make old data look fresh"
+        );
     }
 
     #[tokio::test]

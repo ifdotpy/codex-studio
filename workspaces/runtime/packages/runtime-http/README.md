@@ -374,3 +374,19 @@ envelopes whose identity does not match their key.
 
 The sync protocol, pull, draft-conflict, and preference responses are validated
 through the generated response DTOs before serialization.
+
+## On-demand cost publication
+
+Opening the limits window sends `POST /api/costs/interest` for the selected
+account. The handler reserves at most one scan per account and workspace;
+concurrent interests join it. Both the initial refresh state and the completed
+saved estimate reach the renderer through the existing `accountCost` sync entity.
+A refresh failure preserves saved data and marks it stale. `GET /api/costs` reads
+saved data only. Startup publication and source notifications never admit scans,
+and there is no periodic account-cost scan scheduler. Provider live limits and
+budget enforcement retain their independent owners.
+
+Session-cost publication coalesces committed analytics root hints and agent row
+changes per team. Targeted updates upsert the changed teams and explicitly delete
+removed teams; they do not replace other teams. Startup and unknown change scopes
+retain full reconciliation.

@@ -331,6 +331,24 @@ export default function Usage({
   const rootId = agent.rootId || agent.id;
   useSubscription(visible ? { kind: "session-cost", agentId: rootId } : null);
   useSubscription(visible && limitsOpened ? { kind: "costs" } : null);
+  const costInterest = useRef<string | null>(null);
+  const [costInterestError, setCostInterestError] = useState("");
+  useEffect(() => {
+    if (!visible || !limitsOpened) {
+      costInterest.current = null;
+      return;
+    }
+    const scope = JSON.stringify([stateDir, accountKey]);
+    if (costInterest.current === scope) return;
+    costInterest.current = scope;
+    setCostInterestError("");
+    void post("/api/costs/interest", { account_key: accountKey }).catch(
+      (error) => {
+        if (costInterest.current === scope)
+          setCostInterestError(errorText(error));
+      },
+    );
+  }, [visible, limitsOpened, stateDir, accountKey, post]);
   const costScope = JSON.stringify([stateDir, rootId]);
   const [sessionCostState, setSessionCostState] = useState<{
     scope: string;
@@ -1216,6 +1234,17 @@ export default function Usage({
                     </div>
                   ))}
                 </div>
+                <p className="account-cost-caption" role="status">
+                  {costs?.refreshing
+                    ? "Refreshing estimate…"
+                    : costInterestError || costs?.error
+                      ? "Refresh failed · stale estimate"
+                      : costs?.stale
+                        ? "Stale estimate"
+                        : "Saved estimate"}
+                  {number(costs?.at) &&
+                    ` · Updated ${Math.max(0, Math.round(now - costs!.at!))} seconds ago`}
+                </p>
                 {(costs?.data?.coverage === "partial" ||
                   costs?.stale ||
                   costs?.error) && (

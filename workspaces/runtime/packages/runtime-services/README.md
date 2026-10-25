@@ -588,3 +588,11 @@ complete store-boundary matrix. Its mutation manifest is
 [`tests/monitors/mutations.json`](tests/monitors/mutations.json), consumed by the
 shared `tests/turn_lifecycle/mutation_check.py` runner with `--manifest` and
 `--filter 'test(/^monitor_(corpus|recovery)::/)'`.
+
+## Account cost scans
+
+The usage service reserves an account scan before dispatching blocking
+work. Reservation identity includes the workspace state directory; a concurrent
+interest joins the existing refresh. Cache ages in `usage.rs` decide whether an
+explicit interest needs work and bound failed attempts; they do not schedule a
+timer. Saved scan results continue to notify the bounded entity publisher.

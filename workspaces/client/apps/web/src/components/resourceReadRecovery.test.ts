@@ -608,6 +608,67 @@ describe("resource read callers", () => {
     expect(subscription).not.toHaveBeenCalledWith({ kind: "costs" });
   });
 
+  it("requests account cost interest once when the limits window opens without polling", async () => {
+    post.mockResolvedValue({});
+    const render = (opened: boolean) =>
+      mount(() =>
+        Usage({
+          agent: { id: "lead", rootId: "lead", accountKey: "default" } as Agent,
+          stateDir: "private-fixture",
+          limits: null,
+          reload: vi.fn(),
+          opened,
+        }),
+      );
+    render(false);
+    expect(post).not.toHaveBeenCalled();
+    render(true);
+    render(true);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(post).toHaveBeenCalledExactlyOnceWith("/api/costs/interest", {
+      account_key: "default",
+    });
+    expect(get).not.toHaveBeenCalled();
+    render(false);
+    render(true);
+    expect(post).toHaveBeenCalledTimes(2);
+    post.mockClear();
+  });
+
+  it("shows a failed refresh as stale while retaining the streamed saved value and its age", async () => {
+    vi.setSystemTime(new Date(200_000));
+    post.mockRejectedValue(new Error("Interest unavailable"));
+    const render = () =>
+      mount(() =>
+        Usage({
+          agent: { id: "lead", rootId: "lead", accountKey: "default" } as Agent,
+          stateDir: "private-fixture",
+          limits: null,
+          reload: vi.fn(),
+          opened: true,
+        }),
+      );
+    render();
+    await Promise.resolve();
+    const saved = {
+      accountKey: "default",
+      at: 100,
+      error: "Scan failed",
+      stale: true,
+      refreshing: false,
+      data: { last30DaysUSD: 3 },
+    };
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { default: saved } } });
+    const view = JSON.stringify(render());
+    expect(view).toContain("Refresh failed · stale estimate");
+    expect(view).toContain("Updated 100 seconds ago");
+    expect(view).toContain("$3.00");
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
+    post.mockClear();
+  });
+
   it("applies both cost display projections without GETs", async () => {
     const session = {
       rootId: "lead",

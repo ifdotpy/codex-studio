@@ -217,6 +217,13 @@ pub enum TableChange<'a> {
     Full,
 }
 
+/// Account/team roots proven by a committed analytics generation write.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ChangedRoots {
+    Roots(std::collections::BTreeSet<String>),
+    Full,
+}
+
 /// Committed resource scope proven by the writer's exact SQLite update counts.
 /// Unknown and mixed writes always retain the broad refresh.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -453,6 +460,18 @@ fn fire_commit_observers(notifiers: &Mutex<CommitNotifiers>) {
     }
     for observer in observers {
         observer();
+    }
+}
+
+fn fire_analytics_commit_observers(notifiers: &Mutex<CommitNotifiers>, roots: ChangedRoots) {
+    fire_commit_observers(notifiers);
+    let observers = notifiers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .scoped_analytics
+        .clone();
+    for observer in observers {
+        observer(roots.clone());
     }
 }
 
@@ -1162,6 +1181,7 @@ where
 struct CommitNotifiers {
     primary: Option<Arc<dyn Fn() + Send + Sync>>,
     observers: Vec<Arc<dyn Fn() + Send + Sync>>,
+    scoped_analytics: Vec<Arc<dyn Fn(ChangedRoots) + Send + Sync>>,
 }
 
 enum WriterTransactionOutcome<T, E> {
@@ -1521,6 +1541,19 @@ impl RuntimeStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .observers
+            .push(Arc::new(observer));
+    }
+
+    /// Observe analytics commits with the roots whose usage generation changed.
+    /// Unknown writes require full reconciliation. Callbacks must only enqueue.
+    pub fn add_analytics_root_change_observer(
+        &self,
+        observer: impl Fn(ChangedRoots) + Send + Sync + 'static,
+    ) {
+        self.analytics_commit_notifiers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .scoped_analytics
             .push(Arc::new(observer));
     }
 

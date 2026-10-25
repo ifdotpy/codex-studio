@@ -23498,6 +23498,20 @@
         "title": "CostBreakdown",
         "type": "object"
       },
+      "CostInterestRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "account_key": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_key"
+        ],
+        "title": "CostInterestRequest",
+        "type": "object"
+      },
       "CostsResource": {
         "additionalProperties": false,
         "properties": {
@@ -67935,6 +67949,35 @@
           }
         },
         "summary": "Costs"
+      }
+    },
+    "/api/costs/interest": {
+      "post": {
+        "operationId": "cost_interest_api_costs_interest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CostInterestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Interest accepted; joins an existing refresh when one is active"
+          }
+        },
+        "summary": "Request an on-demand account cost refresh; results arrive through sync entities"
       }
     },
     "/api/desktop": {

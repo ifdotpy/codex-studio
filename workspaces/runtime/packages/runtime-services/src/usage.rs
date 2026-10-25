@@ -11,10 +11,12 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
-// This module owns cost-cache refresh intervals (seconds), history windows
+// This module owns on-demand cost-cache freshness ages (seconds), history windows
 // (days), and the scan timeout (seconds).
-pub const COST_REFRESH_SECONDS: f64 = 120.0;
-const CLAUDE_COST_REFRESH_SECONDS: f64 = 300.0;
+const CODEX_COST_CACHE_MAX_AGE_SECONDS: f64 = 120.0;
+// Minimum spacing between scan attempts, including failed cache writes.
+const COST_REFRESH_RETRY_DELAY: Duration = Duration::from_secs(120);
+const CLAUDE_COST_CACHE_MAX_AGE_SECONDS: f64 = 300.0;
 const CLAUDE_COST_HISTORY_DAYS: i64 = 30;
 const COST_REPORT_HISTORY_DAYS: i64 = 30;
 // This module owns the models.dev catalog lifetime and request timeout.
@@ -97,10 +99,10 @@ pub fn account_cost_snapshot(
         .get("checkedAt")
         .and_then(Value::as_f64)
         .or_else(|| state.get("at").and_then(Value::as_f64));
-    let mut stale = checked_at.is_none_or(|at| now - at >= COST_REFRESH_SECONDS)
+    let mut stale = checked_at.is_none_or(|at| now - at >= CODEX_COST_CACHE_MAX_AGE_SECONDS)
         || state.get("error").is_some_and(|error| !error.is_null());
-    let refreshing = cost_refresh_active(&account_refresh_key(account_key, &home));
-    let refresh_due = checked_at.is_none_or(|at| now - at >= COST_REFRESH_SECONDS);
+    let refreshing = cost_refresh_active(&account_refresh_key(state_dir, account_key));
+    let refresh_due = checked_at.is_none_or(|at| now - at >= CODEX_COST_CACHE_MAX_AGE_SECONDS);
     if let Some(data) = state.get_mut("data").and_then(Value::as_object_mut) {
         let current_day = local_day(now);
         if data.get("sourceDay").and_then(Value::as_str) != Some(&current_day) {
@@ -132,19 +134,18 @@ pub fn account_cost_snapshot(
 }
 
 /// Reserve an in-process refresh attempt so a failed cache write cannot cause
-/// every following GET to start another scan. The interval remains owned by
-/// `COST_REFRESH_SECONDS` above.
+/// every following window-open interest to start another scan. The minimum
+/// spacing is owned by `COST_REFRESH_RETRY_DELAY`.
 pub fn claim_cost_refresh_attempt(account_key: &str) -> bool {
     let now = tokio::time::Instant::now();
     let Ok(mut attempts) = COST_REFRESH_ATTEMPTS.lock() else {
         return false;
     };
-    attempts.retain(|_, started| {
-        now.duration_since(*started) < Duration::from_secs_f64(COST_REFRESH_SECONDS)
-    });
-    if attempts.get(account_key).is_some_and(|started| {
-        now.duration_since(*started) < Duration::from_secs_f64(COST_REFRESH_SECONDS)
-    }) {
+    attempts.retain(|_, started| now.duration_since(*started) < COST_REFRESH_RETRY_DELAY);
+    if attempts
+        .get(account_key)
+        .is_some_and(|started| now.duration_since(*started) < COST_REFRESH_RETRY_DELAY)
+    {
         return false;
     }
     attempts.insert(account_key.to_owned(), now);
@@ -152,7 +153,7 @@ pub fn claim_cost_refresh_attempt(account_key: &str) -> bool {
 }
 
 /// Refresh local session logs into the account-scoped cache.
-/// GET handlers return their cache before scheduling this blocking work.
+/// Interest handlers return promptly; saved results are delivered by sync entities.
 /// Refresh and report whether a cache value was durably saved, even if the
 /// scanner itself failed and the saved value records that failure.
 pub fn refresh_account_costs_report(
@@ -179,6 +180,51 @@ pub fn refresh_account_costs_report(
     result
 }
 
+/// Reserve before dispatching blocking work, so concurrent window interests join
+/// the same scan even while it is queued. Dropping the reservation settles it.
+pub fn reserve_account_cost_refresh(
+    state_dir: &Path,
+    account_key: &str,
+    account: &Value,
+) -> Option<CostRefreshGuard> {
+    if account.get("status").and_then(Value::as_str) != Some("ready") {
+        return None;
+    }
+    account
+        .get("home")?
+        .as_str()
+        .filter(|home| !home.is_empty())?;
+    let key = account_refresh_key(state_dir, account_key);
+    let guard = begin_cost_refresh(key.clone())?;
+    claim_cost_refresh_attempt(&key).then_some(guard)
+}
+
+pub fn refresh_reserved_account_costs_report(
+    state_dir: &Path,
+    account_key: &str,
+    account: &Value,
+    cancelled: &AtomicBool,
+    reservation: CostRefreshGuard,
+) -> (bool, Result<(), UsageError>) {
+    let result = refresh_account_costs_reserved_with(
+        state_dir,
+        account_key,
+        account,
+        cancelled,
+        unix_time_seconds,
+        |home, state_dir, cancelled| {
+            scan_codex_sessions(home, state_dir, unix_time_seconds(), cancelled)
+        },
+        Some(reservation),
+    );
+    if result.0 {
+        crate::resource_notify::publish_bounded_source(
+            crate::resource_notify::BoundedSource::Costs,
+        );
+    }
+    result
+}
+
 fn refresh_account_costs_with<C, S>(
     state_dir: &Path,
     account_key: &str,
@@ -186,6 +232,30 @@ fn refresh_account_costs_with<C, S>(
     cancelled: &AtomicBool,
     clock: C,
     scanner: S,
+) -> (bool, Result<(), UsageError>)
+where
+    C: Fn() -> f64,
+    S: FnOnce(&Path, &Path, &AtomicBool) -> Result<Value, UsageError>,
+{
+    refresh_account_costs_reserved_with(
+        state_dir,
+        account_key,
+        account,
+        cancelled,
+        clock,
+        scanner,
+        None,
+    )
+}
+
+fn refresh_account_costs_reserved_with<C, S>(
+    state_dir: &Path,
+    account_key: &str,
+    account: &Value,
+    cancelled: &AtomicBool,
+    clock: C,
+    scanner: S,
+    reservation: Option<CostRefreshGuard>,
 ) -> (bool, Result<(), UsageError>)
 where
     C: Fn() -> f64,
@@ -200,8 +270,8 @@ where
         Some(home) => home,
         None => return (false, Err(UsageError::MissingProfile)),
     };
-    let refresh_key = account_refresh_key(account_key, &home);
-    let Some(_refresh) = begin_cost_refresh(refresh_key) else {
+    let refresh_key = account_refresh_key(state_dir, account_key);
+    let Some(_refresh) = reservation.or_else(|| begin_cost_refresh(refresh_key)) else {
         return (false, Ok(()));
     };
     if is_claude_account(account) {
@@ -366,7 +436,18 @@ fn refresh_claude_costs(
     if cancelled.load(Ordering::Acquire) {
         return Err(UsageError::ScannerCancelled);
     }
-    let content = json!({"config":home,"data":data,"checked":clock(),"error":error});
+    let checked = clock();
+    let at = if error.is_null() {
+        json!(checked)
+    } else {
+        previous
+            .as_ref()
+            .filter(|value| value.get("data").is_some_and(Value::is_object))
+            .and_then(|value| value.get("at").or_else(|| value.get("checked")))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let content = json!({"config":home,"data":data,"at":at,"checked":checked,"error":error});
     let bytes = serde_json::to_vec(&content).map_err(|_| UsageError::Scan)?;
     if cancelled.load(Ordering::Acquire) {
         return Err(UsageError::ScannerCancelled);
@@ -376,7 +457,7 @@ fn refresh_claude_costs(
     Ok(())
 }
 
-struct CostRefreshGuard(String);
+pub struct CostRefreshGuard(String);
 
 impl Drop for CostRefreshGuard {
     fn drop(&mut self) {
@@ -387,8 +468,11 @@ impl Drop for CostRefreshGuard {
     }
 }
 
-fn account_refresh_key(account_key: &str, home: &Path) -> String {
-    digest(&format!("{account_key}{}", home.to_string_lossy()))
+fn account_refresh_key(state_dir: &Path, account_key: &str) -> String {
+    digest(&crate::event_write::python_json(&json!([
+        state_dir,
+        account_key
+    ])))
 }
 
 fn begin_cost_refresh(key: String) -> Option<CostRefreshGuard> {
@@ -1069,17 +1153,18 @@ fn claude_cost_snapshot(
             .as_ref()
             .and_then(|saved| saved.get("error"))
             .is_some_and(|error| !error.is_null());
-    let refreshing = cost_refresh_active(&account_refresh_key(account_key, home));
+    let refreshing = cost_refresh_active(&account_refresh_key(state_dir, account_key));
     let refresh_due = checked
         .as_f64()
-        .is_none_or(|checked| now - checked >= CLAUDE_COST_REFRESH_SECONDS);
+        .is_none_or(|checked| now - checked >= CLAUDE_COST_CACHE_MAX_AGE_SECONDS);
     let error = saved
         .as_ref()
         .and_then(|saved| saved.get("error"))
         .cloned()
         .unwrap_or(Value::Null);
     Ok(json!({
-        "at": checked,
+        "at": saved.as_ref().and_then(|value| value.get("at")).cloned().unwrap_or_else(|| checked.clone()),
+        "checkedAt": checked,
         "error": error,
         "data": data,
         "refreshing": refreshing,
