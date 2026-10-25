@@ -28,6 +28,7 @@ export function createDataObserver(
           if (error !== null) failed(error);
         },
         true,
+        ref,
       );
     }
     const transient = (version?: ResourceVersion) => {

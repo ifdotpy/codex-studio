@@ -26,6 +26,7 @@ test("a transcript window streams without pulls and older history uses one bound
   const pages = [];
   const streams = new Set();
   let revision = 0;
+  let transcriptSequence = 1;
   const snapshot = {
     items: all.slice(-SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS),
     truncated: true,
@@ -44,7 +45,9 @@ test("a transcript window streams without pulls and older history uses one bound
         reason: "initial",
         resources: refs,
         resourceVersions: refs.map(() => ({
-          revision: 1,
+          revision: transcriptSequence,
+          cursor: { workspaceId, seq: transcriptSequence },
+          replyKind: "snapshot",
           transcriptSnapshot: snapshot,
         })),
       }),
@@ -101,7 +104,18 @@ test("a transcript window streams without pulls and older history uses one bound
               json({ gen: update.gen });
             } else if (url.pathname === "/api/sync/pull") {
               pulls.push(url.searchParams.get("scope"));
-              json({ workspaceId, documents: [], checkpoint: { seq: 1 } });
+              json({
+                workspaceId,
+                documents: [
+                  {
+                    id: "transcript:open",
+                    payload: JSON.stringify(snapshot),
+                    seq: transcriptSequence,
+                    _deleted: false,
+                  },
+                ],
+                checkpoint: { seq: transcriptSequence },
+              });
             } else if (url.pathname === "/api/transcript/page") {
               pages.push(Object.fromEntries(url.searchParams));
               const before = all.findIndex(
@@ -239,6 +253,34 @@ test("a transcript window streams without pulls and older history uses one bound
       all.slice(-2 * SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS).map((item) => item.id),
     );
     assert.deepEqual(pulls, []);
+    all.at(-1).text = "Recovered oversized transcript";
+    transcriptSequence++;
+    for (const stream of streams)
+      stream.write(
+        protocol3SseEvent("resources", {
+          protocol: 4,
+          workspaceId,
+          epoch: "window",
+          revision: ++revision,
+          reason: "change",
+          resources: [
+            {
+              kind: "transcript",
+              agentId: "open",
+              tail: SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS,
+            },
+          ],
+          resourceVersions: [{ revision: transcriptSequence }],
+        }),
+      );
+    await expect(
+      page.getByText("Recovered oversized transcript", { exact: true }),
+    ).toBeVisible();
+    assert.deepEqual(
+      pulls,
+      ["transcript:open"],
+      "only the oversized interval permits one recovery pull",
+    );
     assert.deepEqual(errors, []);
     await page.evaluate(() => window.historyRoot.unmount());
   } finally {

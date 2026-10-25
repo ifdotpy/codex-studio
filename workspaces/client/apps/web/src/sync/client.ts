@@ -879,8 +879,15 @@ export function createSyncClient(options: SyncClientOptions) {
     return watchResourceChanges(resourceForScope(scope), resync);
   }
 
-  function watchTranscriptInvalidations(id: string, resync: () => void) {
-    return watchResourceChanges({ kind: "transcript", agentId: id }, resync);
+  function watchTranscriptInvalidations(
+    id: string,
+    resync: (version?: ResourceVersion) => void,
+    resource?: Extract<ResourceRef, { kind: "transcript" }>,
+  ) {
+    return watchResourceChanges(
+      resource ?? { kind: "transcript", agentId: id },
+      resync,
+    );
   }
 
   // Pull-only projections never run RxDB's upstream scan of every cached chat.
@@ -1344,6 +1351,7 @@ export function createSyncClient(options: SyncClientOptions) {
     scope: string,
     expectedWorkspace?: string,
     background = false,
+    transcriptResource?: Extract<ResourceRef, { kind: "transcript" }>,
   ) {
     const { db, workspaceId, verifyWorkspace } = await syncDatabase();
     if (expectedWorkspace && expectedWorkspace !== workspaceId)
@@ -1924,7 +1932,11 @@ export function createSyncClient(options: SyncClientOptions) {
       const activateInvalidation = () => {
         if (stopInvalidation) return;
         stopInvalidation = transcriptId
-          ? watchTranscriptInvalidations(transcriptId, notifyInvalidation)
+          ? watchTranscriptInvalidations(
+              transcriptId,
+              notifyInvalidation,
+              transcriptResource,
+            )
           : watchSyncInvalidations(
               notifyInvalidation,
               remoteScope === SYNC_ENTITY_SCOPE ? "entities" : "legacy",
@@ -2041,11 +2053,13 @@ export function createSyncClient(options: SyncClientOptions) {
     accept: (payload: TranscriptProjectionPayload) => void,
     fail: (e: unknown) => void,
     localOnly = false,
+    resource?: Extract<ResourceRef, { kind: "transcript" }>,
   ) {
     const { db, workspaceId, state, release } = await acquireProjection(
       scope,
       undefined,
-      localOnly,
+      localOnly && !resource,
+      resource,
     );
     state.listeners.add(fail);
     const id = scope.slice("transcript:".length);
@@ -2740,9 +2754,11 @@ export function createSyncClient(options: SyncClientOptions) {
     accept: (payload: TranscriptProjectionPayload) => void,
     report: (error: unknown | null) => void,
     localOnly = false,
+    resource?: Extract<ResourceRef, { kind: "transcript" }>,
   ) {
     return subscribeProjection(
-      (next, fail) => watchTranscriptProjection(scope, next, fail, localOnly),
+      (next, fail) =>
+        watchTranscriptProjection(scope, next, fail, localOnly, resource),
       accept,
       report,
     );

@@ -723,9 +723,10 @@ describe("entity pull reset wiring", () => {
     { liveBeforeConflict: false, stopDuringBackoff: false },
     { liveBeforeConflict: true, stopDuringBackoff: false },
     { liveBeforeConflict: true, stopDuringBackoff: true },
+    { liveBeforeConflict: true, stopDuringBackoff: false, typed: true },
   ])(
-    "recovers transcript conflicts with live=$liveBeforeConflict stop=$stopDuringBackoff",
-    async ({ liveBeforeConflict, stopDuringBackoff }) => {
+    "recovers transcript conflicts with live=$liveBeforeConflict stop=$stopDuringBackoff typed=$typed",
+    async ({ liveBeforeConflict, stopDuringBackoff, typed = false }) => {
       const workspaceId = "9".repeat(32);
       const rows = new Map<string, Record<string, unknown>>();
       const storageInstance = {
@@ -891,6 +892,10 @@ describe("entity pull reset wiring", () => {
             accepted.push(payload);
           },
           report,
+          typed,
+          typed
+            ? { kind: "transcript", agentId: "agent", tail: 40 }
+            : undefined,
         );
         let stopped = false;
         const stopOnce = () => {
@@ -907,6 +912,14 @@ describe("entity pull reset wiring", () => {
           if (error instanceof mocks.ApiError && error.status === 409)
             resolveConflictReported();
         });
+        if (typed) {
+          await vi.advanceTimersByTimeAsync(0);
+          expect(mocks.watchResourceChanges).toHaveBeenCalledWith(
+            { kind: "transcript", agentId: "agent", tail: 40 },
+            expect.any(Function),
+          );
+          expect(pullCount).toBe(0);
+        }
         await transcriptWatched.promise;
         await projectionWatched.promise;
         expect(mocks.connectionListener).toBeTypeOf("function");
