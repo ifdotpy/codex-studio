@@ -5,9 +5,15 @@ import { fileURLToPath } from "node:url";
 import { browserExecutablePath } from "./browser-executable.mjs";
 
 test.use({
-  launchOptions: {
-    executablePath: browserExecutablePath,
-    ignoreDefaultArgs: ["--hide-scrollbars"],
+  launchOptions: async ({ browserName }, use) => {
+    const launchOverrides =
+      browserName === "chromium"
+        ? {
+            executablePath: browserExecutablePath,
+            ignoreDefaultArgs: ["--hide-scrollbars"],
+          }
+        : {};
+    await use(launchOverrides);
   },
 });
 
