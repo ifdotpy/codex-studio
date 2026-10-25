@@ -213,46 +213,121 @@ pub fn recorded_responses_bounded(
         }
         inspected += 1;
         let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(2)?)?;
-        let fields = UsageCostFields::deserialize(&value)?;
-        let parsed = cost_observation(&value)?;
-        let (response_id, model, tokens, evidence) = match parsed {
-            Some(UsageObservation::Response {
-                response_id,
-                model,
-                tokens,
-                evidence,
-                ..
-            }) => (
-                response_id,
-                (!model.is_empty()).then_some(model),
-                Some(tokens),
-                evidence,
-            ),
-            Some(UsageObservation::Cumulative { .. } | UsageObservation::Gap { .. }) => continue,
-            None => {
-                let Some(response) =
-                    studio_runtime_schema::usage::persisted::legacy_response_id(&value)
-                else {
-                    continue;
-                };
-                (
-                    response.to_owned(),
-                    fields.model.as_deref().map(str::to_owned),
-                    None,
-                    UsageEvidence::Legacy,
-                )
-            }
-        };
-        rows.push(RecordedResponse {
-            agent_id: row.get(0)?,
+        if let DecodedUsageEvidence::Response(response) =
+            decode_usage_evidence(row.get(0)?, row.get(1)?, &value)?
+        {
+            rows.push(response);
+        }
+    }
+    Ok((rows, false))
+}
+
+enum DecodedUsageEvidence {
+    Response(RecordedResponse),
+    Observation(UsageObservation),
+    Ignored,
+}
+
+/// Shared interpretation for the existing response reader and the bounded
+/// reconciliation source window. Legacy unknown categories stay unknown.
+fn decode_usage_evidence(
+    agent_id: String,
+    at: f64,
+    value: &serde_json::Value,
+) -> StoreResult<DecodedUsageEvidence> {
+    let fields = UsageCostFields::deserialize(value)?;
+    let (response_id, model, tokens, evidence) = match cost_observation(value)? {
+        Some(UsageObservation::Response {
             response_id,
             model,
             tokens,
             evidence,
-            at: row.get(1)?,
-        });
+            ..
+        }) => (
+            response_id,
+            (!model.is_empty()).then_some(model),
+            Some(tokens),
+            evidence,
+        ),
+        Some(observation) => return Ok(DecodedUsageEvidence::Observation(observation)),
+        None => {
+            let Some(response) = studio_runtime_schema::usage::persisted::legacy_response_id(value)
+            else {
+                return Ok(DecodedUsageEvidence::Ignored);
+            };
+            (
+                response.to_owned(),
+                fields.model.as_deref().map(str::to_owned),
+                None,
+                UsageEvidence::Legacy,
+            )
+        }
+    };
+    Ok(DecodedUsageEvidence::Response(RecordedResponse {
+        agent_id,
+        response_id,
+        model,
+        tokens,
+        evidence,
+        at,
+    }))
+}
+
+/// One diagnostic snapshot classified from a single indexed source window.
+pub struct ReconciliationUsageWindow {
+    pub responses: Vec<RecordedResponse>,
+    pub observations: Vec<UsageObservation>,
+    /// At least one source row was excluded by the shared examination budget.
+    pub truncated: bool,
+}
+
+/// Examine at most `max_examined` source rows using the existing (agent,seq)
+/// index, before any usage-kind filtering. One row is reserved as lookahead;
+/// responses, gaps and cumulative observations share the remaining window.
+pub fn reconciliation_usage_window(
+    db: &Connection,
+    agent: &str,
+    max_examined: usize,
+) -> StoreResult<ReconciliationUsageWindow> {
+    let mut window = ReconciliationUsageWindow {
+        responses: Vec::new(),
+        observations: Vec::new(),
+        truncated: max_examined == 0,
+    };
+    if max_examined == 0 {
+        return Ok(window);
     }
-    Ok((rows, false))
+    let sql_limit = i64::try_from(max_examined).unwrap_or(i64::MAX);
+    let mut statement = db.prepare_cached("SELECT seq,agent,at,record FROM analytics_usage INDEXED BY analytics_usage_migration WHERE agent=?1 ORDER BY seq DESC LIMIT ?2")?;
+    let mut source = statement.query(params![agent, sql_limit])?;
+    let mut decoded = Vec::new();
+    let mut examined = 0;
+    while let Some(row) = source.next()? {
+        examined += 1;
+        if examined == max_examined {
+            window.truncated = true;
+            break;
+        }
+        let at: f64 = row.get(2)?;
+        let sequence: i64 = row.get(0)?;
+        let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(3)?)?;
+        decoded.push((
+            at,
+            sequence,
+            decode_usage_evidence(row.get(1)?, at, &value)?,
+        ));
+    }
+    // Keep the prior observation ordering inside the bounded recent source
+    // window, including delayed imports with earlier observation timestamps.
+    decoded.sort_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
+    for (_, _, evidence) in decoded {
+        match evidence {
+            DecodedUsageEvidence::Response(response) => window.responses.push(response),
+            DecodedUsageEvidence::Observation(observation) => window.observations.push(observation),
+            DecodedUsageEvidence::Ignored => {}
+        }
+    }
+    Ok(window)
 }
 
 /// Preserve final live/recovered responses; only missing or legacy evidence accepts journal recovery.

@@ -8,6 +8,15 @@ use studio_runtime_store::path_identity::CanonicalPath;
 
 const MAX_PROFILE_DISCOVERY_ENTRIES: usize = 65_536;
 const MAX_ROUND_DISCOVERY_ENTRIES: usize = 65_536;
+pub(crate) struct DiscoveryRejection {
+    pub path: PathBuf,
+    pub reason: &'static str,
+}
+pub(crate) struct BoundedDiscovery {
+    pub path: Result<RolloutPath, HistoryError>,
+    pub examined: usize,
+    pub rejections: Vec<DiscoveryRejection>,
+}
 pub struct DiscoveryRound {
     profiles: BTreeMap<CanonicalPath, Option<Vec<PathBuf>>>,
     limit_profiles: std::collections::BTreeSet<CanonicalPath>,
@@ -15,6 +24,7 @@ pub struct DiscoveryRound {
     profile_entry_limit: usize,
     round_entry_limit: usize,
     request_entries_remaining: Option<usize>,
+    request_rejections: Vec<DiscoveryRejection>,
 }
 
 impl Default for DiscoveryRound {
@@ -26,6 +36,7 @@ impl Default for DiscoveryRound {
             profile_entry_limit: MAX_PROFILE_DISCOVERY_ENTRIES,
             round_entry_limit: MAX_ROUND_DISCOVERY_ENTRIES,
             request_entries_remaining: None,
+            request_rejections: Vec::new(),
         }
     }
 }
@@ -86,14 +97,23 @@ impl DiscoveryRound {
         thread: &str,
         cancel: &AtomicBool,
         allowance: usize,
-    ) -> (Result<RolloutPath, HistoryError>, usize) {
+    ) -> BoundedDiscovery {
         if allowance == 0 {
-            return (Err(HistoryError::DiscoveryRoundLimit), 0);
+            return BoundedDiscovery {
+                path: Err(HistoryError::DiscoveryRoundLimit),
+                examined: 0,
+                rejections: Vec::new(),
+            };
         }
         self.request_entries_remaining = Some(allowance);
-        let result = self.resolve(profile, thread, cancel);
+        self.request_rejections.clear();
+        let path = self.resolve(profile, thread, cancel);
         let remaining = self.request_entries_remaining.take().unwrap_or(allowance);
-        (result, allowance - remaining)
+        BoundedDiscovery {
+            path,
+            examined: allowance - remaining,
+            rejections: std::mem::take(&mut self.request_rejections),
+        }
     }
 
     pub fn resolve(
@@ -168,6 +188,16 @@ impl DiscoveryRound {
         cancel: &AtomicBool,
         profile_entries: &mut usize,
     ) -> Result<Option<Vec<PathBuf>>, HistoryError> {
+        // Only diagnostic discovery opts into path rejection. The importer's
+        // default resolver retains its existing discovery behavior.
+        let anchor = if self.request_entries_remaining.is_some() {
+            Some(
+                super::NativeEvidenceRoot::new(profile)
+                    .map_err(|_| HistoryError::read(super::PROFILE_DIRECTORY))?,
+            )
+        } else {
+            None
+        };
         let mut directories = vec![profile.join("sessions"), profile.join("archived_sessions")];
         let mut paths = Vec::new();
         self.visit(profile_entries)?;
@@ -175,9 +205,35 @@ impl DiscoveryRound {
             if cancel.load(Ordering::Relaxed) {
                 return Err(HistoryError::Cancelled);
             }
-            let read = match fs::read_dir(directory) {
+            if let Some(anchor) = &anchor {
+                self.visit(profile_entries)?;
+                match anchor.directory(&directory) {
+                    Ok(_) => {}
+                    Err(super::NativeFileOpenError::Read(HistoryError::Read(
+                        super::ReadFailure {
+                            kind: Some(std::io::ErrorKind::NotFound),
+                            ..
+                        },
+                    ))) => continue,
+                    Err(error) => {
+                        self.request_rejections.push(DiscoveryRejection {
+                            path: directory,
+                            reason: error.reason(),
+                        });
+                        continue;
+                    }
+                }
+            }
+            let read = match fs::read_dir(&directory) {
                 Ok(read) => read,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) if anchor.is_some() => {
+                    self.request_rejections.push(DiscoveryRejection {
+                        path: directory.clone(),
+                        reason: "Native directory could not be read",
+                    });
+                    continue;
+                }
                 Err(_) => return Ok(None),
             };
             for entry in read {
@@ -185,10 +241,41 @@ impl DiscoveryRound {
                 if cancel.load(Ordering::Relaxed) {
                     return Err(HistoryError::Cancelled);
                 }
-                let entry = entry.map_err(HistoryError::io(super::ROLLOUT_DIRECTORY))?;
-                let kind = entry
-                    .file_type()
-                    .map_err(HistoryError::io(super::ROLLOUT_DIRECTORY))?;
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) if anchor.is_none() => {
+                        return Err(HistoryError::io(super::ROLLOUT_DIRECTORY)(error));
+                    }
+                    Err(_) => {
+                        self.request_rejections.push(DiscoveryRejection {
+                            path: directory.clone(),
+                            reason: "Native directory entry could not be read",
+                        });
+                        continue;
+                    }
+                };
+                if let Some(anchor) = &anchor
+                    && let Err(error) = anchor.path(&entry.path())
+                {
+                    self.request_rejections.push(DiscoveryRejection {
+                        path: entry.path(),
+                        reason: error.reason(),
+                    });
+                    continue;
+                }
+                let kind = match entry.file_type() {
+                    Ok(kind) => kind,
+                    Err(error) if anchor.is_none() => {
+                        return Err(HistoryError::io(super::ROLLOUT_DIRECTORY)(error));
+                    }
+                    Err(_) => {
+                        self.request_rejections.push(DiscoveryRejection {
+                            path: entry.path(),
+                            reason: "Native entry kind could not be read",
+                        });
+                        continue;
+                    }
+                };
                 if kind.is_dir() {
                     directories.push(entry.path());
                 } else if entry
@@ -196,6 +283,13 @@ impl DiscoveryRound {
                     .to_str()
                     .is_some_and(|s| s.starts_with("rollout-") && s.ends_with(".jsonl"))
                 {
+                    if anchor.is_some() && !kind.is_file() {
+                        self.request_rejections.push(DiscoveryRejection {
+                            path: entry.path(),
+                            reason: "Native rollout candidate is not a regular file",
+                        });
+                        continue;
+                    }
                     paths.push(entry.path());
                 }
             }

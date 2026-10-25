@@ -223,6 +223,26 @@ fn session_cost_inner(
     }))
 }
 
+struct ReconciliationUsageSnapshot {
+    recorded: Vec<studio_runtime_store::cost_aggregate::RecordedResponse>,
+    observations: Vec<studio_runtime_schema::usage::UsageObservation>,
+    truncated: bool,
+}
+
+fn read_usage_snapshot(
+    db: &rusqlite::Connection,
+    agent: &str,
+    limit: usize,
+) -> Result<ReconciliationUsageSnapshot, CostsError> {
+    let window =
+        studio_runtime_store::cost_aggregate::reconciliation_usage_window(db, agent, limit)?;
+    Ok(ReconciliationUsageSnapshot {
+        recorded: window.responses,
+        observations: window.observations,
+        truncated: window.truncated,
+    })
+}
+
 /// Compare the exact agent's stored response facts with native evidence. This never
 /// imports history, repairs analytics, or contacts a provider.
 pub fn usage_reconciliation(
@@ -232,7 +252,6 @@ pub fn usage_reconciliation(
 ) -> Result<Value, CostsError> {
     use rusqlite::OptionalExtension;
     use studio_runtime_schema::usage::{UsageObservation, UsageScope};
-    use studio_runtime_store::cost_aggregate::recorded_responses_bounded;
 
     let repository = AnalyticsRepository::new(store.root());
     let mut db = repository.open_read_only()?;
@@ -248,23 +267,12 @@ pub fn usage_reconciliation(
     let member: CostMember =
         serde_json::from_str(&raw).map_err(|_| CostsError::InvalidSessionState)?;
     let mut budget = EvidenceBudget::default();
-    let (recorded, truncated) =
-        recorded_responses_bounded(&tx, &[agent_id.to_owned()], MAX_RECONCILIATION_RESPONSES)?;
-    budget.truncated |= truncated;
+    let snapshot = read_usage_snapshot(&tx, agent_id, MAX_RECONCILIATION_SOURCE_ROWS)?;
+    let recorded = snapshot.recorded;
+    budget.truncated |= snapshot.truncated;
     let mut gaps = BTreeMap::new();
     let mut provider_costs = BTreeMap::new();
-    let mut statement = tx.prepare("SELECT json_extract(record,'$.studioUsage') FROM analytics_usage WHERE agent=?1 AND json_extract(record,'$.studioUsage.kind') IN ('gap','cumulative') ORDER BY at,seq LIMIT ?2")?;
-    let observations = statement.query_map(
-        rusqlite::params![agent_id, (MAX_RECONCILIATION_RESPONSES + 1) as i64],
-        |row| row.get::<_, String>(0),
-    )?;
-    for (index, raw) in observations.enumerate() {
-        if index == MAX_RECONCILIATION_RESPONSES {
-            budget.truncated = true;
-            break;
-        }
-        let observation: UsageObservation =
-            serde_json::from_str(&raw?).map_err(|_| CostsError::InvalidSessionState)?;
+    for observation in snapshot.observations {
         match observation {
             UsageObservation::Gap {
                 ref response_id, ..
@@ -286,7 +294,6 @@ pub fn usage_reconciliation(
             _ => {}
         }
     }
-    drop(statement);
     tx.commit()?;
 
     let mut native = BTreeMap::<String, NativeResponse>::new();
@@ -542,14 +549,21 @@ fn read_codex_evidence(
         };
         let profile = expand_home(PathBuf::from(profile));
         let remaining_entries = MAX_EVIDENCE_ENTRIES.saturating_sub(budget.entries);
-        let (discovered, examined) = budget.discovery.resolve_with_entry_budget(
+        let discovered = budget.discovery.resolve_with_entry_budget(
             &profile,
             &thread,
             &std::sync::atomic::AtomicBool::new(false),
             remaining_entries,
         );
-        budget.entries += examined;
-        let path = match discovered {
+        budget.entries += discovered.examined;
+        for rejected in discovered.rejections {
+            budget.reject(
+                &rejected.path,
+                EvidenceFileKind::CodexRollout,
+                rejected.reason,
+            );
+        }
+        let path = match discovered.path {
             Ok(RolloutPath::Found(path)) => path,
             Err(
                 crate::analytics_history::HistoryError::DiscoveryLimit
@@ -682,6 +696,9 @@ static SESSION_NATIVE_IDS: LazyLock<FileDerived<Result<Vec<String>, ()>>> =
 
 /// Maximum distinct responses in one diagnostic comparison (unit: responses).
 const MAX_RECONCILIATION_RESPONSES: usize = 10_000;
+/// Maximum indexed SQLite source rows examined per comparison, including a
+/// single lookahead row used to report truncation (unit: source rows).
+const MAX_RECONCILIATION_SOURCE_ROWS: usize = 10_000;
 /// Maximum native bytes read across one comparison, including session state (unit: bytes).
 pub const MAX_RECONCILIATION_NATIVE_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum filesystem entries/files examined across one comparison (unit: entries).
@@ -1502,6 +1519,111 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn usage_reconciliation_sql_examination_is_bounded_before_kind_filtering() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        let measure = |count: usize| {
+            let mut db = rusqlite::Connection::open_in_memory().expect("analytics");
+            db.execute_batch("CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY,agent TEXT NOT NULL,at REAL NOT NULL,record TEXT NOT NULL); CREATE INDEX analytics_usage_migration ON analytics_usage(agent,seq); CREATE INDEX analytics_usage_scope ON analytics_usage(agent,at);").expect("usage source");
+            let tx = db.transaction().expect("seed transaction");
+            for index in 0..count {
+                let record = json!({"studioUsage":{"kind":"response","responseId":format!("r{index}"),"model":"gpt-test","evidence":"live","tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2}}});
+                tx.execute(
+                    "INSERT INTO analytics_usage(agent,at,record) VALUES('agent',?1,?2)",
+                    rusqlite::params![index as i64, record.to_string()],
+                )
+                .expect("source row");
+            }
+            tx.commit().expect("seed");
+            let instructions = Arc::new(AtomicU64::new(0));
+            let counter = Arc::clone(&instructions);
+            db.progress_handler(
+                1,
+                Some(move || {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    false
+                }),
+            )
+            .expect("VM counter");
+            let snapshot = super::read_usage_snapshot(&db, "agent", 4).expect("bounded snapshot");
+            db.progress_handler(1, None::<fn() -> bool>)
+                .expect("remove VM counter");
+            assert!(!snapshot.recorded.is_empty() && snapshot.recorded.len() <= 4);
+            assert!(snapshot.truncated);
+            instructions.load(Ordering::Relaxed)
+        };
+        assert_eq!(
+            measure(100),
+            measure(1000),
+            "non-matching source rows must not increase SQLite VM work"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn usage_reconciliation_discovery_skips_symlink_archive_before_valid_sessions() {
+        let root = tempfile::tempdir().expect("profile");
+        let foreign = tempfile::tempdir().expect("foreign archive");
+        let (member, accounts) = reconciliation_codex_fixture(root.path());
+        for index in 0..20 {
+            fs::write(foreign.path().join(format!("unrelated-{index}")), b"{}")
+                .expect("foreign entry");
+        }
+        std::os::unix::fs::symlink(foreign.path(), root.path().join("archived_sessions"))
+            .expect("archive link");
+        let mut budget = super::EvidenceBudget {
+            entries: super::MAX_EVIDENCE_ENTRIES - 12,
+            ..Default::default()
+        };
+        let mut rows = BTreeMap::new();
+        super::read_codex_evidence(&member, &accounts, &mut rows, &mut budget)
+            .expect("valid sibling");
+        assert_eq!(
+            rows.len(),
+            3,
+            "rejected archive cannot hide valid session evidence"
+        );
+        assert_eq!(budget.rejected, 1);
+        assert!(!budget.truncated);
+        assert!(
+            budget
+                .files
+                .iter()
+                .any(|file| file.reason.is_some_and(|reason| reason.contains("symlink")))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn usage_reconciliation_discovery_rejects_alias_before_ambiguity_resolution() {
+        let root = tempfile::tempdir().expect("profile");
+        let (member, accounts) = reconciliation_codex_fixture(root.path());
+        std::os::unix::fs::symlink(
+            root.path().join("sessions/rollout-test-thread.jsonl"),
+            root.path().join("sessions/rollout-alias-thread.jsonl"),
+        )
+        .expect("rollout link");
+        let mut budget = super::EvidenceBudget::default();
+        let mut rows = BTreeMap::new();
+        super::read_codex_evidence(&member, &accounts, &mut rows, &mut budget)
+            .expect("valid sibling");
+        assert_eq!(
+            rows.len(),
+            3,
+            "symlink candidate cannot make valid evidence ambiguous"
+        );
+        assert_eq!(budget.rejected, 1);
+        assert!(
+            budget
+                .files
+                .iter()
+                .any(|file| file.reason.is_some_and(|reason| reason.contains("symlink")))
+        );
+    }
+
     #[test]
     fn usage_reconciliation_journal_ancestor_symlink_cannot_escape_profile() {
         let root = tempfile::tempdir().expect("state");

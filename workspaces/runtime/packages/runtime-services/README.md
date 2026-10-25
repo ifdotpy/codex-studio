@@ -645,3 +645,10 @@ to the same diagnostic request allowance, and response parsers retain at most th
 remaining response allowance while still detecting conflicting retained replays.
 The diagnostic counts unknown recorded responses separately: absent/null categories
 remain unknown, contribute no known totals, and do not create token mismatches.
+
+Diagnostic Codex discovery validates session roots and candidate paths before
+traversal and ambiguity resolution, returning counted rejection reasons while
+continuing through valid siblings. Its opt-in validation leaves ordinary importer
+discovery unchanged. Recorded usage is classified from one indexed recent source
+window; the source-row examination bound applies before JSON-kind filtering and
+is shared by responses, gaps and cumulative observations.
