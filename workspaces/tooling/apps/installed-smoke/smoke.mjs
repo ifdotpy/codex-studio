@@ -1055,7 +1055,7 @@ export class Smoke {
       id: inputId,
       room: id,
       delivery: "next_turn",
-      text: `This is turn 2 of a usage check. Write about 150 words explaining why small deterministic tests are useful. Then use one read-only file-read tool to read ${path.join(this.root, NOTES_FILE)} (if no file-read tool exists, run cat on that exact file). After that tool result write another 150 words about test cleanup. Do not read files, delegate, or create monitors. End with ${token}.`,
+      text: `This is turn 2 of a usage check. Write about 150 words explaining why small deterministic tests are useful. Then use one read-only file-read tool to read ${path.join(this.root, NOTES_FILE)} (if no file-read tool exists, run cat on that exact file). After that tool result write another 150 words about test cleanup. Do not read any other file, delegate, or create monitors. End with ${token}.`,
     });
     let steer = null;
     if (provider === "claude") {
@@ -1252,7 +1252,7 @@ export class Smoke {
     );
     if (provider === "codex" && longResponseIds.length < 2)
       throw new CheckFailed("Turn 2 has fewer than two native model responses");
-    return `${id}: ${truth.responses.length} native responses, ${responses.length} recorded responses`;
+    return `${id}: ${truth.responses.length} native responses, ${recorded.responses.length} recorded responses`;
   }
 
   /** Match the UI publication to a fresh cost generation containing final-turn usage. */

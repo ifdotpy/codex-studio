@@ -150,6 +150,7 @@ default-filter = '''
     | (package(=studio-runtime-providers) & binary(=connection) & test(recovered_unknown_owner_refuses_cancellation_and_keeps_fresh_work_waiting))
     | (package(=studio-runtime-schema) & kind(lib) & test(provider_method_policy::tests::recovered_policy_keeps_unreadable_parameters_owned))
     | ((package(=studio-runtime-services) | package(=studio-runtime-http)) & kind(lib) & test(usage_reconciliation))
+    | (package(=studio-runtime-http) & kind(lib) & test(routes::insights::tests::))
     | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(conflicting_header_alias_does_not_authorize_a_foreign_file))
 '''
 
@@ -247,6 +248,7 @@ default-filter = '''
     | (package(=studio-runtime-providers) & binary(=connection) & test(recovered_unknown_owner_refuses_cancellation_and_keeps_fresh_work_waiting))
     | (package(=studio-runtime-schema) & kind(lib) & test(provider_method_policy::tests::recovered_policy_keeps_unreadable_parameters_owned))
     | ((package(=studio-runtime-services) | package(=studio-runtime-http)) & kind(lib) & test(usage_reconciliation))
+    | (package(=studio-runtime-http) & kind(lib) & test(routes::insights::tests::))
     | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(conflicting_header_alias_does_not_authorize_a_foreign_file))
     | ((package(=studio-process-supervisor)) & ((kind(test) & binary(=clients))) & (test(supervisor_rejects_retired_protocol_before_admission)))
     | ((package(=studio-runtime-providers)) & (kind(lib)) & (test(supervisor_rejects_python_identity_adoption)))

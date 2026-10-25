@@ -15202,7 +15202,10 @@
           "counterDomain": {
             "enum": [
               "response",
-              "nativeNotice"
+              "nativeNotice",
+              "codexThread",
+              "claudeQuery",
+              "gap"
             ],
             "title": "Counterdomain",
             "type": "string"
@@ -15516,11 +15519,8 @@
           "last",
           "total",
           "delta",
-          "cumulativeDelta",
           "counterDomain",
-          "modelContextWindow",
-          "reset",
-          "baselineMissing"
+          "modelContextWindow"
         ],
         "title": "AnalyticsUsageRecord",
         "type": "object"
