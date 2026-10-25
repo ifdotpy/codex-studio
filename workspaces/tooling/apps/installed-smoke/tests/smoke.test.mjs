@@ -1417,7 +1417,7 @@ test("comparison reprojects old snapshots and preserves unknown categories and g
   const compared = compareEvidence(old, old);
   for (const row of compared) {
     assert.equal(
-      row["recorded input/read/write/output/reasoning"],
+      row["partial recorded input/read/write/output/reasoning"],
       "10/unknown/0/2/unknown",
     );
     assert.equal(row["recorded/truth"], null);
@@ -1435,4 +1435,72 @@ test("comparison reprojects old snapshots and preserves unknown categories and g
   assert.equal(unavailable["recorded/truth"], null);
   assert.equal(unavailable["unpriced gaps"], null);
   assert.match(unavailable["recorded projection"], /unknown.*old-fixture/);
+});
+
+test("comparison gaps make totals incomplete and prices use one explicit rate basis", async () => {
+  const { compareEvidence } = await import("../usage.mjs");
+  const tokens = {
+    uncachedInput: 10,
+    cacheReadInput: 0,
+    cacheWriteInput: 0,
+    output: 2,
+    reasoningOutput: 1,
+  };
+  const rates = { input: 1, cache_read: 0.1, cache_write: 1.25, output: 5 };
+  const make = (timeline, inputRate = 1) => ({
+    providers: [
+      {
+        provider: "claude",
+        agentId: "a",
+        budget: {},
+        analytics: { timeline },
+        recorded: { tokens },
+        truth: {
+          tokens,
+          costUsd: 99,
+          responses: [{ responseId: "r", model: "m", tokens }],
+          prices: [{ responseId: "r", rates: { ...rates, input: inputRate } }],
+        },
+        displayedCost: { totalUSD: 88 },
+      },
+    ],
+  });
+  const response = {
+    studioUsage: { kind: "response", responseId: "r", model: "m", tokens },
+  };
+  const gap = {
+    studioUsage: { kind: "gap", responseId: "g", reason: "queryClosed" },
+  };
+  for (const timeline of [[gap], [response, gap]]) {
+    const [row] = compareEvidence(make(timeline), make(timeline));
+    assert.equal(row["recorded input/read/write/output/reasoning"], null);
+    assert.equal(row["recorded total tokens"], null);
+    assert.equal(row["recorded/truth"], null);
+    assert.equal(row["recorded USD"], null);
+    assert.equal(
+      row["partial recorded input/read/write/output/reasoning"],
+      timeline.length === 1 ? "0/0/0/0/0" : "10/0/0/2/1",
+    );
+  }
+  const compared = compareEvidence(make([response]), make([response], 100));
+  for (const row of compared) {
+    assert.equal(row["recorded USD"], 0.00002);
+    assert.equal(row["truth USD"], 0.00002);
+    assert.equal(row["saved truth USD"], 99);
+    assert.equal(row["saved displayed USD"], 88);
+    assert.match(row["pricing basis"], /OLD.*USD.*million/);
+    assert.match(row["ratio basis"], /reasoning.*output/);
+  }
+  const unknown = structuredClone(response);
+  unknown.studioUsage.tokens.cacheReadInput = null;
+  assert.equal(
+    compareEvidence(make([unknown]), make([unknown]))[0]["recorded USD"],
+    null,
+  );
+  const unavailableRates = make([response]);
+  delete unavailableRates.providers[0].truth.prices;
+  for (const row of compareEvidence(unavailableRates, make([response]))) {
+    assert.equal(row["recorded USD"], null);
+    assert.equal(row["truth USD"], null);
+  }
 });

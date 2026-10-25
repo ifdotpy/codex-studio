@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { isDeepStrictEqual } from "node:util";
 import { execFileSync } from "node:child_process";
 
 export const NOTES_FILE = "notes.txt";
@@ -256,19 +257,36 @@ export function usageTable(evidence, label) {
     "truth input/read/write/output/reasoning": TOKEN_CATEGORIES.map(
       (key) => row.truth.tokens[key],
     ).join("/"),
-    "recorded input/read/write/output/reasoning": TOKEN_CATEGORIES.map(
-      (key) => row.recorded.tokens[key] ?? "unknown",
-    ).join("/"),
+    "recorded input/read/write/output/reasoning": row.recorded.gaps?.length
+      ? null
+      : TOKEN_CATEGORIES.map(
+          (key) => row.recorded.tokens[key] ?? "unknown",
+        ).join("/"),
+    "recorded total tokens": row.recorded.gaps?.length
+      ? null
+      : totalTokens(row.recorded.tokens),
+    "partial recorded input/read/write/output/reasoning": row.recorded.gaps
+      ?.length
+      ? TOKEN_CATEGORIES.map(
+          (key) => row.recorded.tokens[key] ?? "unknown",
+        ).join("/")
+      : null,
     "recorded/truth":
-      totalTokens(row.recorded.tokens) == null
+      row.recorded.gaps?.length ||
+      totalTokens(row.recorded.tokens) == null ||
+      !totalTokens(row.truth.tokens)
         ? null
         : totalTokens(row.recorded.tokens) / totalTokens(row.truth.tokens),
     "unpriced gaps": row.recorded.gaps?.length ?? null,
     "recorded projection": row.recorded.projection ?? "persisted-usage-v3",
     "budget tokens": row.budget.tokensUsed,
     accounting: row.budget.tokenUsageAccounting,
-    "truth priced USD": row.truth.costUsd ?? null,
-    "displayed USD": row.displayedCost?.totalUSD ?? null,
+    "ratio basis": "billed tokens; reasoning already included in output",
+    "pricing basis": evidence.pricingBasis ?? "not recomputed",
+    "recorded USD": row.recorded.recomputedCostUsd ?? null,
+    "truth USD": row.truth.recomputedCostUsd ?? null,
+    "saved truth USD": row.truth.costUsd ?? null,
+    "saved displayed USD": row.displayedCost?.totalUSD ?? null,
     "analytics latency":
       row.analyticsLatency
         ?.map(
@@ -276,24 +294,89 @@ export function usageTable(evidence, label) {
             `${timing.outcome}:${timing.elapsedMs ?? timing.timeoutMs}ms`,
         )
         .join(", ") ?? null,
-    "reconciled recorded USD":
+    "saved reconciled recorded USD":
       row.reconciliation?.totals?.recordedCostUsd ?? null,
-    "reconciled evidence USD":
+    "saved reconciled evidence USD":
       row.reconciliation?.totals?.evidenceCostUsd ?? null,
   }));
 }
 
 /** Re-project both saved runs without mutating snapshots or trusting old derived totals. */
 export function compareEvidence(oldEvidence, newEvidence) {
+  // One common basis for both runs: OLD's saved per-response rates, joined to
+  // their native models. Missing or inconsistent rates cannot produce a price.
+  const modelsByProvider = new Map();
+  for (const row of oldEvidence.providers) {
+    const models = modelsByProvider.get(row.provider) ?? new Map();
+    modelsByProvider.set(row.provider, models);
+    for (const price of row.truth?.prices ?? []) {
+      const model = row.truth.responses?.find(
+        (response) => response.responseId === price.responseId,
+      )?.model;
+      if (!model || !price.rates) continue;
+      if (
+        models.has(model) &&
+        !isDeepStrictEqual(models.get(model), price.rates)
+      )
+        models.set(model, null);
+      else if (!models.has(model)) models.set(model, price.rates);
+    }
+  }
+  const reprice = (responses, provider) => {
+    if (
+      !Array.isArray(responses) ||
+      responses.some((row) =>
+        TOKEN_CATEGORIES.slice(0, 4).some(
+          (key) =>
+            !Number.isSafeInteger(row.tokens?.[key]) || row.tokens[key] < 0,
+        ),
+      )
+    )
+      return null;
+    const models = Object.fromEntries(
+      [...(modelsByProvider.get(provider) ?? [])].map(([model, cost]) => [
+        model,
+        { cost },
+      ]),
+    );
+    try {
+      return priceResponses(
+        responses,
+        {
+          catalog: {
+            providers: {
+              [provider === "claude" ? "anthropic" : "openai"]: { models },
+            },
+          },
+        },
+        provider,
+      ).costUsd;
+    } catch {
+      // Missing model/rate or out-of-base-tier usage is explicitly unpriced.
+      return null;
+    }
+  };
   const project = (evidence) => ({
     ...evidence,
+    pricingBasis:
+      "OLD truth.prices rates by native model; USD per million tokens; base tiers only; missing/conflicting rates or incomplete usage = null",
     providers: evidence.providers.map((row) => {
       const available = Array.isArray(row.analytics?.timeline);
       const recorded = available ? recordedUsage(row.analytics) : null;
       return {
         ...row,
+        truth: {
+          ...row.truth,
+          recomputedCostUsd: reprice(row.truth?.responses, row.provider),
+        },
         recorded: recorded
-          ? { ...recorded, tokens: sumTokens(recorded.responses) }
+          ? {
+              ...recorded,
+              tokens: sumTokens(recorded.responses),
+              recomputedCostUsd: recorded.gaps.length
+                ? null
+                : reprice(recorded.responses, row.provider),
+            }
           : {
               tokens: Object.fromEntries(
                 TOKEN_CATEGORIES.map((key) => [key, null]),
