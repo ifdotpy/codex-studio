@@ -1448,6 +1448,46 @@ fn can_delegate(tx: &Transaction<'_>, record: &Value, root: &Value) -> Result<bo
 
 #[cfg(test)]
 mod resource_tests {
+    #[test]
+    fn native_release_phases_hold_only_unsettled_releases() {
+        for (patch, held) in [
+            (
+                json!({"phase":"blocked", "connectionId":"earlier", "error":"native background command is active"}),
+                false,
+            ),
+            (json!({"phase":"blocked"}), false),
+            (json!({"phase":null, "inspectionPhase":"superseded"}), false),
+            (json!({"phase":"released"}), false),
+            (json!({"phase":"resumed"}), false),
+            (json!({"phase":"pending"}), false),
+            (json!({"phase":"released", "resetPending":true}), true),
+            (json!({"phase":"unsubscribing"}), true),
+            (
+                json!({"phase":"unsubscribing", "connectionId":"earlier"}),
+                false,
+            ),
+            (json!({"phase":"unknown"}), true),
+            (json!({"phase":"checking"}), true),
+            (
+                json!({"phase":"checking", "inspectionPhase":"inspecting"}),
+                false,
+            ),
+            (
+                json!({"phase":"unsubscribing", "resetActorEpoch":0, "submittedAt":101}),
+                true,
+            ),
+        ] {
+            let mut record = json!({"threadId":"thread", "nativeRelease":{
+                "threadId":"thread", "connectionId":"1"
+            }});
+            record["nativeRelease"]
+                .as_object_mut()
+                .expect("release object")
+                .extend(patch.as_object().expect("patch object").clone());
+            assert_eq!(native_release_held(&record, "1"), held, "{patch}");
+        }
+    }
+
     fn guidance(
         resources: &super::PreparationResources,
         record: &serde_json::Value,

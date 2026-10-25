@@ -171,8 +171,7 @@ fn root() -> PathBuf {
 
 async fn test_store() -> (PathBuf, Arc<RuntimeStore>) {
     let root = root();
-    seed_fixture_root(&root).await;
-    let store = RuntimeStore::open(Some(&root)).await.expect("open store");
+    let store = seed_fixture_root(&root).await;
     (root, Arc::new(store))
 }
 
