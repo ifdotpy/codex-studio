@@ -20,12 +20,17 @@ pub const ENTITY_TOMBSTONE_PRUNE_BATCH: i64 = 500;
 /// Prefix of indexed scope visibility fence keys in sync_entity_meta. SQL
 /// bootstrap triggers consume this contract; a fast parity witness checks them.
 const ENTITY_SCOPE_VISIBILITY_KEY_PREFIX: &str = "entity_scope_visibility:";
+/// Qualifier for direct/team-agent selection; absent from root-only fences.
+const ENTITY_SCOPE_TEAM_PREDICATE: &str = "team";
+
+#[cfg(test)]
+const ENTITY_SCOPE_TOMBSTONE_KEY_PREFIX: &str = "entity_scope_tombstone:";
 
 const ENTITY_SCOPE_PREDICATE: &str = "collection NOT LIKE 'transcript:%' \
      AND (:collections IS NULL OR collection IN (SELECT value FROM json_each(:collections))) \
      AND (:id IS NULL OR id=:id) \
-     AND (:agent IS NULL OR json_extract(payload,'$.value.agent')=:agent \
-          OR json_extract(payload,'$.value.agent') IN (SELECT id FROM sync_entities WHERE collection='agentSummary' AND deleted=0 AND json_extract(payload,'$.value.rootId')=:agent) \
+     AND (:agent IS NULL OR (:include_team_members AND (json_extract(payload,'$.value.agent')=:agent \
+          OR json_extract(payload,'$.value.agent') IN (SELECT id FROM sync_entities WHERE collection='agentSummary' AND deleted=0 AND json_extract(payload,'$.value.rootId')=:agent))) \
           OR json_extract(payload,'$.value.rootId')=:agent OR deleted=1)";
 
 /// Selection and initial list ordering shared by the page reader.
@@ -62,6 +67,14 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[
     },
 ];
 const BOOTSTRAP_TRIGGERS: &[TriggerRequirement] = &[
+    TriggerRequirement {
+        name: "sync_entity_scope_tombstone_update",
+        table: "sync_entities",
+    },
+    TriggerRequirement {
+        name: "sync_entity_scope_tombstone_delete",
+        table: "sync_entities",
+    },
     TriggerRequirement {
         name: "sync_entity_scope_visibility_insert",
         table: "sync_entities",
@@ -322,6 +335,7 @@ impl SyncDocumentsRepository {
             collection.map(|c| json!([c]).to_string()).as_deref(),
             id,
             None,
+            true,
             limit,
         )
     }
@@ -334,6 +348,7 @@ impl SyncDocumentsRepository {
         collections_json: Option<&str>,
         id: Option<&str>,
         agent: Option<&str>,
+        include_team_members: bool,
         limit: i64,
     ) -> StoreResult<EntityPage> {
         let tombstone_floor = Self::entity_tombstone_floor(transaction)?;
@@ -348,7 +363,15 @@ impl SyncDocumentsRepository {
             checkpoint: after,
             reset,
         };
-        Self::continue_entity_scope(transaction, &interval, collections_json, id, agent, limit)
+        Self::continue_entity_scope(
+            transaction,
+            &interval,
+            collections_json,
+            id,
+            agent,
+            include_team_members,
+            limit,
+        )
     }
 
     /// Continue only inside the caller's original SQLite read transaction with
@@ -361,6 +384,7 @@ impl SyncDocumentsRepository {
         collections_json: Option<&str>,
         id: Option<&str>,
         agent: Option<&str>,
+        include_team_members: bool,
         limit: i64,
     ) -> StoreResult<EntityPage> {
         let after = interval.checkpoint;
@@ -383,6 +407,7 @@ impl SyncDocumentsRepository {
                     ":snapshot": i64::from(reset),
                     ":limit": limit + 1,
                     ":agent": agent,
+                    ":include_team_members": include_team_members,
                 },
                 entity_row,
             )?
@@ -410,12 +435,14 @@ impl SyncDocumentsRepository {
         transaction: &Transaction<'_>,
         collections_json: &str,
         agent: &str,
+        include_team_members: bool,
     ) -> StoreResult<i64> {
         transaction.query_row_cached(&format!(
             "SELECT COALESCE(MAX(CAST(value AS INTEGER)),0) FROM sync_entity_meta WHERE key IN \
              (SELECT '{ENTITY_SCOPE_VISIBILITY_KEY_PREFIX}' || json_array(value,?2) FROM json_each(?1) \
-              UNION SELECT '{ENTITY_SCOPE_VISIBILITY_KEY_PREFIX}' || json_array('*',?2))"
-        ), params![collections_json,agent], |row| row.get(0)).map_err(StoreError::from)
+              UNION SELECT '{ENTITY_SCOPE_VISIBILITY_KEY_PREFIX}' || json_array(value,?2,'{ENTITY_SCOPE_TEAM_PREDICATE}') FROM json_each(?1) WHERE ?3 \
+              UNION SELECT '{ENTITY_SCOPE_VISIBILITY_KEY_PREFIX}' || json_array('*',?2) WHERE ?3)"
+        ), params![collections_json,agent,include_team_members], |row| row.get(0)).map_err(StoreError::from)
     }
 
     /// Complete live selection, independent of the stream page bound. Stream
@@ -427,13 +454,14 @@ impl SyncDocumentsRepository {
         collections_json: Option<&str>,
         id: Option<&str>,
         agent: Option<&str>,
+        include_team_members: bool,
     ) -> StoreResult<[u8; 32]> {
         use sha2::{Digest, Sha256};
         let mut statement = transaction.prepare_cached(&format!(
             "SELECT collection,id,seq FROM sync_entities WHERE {ENTITY_SCOPE_PREDICATE} AND deleted=0 ORDER BY seq"
         ))?;
         let mut rows = statement.query(named_params! {
-            ":collections": collections_json, ":id": id, ":agent": agent
+            ":collections": collections_json, ":id": id, ":agent": agent, ":include_team_members": include_team_members
         })?;
         let mut digest = Sha256::new();
         while let Some(row) = rows.next()? {
@@ -904,8 +932,13 @@ mod tests {
         )
         .expect("task");
         let fence = |root| {
-            SyncDocumentsRepository::entity_scope_visibility_revision(&tx, r#"["task"]"#, root)
-                .expect("indexed fence")
+            SyncDocumentsRepository::entity_scope_visibility_revision(
+                &tx,
+                r#"["task"]"#,
+                root,
+                true,
+            )
+            .expect("indexed fence")
         };
         let alpha = fence("alpha");
         let beta = fence("beta");
@@ -951,13 +984,169 @@ mod tests {
     }
 
     #[test]
+    fn scope_visibility_retains_deleted_owner_until_restore_and_ignores_team_for_root_only_work() {
+        use serde_json::json;
+        let mut connection = Connection::open_in_memory().expect("SQLite");
+        connection
+            .execute_batch(
+                include_str!("../sync_schema.sql")
+                    .split("-- section: runtime_events")
+                    .next()
+                    .unwrap(),
+            )
+            .unwrap();
+        let tx = connection.transaction().unwrap();
+        for (id, root) in [("a", "alpha"), ("b", "beta")] {
+            SyncDocumentsRepository::put_entity(
+                &tx,
+                "agentSummary",
+                id,
+                json!({"id":id,"rootId":root}),
+                false,
+            )
+            .unwrap();
+        }
+        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({"agent":"a"}), false)
+            .unwrap();
+        let fence = || {
+            SyncDocumentsRepository::entity_scope_visibility_revision(
+                &tx,
+                r#"["task"]"#,
+                "alpha",
+                true,
+            )
+            .unwrap()
+        };
+        let baseline = fence();
+        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({}), true).unwrap();
+        assert_eq!(fence(), baseline, "ordinary deletion stays incremental");
+        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({"agent":"b"}), false)
+            .unwrap();
+        assert!(
+            fence() > baseline,
+            "coalesced delete/restore must retain old ownership"
+        );
+        SyncDocumentsRepository::put_entity(
+            &tx,
+            "workDetail",
+            "work",
+            json!({"rootId":"alpha"}),
+            false,
+        )
+        .unwrap();
+        let work_fence = || {
+            SyncDocumentsRepository::entity_scope_visibility_revision(
+                &tx,
+                r#"["workDetail"]"#,
+                "alpha",
+                false,
+            )
+            .unwrap()
+        };
+        let baseline = work_fence();
+        SyncDocumentsRepository::put_entity(
+            &tx,
+            "agentSummary",
+            "new-child",
+            json!({"rootId":"alpha"}),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            work_fence(),
+            baseline,
+            "root-only Work cannot replay history after a new child"
+        );
+        SyncDocumentsRepository::put_entity(
+            &tx,
+            "workDetail",
+            "outside",
+            json!({"rootId":"beta","agent":"alpha"}),
+            false,
+        )
+        .unwrap();
+        let selected = SyncDocumentsRepository::resume_entity_scope(
+            &tx,
+            None,
+            Some(r#"["workDetail"]"#),
+            None,
+            Some("alpha"),
+            false,
+            512,
+        )
+        .unwrap();
+        assert_eq!(
+            selected
+                .rows
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            ["work"],
+            "root-only capability is enforced in SQL even with arbitrary agent properties"
+        );
+        let provenance_count = || {
+            tx.query_row(
+                "SELECT COUNT(*) FROM sync_entity_meta WHERE key LIKE 'entity_scope_tombstone:%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(provenance_count(), 0, "restoration consumes provenance");
+        tx.execute_batch("SAVEPOINT deleted_owner").unwrap();
+        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({}), true).unwrap();
+        assert_eq!(provenance_count(), 1);
+        tx.execute_batch("ROLLBACK TO deleted_owner; RELEASE deleted_owner")
+            .unwrap();
+        assert_eq!(
+            provenance_count(),
+            0,
+            "rollback retains source/provenance atomicity"
+        );
+        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({}), true).unwrap();
+        let restored_fence = fence();
+        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({"agent":"b"}), false)
+            .unwrap();
+        assert_eq!(
+            fence(),
+            restored_fence,
+            "same-owner restore stays incremental"
+        );
+        SyncDocumentsRepository::put_entity(&tx, "task", "moved", json!({}), true).unwrap();
+        tx.execute(
+            "DELETE FROM sync_entities WHERE collection='task' AND id='moved'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            provenance_count(),
+            0,
+            "physical tombstone pruning cleans metadata"
+        );
+    }
+
+    #[test]
     fn scope_visibility_sql_keys_match_named_owner() {
         let schema = include_str!("../sync_schema.sql");
         assert_eq!(
             schema
-                .matches(super::ENTITY_SCOPE_VISIBILITY_KEY_PREFIX)
+                .matches(&format!("'{}'", super::ENTITY_SCOPE_TEAM_PREDICATE))
                 .count(),
             3,
+            "named team predicate key owner"
+        );
+        assert_eq!(
+            schema
+                .matches(super::ENTITY_SCOPE_TOMBSTONE_KEY_PREFIX)
+                .count(),
+            4,
+            "named tombstone selector provenance owner"
+        );
+        assert_eq!(
+            schema
+                .matches(super::ENTITY_SCOPE_VISIBILITY_KEY_PREFIX)
+                .count(),
+            4,
             "sync_documents::ENTITY_SCOPE_VISIBILITY_KEY_PREFIX owns every bootstrap fence key"
         );
     }
@@ -982,6 +1171,7 @@ mod tests {
                 Some(r#"["task"]"#),
                 id,
                 agent,
+                true,
             )
             .expect("complete fingerprint")
         };
@@ -993,6 +1183,7 @@ mod tests {
                 Some(r#"["task"]"#),
                 None,
                 Some(agent),
+                true,
                 100,
             )
             .expect("selected rows")
@@ -1003,9 +1194,14 @@ mod tests {
         };
         assert_eq!(selected("lead"), ["a-task", "latest"]);
         let exact = fingerprint(Some("latest"), Some("lead"));
-        let empty =
-            SyncDocumentsRepository::entity_scope_fingerprint(&transaction, Some("[]"), None, None)
-                .expect("empty scope");
+        let empty = SyncDocumentsRepository::entity_scope_fingerprint(
+            &transaction,
+            Some("[]"),
+            None,
+            None,
+            true,
+        )
+        .expect("empty scope");
         transaction.execute("UPDATE sync_entities SET payload=json_set(payload,'$.value.rootId',CASE id WHEN 'a' THEN 'other' ELSE 'lead' END),seq=seq+100 WHERE collection='agentSummary'", []).expect("swap team members");
         assert_eq!(selected("lead"), ["b-task", "latest"]);
         let swapped = fingerprint(None, Some("lead"));
@@ -1020,8 +1216,14 @@ mod tests {
         );
         assert_eq!(
             empty,
-            SyncDocumentsRepository::entity_scope_fingerprint(&transaction, Some("[]"), None, None)
-                .expect("empty scope")
+            SyncDocumentsRepository::entity_scope_fingerprint(
+                &transaction,
+                Some("[]"),
+                None,
+                None,
+                true
+            )
+            .expect("empty scope")
         );
         transaction
             .execute(

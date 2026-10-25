@@ -344,6 +344,7 @@ export function createSyncClient(options: SyncClientOptions) {
           properties: {
             ...schema.properties,
             entity: { type: "object", additionalProperties: true },
+            evicted: { type: "boolean" },
           },
         },
         conflictHandler: {
@@ -353,7 +354,8 @@ export function createSyncClient(options: SyncClientOptions) {
             (context === "downstream-check-if-equal-1" && a.seq < b.seq) ||
             (a.seq === b.seq &&
               a.payload === b.payload &&
-              a._deleted === b._deleted),
+              a._deleted === b._deleted &&
+              a.evicted === b.evicted),
           resolve: async ({
             realMasterState,
             newDocumentState,
@@ -361,7 +363,10 @@ export function createSyncClient(options: SyncClientOptions) {
             realMasterState: SyncDocument & { _deleted: boolean };
             newDocumentState: SyncDocument & { _deleted: boolean };
           }) =>
-            newDocumentState.seq > realMasterState.seq
+            newDocumentState.seq > realMasterState.seq ||
+            (newDocumentState.seq === realMasterState.seq &&
+              realMasterState.evicted === true &&
+              newDocumentState.evicted !== true)
               ? newDocumentState
               : realMasterState,
         },
@@ -605,6 +610,7 @@ export function createSyncClient(options: SyncClientOptions) {
         collections: readonly string[];
         idField: string | null;
         agentField: string | null;
+        includeTeamMembers: boolean;
       }
     > = SUBSCRIPTION_ENTITY_SCOPES;
     const scope = scopes[resource.kind];
@@ -621,7 +627,7 @@ export function createSyncClient(options: SyncClientOptions) {
       ? selector[scope.agentField]
       : undefined;
     const selectedAgents = new Set([selectedAgent]);
-    if (selectedAgent) {
+    if (selectedAgent && scope.includeTeamMembers) {
       const summaries = await db.projections
         .find({
           selector: {
@@ -649,7 +655,10 @@ export function createSyncClient(options: SyncClientOptions) {
         scope.agentField &&
         selector[scope.agentField] &&
         entity.value &&
-        !selectedAgents.has((entity.value as { agent?: string }).agent) &&
+        !(
+          scope.includeTeamMembers &&
+          selectedAgents.has((entity.value as { agent?: string }).agent)
+        ) &&
         (entity.value as { rootId?: string }).rootId !==
           selector[scope.agentField]
       )
@@ -692,8 +701,9 @@ export function createSyncClient(options: SyncClientOptions) {
               rows.push({
                 id: row.id,
                 payload: "",
-                seq: cursor.seq,
+                seq: row.seq,
                 _deleted: true,
+                evicted: true,
               });
           }
         }
@@ -745,6 +755,7 @@ export function createSyncClient(options: SyncClientOptions) {
         collections: readonly string[];
         idField: string | null;
         agentField: string | null;
+        includeTeamMembers: boolean;
       }
     > = SUBSCRIPTION_ENTITY_SCOPES;
     const resource = interval.resource;
@@ -764,7 +775,7 @@ export function createSyncClient(options: SyncClientOptions) {
         (!applied || applied.seq < interval.after)
       )
         throw new Error("Staged subscription delta has no applied base");
-      if (selectedAgent) {
+      if (selectedAgent && scope.includeTeamMembers) {
         let after = "entity:agentSummary:";
         for (;;) {
           const summaries = await db.projections
@@ -797,7 +808,7 @@ export function createSyncClient(options: SyncClientOptions) {
         if (selectedAgent && entity.value) {
           const value = entity.value as { agent?: string; rootId?: string };
           if (
-            !selectedAgents.has(value.agent) &&
+            !(scope.includeTeamMembers && selectedAgents.has(value.agent)) &&
             value.rootId !== selectedAgent
           )
             return false;
@@ -842,8 +853,9 @@ export function createSyncClient(options: SyncClientOptions) {
                 removed.push({
                   id: row.id,
                   payload: "",
-                  seq: interval.cursor.seq,
+                  seq: row.seq,
                   _deleted: true,
+                  evicted: true,
                 });
             }
             await persistProjectionBatch(db.projections, removed, isCurrent);
@@ -1133,6 +1145,17 @@ export function createSyncClient(options: SyncClientOptions) {
     );
   }
 
+  // Local scope eviction preserves the last source version. It cannot claim a
+  // server tombstone's sequence and block that same version arriving via a new scope.
+  function projectionSupersedes(
+    previous: SyncDocument,
+    incoming: SyncDocument,
+  ) {
+    if (previous.seq !== incoming.seq) return previous.seq > incoming.seq;
+    if (incoming.evicted) return previous._deleted === true;
+    return previous.evicted !== true;
+  }
+
   // Pull-only projections never run RxDB's upstream scan of every cached chat.
   // The storage revision is a compare-and-swap across tabs; retry conflicts against
   // the latest row before applying server sequence order, including tombstones.
@@ -1148,7 +1171,7 @@ export function createSyncClient(options: SyncClientOptions) {
       );
       if (
         previous &&
-        previous.seq >= incoming.seq &&
+        projectionSupersedes(previous, incoming) &&
         !replaceObsoleteTranscript
       )
         return;
@@ -1185,7 +1208,7 @@ export function createSyncClient(options: SyncClientOptions) {
       const writes = [];
       for (const [id, incoming] of pending) {
         const previous = byId.get(id);
-        if (previous && previous.seq >= incoming.seq) {
+        if (previous && projectionSupersedes(previous, incoming)) {
           pending.delete(id);
           continue;
         }

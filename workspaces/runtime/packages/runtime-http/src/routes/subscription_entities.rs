@@ -50,6 +50,7 @@ async fn read_page(
                 Some(&collections),
                 id.as_deref(),
                 agent.as_deref(),
+                scope.include_team_members,
                 SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
             )
             .map_err(|_| ApiError::internal())
@@ -112,6 +113,7 @@ pub(super) async fn content_fingerprint(
                 Some(&collections),
                 id.as_deref(),
                 agent.as_deref(),
+                scope.include_team_members,
             )
         })
         .await

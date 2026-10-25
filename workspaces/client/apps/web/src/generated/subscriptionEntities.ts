@@ -4,26 +4,31 @@ export const SUBSCRIPTION_ENTITY_SCOPES = {
     collections: ["agentDetail"],
     idField: "agentId",
     agentField: null,
+    includeTeamMembers: true,
   },
   costs: {
     collections: ["accountCost"],
     idField: null,
     agentField: null,
+    includeTeamMembers: true,
   },
   desktop: {
     collections: ["desktop"],
     idField: null,
     agentField: null,
+    includeTeamMembers: true,
   },
   monitors: {
     collections: ["monitor"],
     idField: null,
     agentField: "agentId",
+    includeTeamMembers: true,
   },
   "session-cost": {
     collections: ["sessionCost"],
     idField: "agentId",
     agentField: null,
+    includeTeamMembers: true,
   },
   state: {
     collections: [
@@ -53,30 +58,36 @@ export const SUBSCRIPTION_ENTITY_SCOPES = {
     ],
     idField: null,
     agentField: null,
+    includeTeamMembers: true,
   },
   task: {
     collections: ["task"],
     idField: "taskId",
     agentField: null,
+    includeTeamMembers: true,
   },
   tasks: {
     collections: ["task"],
     idField: null,
     agentField: "agentId",
+    includeTeamMembers: true,
   },
   terminal: {
     collections: ["terminal"],
     idField: "terminalId",
     agentField: null,
+    includeTeamMembers: true,
   },
   terminals: {
     collections: ["terminal"],
     idField: null,
     agentField: null,
+    includeTeamMembers: true,
   },
   work: {
     collections: ["workDetail", "workResult", "workDecision", "workRelease"],
     idField: null,
     agentField: "agentId",
+    includeTeamMembers: false,
   },
 } as const;

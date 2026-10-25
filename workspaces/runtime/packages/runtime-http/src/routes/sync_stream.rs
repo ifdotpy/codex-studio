@@ -725,6 +725,7 @@ async fn read_entity_changes(
                         ),
                         None,
                         None,
+                        true,
                         SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
                     )
                     .ok()

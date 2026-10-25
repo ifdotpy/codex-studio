@@ -123,9 +123,9 @@ async fn prepare(
     let validators = state.validators.clone();
     state.store.as_ref().ok_or_else(ApiError::internal)?.read_async("runtime-http/entity-transfer", move |tx| {
         let after = since.as_ref().map(|cursor| cursor.seq);
-        let visibility = agent.as_deref().map(|agent| SyncDocumentsRepository::entity_scope_visibility_revision(tx, &collections, agent)).transpose().map_err(|_| ApiError::internal())?.unwrap_or(0);
+        let visibility = agent.as_deref().map(|agent| SyncDocumentsRepository::entity_scope_visibility_revision(tx, &collections, agent, scope.include_team_members)).transpose().map_err(|_| ApiError::internal())?.unwrap_or(0);
         let after = after.filter(|after| *after >= visibility);
-        let mut page = SyncDocumentsRepository::resume_entity_scope(tx, after, Some(&collections), id.as_deref(), agent.as_deref(), SYNC_ENTITY_STREAM_MAX_DOCUMENTS).map_err(|_| ApiError::internal())?;
+        let mut page = SyncDocumentsRepository::resume_entity_scope(tx, after, Some(&collections), id.as_deref(), agent.as_deref(), scope.include_team_members, SYNC_ENTITY_STREAM_MAX_DOCUMENTS).map_err(|_| ApiError::internal())?;
         let through = page.max_sequence;
         let snapshot = page.reset;
         let mut after = if snapshot { 0 } else { since.as_ref().map_or(0, |cursor| cursor.seq) };
@@ -154,7 +154,7 @@ async fn prepare(
             }
             if final_sql_page { break; }
             after = checkpoint;
-            page = SyncDocumentsRepository::continue_entity_scope(tx, &page, Some(&collections), id.as_deref(), agent.as_deref(), SYNC_ENTITY_STREAM_MAX_DOCUMENTS).map_err(|_| ApiError::internal())?;
+            page = SyncDocumentsRepository::continue_entity_scope(tx, &page, Some(&collections), id.as_deref(), agent.as_deref(), scope.include_team_members, SYNC_ENTITY_STREAM_MAX_DOCUMENTS).map_err(|_| ApiError::internal())?;
         }
         let mut file = spool.ok_or_else(ApiError::internal)?;
         file.rewind().map_err(|_| ApiError::internal())?;
@@ -407,6 +407,7 @@ mod tests {
                     Some(r#"["workspace"]"#),
                     None,
                     None,
+                    true,
                     SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
                 )?;
                 assert!(first.reset);
@@ -419,6 +420,7 @@ mod tests {
                     Some(r#"["workspace"]"#),
                     None,
                     None,
+                    true,
                     SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
                 )?;
                 assert!(

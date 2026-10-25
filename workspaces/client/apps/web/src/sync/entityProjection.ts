@@ -38,6 +38,8 @@ export type EntityRow = Omit<
 > & {
   _deleted?: components["schemas"]["SyncDocument"]["_deleted"];
   entity?: SyncEntityPayload;
+  /** Local selection eviction; seq remains the last authoritative source version. */
+  evicted?: boolean;
 };
 
 type EntityCollection = SyncEntityPayload["collection"];
@@ -106,6 +108,7 @@ type EntityRowState = {
   collection?: EntityCollection;
   entityId?: string;
   deleted?: boolean;
+  evicted?: boolean;
 };
 
 export type EntityProjection = {
@@ -402,7 +405,7 @@ function retainTombstone(
 export function applyEntityChanges(
   state: EntityProjection,
   rows: Iterable<
-    Readonly<Pick<EntityRow, "id" | "seq" | "_deleted">> & {
+    Readonly<Pick<EntityRow, "id" | "seq" | "_deleted" | "evicted">> & {
       readonly entity?: unknown;
     }
   >,
@@ -415,7 +418,10 @@ export function applyEntityChanges(
     if (
       previous &&
       (previous.seq > row.seq ||
-        (previous.seq === row.seq && (!row._deleted || previous.deleted)))
+        (previous.seq === row.seq &&
+          (row.evicted
+            ? previous.deleted
+            : !previous.evicted && (!row._deleted || previous.deleted))))
     )
       continue;
     const oldCollection = previous?.collection;
@@ -431,6 +437,7 @@ export function applyEntityChanges(
         ...(oldCollection ? { collection: oldCollection } : {}),
         ...(oldEntityId === undefined ? {} : { entityId: oldEntityId }),
         deleted: true,
+        ...(row.evicted ? { evicted: true } : {}),
       });
       continue;
     }

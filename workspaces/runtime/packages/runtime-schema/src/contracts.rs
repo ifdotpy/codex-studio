@@ -769,6 +769,12 @@ fn subscription_scopes_ts(
             )
             .expect("String write");
         }
+        writeln!(
+            text,
+            "    includeTeamMembers: {},",
+            scope.include_team_members
+        )
+        .expect("String write");
         text.push_str("  },\n");
     }
     text.push_str("} as const;\n");

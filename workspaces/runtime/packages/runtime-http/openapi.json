@@ -60338,7 +60338,8 @@
             "workResult",
             "workDecision",
             "workRelease"
-          ]
+          ],
+          "includeTeamMembers": false
         }
       },
       "WorkResultDto": {

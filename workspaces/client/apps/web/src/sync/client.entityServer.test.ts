@@ -9,6 +9,7 @@ import { createInterface } from "node:readline";
 import type { RxDatabase } from "rxdb";
 import { ReplaySubject, filter, firstValueFrom, timeout } from "rxjs";
 import type { Snapshot } from "../types";
+import type { components } from "../generated/api";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 import { SYNC_ENTITY_STREAM_MAX_DOCUMENTS } from "../generated/sharedValues";
 import type { ResourceChangeEvent } from "./subscriptions/events";
@@ -380,6 +381,139 @@ it("stages a cold >512 entity SSE interval before projection deletion or cursor 
   }
 });
 
+it("revives moved rows after inline and staged local eviction in either scope order while retaining authoritative tombstones", async () => {
+  vi.stubGlobal("window", {
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    matchMedia: vi.fn(() => ({ matches: false })),
+  });
+  vi.stubGlobal("document", { hidden: true });
+  vi.stubGlobal("navigator", {
+    onLine: true,
+    locks: {
+      request: (_key: string, write: () => Promise<unknown>) => write(),
+    },
+  });
+  mocks.syncGet.mockImplementation((path: string) => request(path));
+  const { createSyncClient } = await import("./client");
+  const { createEntitySequenceScope } = await import("./entitySequence");
+  const { createTranscriptCache } = await import("./transcriptCache");
+  const { EntityTransferAssembler } = await import("./entityTransfer");
+  for (const staged of [false, true])
+    for (const oldFirst of [false, true]) {
+      const openedCount = mocks.databases.length;
+      const client = createSyncClient({
+        api: {
+          syncGet: mocks.syncGet,
+          syncPost: vi.fn(),
+          saved: (_key, fallback) => fallback,
+          save: vi.fn(),
+          setWorkspace: vi.fn(),
+          isApiSchemaMismatch: () => false,
+          onMatchingApiSchemaResponse: () => () => false,
+        },
+        resources: {
+          watchResourceChanges: () => () => {},
+          watchResourceConnection: () => () => {},
+        },
+        sequences: createEntitySequenceScope(),
+        transcripts: createTranscriptCache(),
+        databaseSuffix: `eviction${staged}${oldFirst}`,
+      });
+      const { db, workspaceId } = await client.syncDatabase();
+      const row = (agent: string, seq: number) => ({
+        collection: "task" as const,
+        id: "moved",
+        op: "upsert" as const,
+        seq,
+        value: {
+          id: "moved",
+          agent,
+          kind: "command" as const,
+          status: "running" as const,
+          created: 1,
+        },
+      });
+      const deliver = async (
+        agent: string,
+        through: number,
+        documents: components["schemas"]["EntityChangeBatch"]["documents"],
+      ) => {
+        const resource = { kind: "tasks" as const, agentId: agent };
+        const metadata = {
+          protocol: SYNC_PROTOCOL_VERSION,
+          workspaceId,
+          epoch: "fixture",
+          revision: through,
+          reason: "reconnect" as const,
+        };
+        if (!staged)
+          return client.persistResourceEntityChanges(
+            {
+              ...metadata,
+              resources: [resource],
+              resourceVersions: [
+                {
+                  resource,
+                  revision: through,
+                  cursor: { workspaceId, seq: through },
+                  replyKind: "snapshot",
+                  entityChanges: { after: 0, through, documents },
+                },
+              ],
+            },
+            () => true,
+          );
+        const assembler = new EntityTransferAssembler(
+          new FixtureTransferStorage(),
+        );
+        try {
+          const interval = await assembler.receive({
+            ...metadata,
+            resource,
+            cursor: { workspaceId, seq: through },
+            replyKind: "snapshot",
+            transferId: crypto.randomUUID(),
+            pageIndex: 0,
+            partIndex: 0,
+            partCount: 1,
+            complete: true,
+            data: JSON.stringify({ after: 0, through, documents }),
+          });
+          expect(interval).toBeDefined();
+          await client.persistStagedEntityTransfer(interval!, () => true);
+          await interval!.dispose();
+        } finally {
+          await assembler.invalidate();
+        }
+      };
+      await deliver("alpha", 3, [row("alpha", 3)]);
+      const remove = () => deliver("alpha", 20, []);
+      const move = () => deliver("beta", 10, [row("beta", 10)]);
+      if (oldFirst) {
+        await remove();
+        await move();
+      } else {
+        await move();
+        await remove();
+      }
+      expect(
+        (await db.projections.findOne("entity:task:moved").exec())?.toJSON()
+          .entity,
+      ).toMatchObject({ value: { agent: "beta" } });
+      await deliver("beta", 11, [
+        { collection: "task", id: "moved", op: "delete", seq: 11 },
+      ]);
+      await deliver("gamma", 12, [row("gamma", 10)]);
+      expect(
+        await db.projections.findOne("entity:task:moved").exec(),
+      ).toBeNull();
+      // Release each isolated case before opening the next RxDB fixture.
+      for (const opened of mocks.databases.splice(openedCount))
+        await opened.remove();
+    }
+});
+
 it("preserves an existing oversized Work result and >512 history rows, then streams only changed task metadata", async () => {
   vi.stubGlobal("window", {
     addEventListener: vi.fn(),
@@ -466,7 +600,16 @@ it("preserves an existing oversized Work result and >512 history rows, then stre
       .find((row) => row.id === "entity:workResult:transfer-assignment:0")!
       .toJSON().seq;
     const reads = mocks.syncGet.mock.calls.length;
-    await request("/fixture/entity", { workStatus: "review" });
+    await request("/fixture/entity", {
+      agent: {
+        id: "work-child",
+        rootId: "lead",
+        epoch: 1,
+        status: "idle",
+        name: "New child",
+      },
+      workStatus: "review",
+    });
     let delta: ResourceChangeEvent | undefined;
     while (!delta) {
       const frame = await frames.next();
@@ -643,8 +786,18 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
       value.threads.some((agent) => agent.id === "worker"),
     );
     expect(
-      shown.threads.filter((agent) => agent.rootId === "lead"),
-    ).toHaveLength(2);
+      shown.threads
+        .filter((agent) => agent.rootId === "lead")
+        .map((agent) => agent.id)
+        .sort(),
+    ).toEqual(
+      [
+        ...baseline.threads
+          .filter((agent) => agent.rootId === "lead")
+          .map((agent) => agent.id),
+        "worker",
+      ].sort(),
+    );
     expect(shown.threads.find((agent) => agent.id === "older-0")).toBe(
       baseline.threads.find((agent) => agent.id === "older-0"),
     );
