@@ -12,7 +12,15 @@ import {
   watch,
   writeSync,
 } from "node:fs";
-import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  unlink,
+} from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
@@ -864,7 +872,12 @@ export async function createReadinessMarkerDirectory(path) {
 // Arms the directory watch before any worker is created, then inspects the
 // directory once so a marker published before arming is not missed. A marker
 // is accepted only when its final name holds the exact per-worker token.
-export async function watchReadinessMarkers(directory, tokens, signal = null) {
+export async function watchReadinessMarkers(
+  directory,
+  tokens,
+  signal = null,
+  { watchDirectory = watch } = {},
+) {
   signal?.throwIfAborted();
   const ready = [];
   const seen = new Set();
@@ -904,34 +917,54 @@ export async function watchReadinessMarkers(directory, tokens, signal = null) {
     const pending = checks.get(index) ?? Promise.resolve();
     checks.set(index, pending.then(() => inspect(index)).catch(fail));
   };
-  const checkAll = () => {
-    for (let index = 0; index < tokens.length; index += 1) check(index);
-  };
-  const ownName = basename(directory);
-  const watcher = watch(directory, (_eventType, filename) => {
-    if (closed) return;
-    if (filename == null) {
-      checkAll();
-      return;
-    }
-    const name = String(filename);
-    // macOS FSEvents also reports the watched directory itself under its own
-    // base name (for example its recent creation). Only an entry inside the
-    // directory with that name is an unknown marker.
-    if (name === ownName) {
-      lstat(join(directory, name)).then(
-        () => fail(new Error(`Unknown readiness marker name: ${name}`)),
-        (error) => (error?.code === "ENOENT" ? checkAll() : fail(error)),
-      );
-      return;
-    }
-    // A temporary name exists only until the atomic rename publishes the final name.
-    if (name.endsWith(".tmp")) return;
+  const markerIndex = (name) => {
     const match = READINESS_MARKER_PATTERN.exec(name);
     const index = match ? Number(match[1]) : Number.NaN;
     if (!Number.isSafeInteger(index) || index >= tokens.length)
-      fail(new Error(`Unknown readiness marker name: ${name}`));
-    else check(index);
+      throw new Error(`Unknown readiness marker name: ${name}`);
+    return index;
+  };
+  let scanning = false;
+  let scanRequested = false;
+  const checkAll = () => {
+    scanRequested = true;
+    if (scanning) return;
+    scanning = true;
+    // Coalesce events during each read, then scan again so none are lost.
+    (async () => {
+      try {
+        while (scanRequested && !closed && !failure) {
+          scanRequested = false;
+          const names = await readdir(directory);
+          if (closed || failure) return;
+          // Validate every final name before accepting any marker in this scan.
+          const indices = names
+            .filter((name) => !name.endsWith(".tmp"))
+            .map(markerIndex);
+          for (const index of indices) check(index);
+        }
+      } finally {
+        scanning = false;
+      }
+    })().catch(fail);
+  };
+  const ownName = basename(directory);
+  const watcher = watchDirectory(directory, (_eventType, filename) => {
+    if (closed) return;
+    if (filename != null) {
+      const name = String(filename);
+      // macOS can report the directory's own name instead of a changed entry.
+      // Temporary entries are ignored, but their event can cover a final rename.
+      if (name !== ownName && !name.endsWith(".tmp")) {
+        try {
+          markerIndex(name);
+        } catch (error) {
+          fail(error);
+          return;
+        }
+      }
+    }
+    checkAll();
   });
   watcher.on("error", fail);
   const onAbort = () =>

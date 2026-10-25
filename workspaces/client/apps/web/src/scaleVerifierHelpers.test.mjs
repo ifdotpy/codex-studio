@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   mkdir,
   mkdtemp,
@@ -687,6 +688,24 @@ describe("scale verifier helpers", () => {
 });
 
 describe("scale verifier readiness markers", () => {
+  const controlledWatch = () => {
+    const watcher = new EventEmitter();
+    let notify;
+    let closeCount = 0;
+    watcher.close = () => {
+      closeCount += 1;
+    };
+    return {
+      watchDirectory: (_directory, listener) => {
+        notify = listener;
+        return watcher;
+      },
+      notify: (filename) => notify("rename", filename),
+      get closeCount() {
+        return closeCount;
+      },
+    };
+  };
   const newRoot = async () => {
     const root = await mkdtemp(join(tmpdir(), "scale-markers-"));
     temporaryPaths.push(root);
@@ -770,6 +789,56 @@ describe("scale verifier readiness markers", () => {
       watch.close();
     }
   });
+
+  it.each(["worker-7.ready", "named"])(
+    "rejects unknown markers present before arming: %s",
+    async (name) => {
+      const root = await newRoot();
+      const directory = await createReadinessMarkerDirectory(
+        join(root, "named"),
+      );
+      await writeFile(join(directory, name), "unknown", { mode: 0o600 });
+      const events = controlledWatch();
+      const watch = await watchReadinessMarkers(
+        directory,
+        [randomUUID()],
+        null,
+        events,
+      );
+      try {
+        await expect(watch.next(soon())).rejects.toThrow(/Unknown readiness/);
+      } finally {
+        watch.close();
+      }
+      expect(events.closeCount).toBe(1);
+    },
+  );
+
+  it.each([null, "m", "worker-0.ready", "worker-7.ready.tmp"])(
+    "rejects unknown markers after a coalesced event: %s",
+    async (filename) => {
+      const root = await newRoot();
+      const directory = await createReadinessMarkerDirectory(join(root, "m"));
+      const tokens = [randomUUID()];
+      await publish(directory, 0, `${tokens[0]}\n`);
+      const events = controlledWatch();
+      const watch = await watchReadinessMarkers(
+        directory,
+        tokens,
+        null,
+        events,
+      );
+      try {
+        expect(await watch.next(soon())).toBe(0);
+        await publish(directory, 7, `${tokens[0]}\n`);
+        events.notify(filename);
+        await expect(watch.next(soon())).rejects.toThrow(/Unknown readiness/);
+      } finally {
+        watch.close();
+      }
+      expect(events.closeCount).toBe(1);
+    },
+  );
 
   it("rejects unknown marker names and symbolic-link markers", async () => {
     const root = await newRoot();
