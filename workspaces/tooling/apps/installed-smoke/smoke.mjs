@@ -63,6 +63,8 @@ export const RUN_MARKER = "studio-smoke-run.json";
 const BACKEND_SETTLED_SECONDS = 60;
 /** Milliseconds for one HTTP request. */
 const REQUEST_MS = 30_000;
+/** Milliseconds for a coherent read-only usage snapshot on a busy installed backend. */
+const USAGE_SNAPSHOT_MS = 120_000;
 /** Milliseconds for one model turn to finish. */
 const TURN_MS = 240_000;
 /** Milliseconds for the monitor turn: the tool call, the command and the exit event. */
@@ -1110,18 +1112,19 @@ export class Smoke {
     });
     try {
       await stream.ready;
+      const deadline = Date.now() + USAGE_SNAPSHOT_MS;
+      const read = (route) =>
+        this.backend.get(route, Math.max(1, deadline - Date.now()));
       return await until(
         "final-turn usage publication",
-        REQUEST_MS,
+        USAGE_SNAPSHOT_MS,
         async () => {
           this.checkActive();
-          const analytics = await this.backend.get(analyticsRoute(id));
+          const analytics = await read(analyticsRoute(id));
           const summary = (analytics.agents ?? []).find((row) => row.id === id);
           const detail = stream.entities.get(`agentDetail:${id}`);
           const sessionCost = stream.entities.get(`sessionCost:${id}`);
-          const currentCost = await this.backend.get(
-            `/api/session-cost?agent=${id}`,
-          );
+          const currentCost = await read(`/api/session-cost?agent=${id}`);
           const final =
             finalTurnId ??
             (await this.transcript(id))
@@ -1136,7 +1139,7 @@ export class Smoke {
               done: false,
               note: `cost generation ${sessionCost?.generation}/${currentCost.generation}, state ${sessionCost?.pricingState}`,
             };
-          const after = await this.backend.get(analyticsRoute(id));
+          const after = await read(analyticsRoute(id));
           return {
             done:
               JSON.stringify(after.timeline) ===
@@ -1198,6 +1201,7 @@ export class Smoke {
       accounts.accounts.map((account) => [account.id, account]),
     );
     for (const id of this.chats) {
+      console.log(`Recovering usage snapshot for ${id}`);
       const entities = await this.ownEntities(id);
       const { agent } = entities;
       if (!agent.name?.startsWith(`Studio smoke ${this.runId} `))
