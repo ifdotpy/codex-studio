@@ -159,7 +159,10 @@ fn is_hashed_asset(relative: &str) -> bool {
     let Some((stem, extension)) = filename.rsplit_once('.') else {
         return false;
     };
-    if !matches!(extension, "js" | "css" | "png" | "svg" | "woff" | "woff2") {
+    if !matches!(
+        extension,
+        "js" | "css" | "png" | "svg" | "wasm" | "woff" | "woff2"
+    ) {
         return false;
     }
     let Some((name, hash)) = stem.rsplit_once('-') else {
@@ -244,6 +247,8 @@ mod tests {
         fs::write(root.join("studio-sw.js"), "self.skipWaiting();").expect("service worker");
         fs::write(root.join("assets/app-0123456789.js"), "console.log('ok');")
             .expect("hashed bundle");
+        fs::write(root.join("assets/client_bg-i8Hpi7VY.wasm"), b"\0asm")
+            .expect("hashed WebAssembly module");
         let assets = WebAssets {
             root: Some(
                 CanonicalPath::existing(root)
@@ -312,6 +317,22 @@ mod tests {
             bundle.headers()[header::CACHE_CONTROL],
             "private, max-age=31536000, immutable"
         );
+
+        let module = app
+            .clone()
+            .oneshot(
+                Request::get("/assets/client_bg-i8Hpi7VY.wasm")
+                    .body(Body::empty())
+                    .expect("WebAssembly request"),
+            )
+            .await
+            .expect("WebAssembly response");
+        assert_eq!(module.status(), StatusCode::OK);
+        assert_eq!(
+            module.headers()[header::CACHE_CONTROL],
+            "private, max-age=31536000, immutable"
+        );
+        assert_eq!(module.headers()[header::CONTENT_TYPE], "application/wasm");
 
         let api = app
             .oneshot(
