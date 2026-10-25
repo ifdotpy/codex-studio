@@ -1,6 +1,7 @@
 //! Host Layr workspaces. The Studio state directory owns the store and binary.
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 pub use studio_runtime_store::NATIVE_LAYR_DIRECTORY;
 /// Store directory below the native installation directory, outside project checkouts.
@@ -84,6 +85,7 @@ mod tests {
 }
 
 mod capability;
+mod git_guard;
 pub mod install;
 pub use capability::{NativeLayrCapability, capability};
 mod runtime;
@@ -135,16 +137,16 @@ mod receipt_tests {
 
     #[test]
     fn completed_operations_replay_without_repeating_the_effect() {
-        let state = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().expect("fixture operation succeeds");
         let intent = json!({"line":"worker"});
         let first = operation(state.path(), "create-worker", &intent, || {
             Ok(json!({"stateId":"full-state"}))
         })
-        .unwrap();
+        .expect("fixture operation succeeds");
         let again = operation(state.path(), "create-worker", &intent, || {
             panic!("must not repeat")
         })
-        .unwrap();
+        .expect("fixture operation succeeds");
         assert_eq!(first, again);
         assert!(
             operation(
@@ -159,7 +161,7 @@ mod receipt_tests {
 
     #[test]
     fn unknown_operations_stay_held_after_a_lost_result() {
-        let state = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().expect("fixture operation succeeds");
         let intent = json!({"state":"reviewed"});
         assert!(matches!(
             operation(state.path(), "merge", &intent, || Err(
@@ -177,7 +179,7 @@ mod receipt_tests {
 
     #[test]
     fn explicit_failures_replay_the_same_refusal() {
-        let state = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().expect("fixture operation succeeds");
         let intent = json!({"state":"reviewed"});
         assert!(
             operation(state.path(), "merge", &intent, || Err(
@@ -188,15 +190,23 @@ mod receipt_tests {
         let result = operation(state.path(), "merge", &intent, || {
             panic!("failed merge must not repeat")
         });
-        assert!(result.unwrap_err().to_string().contains("line moved"));
+        assert!(
+            result
+                .expect_err("operation must fail")
+                .to_string()
+                .contains("line moved")
+        );
     }
 
     #[test]
     fn project_identity_is_shared_by_migration_and_chats_with_a_logical_binding() {
         let mut record = json!({"hostProjectPath":"/project"});
-        let before = project_id(&record).unwrap();
+        let before = project_id(&record).expect("fixture operation succeeds");
         record["projectId"] = json!("logical-project");
-        assert_eq!(project_id(&record).unwrap(), before);
+        assert_eq!(
+            project_id(&record).expect("fixture operation succeeds"),
+            before
+        );
     }
 
     #[test]
@@ -210,7 +220,7 @@ mod receipt_tests {
         assert!(
             env["PATH"]
                 .as_str()
-                .unwrap()
+                .expect("fixture operation succeeds")
                 .starts_with("/studio/layr-native/bin:")
         );
     }
@@ -218,33 +228,38 @@ mod receipt_tests {
     #[test]
     #[ignore = "requires a real Layr 0.2.0 host binary and APFS or btrfs"]
     fn real_host_import_worker_merge_archive_and_warm_caches() {
-        use std::{fs, path::PathBuf, process::Command};
+        use std::{fs, path::PathBuf};
         let binary = PathBuf::from(
             std::env::var_os("STUDIO_LAYR_NATIVE_TEST_BINARY")
                 .expect("Set STUDIO_LAYR_NATIVE_TEST_BINARY"),
         );
-        let state = tempfile::tempdir().unwrap();
-        let source = tempfile::tempdir().unwrap();
-        fs::write(source.path().join("code.txt"), "base\n").unwrap();
-        fs::write(source.path().join(".gitignore"), "node_modules/\n.env\n").unwrap();
+        let state = tempfile::tempdir().expect("fixture operation succeeds");
+        let source = tempfile::tempdir().expect("fixture operation succeeds");
+        fs::write(source.path().join("code.txt"), "base\n").expect("fixture operation succeeds");
+        fs::write(source.path().join(".gitignore"), "node_modules/\n.env\n")
+            .expect("fixture operation succeeds");
         fs::write(
             source.path().join(".layrattributes"),
             "node_modules regenerable\n",
         )
-        .unwrap();
-        fs::write(source.path().join(".env"), "TEST_VALUE=local\n").unwrap();
-        fs::create_dir(source.path().join("node_modules")).unwrap();
-        fs::write(source.path().join("node_modules/old"), "excluded\n").unwrap();
+        .expect("fixture operation succeeds");
+        fs::write(source.path().join(".env"), "TEST_VALUE=local\n")
+            .expect("fixture operation succeeds");
+        fs::create_dir(source.path().join("node_modules")).expect("fixture operation succeeds");
+        fs::write(source.path().join("node_modules/old"), "excluded\n")
+            .expect("fixture operation succeeds");
         let git = |args: &[&str]| {
-            assert!(
-                Command::new("git")
-                    .arg("-C")
-                    .arg(source.path())
-                    .args(args)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
+            crate::bounded_child::run(crate::bounded_child::Request {
+                program: std::ffi::OsStr::new("git"),
+                git_directory: Some(source.path().as_os_str()),
+                args,
+                environment: &[],
+                input: None,
+                stdout_limit: 64 * 1024,
+                stderr_limit: 64 * 1024,
+                timeout: std::time::Duration::from_secs(60),
+            })
+            .expect("fixture Git command succeeds");
         };
         git(&["init", "-q"]);
         git(&["-c", "core.hooksPath=/dev/null", "add", "."]);
@@ -259,61 +274,115 @@ mod receipt_tests {
             "-qm",
             "Base",
         ]);
-        fs::create_dir_all(binary_path(state.path()).parent().unwrap()).unwrap();
-        fs::copy(binary, binary_path(state.path())).unwrap();
+        fs::create_dir_all(
+            binary_path(state.path())
+                .parent()
+                .expect("fixture operation succeeds"),
+        )
+        .expect("fixture operation succeeds");
+        fs::copy(binary, binary_path(state.path())).expect("fixture operation succeeds");
         let mut lead = json!({"id":"lead","isLead":true,"autoWake":true,"cwd":source.path()});
         configure_new_chat(
             &mut lead,
-            fs::canonicalize(source.path()).unwrap().to_str().unwrap(),
+            CanonicalPath::existing(source.path())
+                .map(CanonicalPath::into_path_buf)
+                .expect("fixture operation succeeds")
+                .to_str()
+                .expect("fixture operation succeeds"),
         );
-        let ready = runtime::prepare_files(state.path(), &lead).unwrap();
-        for (key, value) in ready.as_object().unwrap() {
+        let ready =
+            runtime::prepare_files(state.path(), &lead).expect("fixture operation succeeds");
+        for (key, value) in ready.as_object().expect("fixture operation succeeds") {
             lead[key] = value.clone();
         }
-        let main = PathBuf::from(lead["cwd"].as_str().unwrap());
+        let main = PathBuf::from(lead["cwd"].as_str().expect("fixture operation succeeds"));
         assert!(main.join(".env").is_file());
         assert!(!main.join("node_modules/old").exists());
-        fs::create_dir_all(main.join("node_modules")).unwrap();
-        fs::write(main.join("node_modules/warm"), "warm cache\n").unwrap();
-        run(state.path(), &main, &["save", "--caches"]).unwrap();
+        let real_git: PathBuf = serde_json::from_slice(
+            &fs::read(binary_path(state.path()).with_file_name("git-real.json"))
+                .expect("saved real Git path"),
+        )
+        .expect("real Git path JSON");
+        for program in [binary_path(state.path()).with_file_name("git"), real_git] {
+            let result =
+                crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
+                    program: program.as_os_str(),
+                    git_directory: Some(main.as_os_str()),
+                    args: &[
+                        "-c",
+                        "user.name=Fixture",
+                        "-c",
+                        "user.email=fixture@example.test",
+                        "commit",
+                        "--allow-empty",
+                        "-m",
+                        "Must refuse",
+                    ],
+                    environment: &[],
+                    input: None,
+                    stdout_limit: 4096,
+                    stderr_limit: 4096,
+                    timeout: std::time::Duration::from_secs(30),
+                });
+            assert!(
+                matches!(result,Err(crate::bounded_child::ChildError::Failed(ref reason)) if reason.contains("layr save -m")),
+                "native Git commit guard: {result:?}"
+            );
+        }
+        fs::create_dir_all(main.join("node_modules")).expect("fixture operation succeeds");
+        fs::write(main.join("node_modules/warm"), "warm cache\n")
+            .expect("fixture operation succeeds");
+        run(state.path(), &main, &["save", "--caches"]).expect("fixture operation succeeds");
         let mut worker = json!({"id":"worker","role":"implementer","autoWake":true,"isLead":false});
         configure_child(&mut worker, &lead, &lead);
-        let ready = runtime::prepare_files(state.path(), &worker).unwrap();
-        for (key, value) in ready.as_object().unwrap() {
+        let ready =
+            runtime::prepare_files(state.path(), &worker).expect("fixture operation succeeds");
+        for (key, value) in ready.as_object().expect("fixture operation succeeds") {
             worker[key] = value.clone();
         }
-        let cwd = PathBuf::from(worker["cwd"].as_str().unwrap());
+        let cwd = PathBuf::from(worker["cwd"].as_str().expect("fixture operation succeeds"));
         assert_eq!(
-            fs::read_to_string(cwd.join("node_modules/warm")).unwrap(),
+            fs::read_to_string(cwd.join("node_modules/warm")).expect("fixture operation succeeds"),
             "warm cache\n"
         );
-        fs::write(cwd.join("code.txt"), "worker result\n").unwrap();
-        run(state.path(), &cwd, &["add", "code.txt"]).unwrap();
-        run(state.path(), &cwd, &["save", "-m", "Worker result"]).unwrap();
-        let state_id = run(state.path(), &cwd, &["rev-parse", "head"]).unwrap();
+        fs::write(cwd.join("code.txt"), "worker result\n").expect("fixture operation succeeds");
+        run(state.path(), &cwd, &["add", "code.txt"]).expect("fixture operation succeeds");
+        run(state.path(), &cwd, &["save", "-m", "Worker result"])
+            .expect("fixture operation succeeds");
+        let state_id =
+            run(state.path(), &cwd, &["rev-parse", "head"]).expect("fixture operation succeeds");
         assert_eq!(
-            evidence(state.path(), &worker, &state_id).unwrap()["stateId"],
+            evidence(state.path(), &worker, &state_id).expect("fixture operation succeeds")["stateId"],
             state_id
         );
         assert!(evidence(state.path(), &worker, &state_id[..8]).is_err());
-        merge(state.path(), &lead, &worker, &state_id, "accept-worker").unwrap();
+        merge(state.path(), &lead, &worker, &state_id, "accept-worker")
+            .expect("fixture operation succeeds");
         assert_eq!(
-            fs::read_to_string(main.join("code.txt")).unwrap(),
+            fs::read_to_string(main.join("code.txt")).expect("fixture operation succeeds"),
             "worker result\n"
         );
         let mut reviewer =
             json!({"id":"reviewer","role":"reviewer","autoWake":true,"isLead":false});
         configure_child(&mut reviewer, &lead, &lead);
-        let ready = runtime::prepare_files(state.path(), &reviewer).unwrap();
-        for (key, value) in ready.as_object().unwrap() {
+        let ready =
+            runtime::prepare_files(state.path(), &reviewer).expect("fixture operation succeeds");
+        for (key, value) in ready.as_object().expect("fixture operation succeeds") {
             reviewer[key] = value.clone();
         }
         assert_eq!(reviewer["cwd"], reviewer["layrScratch"]);
-        assert_eq!(Path::new(reviewer["layrReadCwd"].as_str().unwrap()), main);
+        assert_eq!(
+            Path::new(
+                reviewer["layrReadCwd"]
+                    .as_str()
+                    .expect("fixture operation succeeds")
+            ),
+            main
+        );
         let args = vec!["try".into(),state_id.clone(),"--".into(),"/bin/sh".into(),"-c".into(),
             "printf local > review-check; printf note > \"$TMPDIR/note\"; if printf forbidden > \"$1/code.txt\"; then exit 7; fi".into(),
             "review-check".into(),main.to_string_lossy().into_owned()];
-        reviewer_try(state.path(), &reviewer, &args).unwrap();
+        reviewer_try(state.path(), &reviewer, &args).expect("fixture operation succeeds");
         let environment = reviewer_try(
             state.path(),
             &reviewer,
@@ -324,7 +393,7 @@ mod receipt_tests {
                 "/usr/bin/env".into(),
             ],
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         assert!(
             !environment
                 .lines()
@@ -334,17 +403,21 @@ mod receipt_tests {
             "Reviewer check inherited the runtime store environment"
         );
         assert_eq!(
-            fs::read_to_string(main.join("code.txt")).unwrap(),
+            fs::read_to_string(main.join("code.txt")).expect("fixture operation succeeds"),
             "worker result\n"
         );
         assert!(!main.join("review-check").exists());
         assert!(
-            PathBuf::from(reviewer["layrScratch"].as_str().unwrap())
-                .join("note")
-                .is_file()
+            PathBuf::from(
+                reviewer["layrScratch"]
+                    .as_str()
+                    .expect("fixture operation succeeds")
+            )
+            .join("note")
+            .is_file()
         );
-        save(state.path(), &worker, "worker-turn-end").unwrap();
-        remove(state.path(), &worker, "archive-worker").unwrap();
+        save(state.path(), &worker, "worker-turn-end").expect("fixture operation succeeds");
+        remove(state.path(), &worker, "archive-worker").expect("fixture operation succeeds");
         assert!(!cwd.exists());
         assert!(
             run(
@@ -352,36 +425,51 @@ mod receipt_tests {
                 &main,
                 &["show", &format!("{state_id}:code.txt")]
             )
-            .unwrap()
+            .expect("fixture operation succeeds")
             .contains("worker result")
         );
-        let worktree = tempfile::tempdir().unwrap();
+        let worktree = tempfile::tempdir().expect("fixture operation succeeds");
         git(&[
             "worktree",
             "add",
             "-b",
             "migration-fixture",
-            worktree.path().to_str().unwrap(),
+            worktree
+                .path()
+                .to_str()
+                .expect("fixture operation succeeds"),
         ]);
-        fs::write(worktree.path().join("code.txt"), "migrated worktree\n").unwrap();
-        fs::write(worktree.path().join(".env"), "TEST_VALUE=migrated\n").unwrap();
-        let plan = migration::migrate(state.path(), source.path(), true).unwrap();
-        assert_eq!(plan["lines"].as_array().unwrap().len(), 1);
-        let imported = migration::migrate(state.path(), source.path(), false).unwrap();
-        assert_eq!(imported["projectId"], lead["layrProjectId"]);
-        let migrated = main
-            .parent()
-            .unwrap()
-            .join(imported["lines"][0]["line"].as_str().unwrap());
+        fs::write(worktree.path().join("code.txt"), "migrated worktree\n")
+            .expect("fixture operation succeeds");
+        fs::write(worktree.path().join(".env"), "TEST_VALUE=migrated\n")
+            .expect("fixture operation succeeds");
+        let plan = migration::migrate(state.path(), source.path(), true)
+            .expect("fixture operation succeeds");
         assert_eq!(
-            fs::read_to_string(migrated.join("code.txt")).unwrap(),
+            plan["lines"]
+                .as_array()
+                .expect("fixture operation succeeds")
+                .len(),
+            1
+        );
+        let imported = migration::migrate(state.path(), source.path(), false)
+            .expect("fixture operation succeeds");
+        assert_eq!(imported["projectId"], lead["layrProjectId"]);
+        let migrated = main.parent().expect("fixture operation succeeds").join(
+            imported["lines"][0]["line"]
+                .as_str()
+                .expect("fixture operation succeeds"),
+        );
+        assert_eq!(
+            fs::read_to_string(migrated.join("code.txt")).expect("fixture operation succeeds"),
             "migrated worktree\n"
         );
         assert_eq!(
-            fs::read_to_string(migrated.join(".env")).unwrap(),
+            fs::read_to_string(migrated.join(".env")).expect("fixture operation succeeds"),
             "TEST_VALUE=migrated\n"
         );
-        let again = migration::migrate(state.path(), source.path(), false).unwrap();
+        let again = migration::migrate(state.path(), source.path(), false)
+            .expect("fixture operation succeeds");
         assert_eq!(imported["lines"], again["lines"]);
         println!("native host evidence store: {}", state.path().display());
     }
@@ -446,7 +534,7 @@ pub fn reviewer_try(
     let wrapper = linux_reviewer_wrapper();
     #[cfg(not(target_os = "macos"))]
     let profile = "";
-    let state = std::fs::canonicalize(state_dir)?;
+    let state = CanonicalPath::existing(state_dir).map(CanonicalPath::into_path_buf)?;
     let state = state
         .to_str()
         .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 state path".into()))?;
@@ -521,22 +609,24 @@ mod turn_save_tests {
 
     #[tokio::test]
     async fn native_terminal_stages_a_save_without_resetting_a_completed_receipt() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        let directory = tempfile::tempdir().expect("fixture operation succeeds");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("fixture operation succeeds");
         store.transaction_with(|tx| -> Result<(), StoreError> {
             let record = json!({"id":"native-save-agent","rootId":"native-save-agent","epoch":0,
                 "status":"idle","autoWake":true,"workspaceMode":"layr-native","layrReady":true,"cwd":"/native/main"});
             AgentRepository::put(tx,&AgentRecord::from_value(record).map_err(StoreError::from)?)?;
             stage_turn_save(tx,"native-save-agent","turn-1")?;
             let id = AgentId::from("native-save-agent");
-            let mut saved = AgentRepository::get(tx,&id)?.unwrap().value();
+            let mut saved = AgentRepository::get(tx,&id)?.expect("fixture operation succeeds").value();
             assert_eq!(saved["layrTurnSaves"]["turn-1"]["status"],"pending");
             saved["layrTurnSaves"]["turn-1"] = json!({"status":"saved","stateId":"exact-state"});
             AgentRepository::put(tx,&AgentRecord::from_value(saved).map_err(StoreError::from)?)?;
             stage_turn_save(tx,"native-save-agent","turn-1")?;
-            assert_eq!(AgentRepository::get(tx,&id)?.unwrap().value()["layrTurnSaves"]["turn-1"]["stateId"],"exact-state");
+            assert_eq!(AgentRepository::get(tx,&id)?.expect("fixture operation succeeds").value()["layrTurnSaves"]["turn-1"]["stateId"],"exact-state");
             Ok(())
-        }).await.unwrap();
+        }).await.expect("fixture operation succeeds");
     }
 }
 
@@ -548,8 +638,13 @@ mod review_regressions {
     #[cfg(unix)]
     fn fast_fixture() -> (tempfile::TempDir, Value) {
         use std::os::unix::fs::PermissionsExt;
-        let state = tempfile::tempdir().unwrap();
-        fs::create_dir_all(binary_path(state.path()).parent().unwrap()).unwrap();
+        let state = tempfile::tempdir().expect("fixture operation succeeds");
+        fs::create_dir_all(
+            binary_path(state.path())
+                .parent()
+                .expect("fixture operation succeeds"),
+        )
+        .expect("fixture operation succeeds");
         fs::write(binary_path(state.path()),r#"#!/bin/sh
 printf '%s\n' "$*" >> "$LAYR_ROOT/commands"
 case "$3 $4" in
@@ -557,16 +652,17 @@ case "$3 $4" in
     if [ -f "$LAYR_ROOT/automatic" ]; then cat "$LAYR_ROOT/automatic"; else printf "head@{0}: line has only 0 automatic states\n" >&2; exit 128; fi ;;
   'rev-parse head') printf 'full-named-state\n' ;;
 esac
-"#).unwrap();
-        fs::set_permissions(binary_path(state.path()), fs::Permissions::from_mode(0o755)).unwrap();
+"#).expect("fixture operation succeeds");
+        fs::set_permissions(binary_path(state.path()), fs::Permissions::from_mode(0o755))
+            .expect("fixture operation succeeds");
         let project = studio_runtime_store::sha256_hex(b"/fast-source");
         let line = format!("agent-{}", studio_runtime_store::sha256_hex(b"fast-worker"));
         let cwd = main_path(state.path(), &project)
             .parent()
-            .unwrap()
+            .expect("fixture operation succeeds")
             .join(&line);
-        fs::create_dir_all(&cwd).unwrap();
-        fs::create_dir_all(main_path(state.path(), &project)).unwrap();
+        fs::create_dir_all(&cwd).expect("fixture operation succeeds");
+        fs::create_dir_all(main_path(state.path(), &project)).expect("fixture operation succeeds");
         let worker = json!({"id":"fast-worker","workspaceMode":"layr-native","role":"implementer","isLead":false,"layrReady":true,"layrProjectId":project,"layrLine":line,"cwd":cwd});
         (state, worker)
     }
@@ -575,7 +671,10 @@ esac
     #[test]
     fn native_layr_unchanged_save_replays_only_explicit_failures() {
         let (state, worker) = fast_fixture();
-        let cwd = fs::canonicalize(worker["cwd"].as_str().unwrap()).unwrap();
+        let cwd =
+            CanonicalPath::existing(worker["cwd"].as_str().expect("fixture operation succeeds"))
+                .map(CanonicalPath::into_path_buf)
+                .expect("fixture operation succeeds");
         let intent = json!({"agent":worker["id"],"cwd":cwd,"kind":"save"});
         assert!(
             operation(state.path(), "failed-save", &intent, || Err(
@@ -584,7 +683,7 @@ esac
             .is_err()
         );
         assert_eq!(
-            save(state.path(), &worker, "failed-save").unwrap()["stateId"],
+            save(state.path(), &worker, "failed-save").expect("fixture operation succeeds")["stateId"],
             "full-named-state"
         );
         assert!(
@@ -607,53 +706,65 @@ esac
             store_path(state.path()).join("automatic"),
             "full-automatic-state\n",
         )
-        .unwrap();
-        let receipt = remove(state.path(), &worker, "archive-with-pin").unwrap();
+        .expect("fixture operation succeeds");
+        let receipt =
+            remove(state.path(), &worker, "archive-with-pin").expect("fixture operation succeeds");
         assert_eq!(receipt["stateId"], "full-automatic-state");
         assert!(
             receipt["archiveRef"]
                 .as_str()
-                .unwrap()
+                .expect("fixture operation succeeds")
                 .starts_with("pins/studio/archive/")
         );
-        let commands = fs::read_to_string(store_path(state.path()).join("commands")).unwrap();
+        let commands = fs::read_to_string(store_path(state.path()).join("commands"))
+            .expect("fixture operation succeeds");
         let commands: Vec<_> = commands.lines().collect();
         let pin = commands
             .iter()
             .position(|line| line.contains(" ref set "))
-            .unwrap();
+            .expect("fixture operation succeeds");
         let deletion = commands
             .iter()
             .position(|line| line.contains(" line delete "))
-            .unwrap();
+            .expect("fixture operation succeeds");
         assert!(pin < deletion);
         assert!(!commands[pin].contains("--ttl"));
         assert!(commands[pin].ends_with("full-automatic-state"));
     }
 
     fn fixture() -> (tempfile::TempDir, tempfile::TempDir, Value, Value) {
-        let state = tempfile::tempdir().unwrap();
-        let source = tempfile::tempdir().unwrap();
-        fs::write(source.path().join("code.txt"), "base\n").unwrap();
-        fs::create_dir_all(binary_path(state.path()).parent().unwrap()).unwrap();
+        let state = tempfile::tempdir().expect("fixture operation succeeds");
+        let source = tempfile::tempdir().expect("fixture operation succeeds");
+        fs::write(source.path().join("code.txt"), "base\n").expect("fixture operation succeeds");
+        fs::create_dir_all(
+            binary_path(state.path())
+                .parent()
+                .expect("fixture operation succeeds"),
+        )
+        .expect("fixture operation succeeds");
         fs::copy(
             std::env::var_os("STUDIO_LAYR_NATIVE_TEST_BINARY")
                 .expect("Set STUDIO_LAYR_NATIVE_TEST_BINARY"),
             binary_path(state.path()),
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         let mut lead =
             json!({"id":"regression-lead","isLead":true,"autoWake":true,"cwd":source.path()});
-        configure_new_chat(&mut lead, source.path().to_str().unwrap());
-        let fields = runtime::prepare_files(state.path(), &lead).unwrap();
-        for (key, value) in fields.as_object().unwrap() {
+        configure_new_chat(
+            &mut lead,
+            source.path().to_str().expect("fixture operation succeeds"),
+        );
+        let fields =
+            runtime::prepare_files(state.path(), &lead).expect("fixture operation succeeds");
+        for (key, value) in fields.as_object().expect("fixture operation succeeds") {
             lead[key] = value.clone();
         }
         let mut worker =
             json!({"id":"regression-worker","role":"implementer","isLead":false,"autoWake":true});
         configure_child(&mut worker, &lead, &lead);
-        let fields = runtime::prepare_files(state.path(), &worker).unwrap();
-        for (key, value) in fields.as_object().unwrap() {
+        let fields =
+            runtime::prepare_files(state.path(), &worker).expect("fixture operation succeeds");
+        for (key, value) in fields.as_object().expect("fixture operation succeeds") {
             worker[key] = value.clone();
         }
         (state, source, lead, worker)
@@ -665,15 +776,18 @@ esac
         let (state, _source, _lead, worker) = fixture();
         let expected = run(
             state.path(),
-            Path::new(worker["cwd"].as_str().unwrap()),
+            Path::new(worker["cwd"].as_str().expect("fixture operation succeeds")),
             &["rev-parse", "head"],
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         assert_eq!(
-            save(state.path(), &worker, "unchanged-turn").unwrap()["stateId"],
+            save(state.path(), &worker, "unchanged-turn").expect("fixture operation succeeds")["stateId"],
             expected
         );
-        let cwd = fs::canonicalize(worker["cwd"].as_str().unwrap()).unwrap();
+        let cwd =
+            CanonicalPath::existing(worker["cwd"].as_str().expect("fixture operation succeeds"))
+                .map(CanonicalPath::into_path_buf)
+                .expect("fixture operation succeeds");
         let intent = json!({"agent":worker["id"],"cwd":cwd,"kind":"save"});
         assert!(
             operation(state.path(), "previously-failed-save", &intent, || Err(
@@ -682,7 +796,8 @@ esac
             .is_err()
         );
         assert_eq!(
-            save(state.path(), &worker, "previously-failed-save").unwrap()["stateId"],
+            save(state.path(), &worker, "previously-failed-save")
+                .expect("fixture operation succeeds")["stateId"],
             expected
         );
     }
@@ -692,35 +807,40 @@ esac
     fn native_layr_archive_pins_an_unmerged_automatic_state_without_expiry() {
         let (state, _source, lead, worker) = fixture();
         fs::write(
-            PathBuf::from(worker["cwd"].as_str().unwrap()).join("code.txt"),
+            PathBuf::from(worker["cwd"].as_str().expect("fixture operation succeeds"))
+                .join("code.txt"),
             "unmerged work\n",
         )
-        .unwrap();
-        let saved = save(state.path(), &worker, "archive-turn-save").unwrap();
-        let receipt = remove(state.path(), &worker, "archive-worker-with-retention").unwrap();
+        .expect("fixture operation succeeds");
+        let saved =
+            save(state.path(), &worker, "archive-turn-save").expect("fixture operation succeeds");
+        let receipt = remove(state.path(), &worker, "archive-worker-with-retention")
+            .expect("fixture operation succeeds");
         let reference = receipt["archiveRef"]
             .as_str()
             .expect("archive must keep a durable ref");
-        let main = Path::new(lead["cwd"].as_str().unwrap());
+        let main = Path::new(lead["cwd"].as_str().expect("fixture operation succeeds"));
         let pins: Value = serde_json::from_str(
             &run(
                 state.path(),
                 main,
                 &["ref", "list", "pins/studio/archive/", "--json"],
             )
-            .unwrap(),
+            .expect("fixture operation succeeds"),
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         let pin = pins
             .as_array()
-            .unwrap()
+            .expect("fixture operation succeeds")
             .iter()
             .find(|pin| pin["name"] == reference)
-            .unwrap();
+            .expect("fixture operation succeeds");
         assert!(pin.get("expires_at").is_none_or(Value::is_null));
         assert_eq!(
-            run(state.path(), main, &["rev-parse", reference]).unwrap(),
-            saved["stateId"].as_str().unwrap()
+            run(state.path(), main, &["rev-parse", reference]).expect("fixture operation succeeds"),
+            saved["stateId"]
+                .as_str()
+                .expect("fixture operation succeeds")
         );
         assert!(
             run(
@@ -728,9 +848,9 @@ esac
                 main,
                 &["show", &format!("{reference}:code.txt")]
             )
-            .unwrap()
+            .expect("fixture operation succeeds")
             .contains("unmerged work")
         );
-        assert!(!Path::new(worker["cwd"].as_str().unwrap()).exists());
+        assert!(!Path::new(worker["cwd"].as_str().expect("fixture operation succeeds")).exists());
     }
 }

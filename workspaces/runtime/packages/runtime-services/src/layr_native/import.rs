@@ -27,7 +27,7 @@ fn case_sensitive(destination: &Path) -> Result<bool, NativeLayrError> {
         probe
             .path()
             .file_name()
-            .unwrap()
+            .expect("temporary file has a basename")
             .to_string_lossy()
             .to_lowercase(),
     );
@@ -123,9 +123,9 @@ mod tests {
 
     #[test]
     fn native_import_always_rejects_unicode_aliases_on_apfs() {
-        let archive = tempfile::NamedTempFile::new().unwrap();
+        let archive = tempfile::NamedTempFile::new().expect("fixture operation succeeds");
         let gzip = flate2::write::GzEncoder::new(
-            File::create(archive.path()).unwrap(),
+            File::create(archive.path()).expect("fixture operation succeeds"),
             flate2::Compression::default(),
         );
         let mut builder = tar::Builder::new(gzip);
@@ -134,9 +134,15 @@ mod tests {
             header.set_size(0);
             header.set_mode(0o644);
             header.set_cksum();
-            builder.append_data(&mut header, name, &b""[..]).unwrap();
+            builder
+                .append_data(&mut header, name, &b""[..])
+                .expect("fixture operation succeeds");
         }
-        builder.into_inner().unwrap().finish().unwrap();
+        builder
+            .into_inner()
+            .expect("fixture operation succeeds")
+            .finish()
+            .expect("fixture operation succeeds");
         assert!(validate_case_policy(archive.path(), true, true).is_err());
         assert!(validate_case_policy(archive.path(), true, false).is_ok());
     }
@@ -144,9 +150,9 @@ mod tests {
     #[test]
     fn native_layr_import_refuses_case_and_unicode_collisions_before_any_write() {
         for names in [["Src/one", "src/two"], ["café", "cafe\u{301}"]] {
-            let archive = tempfile::NamedTempFile::new().unwrap();
+            let archive = tempfile::NamedTempFile::new().expect("fixture operation succeeds");
             let gzip = flate2::write::GzEncoder::new(
-                File::create(archive.path()).unwrap(),
+                File::create(archive.path()).expect("fixture operation succeeds"),
                 flate2::Compression::default(),
             );
             let mut builder = tar::Builder::new(gzip);
@@ -157,16 +163,39 @@ mod tests {
                 header.set_cksum();
                 builder
                     .append_data(&mut header, name, &b"data"[..])
-                    .unwrap();
+                    .expect("fixture operation succeeds");
             }
-            builder.into_inner().unwrap().finish().unwrap();
-            let destination = tempfile::tempdir().unwrap();
+            builder
+                .into_inner()
+                .expect("fixture operation succeeds")
+                .finish()
+                .expect("fixture operation succeeds");
+            let destination = tempfile::tempdir().expect("fixture operation succeeds");
             let error = unpack_with_case_policy(archive.path(), destination.path(), false)
-                .unwrap_err()
+                .expect_err("operation must fail")
                 .to_string();
-            assert!(error.contains(names[0].split('/').next().unwrap()));
-            assert!(error.contains(names[1].split('/').next().unwrap()));
-            assert_eq!(std::fs::read_dir(destination.path()).unwrap().count(), 0);
+            assert!(
+                error.contains(
+                    names[0]
+                        .split('/')
+                        .next()
+                        .expect("fixture operation succeeds")
+                )
+            );
+            assert!(
+                error.contains(
+                    names[1]
+                        .split('/')
+                        .next()
+                        .expect("fixture operation succeeds")
+                )
+            );
+            assert_eq!(
+                std::fs::read_dir(destination.path())
+                    .expect("fixture operation succeeds")
+                    .count(),
+                0
+            );
         }
     }
 }

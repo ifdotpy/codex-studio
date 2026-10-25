@@ -202,6 +202,10 @@ fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
     archive_exclusions(root, false)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "archive creation runs on the labeled vm-project-archive blocking worker"
+)]
 fn archive_exclusions(root: &Path, root_worktree: bool) -> std::io::Result<VmArchiveExclusions> {
     let mut repositories = HashSet::new();
     let mut worktrees = HashSet::new();

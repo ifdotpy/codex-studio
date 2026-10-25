@@ -9,6 +9,7 @@ use std::{
     fs::{self, File},
     path::Path,
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 
 type Result<T> = std::result::Result<T, NativeLayrError>;
 
@@ -57,22 +58,33 @@ fn operator_commands(state: &Path, project: &Path, lines: &[Value]) -> Value {
     let project_arg = quote(&project.to_string_lossy());
     let mut commands = vec![
         format!("git -C {project_arg} worktree list --porcelain"),
-        format!("studio-runtime-server native-layr migrate --state {state_arg} --dry-run {project_arg}"),
+        format!(
+            "studio-runtime-server native-layr migrate --state {state_arg} --dry-run {project_arg}"
+        ),
         format!("studio-runtime-server native-layr migrate --state {state_arg} {project_arg}"),
     ];
     let project_id = studio_runtime_store::sha256_hex(project.to_string_lossy().as_bytes());
     let main = main_path(state, &project_id);
     let environment = super::transport_environment(state, cfg!(target_os = "linux"))
         .into_iter()
-        .map(|(name,value)| format!("{name}={}", quote(value.as_str().unwrap_or_default())))
-        .collect::<Vec<_>>().join(" ");
-    let layr = format!("env {environment} {} -C {}", quote(&binary_path(state).to_string_lossy()), quote(&main.to_string_lossy()));
+        .map(|(name, value)| format!("{name}={}", quote(value.as_str().unwrap_or_default())))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let layr = format!(
+        "env {environment} {} -C {}",
+        quote(&binary_path(state).to_string_lossy()),
+        quote(&main.to_string_lossy())
+    );
     commands.push(format!("{layr} line list"));
     for line in lines.iter().filter(|line| line["status"] != "skipped") {
         let name = line["line"].as_str().unwrap_or_default();
         commands.push(format!("{layr} diff {}", quote(&format!("main...{name}"))));
         if let Some(state_id) = line["stateId"].as_str() {
-            commands.push(format!("{layr} merge {} --expect {}", quote(name), quote(state_id)));
+            commands.push(format!(
+                "{layr} merge {} --expect {}",
+                quote(name),
+                quote(state_id)
+            ));
         }
     }
     json!({
@@ -91,7 +103,7 @@ fn operator_commands(state: &Path, project: &Path, lines: &[Value]) -> Value {
 
 /// Project identity uses the canonical source folder, as native chat preparation does.
 pub fn migrate(state_dir: &Path, project: &Path, dry_run: bool) -> Result<Value> {
-    let project = fs::canonicalize(project)?;
+    let project = CanonicalPath::existing(project).map(CanonicalPath::into_path_buf)?;
     let mut record = json!({"id":"migration", "isLead":true,"autoWake":true,"cwd":project});
     configure_new_chat(
         &mut record,
@@ -134,7 +146,9 @@ pub fn migrate(state_dir: &Path, project: &Path, dry_run: bool) -> Result<Value>
         }
     }
     if dry_run {
-        return Ok(json!({"dryRun":true,"projectId":project_id,"source":project,"operator":operator_commands(state_dir,&project,&lines),"lines":lines}));
+        return Ok(
+            json!({"dryRun":true,"projectId":project_id,"source":project,"operator":operator_commands(state_dir,&project,&lines),"lines":lines}),
+        );
     }
     let ready = runtime::prepare_files(state_dir, &record)?;
     let main = PathBuf::from(
@@ -156,7 +170,7 @@ pub fn migrate(state_dir: &Path, project: &Path, dry_run: bool) -> Result<Value>
             &json!({"source":source,"repository":relative,"line":name}),
             || {
                 let archive = crate::vm_preparation::native_worktree_archive(&source)?;
-                super::import::validate(archive.file.path(),&main)?;
+                super::import::validate(archive.file.path(), &main)?;
                 run(state_dir, &main, &["line", "new", &name, "main"])?;
                 let cwd = main
                     .parent()
@@ -186,10 +200,11 @@ pub fn migrate(state_dir: &Path, project: &Path, dry_run: bool) -> Result<Value>
                     fs::remove_dir_all(&destination)?;
                 }
                 fs::create_dir_all(&destination)?;
-                super::import::unpack(archive.file.path(),&destination)?;
+                super::import::unpack(archive.file.path(), &destination)?;
                 if let Some(saved) = &saved_git {
                     fs::rename(saved.path().join("git"), &git_marker)?;
                 }
+                super::git_guard::install_hook(state_dir, &cwd)?;
                 run(state_dir, &cwd, &["add", "-A"])?;
                 let mut archive_files = Vec::new();
                 for entry in tar::Archive::new(flate2::read::GzDecoder::new(File::open(
@@ -234,12 +249,41 @@ mod tests {
     fn migration_commands_preserve_paths_and_pin_imported_states() {
         let state = Path::new("/state with spaces");
         let project = Path::new("/project's code");
-        let lines = vec![json!({"line":"wt-worker","status":"imported","stateId":"full-exact-state"})];
+        let lines =
+            vec![json!({"line":"wt-worker","status":"imported","stateId":"full-exact-state"})];
         let report = operator_commands(state, project, &lines);
-        let commands = report["commands"].as_array().unwrap();
-        assert!(commands[1].as_str().unwrap().contains("--dry-run '/project'\"'\"'s code'"));
-        assert!(commands[2].as_str().unwrap().contains("--state '/state with spaces'"));
-        assert!(commands.last().unwrap().as_str().unwrap().ends_with("merge 'wt-worker' --expect 'full-exact-state'"));
-        assert!(report["steps"].as_array().unwrap().iter().any(|step|step.as_str().unwrap().contains("does not pause or convert")));
+        let commands = report["commands"]
+            .as_array()
+            .expect("fixture operation succeeds");
+        assert!(
+            commands[1]
+                .as_str()
+                .expect("fixture operation succeeds")
+                .contains("--dry-run '/project'\"'\"'s code'")
+        );
+        assert!(
+            commands[2]
+                .as_str()
+                .expect("fixture operation succeeds")
+                .contains("--state '/state with spaces'")
+        );
+        assert!(
+            commands
+                .last()
+                .expect("fixture operation succeeds")
+                .as_str()
+                .expect("fixture operation succeeds")
+                .ends_with("merge 'wt-worker' --expect 'full-exact-state'")
+        );
+        assert!(
+            report["steps"]
+                .as_array()
+                .expect("fixture operation succeeds")
+                .iter()
+                .any(|step| step
+                    .as_str()
+                    .expect("fixture operation succeeds")
+                    .contains("does not pause or convert"))
+        );
     }
 }

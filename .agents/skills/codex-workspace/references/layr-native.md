@@ -60,6 +60,7 @@ Studio blocks the next turn until the previous turn save completes.
 Acceptance refuses when the source line no longer matches the reviewed state.
 Resolve conflicts in an owned task line before acceptance when main requires checks.
 Git is the remote bridge. Use it only when the task permits an export or push.
+Native lines allow Git reads. The managed Git wrapper and the pre-commit hook refuse Git writes and name the Layr command.
 
 Archive creates `pins/studio/archive/<sha256(agent ID)>` without an expiry.
 The receipt records `archiveRef` and `stateId`. The pin retains unmerged automatic states through garbage collection.

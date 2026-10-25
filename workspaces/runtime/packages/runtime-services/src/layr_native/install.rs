@@ -13,6 +13,7 @@ pub fn ensure_binary(state_dir: &Path) -> Result<(), NativeLayrError> {
                 "Expected Layr {LAYR_VERSION}, found {version}"
             )));
         }
+        super::git_guard::ensure(state_dir)?;
         return Ok(());
     }
     let source = source_directory()?;
@@ -93,6 +94,7 @@ fn install_unlocked(state_dir: &Path, source: &Path) -> Result<(), NativeLayrErr
     let temporary = directory.join("bin/layr.new");
     fs::copy(target.join("release/layr"), &temporary)?;
     fs::rename(temporary, binary_path(state_dir))?;
+    super::git_guard::ensure(state_dir)?;
     Ok(())
 }
 
@@ -111,7 +113,7 @@ fn source_directory() -> Result<std::path::PathBuf, NativeLayrError> {
     }
     #[cfg(debug_assertions)]
     {
-        return Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/layr"));
+        Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/layr"))
     }
     #[cfg(not(debug_assertions))]
     Err(NativeLayrError::Refused(

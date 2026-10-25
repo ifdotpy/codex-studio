@@ -1484,15 +1484,18 @@ mod tests {
             &connection,
             &studio_runtime_store::AgentId::from("lead"),
         )
-        .unwrap()
-        .unwrap();
+        .expect("fixture operation succeeds")
+        .expect("fixture operation succeeds");
         lead.status = studio_runtime_store::AgentStatus::Completed;
         lead.extra.insert("workspaceMode".into(), json!("image"));
         lead.extra
             .insert("legacyWorkspaceFinished".into(), json!(true));
         lead.extra.insert("autoWake".into(), json!(false));
-        studio_runtime_store::AgentRepository::put(&connection, &lead).unwrap();
-        let tx = connection.transaction().unwrap();
+        studio_runtime_store::AgentRepository::put(&connection, &lead)
+            .expect("fixture operation succeeds");
+        let tx = connection
+            .transaction()
+            .expect("fixture operation succeeds");
         let result = post_message_with_admission(
             &tx,
             PostManagedMessage {
@@ -1514,15 +1517,15 @@ mod tests {
                 [],
                 |r| r.get::<_, i64>(0)
             )
-            .unwrap(),
+            .expect("fixture operation succeeds"),
             0
         );
         let saved = studio_runtime_store::AgentRepository::get(
             &tx,
             &studio_runtime_store::AgentId::from("lead"),
         )
-        .unwrap()
-        .unwrap();
+        .expect("fixture operation succeeds")
+        .expect("fixture operation succeeds");
         assert_eq!(saved.extra["autoWake"], false);
     }
 

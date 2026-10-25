@@ -711,7 +711,16 @@
       "requestTicket": "request:attempt",
       "connectionGeneration": 7,
       "claudeInputRequest": {
-        "$ref": 20
+        "$base": 20,
+        "set": {
+          "source": {
+            "$base": 15,
+            "set": {
+              "imageWorkspace": null,
+              "imageWorkspaceReady": null
+            }
+          }
+        }
       },
       "nativeOperationId": "turn:agent:one:attempt:attempt",
       "connectionId": "connection",

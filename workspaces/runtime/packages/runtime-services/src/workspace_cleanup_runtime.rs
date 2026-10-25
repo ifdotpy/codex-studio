@@ -1525,7 +1525,8 @@ mod tests {
         put_agent(
             &store,
             json!({
-                "imageWorkspace":true, "imageWorkspaceReady":true,
+                "executionMode":"vm", "layrReady":true,
+                "layrTurnSaves":{"turn-1":{"status":"pending"}},
                 "agentArchive":{"cleanupPending":true}
             }),
         )
@@ -1588,7 +1589,8 @@ mod tests {
         let (directory, store) = fixture().await;
         put_agent(
             &store,
-            json!({"imageWorkspace":true,"imageWorkspaceReady":true,
+            json!({"executionMode":"vm", "layrReady":true,
+                "layrTurnSaves":{"turn-1":{"status":"pending"}},
                 "agentArchive":{"cleanupPending":true}}),
         )
         .await;
@@ -1640,7 +1642,13 @@ mod tests {
         )
         .await
         .expect("metadata cleanup");
-        assert!(ports.calls.lock().unwrap().is_empty());
+        assert!(
+            ports
+                .calls
+                .lock()
+                .expect("fixture operation succeeds")
+                .is_empty()
+        );
         assert_eq!(agent(&store)["imageWorkspaceReady"], true);
     }
 

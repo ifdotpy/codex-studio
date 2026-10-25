@@ -466,27 +466,33 @@ mod native_layr_tests {
 
     #[test]
     fn native_layr_install_can_precede_the_first_backend_start() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("fixture operation succeeds");
         let native = root.path().join(crate::NATIVE_LAYR_DIRECTORY);
-        fs::create_dir_all(native.join("bin")).unwrap();
-        fs::write(native.join("bin/layr"), "installed host binary").unwrap();
-        validate(root.path()).unwrap();
+        fs::create_dir_all(native.join("bin")).expect("fixture operation succeeds");
+        fs::write(native.join("bin/layr"), "installed host binary")
+            .expect("fixture operation succeeds");
+        validate(root.path()).expect("fixture operation succeeds");
         assert!(!root.path().join("canvas.sqlite3").exists());
     }
 
     #[test]
     fn native_layr_installation_directory_cannot_be_a_file() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join(crate::NATIVE_LAYR_DIRECTORY), "wrong type").unwrap();
+        let root = tempfile::tempdir().expect("fixture operation succeeds");
+        fs::write(root.path().join(crate::NATIVE_LAYR_DIRECTORY), "wrong type")
+            .expect("fixture operation succeeds");
         assert!(validate(root.path()).is_err());
     }
 
     #[cfg(unix)]
     #[test]
     fn native_layr_installation_directory_cannot_be_a_symlink() {
-        let root = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside.path(), root.path().join(crate::NATIVE_LAYR_DIRECTORY)).unwrap();
+        let root = tempfile::tempdir().expect("fixture operation succeeds");
+        let outside = tempfile::tempdir().expect("fixture operation succeeds");
+        std::os::unix::fs::symlink(
+            outside.path(),
+            root.path().join(crate::NATIVE_LAYR_DIRECTORY),
+        )
+        .expect("fixture operation succeeds");
         assert!(validate(root.path()).is_err());
     }
 }

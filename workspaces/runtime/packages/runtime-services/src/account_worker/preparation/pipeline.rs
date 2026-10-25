@@ -780,10 +780,15 @@ fn native_turn_params(
         params.insert("cyberAccessProgram".into(), json!(program));
     }
     if snapshot.settings.role == thread::Role::Reviewer
-        && snapshot.guidance.thread_config.contains_key("shell_environment_policy.set.LAYR_ROOT")
+        && snapshot
+            .guidance
+            .thread_config
+            .contains_key("shell_environment_policy.set.LAYR_ROOT")
     {
-        let permissions=vm_reviewer_permissions(&json!({"workspaceMode":"layr-native","role":"reviewer","layrScratch":snapshot.actor.cwd}));
-        apply_vm_reviewer_permissions(&mut params,permissions.as_ref());
+        let permissions = vm_reviewer_permissions(
+            &json!({"workspaceMode":"layr-native","role":"reviewer","layrScratch":snapshot.actor.cwd}),
+        );
+        apply_vm_reviewer_permissions(&mut params, permissions.as_ref());
     }
     Ok(params)
 }
@@ -2305,12 +2310,19 @@ mod daybreak_tests {
         let mut snapshot = action_snapshot(false);
         snapshot.settings.role = thread::Role::Reviewer;
         snapshot.actor.cwd = "/private/review-scratch".into();
-        snapshot.guidance.thread_config.insert("shell_environment_policy.set.LAYR_ROOT".into(),json!("/studio/store"));
-        let params=native_turn_params(&mut snapshot,&thread::TurnInput::default(),None).unwrap();
-        assert_eq!(params["sandboxPolicy"],json!({"type":"workspaceWrite","writableRoots":["/private/review-scratch"],"networkAccess":false}));
-        assert_eq!(params["approvalPolicy"],"never");
-        let monitor=monitor_command_settings(&json!({"workspaceMode":"layr-native","role":"reviewer","layrScratch":snapshot.actor.cwd}),&snapshot.actor.cwd,thread::Role::Reviewer,Some(true)).unwrap();
-        assert_eq!(monitor["sandboxPolicy"],params["sandboxPolicy"]);
+        snapshot.guidance.thread_config.insert(
+            "shell_environment_policy.set.LAYR_ROOT".into(),
+            json!("/studio/store"),
+        );
+        let params = native_turn_params(&mut snapshot, &thread::TurnInput::default(), None)
+            .expect("fixture operation succeeds");
+        assert_eq!(
+            params["sandboxPolicy"],
+            json!({"type":"workspaceWrite","writableRoots":["/private/review-scratch"],"networkAccess":false})
+        );
+        assert_eq!(params["approvalPolicy"], "never");
+        let monitor=monitor_command_settings(&json!({"workspaceMode":"layr-native","role":"reviewer","layrScratch":snapshot.actor.cwd}),&snapshot.actor.cwd,thread::Role::Reviewer,Some(true)).expect("fixture operation succeeds");
+        assert_eq!(monitor["sandboxPolicy"], params["sandboxPolicy"]);
     }
 
     #[test]
@@ -2446,7 +2458,10 @@ mod daybreak_tests {
     fn native_layr_reviewer_model_cwd_is_scratch_for_codex_and_claude() {
         for provider in ["codex", "claude"] {
             let record = json!({"workspaceMode":"layr-native","executionMode":"native", "role":"reviewer", "provider":provider,"cwd":"/store/main","layrScratch":"/private/review-scratch"});
-            assert_eq!(execution_cwd(&record, Path::new("/store/main")), Some("/private/review-scratch".into()));
+            assert_eq!(
+                execution_cwd(&record, Path::new("/store/main")),
+                Some("/private/review-scratch".into())
+            );
         }
     }
 

@@ -121,8 +121,10 @@ mod tests {
     }
     #[tokio::test]
     async fn review_regression_legacy_finish_settles_turn_tasks() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        let directory = tempfile::tempdir().expect("fixture operation succeeds");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("fixture operation succeeds");
         store.transaction(|tx| {
             let agent = json!({"id":"legacy-worker", "rootId":"lead", "parentId":"lead", "epoch":1,
                 "workspaceMode":"image", "status":"running", "autoWake":true, "inFlight":true,
@@ -132,17 +134,19 @@ mod tests {
             let task = json!({"id":"legacy-task", "agent":"legacy-worker", "itemId":"item",
                 "turnId":"old-turn", "created":1.0, "kind":"command", "status":"running",
                 "type":"commandExecution", "name":"commandExecution"});
-            crate::notification_dispatch::put_task_record(tx, &task).unwrap();
+            crate::notification_dispatch::put_task_record(tx, &task).expect("fixture operation succeeds");
             let mut background=task;
             background["id"]=json!("legacy-background"); background["processId"]=json!("old-process");
-            crate::notification_dispatch::put_task_record(tx, &background).unwrap();
+            crate::notification_dispatch::put_task_record(tx, &background).expect("fixture operation succeeds");
             Ok(())
-        }).await.unwrap();
-        finish_stored_workspaces(&store).await.unwrap();
-        let db = store.test_reader().unwrap();
+        }).await.expect("fixture operation succeeds");
+        finish_stored_workspaces(&store)
+            .await
+            .expect("fixture operation succeeds");
+        let db = store.test_reader().expect("fixture operation succeeds");
         let agent = AgentRepository::get(&db, &AgentId::from("legacy-worker"))
-            .unwrap()
-            .unwrap()
+            .expect("fixture operation succeeds")
+            .expect("fixture operation succeeds")
             .value();
         assert!(
             !crate::task_settlement::turn_live(&agent, "old-turn", false),
@@ -154,9 +158,9 @@ mod tests {
                 [],
                 |row| row.get(0),
             )
-            .unwrap();
+            .expect("fixture operation succeeds");
         assert_eq!(
-            serde_json::from_str::<Value>(&task).unwrap()["status"],
+            serde_json::from_str::<Value>(&task).expect("fixture operation succeeds")["status"],
             crate::task_settlement::SETTLED_TASK_STATUS
         );
         let background: String = db
@@ -165,9 +169,9 @@ mod tests {
                 [],
                 |row| row.get(0),
             )
-            .unwrap();
+            .expect("fixture operation succeeds");
         assert_eq!(
-            serde_json::from_str::<Value>(&background).unwrap()["status"],
+            serde_json::from_str::<Value>(&background).expect("fixture operation succeeds")["status"],
             crate::task_settlement::LOST_TASK_STATUS
         );
     }

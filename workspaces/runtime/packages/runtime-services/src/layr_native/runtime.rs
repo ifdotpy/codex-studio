@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
 
 #[derive(Debug, thiserror::Error)]
@@ -37,7 +38,7 @@ fn text<'a>(record: &'a Value, key: &str) -> Result<&'a str> {
 /// Run only the Studio-owned binary. Ambient Layr and Git selectors never escape this store.
 pub fn run(state_dir: &Path, cwd: &Path, args: &[&str]) -> Result<String> {
     // APFS clonefile traversal refuses symlink ancestors, including macOS /var and /tmp.
-    let state_dir = fs::canonicalize(state_dir)?;
+    let state_dir = CanonicalPath::existing(state_dir).map(CanonicalPath::into_path_buf)?;
     let binary = binary_path(&state_dir);
     let mut argv = vec![
         "-u",
@@ -200,7 +201,8 @@ pub(super) fn prepare_files(state_dir: &Path, record: &Value) -> Result<Value> {
         .join(NATIVE_LAYR_DIRECTORY)
         .join(format!("{project}.json"));
     if !ready_path.exists() {
-        let source = fs::canonicalize(text(record, "hostProjectPath")?)?;
+        let source = CanonicalPath::existing(text(record, "hostProjectPath")?)
+            .map(CanonicalPath::into_path_buf)?;
         if state_dir.starts_with(&source) {
             return Err(NativeLayrError::Refused(
                 "The Studio state directory must be outside the project".into(),
@@ -263,6 +265,7 @@ pub(super) fn prepare_files(state_dir: &Path, record: &Value) -> Result<Value> {
             },
         )?;
     }
+    super::git_guard::install_hook(state_dir, &cwd)?;
     let state = run(state_dir, &cwd, &["rev-parse", "head"])?;
     let mut result = json!({"cwd":cwd,"layrProjectId":project,"layrLine":line,"layrStateId":state,"layrReady":true});
     if reviewer {
@@ -275,8 +278,9 @@ pub(super) fn prepare_files(state_dir: &Path, record: &Value) -> Result<Value> {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700))?;
         }
-        let canonical = fs::canonicalize(&scratch)?;
-        let expected = fs::canonicalize(state_dir)?
+        let canonical = CanonicalPath::existing(&scratch).map(CanonicalPath::into_path_buf)?;
+        let expected = CanonicalPath::existing(state_dir)
+            .map(CanonicalPath::into_path_buf)?
             .join(NATIVE_LAYR_DIRECTORY)
             .join("scratch")
             .join(studio_runtime_store::sha256_hex(
@@ -377,22 +381,28 @@ pub(super) fn associated_cwd(state_dir: &Path, record: &Value) -> Result<PathBuf
         .join(expected_line);
     let reviewer = record["role"] == "reviewer";
     if reviewer {
-        let scratch = fs::canonicalize(state_dir)?
+        let scratch = CanonicalPath::existing(state_dir)
+            .map(CanonicalPath::into_path_buf)?
             .join(NATIVE_LAYR_DIRECTORY)
             .join("scratch")
             .join(studio_runtime_store::sha256_hex(
                 text(record, "id")?.as_bytes(),
             ));
-        if fs::canonicalize(text(record, "cwd")?)? != scratch
-            || fs::canonicalize(text(record, "layrScratch")?)? != scratch
+        if CanonicalPath::existing(text(record, "cwd")?).map(CanonicalPath::into_path_buf)?
+            != scratch
+            || CanonicalPath::existing(text(record, "layrScratch")?)
+                .map(CanonicalPath::into_path_buf)?
+                != scratch
         {
             return Err(NativeLayrError::Refused(
                 "The reviewer scratch association changed".into(),
             ));
         }
     }
-    let actual = fs::canonicalize(text(record, if reviewer { "layrReadCwd" } else { "cwd" })?)?;
-    if actual != fs::canonicalize(expected)? {
+    let actual =
+        CanonicalPath::existing(text(record, if reviewer { "layrReadCwd" } else { "cwd" })?)
+            .map(CanonicalPath::into_path_buf)?;
+    if actual != CanonicalPath::existing(expected).map(CanonicalPath::into_path_buf)? {
         return Err(NativeLayrError::Refused(
             "The native Layr cwd association changed".into(),
         ));
