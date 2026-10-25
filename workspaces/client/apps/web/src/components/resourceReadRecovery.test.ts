@@ -20,6 +20,7 @@ const {
   post,
   syncPost,
   reconcile,
+  subscription,
 } = vi.hoisted(() => ({
   projectionListeners: new Set<(snapshot: unknown) => void>(),
   contexts: new Map<unknown, unknown>(),
@@ -45,6 +46,11 @@ const {
   post: vi.fn(),
   syncPost: vi.fn(),
   reconcile: vi.fn(async (..._args: unknown[]) => {}),
+  subscription: vi.fn(() => ({
+    data: undefined,
+    status: "loading",
+    error: null,
+  })),
 }));
 
 vi.mock("react", async (importOriginal) => {
@@ -133,7 +139,7 @@ vi.mock("../sync/localDraft", async (importOriginal) => ({
 vi.mock("../sync/send", () => ({ reconcileOutboxReceipts: reconcile }));
 vi.mock("../sync/resume", () => ({ onResume: () => () => {} }));
 vi.mock("../sync/subscriptions", () => ({
-  useSubscription: () => ({ data: undefined, status: "loading", error: null }),
+  useSubscription: subscription,
 }));
 vi.mock("../sync/subscriptions/events", () => ({
   watchResourceChanges: (
@@ -206,6 +212,7 @@ describe("resource read callers", () => {
     post.mockReset();
     syncPost.mockReset();
     reconcile.mockClear();
+    subscription.mockClear();
     contexts.clear();
     effects.length = 0;
     states.length = 0;
@@ -602,6 +609,11 @@ describe("resource read callers", () => {
         reload: vi.fn(),
       }),
     );
+    expect(subscription).toHaveBeenCalledWith({
+      kind: "session-cost",
+      agentId: "lead",
+    });
+    expect(subscription).not.toHaveBeenCalledWith({ kind: "costs" });
     for (const accept of projectionListeners)
       accept({
         runtime: {

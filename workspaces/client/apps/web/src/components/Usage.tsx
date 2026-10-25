@@ -327,9 +327,7 @@ export default function Usage({
     (Partial<GetResult<"/api/costs">> & { error?: string | null }) | null
   >(null);
   const rootId = agent.rootId || agent.id;
-  useSubscription(
-    limitsOpened ? { kind: "session-cost", agentId: rootId } : null,
-  );
+  useSubscription({ kind: "session-cost", agentId: rootId });
   useSubscription(limitsOpened ? { kind: "costs" } : null);
   const costScope = JSON.stringify([stateDir, rootId]);
   const [sessionCostState, setSessionCostState] = useState<{
