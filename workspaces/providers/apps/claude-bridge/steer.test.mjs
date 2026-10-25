@@ -159,7 +159,11 @@ async function end(bridge, fail = false) {
   const ready = bridge.note(
     (n) => n.method === "fixture/result-ready" && n.params.token === token,
   );
-  await fs.writeFile(path.join(bridge.root, ".end"), token);
+  // Publish the complete token atomically: a file watcher can observe creation
+  // before an asynchronous write has filled the file.
+  const readyFile = path.join(bridge.root, `.end-${token}.tmp`);
+  await fs.writeFile(readyFile, token);
+  await fs.rename(readyFile, path.join(bridge.root, ".end"));
   await ready;
 }
 

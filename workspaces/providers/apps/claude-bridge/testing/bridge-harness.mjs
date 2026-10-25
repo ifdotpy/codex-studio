@@ -127,7 +127,16 @@ export async function startBridge(
         const message = await new Promise((resolve, reject) => {
           waiting.set(id, { resolve, reject });
           timer = setTimeout(
-            () => reject(new Error(method + " hung\n" + stderr)),
+            () =>
+              reject(
+                new Error(
+                  method +
+                    " hung\n" +
+                    stderr +
+                    "\nRecent notifications: " +
+                    JSON.stringify(notes.slice(-10)),
+                ),
+              ),
             HANG_GUARD_MS,
           );
           child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
@@ -155,7 +164,15 @@ export async function startBridge(
           };
           notifications.add(notify);
           timer = setTimeout(
-            () => reject(new Error("notification missing\n" + stderr)),
+            () =>
+              reject(
+                new Error(
+                  "notification missing\n" +
+                    stderr +
+                    "\nRecent notifications: " +
+                    JSON.stringify(notes.slice(-10)),
+                ),
+              ),
             HANG_GUARD_MS,
           );
           notify();
