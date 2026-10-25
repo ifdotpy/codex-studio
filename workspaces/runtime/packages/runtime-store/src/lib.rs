@@ -8,6 +8,8 @@ pub use cached_sql::{CachedSql, STATEMENT_CACHE_CAPACITY};
 pub use entity_publication::{EntityPublisher, PendingEntities, StudioErrorSources};
 mod feature_schema;
 mod fresh_state;
+#[cfg(any(test, feature = "test-support"))]
+pub use fresh_state::test_canvas;
 
 /// Durable marker proving bounded summary entities have been seeded. Unit: metadata key.
 pub const SUMMARY_ENTITIES_SEED_MARKER: &str = "summary_entities_v1";
@@ -499,6 +501,29 @@ fn fire_resource_change_observers(
             // Resource observers are hints and cannot report panics to their caller.
         }
     }
+}
+
+// Nanosecond samples on the actor thread: queue time ends before operation
+// hold time starts. The clock parameter keeps the measurement deterministic in tests.
+fn timed_writer_job<T>(
+    submitted: Option<Instant>,
+    timing: &[AtomicU64; 2],
+    now: impl Fn() -> Instant,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let started = submitted.map(|submitted| {
+        let started = now();
+        (started.saturating_duration_since(submitted), started)
+    });
+    let outcome = operation();
+    if let Some((queued, started)) = started {
+        timing[0].store(saturating_nanos(queued), Ordering::Relaxed);
+        timing[1].store(
+            saturating_nanos(now().saturating_duration_since(started)),
+            Ordering::Relaxed,
+        );
+    }
+    outcome
 }
 
 fn saturating_nanos(duration: Duration) -> u64 {
@@ -1899,13 +1924,9 @@ impl RuntimeStore {
                 }
             };
         let operation = move |writer: &mut Connection| {
-            let started = submitted.map(|submitted| (submitted.elapsed(), Instant::now()));
-            let outcome = transaction_job(writer);
-            if let Some((queued, started)) = started {
-                job_timing[0].store(saturating_nanos(queued), Ordering::Relaxed);
-                job_timing[1].store(saturating_nanos(started.elapsed()), Ordering::Relaxed);
-            }
-            outcome
+            timed_writer_job(submitted, &job_timing, Instant::now, || {
+                transaction_job(writer)
+            })
         };
         let abandoned_notifiers = Arc::clone(&self.commit_notifiers);
         let abandoned_checkpoint = Arc::clone(&self.wal_flush);
@@ -2725,7 +2746,7 @@ mod read_pool_tests {
 #[cfg(test)]
 mod diagnostics_hook_tests {
     use super::*;
-    use std::sync::{Condvar, Mutex, mpsc};
+    use std::sync::{Condvar, Mutex};
 
     static EVENTS: Mutex<Vec<StoreDiagnosticsEvent>> = Mutex::new(Vec::new());
     static EVENTS_READY: Condvar = Condvar::new();
@@ -2771,6 +2792,7 @@ mod diagnostics_hook_tests {
             .set_diagnostics_callback(Some(record_event))
             .await
             .expect("install diagnostics callback");
+        let origin_line = line!() + 2;
         store
             .transaction(|transaction| {
                 transaction.execute_batch("CREATE TABLE measured(value INTEGER);")?;
@@ -2780,6 +2802,10 @@ mod diagnostics_hook_tests {
             .await
             .expect("transaction succeeds");
         assert!(EVENTS.lock().expect("diagnostic events lock").len() >= 3);
+        assert!(EVENTS.lock().expect("diagnostic events lock").iter().any(|event|
+            matches!(event, StoreDiagnosticsEvent::WriterTransaction { origin, .. }
+                if origin.line() == origin_line && origin.file().ends_with("runtime-store/src/lib.rs"))
+        ), "the real writer job keeps its caller origin");
 
         EVENTS.lock().expect("diagnostic events lock").clear();
         let held = Arc::clone(&store.read_pool.admission)
@@ -2850,71 +2876,25 @@ mod diagnostics_hook_tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn queued_writer_job_reports_queue_as_wait_and_its_caller_origin() {
-        const BLOCKED: Duration = Duration::from_millis(150);
-        let _test_guard = TEST_LOCK.lock().await;
-        let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = Arc::new(
-            RuntimeStore::open(Some(directory.path()))
-                .await
-                .expect("open runtime store"),
+    #[test]
+    fn writer_job_timing_separates_queue_and_hold() {
+        let submitted = Instant::now();
+        let queued = Duration::from_millis(150);
+        let held = Duration::from_millis(20);
+        let clock = std::cell::Cell::new(submitted + queued);
+        let timing = [AtomicU64::new(0), AtomicU64::new(0)];
+        let result = timed_writer_job(
+            Some(submitted),
+            &timing,
+            || clock.get(),
+            || {
+                clock.set(clock.get() + held);
+                "completed"
+            },
         );
-        EVENTS.lock().expect("diagnostic events lock").clear();
-        store
-            .set_diagnostics_callback(Some(record_event))
-            .await
-            .expect("install diagnostics callback");
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel::<()>();
-        let slow_store = Arc::clone(&store);
-        let slow = tokio::spawn(async move {
-            slow_store
-                .transaction(move |_| {
-                    entered_tx.send(()).expect("report entered writer");
-                    release_rx.recv().expect("release blocked writer");
-                    Ok(())
-                })
-                .await
-        });
-        crate::blocking_pool::spawn_blocking("runtime-store/lib", move || {
-            entered_rx.recv().expect("slow job entered")
-        })
-        .await
-        .expect("entered wait");
-        let queued_store = Arc::clone(&store);
-        let queued_line = line!() + 3;
-        let queued = tokio::spawn(async move {
-            queued_store
-                .transaction(|transaction| Ok(transaction.execute("SELECT 1", []).is_err()))
-                .await
-        });
-        while store.writer.available_admissions() > sqlite_actor::MAX_PENDING_WRITES - 2 {
-            tokio::task::yield_now().await;
-        }
-        tokio::time::sleep(BLOCKED).await;
-        release_tx.send(()).expect("release slow job");
-        slow.await.expect("slow task").expect("slow job");
-        queued.await.expect("queued task").expect("queued job");
-        store
-            .set_diagnostics_callback(None)
-            .await
-            .expect("clear diagnostics callback");
-        let events = EVENTS.lock().expect("diagnostic events lock");
-        let queued_event = events
-            .iter()
-            .find_map(|event| match event {
-                StoreDiagnosticsEvent::WriterTransaction { wait, hold, origin }
-                    if origin.line() == queued_line =>
-                {
-                    Some((*wait, *hold, origin.file()))
-                }
-                _ => None,
-            })
-            .expect("queued writer job event");
-        assert!(queued_event.0 >= BLOCKED, "actor queue time is wait time");
-        assert!(queued_event.1 < BLOCKED, "queued time is not hold time");
-        assert!(queued_event.2.ends_with("runtime-store/src/lib.rs"));
+        assert_eq!(result, "completed");
+        assert_eq!(timing[0].load(Ordering::Relaxed), saturating_nanos(queued));
+        assert_eq!(timing[1].load(Ordering::Relaxed), saturating_nanos(held));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

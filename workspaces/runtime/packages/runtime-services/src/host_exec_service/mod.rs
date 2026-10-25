@@ -29,6 +29,8 @@ use protocol::{Failure, HostExecError, INVALID, Outcome, require};
 
 /// The subcommand of `studio-runtime-server` that runs this service.
 pub const SUBCOMMAND: &str = "host-exec-service";
+/// Stdout line proving the host service has bound and secured its Unix socket.
+pub const SERVICE_READY_LINE: &str = "studio-host-exec-ready";
 /// The optional argument that names the Studio server's host bridge folder.
 pub const BROWSER_HOST_ARGUMENT: &str = "--browser-host";
 /// The service socket in the VM state folder; the native helper forwards the
@@ -37,7 +39,7 @@ pub const SOCKET_FILE: &str = "host-exec.sock";
 /// The channel token file in the VM state folder; the guest gets it with `host.configure`.
 pub const TOKEN_FILE: &str = crate::host_exec::TOKEN_FILE;
 /// The lease that one running service holds.
-pub(crate) const LEASE_FILE: &str = "host-exec.lock";
+pub const LEASE_FILE: &str = "host-exec.lock";
 /// The lease of a service start, held by [`lifecycle::ensure_service`].
 pub(crate) const START_LEASE_FILE: &str = "host-exec-start.lock";
 /// The output of the service process.
@@ -927,6 +929,12 @@ pub(crate) async fn serve(service: Arc<HostService>) -> std::io::Result<()> {
     }
     let listener = tokio::net::UnixListener::bind(&path)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    {
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{SERVICE_READY_LINE}")?;
+        stdout.flush()?;
+    }
     let mut connections = tokio::task::JoinSet::new();
     loop {
         tokio::select! {

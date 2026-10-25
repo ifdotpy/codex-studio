@@ -348,11 +348,11 @@ fn journal_value_decoder_matches_the_wire_decoder_for_valid_and_malformed_values
 }
 
 #[test]
-fn response_defaults_and_error_precedence_match_python_client() {
+fn response_defaults_and_error_precedence_are_preserved() {
     let mut decoder = LineDecoder::new();
     let decoded = decoder
         .push(b"{\"id\":1}\n{\"id\":2,\"result\":{},\"error\":{\"code\":9}}\n")
-        .expect("Python response forms");
+        .expect("supported response forms");
     assert_eq!(
         decoded[0],
         Frame::Response {

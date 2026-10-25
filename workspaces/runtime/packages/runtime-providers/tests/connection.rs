@@ -50,43 +50,6 @@ fn outgoing(actions: &[Action]) -> Vec<Value> {
 }
 
 #[test]
-fn initialize_handshake_and_python_caller_request_shapes() {
-    let shapes = [
-        (Method::TurnStart, json!({"threadId":"thread","input":[]})),
-        (
-            Method::TurnInterrupt,
-            json!({"threadId":"thread","turnId":"turn"}),
-        ),
-        (Method::AccountRead, json!({"passive":true})),
-        (Method::ModelList, json!({"limit":100,"includeHidden":true})),
-    ];
-    for (method, params) in shapes {
-        let mut session = state(false);
-        let (ticket, actions) = session
-            .submit(method, params.clone(), 1, 10, None, false)
-            .expect("scripted test operation");
-        let request = &outgoing(&actions)[0];
-        assert_eq!(request["method"], method.as_str());
-        assert_eq!(request["id"], 2);
-        assert_eq!(request["params"], params);
-        let settled = session
-            .receive(Frame::Response {
-                id: ticket.id,
-                body: ResponseBody::Result(json!({"ok":true})),
-                fields: Default::default(),
-            })
-            .expect("scripted test operation");
-        assert!(matches!(
-            &settled[0],
-            Action::Resolve {
-                outcome: RequestOutcome::Reply { late: false, .. },
-                ..
-            }
-        ));
-    }
-}
-
-#[test]
 fn one_off_catalog_and_terminal_requests_are_correlated_and_resolved() {
     let shapes = [
         (
@@ -113,6 +76,7 @@ fn one_off_catalog_and_terminal_requests_are_correlated_and_resolved() {
             .expect("one-off request is admitted");
         let request = &outgoing(&actions)[0];
         assert_eq!(request["method"], method.as_str());
+        assert_eq!(request["id"], 2);
         assert_eq!(request["params"], params);
         let settled = session
             .receive(Frame::Response {

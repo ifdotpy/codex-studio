@@ -709,7 +709,7 @@ pub fn router(mut state: HttpState) -> Result<Router, Box<dyn std::error::Error>
         std::io::Error::other(format!("invalid HTTP route registration: {error}"))
     })?;
     state.validators =
-        Registry::compile(&registered.iter().map(|item| item.key()).collect::<Vec<_>>())?;
+        Registry::production(&registered.iter().map(|item| item.key()).collect::<Vec<_>>())?;
     state.etag_operations = registered
         .iter()
         .filter_map(|operation| {
@@ -1971,32 +1971,40 @@ mod tests {
 
     #[tokio::test]
     async fn boundary_accepts_each_route_body_limit_and_rejects_the_next_byte() {
+        use crate::http_body_limits::{
+            ASSET_BODY_LIMIT, DEFAULT_BODY_LIMIT, PROJECTS_BODY_LIMIT, VOICE_AUDIO_BODY_LIMIT,
+        };
         let cases = [
-            ("/api/agents", r#"{"prompt":"x"}"#, 256 * 1024),
+            ("/api/agents", r#"{"prompt":"x"}"#, DEFAULT_BODY_LIMIT),
             (
                 "/api/assets",
                 r#"{"agent":"x","name":"x"}"#,
-                28 * 1024 * 1024,
+                ASSET_BODY_LIMIT,
             ),
             (
                 "/api/projects",
                 r#"{"action":"add_location","project":"x","request_id":"00000000-0000-4000-8000-000000000001","server":"x"}"#,
-                6 * 1024 * 1024,
+                PROJECTS_BODY_LIMIT,
             ),
             (
                 "/api/voice/audio",
                 r#"{"agent":"x","audio":"x","chunk_id":"x","mime":"x","session_id":"x"}"#,
-                6 * 1024 * 1024,
+                VOICE_AUDIO_BODY_LIMIT,
             ),
             (
                 "/api/federation",
                 r#"{"action":"accept_peer","invitation":{"expires":1,"inviteId":"x","label":"x","origin":"x","protocol":1,"publicKey":"x","stateId":"x","token":"x"}}"#,
-                256 * 1024,
+                studio_runtime_services::federation_limits::FEDERATION_BODY_LIMIT,
             ),
         ];
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
+        let requested = cases
+            .iter()
+            .map(|(path, _, _)| ("POST", *path))
+            .collect::<Vec<_>>();
+        let (app, _directory) = probe_app(&requested);
         for (path, valid_json, limit) in cases {
-            let (app, _directory) = probe_app(&[("POST", path)]);
+            assert_eq!(crate::http_body_limits::request_limit(path), limit);
             // The probe must return the validated body at the exact limit.
             for (length, over_limit) in [(limit, false), (limit + 1, true)] {
                 let opaque_scans_before = crate::validation::opaque_body_scan_count();

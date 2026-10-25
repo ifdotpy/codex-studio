@@ -225,6 +225,7 @@ printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
     assert!(receipt.accepted);
     assert_eq!(receipt.native_id, write.remote_id);
 
+    let (_watcher, changes) = watch_changes(&state.0);
     let mut cursor = ready.sequence;
     let mut stdout_payloads = Vec::new();
     let mut stderr_text = String::new();
@@ -240,6 +241,7 @@ printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
                 extra: BTreeMap::new(),
             })
             .unwrap();
+        let has_event = result.event.is_some();
         if let Some(event) = result.event {
             cursor = event.sequence;
             match event.kind {
@@ -264,6 +266,12 @@ printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
         }
         readers_drained =
             exit_code.is_some() && !result.stdout_reader_alive && !result.stderr_reader_alive;
+        if !has_event && !(readers_drained && stderr_seen) {
+            changes
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("journal change before the hang guard")
+                .expect("journal watcher remains healthy");
+        }
     }
     assert!(
         readers_drained,
@@ -313,23 +321,17 @@ printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
         EventCursor(quick_open.acknowledged),
         |event| event.kind == EventKind::Exit,
     );
-    let mut ended = false;
-    let reader_deadline = Instant::now() + HANG_GUARD;
-    while !ended && Instant::now() < reader_deadline {
-        let next = client
-            .next(CursorRequest {
-                handle: command_handle.clone(),
-                cursor: exit.sequence,
-                extra: BTreeMap::new(),
-            })
-            .unwrap();
-        ended =
-            next.return_code.is_some() && !next.stdout_reader_alive && !next.stderr_reader_alive;
-        if !ended {
-            thread::park_timeout(Duration::from_millis(1));
-        }
-    }
-    assert!(ended, "command readers did not stop before retirement");
+    let ended = client
+        .next(CursorRequest {
+            handle: command_handle.clone(),
+            cursor: exit.sequence,
+            extra: BTreeMap::new(),
+        })
+        .unwrap();
+    assert!(
+        ended.return_code.is_some() && !ended.stdout_reader_alive && !ended.stderr_reader_alive,
+        "a committed exit event must already prove the readers stopped"
+    );
     client
         .ack(AckRequest {
             handle: command_handle.clone(),
@@ -405,8 +407,14 @@ printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
         "retired test child remains alive"
     );
     drop(supervisor);
-    wait_until("supervisor process exit", || !pid_exists(supervisor_pid));
-    wait_until("operator-closed child exit", || !pid_exists(admin_open.pid));
+    assert!(
+        !pid_exists(supervisor_pid),
+        "the owned supervisor was reaped"
+    );
+    assert!(
+        !pid_exists(admin_open.pid),
+        "operator close reaped its child"
+    );
     assert!(
         !pid_exists(resumed.pid),
         "provider test child remains alive"
