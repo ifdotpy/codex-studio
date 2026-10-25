@@ -219,7 +219,7 @@ export default function FilePreview({
               variant="subtle"
               onClick={() => act(() => previewFile(target))}
             >
-              Quick Look
+              Preview
             </Button>
           </>
         )}

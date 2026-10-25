@@ -316,6 +316,34 @@ cannot request recovery for its replacement.
 
 ### Connection loss and recovery
 
+Connection health, subscription readiness, and message delivery are separate
+contracts. The renderer's
+[connection module](../workspaces/client/apps/web/src/sync/resourceConnection.ts)
+owns connection states and peer-health validation. The subscription store owns
+whether a resource has an applied baseline; the outbox owns whether a message has
+a server receipt. Neither stale resource data nor an unacknowledged message alone
+means that the connection is lost.
+
+An intentionally hidden tab releases its stream with a `paused` connection state.
+Returning to the tab resumes coordination without reporting that pause as a
+network failure. Browser `online` and `offline` events are network hints: an
+`online` event can trigger recovery but cannot establish a live connection, and
+an `offline` hint does not discard an active stream with fresh server evidence.
+Transport errors and expired server liveness still trigger recovery.
+
+The stream owner publishes its current server-health snapshot with peer
+heartbeats and when a follower announces its subscriptions. A snapshot is scoped
+to the workspace, schema, owner, and source generation; its ordering and server
+evidence must still be current. Peer liveness alone never proves server health.
+A fresh healthy snapshot can restore a follower after missed peer messages even
+when no resource has changed. Replaying peer health does not replay resource
+baselines or start HTTP reads.
+The browser coordination namespace includes its protocol version and API schema
+identity for both the channel and stream-owner lock. An older open renderer
+cannot hold the new protocol's ownership lock without understanding its health
+snapshots. During an update, incompatible renderer groups can each retain a
+stream until their older tabs close; they do not share unverified health.
+
 Named `heartbeat` events prove liveness and never trigger resource reads.
 Comment-only SSE heartbeats are insufficient for a browser silence timeout
 because EventSource does not expose them to JavaScript. A silent, failed or

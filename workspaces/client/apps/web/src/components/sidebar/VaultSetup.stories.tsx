@@ -138,7 +138,7 @@ export const PaperKeyThenVault: Story = {
     const create = await page.findByRole("button", { name: "Create vault" });
     await expect(create).toBeDisabled();
     await userEvent.click(
-      page.getByRole("button", { name: "Show the paper key in Terminal" }),
+      page.getByRole("button", { name: "Show the paper key in a terminal" }),
     );
     await expect(shown).toEqual(["my-project"]);
     await page.findByText("The paper key of my-project is made.", undefined, {

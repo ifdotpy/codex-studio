@@ -5,6 +5,7 @@ import {
 } from "./ConnectionRecovery";
 import {
   BACKEND_RESTARTED_TURN_ERROR,
+  LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
   PROVIDER_DISCONNECTED_TURN_ERROR,
   VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 } from "../generated/sharedValues";
@@ -25,7 +26,7 @@ const interrupted = (error: string, turnId: string | null) =>
     error,
   }) as unknown as Agent;
 
-test("a Linux VM provider disconnect offers Check connection", () => {
+test("a VM provider disconnect offers Check connection", () => {
   expect(
     canCheckConnection(
       interrupted(VM_PROVIDER_DISCONNECTED_TURN_ERROR, "turn-1"),
@@ -35,6 +36,27 @@ test("a Linux VM provider disconnect offers Check connection", () => {
     canCheckConnection(interrupted(PROVIDER_DISCONNECTED_TURN_ERROR, "turn-1")),
   ).toBe(true);
 });
+
+test.each([null, "turn-1"])(
+  "saved VM provider errors still offer recovery, turn=%s",
+  (turnId) => {
+    const agent = interrupted(
+      LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+      turnId,
+    );
+    expect(canCheckConnection(agent)).toBe(true);
+    agent.connectionCheck = {
+      at: 10,
+      epoch: 4,
+      accountKey: "default",
+      threadId: "thread-1",
+      turnId,
+      previousError: LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+      nativeState: "idle",
+    } as Agent["connectionCheck"];
+    expect(matchingConnectionCheck(agent)).toBeTruthy();
+  },
+);
 
 test("a lost start with no turn ID offers Check connection after a transport loss only", () => {
   expect(

@@ -112,10 +112,10 @@ fn message(free: u64, level: Option<DiskSpaceLevel>) -> Option<String> {
     match level? {
         DiskSpaceLevel::Full => Some(admission_message(Some(free))),
         DiskSpaceLevel::Critical => Some(format!(
-            "The Mac disk has only {amount} free. VMs, Docker and Studio can fail to write. Free disk space now."
+            "The disk has only {amount} free. VMs, Docker and Studio can fail to write. Free disk space now."
         )),
         DiskSpaceLevel::Warning => Some(format!(
-            "The Mac disk has only {amount} free. Free disk space soon."
+            "The disk has only {amount} free. Free disk space soon."
         )),
     }
 }
@@ -594,6 +594,24 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    #[test]
+    fn platform_neutral_disk_warnings_keep_urgency_and_free_space() {
+        assert_eq!(
+            status_value(Some(3 * GIB), false).message.as_deref(),
+            Some(
+                "The disk has only 3.0 GB free. VMs, Docker and Studio can fail to write. Free disk space now."
+            )
+        );
+        assert_eq!(
+            status_value(Some(10 * GIB), false).message.as_deref(),
+            Some("The disk has only 10.0 GB free. Free disk space soon.")
+        );
+        assert_eq!(
+            status_value(Some(100 * GIB), false),
+            DiskSpaceStatus::default()
+        );
+    }
+
     fn synthetic_filesystem(path: &Path) -> Option<(PathBuf, String)> {
         Some((
             path.to_path_buf(),
@@ -923,7 +941,7 @@ mod tests {
         assert_eq!(
             status_value(Some(3 * GIB), false).message.as_deref(),
             Some(
-                "The Mac disk has only 3.0 GB free. VMs, Docker and Studio can fail to write. Free disk space now."
+                "The disk has only 3.0 GB free. VMs, Docker and Studio can fail to write. Free disk space now."
             )
         );
         assert_eq!(

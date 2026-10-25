@@ -395,7 +395,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
     await page
       .getByText("File exceeds preview limit", { exact: true })
       .waitFor();
-    await page.getByRole("button", { name: "Quick Look", exact: true }).click();
+    await page.getByRole("button", { name: "Preview", exact: true }).click();
     assert.deepEqual((await page.evaluate(() => window.actions)).at(-1), {
       action: "preview",
       target: { agent: "agent-a", path: "/large.docx" },

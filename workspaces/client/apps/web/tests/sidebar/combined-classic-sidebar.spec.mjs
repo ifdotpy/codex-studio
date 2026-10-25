@@ -414,7 +414,7 @@ for (const [theme, viewport] of [
       await expect(layrChip).toHaveAttribute("data-attention", "true");
       await expect(layrChip).toHaveAttribute(
         "title",
-        "REM: Ready for layr chats\nREM: Mac folder sync: 1 file changed on both sides",
+        "REM: Ready for layr chats\nREM: Folder sync: 1 file changed on both sides",
       );
       await expect(heading.locator(".project-layr-sync")).toHaveCount(0);
       // The chip starts where the project name starts.
@@ -452,7 +452,7 @@ for (const [theme, viewport] of [
       await expect(
         sidebar.getByRole("button", { name: "Home project", exact: true }),
       ).toHaveAccessibleDescription(
-        "REM: Ready for layr chats; REM: Mac folder sync: 1 file changed on both sides. " +
+        "REM: Ready for layr chats; REM: Folder sync: 1 file changed on both sides. " +
           "Drag to reorder. Alt + Up or Down also works.",
       );
       await page.screenshot({
@@ -468,7 +468,7 @@ for (const [theme, viewport] of [
         })
         .click();
       const syncDialog = page.getByRole("dialog", {
-        name: "Mac folder sync: Home project (REM)",
+        name: "Folder sync: Home project (REM)",
       });
       await expect(syncDialog.getByText("src/app.txt")).toBeVisible();
       await page.screenshot({

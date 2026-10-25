@@ -1723,6 +1723,10 @@ describe("shared resource event transport", () => {
 
     navigatorStub.onLine = false;
     windowListeners.get("offline")?.();
+    expect(first.closed).toBe(false);
+    // A transport error, rather than the reachability hint, ends this stream.
+    first.open();
+    first.onerror?.();
     expect(first.closed).toBe(true);
     navigatorStub.onLine = true;
     windowListeners.get("online")?.();
@@ -2314,6 +2318,7 @@ describe("shared resource event transport", () => {
         { resource: b, revision: 7 },
       ],
     };
+    let sequence = 0;
     const send = (kind: string, value: unknown) =>
       followerChannel.onmessage?.({
         data: {
@@ -2321,6 +2326,13 @@ describe("shared resource event transport", () => {
           workspaceId,
           tabId: "tab-owner",
           apiSchemaHash: API_SCHEMA_HASH,
+          health: {
+            status: kind === "status" ? value : "live",
+            generation: 1,
+            sequence: ++sequence,
+            sentAt: Date.now(),
+            validatedAt: Date.now(),
+          },
           ...(kind === "resource-event" ? { event: value } : { status: value }),
         },
       } as MessageEvent);

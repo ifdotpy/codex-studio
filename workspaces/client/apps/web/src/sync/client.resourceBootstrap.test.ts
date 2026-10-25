@@ -743,11 +743,19 @@ it.each([
     stops.push(finish, store.dispose, transport.dispose);
     if (follower) {
       await vi.waitFor(() => expect(peer).toBeTypeOf("function"));
+      const validatedAt = Date.now();
       peer({
         kind: "resource-event",
         apiSchemaHash: API_SCHEMA_HASH,
         workspaceId: f.workspaceId,
         tabId: "owner",
+        health: {
+          status: "live",
+          generation: 1,
+          sequence: 1,
+          sentAt: validatedAt,
+          validatedAt,
+        },
         event: f.frame(5),
       });
     } else {

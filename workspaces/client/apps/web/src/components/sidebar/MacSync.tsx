@@ -5,7 +5,7 @@ import type { SidebarBackend } from "./services";
 import type { LayrReadinessSummary } from "./LayrReadiness";
 
 export type LayrSync = components["schemas"]["ProjectLayrSyncDto"];
-/** One server's Mac folder sync; `server` is its alias when the sidebar combines servers. */
+/** One server's folder sync; `server` is its alias when the sidebar combines servers. */
 export type LayrSyncEntry = {
   server?: string;
   ownerId?: string;
@@ -40,23 +40,23 @@ export function layrSyncText(sync: LayrSync): string {
   const open = macSyncOpen(sync).length;
   switch (sync.state) {
     case "synced":
-      return "Mac folder synced with the VM";
+      return "Folder synced with the VM";
     case "syncing":
-      return "Mac folder sync is running";
+      return "Folder sync is running";
     case "waiting":
       return sync.withAgent.length
-        ? `Mac folder sync: the agent combines ${files(sync.withAgent.length)}`
-        : "Mac folder sync waits for the VM";
+        ? `Folder sync: the agent combines ${files(sync.withAgent.length)}`
+        : "Folder sync waits for the VM";
     case "conflict":
-      return `Mac folder sync: ${files(open)} changed on both sides`;
+      return `Folder sync: ${files(open)} changed on both sides`;
     case "paused":
       if (sync.deletes)
-        return `Mac folder sync paused: confirm ${files(sync.deletes)} deleted on the Mac`;
-      return "Mac folder sync paused";
+        return `Folder sync paused: confirm ${files(sync.deletes)} deleted locally`;
+      return "Folder sync paused";
     case "error":
       return sync.reason
-        ? `Mac folder sync failed: ${sync.reason}`
-        : "Mac folder sync failed";
+        ? `Folder sync failed: ${sync.reason}`
+        : "Folder sync failed";
   }
 }
 
@@ -93,7 +93,7 @@ export type ProjectChip = {
 
 const ATTENTION_SYNC: LayrSync["state"][] = ["error", "conflict"];
 
-/** The row has one chip, LAYR, on a second line. A Mac folder sync that needs the user (a
+/** The row has one chip, LAYR, on a second line. A folder sync that needs the user (a
  * conflict, a failure, files that wait for a choice or deletions to confirm) marks it and
  * adds its report to the tooltip; a quiet or paused sync does not show. */
 export function projectChip(
@@ -118,13 +118,13 @@ export function projectChip(
 const CHOICES: { choice: MacSyncChoice; label: string; hint: string }[] = [
   {
     choice: "mac",
-    label: "Keep Mac",
-    hint: "The VM takes the file from your Mac folder.",
+    label: "Keep local",
+    hint: "The VM takes the file from your local folder.",
   },
   {
     choice: "vm",
     label: "Keep VM",
-    hint: "Your Mac folder takes the file from the VM.",
+    hint: "Your local folder takes the file from the VM.",
   },
   {
     choice: "agent",
@@ -213,13 +213,13 @@ export function MacSyncConflicts({
     <Modal
       opened={!!entry}
       onClose={close}
-      title={`Mac folder sync: ${projectName}${entry?.server ? ` (${entry.server})` : ""}`}
+      title={`Folder sync: ${projectName}${entry?.server ? ` (${entry.server})` : ""}`}
       size="lg"
     >
       <Stack gap="sm">
         <Text size="sm" c="dimmed">
-          These files changed on your Mac and in the VM. Choose which version to
-          keep, or ask the agent to combine them.
+          These files changed in the project folder and in the VM. Choose which
+          version to keep, or ask the agent to combine them.
         </Text>
         {open.map((path) => row(path, ["mac", "vm", "agent"]))}
         {withAgent.length > 0 && (

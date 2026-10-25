@@ -20,6 +20,8 @@ pub use studio_runtime_schema::shared_values::{
     VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 };
 
+use studio_runtime_schema::shared_values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR;
+
 /// `startAttempt.action` wire names of the native provider actions
 /// (`thread/compact/start` and `review/start`). Such an attempt submits no
 /// queued input, so its `events` list is empty, and the provider reply binds

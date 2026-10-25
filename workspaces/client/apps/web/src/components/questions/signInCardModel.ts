@@ -42,7 +42,7 @@ export function resultTarget(
   if (details.port === undefined) return "No result to forward";
   const server = serverName || "the chat's server";
   if (details.source === "vm")
-    return `The Linux VM on ${server}${details.linuxUser ? `, user ${details.linuxUser}` : ""}, port ${details.port}`;
+    return `The VM on ${server}${details.linuxUser ? `, user ${details.linuxUser}` : ""}, port ${details.port}`;
   return `${server}, port ${details.port}`;
 }
 
@@ -80,9 +80,16 @@ export function pasteBody(text: string): Json | undefined {
   return result ? { decision: "answer", result } : undefined;
 }
 
-/** The server refused the forward because a program on this Mac holds the port. */
+/** Recognize both current and older servers when another sign-in holds the port. */
 export const portInUse = (error: string) =>
-  error.includes("is in use on this Mac");
+  /(?:is in use|uses port \d+) on this (?:computer|Mac)\b/.test(error);
+
+/** Older server messages still identify the conflict, but use current product words. */
+export function signInErrorText(error: string): string {
+  return portInUse(error)
+    ? "The sign-in port is in use on this computer. Wait until the other sign-in ends, approve again, or paste the result instead."
+    : error;
+}
 
 /** The page that a device code is typed into: the link without its query. */
 export function verificationPage(url: string): string {

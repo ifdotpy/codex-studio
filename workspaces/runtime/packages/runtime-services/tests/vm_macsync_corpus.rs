@@ -389,7 +389,13 @@ fn vm_and_mac_functions_match_frozen_corpus_for_each_resolution_choice() {
             assert_eq!(id, expected_event.id);
             assert_eq!(agent, expected_event.agent);
             assert_eq!(kind, expected_event.kind);
-            assert_eq!(text, expected_event.text);
+            // Persisted identities and data still match the frozen corpus; product copy is neutral.
+            let expected_text = expected_event
+                .text
+                .replace("[Studio Mac sync]", "[Studio folder sync]")
+                .replace("Mac folder", "host folder")
+                .replace("Mac version", "host version");
+            assert_eq!(text, expected_text);
             assert_eq!(status, "pending");
             assert_eq!(epoch, expected_event.epoch);
             let metadata: String = database
@@ -433,7 +439,13 @@ fn darwin_memory_over_the_host_ceiling_is_rejected_before_persisting() {
     )
     .expect_err("settings over Darwin host limit are rejected");
 
-    assert_eq!(error.to_string(), expected.error);
+    assert_eq!(
+        error.to_string(),
+        expected
+            .error
+            .replace("leave macOS enough memory", "leave the host enough memory")
+            .replace("on this Mac", "on this computer")
+    );
     assert_eq!(
         serde_json::from_slice::<Value>(&before).expect("Rust seed JSON"),
         expected.settings_before
@@ -467,7 +479,16 @@ fn write_space_preflight_refuses_before_opening_the_guest_socket() {
     use std::os::unix::net::UnixListener;
 
     let rust_root = tempfile::tempdir().expect("Rust fixture root");
-    let expected = fixtures().preflight;
+    let mut expected = fixtures().preflight;
+    // Keep the frozen preflight witness; only its displayed platform wording changed.
+    for record in &mut expected.preflights {
+        record["error"] = json!(
+            record["error"]
+                .as_str()
+                .expect("fixture error")
+                .replace("for the Linux VM", "for the VM")
+        );
+    }
 
     let mut actual_preflights = Vec::new();
     for (index, method) in [

@@ -201,7 +201,7 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         && data.get("forward").and_then(Value::as_bool) == Some(true);
     if decision == "accept" && !local_window && !remote && !paste_mode {
         return Err(BrowserAnswerError::Invalid(
-            "Open this chat in the window of the Mac that runs its server to sign in, or use the tool's device-code mode.",
+            "Open this chat in a window on the computer that runs its server to sign in, or use the tool's device-code mode.",
         ));
     }
 

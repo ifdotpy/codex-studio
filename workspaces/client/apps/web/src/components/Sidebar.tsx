@@ -1649,7 +1649,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                     ))}
                     {syncEntries.length > 0 && <Menu.Divider />}
                     {syncEntries.length > 0 && (
-                      <Menu.Label>Mac folder sync</Menu.Label>
+                      <Menu.Label>Folder sync</Menu.Label>
                     )}
                     {syncEntries.flatMap((entry) => {
                       const suffix = entry.server ? ` (${entry.server})` : "";
@@ -1682,7 +1682,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                               })
                             }
                           >
-                            {`Sync ${entry.sync.deletes} Mac deletions${suffix}`}
+                            {`Sync ${entry.sync.deletes} local deletions${suffix}`}
                           </Menu.Item>
                         ),
                         <Menu.Item
@@ -1732,7 +1732,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                               })
                             }
                           >
-                            {`Unlock on this Mac…${suffix}`}
+                            {`Unlock on this computer…${suffix}`}
                           </Menu.Item>
                         ),
                         actions(entry).includes("finder") && (
@@ -1740,7 +1740,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                             key={`${key}:finder`}
                             onClick={() => void revealPath(entry.vault.disk!)}
                           >
-                            {`Show in Finder${suffix}`}
+                            {`Show folder${suffix}`}
                           </Menu.Item>
                         ),
                         actions(entry).includes("pull") && (

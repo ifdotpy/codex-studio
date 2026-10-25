@@ -7,6 +7,7 @@ import {
   portInUse,
   resultTarget,
   signInDeadline,
+  signInErrorText,
   signInFlow,
   signInState,
   timeLeftLabel,
@@ -52,7 +53,7 @@ describe("sign-in card model", () => {
 
   it("says where the result goes", () => {
     expect(resultTarget(redirect, "igor-mbp")).toBe(
-      "The Linux VM on igor-mbp, user studio-a-1, port 8000",
+      "The VM on igor-mbp, user studio-a-1, port 8000",
     );
     expect(resultTarget({ ...redirect, source: "host" }, undefined)).toBe(
       "the chat's server, port 8000",
@@ -116,6 +117,23 @@ describe("sign-in card model", () => {
     expect(verificationPage("https://d.example.com/?user_code=A")).toBe(
       "d.example.com",
     );
+  });
+
+  it.each([
+    "another sign-in uses port 8000 on this computer. Wait until it ends, then approve again.",
+    "another sign-in uses port 8000 on this Mac. Wait until it ends, then approve again.",
+    "Port 8000 is in use on this Mac. Free it and approve again, or decline.",
+  ])("offers paste mode for current and saved port conflicts: %s", (error) => {
+    expect(portInUse(error)).toBe(true);
+    expect(signInErrorText(error)).toBe(
+      "The sign-in port is in use on this computer. Wait until the other sign-in ends, approve again, or paste the result instead.",
+    );
+  });
+
+  it("preserves unrelated sign-in error details", () => {
+    const error = "The sign-in command already stopped.";
+    expect(portInUse(error)).toBe(false);
+    expect(signInErrorText(error)).toBe(error);
   });
 });
 

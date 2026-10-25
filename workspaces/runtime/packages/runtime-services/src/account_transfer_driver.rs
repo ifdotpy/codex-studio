@@ -398,7 +398,7 @@ pub async fn request(
                         != target
             }) {
                 return Err(TransferError::Refused(
-                    "Archive Linux VM workers before changing the team account",
+                    "Archive VM workers before changing the team account",
                 ));
             }
             let operation_id = id;
