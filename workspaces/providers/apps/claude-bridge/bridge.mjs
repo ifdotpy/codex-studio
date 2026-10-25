@@ -1,7 +1,9 @@
+import { prepareIdleSummary, applyIdleSummary } from "./idle-summary.mjs";
 import { ResponseUsage, cumulativeUsage } from "./usage.mjs";
 import { isThreadSerialized } from "./provider-method-policy.generated.mjs";
 import {
   cacheReport,
+  promptPrefix,
   idleRefusal,
   compactionEnabled,
 } from "./idle-compaction.mjs";
@@ -235,6 +237,8 @@ const sessions = sessionStore.sessions;
 // dialog (summary or full history) on their next turn is Studio's own resume,
 // not a user's return to a stale chat: it keeps the full history and never asks.
 const studioUnloaded = new Set();
+// A separate query prepares a summary without changing the live native history.
+const summaryQueries = new Map();
 const queryHasInput = (active) =>
   Boolean(
     active.pendingSteers.size ||
@@ -244,6 +248,7 @@ const queryHasInput = (active) =>
   );
 const queryBusy = (id, active) =>
   Boolean(
+    summaryQueries.has(id) ||
     active.turn ||
     active.tasks.size ||
     queryHasInput(active) ||
@@ -1421,6 +1426,311 @@ const armStallWatch = watchStalls(
       lifecycleFailure(s, active, error),
     ),
 );
+async function sessionOptions(s, active, p, deadline, startedAt) {
+  const externalMcpServers = await movedExternalConfigs(s);
+  const titleOptions = ephemeralSessionOptions(s);
+  const mode = titleOptions.permissionMode || permissionMode(s, p);
+  const options = {
+    ...settings(s),
+    // Match Python's --no-session-persistence and --tools "" title flags.
+    ...titleOptions,
+    model: s.moveProof?.options.model || p.model || s.model,
+    ...(s.started
+      ? { resume: s.nativeId || s.id }
+      : { sessionId: s.nativeId || s.id }),
+    systemPrompt: s.moveProof?.options.systemPrompt || {
+      type: "preset",
+      preset: "claude_code",
+      append: s.developerInstructions || "",
+      ...movePrompt,
+    },
+    // Studio managed agents replace native subagents, as in Codex threads.
+    disallowedTools: ["Agent"],
+    permissionMode: mode,
+    allowDangerouslySkipPermissions: true,
+    ...((s.moveProof ? s.moveProof.options.effort : p.effort)
+      ? { effort: s.moveProof ? s.moveProof.options.effort : p.effort }
+      : {}),
+    settings: await boundedPreparation(
+      () =>
+        s.moveProof
+          ? Promise.resolve(s.moveProof.options.settings)
+          : flags(s, p),
+      deadline,
+      () => {},
+      "catalog_flags",
+      startedAt,
+    ),
+    extraArgs: {
+      ...providerOptions.extraArgs,
+      "replay-user-messages": null,
+    },
+    canUseTool: (name, input, options) =>
+      permissions(s, active.turn, name, input, options),
+    mcpServers: {
+      ...externalMcpServers,
+      studio: studioTools(s, () => active.turn),
+    },
+    supportedDialogKinds: ["resume_return"],
+    perTaskStopAffordance: true,
+    onUserDialog: async (value, options) => {
+      if (value.dialogKind !== "resume_return" || !active.turn)
+        return { behavior: "cancelled" };
+      if (studioUnloaded.has(s.id))
+        return { behavior: "completed", result: "continue" };
+      const question =
+        "Resume this Claude conversation with a summary or full history?";
+      const answer = await permissions(
+        s,
+        active.turn,
+        "AskUserQuestion",
+        {
+          questions: [
+            {
+              question,
+              header: "Resume",
+              options: [
+                {
+                  label: "Compact and continue",
+                  description: "Use a summary.",
+                },
+                {
+                  label: "Keep full history",
+                  description: "Keep the complete context.",
+                },
+                {
+                  label: "Never ask again",
+                  description: "Keep the history and disable this prompt.",
+                },
+              ],
+            },
+          ],
+        },
+        { ...options, toolUseID: value.toolUseID || options.requestId },
+      );
+      const selected = answer.updatedInput?.answers?.[question];
+      return selected
+        ? {
+            behavior: "completed",
+            result:
+              selected === "Compact and continue"
+                ? "compact"
+                : selected === "Never ask again"
+                  ? "never"
+                  : "continue",
+          }
+        : { behavior: "cancelled" };
+    },
+    onElicitation: (value, options) =>
+      request(
+        "mcpServer/elicitation/request",
+        {
+          threadId: s.id,
+          turnId: active.turn?.id,
+          serverName: value.serverName,
+          request: value,
+          ...value,
+        },
+        options.signal,
+      ),
+  };
+  return { options, externalMcpServers, mode };
+}
+
+async function compactSummaryFork(s, nativeId, p) {
+  const startedAt = Date.now();
+  const deadline = startedAt + PREPARATION_TIMEOUT_MS;
+  const { options } = await sessionOptions(
+    s,
+    { turn: null },
+    p,
+    deadline,
+    startedAt,
+  );
+  const controller = new AbortController();
+  let admit;
+  const admitted = new Promise((resolve) => (admit = resolve));
+  async function* prompt() {
+    await admitted;
+    if (controller.signal.aborted) return;
+    yield {
+      type: "user",
+      session_id: nativeId,
+      uuid: nativeUserMessageId("summary:" + p.requestId),
+      parent_tool_use_id: null,
+      message: { role: "user", content: [{ type: "text", text: "/compact" }] },
+    };
+  }
+  const q = query({
+    prompt: prompt(),
+    options: {
+      ...options,
+      sessionId: undefined,
+      resume: nativeId,
+      abortController: controller,
+      permissionMode: "dontAsk",
+      canUseTool: async () => ({
+        behavior: "deny",
+        message: "An idle summary cannot use tools.",
+      }),
+      onUserDialog: async (value) =>
+        value.dialogKind === "resume_return"
+          ? { behavior: "completed", result: "continue" }
+          : { behavior: "cancelled" },
+    },
+  });
+  // Unit: milliseconds. This bounds only the separate summary query.
+  const summaryTimeoutMs = 10 * 60 * 1000;
+  let timer;
+  try {
+    await verifiedAccount(q, deadline, () => q.close(), startedAt);
+    admit();
+    return await Promise.race([
+      (async () => {
+        let metadata;
+        for await (const message of q) {
+          if (
+            message.type === "system" &&
+            message.subtype === "compact_boundary"
+          )
+            metadata = message.compact_metadata;
+          if (message.type === "result") {
+            if (message.subtype !== "success" || message.is_error || !metadata)
+              throw new Error("Claude did not complete the idle summary.");
+            return metadata;
+          }
+        }
+        throw new Error("Claude ended before the idle summary completed.");
+      })(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("Claude idle summary timed out."));
+        }, summaryTimeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+    admit();
+    q.close();
+  }
+}
+
+function startIdleSummary(s, p, effective) {
+  if (typeof p.requestId !== "string" || !p.requestId)
+    throw new Error("An idle summary requires its original request identity.");
+  const turnId = nativeUserMessageId("idle-summary:" + p.requestId);
+  const previous = s.idleSummary;
+  if (previous?.requestId === p.requestId) {
+    if (previous.status !== "ready" && !summaryQueries.has(s.id))
+      throw new Error(
+        "Claude summary preparation outcome is uncertain; do not repeat it.",
+      );
+    return {
+      turn: {
+        id: turnId,
+        status: previous.status === "ready" ? "completed" : "inProgress",
+      },
+    };
+  }
+  if (summaryQueries.has(s.id))
+    throw new Error("Claude already has an idle summary query.");
+  const nativeId = s.nativeId || s.id;
+  const isCurrent = () =>
+    (s.nativeId || s.id) === nativeId &&
+    idleRefusal(s, queries.get(s.id), p.idleCompaction, effective) === null;
+  const operation = prepareIdleSummary(
+    s,
+    p.requestId,
+    p.idleCompaction,
+    effective,
+    {
+      persist,
+      forkSession,
+      getSessionMessages,
+      isCurrent,
+      compact: (id) => compactSummaryFork(s, id, p),
+    },
+  );
+  summaryQueries.set(s.id, operation);
+  emit("turn/started", {
+    threadId: s.id,
+    turn: { id: turnId, status: "inProgress" },
+  });
+  operation
+    .then(
+      () => {
+        emit("thread/idleCompaction/updated", {
+          threadId: s.id,
+          preparedSummary: { requestId: p.requestId },
+        });
+        emit("turn/completed", {
+          threadId: s.id,
+          turn: { id: turnId, status: "completed", items: [] },
+        });
+      },
+      (error) => {
+        emit("turn/completed", {
+          threadId: s.id,
+          turn: {
+            id: turnId,
+            status: "failed",
+            items: [],
+            error: { message: error.message },
+          },
+        });
+      },
+    )
+    .finally(() => summaryQueries.delete(s.id));
+  return { turn: { id: turnId, status: "inProgress" } };
+}
+
+async function applySummaryOnInput(s, p) {
+  if (!s.idleSummary || s.idleSummary.status !== "ready") return;
+  if (
+    p.idleCompactionMode !== "compact_on_return" ||
+    p.idleSummaryRosterIncluded !== true
+  ) {
+    s.idleSummary.status = "discarded";
+    await persist(s);
+    return;
+  }
+  const { effective } = await resolveSettings({
+    cwd: s.cwd,
+    settingSources: settings(s).settingSources,
+  });
+  const requested = {
+    ...s,
+    model: p.model || s.model,
+    dynamicTools: exactTurnTools(s, p.dynamicTools) || s.dynamicTools,
+    moveTurnOptions: s.moveProof
+      ? s.moveTurnOptions
+      : Object.fromEntries(
+          ["effort", "serviceTier"]
+            .filter((key) => p[key] !== undefined)
+            .map((key) => [key, p[key]]),
+        ),
+  };
+  if (
+    !compactionEnabled(effective) ||
+    effective.idleCompaction === false ||
+    promptPrefix(requested, effective) !== s.idleSummary.prefix
+  ) {
+    s.idleSummary.status = "discarded";
+    await persist(s);
+    return;
+  }
+  const active = queries.get(s.id);
+  const receipt = await applyIdleSummary(s, effective, {
+    persist,
+    getSessionMessages,
+    isCurrent: () =>
+      !summaryQueries.has(s.id) && (!active || !queryBusy(s.id, active)),
+  });
+  if (receipt) discardQuery(s.id, active);
+}
 async function startSession(s, active, p) {
   const initial = active.turn;
   const startedAt = Date.now();
@@ -1449,116 +1759,14 @@ async function startSession(s, active, p) {
     yield* active.input;
   }
   try {
-    const externalMcpServers = await movedExternalConfigs(s);
-    const titleOptions = ephemeralSessionOptions(s);
-    const mode = titleOptions.permissionMode || permissionMode(s, p);
-    const q = query({
-      prompt: prompt(),
-      options: {
-        ...settings(s),
-        // Match Python's --no-session-persistence and --tools "" title flags.
-        ...titleOptions,
-        model: s.moveProof?.options.model || p.model || s.model,
-        ...(s.started
-          ? { resume: s.nativeId || s.id }
-          : { sessionId: s.nativeId || s.id }),
-        systemPrompt: s.moveProof?.options.systemPrompt || {
-          type: "preset",
-          preset: "claude_code",
-          append: s.developerInstructions || "",
-          ...movePrompt,
-        },
-        // Studio managed agents replace native subagents, as in Codex threads.
-        disallowedTools: ["Agent"],
-        permissionMode: mode,
-        allowDangerouslySkipPermissions: true,
-        ...((s.moveProof ? s.moveProof.options.effort : p.effort)
-          ? { effort: s.moveProof ? s.moveProof.options.effort : p.effort }
-          : {}),
-        settings: await boundedPreparation(
-          () =>
-            s.moveProof
-              ? Promise.resolve(s.moveProof.options.settings)
-              : flags(s, p),
-          deadline,
-          () => {},
-          "catalog_flags",
-          startedAt,
-        ),
-        extraArgs: {
-          ...providerOptions.extraArgs,
-          "replay-user-messages": null,
-        },
-        canUseTool: (name, input, options) =>
-          permissions(s, active.turn, name, input, options),
-        mcpServers: {
-          ...externalMcpServers,
-          studio: studioTools(s, () => active.turn),
-        },
-        supportedDialogKinds: ["resume_return"],
-        perTaskStopAffordance: true,
-        onUserDialog: async (value, options) => {
-          if (value.dialogKind !== "resume_return" || !active.turn)
-            return { behavior: "cancelled" };
-          if (studioUnloaded.has(s.id))
-            return { behavior: "completed", result: "continue" };
-          const question =
-            "Resume this Claude conversation with a summary or full history?";
-          const answer = await permissions(
-            s,
-            active.turn,
-            "AskUserQuestion",
-            {
-              questions: [
-                {
-                  question,
-                  header: "Resume",
-                  options: [
-                    {
-                      label: "Compact and continue",
-                      description: "Use a summary.",
-                    },
-                    {
-                      label: "Keep full history",
-                      description: "Keep the complete context.",
-                    },
-                    {
-                      label: "Never ask again",
-                      description: "Keep the history and disable this prompt.",
-                    },
-                  ],
-                },
-              ],
-            },
-            { ...options, toolUseID: value.toolUseID || options.requestId },
-          );
-          const selected = answer.updatedInput?.answers?.[question];
-          return selected
-            ? {
-                behavior: "completed",
-                result:
-                  selected === "Compact and continue"
-                    ? "compact"
-                    : selected === "Never ask again"
-                      ? "never"
-                      : "continue",
-              }
-            : { behavior: "cancelled" };
-        },
-        onElicitation: (value, options) =>
-          request(
-            "mcpServer/elicitation/request",
-            {
-              threadId: s.id,
-              turnId: active.turn?.id,
-              serverName: value.serverName,
-              request: value,
-              ...value,
-            },
-            options.signal,
-          ),
-      },
-    });
+    const { options, externalMcpServers, mode } = await sessionOptions(
+      s,
+      active,
+      p,
+      deadline,
+      startedAt,
+    );
+    const q = query({ prompt: prompt(), options });
     active.q = q;
     active.externalMcpServers = externalMcpServers;
     active.session = s;
@@ -2648,6 +2856,8 @@ async function handle(method, p) {
           ? "idle_compaction_off"
           : refusal;
       if (reason) throw new Error("Idle compaction skipped: " + reason);
+      if (p.idleCompaction.mode === "compact_on_return")
+        return startIdleSummary(s, p, options);
     }
     return handle("turn/start", {
       ...p,
@@ -2717,6 +2927,11 @@ async function handle(method, p) {
         if (queries.get(s.id)?.turn) throw error;
       }
     }
+    if (summaryQueries.has(s.id))
+      throw new Error(
+        "Wait for the Claude idle summary to finish before submitting input.",
+      );
+    if (!p.idleCompaction) await applySummaryOnInput(s, p);
     let nativeCommand;
     if (p.claudeCommand) {
       const commands = await handle("claude/commands", { cwd: s.cwd });
@@ -2743,6 +2958,21 @@ async function handle(method, p) {
         },
       ],
     };
+    const appliedSummary =
+      s.idleSummary?.status === "applied" && s.idleSummary.noticePending
+        ? s.idleSummary
+        : null;
+    if (appliedSummary) {
+      turn.items.push({
+        id: appliedSummary.requestId + ":boundary",
+        type: "contextCompaction",
+        status: "completed",
+        compactionMetadata: appliedSummary.metadata,
+        idleCompactionRequestId: appliedSummary.requestId,
+        idleCompactionOnReturn: true,
+      });
+      appliedSummary.noticePending = false;
+    }
     const message = userMessage(
       s,
       turn,
@@ -2857,6 +3087,7 @@ async function handle(method, p) {
       }
       s.turns = s.turns.filter((t) => t !== turn);
       pendingTurnReceipts.delete(turn.id);
+      if (appliedSummary) appliedSummary.noticePending = true;
       throw isDiskFull(error) ? diskFullInputError(error) : error;
     }
     if (active) {
@@ -2887,6 +3118,13 @@ async function handle(method, p) {
       threadId: s.id,
       turn: { id: turn.id, status: "inProgress" },
     });
+    if (appliedSummary)
+      turnEvent(
+        s,
+        turn,
+        "item/completed",
+        turn.items.find((item) => item.type === "contextCompaction"),
+      );
     active.input.push(message);
     turn.startOutcome = "accepted";
     // The reply reports the turn as Claude accepted it. The SDK stream runs

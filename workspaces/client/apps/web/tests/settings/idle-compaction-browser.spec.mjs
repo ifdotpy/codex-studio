@@ -15,10 +15,12 @@ test("Claude idle compaction settings and notice at 320 and 1200 pixels", async 
   const entry = join(root, "idle-compaction-fixture.tsx");
   const notice =
     "Compacted while idle, before the prompt cache expired. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration.";
+  const deferredNotice =
+    "Compacted on return with a summary prepared while idle. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration.";
   let settings = {
     childResultCoalesceSeconds: 10,
     idleSessionUnloadMinutes: 15,
-    idleCompaction: { mode: "off", minTokens: 200000 },
+    idleCompaction: { mode: "off", minTokens: 150000 },
   };
   const saved = [];
   await page.route("**/api/orchestration/settings", async (route) => {
@@ -53,7 +55,7 @@ test("Claude idle compaction settings and notice at 320 and 1200 pixels", async 
         load(id) {
           if (id !== entry) return;
           return `import React from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {OrchestrationSettings} from '/src/components/OrchestrationSettings.tsx';import {IdleCompactionNotice} from '/src/components/IdleCompactionNotice.tsx';import '/src/components/ui/primitives.css';
-      createRoot(document.getElementById('root')).render(<MantineProvider><main style={{padding:16,maxWidth:900,margin:'auto'}}><OrchestrationSettings active={true}/><section aria-label="Transcript"><h2>Transcript</h2><IdleCompactionNotice text={${JSON.stringify(notice)}}/></section></main></MantineProvider>);`;
+      createRoot(document.getElementById('root')).render(<MantineProvider><main style={{padding:16,maxWidth:900,margin:'auto'}}><OrchestrationSettings active={true}/><section aria-label="Transcript"><h2>Transcript</h2><IdleCompactionNotice text={${JSON.stringify(notice)}}/><IdleCompactionNotice text={${JSON.stringify(deferredNotice)}}/></section></main></MantineProvider>);`;
         },
       },
     ],
@@ -73,15 +75,25 @@ test("Claude idle compaction settings and notice at 320 and 1200 pixels", async 
       await expect.poll(() => saved.at(-1)?.idleCompaction.mode).toBe("log");
       await mode.selectOption("compact");
       const tokens = page.getByLabel("Idle compaction minimum context tokens");
-      await tokens.fill("100000");
+      await tokens.fill("60000");
       await tokens.blur();
       await page
         .getByRole("button", { name: "Save orchestration settings" })
         .click();
       await expect
         .poll(() => saved.at(-1)?.idleCompaction)
-        .toEqual({ mode: "compact", minTokens: 100000 });
-      await expect(page.getByRole("status")).toHaveText(notice);
+        .toEqual({ mode: "compact", minTokens: 60000 });
+      await mode.selectOption("compact_on_return");
+      await page
+        .getByRole("button", { name: "Save orchestration settings" })
+        .click();
+      await expect
+        .poll(() => saved.at(-1)?.idleCompaction)
+        .toEqual({ mode: "compact_on_return", minTokens: 60000 });
+      await expect(page.getByRole("status")).toHaveText([
+        notice,
+        deferredNotice,
+      ]);
       expect(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= window.innerWidth,

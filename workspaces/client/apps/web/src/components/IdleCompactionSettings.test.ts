@@ -31,5 +31,7 @@ test("the Claude control defaults to off and shows all supported modes and the t
   expect(html).toContain('value="log"');
   expect(html).toContain('value="compact"');
   expect(html).toContain(`aria-valuemin="${IDLE_COMPACTION_MIN_TOKENS}"`);
-  expect(html).not.toContain("compact_on_return");
+  expect(html).toContain('value="compact_on_return"');
+  expect(html).toContain("five-minute");
+  expect(html).toContain("30 seconds before");
 });

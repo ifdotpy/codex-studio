@@ -4,7 +4,7 @@ use crate::native_actions::{Action, Admission, NativeError};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 use studio_runtime_schema::{
     idle_compaction::{Mode, Settings},
     shared_values::*,
@@ -15,6 +15,7 @@ use studio_runtime_store::{
 use tokio::sync::{Notify, watch};
 
 pub const NOTICE: &str = "Compacted while idle, before the prompt cache expired. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration.";
+pub const ON_RETURN_NOTICE: &str = "Compacted on return with a summary prepared while idle. To turn it off, set Claude idle compaction to Off in Settings > Agent orchestration.";
 pub const REQUEST_PREFIX: &str = "idle-compaction:";
 const FAILURE_RETRY_SECONDS: u64 = 30;
 
@@ -48,6 +49,17 @@ pub struct Episode {
     pub identity: Value,
     pub prefix_inputs: Value,
     pub attempt: Value,
+    /// Actual account-worker unload deadline, in Unix seconds.
+    #[serde(default)]
+    pub unload_at: Option<f64>,
+}
+
+fn cache_seconds(ttl: &str) -> Option<f64> {
+    match ttl {
+        "1h" => Some(IDLE_COMPACTION_CACHE_SECONDS),
+        "5m" => Some(IDLE_COMPACTION_SHORT_CACHE_SECONDS),
+        _ => None,
+    }
 }
 
 pub fn fire_at(activity: f64, expiry: f64, fraction: f64) -> f64 {
@@ -101,15 +113,19 @@ pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Resul
         ));
     }
     agent["idleCache"] = json!(cache);
+    if let Some(fields) = agent.as_object_mut() {
+        fields.remove("idleSummaryPrepared");
+    }
     let settings = OrchestrationSettingsRepository::idle_compaction(connection)?;
-    if cache.ttl != "1h" || settings.mode == Mode::Off {
+    let lifetime = cache_seconds(&cache.ttl);
+    if lifetime.is_none() || settings.mode == Mode::Off {
         if let Some(fields) = agent.as_object_mut() {
             fields.remove("idleCompactionEpisode");
         }
         return Ok(());
     }
     let activity = cache.last_activity_at / 1000.0;
-    let expiry = activity + IDLE_COMPACTION_CACHE_SECONDS;
+    let expiry = activity + lifetime.unwrap_or_default();
     let id = format!(
         "{REQUEST_PREFIX}{}",
         studio_runtime_store::sha256_hex(
@@ -126,6 +142,7 @@ pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Resul
         identity: identity(agent),
         prefix_inputs: prefix_inputs(agent),
         attempt: agent["startAttempt"]["id"].clone(),
+        unload_at: None,
     });
     Ok(())
 }
@@ -151,8 +168,9 @@ pub fn refusal(
     if prefix_inputs(agent) != episode.prefix_inputs || identity(agent) != episode.identity {
         return Some("prefix_changed");
     }
-    if agent["idleCache"]["ttl"] != "1h" {
-        return Some("not_one_hour");
+    if cache_seconds(&episode.cache.ttl).is_none() || agent["idleCache"]["ttl"] != episode.cache.ttl
+    {
+        return Some("ttl_changed");
     }
     if (now - episode.fire_at).max(0.0) > IDLE_COMPACTION_MAX_LATE_SECONDS
         || !episode.cache.warm
@@ -193,6 +211,68 @@ pub fn refusal(
     None
 }
 
+/// The account worker owns these monotonic unload clocks. Publish their wall
+/// equivalents without resetting a receipt or creating another episode.
+pub fn sync_unload_deadlines(
+    connection: &Connection,
+    account: &str,
+    deadlines: &BTreeMap<String, f64>,
+    now: f64,
+) -> Result<(), StoreError> {
+    let mut statement = connection.prepare("SELECT id,record FROM runtime_agents WHERE json_extract(record,'$.provider')='claude' AND coalesce(json_extract(record,'$.accountKey'),'default')=?1 AND json_type(record,'$.idleCompactionEpisode')='object'")?;
+    let records = statement
+        .query_map([account], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (id, raw) in records {
+        let mut agent: Value = serde_json::from_str(&raw)?;
+        let mut episode: Episode =
+            serde_json::from_value(agent["idleCompactionEpisode"].clone())
+                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+        if settled(connection, &episode.id)? {
+            continue;
+        }
+        let unload_at = agent["threadId"]
+            .as_str()
+            .and_then(|thread| deadlines.get(thread))
+            .copied();
+        if episode.unload_at == unload_at {
+            continue;
+        }
+        episode.unload_at = unload_at;
+        let cache_fire = fire_at(
+            episode.cache.last_activity_at / 1000.0,
+            episode.expires_at,
+            IDLE_COMPACTION_FIRE_FRACTION,
+        );
+        episode.fire_at = unload_at.map_or(cache_fire, |at| {
+            cache_fire.min((at - IDLE_COMPACTION_UNLOAD_LEAD_SECONDS).max(now))
+        });
+        agent["idleCompactionEpisode"] = json!(episode);
+        AgentRepository::put(
+            connection,
+            &studio_runtime_store::AgentRecord::from_value(agent)
+                .map_err(|error| StoreError::SchemaMismatch(format!("{id}: {error}")))?,
+        )?;
+    }
+    Ok(())
+}
+
+/// An immediate unload waits for the same timer admission as ordinary sleep
+/// compaction. Its receipt settles refusals too, so this cannot retry a query.
+pub fn pending_before_unload(
+    connection: &Connection,
+    account: &str,
+    thread: &str,
+    now: f64,
+) -> Result<bool, StoreError> {
+    if OrchestrationSettingsRepository::idle_compaction(connection)?.mode == Mode::Off {
+        return Ok(false);
+    }
+    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM runtime_agents a WHERE json_extract(a.record,'$.provider')='claude' AND coalesce(json_extract(a.record,'$.accountKey'),'default')=?1 AND json_extract(a.record,'$.threadId')=?2 AND json_extract(a.record,'$.idleCompactionEpisode.fireAt')<=?3 AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id=json_extract(a.record,'$.idleCompactionEpisode.id')))", params![account,thread,now], |row| row.get(0))?)
+}
+
 fn queued(connection: &Connection, id: &str) -> Result<bool, StoreError> {
     Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status IN ('pending','reserved','dispatching','uncertain'))", [id], |row| row.get(0))?)
 }
@@ -209,7 +289,12 @@ fn record(
     outcome: &str,
     now: f64,
 ) -> Result<(), StoreError> {
-    connection.execute("INSERT OR IGNORE INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'idle-compaction',?2)", params![episode.id, json!({"outcome":outcome,"at":now,"fireAt":episode.fire_at,"contextTokens":episode.cache.context_tokens,"lateMs":((now-episode.fire_at).max(0.0)*1000.0)}).to_string()])?;
+    let inserted = connection.execute("INSERT OR IGNORE INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'idle-compaction',?2)", params![episode.id, json!({"outcome":outcome,"at":now,"fireAt":episode.fire_at,"contextTokens":episode.cache.context_tokens,"lateMs":((now-episode.fire_at).max(0.0)*1000.0)}).to_string()])?;
+    if inserted > 0 && outcome != "started" {
+        // Agent changes wake the unload owner. A receipt-only log/refusal
+        // would otherwise leave an immediate unload parked without an event.
+        connection.execute("UPDATE runtime_agents SET record=json_remove(record,'$.idleCompactionEpisode') WHERE json_extract(record,'$.idleCompactionEpisode.id')=?1", [&episode.id])?;
+    }
     eprintln!(
         "idle_compaction_fired request={} outcome={} contextTokens={} lateMs={}",
         episode.id,
@@ -548,6 +633,7 @@ mod tests {
             identity: identity(&agent),
             prefix_inputs: prefix_inputs(&agent),
             attempt: json!("request"),
+            unload_at: None,
         };
         (settings, episode, agent, Clock(3241.0))
     }
@@ -573,7 +659,7 @@ mod tests {
             "compaction_off",
             "idle_compaction_off",
             "prefix_changed",
-            "not_one_hour",
+            "ttl_changed",
             "lapsed",
             "small",
             "newer_request",
@@ -590,7 +676,7 @@ mod tests {
                 "compaction_off" => e.cache.compaction_enabled = false,
                 "idle_compaction_off" => e.cache.idle_compaction_enabled = false,
                 "prefix_changed" => a["model"] = json!("changed"),
-                "not_one_hour" => a["idleCache"]["ttl"] = json!("5m"),
+                "ttl_changed" => a["idleCache"]["ttl"] = json!("5m"),
                 "lapsed" => c.advance(60.001),
                 "small" => e.cache.context_tokens = s.min_tokens - 1,
                 "newer_request" => a["idleCache"]["requestId"] = json!("new"),

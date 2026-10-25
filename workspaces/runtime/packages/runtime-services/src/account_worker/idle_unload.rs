@@ -93,6 +93,8 @@ enum IdleBlocker {
 /// Idle clocks of one connection's loaded threads and of its process.
 #[derive(Debug, Default)]
 pub(super) struct IdleClocks {
+    /// One mapping from this connection's monotonic clock to Unix seconds.
+    wall_clock: Option<(Instant, f64)>,
     /// Provider-loaded threads known from the attach snapshot and native events.
     loaded: BTreeSet<String>,
     /// When each loaded thread was first seen unused, since its last use.
@@ -115,6 +117,24 @@ pub(super) struct IdleClocks {
 }
 
 impl IdleClocks {
+    fn compaction_deadlines(&mut self, delay: Duration) -> BTreeMap<String, f64> {
+        let (origin, wall) = *self
+            .wall_clock
+            .get_or_insert_with(|| (Instant::now(), crate::idle_compaction::wall_now()));
+        self.threads
+            .iter()
+            .filter(|(thread, _)| !self.released.contains(*thread))
+            .map(|(thread, since)| {
+                let deadline = *since + self.unload_delay(thread, delay);
+                let offset = if deadline >= origin {
+                    deadline.duration_since(origin).as_secs_f64()
+                } else {
+                    -origin.duration_since(deadline).as_secs_f64()
+                };
+                (thread.clone(), wall + offset)
+            })
+            .collect()
+    }
     /// The worker sent a request for `thread`; its idle time starts again.
     pub(super) fn touch(&mut self, thread: &str) {
         self.loaded.insert(thread.to_owned());
@@ -333,6 +353,27 @@ enum UnloadResult {
 }
 
 impl Worker {
+    async fn sync_sleep_compaction(&mut self, delay: Duration) -> Result<(), WorkerError> {
+        let deadlines = self.idle_clocks.compaction_deadlines(delay);
+        let account = self.account.clone();
+        self.db(
+            "sleep_compaction_unload_deadlines",
+            move |store| async move {
+                Ok(store
+                    .transaction(move |tx| {
+                        crate::idle_compaction::sync_unload_deadlines(
+                            tx,
+                            &account,
+                            &deadlines,
+                            crate::idle_compaction::wall_now(),
+                        )
+                    })
+                    .await?)
+            },
+        )
+        .await?;
+        Ok(())
+    }
     pub(super) fn idle_thread_touched(&mut self, thread: &str) {
         self.idle_clocks.touch(thread);
         self.idle_deadline = next_deadline(&self.idle_clocks, self.idle_delay);
@@ -391,6 +432,7 @@ impl Worker {
                 self.idle_clocks = IdleClocks::default();
                 self.idle_delay = None;
                 self.idle_deadline = None;
+                self.sync_sleep_compaction(Duration::ZERO).await?;
                 return Ok(());
             }
             Err(error) => {
@@ -448,6 +490,7 @@ impl Worker {
                 .idle_clocks
                 .eligibility_changed(thread, unused, now, delay)
             {
+                self.sync_sleep_compaction(delay).await?;
                 match self.unload_thread(thread).await? {
                     UnloadResult::Unloaded => self.idle_clocks.release(thread),
                     UnloadResult::Busy(reason) => self.idle_clocks.block(thread, reason),
@@ -467,6 +510,7 @@ impl Worker {
         usage_snapshot: Option<IdleUsageSnapshot>,
         retry: bool,
     ) -> Result<(), WorkerError> {
+        self.sync_sleep_compaction(delay).await?;
         let all_released = self
             .idle_clocks
             .loaded()
@@ -648,6 +692,7 @@ impl Worker {
             self.idle_delay = None;
             self.idle_clocks = IdleClocks::default();
             self.idle_deadline = None;
+            self.sync_sleep_compaction(Duration::ZERO).await?;
             return Ok(());
         };
         let newly_enabled = self.idle_delay.is_none();
@@ -691,6 +736,7 @@ impl Worker {
             let unused = self.thread_unused(thread).await?;
             self.idle_clocks
                 .eligibility_changed(thread, unused, Instant::now(), delay);
+            self.sync_sleep_compaction(delay).await?;
             self.idle_deadline = next_deadline(&self.idle_clocks, self.idle_delay);
         } else {
             self.idle_thread_touched(thread);
@@ -836,6 +882,28 @@ impl Worker {
             return Ok(UnloadResult::Busy(IdleBlocker::Local));
         }
         if !self.thread_unused(thread).await? {
+            return Ok(UnloadResult::Busy(IdleBlocker::Durable));
+        }
+        let account = self.account.clone();
+        let owned = thread.to_owned();
+        let pending = self
+            .db("sleep_compaction_before_unload", move |store| async move {
+                Ok(store
+                    .read_async(
+                        "runtime-services/sleep_compaction_before_unload",
+                        move |connection| {
+                            crate::idle_compaction::pending_before_unload(
+                                connection,
+                                &account,
+                                &owned,
+                                crate::idle_compaction::wall_now(),
+                            )
+                        },
+                    )
+                    .await?)
+            })
+            .await?;
+        if pending {
             return Ok(UnloadResult::Busy(IdleBlocker::Durable));
         }
         let Some(reply) = self
@@ -1031,6 +1099,24 @@ mod tests {
     }
 
     const DELAY: Duration = Duration::from_secs(15 * 60);
+
+    #[test]
+    fn sleep_compaction_uses_the_actual_unload_clock_and_immediate_worker_policy() {
+        let start = Instant::now();
+        let mut clocks = IdleClocks::default();
+        clocks.wall_clock = Some((start, 1000.0));
+        clocks.thread_due("lead", true, start, DELAY);
+        clocks.set_immediate("worker", true);
+        assert!(clocks.thread_due("worker", true, start, DELAY));
+        assert_eq!(
+            clocks.compaction_deadlines(DELAY),
+            BTreeMap::from([("lead".into(), 1900.0), ("worker".into(), 1000.0)])
+        );
+        assert_eq!(clocks.compaction_deadlines(DELAY)["lead"], 1900.0);
+        clocks.touch("lead");
+        clocks.release("worker");
+        assert!(clocks.compaction_deadlines(DELAY).is_empty());
+    }
 
     #[test]
     fn a_thread_is_due_only_after_the_delay_without_a_break() {

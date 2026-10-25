@@ -176,6 +176,10 @@ pub struct Event {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PreparationSnapshot {
+    /// An idle summary can replace history during this input's bridge admission.
+    /// Restore the current roster within the ordinary Studio input byte budget.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub idle_summary_return: bool,
     /// The provider controls only the input wire projection, never transcript text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<ProviderKind>,
@@ -398,7 +402,7 @@ fn context(s: &PreparationSnapshot) -> Result<(Vec<String>, ContextManifest), Pr
     }
     let mut versions = Versions::new();
     let mut blocks = Vec::new();
-    if needs_team_restore(&s.actor.epoch, &s.delivered_manifests)
+    if (s.idle_summary_return || needs_team_restore(&s.actor.epoch, &s.delivered_manifests))
         && let Some(state) = &s.team_state
     {
         let count = |key: &str| state[key].as_array().map_or(0, Vec::len);

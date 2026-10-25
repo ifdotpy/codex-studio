@@ -389,6 +389,8 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
     {
         params["requestId"] = json!(r.request_id);
         params["idleCompaction"] = snapshot.agent["idleCompactionEpisode"]["cache"].clone();
+        params["idleCompaction"]["mode"] =
+            json!(studio_runtime_store::OrchestrationSettingsRepository::idle_compaction(tx)?.mode);
     }
     let request = NativeRequest {
         ticket: ticket.clone(),
