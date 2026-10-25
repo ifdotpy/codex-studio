@@ -364,8 +364,10 @@ consumes this detail without maintaining a second recovery state machine.
 
 Only one stream-opening attempt may prepare durable cursors at a time. Peer
 heartbeats and subscription changes coalesce with that attempt rather than
-canceling it. Opening uses the current resource union; newly requested resources
-without a prepared cursor receive a baseline. Cursor preparation for opening and
+canceling it. Opening uses the current resource union. Late subscriptions read
+their available cursors within the same original preparation budget, once per
+selector; they never renew that budget. Resources without a prepared cursor
+receive a baseline. Cursor preparation for opening and
 subscription changes is bounded by the connection module's named preparation
 budget. If optional cursor reads do not finish, the stream requests an
 authoritative SSE baseline without a cursor. This is not an HTTP polling fallback
