@@ -362,7 +362,10 @@ the shared normalized token contract and excludes running totals and gaps. It
 retains request token tuples so context pricing tiers apply per request. Native
 journal receipts replace provisional legacy evidence and add missing responses;
 final live or recovered evidence takes precedence. The typed response reader
-provides a bounded variant for diagnostics. Old analytics rows remain readable
+provides a bounded variant for diagnostics. Legacy response rows with absent or
+null cache counts keep unknown tokens and are not newly priced; explicit zero
+counts remain priceable. Migrated-row suppression precomputes responded turns
+once, so predicate work grows linearly with the selected scope. Old analytics rows remain readable
 through the [shared adapter](../runtime-schema/src/usage/persisted.rs). Opening an
 existing aggregate adds nullable eligibility and final-evidence columns without
 reading usage records or rebuilding groups. NULL eligibility preserves the prior
