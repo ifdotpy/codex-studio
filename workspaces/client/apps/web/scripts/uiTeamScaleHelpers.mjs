@@ -250,6 +250,31 @@ export function cleanupVerified({
   );
 }
 
+// Serialized into headless Chromium by page.evaluate; keep this self-contained.
+export function readTeamUiCounts(document = globalThis.document) {
+  const completedCollapsed = !!document.querySelector(
+    '#team .worker-group [aria-expanded="false"]',
+  );
+  return {
+    teamCount: Number(
+      document.querySelector('#team [data-team-count="all"] strong')
+        ?.textContent || 0,
+    ),
+    workerCards:
+      document.querySelectorAll("#team [data-worker]").length +
+      (completedCollapsed
+        ? Number(
+            document.querySelector('#team [data-team-count="completed"] strong')
+              ?.textContent || 0,
+          )
+        : 0),
+    sidebarChats: document.querySelectorAll("#sidebar [data-chat]").length,
+    teamPanelClosed:
+      document.querySelector("#team-toggle")?.getAttribute("aria-expanded") ===
+      "false",
+  };
+}
+
 // The New chat draft is an inline role picker. Keep every action inside its
 // dialog: Escape would close the whole draft, and settings popovers belong to
 // existing chats. Radio labels are clicked because native inputs are styled.
@@ -353,6 +378,7 @@ export function buildLeadPrompt({ workers, runTag, workspace }) {
     `Use exactly ${calls.length} call(s), one per range (${plan}); issue all calls in this turn without waiting between them, and repeat any call that failed.`,
     `Give every agent workspace "${workspace}", the default model and effort, and this task with N replaced by its number zero-padded to 4 digits:`,
     `"Run exactly one shell command: sleep ${WORKER_COMMAND_SECONDS}; echo ${runTag}_WNNNN. Then reply with only the printed token and stop."`,
+    `Do not send messages to the agents; wait for their results.`,
     `Spawn nothing else and run no commands yourself. Do not answer until all ${workers} agents have replied; then answer with only ${leadDoneToken(runTag)}.`,
   ].join(" ");
 }

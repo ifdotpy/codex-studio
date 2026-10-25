@@ -179,13 +179,60 @@ function repeated(values) {
   return [...counts].filter(([, count]) => count > 1).map(([value]) => value);
 }
 
-// One worker: exactly one turn, no failed turn, its task delivered once and
-// every tool call answered.
-export function auditWorker(id, items) {
+// One worker: one task turn plus any unique lead-message turns. Delivery
+// duplication, unexplained turns, failed turns and unanswered tools still fail.
+export function auditWorker(id, items, leadId) {
   const failures = [];
   const anomalies = [];
   const turns = turnsOf(items);
-  if (turns.size > 1)
+  const triggeringInputs = new Map();
+  for (const [index, item] of items.entries()) {
+    if (item.role !== "user") continue;
+    // Older transcript rows omit turnId on the user item; the following
+    // output identifies that input batch's turn, before the next user item.
+    const following = items.slice(index + 1);
+    const boundary = following.findIndex((next) => next.role === "user");
+    const nextTurn = (
+      boundary < 0 ? following : following.slice(0, boundary)
+    ).find((next) => next.turnId)?.turnId;
+    for (const input of item.inputs || []) {
+      const turn = input.turnId || item.turnId || nextTurn;
+      if (turn)
+        triggeringInputs.set(turn, [
+          ...(triggeringInputs.get(turn) || []),
+          input,
+        ]);
+    }
+  }
+  const duplicateIds = new Set(
+    repeated(inputsOf(items).map((input) => input.id)),
+  );
+  const leadTurns = new Set();
+  for (const turnId of [...turns].slice(1)) {
+    const inputs = triggeringInputs.get(turnId) || [];
+    if (
+      inputs.length &&
+      inputs.every(
+        (input) =>
+          input.id &&
+          !duplicateIds.has(input.id) &&
+          input.kind === "agent_message" &&
+          leadId &&
+          parseJson(input.text)?.sender === leadId,
+      )
+    ) {
+      leadTurns.add(turnId);
+      for (const input of inputs)
+        anomalies.push({
+          kind: "leadMessageTriggeredWorkerTurn",
+          agent: id,
+          turnId,
+          input: input.id,
+          text: parseJson(input.text).text ?? input.text,
+        });
+    }
+  }
+  if (turns.size - leadTurns.size > 1)
     failures.push({
       kind: "duplicateWorkerTurns",
       agent: id,
@@ -336,6 +383,31 @@ export function auditToolRequests(requests, calls) {
       });
   }
   return { failures, anomalies };
+}
+
+// journalctl --grep uses status 1 for an empty result as well as failures.
+export function auditJournalResult(result, unit) {
+  if (
+    result.status === 0 ||
+    (result.status === 1 &&
+      result.stdout === "" &&
+      result.stderr === "" &&
+      !result.error)
+  )
+    return auditJournal((result.stdout || "").split("\n"));
+  return {
+    failures: [],
+    anomalies: [
+      {
+        kind: "journalUnavailable",
+        unit,
+        error: String(result.error?.message ?? result.stderr ?? "").slice(
+          0,
+          300,
+        ),
+      },
+    ],
+  };
 }
 
 // Journal lines of the run window ("<iso time> <host> <unit>[pid]: text").

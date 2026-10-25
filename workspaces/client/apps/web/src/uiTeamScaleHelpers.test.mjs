@@ -9,6 +9,7 @@ import {
   createEntityFrameReader,
   openEntityStream,
   cleanupVerified,
+  readTeamUiCounts,
   cpuDeltaMs,
   cpuPercent,
   createTeamTracker,
@@ -577,4 +578,27 @@ it("checks owned cleanup while retaining unrelated loaded thread counts only as 
   expect(cleanupVerified({ ...clean, leakedProcesses: [{ pid: 2 }] })).toBe(
     false,
   );
+});
+
+it("reads the current TeamSummary strong counts without summing All with its statuses", () => {
+  const selectors = [];
+  const document = {
+    querySelector: (selector) => {
+      selectors.push(selector);
+      if (selector === '#team [data-team-count="all"] strong')
+        return { textContent: "3" };
+      if (selector === '#team [data-team-count="completed"] strong')
+        return { textContent: "2" };
+      if (selector === '#team .worker-group [aria-expanded="false"]') return {};
+      return null;
+    },
+    querySelectorAll: (selector) =>
+      selector === "#team [data-worker]" ? [{}] : [],
+  };
+  expect(readTeamUiCounts(document)).toMatchObject({
+    teamCount: 3,
+    workerCards: 3,
+    teamPanelClosed: false,
+  });
+  expect(selectors).not.toContain("[data-team-count] dd");
 });

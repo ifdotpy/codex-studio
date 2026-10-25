@@ -39,6 +39,7 @@ import {
   createEntityReader,
   openEntityStream,
   cleanupVerified,
+  readTeamUiCounts,
   evaluateCriteria,
   firstReachedMs,
   parseArgs,
@@ -55,7 +56,7 @@ import {
   TRANSCRIPT_PAGE_LIMIT,
   auditDiagnostics,
   pendingTeamInputs,
-  auditJournal,
+  auditJournalResult,
   auditLead,
   auditLeadReport,
   auditToolRequests,
@@ -273,25 +274,6 @@ const PROBE_SOURCE = ({ frameGapRecordMs }) => {
     true,
   );
 };
-
-const UI_COUNTS_SOURCE = () => ({
-  teamCount: [...document.querySelectorAll("[data-team-count] dd")].reduce(
-    (sum, node) => sum + Number(node.textContent),
-    0,
-  ),
-  // The collapsed Finished group renders no cards, so its overview count stands
-  // in for them: this still reaches the team size once every card is reachable.
-  workerCards:
-    document.querySelectorAll("[data-worker]").length +
-    Number(
-      document.querySelector('[data-team-count="completed"] dd')?.textContent ||
-        0,
-    ),
-  sidebarChats: document.querySelectorAll("#sidebar [data-chat]").length,
-  teamPanelClosed:
-    document.querySelector("#team-toggle")?.getAttribute("aria-expanded") ===
-    "false",
-});
 
 async function resolveRole(api, accounts, profile) {
   const accountKeys = scaleAccountKeys(accounts, profile);
@@ -586,7 +568,7 @@ async function main({ setCleanup, setRemaining }) {
         try {
           await pull();
           const uiStart = performance.now();
-          const ui = await page.evaluate(UI_COUNTS_SOURCE);
+          const ui = await page.evaluate(readTeamUiCounts);
           const uiRoundtripMs = Math.round(performance.now() - uiStart);
           if (ui.teamPanelClosed)
             await page
@@ -601,6 +583,19 @@ async function main({ setCleanup, setRemaining }) {
           );
           const wallMs = performance.now() - previousCpu.at;
           const workersSeen = tracker ? tracker.summary() : null;
+          if (
+            promptSentAtMs !== null &&
+            ui.teamCount > 0 &&
+            !journal.teamVisibleScreenshot
+          ) {
+            const path = join(runDir, "workers-visible.png");
+            await page.screenshot({ path });
+            journal.teamVisibleScreenshot = {
+              path,
+              atMs: runMs(),
+              teamCount: ui.teamCount,
+            };
+          }
           journal.samples.push({
             atMs: runMs(),
             ui: { ...ui, rafRoundtripMs: uiRoundtripMs },
@@ -1062,7 +1057,7 @@ async function auditRun({
   const workers = await mapLimited(
     workerIds,
     AUDIT_FETCH_CONCURRENCY,
-    async (id) => auditWorker(id, await transcript(id)),
+    async (id) => auditWorker(id, await transcript(id), leadId),
   );
   parts.push(...workers);
   parts.push({
@@ -1110,21 +1105,7 @@ async function auditRun({
     ],
     { encoding: "utf8", maxBuffer: JOURNAL_MAX_BYTES },
   );
-  if (journalRead.status === 0)
-    parts.push(auditJournal(journalRead.stdout.split("\n")));
-  else
-    parts.push({
-      anomalies: [
-        {
-          kind: "journalUnavailable",
-          unit: journalUnit,
-          error: String(journalRead.error?.message ?? journalRead.stderr).slice(
-            0,
-            300,
-          ),
-        },
-      ],
-    });
+  parts.push(auditJournalResult(journalRead, journalUnit));
   return {
     ...mergeAudits(parts),
     teamInputAudit: {

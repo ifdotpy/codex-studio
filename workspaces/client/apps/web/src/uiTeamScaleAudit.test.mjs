@@ -5,6 +5,7 @@ import {
   auditDiagnostics,
   pendingTeamInputs,
   auditJournal,
+  auditJournalResult,
   auditLead,
   auditLeadReport,
   auditSummaryLines,
@@ -430,4 +431,106 @@ it("allows baseline queues from other chats but rejects global growth and retain
   expect(
     auditDiagnostics(before, grown, pending).failures.map(({ kind }) => kind),
   ).toContain("teamInputsPending");
+});
+
+it("treats journalctl's empty status 1 as no matches, while preserving other failures", () => {
+  expect(
+    auditJournalResult({ status: 1, stdout: "", stderr: "" }, "studio"),
+  ).toEqual({ failures: [], anomalies: [] });
+  expect(
+    auditJournalResult(
+      { status: 1, stdout: "", stderr: "No journal access" },
+      "studio",
+    ).anomalies,
+  ).toEqual([
+    { kind: "journalUnavailable", unit: "studio", error: "No journal access" },
+  ]);
+  expect(
+    auditJournalResult({ status: 2, stdout: "", stderr: "" }, "studio")
+      .anomalies[0].kind,
+  ).toBe("journalUnavailable");
+});
+
+it("attributes only a new lead message triggering another worker turn to the lead", () => {
+  const initial = {
+    ...userItem(1, [{ id: "initial", kind: "user", text: "task" }]),
+    turnId: "t1",
+  };
+  const message = {
+    id: "nudge",
+    kind: "agent_message",
+    text: JSON.stringify({
+      sender: "lead",
+      text: "Please finish the assigned exact shell command",
+    }),
+  };
+  const audit = auditWorker(
+    "worker",
+    [
+      initial,
+      answer("TOKEN"),
+      { ...userItem(2, [message]), turnId: "t2" },
+      answer("TOKEN", "t2"),
+    ],
+    "lead",
+  );
+  expect(audit.failures).toEqual([]);
+  expect(audit.anomalies).toEqual([
+    {
+      kind: "leadMessageTriggeredWorkerTurn",
+      agent: "worker",
+      turnId: "t2",
+      input: "nudge",
+      text: "Please finish the assigned exact shell command",
+    },
+  ]);
+  expect(
+    kinds(
+      auditWorker(
+        "worker",
+        [initial, answer("TOKEN"), answer("TOKEN", "t2")],
+        "lead",
+      ),
+    ),
+  ).toContain("duplicateWorkerTurns");
+  expect(
+    kinds(
+      auditWorker(
+        "worker",
+        [
+          initial,
+          answer("TOKEN"),
+          { ...userItem(2, [message]), turnId: "t2" },
+          answer("TOKEN", "t2"),
+          { ...userItem(3, [message]), turnId: "t3" },
+          answer("TOKEN", "t3"),
+        ],
+        "lead",
+      ),
+    ),
+  ).toEqual(
+    expect.arrayContaining(["duplicateWorkerTurns", "duplicateDelivery"]),
+  );
+  expect(
+    kinds(
+      auditWorker(
+        "worker",
+        [
+          initial,
+          answer("TOKEN"),
+          {
+            ...userItem(2, [
+              {
+                ...message,
+                text: JSON.stringify({ sender: "other", text: "go" }),
+              },
+            ]),
+            turnId: "t2",
+          },
+          answer("TOKEN", "t2"),
+        ],
+        "lead",
+      ),
+    ),
+  ).toContain("duplicateWorkerTurns");
 });
