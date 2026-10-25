@@ -205,6 +205,81 @@ async function setup({ ready = true } = {}) {
 }
 
 describe("entity pull dispatch gate", () => {
+  it("applies a typed state interval overlapping a mutation's durable checkpoint", async () => {
+    const { client, rows, workspaceId, stop } = await setup();
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: async (_name: string, write: () => Promise<unknown>) =>
+          write(),
+      },
+    });
+    // A complete mutation response already applied the first part of this interval.
+    rows.set("state:entities:checkpoint", {
+      id: "state:entities:checkpoint",
+      payload: "{}",
+      seq: 101,
+    });
+    const value = {
+      id: "overlap",
+      name: "After mutation",
+      status: "idle" as const,
+      source: "managed" as const,
+    };
+    rows.set("entity:agentSummary:overlap", {
+      id: "entity:agentSummary:overlap",
+      payload: "",
+      seq: 101,
+      entity: { collection: "agentSummary", id: "overlap", value },
+    });
+    try {
+      await client.persistResourceEntityChanges(
+        {
+          protocol: 4,
+          workspaceId,
+          epoch: "overlap",
+          revision: 2,
+          reason: "change",
+          resources: [{ kind: "state" }],
+          resourceVersions: [
+            {
+              revision: 103,
+              cursor: { workspaceId, seq: 103 },
+              replyKind: "delta",
+              entityChanges: {
+                after: 100,
+                through: 103,
+                documents: [
+                  {
+                    op: "upsert",
+                    collection: "agentSummary",
+                    id: "overlap",
+                    seq: 101,
+                    value,
+                  },
+                  {
+                    op: "upsert",
+                    collection: "agentSummary",
+                    id: "later",
+                    seq: 102,
+                    value: { ...value, id: "later" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        () => true,
+      );
+      expect(rows.get("entity:agentSummary:later")?.seq).toBe(102);
+      expect(await client.readSubscriptionCursor({ kind: "state" })).toEqual({
+        workspaceId,
+        seq: 103,
+      });
+    } finally {
+      stop();
+    }
+  });
   it("applies a full streamed state batch before invalidation with zero new pulls", async () => {
     const { client, rows, workspaceId, stop, entitySequence } = await setup();
     mocks.pulls = [];

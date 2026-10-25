@@ -527,6 +527,35 @@ export function createSyncClient(options: SyncClientOptions) {
 
   async function readSubscriptionCursor(resource: ResourceRef) {
     const { db, workspaceId } = await syncDatabase();
+    if (resource.kind === "state") {
+      // Both paginated bootstrap/recovery and inline state deliveries own this
+      // checkpoint. A separate per-ref row cannot prove a pull's applied base.
+      const rows = await db.projections.storageInstance.findDocumentsById(
+        [
+          "state:entities:checkpoint",
+          "state:entities:ready",
+          "state:entities:complete",
+        ],
+        true,
+      );
+      const checkpoint = rows.find(
+        (row) => row.id === "state:entities:checkpoint",
+      );
+      const ready = rows.find((row) => row.id === "state:entities:ready");
+      const complete = rows.find((row) => row.id === "state:entities:complete");
+      if (
+        checkpoint &&
+        !checkpoint._deleted &&
+        Number.isSafeInteger(checkpoint.seq) &&
+        checkpoint.seq >= 0 &&
+        ready?.payload === "ready" &&
+        !ready._deleted &&
+        complete?.payload === "complete" &&
+        !complete._deleted
+      )
+        return { workspaceId, seq: checkpoint.seq };
+      return undefined;
+    }
     const [row] = await db.projections.storageInstance.findDocumentsById(
       [await cursorDocumentId(resource)],
       false,
@@ -550,6 +579,7 @@ export function createSyncClient(options: SyncClientOptions) {
   ) {
     const { db, workspaceId } = await syncDatabase();
     if (!isCurrent() || workspaceId !== cursor.workspaceId) return;
+    if (resource.kind === "state") return;
     await persistProjection(db.projections, {
       id: await cursorDocumentId(resource),
       payload: JSON.stringify(cursor),
@@ -626,7 +656,12 @@ export function createSyncClient(options: SyncClientOptions) {
       if (!isCurrent()) return;
       const applied = await readSubscriptionCursor(resource);
       if (applied && applied.seq > cursor.seq) return;
-      if (entry.replyKind !== "snapshot" && applied?.seq !== changes.after)
+      // A mutation response or another tab may already cover the interval's
+      // prefix. Only a missing base or a forward gap requires recovery.
+      if (
+        entry.replyKind !== "snapshot" &&
+        (!applied || applied.seq < changes.after)
+      )
         throw new Error("Subscription delta has no applied local base");
       if (
         changes.documents.some(
@@ -667,11 +702,23 @@ export function createSyncClient(options: SyncClientOptions) {
           payload: "{}",
           seq: cursor.seq,
         });
-        await persistProjection(db.projections, {
-          id: "state:entities:ready",
-          payload: "ready",
-          seq: cursor.seq,
-        });
+        if (entry.replyKind === "snapshot") {
+          const [ready] =
+            await db.projections.storageInstance.findDocumentsById(
+              ["state:entities:ready"],
+              true,
+            );
+          await persistProjection(db.projections, {
+            id: "state:entities:complete",
+            payload: "complete",
+            seq: Date.now(),
+          });
+          await persistProjection(db.projections, {
+            id: "state:entities:ready",
+            payload: "ready",
+            seq: (ready?.seq ?? 0) + 1,
+          });
+        }
       }
       await persistSubscriptionCursor(resource, cursor, isCurrent);
     });

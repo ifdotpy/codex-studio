@@ -218,6 +218,12 @@ these applied cursors through the same subscription path. A covered reconnect
 requires no sync pull. Transient resources retain their existing in-memory
 snapshot owners and do not create durable cursor rows.
 
+The state resource resumes from the completed entity projection's existing
+checkpoint, shared by bootstrap pulls, mutation responses and streamed deltas.
+Its ready marker identifies a replacement baseline; ordinary deltas preserve
+that marker and unchanged agent objects. A delta may overlap already applied
+records, but a missing base or forward gap cannot advance the checkpoint.
+
 ### Connection loss and recovery
 
 Named `heartbeat` events prove liveness and never trigger resource reads.

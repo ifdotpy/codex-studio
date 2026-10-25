@@ -27,6 +27,7 @@ export default {
       "src/sync/transcriptCache.test.ts",
       "src/sync/entityProjectionObserver.test.ts",
       "src/sync/client.draftServer.test.ts",
+      "src/sync/client.entityServer.test.ts",
 
       // Token snapshots carry each agent once and derive team membership without entity projections.
       "src/usage/tokenRate.records.test.ts",
