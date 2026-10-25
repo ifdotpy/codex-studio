@@ -8,6 +8,7 @@ export default {
     name: "fast",
     include: [
       "src/precompressedAssets.test.mjs",
+      "src/platformNeutralCopy.test.ts",
       "src/scrollbars.test.mjs",
       "src/sync/subscriptions/store.test.ts",
       "src/sync/subscriptions/viewData.test.ts",
@@ -24,6 +25,7 @@ export default {
       "src/hooks.subscriptionVisibility.test.ts",
       "src/hooks/snapshotRecovery.test.ts",
       "src/servers/serverNames.test.ts",
+      "src/servers/serverRows.test.ts",
       "src/renameRequest.test.ts",
       "src/sync/drafts.publication.test.ts",
       "src/sync/transcriptCache.test.ts",
@@ -38,6 +40,7 @@ export default {
       "src/components/StudioErrors.test.ts",
       "src/components/SidebarWarnings.test.ts",
       "src/components/ConversationWarnings.test.ts",
+      "src/components/Conversation.connection.test.ts",
       "src/components/Conversation.limits.test.ts",
       // web unit safety witnesses
       "src/api.test.ts",

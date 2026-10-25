@@ -19,6 +19,25 @@ describes managed tools and application workflows. No external skill repository
 is required. Standard Codex CLI delegation belongs to the independent native
 agent skill, not this application skill.
 
+## Interface language and interaction
+
+The same interface serves desktop and mobile clients connected to different
+server platforms. Product labels, notices, errors, and icons do not assume an
+operating system. They name the affected server, device, project folder, virtual
+machine, file manager, or secure storage. A disk-space notice refers to the
+server whose disk needs space. Capability restrictions remain enforced, with
+neutral explanations when a feature is unavailable. Platform names belong only
+in technical setup instructions where needed, not ordinary product copy.
+
+A single click or tap on a sidebar chat opens it. Scrolling, dragging, and the
+separate row action menu do not require a preliminary selection tap. Keyboard
+activation remains available. The composer shows the lead, worker, and review
+model choices without provider logos. On narrow screens the controls must remain
+within the composer, preserve accessible role/model names, and stay operable
+without overlapping the send, stop, attachment, or microphone controls.
+Use intrinsic sizing, wrapping, and shared spacing tokens rather than fixed
+widths or offsets for individual devices.
+
 The [approved Rust migration and workspace specification](plans/rust-workspaces.md)
 defines migration boundaries and acceptance gates. Issue #37 tracks completion.
 For an existing checkout, see the [layout relocation procedure](relocating-installation.md).
@@ -85,7 +104,7 @@ instead of falling back. Each new worktree reads the file, so a change needs no
 restart. Archive and cleanup still manage worktrees under the previous root.
 
 The first layr chat imports the project once. Later chats reuse the VM main line.
-The Mac folder stays separate. Export a copy only on request.
+The host project folder stays separate. Export a copy only on request.
 See [VM chats](linux-vm-workspaces.md) and [ASIF images](workspace-images.md).
 
 ## Setup
@@ -328,7 +347,7 @@ For systemd user services and Windows Subsystem for Linux, see
 
 The mobile layout shows orchestrator chats, team agents, existing projects, account selection,
 and chat settings. Add the page to the iPhone home screen for a standalone window.
-The Mac remains the server. SQLite remains the authoritative store.
+The connected computer remains the server. SQLite remains the authoritative store.
 
 The former mobile setup command was removed with the Python backend and has no
 Rust replacement in this change. Preserve existing Tailscale Serve configuration.
@@ -343,11 +362,11 @@ RxDB replicates SQLite projections to IndexedDB. It keeps message identities acr
 reloads and retries. Different browser drafts remain separate and can be combined.
 A lost response does not authorize another underlying command.
 After one complete online load, the browser can cache the interface for later use
-without the Mac connection. Cached chats and drafts can open while the Mac is
+without a server connection. Cached chats and drafts can open while the server is
 unavailable. Browser storage must still contain that data.
 Text messages for existing chats enter a local queue before the composer clears.
-The queue retries the same message identity when Studio can reach the Mac again.
-New chats, new file uploads, and voice require the Mac connection.
+The queue retries the same message identity when Studio can reach the server again.
+New chats, new file uploads, and voice require the server connection.
 Return to Studio to resume sync and delivery. Delivery while iOS suspends Studio
 is not guaranteed. Keep the page open for voice.
 
@@ -374,7 +393,13 @@ agent chats in the background. It updates these saved histories before selection
 The current chat loads first. One background history loads at a time.
 This leaves connections available for messages and other active requests.
 A ready history appears immediately on selection, including its saved scroll position.
-After a network change or a return to Studio, sync replaces the old connection.
+After a network change or a return to Studio, sync restores updates when needed.
+Browser network hints do not interrupt a working server stream. A hidden tab
+pauses its updates deliberately; this pause is not reported as a lost connection.
+`Reconnecting` means that the live update connection needs recovery. A saved
+message awaiting delivery confirmation has its own notice, so it does not imply
+that the connection is lost. The notice clears after the server acknowledges
+the message.
 A cached workspace cannot send drafts to a different workspace before verification.
 
 Run `pnpm --filter codex-agents-web run test:mobile` for the mobile regression suite.
@@ -395,7 +420,7 @@ ChatGPT account through its app-server. No separate API key is required.
 Voice can pass spoken tasks directly to the orchestrator. It does not wait for
 a separate Send transcript button. Normal orchestrator replies return to voice.
 End voice stops the microphone and voice connection. It does not stop the task.
-Transcripts remain on the Mac until the chat is deleted. Old courier drafts
+Transcripts remain on the server until the chat is deleted. Old courier drafts
 remain available for recovery; Studio does not automatically send them.
 `orchestration_speak` supplies additional speakable context to native voice.
 Its receipt does not confirm exact audible playback. Use chat buttons for
