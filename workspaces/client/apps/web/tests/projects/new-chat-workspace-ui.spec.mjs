@@ -123,6 +123,25 @@ async function setup(
       return false;
     },
   });
+  const catalogRows = (accountKey, rows) =>
+    rows.map((row, catalogPosition) => ({
+      ...row,
+      accountKey,
+      catalogPosition,
+      hidden: false,
+    }));
+  server.snapshot.runtime.modelsByAccount =
+    provider === "claude"
+      ? {
+          default: catalogRows("default", claudeModels),
+          codex: catalogRows("codex", models),
+        }
+      : {
+          default: catalogRows(
+            "default",
+            label === "Remote" ? [models[2]] : models,
+          ),
+        };
   return { server, creations, changes, modelReads };
 }
 async function openNewChat(page, server, classic = false) {
@@ -388,7 +407,7 @@ test("a paired server uses its own platform and catalog", async ({
       workspaceMode: "layr-native",
       model: "gpt-5.6-sol",
     });
-    expect(remote.modelReads.length).toBeGreaterThan(0);
+    expect(remote.modelReads).toHaveLength(0);
   } finally {
     await local.server.close();
     await remote.server.close();
