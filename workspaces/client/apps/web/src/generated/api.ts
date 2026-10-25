@@ -32719,6 +32719,8 @@ export interface operations {
     parameters: {
       query?: {
         account_key?: string;
+        /** @description Require current provider metadata before an account choice. Display reads can return the last known catalog. */
+        fresh?: "1";
         retry?: "1";
         workers?: "1";
       };

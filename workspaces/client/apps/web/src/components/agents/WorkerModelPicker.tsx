@@ -7,7 +7,13 @@ import {
   useSyncExternalStore,
   type ContextType,
 } from "react";
-import { ApiError, get, errorText, type GetResult } from "../../api";
+import {
+  ApiError,
+  get,
+  errorText,
+  type GetOptions,
+  type GetResult,
+} from "../../api";
 import { watchResourceReads } from "../watchResourceReads";
 import type { ResourceVersion } from "../../sync/resourceEvents";
 import { serverResourceScope } from "../../servers/registry";
@@ -124,7 +130,7 @@ type ModelCatalogSource = {
   scope: string;
   cacheOwner?: object;
   read: (options: {
-    query?: { account_key?: string; workers?: "1"; retry?: "1" };
+    query?: GetOptions<"/api/models">["query"];
     signal?: AbortSignal;
   }) => Promise<GetResult<"/api/models">>;
   watchResourceReads: typeof watchResourceReads;
@@ -356,14 +362,18 @@ function subscribeModelCatalog(
   };
 }
 
-/** One read of an account's subagent models, parsed like useWorkerModels. */
+/** Fresh metadata for an account choice, not the display's stale fallback. */
 export async function readWorkerModels(
   reader: ContextType<typeof ModelCatalogReader>,
   accountKey: string,
   workers = false,
 ): Promise<WorkerModelInfo[]> {
   const data = await reader.read({
-    query: { account_key: accountKey, workers: workers ? "1" : undefined },
+    query: {
+      account_key: accountKey,
+      workers: workers ? "1" : undefined,
+      fresh: "1",
+    },
   });
   return Array.isArray(data.data)
     ? data.data.flatMap((row) => {

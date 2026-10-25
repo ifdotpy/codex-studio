@@ -40,6 +40,7 @@ async fn models(
         .to_owned();
     let workers = params.typed_value("workers").and_then(Value::as_str) == Some("1");
     let retry = params.typed_value("retry").and_then(Value::as_str) == Some("1");
+    let fresh = params.typed_value("fresh").and_then(Value::as_str) == Some("1");
     let account_policy = state
         .account_policy
         .clone()
@@ -59,7 +60,9 @@ async fn models(
     catalog.retain_accounts(&snapshot.accounts);
     let session = state.account_session.clone();
     let result = if workers {
-        worker_catalog(&catalog, &snapshot, &account_key, retry, session).await
+        worker_catalog(&catalog, &snapshot, &account_key, retry, fresh, session).await
+    } else if fresh {
+        account_catalog_read(&catalog, &snapshot, &account_key, retry, true, session).await
     } else {
         account_catalog(&catalog, &snapshot, &account_key, retry, session).await
     };
@@ -80,38 +83,76 @@ async fn account_catalog(
         std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     >,
 ) -> Result<Value, (StatusCode, Value)> {
+    account_catalog_read(catalog, snapshot, account_key, retry, false, session).await
+}
+
+async fn account_catalog_read(
+    catalog: &ModelCatalogService,
+    snapshot: &AccountsSnapshot,
+    account_key: &str,
+    retry: bool,
+    fresh: bool,
+    session: Option<
+        std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
+    >,
+) -> Result<Value, (StatusCode, Value)> {
     let account = account_context(snapshot, account_key)?;
     if account.provider == "claude" && session.is_none() {
         return Err(catalog_pending());
     }
-    ensure_session(session, &account.key)
-        .await
-        .map_err(|error| {
-            if account.provider == "claude"
-                && matches!(
+    let read = async {
+        ensure_session(session, &account.key)
+            .await
+            .map_err(|error| {
+                if account.provider == "claude"
+                    && matches!(
                     &error,
                     studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
                         _
                     )
-                )
-            {
-                return catalog_pending();
-            }
-            match error {
+                ) {
+                    return catalog_pending();
+                }
+                match error {
                 // A refusal is a stable verdict about the account, not a transient fault.
                 studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
                     message,
                 ) => (StatusCode::BAD_REQUEST, json!({"error": message})),
                 _ => catalog_unavailable(),
             }
-        })?;
-    match catalog
-        .read_until_ready(&account.key, &account.home, &account.provider, retry)
+            })?;
+        let result = if fresh {
+            if retry {
+                let _ = catalog
+                    .read(&account.key, &account.home, &account.provider, true)
+                    .await;
+            }
+            catalog
+                .read_until_fresh(&account.key, &account.home, &account.provider)
+                .await
+        } else {
+            catalog
+                .read_until_ready(&account.key, &account.home, &account.provider, retry)
+                .await
+        };
+        match result {
+            CatalogRead::Ready(value) => Ok(value),
+            CatalogRead::Pending => Err(catalog_pending()),
+            CatalogRead::Unavailable => Err(catalog_unavailable()),
+        }
+    };
+    if fresh {
+        // Finish the catalog preflight before the short settings POST starts.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(
+                studio_runtime_schema::shared_values::MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
+            ),
+            read,
+        )
         .await
-    {
-        CatalogRead::Ready(value) => Ok(value),
-        CatalogRead::Pending => Err(catalog_pending()),
-        CatalogRead::Unavailable => Err(catalog_unavailable()),
+        .unwrap_or_else(|_| Err(catalog_pending()))
+    } else {
+        read.await
     }
 }
 
@@ -195,6 +236,7 @@ async fn worker_catalog(
     snapshot: &AccountsSnapshot,
     parent_account: &str,
     retry: bool,
+    fresh: bool,
     session: Option<
         std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     >,
@@ -216,6 +258,7 @@ async fn worker_catalog(
     let mut seen = std::collections::HashSet::new();
     let mut unavailable = Vec::new();
     let mut pending = false;
+    let mut selection_reads = Vec::new();
     for key in order {
         let Some(source) = snapshot
             .accounts
@@ -242,6 +285,16 @@ async fn worker_catalog(
                 continue;
             }
         };
+        if fresh {
+            let session = session.clone();
+            selection_reads.push(async move {
+                let result =
+                    account_catalog_read(catalog, snapshot, &account.key, retry, true, session)
+                        .await;
+                (account, result)
+            });
+            continue;
+        }
         if let Err(error) = ensure_session(session.clone(), &account.key).await {
             unavailable.push(json!({"accountKey":key,"error":error.to_string()}));
             continue;
@@ -251,31 +304,7 @@ async fn worker_catalog(
             .await
         {
             CatalogRead::Ready(value) => {
-                if let Some(rows) = value.get("data").and_then(Value::as_array) {
-                    for row in rows {
-                        let Some(model) = row
-                            .get("model")
-                            .and_then(Value::as_str)
-                            .filter(|model| !model.is_empty())
-                        else {
-                            continue;
-                        };
-                        if row.get("hidden") == Some(&Value::Bool(true))
-                            || !seen.insert(model.to_owned())
-                        {
-                            continue;
-                        }
-                        let mut row = row.clone();
-                        if let Some(row) = row.as_object_mut() {
-                            row.insert("accountKey".to_owned(), Value::String(key.clone()));
-                            row.insert(
-                                "provider".to_owned(),
-                                Value::String(account.provider.clone()),
-                            );
-                        }
-                        models.push(row);
-                    }
-                }
+                append_worker_models(&mut models, &mut seen, &account, &value);
             }
             CatalogRead::Pending => {
                 pending = true;
@@ -289,6 +318,23 @@ async fn worker_catalog(
                 "accountKey": key,
                 "error": UNAVAILABLE_MESSAGE,
             })),
+        }
+    }
+    // Candidate reads share the user action's provider budget and keep the
+    // existing account preference order. Display reads keep their old path.
+    for (account, result) in futures_util::future::join_all(selection_reads).await {
+        match result {
+            Ok(value) => append_worker_models(&mut models, &mut seen, &account, &value),
+            Err((_, error)) => {
+                let account_pending = error.get("catalogPending") == Some(&Value::Bool(true));
+                pending |= account_pending;
+                let mut unavailable_account =
+                    json!({"accountKey":account.key, "error":error["error"]});
+                if account_pending {
+                    unavailable_account["catalogPending"] = Value::Bool(true);
+                }
+                unavailable.push(unavailable_account);
+            }
         }
     }
     if models.is_empty() {
@@ -308,6 +354,37 @@ async fn worker_catalog(
         response["catalogPending"] = Value::Bool(true);
     }
     Ok(response)
+}
+
+fn append_worker_models(
+    models: &mut Vec<Value>,
+    seen: &mut std::collections::HashSet<String>,
+    account: &AccountContext,
+    value: &Value,
+) {
+    if let Some(rows) = value.get("data").and_then(Value::as_array) {
+        for row in rows {
+            let Some(model) = row
+                .get("model")
+                .and_then(Value::as_str)
+                .filter(|model| !model.is_empty())
+            else {
+                continue;
+            };
+            if row.get("hidden") == Some(&Value::Bool(true)) || !seen.insert(model.to_owned()) {
+                continue;
+            }
+            let mut row = row.clone();
+            if let Some(row) = row.as_object_mut() {
+                row.insert("accountKey".to_owned(), Value::String(account.key.clone()));
+                row.insert(
+                    "provider".to_owned(),
+                    Value::String(account.provider.clone()),
+                );
+            }
+            models.push(row);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -444,6 +521,178 @@ mod tests {
             default_account_groups: Vec::new(),
             logins: Vec::new(),
             known_account_keys: HashSet::new(),
+        }
+    }
+
+    struct DelayedRefreshSession {
+        inner: CatalogSession,
+        gate: tokio::sync::Semaphore,
+        requested: tokio::sync::Notify,
+    }
+
+    impl studio_runtime_services::account_session_runtime::AccountSessionPort
+        for DelayedRefreshSession
+    {
+        fn current_scope(
+            &self,
+            account: &str,
+        ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope> {
+            self.inner.current_scope(account)
+        }
+
+        fn ensure_session<'a>(
+            &'a self,
+            account: &'a str,
+        ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+            'a,
+            studio_runtime_services::account_session_runtime::ConnectionScope,
+        > {
+            self.inner.ensure_session(account)
+        }
+
+        fn provider_request<'a>(
+            &'a self,
+            request: studio_runtime_services::account_session_runtime::ProviderRequest,
+        ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+            'a,
+            studio_runtime_services::account_session_runtime::SessionReceipt,
+        > {
+            let reply = self.inner.provider_request(request);
+            let refresh = self.inner.requests.load(Ordering::SeqCst) > 1;
+            Box::pin(async move {
+                if refresh {
+                    self.requested.notify_one();
+                    self.gate.acquire().await.expect("refresh gate").forget();
+                }
+                reply.await
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fresh_account_selection_waits_for_the_shared_refresh_while_display_keeps_stale_rows() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::Request,
+        };
+        use std::{sync::Arc, time::Duration};
+        use studio_runtime_services::model_catalog::{AdmissionCatalogRead, CatalogRead};
+        use tower::ServiceExt;
+
+        for provider in ["codex", "claude"] {
+            for workers in [false, true] {
+                let startup = serde_json::to_vec(&json!({
+                "version":1, "defaultAccountKey":"target", "logins":{},
+                "accounts":{"target":{"id":"target","home":"fixture","provider":provider,"label":"Target","source":"fixture","status":"ready"}}
+            })).expect("startup account");
+                let policy = Arc::new(
+                    studio_runtime_services::account_policy::AccountPolicyState::from_startup(
+                        Some(&startup),
+                        [],
+                    )
+                    .expect("account policy"),
+                );
+                let session = Arc::new(DelayedRefreshSession {
+                    inner: CatalogSession {
+                        pages: std::sync::Mutex::new(vec![
+                            json!({"data":[{"model":"fresh"}]}),
+                            json!({"data":[{"model":"stale"}]}),
+                        ]),
+                        requests: Arc::new(AtomicUsize::new(0)),
+                    },
+                    gate: tokio::sync::Semaphore::new(0),
+                    requested: tokio::sync::Notify::new(),
+                });
+                let mut state = crate::router::HttpState::new(
+                    "token".into(),
+                    "fixture".into(),
+                    "/fixture".into(),
+                    4000,
+                    None,
+                    None,
+                    Some(policy),
+                );
+                state.account_session = Some(session.clone());
+                state
+                    .model_catalog
+                    .set_account_session(Some(session.clone()));
+                let catalog = state.model_catalog.clone();
+                assert!(matches!(
+                    catalog
+                        .read_until_ready("target", "fixture", provider, false)
+                        .await,
+                    CatalogRead::Ready(_)
+                ));
+                tokio::time::advance(Duration::from_secs(
+                    studio_runtime_schema::shared_values::MODEL_CATALOG_CACHE_TTL_SECONDS + 1,
+                ))
+                .await;
+                let app = crate::router::router(state).expect("HTTP router");
+                let request = |uri: &str| {
+                    Request::builder()
+                        .uri(uri)
+                        .header("host", "127.0.0.1:4000")
+                        .header("x-canvas-token", "token")
+                        .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                            [127, 0, 0, 1],
+                            12345,
+                        ))))
+                        .body(Body::empty())
+                        .expect("catalog request")
+                };
+                let display = app
+                    .clone()
+                    .oneshot(request("/api/models?account_key=target"))
+                    .await
+                    .expect("display response");
+                assert_eq!(display.status(), StatusCode::OK);
+                let display: Value = serde_json::from_slice(
+                    &to_bytes(display.into_body(), 65536)
+                        .await
+                        .expect("display body"),
+                )
+                .expect("display JSON");
+                assert_eq!(display["data"][0]["model"], "stale");
+                session.requested.notified().await;
+                let selection_uri = format!(
+                    "/api/models?account_key=target&fresh=1{}",
+                    if workers { "&workers=1" } else { "" }
+                );
+                let fresh = tokio::spawn(app.oneshot(request(&selection_uri)));
+                tokio::task::yield_now().await;
+                tokio::time::advance(Duration::from_secs(
+                    studio_runtime_schema::shared_values::MODEL_CATALOG_ADMISSION_WAIT_SECONDS + 1,
+                ))
+                .await;
+                tokio::task::yield_now().await;
+                assert!(
+                    !fresh.is_finished(),
+                    "selection must await the fresh catalog instead of returning stale rows or refusing a slow refresh"
+                );
+                session.gate.add_permits(1);
+                let response = fresh
+                    .await
+                    .expect("selection task")
+                    .expect("selection response");
+                assert_eq!(response.status(), StatusCode::OK);
+                let body: Value = serde_json::from_slice(
+                    &to_bytes(response.into_body(), 65536)
+                        .await
+                        .expect("selection body"),
+                )
+                .expect("selection JSON");
+                assert_eq!(body["data"][0]["model"], "fresh");
+                assert!(matches!(
+                    catalog.read_for_admission("target", "fixture", provider),
+                    AdmissionCatalogRead::Fresh { .. }
+                ));
+                assert_eq!(
+                    session.inner.requests.load(Ordering::SeqCst),
+                    2,
+                    "display and selection share one refresh"
+                );
+                catalog.shutdown().await.expect("catalog shutdown");
+            }
         }
     }
 

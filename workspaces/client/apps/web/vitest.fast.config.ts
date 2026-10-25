@@ -58,6 +58,8 @@ export default {
       "src/uiTeamScaleAudit.test.mjs",
       "src/verifyRustChatLifecycle.test.mjs",
       "src/components/agents/AgentProgress.test.ts",
+      "src/components/agents/ExecutionSettings.test.ts",
+      "src/components/agents/WorkerModelPicker.test.ts",
       "src/components/models/modelOption.test.ts",
       "src/components/chat-status/chatStatusModel.test.mjs",
       "src/sync/outboxWriteFailure.test.ts",

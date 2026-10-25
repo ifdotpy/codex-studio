@@ -757,65 +757,79 @@ function ScopedExecutionSettings({
   // A new account for new subagents keeps the model when the account offers it, else
   // the account's recommended model. Existing subagents keep theirs.
   const changeAccount = async (target: string | null) => {
-    if (saveLock.current || target === current.account_key) return;
-    let offered: WorkerModelInfo[];
+    if (readOnlyReason || saveLock.current || target === current.account_key)
+      return;
+    saveLock.current = true;
+    setSaving(true);
+    setError("");
+    setStatus({ kind: "saving", text: "" });
+    let next: ConversationBody | undefined;
     try {
-      offered = await readWorkerModels(
+      const offered = await readWorkerModels(
         catalogReader,
         target || accountOf(agent),
         !target,
       );
+      if (!mounted.current) return;
+      const usable = offered.filter(
+        (row) =>
+          !row.hidden &&
+          isModelWhitelisted(
+            {
+              ...row,
+              provider:
+                row.provider ||
+                providerOf(
+                  accounts.find(
+                    (account) => account.id === (target || accountOf(agent)),
+                  ),
+                ),
+            },
+            allowedModels,
+          ) &&
+          !isDaybreakAlias(row.model) &&
+          supportsDaybreakMode(row, false),
+      );
+      const wanted = current.model;
+      const kept = modelForValue(usable, wanted);
+      const model = kept
+        ? wanted
+        : target
+          ? (usable.find((row) => row.isDefault) || usable[0])?.model
+          : null;
+      if (target && !model) {
+        setError("This account offers no model for subagents.");
+        return;
+      }
+      const row = modelForValue(usable, model || agent.model);
+      const effort = row?.supportedReasoningEfforts?.some(
+        (item) => item.reasoningEffort === current.effort,
+      )
+        ? current.effort
+        : row?.defaultReasoningEffort || null;
+      next = {
+        id: agent.id,
+        worker_defaults: {
+          ...current,
+          account_key: target,
+          model: model || null,
+          effort,
+          fast_mode: current.fast_mode && !!fastTier(row),
+          daybreak_enabled: false,
+        },
+      };
     } catch (failure) {
       if (mounted.current) setError(errorText(failure));
-      return;
+    } finally {
+      // Hand the lock to submit synchronously. A failed or cancelled read
+      // releases the controls without making a settings request.
+      saveLock.current = false;
+      if (mounted.current && (!next || onDraftChange)) {
+        setSaving(false);
+        setStatus(null);
+      }
     }
-    const usable = offered.filter(
-      (row) =>
-        !row.hidden &&
-        isModelWhitelisted(
-          {
-            ...row,
-            provider:
-              row.provider ||
-              providerOf(
-                accounts.find(
-                  (account) => account.id === (target || accountOf(agent)),
-                ),
-              ),
-          },
-          allowedModels,
-        ) &&
-        !isDaybreakAlias(row.model) &&
-        supportsDaybreakMode(row, false),
-    );
-    const wanted = current.model;
-    const kept = modelForValue(usable, wanted);
-    const model = kept
-      ? wanted
-      : target
-        ? (usable.find((row) => row.isDefault) || usable[0])?.model
-        : null;
-    if (target && !model) {
-      setError("This account offers no model for subagents.");
-      return;
-    }
-    const row = modelForValue(usable, model || agent.model);
-    const effort = row?.supportedReasoningEfforts?.some(
-      (item) => item.reasoningEffort === current.effort,
-    )
-      ? current.effort
-      : row?.defaultReasoningEffort || null;
-    await submit({
-      id: agent.id,
-      worker_defaults: {
-        ...current,
-        account_key: target,
-        model: model || null,
-        effort,
-        fast_mode: current.fast_mode && !!fastTier(row),
-        daybreak_enabled: false,
-      },
-    });
+    if (next) await submit(next);
   };
   // Moving existing subagents is a separate, explicit action.
   const moveExisting = async (target: string) => {

@@ -625,9 +625,6 @@ impl ModelCatalogService {
         home: &str,
         provider: &str,
     ) -> CatalogRead {
-        if provider != "codex" {
-            return CatalogRead::Unavailable;
-        }
         let wait_for_result = async {
             loop {
                 if let AdmissionCatalogRead::Fresh { value, .. } =
@@ -1168,31 +1165,37 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn read_until_fresh_waits_for_catalog_change_notification() {
-        let service = ModelCatalogService::new();
-        let _pages = serve_pages(&service, AccountSessionPages::gated(Vec::new()));
-        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
-        service.0.state.lock().expect("cache").entries.insert(
-            key.clone(),
-            CacheEntry {
-                generation: 7,
-                value: Some(json!({"data":[{"model":"stale"}]})),
-                expires_at: None,
-                error: false,
-                pending: true,
-            },
-        );
-        let waiting = service.clone();
-        let read =
-            tokio::spawn(
-                async move { waiting.read_until_fresh("account", "/home", "codex").await },
+        for provider in ["codex", "claude"] {
+            let service = ModelCatalogService::new();
+            let _pages = serve_pages(&service, AccountSessionPages::gated(Vec::new()));
+            let key = (
+                "account".to_owned(),
+                "/home".to_owned(),
+                provider.to_owned(),
             );
-        tokio::task::yield_now().await;
-        let value = json!({"data":[{"model":"fixture"}]});
-        assert!(store_result(&service.0, &key, 7, Ok(value.clone())));
-        assert_eq!(
-            read.await.expect("catalog waiter"),
-            CatalogRead::Ready(value)
-        );
+            service.0.state.lock().expect("cache").entries.insert(
+                key.clone(),
+                CacheEntry {
+                    generation: 7,
+                    value: Some(json!({"data":[{"model":"stale"}]})),
+                    expires_at: None,
+                    error: false,
+                    pending: true,
+                },
+            );
+            let waiting = service.clone();
+            let read = tokio::spawn(async move {
+                waiting.read_until_fresh("account", "/home", provider).await
+            });
+            tokio::task::yield_now().await;
+            let value = json!({"data":[{"model":"fixture"}]});
+            assert!(store_result(&service.0, &key, 7, Ok(value.clone())));
+            assert_eq!(
+                read.await.expect("catalog waiter"),
+                CatalogRead::Ready(value)
+            );
+            service.shutdown().await.expect("catalog task shutdown");
+        }
     }
 
     #[tokio::test]

@@ -1,8 +1,35 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  readWorkerModels,
   supportsDaybreakMode,
   type WorkerModelInfo,
 } from "./WorkerModelPicker";
+
+it.each([false, true])(
+  "account selection requires fresh metadata with automatic=%s",
+  async (workers) => {
+    const read = vi.fn(async () => ({
+      data: [{ model: "gpt-6.1-sol", provider: "codex" }],
+    }));
+    const rows = await readWorkerModels(
+      {
+        scope: "account-choice",
+        read,
+        watchResourceReads: vi.fn(),
+      },
+      "selected-account",
+      workers,
+    );
+    expect(read).toHaveBeenCalledExactlyOnceWith({
+      query: {
+        account_key: "selected-account",
+        workers: workers ? "1" : undefined,
+        fresh: "1",
+      },
+    });
+    expect(rows.map((row) => row.model)).toEqual(["gpt-6.1-sol"]);
+  },
+);
 
 const modelInfo = (...args: [] | [unknown]): WorkerModelInfo => {
   const base = {
