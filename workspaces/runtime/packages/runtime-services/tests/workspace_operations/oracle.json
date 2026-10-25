@@ -657,7 +657,8 @@
         },
         "autoWake": true,
         "worktreeReady": true,
-        "inFlight": false
+        "inFlight": false,
+        "imageWorkspace": true
       },
       "operations": [],
       "checkpoints": [],
@@ -678,7 +679,8 @@
         },
         "autoWake": true,
         "worktreeReady": true,
-        "inFlight": false
+        "inFlight": false,
+        "imageWorkspace": true
       },
       "eligible": false
     }
@@ -1569,7 +1571,8 @@
         },
         "autoWake": true,
         "worktreeReady": true,
-        "inFlight": false
+        "inFlight": false,
+        "imageWorkspace": null
       },
       "operations": [],
       "checkpoints": [],
@@ -1590,7 +1593,8 @@
         },
         "autoWake": true,
         "worktreeReady": true,
-        "inFlight": false
+        "inFlight": false,
+        "imageWorkspace": null
       },
       "eligible": true
     }

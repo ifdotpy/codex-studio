@@ -26,6 +26,7 @@ pub async fn finish_stored_workspaces(store: &RuntimeStore) -> Result<usize, Sto
             let id = value["id"].as_str().unwrap_or("legacy").to_owned();
             let record = AgentRecord::from_value(value).map_err(|_| StoreError::InvalidStoredObject { table: "runtime_agents", id })?;
             AgentRepository::put(tx, &record)?;
+            crate::agents_create::publish_agent(tx, &record.value())?;
             count += 1;
         }
         Ok(count)

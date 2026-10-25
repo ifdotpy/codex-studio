@@ -531,7 +531,8 @@
       },
       "autoWake": true,
       "worktreeReady": true,
-      "inFlight": false
+      "inFlight": false,
+      "imageWorkspace": true
     },
     "request": {
       "id": "agent",
@@ -1311,7 +1312,8 @@
       },
       "autoWake": true,
       "worktreeReady": true,
-      "inFlight": false
+      "inFlight": false,
+      "imageWorkspace": null
     },
     "request": {
       "id": "agent",
@@ -1327,7 +1329,8 @@
       },
       "autoWake": true,
       "worktreeReady": true,
-      "inFlight": false
+      "inFlight": false,
+      "imageWorkspace": null
     }
   },
   {
