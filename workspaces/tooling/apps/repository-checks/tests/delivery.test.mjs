@@ -18,6 +18,126 @@ const repository = path.resolve(
 );
 const fixtureApp = path.join(os.tmpdir(), "checked", "Codex Studio.app");
 
+test("explicit canary skip keeps target verification and the normal install owner", () => {
+  const options = parseDeliveryArguments([
+    "HEAD",
+    "--app",
+    fixtureApp,
+    "--skip-canary",
+  ]);
+  const plan = deliveryPlan({
+    ...options,
+    platform: "darwin",
+    commit: "b".repeat(40),
+    repository,
+  });
+  assert.deepEqual(
+    plan.map((step) => step.label),
+    ["verify target", "record canary skip", "stage and verify"],
+  );
+  assert.equal(plan[0].args.at(-1), "--dry-run");
+  assert.equal(plan[1].canarySkip.commit, "b".repeat(40));
+  assert.equal(plan[1].canarySkip.app, fixtureApp);
+  assert.ok(
+    plan[2].args.some((argument) => argument.endsWith("deliver_server.py")),
+  );
+  assert.ok(!plan[2].args.includes("--dry-run"));
+  assert.throws(() => parseDeliveryArguments(["--skip-canary"]), /--app/);
+  assert.throws(
+    () =>
+      parseDeliveryArguments([
+        "--app",
+        fixtureApp,
+        "--skip-canary",
+        "--dry-run",
+      ]),
+    /--dry-run/,
+  );
+  assert.throws(
+    () =>
+      parseDeliveryArguments([
+        "--app",
+        fixtureApp,
+        "--skip-canary",
+        "--allow-retained-claude-steer-failure",
+      ]),
+    /combine/,
+  );
+  assert.throws(
+    () =>
+      deliveryPlan({
+        ...options,
+        platform: "linux",
+        commit: "b".repeat(40),
+        repository,
+      }),
+    /Mac delivery/,
+  );
+});
+
+test("prepared skip delivery records the exact artifact without a passing canary verdict", (t) => {
+  const folder = fs.mkdtempSync(
+    path.join(os.tmpdir(), "delivery-canary-skip-"),
+  );
+  t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+  const gate = {
+    folder,
+    requestId: "skip-one",
+    commit: "b".repeat(40),
+    app: fixtureApp,
+    url: "http://127.0.0.1:4620",
+  };
+  const artifact = {
+    build: { commit: gate.commit },
+    bundleHash: "c".repeat(64),
+    backendHash: "d".repeat(64),
+  };
+  assert.throws(
+    () =>
+      delivery.writeCanarySkip(
+        gate,
+        { ...artifact, build: { commit: "e".repeat(40) } },
+        "f".repeat(40),
+      ),
+    /requested commit/,
+  );
+  const receiptFile = delivery.writeCanarySkip(gate, artifact, "f".repeat(40));
+  const receipt = JSON.parse(fs.readFileSync(receiptFile, "utf8"));
+  assert.equal(receipt.decision, "skipped");
+  assert.equal(receipt.authorization, "--skip-canary");
+  assert.equal(receipt.operatorCommit, "f".repeat(40));
+  assert.deepEqual(receipt.request.artifact, artifact);
+  assert.equal(receipt.report, undefined);
+  assert.throws(
+    () => delivery.writeCanarySkip(gate, artifact, "f".repeat(40)),
+    /EEXIST/,
+  );
+  assert.equal(fs.statSync(receiptFile).mode & 0o777, 0o600);
+});
+
+test("only an explicit prepared-package skip may use a different operator commit", () => {
+  const source = {
+    commit: "b".repeat(40),
+    head: "a".repeat(40),
+    dirty: "",
+    app: fixtureApp,
+    skipCanary: true,
+  };
+  assert.doesNotThrow(() => delivery.validateDeliverySource(source));
+  assert.throws(
+    () => delivery.validateDeliverySource({ ...source, skipCanary: false }),
+    /requested commit/,
+  );
+  assert.throws(
+    () => delivery.validateDeliverySource({ ...source, app: undefined }),
+    /requested commit/,
+  );
+  assert.throws(
+    () => delivery.validateDeliverySource({ ...source, dirty: " M tracked" }),
+    /tracked changes/,
+  );
+});
+
 test("retained Claude steer admission is explicit and keeps the real canary", () => {
   const options = parseDeliveryArguments([
     "HEAD",

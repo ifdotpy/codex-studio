@@ -25,6 +25,13 @@ just deliver-server COMMIT --app '/absolute/package/Codex Studio.app'
 ```
 
 `--dry-run` checks the target without a package build, canary, or state write.
+Use `--skip-canary` only with explicit approval to install a prepared `--app`
+without the canary. This option records a skip, not a passing verdict. It keeps
+the target, signature, receipt, backend, and retained-process checks. For this
+explicit prepared-package path, the clean operator checkout may have a different
+commit. The package must still match `COMMIT`. The skip record identifies both
+commits and the exact artifact. Do not combine it with `--dry-run` or the retained
+Claude admission option.
 `--url` selects another loopback origin. `--receipts` selects the local receipt
 directory. The default receipt directory is `~/.cache/codex-studio/deliveries/COMMIT`.
 Retry with the same commit, package, and receipt directory after a lost response.

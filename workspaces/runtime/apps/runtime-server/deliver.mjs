@@ -103,6 +103,52 @@ export function writeCanaryAdmission(gate, artifact, report, exitCode) {
   return { decision, receiptFile };
 }
 
+export function writeCanarySkip(gate, artifact, operatorCommit) {
+  if (artifact.build?.commit !== gate.commit)
+    throw new Error("The candidate differs from the requested commit.");
+  const receiptFile = path.join(
+    gate.folder,
+    `canary-skip-${gate.requestId}.json`,
+  );
+  fs.writeFileSync(
+    receiptFile,
+    JSON.stringify(
+      {
+        version: 1,
+        request: {
+          requestId: gate.requestId,
+          commit: gate.commit,
+          app: gate.app,
+          url: gate.url,
+          artifact,
+        },
+        decision: "skipped",
+        authorization: "--skip-canary",
+        operatorCommit,
+        recordedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    ) + "\n",
+    { mode: 0o600, flag: "wx" },
+  );
+  return receiptFile;
+}
+
+export function validateDeliverySource({
+  commit,
+  head,
+  dirty,
+  app,
+  skipCanary,
+}) {
+  if (commit !== head && !(app && skipCanary))
+    throw new Error(
+      "Use a worktree at the requested commit before Mac delivery.",
+    );
+  if (dirty) throw new Error("Commit the tracked changes before Mac delivery.");
+}
+
 // Reuse the staging owner's complete bundle hash, not a second hash definition.
 export function deliveryArtifact(app, python) {
   return JSON.parse(
@@ -150,12 +196,14 @@ export function parseDeliveryArguments(argv) {
     url: undefined,
     receipts: undefined,
     allowRetainedClaudeSteerFailure: false,
+    skipCanary: false,
   };
   const args = [...argv];
   if (args[0] && !args[0].startsWith("--")) options.ref = args.shift();
   while (args.length) {
     const flag = args.shift();
     if (flag === "--dry-run") options.dryRun = true;
+    else if (flag === "--skip-canary") options.skipCanary = true;
     else if (flag === "--allow-retained-claude-steer-failure")
       options.allowRetainedClaudeSteerFailure = true;
     else if (["--app", "--url", "--receipts"].includes(flag)) {
@@ -173,6 +221,15 @@ export function parseDeliveryArguments(argv) {
     throw new Error(
       "The retained Claude steer admission requires a real canary, not --dry-run.",
     );
+  if (options.skipCanary) {
+    if (!options.app) throw new Error("Provide --app with --skip-canary.");
+    if (options.dryRun)
+      throw new Error("Do not combine --skip-canary with --dry-run.");
+    if (options.allowRetainedClaudeSteerFailure)
+      throw new Error(
+        "Do not combine --skip-canary with retained Claude admission.",
+      );
+  }
   return options;
 }
 
@@ -184,10 +241,18 @@ export function deliveryPlan({
   url,
   receipts,
   allowRetainedClaudeSteerFailure = false,
+  skipCanary = false,
   repository: root = repository,
 }) {
   if (platform === "linux") {
-    if (app || dryRun || url || receipts || allowRetainedClaudeSteerFailure)
+    if (
+      app ||
+      dryRun ||
+      url ||
+      receipts ||
+      allowRetainedClaudeSteerFailure ||
+      skipCanary
+    )
       throw new Error("Mac delivery options are not supported on Linux");
     return [
       {
@@ -270,44 +335,60 @@ export function deliveryPlan({
   const resume =
     saved?.request?.commit === commit &&
     Object.values(contract.phases).includes(saved.phase);
-  if (!resume || allowRetainedClaudeSteerFailure) {
+  if (!resume || allowRetainedClaudeSteerFailure || skipCanary) {
     steps.push({
       ...stage,
       label: "verify target",
       args: [...stage.args, "--dry-run"],
     });
-    const requestId = allowRetainedClaudeSteerFailure
-      ? randomUUID()
-      : undefined;
-    const reportFile =
-      requestId && path.join(folder, `canary-${requestId}.json`);
-    steps.push({
-      label: "upgrade canary",
-      command: reportFile ? process.execPath : "just",
-      args: [
-        reportFile
-          ? path.join(root, "workspaces/tooling/apps/upgrade-canary/canary.mjs")
-          : "upgrade-canary",
-        "--to",
-        application,
+    if (skipCanary) {
+      steps.push({
+        label: "record canary skip",
+        canarySkip: {
+          requestId: randomUUID(),
+          folder,
+          app: application,
+          commit,
+          url: url ?? `http://127.0.0.1:${layout.port}`,
+        },
+      });
+    } else {
+      const requestId = allowRetainedClaudeSteerFailure
+        ? randomUUID()
+        : undefined;
+      const reportFile =
+        requestId && path.join(folder, `canary-${requestId}.json`);
+      steps.push({
+        label: "upgrade canary",
+        command: reportFile ? process.execPath : "just",
+        args: [
+          reportFile
+            ? path.join(
+                root,
+                "workspaces/tooling/apps/upgrade-canary/canary.mjs",
+              )
+            : "upgrade-canary",
+          "--to",
+          application,
+          ...(reportFile
+            ? ["--report-json", reportFile, "--request-id", requestId]
+            : []),
+        ],
         ...(reportFile
-          ? ["--report-json", reportFile, "--request-id", requestId]
-          : []),
-      ],
-      ...(reportFile
-        ? {
-            canaryAdmission: {
-              requestId,
-              reportFile,
-              folder,
-              app: application,
-              commit,
-              url: url ?? `http://127.0.0.1:${layout.port}`,
-              allowRetainedClaudeSteerFailure,
-            },
-          }
-        : {}),
-    });
+          ? {
+              canaryAdmission: {
+                requestId,
+                reportFile,
+                folder,
+                app: application,
+                commit,
+                url: url ?? `http://127.0.0.1:${layout.port}`,
+                allowRetainedClaudeSteerFailure,
+              },
+            }
+          : {}),
+      });
+    }
   }
   steps.push(stage);
   return steps;
@@ -322,22 +403,38 @@ async function main(argv) {
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
   const commit = git(["rev-parse", "--verify", `${options.ref}^{commit}`]);
+  const operatorCommit = git(["rev-parse", "HEAD"]);
   if (process.platform === "darwin") {
-    if (commit !== git(["rev-parse", "HEAD"]))
-      throw new Error(
-        "Use a worktree at the requested commit before Mac delivery.",
-      );
-    if (git(["status", "--porcelain", "--untracked-files=no"]))
-      throw new Error("Commit the tracked changes before Mac delivery.");
+    validateDeliverySource({
+      ...options,
+      commit,
+      head: operatorCommit,
+      dirty: git(["status", "--porcelain", "--untracked-files=no"]),
+    });
   }
   const python =
     process.platform === "darwin" ? await deliveryPython() : undefined;
+  let skippedArtifact;
   for (const step of deliveryPlan({
     ...options,
     platform: process.platform,
     commit,
   })) {
     console.log(step.label);
+    if (step.canarySkip) {
+      const gate = step.canarySkip;
+      skippedArtifact = deliveryArtifact(gate.app, python);
+      fs.mkdirSync(gate.folder, { recursive: true, mode: 0o700 });
+      const receiptFile = writeCanarySkip(
+        gate,
+        skippedArtifact,
+        operatorCommit,
+      );
+      console.log(
+        `Canary skipped by explicit request; recorded in ${receiptFile}`,
+      );
+      continue;
+    }
     if (step.canaryAdmission) {
       const gate = step.canaryAdmission;
       const artifact = deliveryArtifact(gate.app, python);
@@ -374,6 +471,12 @@ async function main(argv) {
       );
       continue;
     }
+    if (
+      skippedArtifact &&
+      JSON.stringify(deliveryArtifact(options.app, python)) !==
+        JSON.stringify(skippedArtifact)
+    )
+      throw new Error("The candidate artifact changed after the canary skip.");
     execFileSync(
       step.command === "python3" ? python : step.command,
       step.args,

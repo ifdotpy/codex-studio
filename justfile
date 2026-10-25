@@ -26,7 +26,7 @@ build-release-binaries dir="":
 verify-release-binaries dir="":
     @node workspaces/client/apps/desktop/release-binaries.mjs verify {{quote(dir)}}
 
-[doc("Deliver a commit (default HEAD) on this host. Linux uses its source release and systemd owner. macOS verifies a signed package and its upgrade canary, then uses the existing recovery owner. Use --app PATH for a prepared Mac package and --dry-run to verify without an install.")]
+[doc("Deliver a commit (default HEAD) on this host. Linux uses its source release and systemd owner. macOS verifies a signed package and its upgrade canary, then uses the existing recovery owner. Use --app PATH for a prepared Mac package and --dry-run to verify without an install. Explicitly approved Mac installs may use --app PATH --skip-canary.")]
 deliver-server commit="HEAD" *args:
     @node workspaces/runtime/apps/runtime-server/deliver.mjs "$@"
 
