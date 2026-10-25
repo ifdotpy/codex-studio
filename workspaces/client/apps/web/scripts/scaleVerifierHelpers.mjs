@@ -864,7 +864,12 @@ export async function createReadinessMarkerDirectory(path) {
 // Arms the directory watch before any worker is created, then inspects the
 // directory once so a marker published before arming is not missed. A marker
 // is accepted only when its final name holds the exact per-worker token.
-export async function watchReadinessMarkers(directory, tokens, signal = null) {
+export async function watchReadinessMarkers(
+  directory,
+  tokens,
+  signal = null,
+  watchDirectory = watch,
+) {
   signal?.throwIfAborted();
   const ready = [];
   const seen = new Set();
@@ -908,7 +913,7 @@ export async function watchReadinessMarkers(directory, tokens, signal = null) {
     for (let index = 0; index < tokens.length; index += 1) check(index);
   };
   const ownName = basename(directory);
-  const watcher = watch(directory, (_eventType, filename) => {
+  const watcher = watchDirectory(directory, (_eventType, filename) => {
     if (closed) return;
     if (filename == null) {
       checkAll();
@@ -925,13 +930,16 @@ export async function watchReadinessMarkers(directory, tokens, signal = null) {
       );
       return;
     }
-    // A temporary name exists only until the atomic rename publishes the final name.
-    if (name.endsWith(".tmp")) return;
-    const match = READINESS_MARKER_PATTERN.exec(name);
+    // A rename notification may retain the temporary name. Inspect only the
+    // corresponding final path; temporary contents never prove readiness.
+    const temporary = name.endsWith(".tmp");
+    const match = READINESS_MARKER_PATTERN.exec(
+      temporary ? name.slice(0, -4) : name,
+    );
     const index = match ? Number(match[1]) : Number.NaN;
-    if (!Number.isSafeInteger(index) || index >= tokens.length)
-      fail(new Error(`Unknown readiness marker name: ${name}`));
-    else check(index);
+    if (!Number.isSafeInteger(index) || index >= tokens.length) {
+      if (!temporary) fail(new Error(`Unknown readiness marker name: ${name}`));
+    } else check(index);
   });
   watcher.on("error", fail);
   const onAbort = () =>
