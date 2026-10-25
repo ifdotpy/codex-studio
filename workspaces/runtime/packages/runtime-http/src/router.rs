@@ -709,7 +709,7 @@ pub fn router(mut state: HttpState) -> Result<Router, Box<dyn std::error::Error>
         std::io::Error::other(format!("invalid HTTP route registration: {error}"))
     })?;
     state.validators =
-        Registry::compile(&registered.iter().map(|item| item.key()).collect::<Vec<_>>())?;
+        Registry::production(&registered.iter().map(|item| item.key()).collect::<Vec<_>>())?;
     state.etag_operations = registered
         .iter()
         .filter_map(|operation| {

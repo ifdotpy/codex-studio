@@ -1,3 +1,4 @@
+use notify::Watcher;
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -9,7 +10,29 @@ use studio_runtime_process::{BackendIdentity, SupervisorClient};
 // A hang guard, never a delay or a condition for success.
 pub const HANG_GUARD: Duration = Duration::from_secs(120);
 
+pub(crate) fn watch_changes(
+    root: &Path,
+) -> (
+    notify::RecommendedWatcher,
+    std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
+) {
+    let (sender, events) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event.as_ref().map_or(true, |event| {
+            event.kind.is_create() || event.kind.is_modify() || event.kind.is_remove()
+        }) {
+            drop(sender.send(event));
+        }
+    })
+    .expect("supervisor readiness watcher starts");
+    watcher
+        .watch(root, notify::RecursiveMode::NonRecursive)
+        .expect("watch supervisor state");
+    (watcher, events)
+}
+
 pub fn wait(child: &mut Child, identity: BackendIdentity, stderr: &Path) {
+    let (_watcher, events) = watch_changes(&identity.state_dir);
     let socket = identity.state_dir.join("supervisor.sock");
     let deadline = Instant::now() + HANG_GUARD;
     let result = loop {
@@ -44,8 +67,11 @@ pub fn wait(child: &mut Child, identity: BackendIdentity, stderr: &Path) {
                     io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
                 ) =>
             {
-                // Condition polling yields the CPU to the child; no fixed startup sleep.
-                std::thread::park_timeout(Duration::from_millis(10));
+                if let Err(error) =
+                    events.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                {
+                    break Err(format!("supervisor readiness event failed: {error}"));
+                }
             }
             Err(error) => break Err(format!("supervisor readiness connect failed: {error}")),
         }

@@ -361,6 +361,7 @@ pub fn test_canvas() -> Connection {
     let tx = connection.transaction().expect("fixture transaction");
     crate::agent_columns::prepare(&tx).expect("agent columns");
     crate::bootstrap::prepare_sync_schema(&tx).expect("sync schema");
+    crate::bootstrap::prepare_runtime_event_indexes(&tx).expect("scheduler and event indexes");
     crate::AgentRepository::prepare_change_journal(&tx).expect("change journal");
     crate::agent_volatile::prepare(&tx).expect("volatile fields");
     crate::feature_schema::prepare(&tx).expect("feature schema");

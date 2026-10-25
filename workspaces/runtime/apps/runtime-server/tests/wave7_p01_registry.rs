@@ -4686,13 +4686,35 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
     eprintln!("restart witness ran in {:?}", started.elapsed());
 }
 
-/// Wait in real time until the store reports no pending WAL flush. Paused time
-/// would advance past a bounded poll while the writer thread is still busy.
-async fn wait_for_wal_flush(store: &RuntimeStore) -> bool {
+/// SQLite emits these receipts after the actual checkpoint, while a taken
+/// scheduling claim alone no longer proves that the WAL reached the database.
+async fn wait_for_wal_flush(
+    events: &mut mpsc::UnboundedReceiver<studio_runtime_store::StoreDiagnosticsEvent>,
+) -> bool {
+    use studio_runtime_store::{StoreDatabaseKind, StoreDiagnosticsEvent};
+    // SQLite runs on dedicated threads; their completion must not race an
+    // automatically advancing virtual hang guard.
     tokio::time::resume();
     let flushed = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, async {
-        while store.wal_checkpoint_retry_after().unwrap().is_some() {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        for expected in [StoreDatabaseKind::Canvas, StoreDatabaseKind::Analytics] {
+            match events
+                .recv()
+                .await
+                .expect("checkpoint observer remains open")
+            {
+                StoreDiagnosticsEvent::WalCheckpoint {
+                    database,
+                    busy,
+                    log_frames,
+                    checkpointed_frames,
+                    ..
+                } => {
+                    assert_eq!(database, expected);
+                    assert_eq!(busy, 0);
+                    assert_eq!(checkpointed_frames, log_frames);
+                }
+                _ => unreachable!("observer sends only checkpoint events"),
+            }
         }
     })
     .await
@@ -4708,6 +4730,26 @@ async fn wait_for_wal_flush(store: &RuntimeStore) -> bool {
 async fn a_commit_without_a_registry_wake_is_flushed_after_one_interval() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    static CHECKPOINTS: std::sync::OnceLock<
+        mpsc::UnboundedSender<studio_runtime_store::StoreDiagnosticsEvent>,
+    > = std::sync::OnceLock::new();
+    fn checkpointed(event: studio_runtime_store::StoreDiagnosticsEvent) {
+        if matches!(
+            event,
+            studio_runtime_store::StoreDiagnosticsEvent::WalCheckpoint { .. }
+        ) {
+            // A failed fixture may already have closed its receiver.
+            if let Some(sender) = CHECKPOINTS.get() {
+                let _closed = sender.send(event);
+            }
+        }
+    }
+    let (sender, mut checkpoints) = mpsc::unbounded_channel();
+    CHECKPOINTS.set(sender).unwrap();
+    store
+        .set_diagnostics_callback(Some(checkpointed))
+        .await
+        .unwrap();
     let (launcher, _writes) = scripted_with_unknown_writes(false);
     let registry = AccountRegistry::new(store.clone(), launcher, test_registry_config())
         .await
@@ -4737,7 +4779,7 @@ async fn a_commit_without_a_registry_wake_is_flushed_after_one_interval() {
         assert!(store.wal_checkpoint_retry_after().unwrap().is_some());
         tokio::time::sleep(interval).await;
         assert!(
-            wait_for_wal_flush(&store).await,
+            wait_for_wal_flush(&mut checkpoints).await,
             "commit {value} was not flushed one interval later"
         );
     }
@@ -4749,4 +4791,5 @@ async fn a_commit_without_a_registry_wake_is_flushed_after_one_interval() {
         .expect("account registry shutdown hang guard")
         .unwrap()
         .unwrap();
+    store.set_diagnostics_callback(None).await.unwrap();
 }

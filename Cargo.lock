@@ -5584,6 +5584,7 @@ dependencies = [
  "chrono",
  "command-fds",
  "file-rotate",
+ "notify",
  "process-wrap",
  "pty-process",
  "rustix",

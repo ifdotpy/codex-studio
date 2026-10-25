@@ -69,7 +69,7 @@ pub(crate) struct MatchedOperation {
     pub has_opaque_body: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CompileError {
     pub operation_id: String,
     pub message: String,
@@ -88,6 +88,17 @@ impl fmt::Display for CompileError {
 impl std::error::Error for CompileError {}
 
 impl Registry {
+    /// The complete production route inventory and embedded schema are immutable.
+    /// Reuse their compiled validators across routers in this process; scoped
+    /// probe registries still compile their own requested operation set.
+    pub(crate) fn production(registered: &[(String, String)]) -> Result<Self, CompileError> {
+        static PRODUCTION_REGISTRY: std::sync::OnceLock<Result<Registry, CompileError>> =
+            std::sync::OnceLock::new();
+        PRODUCTION_REGISTRY
+            .get_or_init(|| Registry::compile(registered))
+            .clone()
+    }
+
     pub(crate) fn compile(registered: &[(String, String)]) -> Result<Self, CompileError> {
         let document = crate::schema::openapi_document().clone();
         let schema_registry = schema_registry(&document).map_err(|message| CompileError {
@@ -1298,7 +1309,7 @@ mod tests {
 
     use super::{
         MAX_SAFE_INTEGER, OperationValidator, RawRequest, Registry, check_safe_integer_bounds,
-        compile_part,
+        compile_part, schema_registry,
     };
     use axum::http::{HeaderMap, HeaderValue};
     use serde_json::{Map, Value, json};
@@ -1329,8 +1340,15 @@ mod tests {
         let persisted_elapsed = started.elapsed();
         let operations = crate::schema::operations().expect("OpenAPI operations");
         let memory_before = resident_kib();
-        let registry = Registry::compile(&operations.iter().cloned().collect::<Vec<_>>())
-            .expect("all authority validators compile");
+        let operations = operations.iter().cloned().collect::<Vec<_>>();
+        let registry = Registry::production(&operations).expect("all authority validators compile");
+        let reused = Registry::production(&operations)
+            .expect("the compiled production registry is reusable");
+        assert!(Arc::ptr_eq(&registry.operations, &reused.operations));
+        assert!(Arc::ptr_eq(
+            &registry.stored_schemas,
+            &reused.stored_schemas
+        ));
         eprintln!(
             "named schema startup: persisted_us={} total_us={} http_named_count={} operations={} rss_before_kib={:?} rss_after_kib={:?}",
             persisted_elapsed.as_micros(),
