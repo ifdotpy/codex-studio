@@ -43,6 +43,7 @@ mod tool_reply_retirement;
 mod transport_reattach;
 mod unknown_thread_retry;
 mod unsent_start;
+mod vm_attachments;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
 use std::{

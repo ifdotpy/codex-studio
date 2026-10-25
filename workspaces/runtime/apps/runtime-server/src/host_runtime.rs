@@ -1707,8 +1707,8 @@ fn unix_time_ms() -> Result<f64, WorkerError> {
     Ok(now_ms)
 }
 
-fn verify_vm_claude_account(
-    accounts: &AccountDriver,
+fn verify_vm_claude_account<R: studio_runtime_services::account_driver::ProviderAuthReader>(
+    accounts: &AccountDriver<R>,
     account_key: &str,
     original_account: &Value,
     expected_pin: &Value,
@@ -1733,10 +1733,9 @@ fn verify_vm_claude_account(
         .iter()
         .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
         .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/account-identity".into()))?;
-    if accounts
-        .auth_pin(account_key)
+    if !accounts
+        .auth_pin_matches(account_key, expected_pin)
         .map_err(|_| WorkerError::PreparationPending("vm-credentials/account-status".into()))?
-        != *expected_pin
     {
         return Err(WorkerError::PreparationRefused(
             "vm-credentials/account-changed".into(),
@@ -3232,6 +3231,64 @@ IFS= read -r release
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn vm_claude_account_refresh_accepts_a_verified_identity_refinement() {
+        use studio_runtime_services::account_driver::{
+            AccountDriver, AuthMetadata, AuthProfile, ProviderAuthReader,
+        };
+        struct VerifiedReader;
+        impl ProviderAuthReader for VerifiedReader {
+            fn read(&self, _profile: &AuthProfile) -> AuthMetadata {
+                studio_runtime_services::account_driver::claude::auth_metadata_from_output(
+                    br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.invalid","orgId":"org-a"}"#,
+                    true,
+                )
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let registry = root.path().join("registry.json");
+        fs::write(
+            &registry,
+            json!({
+                "version":1,"defaultAccountKey":"claude-test",
+                "accounts":{"claude-test":{
+                    "id":"claude-test","provider":"claude","home":root.path().join("home"),
+                    "label":"fixture","source":"test","status":"ready",
+                    "email":"fixture@example.invalid","accountId":"claude:fixture@example.invalid",
+                    "_credentialIdentity":"claude:fixture@example.invalid","claudeOptions":{}
+                }},"logins":{},"deleteReceipts":{}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let accounts = AccountDriver::open_with_reader(registry, VerifiedReader).unwrap();
+        let original = accounts.snapshot().unwrap().accounts[0].clone();
+        let expected_pin = accounts.auth_pin("claude-test").unwrap();
+        verify_vm_claude_account(
+            &accounts,
+            "claude-test",
+            &original,
+            &expected_pin,
+            "fixture@example.invalid",
+            true,
+        )
+        .unwrap();
+        assert_ne!(accounts.auth_pin("claude-test").unwrap(), expected_pin);
+        let mut changed_original = original;
+        changed_original["email"] = json!("other@example.invalid");
+        assert!(matches!(
+            verify_vm_claude_account(
+                &accounts,
+                "claude-test",
+                &changed_original,
+                &expected_pin,
+                "fixture@example.invalid",
+                false,
+            ),
+            Err(WorkerError::PreparationRefused(code)) if code == "vm-credentials/account-changed"
+        ));
     }
 
     #[test]

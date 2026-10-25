@@ -116,6 +116,37 @@ async fn compile_with_artifacts(
     Ok((turn_snapshot, events, compiled))
 }
 
+/// Copy authorized host attachments before freezing the provider projection.
+/// Both a new turn and a steer use this boundary; commit rechecks its evidence.
+async fn vm_attachment_paths(
+    store: &Arc<RuntimeStore>,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    snapshot: &mut turn::PreparationSnapshot,
+) -> Result<(), WorkerError> {
+    if snapshot.assets.is_empty() {
+        return Ok(());
+    }
+    let record = stored_agent_value(store, &intent.agent_id).await?;
+    if record["executionMode"] != "vm" {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    let guest: Arc<dyn crate::linux_vm_guest::GuestRpc> =
+        resources.guest_rpc.clone().unwrap_or_else(|| {
+            Arc::new(crate::linux_vm_guest::UnixGuestRpc::for_runtime_state(
+                store.state_dir(),
+            ))
+        });
+    #[cfg(not(unix))]
+    let guest = resources
+        .guest_rpc
+        .clone()
+        .ok_or_else(|| refusal("VM attachment guest unavailable".into()))?;
+    snapshot.asset_paths = crate::vm_attachments::prepare(store, guest, intent, snapshot).await?;
+    Ok(())
+}
+
 /// Canonical transcript projection shared by turn starts and acknowledged steers.
 pub(crate) fn compiled_submission(
     intent: &TurnIntent,
@@ -177,6 +208,7 @@ pub(crate) async fn prepare_steer(
     })
     .await?;
     snapshot.operation_id = super::super::steer::operation(&intent.account_key, &intent.attempt_id);
+    vm_attachment_paths(&store, resources, intent, &mut snapshot).await?;
     let (snapshot, _, compiled) = compile_with_artifacts(&store, snapshot, events).await?;
     let transport_intent = intent.clone();
     let expected_turn = expected_turn.to_owned();
@@ -233,6 +265,7 @@ pub(crate) fn commit_steer(
     snapshot.operation_id = prepared.snapshot.operation_id.clone();
     snapshot.prepared_at = prepared.snapshot.prepared_at;
     snapshot.artifact_paths = prepared.snapshot.artifact_paths.clone();
+    snapshot.asset_paths = prepared.snapshot.asset_paths.clone();
     let current = turn::compile(&snapshot, &events).map_err(|e| refusal(e.to_string()))?;
     if serde_json::to_value(current).map_err(|_| invalid("steer compilation"))?
         != serde_json::to_value(&prepared.compiled).map_err(|_| invalid("steer compilation"))?
@@ -1954,6 +1987,7 @@ pub(crate) async fn prepare_ready(
         intent.attempt_id,
         method.as_str()
     );
+    vm_attachment_paths(&store, &resources, intent, &mut turn_snapshot).await?;
     let (turn_snapshot, events, compiled) =
         compile_with_artifacts(&store, turn_snapshot, events).await?;
     guard.compiler_snapshot = Some(turn_snapshot.clone());
@@ -2073,6 +2107,7 @@ pub(crate) fn commit(
         current_submission.prepared_at = baseline.prepared_at;
         current_submission.operation_id = baseline.operation_id.clone();
         current_submission.artifact_paths = baseline.artifact_paths.clone();
+        current_submission.asset_paths = baseline.asset_paths.clone();
         let recompiled = stage("turn_submission.commit.compile", || {
             turn::compile(&current_submission, &current_events)
         })

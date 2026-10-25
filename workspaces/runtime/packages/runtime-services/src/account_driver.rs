@@ -1882,6 +1882,37 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .collect())
     }
 
+    /// Compare the selected pin with the current non-secret account identity.
+    /// A Claude status read can add identity evidence through `claude_identity::accepts`.
+    /// Every other field in the `auth_pin` projection must remain exact.
+    pub fn auth_pin_matches(
+        &self,
+        account: &str,
+        expected: &Value,
+    ) -> Result<bool, AccountDriverError> {
+        let current = self.auth_pin(account)?;
+        if current == *expected {
+            return Ok(true);
+        }
+        if expected.get("provider").and_then(Value::as_str) != Some("claude")
+            || current.get("provider").and_then(Value::as_str) != Some("claude")
+        {
+            return Ok(false);
+        }
+        let (Some(old), Some(new)) = (
+            expected.get("_credentialIdentity").and_then(Value::as_str),
+            current.get("_credentialIdentity").and_then(Value::as_str),
+        ) else {
+            return Ok(false);
+        };
+        if !claude_identity::accepts(old, new) {
+            return Ok(false);
+        }
+        let mut refined = expected.clone();
+        refined["_credentialIdentity"] = Value::String(new.to_owned());
+        Ok(refined == current)
+    }
+
     /// Refresh the response projection from credentials without persisting it.
     pub fn listing_snapshot(&self) -> Result<AccountsSnapshot, AccountDriverError> {
         // Provider reads run on this copy, so the registry lock is not held during I/O.
@@ -3527,6 +3558,134 @@ exit 0
             error: None,
             error_kind: None,
         }
+    }
+
+    #[test]
+    fn auth_pin_refinement_accepts_only_added_claude_identity_evidence() {
+        let fixture = TestDir::new();
+        let path = claude_registry(&fixture, "ready", None);
+        let mut metadata = ready_claude();
+        metadata.credential_identity = Some(claude_identity::identity(
+            "fixture@example.invalid",
+            Some("org-a"),
+            Some("account-a"),
+        ));
+        let driver =
+            AccountDriver::open_with_reader(&path, FixedReader(metadata)).expect("open fixture");
+        let selected = driver.auth_pin("default").expect("selected pin");
+        assert_eq!(
+            driver.get("default").expect("refresh metadata"),
+            AccountStatus::Ready
+        );
+        let observed = driver.auth_pin("default").expect("observed pin");
+        assert_ne!(
+            selected, observed,
+            "the status read learns the identity tuple"
+        );
+        assert!(
+            driver
+                .auth_pin_matches("default", &selected)
+                .expect("compare legacy pin")
+        );
+        let mut partial = selected.clone();
+        partial["_credentialIdentity"] = Value::String(claude_identity::identity(
+            "fixture@example.invalid",
+            Some("org-a"),
+            None,
+        ));
+        assert!(
+            driver
+                .auth_pin_matches("default", &partial)
+                .expect("compare partial pin")
+        );
+        assert!(
+            driver
+                .auth_pin_matches("default", &observed)
+                .expect("compare exact pin")
+        );
+
+        for field in AUTH_PIN_FIELDS {
+            if field == "_credentialIdentity" {
+                continue;
+            }
+            let mut changed = selected.clone();
+            changed[field] = match field {
+                "id" | "duplicateOf" => Value::String("another-account".into()),
+                "provider" => Value::String("codex".into()),
+                "home" => Value::String("/fixture/another-home".into()),
+                "claudeOptions" => serde_json::json!({"configDir":"/fixture/another-config"}),
+                "accountId" => Value::String("claude:other@example.invalid".into()),
+                "deleted" | "disconnected" => Value::Bool(true),
+                "updatedAt" => serde_json::json!(2.0),
+                _ => panic!("add a changed fixture value for {field}"),
+            };
+            assert!(
+                !driver
+                    .auth_pin_matches("default", &changed)
+                    .expect("compare changed pin"),
+                "{field}"
+            );
+        }
+        let mut unexpected = selected;
+        unexpected["unknownField"] = Value::Bool(true);
+        assert!(
+            !driver
+                .auth_pin_matches("default", &unexpected)
+                .expect("compare unknown field")
+        );
+    }
+
+    #[test]
+    fn auth_pin_refinement_refuses_identity_replacement_loss_and_unknown_forms() {
+        let fixture = TestDir::new();
+        let path = claude_registry(&fixture, "ready", None);
+        let driver = AccountDriver::open_with_reader(&path, FixedReader(ready_claude()))
+            .expect("open fixture");
+        let legacy = "claude:fixture@example.invalid";
+        let partial = claude_identity::identity("fixture@example.invalid", Some("org-a"), None);
+        let full =
+            claude_identity::identity("fixture@example.invalid", Some("org-a"), Some("account-a"));
+        let other_email =
+            claude_identity::identity("other@example.invalid", Some("org-a"), Some("account-a"));
+        let other_org =
+            claude_identity::identity("fixture@example.invalid", Some("org-b"), Some("account-a"));
+        let other_account =
+            claude_identity::identity("fixture@example.invalid", Some("org-a"), Some("account-b"));
+        for (old, new) in [
+            (serde_json::json!(full), serde_json::json!(legacy)),
+            (serde_json::json!(full), serde_json::json!(partial)),
+            (serde_json::json!(partial), serde_json::json!(legacy)),
+            (serde_json::json!(full), serde_json::json!(other_email)),
+            (serde_json::json!(legacy), serde_json::json!(other_email)),
+            (serde_json::json!(full), serde_json::json!(other_org)),
+            (serde_json::json!(full), serde_json::json!(other_account)),
+            (Value::Null, serde_json::json!(full)),
+            (serde_json::json!(full), Value::Null),
+            (serde_json::json!("unknown"), serde_json::json!(full)),
+            (serde_json::json!(full), serde_json::json!("unknown")),
+            (serde_json::json!(42), serde_json::json!(full)),
+        ] {
+            let mut selected = driver.auth_pin("default").expect("selected pin");
+            selected["_credentialIdentity"] = old;
+            driver.state.lock().expect("registry lock").value["accounts"]["default"]["_credentialIdentity"] =
+                new;
+            assert!(
+                !driver
+                    .auth_pin_matches("default", &selected)
+                    .expect("compare identity boundary")
+            );
+        }
+        driver.state.lock().expect("registry lock").value["accounts"]["default"]["provider"] =
+            serde_json::json!("codex");
+        driver.state.lock().expect("registry lock").value["accounts"]["default"]["_credentialIdentity"] =
+            serde_json::json!(full);
+        let mut codex_selected = driver.auth_pin("default").expect("Codex pin");
+        codex_selected["_credentialIdentity"] = serde_json::json!(legacy);
+        assert!(
+            !driver
+                .auth_pin_matches("default", &codex_selected)
+                .expect("Claude refinement cannot apply to Codex")
+        );
     }
 
     #[test]

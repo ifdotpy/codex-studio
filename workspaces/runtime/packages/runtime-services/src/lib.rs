@@ -204,6 +204,7 @@ pub mod turn_prepare;
 pub mod usage;
 pub mod usage_resume;
 pub mod vault;
+mod vm_attachments;
 pub mod vm_preparation;
 pub mod voice;
 pub mod voice_runtime;

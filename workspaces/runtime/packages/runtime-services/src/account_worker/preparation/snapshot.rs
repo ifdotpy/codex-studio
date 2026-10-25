@@ -1392,6 +1392,7 @@ pub(super) fn submission_snapshot(
             team_state,
             delivered_reminders,
             assets,
+            asset_paths: BTreeMap::new(),
             guidance: turn::GuidanceBundle { role },
             artifact_paths: BTreeMap::new(),
             prepared_at: now(),

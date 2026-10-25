@@ -41,6 +41,10 @@ use thiserror::Error;
 
 const START_RECEIPT_PREFIX: &str = "linux-vm-provider-start:";
 const START_REQUEST_ID_MAX_BYTES: usize = 128;
+/// Maximum provider start socket exchange. Two guest setup commands can each
+/// take 120 seconds; the remaining budget covers native startup and transport.
+/// An expired exchange stays unknown and never permits a second start.
+const PROVIDER_START_TIMEOUT: Duration = Duration::from_secs(300);
 const PROVIDER_RPC_TIMEOUT: Duration = Duration::from_secs(15);
 const EVENT_PAYLOAD_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const EVENT_CHUNK_MAX_BYTES: u64 = 1024 * 1024;
@@ -537,14 +541,11 @@ impl GuestProviderSession {
                 "provider.start",
                 params,
                 Some(identity.request_id.clone()),
-                Duration::from_secs(GUEST_RPC_TIMEOUT_SECONDS),
+                PROVIDER_START_TIMEOUT,
             )
             .await
             {
-                Ok(info) => {
-                    persist_started(store.clone(), identity.clone(), info.clone()).await?;
-                    info
-                }
+                Ok(info) => info,
                 Err(error) if error.uncertain() => return Err(GuestProviderError::Unknown),
                 Err(error) => {
                     persist_not_sent(store.clone(), identity.clone()).await?;
@@ -569,10 +570,12 @@ impl GuestProviderSession {
                     error.into()
                 }
             })?;
-            persist_started(store.clone(), identity.clone(), info.clone()).await?;
             info
         };
-        let info = parse_info(&identity.handle, started)?;
+        // A stale or terminal handle does not prove this start succeeded. Keep
+        // its existing receipt unchanged until running metadata is verified.
+        let info = parse_info(&identity.handle, started.clone())?;
+        persist_started(store, identity.clone(), started).await?;
         let cursor = info.acknowledged;
         Ok(Self {
             guest,
@@ -1202,6 +1205,9 @@ async fn read_guest_journal(
 }
 
 fn parse_info(handle: &str, value: Value) -> Result<ProviderInfo> {
+    if value.get("state").and_then(Value::as_str) != Some("running") {
+        return Err(GuestProviderError::Unknown);
+    }
     let parsed = ProviderInfo {
         handle: value
             .get("handle")
@@ -1508,6 +1514,271 @@ mod tests {
             launch(),
         )
         .await
+    }
+
+    struct TerminalInfoGuest {
+        inner: FakeGuest,
+        state: &'static str,
+    }
+
+    impl GuestRpc for TerminalInfoGuest {
+        fn stream(
+            &self,
+            method: &str,
+            params: &Value,
+            request_id: Option<&str>,
+            timeout: Duration,
+            on_frame: &mut dyn FnMut(Value) -> std::result::Result<(), GuestError>,
+        ) -> std::result::Result<Value, GuestError> {
+            let mut value = self
+                .inner
+                .stream(method, params, request_id, timeout, on_frame)?;
+            if method == "provider.start" || params["action"] == "info" {
+                value["state"] = json!(self.state);
+            }
+            Ok(value)
+        }
+    }
+
+    async fn saved_start(store: &RuntimeStore) -> String {
+        store
+            .read_async("linux_vm_provider/test_start_receipt", |connection| {
+                connection
+                    .query_row(
+                        "SELECT result FROM runtime_operation_receipts WHERE id='linux-vm-provider-start:agent-1:9'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(StoreError::from)
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn terminal_guest_info_keeps_the_reserved_start_without_relaunch() {
+        for state in ["lost", "exited"] {
+            let (_directory, store) = open_store().await;
+            let guest = Arc::new(TerminalInfoGuest {
+                inner: FakeGuest::new(true),
+                state,
+            });
+            assert!(matches!(
+                open_session(store.clone(), guest.clone()).await,
+                Err(GuestProviderError::Unknown)
+            ));
+            let reserved = saved_start(&store).await;
+            assert_eq!(
+                serde_json::from_str::<Value>(&reserved).unwrap()["phase"],
+                "reserved"
+            );
+            assert!(
+                matches!(
+                    open_session(store.clone(), guest.clone()).await,
+                    Err(GuestProviderError::Unknown)
+                ),
+                "{state} is not proof of a running provider"
+            );
+            assert_eq!(saved_start(&store).await, reserved);
+            assert_eq!(*guest.inner.starts.lock().unwrap(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_terminal_start_reply_never_becomes_a_started_receipt() {
+        for state in ["lost", "exited"] {
+            let (_directory, store) = open_store().await;
+            let guest = Arc::new(TerminalInfoGuest {
+                inner: FakeGuest::new(false),
+                state,
+            });
+            assert!(
+                matches!(
+                    open_session(store.clone(), guest.clone()).await,
+                    Err(GuestProviderError::Unknown)
+                ),
+                "{state} cannot complete a start"
+            );
+            let reserved = saved_start(&store).await;
+            assert_eq!(
+                serde_json::from_str::<Value>(&reserved).unwrap()["phase"],
+                "reserved"
+            );
+            assert!(open_session(store.clone(), guest.clone()).await.is_err());
+            assert_eq!(saved_start(&store).await, reserved);
+            assert_eq!(*guest.inner.starts.lock().unwrap(), 1);
+        }
+    }
+
+    #[cfg(unix)]
+    mod start_transport {
+        use super::*;
+        use crate::{
+            linux_vm_guest::UnixGuestRpc,
+            provider_session_task::{
+                SessionHandle, SessionOutcome, SessionTaskConfig, WriteOutcome,
+            },
+        };
+        use std::{
+            io::{BufRead, BufReader, Write},
+            os::unix::net::UnixListener,
+        };
+
+        // Inject only the socket deadline. Production still supplies its own
+        // start budget, which every real transport witness checks below.
+        struct ShortSocketDeadline {
+            inner: UnixGuestRpc,
+            observed: Mutex<Vec<Duration>>,
+        }
+
+        impl GuestRpc for ShortSocketDeadline {
+            fn stream(
+                &self,
+                method: &str,
+                params: &Value,
+                request_id: Option<&str>,
+                timeout: Duration,
+                on_frame: &mut dyn FnMut(Value) -> std::result::Result<(), GuestError>,
+            ) -> std::result::Result<Value, GuestError> {
+                self.observed.lock().unwrap().push(timeout);
+                self.inner.stream(
+                    method,
+                    params,
+                    request_id,
+                    timeout.min(Duration::from_secs(1)),
+                    on_frame,
+                )
+            }
+        }
+
+        enum Reply {
+            Unknown,
+            Lost,
+            Withheld,
+        }
+
+        async fn failed_start(reply: Reply) {
+            let (directory, store) = open_store().await;
+            let listener = UnixListener::bind(directory.path().join("guest.sock")).unwrap();
+            let (release, held) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut line = String::new();
+                BufReader::new(&mut socket).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["method"], "provider.start");
+                match reply {
+                    Reply::Unknown => {
+                        let response = json!({"id":request["id"],"error":{"code":"outcome_unknown","message":"native result is unknown"}});
+                        writeln!(socket, "{response}").unwrap();
+                    }
+                    Reply::Lost => {}
+                    Reply::Withheld => {
+                        let _released = held.recv_timeout(Duration::from_secs(5));
+                    }
+                }
+                drop(socket);
+                listener.set_nonblocking(true).unwrap();
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock,
+                    "the failed session must not dispatch another start"
+                );
+                request
+            });
+            let guest = Arc::new(ShortSocketDeadline {
+                inner: UnixGuestRpc::new(directory.path()),
+                observed: Mutex::new(Vec::new()),
+            });
+            let factory = Arc::new(GuestProviderTaskFactory::new(
+                store.clone(),
+                guest.clone(),
+                GuestProviderIdentity {
+                    agent_id: "agent-1".into(),
+                    epoch: 9,
+                    generation: 3,
+                    account_key: "default".into(),
+                    provider: "codex".into(),
+                },
+                "profiles/default",
+            ));
+            let mut session = SessionHandle::open(
+                factory,
+                ProviderHandle::for_account("agent-1"),
+                OpenOptions {
+                    clock: SessionClock::default(),
+                    launch: launch(),
+                    expected_generation: Some(Generation(3)),
+                },
+                SessionTaskConfig {
+                    initialize_params: json!({}),
+                    generation: Generation(3),
+                    wire: studio_runtime_providers::ProviderKind::Codex.wire(),
+                    timeout_ms: 1000,
+                    initialize_operation: OperationId("vm-test-initialize".into()),
+                    request_id_prefix: None,
+                    recovered: vec![],
+                },
+            )
+            .await
+            .unwrap();
+            let completed = tokio::time::timeout(Duration::from_secs(4), async {
+                assert!(
+                    session.events.recv().await.is_none(),
+                    "a failed open emits no provider journal"
+                );
+                assert!(
+                    session.status.changed().await.is_err(),
+                    "initialization must close after the open failure"
+                );
+                session.completion().await
+            })
+            .await;
+            let _released = release.send(());
+            let request = server.join().unwrap();
+            let exit = completed.expect("the actual socket deadline ends startup");
+            assert!(exit.result.is_err());
+            assert!(exit.adapter.is_none());
+            assert!(exit.outcomes.iter().any(|outcome| matches!(
+                outcome,
+                SessionOutcome::Write {
+                    outcome: WriteOutcome::NotSent,
+                    ..
+                }
+            )));
+            assert!(exit.outcomes.iter().any(|outcome| matches!(
+                outcome,
+                SessionOutcome::GenerationClosed { generation: 3 }
+            )));
+            let reserved = saved_start(&store).await;
+            let saved: Value = serde_json::from_str(&reserved).unwrap();
+            assert_eq!(saved["phase"], "reserved");
+            assert_eq!(saved["identity"]["requestId"], request["id"]);
+            assert_eq!(
+                guest.observed.lock().unwrap().as_slice(),
+                &[Duration::from_secs(300)],
+                "the production start budget must not inherit the one-hour general RPC timeout"
+            );
+            assert_eq!(saved_start(&store).await, reserved);
+        }
+
+        #[tokio::test]
+        async fn unknown_start_reply_closes_initialization_without_retry() {
+            failed_start(Reply::Unknown).await;
+        }
+
+        #[tokio::test]
+        async fn lost_start_reply_closes_initialization_without_retry() {
+            failed_start(Reply::Lost).await;
+        }
+
+        #[tokio::test]
+        async fn withheld_start_reply_hits_the_socket_deadline_without_retry() {
+            failed_start(Reply::Withheld).await;
+        }
     }
 
     #[tokio::test]

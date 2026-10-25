@@ -10,6 +10,9 @@ export default {
       // Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.
       "restart-reconcile.test.mjs",
       "journal-repair.test.mjs",
+      // Recover an absent descriptor only with exact idle and unsent-input proof.
+      "native-session-recovery.test.mjs",
+      "native-session-recovery-cli.test.mjs",
       "steer.test.mjs",
       // Check zero idle timers, exact deadline recovery, and rearming on progress, results and Studio waits.
       "stall-watch.test.mjs",
