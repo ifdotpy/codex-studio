@@ -7,7 +7,24 @@ import { randomUUID } from "./uuid";
 
 afterEach(() => vi.unstubAllGlobals());
 
+function uuidAccessCandidate(source: string): boolean {
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    false,
+    ts.LanguageVariant.JSX,
+    source,
+  );
+  while (scanner.scan() !== ts.SyntaxKind.EndOfFileToken) {
+    if (scanner.getTokenValue() === "randomUUID") return true;
+    // A standalone scanner has no parser context for regex, JSX, or templates.
+    // Keep raw names and escapes as candidates even inside an ambiguous token.
+    if (/randomUUID|\\/.test(scanner.getTokenText())) return true;
+  }
+  return false;
+}
+
 function directUUIDAccess(source: string): boolean {
+  if (!uuidAccessCandidate(source)) return false;
   const tree = ts.createSourceFile(
     "source.tsx",
     source,
@@ -39,8 +56,19 @@ describe("browser UUID owner", () => {
     "globalThis.crypto?.randomUUID?.()",
     'crypto["randomUUID"]()',
     "const { randomUUID: uuid } = crypto; uuid()",
+    String.raw`crypto.r\u0061ndomUUID()`,
+    String.raw`crypto["r\u0061ndomUUID"]()`,
+    String.raw`crypto["\x72andomUUID"]()`,
+    String.raw`const pattern = /"/; crypto.r\u0061ndomUUID()`,
   ])("detects direct browser UUID access: %s", (source) => {
     expect(directUUIDAccess(source)).toBe(true);
+  });
+
+  it("does not parse sources without a possible UUID access token", () => {
+    expect(
+      uuidAccessCandidate("const id = crypto.getRandomValues(bytes);"),
+    ).toBe(false);
+    expect(directUUIDAccess('const label = "randomUUID";')).toBe(false);
   });
 
   it("routes every production browser UUID access through src/uuid.ts", () => {

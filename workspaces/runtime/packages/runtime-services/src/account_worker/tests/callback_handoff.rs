@@ -436,6 +436,7 @@ async fn submitted_callback_recovery_sends_exact_saved_reply_without_dispatching
             duplicate: false,
         })
         .unwrap_or_else(|_| panic!("the receipt has an owner"));
+    callbacks_retired(&state).await;
     worker_barrier(&worker).await;
     assert_eq!(phases(&state, GENERATION, 1), [false, false, false]);
     assert!(
@@ -573,6 +574,7 @@ async fn missing_callback_receipt_recovers_exact_saved_answer_once_after_same_ge
             duplicate: false,
         })
         .unwrap_or_else(|_| panic!("the resumed receipt has an owner"));
+    callbacks_retired(&state).await;
     worker_barrier(&resumed).await;
     assert_eq!(phases(&state, GENERATION, cursor), [false, false, false]);
     assert!(retained.writes.try_recv().is_err());
@@ -819,6 +821,7 @@ async fn managed_callback_first_handoff_captures_the_current_actor_authority() {
             duplicate: false,
         })
         .unwrap_or_else(|_| panic!("the first reply receipt has an owner"));
+    callbacks_retired(&state).await;
     worker_barrier(&worker).await;
     assert_eq!(phases(&state, GENERATION, cursor), [false, false, false]);
     worker.shutdown().await.unwrap();
