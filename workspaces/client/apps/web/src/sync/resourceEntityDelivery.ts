@@ -25,15 +25,27 @@ export class ResourceEntityDelivery {
   private running = false;
   private current: ResourceChangeEvent | undefined;
   private storageBlocked = false;
-  // A skipped terminal snapshot invalidates its interval base until a newer
-  // authoritative snapshot commits, including deltas already beyond the old offset.
+  // Saved output alone cannot prove a baseline under the current stream owner.
+  private terminalBaselines = new Set<string>();
+  // A skipped snapshot also fences intervals already beyond the old offset.
   private terminalSnapshotsRequired = new Map<
     string,
     { epoch: string; revision: number }
   >();
 
   requiresSnapshot(resource: ResourceChangeEvent["resources"][number]) {
-    return this.terminalSnapshotsRequired.has(subscriptionKey(resource));
+    const key = subscriptionKey(resource);
+    return (
+      resource.kind === "terminal-output" &&
+      (!this.terminalBaselines.has(key) ||
+        this.terminalSnapshotsRequired.has(key))
+    );
+  }
+
+  /** A new stream owner cannot inherit a follower's unproven terminal base. */
+  beginOwnership() {
+    this.invalidate();
+    this.terminalBaselines.clear();
   }
 
   private revoke(event: ResourceChangeEvent) {
@@ -72,10 +84,13 @@ export class ResourceEntityDelivery {
       const key = subscriptionKey(resource);
       const required = this.terminalSnapshotsRequired.get(key);
       if (
-        required &&
-        (required.epoch !== event.epoch || entry.revision >= required.revision)
-      )
+        !required ||
+        required.epoch !== event.epoch ||
+        entry.revision >= required.revision
+      ) {
         this.terminalSnapshotsRequired.delete(key);
+        this.terminalBaselines.add(key);
+      }
     }
   }
 
@@ -103,11 +118,11 @@ export class ResourceEntityDelivery {
         subscriptionKey(resource),
       );
       if (
-        required &&
-        (entry.replyKind === "delta" ||
-          (entry.replyKind === "snapshot" &&
-            required.epoch === event.epoch &&
-            entry.revision < required.revision))
+        (entry.replyKind === "delta" && this.requiresSnapshot(resource)) ||
+        (required &&
+          entry.replyKind === "snapshot" &&
+          required.epoch === event.epoch &&
+          entry.revision < required.revision)
       ) {
         // Keep only a scoped recovery hint until the skipped snapshot's base
         // commits; an old snapshot replay cannot satisfy that requirement.

@@ -1603,6 +1603,61 @@ describe("entity pull reset wiring", () => {
         seq: 4,
       });
     }
+    await client.persistResourceEntityChanges(
+      event("o".repeat(40), 40, "snapshot", 70),
+      () => true,
+    );
+    const oldDispatch = vi.fn();
+    const oldDelivery = new ResourceEntityDelivery(
+      client.persistResourceEntityChanges,
+      oldDispatch,
+    );
+    fail = true;
+    oldDelivery.receive(event("new", 3, "snapshot", 71));
+    await vi.waitFor(() => expect(oldDispatch).toHaveBeenCalled());
+    expect(oldDelivery.requiresSnapshot(resource)).toBe(true);
+    fail = false;
+    const cursorAfterReload = await client.readSubscriptionCursor(resource);
+    expect(cursorAfterReload).toEqual({ workspaceId, seq: 40 });
+    // A replacement transport has a fresh delivery object but the same durable cache.
+    const reloadedDispatch = vi.fn();
+    const reloadedDelivery = new ResourceEntityDelivery(
+      client.persistResourceEntityChanges,
+      reloadedDispatch,
+    );
+    const reloadDelta = event("!!!!", 44, "delta", 72);
+    reloadDelta.reason = "reconnect";
+    reloadedDelivery.receive(reloadDelta);
+    await vi.waitFor(() => expect(reloadedDispatch).toHaveBeenCalled());
+    expect(
+      reloadedDispatch.mock.calls[0][0].resourceVersions[0].viewSnapshot
+        ?.terminalOutput,
+    ).toBeUndefined();
+    expect(stored().viewRevision).toBe(70);
+    reloadedDelivery.receive(event("new" + "!".repeat(41), 44, "snapshot", 73));
+    await vi.waitFor(() => expect(stored().viewRevision).toBe(73));
+    reloadedDelivery.receive(event("!", 45, "delta", 74));
+    await vi.waitFor(() =>
+      expect(stored().viewSnapshot.terminalOutput.text).toBe(
+        "new" + "!".repeat(42),
+      ),
+    );
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 45,
+    });
+    const noOpDispatch = vi.fn();
+    const noOpDelivery = new ResourceEntityDelivery(
+      client.persistResourceEntityChanges,
+      noOpDispatch,
+    );
+    const foreignSnapshot = event("foreign", 7, "snapshot", 80);
+    foreignSnapshot.workspaceId = "9".repeat(32);
+    foreignSnapshot.resourceVersions[0].cursor!.workspaceId =
+      foreignSnapshot.workspaceId;
+    noOpDelivery.receive(foreignSnapshot);
+    await vi.waitFor(() => expect(noOpDispatch).toHaveBeenCalled());
+    expect(noOpDelivery.requiresSnapshot(resource)).toBe(true);
     quiet.mockRestore();
   });
 });

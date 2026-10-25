@@ -1681,6 +1681,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   function startIndependent() {
     if (!coordinatorActive || owner || independent) return;
+    entityDelivery.beginOwnership();
     independent = true;
     startPeerHeartbeat();
     scheduleOwnerStreamUpdate();
@@ -1721,6 +1722,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           )
             return;
           requireBaselineReconciliation();
+          entityDelivery.beginOwnership();
           owner = true;
           startPeerHeartbeat();
           broadcast({ kind: "discover-subscriptions" });

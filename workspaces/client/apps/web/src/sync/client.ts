@@ -913,7 +913,14 @@ export function createSyncClient(options: SyncClientOptions) {
       return;
     }
     const { db, workspaceId } = await syncDatabase();
-    if (!isCurrent() || workspaceId !== event.workspaceId) return;
+    if (!isCurrent() || workspaceId !== event.workspaceId) {
+      // Returning without a terminal write must not grant ownership baseline proof.
+      for (const [index, entry] of event.resourceVersions.entries()) {
+        const resource = entry.resource ?? event.resources[index];
+        if (resource?.kind === "terminal-output") delete entry.cursor;
+      }
+      return;
+    }
     for (const [index, entry] of event.resourceVersions.entries()) {
       if (!isCurrent()) return;
       const resource = entry.resource ?? event.resources[index];

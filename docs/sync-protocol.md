@@ -214,8 +214,10 @@ then only output since its last sent cursor, including status updates with no ne
 text. Buffer loss, an output reset, or an oversized interval sends a bounded
 replacement snapshot. Removing a terminal selector releases its live cursor.
 The renderer merges intervals and stores retained output and its resume cursor
-under the projection write lock before notifying readers. A reconnect reuses
-that applied base or receives a replacement snapshot. If a replacement snapshot
+under the projection write lock before notifying readers. A fresh transport or
+new stream owner always requests a bounded authoritative snapshot, even when an
+older output cursor is cached. A reconnect under the same owner reuses its
+proven applied base or receives a replacement snapshot. If a replacement snapshot
 cannot be persisted or is skipped during cancellation or overflow, later intervals
 retain only a recovery hint. Re-add and reconnect omit the saved cursor until a
 fresh snapshot commits, so stale output cannot become the new base.

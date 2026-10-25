@@ -78,6 +78,7 @@ async function fixture(follower = false, session = true) {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
   });
+  let acquire: ((lock: Lock | null) => Promise<void>) | undefined;
   vi.stubGlobal("navigator", {
     onLine: true,
     ...(follower
@@ -86,8 +87,11 @@ async function fixture(follower = false, session = true) {
             request: (
               _name: string,
               _options: unknown,
-              callback: (lock: null) => Promise<void>,
-            ) => callback(null),
+              callback: (lock: Lock | null) => Promise<void>,
+            ) => {
+              acquire = callback;
+              return callback(null);
+            },
           },
         }
       : {}),
@@ -182,6 +186,9 @@ async function fixture(follower = false, session = true) {
     stopState,
     get,
     readCursor,
+    takeOwnership: () => {
+      void acquire?.({ name: "fixture", mode: "exclusive" } as Lock);
+    },
   };
 }
 
@@ -1081,4 +1088,76 @@ it("reopens a terminal with a fresh snapshot after its reset base could not pers
   });
   stop();
   quiet.mockRestore();
+});
+
+it("takes terminal ownership with a snapshot and resumes only its proven baseline", async () => {
+  const f = await fixture(true);
+  const resource = {
+    kind: "terminal-output",
+    terminalId: "taken-over",
+  } as const;
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "terminal-output"
+      ? { workspaceId: "workspace", seq: 40 }
+      : undefined,
+  );
+  f.transport.watchResourceChanges(resource, vi.fn());
+  const frame = (revision: number, text: string, offset: number) => ({
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision,
+    reason: "change",
+    resources: [resource],
+    resourceVersions: [
+      {
+        revision,
+        cursor: { workspaceId: "workspace", seq: offset },
+        replyKind: "snapshot",
+        viewSnapshot: {
+          terminalOutput: { text, offset, status: "running", truncated: false },
+        },
+      },
+    ],
+  });
+  f.source.emit("resources", {
+    ...frame(10, "o".repeat(40), 40),
+    reason: "initial",
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const reset = frame(11, "new", 3);
+  // This is what an owner's failed snapshot dispatch broadcasts to a follower.
+  const {
+    cursor: _cursor,
+    replyKind: _kind,
+    ...revoked
+  } = reset.resourceVersions[0];
+  f.source.emit("resources", { ...reset, resourceVersions: [revoked] });
+  await vi.advanceTimersByTimeAsync(0);
+  f.takeOwnership();
+  await vi.advanceTimersByTimeAsync(50);
+  const coldUrl = new URL(f.urls.at(-1)!, "http://studio.test");
+  expect(
+    JSON.parse(coldUrl.searchParams.get("since") ?? "[]").some(
+      (entry: { resource: unknown }) =>
+        JSON.stringify(entry.resource) === JSON.stringify(resource),
+    ),
+  ).toBe(false);
+  const owned = f.sources.at(-1)!;
+  owned.emit("session", { sessionId: "owned" });
+  owned.emit("api-schema", { hash: API_SCHEMA_HASH });
+  owned.emit("resources", { ...frame(12, "new", 3), reason: "initial" });
+  await vi.advanceTimersByTimeAsync(0);
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "terminal-output"
+      ? { workspaceId: "workspace", seq: 3 }
+      : undefined,
+  );
+  owned.onerror?.();
+  await vi.advanceTimersByTimeAsync(10000);
+  const resumed = new URL(f.urls.at(-1)!, "http://studio.test");
+  expect(JSON.parse(resumed.searchParams.get("since")!)).toContainEqual({
+    resource,
+    since: { workspaceId: "workspace", seq: 3 },
+  });
 });
