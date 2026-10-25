@@ -32,6 +32,7 @@ export default {
       "src/components/StudioErrors.test.ts",
       "src/components/SidebarWarnings.test.ts",
       "src/components/ConversationWarnings.test.ts",
+      "src/components/Conversation.limits.test.ts",
       // web unit safety witnesses
       "src/api.test.ts",
       "src/playwrightWorkers.test.mjs",

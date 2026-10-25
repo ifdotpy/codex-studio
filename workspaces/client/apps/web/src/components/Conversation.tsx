@@ -50,11 +50,7 @@ import {
 import { errorText } from "../api";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
-import {
-  isCyberPolicyRefusal,
-  nativeErrorKind,
-  nativeThreadError,
-} from "../nativeErrors";
+import { isCyberPolicyRefusal, nativeThreadError } from "../nativeErrors";
 import { useMessages, transcriptMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
 import type { DraftVersion } from "../sync/drafts";
@@ -608,7 +604,6 @@ export default function Conversation(p: {
   const uploading = addingFiles || pendingFiles.length > 0;
   useServerActivity(addingFiles || uploadRecovery.pending.length > 0);
   const [limitsOpen, setLimitsOpen] = useState(false);
-  const refreshedFailure = useRef("");
   const sendLock = useRef<symbol | null>(null);
   const latestSend = useRef<Record<string, symbol>>({});
   const branchLock = useRef(false);
@@ -650,19 +645,6 @@ export default function Conversation(p: {
   );
   const threadBlock = nativeThreadError(agent);
   const capacityRetry = agent ? currentCapacityRetry(agent) : null;
-  const errorKind = nativeErrorKind(agent?.error);
-  const failureKey = [
-    p.id,
-    agent?.nativeTurnError?.turnId || agent?.turnId || agent?.lastCompletedTurn,
-    errorKind,
-  ].join(":");
-  useEffect(() => {
-    if (!["usageLimitExceeded", "rateLimitExceeded"].includes(errorKind))
-      return;
-    if (refreshedFailure.current === failureKey) return;
-    refreshedFailure.current = failureKey;
-    p.reloadLimits();
-  }, [errorKind, failureKey, p.reloadLimits]);
   const displayPhase = useDisplayPhase(
     p.id,
     agent?.activity?.phase || "thinking",
