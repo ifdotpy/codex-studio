@@ -300,6 +300,11 @@ pub(crate) fn ensure_project(
         .get("cwd")
         .and_then(Value::as_str)
         .ok_or_else(|| StoreError::SchemaMismatch("new lead has no project path".to_owned()))?;
+    if crate::project_deletion::admission_version(transaction, path)?
+        .is_some_and(|(_, deleted)| deleted)
+    {
+        return Err(MutationError::Deleted);
+    }
     if load_open_record(transaction, "runtime_projects", path)?.is_some() {
         return Ok(());
     }

@@ -314,6 +314,20 @@ cursor; a follower asks that owner through browser coordination. Queued deltas
 cannot confirm readiness after their base failed, and a cancelled subscription
 cannot request recovery for its replacement.
 
+Project deletion uses the dedicated `POST /api/projects/delete` contract in
+[OpenAPI](../workspaces/runtime/packages/runtime-http/openapi.json). The confirmation
+captures the project entity's own `seq` and the applied baseline's `workspaceId`;
+a stream revision or global cursor is not the project precondition. One canvas
+transaction records project and chat deletion, permanent room retirement, managed
+stop intents, and the exact-request receipt. The ordinary resource stream delivers
+the resulting tombstones. A successful reply does not trigger a refresh.
+An identical request recovers the committed reply even after re-registration;
+changed content or a stale project precondition requires a new confirmation.
+External stops and disposable-workspace cleanup follow commit through existing
+durable owners. Project deletion retains transcripts, accounting, native history,
+and source folders. It revokes archive restoration while preserving cleanup
+already requested by an earlier archive action and its exact operation identity.
+
 ### Connection loss and recovery
 
 Named `heartbeat` events prove liveness and never trigger resource reads.
