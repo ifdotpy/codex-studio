@@ -1273,13 +1273,15 @@ mod tests {
         let (state, store, _directory) = state_with_store().await;
         let volatile = [
             serde_json::json!({"kind":"accounts"}),
-            serde_json::json!({"kind":"costs"}),
-            serde_json::json!({"kind":"desktop"}),
             serde_json::json!({"kind":"queue","agentId":"agent"}),
-            serde_json::json!({"kind":"session-cost","agentId":"agent"}),
-            serde_json::json!({"kind":"terminals"}),
         ];
         let entities = vec![
+            serde_json::json!({"kind":"costs"}),
+            serde_json::json!({"kind":"desktop"}),
+            serde_json::json!({"kind":"session-cost","agentId":"agent"}),
+            serde_json::json!({"kind":"terminals"}),
+            serde_json::json!({"kind":"agentDetail","agentId":"agent"}),
+            serde_json::json!({"kind":"monitors","agentId":"agent"}),
             serde_json::json!({"kind":"state"}),
             serde_json::json!({"kind":"transcript","agentId":"agent"}),
             serde_json::json!({"kind":"transcripts"}),

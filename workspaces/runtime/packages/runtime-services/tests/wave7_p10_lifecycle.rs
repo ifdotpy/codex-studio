@@ -902,6 +902,8 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
         .iter()
         .filter(|row| {
             row[0] != "workspace"
+                && row[0] != "agentSummary"
+                && row[0] != "agentDetail"
                 && row[0] != "queue"
                 && row[0] != "questionHistory"
                 && row[0] != "retainedWorktree"
@@ -928,6 +930,34 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
     });
     with_delete_settlement_sync(&mut expected_sync, &case["expected"]["records"]["tables"]);
     assert_eq!(actual_sync, expected_sync, "{} sync_entities", case["name"]);
+    // The frozen Python oracle predates view-scoped agent collections. Keep its
+    // legacy comparison intact and check the added projections independently.
+    let rows = saved["sync"].as_array().expect("sync rows");
+    for legacy in rows.iter().filter(|row| row[0] == "agent" && row[5] == 0) {
+        let full: Value =
+            serde_json::from_str(legacy[4].as_str().expect("legacy payload")).expect("legacy JSON");
+        for collection in ["agentSummary", "agentDetail"] {
+            let row = rows
+                .iter()
+                .find(|row| row[0] == collection && row[1] == legacy[1])
+                .expect("agent projection exists");
+            assert_eq!(row[5], 0, "live projection");
+            let payload: Value = serde_json::from_str(row[4].as_str().expect("projection payload"))
+                .expect("projection JSON");
+            assert_eq!(payload["value"]["id"], full["value"]["id"]);
+            if collection == "agentSummary" {
+                assert_eq!(payload["value"]["status"], full["value"]["status"]);
+                assert!(payload["value"].get("tail").is_none());
+            } else {
+                assert_eq!(payload["value"]["lastAnswer"], full["value"]["lastAnswer"]);
+                assert_eq!(
+                    payload["value"]["commandProgress"],
+                    full["value"]["commandProgress"]
+                );
+            }
+        }
+    }
+
     for row in saved["sync"].as_array().expect("sync rows") {
         if row[0] != "messageReceipt" || row[5] != 0 {
             continue;

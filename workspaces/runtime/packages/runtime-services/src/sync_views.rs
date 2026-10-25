@@ -6,6 +6,11 @@ use std::sync::{Arc, OnceLock};
 
 use crate::event_write::truthy;
 
+/// Derived list-attention fields. Compatibility agent envelopes omit these;
+/// view-scoped summaries own them. Unit: OpenAPI field names.
+pub(crate) const AGENT_SUMMARY_ATTENTION_FIELDS: [&str; 3] =
+    ["hasQuestion", "hasApproval", "hasBackgroundWork"];
+
 /// Maximum last-answer text retained in an agent sync view. Unit: Unicode scalar values.
 pub(crate) const AGENT_SYNC_LAST_ANSWER_CHARS: usize = 4_000;
 
@@ -447,12 +452,19 @@ pub fn agent_entity_view(record: &Value, context: &AgentViewContext) -> Option<V
     );
     view.insert("nextTurnSettingsSupported".to_owned(), Value::Bool(true));
     view.insert("readStateSupported".to_owned(), Value::Bool(true));
-    view.insert("hasQuestion".to_owned(), Value::Bool(context.has_question));
-    view.insert("hasApproval".to_owned(), Value::Bool(context.has_approval));
-    view.insert(
-        "hasBackgroundWork".to_owned(),
-        Value::Bool(!context.command_progress.is_empty()),
-    );
+    // False attention is represented by absence, preserving the legacy DTO's
+    // wire shape while a replacement summary clears any previous true flag.
+    for (field, enabled) in AGENT_SUMMARY_ATTENTION_FIELDS.into_iter().zip([
+        context.has_question,
+        context.has_approval,
+        !context.command_progress.is_empty(),
+    ]) {
+        if enabled {
+            view.insert(field.to_owned(), Value::Bool(true));
+        } else {
+            view.remove(field);
+        }
+    }
     if let Some(block) = block {
         view.insert("nativeThreadBlock".to_owned(), block);
     } else {

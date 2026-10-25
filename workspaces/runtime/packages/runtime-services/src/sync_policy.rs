@@ -933,7 +933,13 @@ pub(crate) fn publish_agent_projection(
         };
         put_projection(transaction, collection, id, projected, deleted, validate)?;
     }
-    put_projection(transaction, "agent", id, view, deleted, validate)
+    let mut compatibility = view;
+    if let Some(fields) = compatibility.as_object_mut() {
+        for field in crate::sync_views::AGENT_SUMMARY_ATTENTION_FIELDS {
+            fields.remove(field);
+        }
+    }
+    put_projection(transaction, "agent", id, compatibility, deleted, validate)
 }
 
 /// Publish one request, rule or work row; only pending requests stay live.

@@ -94,11 +94,15 @@ for (const frame of frames) {
               .filter((field) => field in row.value)
               .map((field) => [field, row.value[field]]),
           );
-          mapped.value.hasQuestion ??= false;
-          mapped.value.hasApproval ??= false;
-          mapped.value.hasBackgroundWork ??= Boolean(
-            row.value.commandProgress?.length,
-          );
+          for (const field of [
+            "hasQuestion",
+            "hasApproval",
+            "hasBackgroundWork",
+          ]) {
+            if (!mapped.value[field]) delete mapped.value[field];
+          }
+          if (row.value.commandProgress?.length)
+            mapped.value.hasBackgroundWork = true;
           // The publication owner compares canonical values before assigning seq.
           agentRows++;
           agentValueBytes += Buffer.byteLength(JSON.stringify(row.value));

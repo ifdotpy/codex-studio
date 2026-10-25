@@ -186,17 +186,17 @@ or mounted panels, preserving the token-rate frames. It used the server's Brotli
 quality/window owners, one encoder dictionary for the entire connection, and a
 flush after every event. This is a projection replay, not a live-network claim.
 The historical recording does not contain the new attention flags; the replay
-defaults pending-input flags to false and derives background-work from recorded
+treats absent pending-input flags as false and derives background-work from recorded
 command progress.
 
 | Measured quantity                              | Recorded baseline | View-scoped replay |
 | ---------------------------------------------- | ----------------: | -----------------: |
-| Identity SSE bytes                             |           398,548 |             50,276 |
-| Brotli SSE bytes                               |            31,476 |              6,911 |
+| Identity SSE bytes                             |           398,548 |             49,600 |
+| Brotli SSE bytes                               |            31,476 |              6,828 |
 | SSE events                                     |               140 |                 88 |
-| Agent value bytes before duplicate suppression |           301,258 |             59,469 |
+| Agent value bytes before duplicate suppression |           301,258 |             55,483 |
 
-The Brotli reduction is 4.55×. The replay suppresses 60 unchanged summaries among
+The Brotli reduction is 4.61×. The replay suppresses 60 unchanged summaries among
 73 recorded agent updates and excludes 42 panel/detail records or hints. It
 implements whole-entity projection comparison; it does not use field patches.
 
