@@ -8,7 +8,7 @@ use studio_runtime_services::{
 };
 fn db(records: &Value, case: &Value) -> Connection {
     let connection = Connection::open_in_memory().expect("SQLite");
-    connection.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget_usage(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,tokens INTEGER,at REAL);CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);CREATE TABLE runtime_native_action_receipts(id TEXT PRIMARY KEY,signature TEXT,receipt TEXT,outcome TEXT);")).expect("schema");
+    connection.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget_usage(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,tokens INTEGER,at REAL,breakdown TEXT);CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);CREATE TABLE runtime_native_action_receipts(id TEXT PRIMARY KEY,signature TEXT,receipt TEXT,outcome TEXT);")).expect("schema");
     connection
         .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
@@ -25,13 +25,14 @@ fn db(records: &Value, case: &Value) -> Connection {
     for row in records["usage"].as_array().expect("usage") {
         connection
             .execute(
-                "INSERT INTO runtime_budget_usage VALUES (?1,?2,?3,?4,?5)",
+                "INSERT INTO runtime_budget_usage(id,agent,kind,tokens,at,breakdown) VALUES (?1,?2,?3,?4,?5,?6)",
                 params![
                     row["id"].as_str(),
                     row["agent"].as_str(),
                     row["kind"].as_str(),
                     row["tokens"].as_i64(),
-                    row["at"].as_f64()
+                    row["at"].as_f64(),
+                    row.get("breakdown").filter(|v| !v.is_null()).map(Value::to_string)
                 ],
             )
             .expect("usage");
@@ -390,30 +391,46 @@ fn exact_response_replay_is_noop_and_conflicting_replay_records_fault() {
         "identical replay writes nothing"
     );
 
-    let tx = connection.transaction().expect("conflict transaction");
-    let mut agent =
-        studio_runtime_store::budget::BudgetRepository::agent(&tx, "a").expect("current agent");
-    let mut changed = params.clone();
-    changed["requestUsage"]["totalTokens"] = json!(21);
-    changed["requestUsage"]["inputTokens"] = json!(21);
-    assert!(
-        budget_service::capture(&tx, &mut agent, &changed, 101., CaptureSource::Live, 100.).is_ok()
-    );
-    tx.commit().expect("commit conflict refusal");
-    let after = all_stored(&connection);
-    assert_eq!(after["stored"]["usage"], before_replay["stored"]["usage"]);
-    assert_eq!(after["stored"]["agents"]["a"]["tokensUsed"], 20);
-    assert_eq!(
-        after["stored"]["agents"]["a"]["tokenUsageAccounting"],
-        "provisional"
-    );
-    assert!(
-        after["stored"]["states"]["a"]["faults"]
-            .as_array()
-            .expect("faults")
-            .iter()
-            .any(|fault| fault == "responseReplayConflict")
-    );
+    let raw: String = connection
+        .query_row(
+            "SELECT breakdown FROM runtime_budget_usage WHERE kind='response'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("persisted typed breakdown");
+    let tokens: studio_runtime_schema::usage::UsageTokens =
+        serde_json::from_str(&raw).expect("shared token owner");
+    assert_eq!(tokens.uncached_input, 20);
+    assert_eq!(tokens.output, 0);
+    assert_eq!(raw, serde_json::to_string(&tokens).expect("canonical JSON"));
+    for (total, input, output) in [(21, 21, 0), (20, 19, 1)] {
+        let tx = connection.transaction().expect("conflict transaction");
+        let mut agent =
+            studio_runtime_store::budget::BudgetRepository::agent(&tx, "a").expect("current agent");
+        let mut changed = params.clone();
+        changed["requestUsage"]["totalTokens"] = json!(total);
+        changed["requestUsage"]["inputTokens"] = json!(input);
+        changed["requestUsage"]["outputTokens"] = json!(output);
+        assert!(
+            budget_service::capture(&tx, &mut agent, &changed, 101., CaptureSource::Live, 100.)
+                .is_ok()
+        );
+        tx.commit().expect("commit conflict refusal");
+        let after = all_stored(&connection);
+        assert_eq!(after["stored"]["usage"], before_replay["stored"]["usage"]);
+        assert_eq!(after["stored"]["agents"]["a"]["tokensUsed"], 20);
+        assert_eq!(
+            after["stored"]["agents"]["a"]["tokenUsageAccounting"],
+            "provisional"
+        );
+        assert!(
+            after["stored"]["states"]["a"]["faults"]
+                .as_array()
+                .expect("faults")
+                .iter()
+                .any(|fault| fault == "responseReplayConflict")
+        );
+    }
 }
 
 #[test]
@@ -990,7 +1007,7 @@ fn usage_state_check_refuses_bad_scalar_rows_without_writing() {
     let connection = db(&records, &case);
     connection
         .execute(
-            "INSERT INTO runtime_budget_usage VALUES ('bad','a','response',-1,1)",
+            "INSERT INTO runtime_budget_usage(id,agent,kind,tokens,at) VALUES ('bad','a','response',-1,1)",
             [],
         )
         .expect("bad existing row");

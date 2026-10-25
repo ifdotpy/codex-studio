@@ -5,6 +5,7 @@ use crate::provider_adapter::{self, ProviderKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use studio_runtime_schema::usage::UsageTokens;
 use studio_runtime_store::{python_json_with_separators, sha256_hex};
 use thiserror::Error;
 
@@ -63,6 +64,12 @@ pub struct BudgetState {
     historical_notices: u64,
     notice_spent: u64,
     counter: Option<u64>,
+    /// Last native cumulative categories; absent on pre-contract ledgers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    counter_tokens: Option<UsageTokens>,
+    /// Previous native last-response categories, used only for reset ambiguity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_tokens: Option<UsageTokens>,
     thread: Option<String>,
     notice_at: f64,
     created: f64,
@@ -210,6 +217,8 @@ impl BudgetSnapshot {
                 historical_notices: 0,
                 notice_spent: floor,
                 counter: (floor != 0).then_some(floor),
+                counter_tokens: None,
+                last_tokens: None,
                 thread: durable.thread_id.clone(),
                 notice_at: 0.,
                 created: durable.created,
@@ -271,6 +280,8 @@ pub struct UsageObservation {
     exact: bool,
     amount: Option<u64>,
     counter: Option<u64>,
+    tokens: Option<UsageTokens>,
+    last_tokens: Option<UsageTokens>,
     response: bool,
     thread: Option<String>,
     estimated: bool,
@@ -301,6 +312,15 @@ impl UsageObservation {
                 ..
             })
         );
+        let tokens = match &parsed {
+            Ok(ParsedUsage::Response { tokens, .. }) => Some(tokens.clone()),
+            Ok(ParsedUsage::Cumulative { total, .. }) => Some(total.clone()),
+            _ => None,
+        };
+        let last_tokens = match &parsed {
+            Ok(ParsedUsage::Cumulative { last, .. }) => last.clone(),
+            _ => None,
+        };
         let (exact, amount, counter, response, turn, identity_usage, gap) = match parsed {
             Ok(ref observation) => {
                 let identity_usage =
@@ -405,6 +425,8 @@ impl UsageObservation {
             exact,
             amount,
             counter,
+            tokens,
+            last_tokens,
             response: response.is_some(),
             thread,
             gap,
@@ -456,7 +478,13 @@ pub fn capture(
                 state.ambiguous_notices.retain(|key| key != &p.key);
             }
             if p.exact {
-                if previous.kind != "response" || p.amount != Some(previous.tokens) {
+                if previous.kind != "response"
+                    || p.amount != Some(previous.tokens)
+                    || previous
+                        .breakdown
+                        .as_ref()
+                        .is_some_and(|old| p.tokens.as_ref() != Some(old))
+                {
                     state.fault("responseReplayConflict");
                     return Ok(CaptureDecision {
                         state,
@@ -477,6 +505,7 @@ pub fn capture(
                 kind: if p.exact { "response" } else { "notice" }.into(),
                 tokens: amount,
                 at: p.at,
+                breakdown: p.exact.then(|| p.tokens.clone()).flatten(),
             });
             if p.exact {
                 if p.estimated {
@@ -495,7 +524,10 @@ pub fn capture(
                 if p.at < state.notice_at {
                     state.notice_spent = state.notice_spent.max(counter);
                 } else {
-                    let reset = state.counter.is_some_and(|old| counter < old);
+                    let reset = match (&p.tokens, &state.counter_tokens) {
+                        (Some(tokens), Some(previous)) => tokens.decreased_from(previous),
+                        _ => state.counter.is_some_and(|old| counter < old),
+                    };
                     let mut delta = if state.counter.is_none() || p.thread != state.thread {
                         amount
                     } else if reset {
@@ -503,7 +535,14 @@ pub fn capture(
                     } else {
                         counter.saturating_sub(state.counter.unwrap_or(0))
                     };
-                    if reset && Some(amount) == state.last_amount {
+                    let ambiguous_reset = match (&p.tokens, &state.counter_tokens) {
+                        (Some(total), Some(_)) => p.last_tokens.as_ref().is_some_and(|last| {
+                            Some(last) == state.last_tokens.as_ref() && total == last
+                        }),
+                        // Until the first typed counter is stored, preserve the old heuristic.
+                        _ => Some(amount) == state.last_amount,
+                    };
+                    if reset && ambiguous_reset {
                         delta = 0;
                         if !p.response {
                             state.ambiguous_notices.push(p.key.clone());
@@ -511,6 +550,8 @@ pub fn capture(
                     }
                     state.notice_spent = add(state.notice_spent, delta)?;
                     state.counter = Some(counter);
+                    state.counter_tokens = p.tokens.clone();
+                    state.last_tokens = p.last_tokens.clone();
                     state.thread = p.thread.clone();
                     state.notice_at = p.at;
                     state.last_amount = Some(amount);
@@ -968,6 +1009,114 @@ mod typed_usage_tests {
             assert_eq!(decision.state.spent, spent);
             snapshot.state = decision.state;
         }
+    }
+
+    #[test]
+    fn response_count_does_not_grow_budget_state() {
+        let size_after = |responses| {
+            let mut snapshot = snapshot();
+            for response in 0..responses {
+                let params = json!({"studioUsage":{"kind":"response","responseId":format!("r-{response}"),"model":"claude","evidence":"live","tokens":{"uncachedInput":0,"cacheReadInput":0,"cacheWriteInput":0,"output":0}}});
+                let observation =
+                    UsageObservation::from_record(&snapshot, &params, 101., CaptureSource::Live)
+                        .expect("response");
+                snapshot.state = capture(&snapshot, &observation, None)
+                    .expect("capture")
+                    .state;
+            }
+            snapshot.state.record().expect("state").to_string().len()
+        };
+        assert_eq!(
+            size_after(2),
+            size_after(200),
+            "response evidence belongs in rows, not the bounded agent state"
+        );
+    }
+
+    #[test]
+    fn category_reset_survives_persistence_and_total_only_upgrade() {
+        let mut snapshot = snapshot();
+        // Start from a pre-contract ledger: compare its total until typed evidence arrives.
+        snapshot.state.counter = Some(100);
+        snapshot.state.notice_spent = 100;
+        snapshot.state.thread = Some("t".into());
+        for (at, input, output, spent) in [(101., 100, 10, 110), (102., 20, 150, 280)] {
+            let params = json!({"threadId":"t","studioUsage":{"kind":"cumulative","scope":"codexThread","total":{"uncachedInput":input,"cacheReadInput":0,"cacheWriteInput":0,"output":output}}});
+            let observation =
+                UsageObservation::from_record(&snapshot, &params, at, CaptureSource::Live)
+                    .expect("counter");
+            let decision = capture(&snapshot, &observation, None).expect("capture");
+            assert_eq!(
+                decision.state.spent, spent,
+                "any category decrease starts a new epoch"
+            );
+            snapshot.state = decode(&decision.state.record().expect("persist"), "runtime_budget")
+                .expect("reopen");
+        }
+    }
+
+    #[test]
+    fn category_reset_with_repeated_last_and_larger_total_is_charged() {
+        let mut snapshot = snapshot();
+        snapshot.state.counter = Some(100);
+        snapshot.state.notice_spent = 100;
+        snapshot.state.thread = Some("t".into());
+        for (at, input, output, spent) in [(101., 100, 10, 110), (102., 20, 150, 280)] {
+            let params = json!({"threadId":"t","studioUsage":{"kind":"cumulative","scope":"codexThread","total":{"uncachedInput":input,"cacheReadInput":0,"cacheWriteInput":0,"output":output},"last":{"uncachedInput":5,"cacheReadInput":0,"cacheWriteInput":0,"output":1}}});
+            let observation =
+                UsageObservation::from_record(&snapshot, &params, at, CaptureSource::Live)
+                    .expect("counter");
+            let decision = capture(&snapshot, &observation, None).expect("capture");
+            assert_eq!(
+                decision.state.spent, spent,
+                "repeated last alone cannot suppress a typed reset"
+            );
+            snapshot.state = decode(&decision.state.record().expect("persist"), "runtime_budget")
+                .expect("reopen");
+        }
+    }
+
+    #[test]
+    fn same_total_response_replay_compares_persisted_breakdown() {
+        let mut snapshot = snapshot();
+        let params = |input, output| json!({"studioUsage":{"kind":"response","responseId":"r","model":"claude","evidence":"live","tokens":{"uncachedInput":input,"cacheReadInput":0,"cacheWriteInput":0,"output":output}}});
+        let observation =
+            UsageObservation::from_record(&snapshot, &params(10, 2), 101., CaptureSource::Live)
+                .expect("response");
+        let decision = capture(&snapshot, &observation, None).expect("capture");
+        let previous: UsageRow = serde_json::from_value(
+            serde_json::to_value(decision.usage.expect("response row")).expect("persist row"),
+        )
+        .expect("reopen row");
+        snapshot.state =
+            decode(&decision.state.record().expect("persist"), "runtime_budget").expect("reopen");
+        let conflict =
+            UsageObservation::from_record(&snapshot, &params(9, 3), 102., CaptureSource::Live)
+                .expect("replay");
+        let decision = capture(&snapshot, &conflict, Some(&previous)).expect("conflict continues");
+        assert!(decision.changed);
+        assert!(
+            decision
+                .state
+                .faults
+                .iter()
+                .any(|fault| fault == "responseReplayConflict")
+        );
+        assert_eq!(decision.state.spent, 12);
+        assert!(decision.usage.is_none());
+        snapshot.state = decision.state;
+        let replay =
+            capture(&snapshot, &observation, Some(&previous)).expect("first value retained");
+        assert!(!replay.changed);
+
+        // Records predating the typed ledger keep their total-only comparison.
+        let mut previous = previous;
+        previous.breakdown = None;
+        assert!(
+            !capture(&snapshot, &conflict, Some(&previous))
+                .expect("legacy comparison")
+                .changed
+        );
     }
 
     #[test]

@@ -102,7 +102,7 @@ const FEATURE_SCHEMA: &str = r#"
                 ON runtime_rules(json_extract(record,'$.status'))
                 WHERE NOT COALESCE(json_extract(record,'$.inFlight'),0);
             CREATE TABLE IF NOT EXISTS runtime_budget (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL, breakdown TEXT);
             CREATE INDEX IF NOT EXISTS runtime_budget_usage_agent ON runtime_budget_usage(agent,kind);
             CREATE TABLE IF NOT EXISTS runtime_execution_runs (id TEXT PRIMARY KEY, agent TEXT NOT NULL, account TEXT NOT NULL, epoch INTEGER NOT NULL, thread TEXT, turn TEXT, created REAL NOT NULL, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_execution_run_agent ON runtime_execution_runs(agent,created DESC);
@@ -281,6 +281,14 @@ const FEATURE_SCHEMA: &str = r#"
 
 pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
     transaction.execute_batch(FEATURE_SCHEMA)?;
+    let has_breakdown: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_budget_usage') WHERE name='breakdown')",
+        [], |row| row.get(0),
+    )?;
+    if !has_breakdown {
+        // NULL preserves total-only replay comparison for every existing response.
+        transaction.execute_batch("ALTER TABLE runtime_budget_usage ADD COLUMN breakdown TEXT")?;
+    }
     transaction.execute_batch("CREATE INDEX IF NOT EXISTS runtime_receipt_transcript_item ON runtime_event_meta(json_extract(record,'$.transcriptItemId'))")?;
     // A deleted row is no longer readable by the writer journal. Its source
     // trigger owns the corresponding summary tombstone in the same transaction.
@@ -327,6 +335,57 @@ mod tests {
     use crate::repositories::schema_registrations;
     use rusqlite::Connection;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn budget_usage_breakdown_upgrade_preserves_legacy_rows_and_is_idempotent() {
+        let mut db = crate::fresh_state::test_canvas();
+        db.execute_batch("DROP TABLE runtime_budget_usage;
+            CREATE TABLE runtime_budget_usage(id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,tokens INTEGER NOT NULL,at REAL NOT NULL);
+            CREATE INDEX runtime_budget_usage_agent ON runtime_budget_usage(agent,kind);
+            INSERT INTO runtime_budget_usage VALUES('legacy','agent','response',12,101);").expect("legacy usage table");
+        let root_page: i64 = db
+            .query_row(
+                "SELECT rootpage FROM sqlite_master WHERE name='runtime_budget_usage'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("root page");
+        let tx = db.transaction().expect("upgrade transaction");
+        super::prepare(&tx).expect("additive upgrade");
+        tx.commit().expect("commit upgrade");
+        let legacy: (i64, String, i64, Option<String>) = db
+            .query_row(
+                "SELECT rowid,kind,tokens,breakdown FROM runtime_budget_usage WHERE id='legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("new nullable column");
+        assert_eq!(
+            legacy,
+            (1, "response".into(), 12, None),
+            "no backfill or row rewrite"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT rootpage FROM sqlite_master WHERE name='runtime_budget_usage'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("same table"),
+            root_page
+        );
+        let cookie: i64 = db
+            .pragma_query_value(None, "schema_version", |row| row.get(0))
+            .expect("schema cookie");
+        let tx = db.transaction().expect("second prepare");
+        super::prepare(&tx).expect("idempotent upgrade");
+        tx.commit().expect("second commit");
+        assert_eq!(
+            db.pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))
+                .expect("same cookie"),
+            cookie
+        );
+    }
 
     #[test]
     fn feature_tables_are_not_core_repository_requirements() {

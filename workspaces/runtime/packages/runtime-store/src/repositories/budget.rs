@@ -8,6 +8,7 @@ use crate::{
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use studio_runtime_schema::usage::UsageTokens;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(transparent)]
@@ -29,6 +30,9 @@ pub struct BudgetUsageRow {
     pub kind: String,
     pub tokens: u64,
     pub at: f64,
+    /// Immutable response categories in tokens; absent on pre-contract rows and notices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breakdown: Option<UsageTokens>,
 }
 
 pub struct BudgetRepository;
@@ -47,8 +51,12 @@ impl BudgetRepository {
         ids.iter().map(|id| Self::agent(db, id)).collect()
     }
     pub fn usage(db: &Connection, id: &str) -> StoreResult<Option<BudgetUsageRow>> {
-        let row=db.query_row_cached("SELECT id,agent,kind,tokens,at FROM runtime_budget_usage WHERE id=?1",[id],|row| Ok(json!({"id":row.get::<_,String>(0)?,"agent":row.get::<_,String>(1)?,"kind":row.get::<_,String>(2)?,"tokens":row.get::<_,i64>(3)?,"at":row.get::<_,f64>(4)?}))).optional()?;
-        row.map(|row| {
+        let row=db.query_row_cached("SELECT id,agent,kind,tokens,at,breakdown FROM runtime_budget_usage WHERE id=?1",[id],|row| Ok((json!({"id":row.get::<_,String>(0)?,"agent":row.get::<_,String>(1)?,"kind":row.get::<_,String>(2)?,"tokens":row.get::<_,i64>(3)?,"at":row.get::<_,f64>(4)?}),row.get::<_,Option<String>>(5)?))).optional()?;
+        row.map(|(mut row, raw)| {
+            let breakdown = raw
+                .map(|raw| serde_json::from_str::<UsageTokens>(&raw))
+                .transpose()?;
+            row["breakdown"] = serde_json::to_value(breakdown)?;
             validate_usage(&row)?;
             Ok(serde_json::from_value(row)?)
         })
@@ -57,7 +65,7 @@ impl BudgetRepository {
     pub fn insert_usage(tx: &Transaction<'_>, row: &BudgetUsageRow) -> StoreResult<()> {
         validate_usage(&serde_json::to_value(row)?)?;
         tx.execute_cached(
-            "INSERT INTO runtime_budget_usage(id,agent,kind,tokens,at) VALUES (?1,?2,?3,?4,?5)",
+            "INSERT INTO runtime_budget_usage(id,agent,kind,tokens,at,breakdown) VALUES (?1,?2,?3,?4,?5,?6)",
             params![
                 row.id,
                 row.agent,
@@ -65,7 +73,8 @@ impl BudgetRepository {
                 i64::try_from(row.tokens).map_err(|_| StoreError::SchemaMismatch(
                     "invalid runtime_budget_usage/tokens".into()
                 ))?,
-                row.at
+                row.at,
+                row.breakdown.as_ref().map(serde_json::to_string).transpose()?
             ],
         )?;
         Ok(())
@@ -150,6 +159,9 @@ fn validate_usage(value: &Value) -> StoreResult<()> {
             "invalid runtime_budget_usage{pointer}"
         )));
     }
+    serde_json::from_value::<BudgetUsageRow>(value.clone()).map_err(|error| {
+        StoreError::SchemaMismatch(format!("invalid runtime_budget_usage/breakdown: {error}"))
+    })?;
     Ok(())
 }
 const TABLES: &[TableRequirement] = &[
@@ -171,7 +183,10 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[TableRequirement {
+        name: "runtime_budget_usage",
+        columns: &["breakdown"],
+    }],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -186,8 +201,15 @@ pub fn check_usage_readonly(db: &Connection) -> StoreResult<crate::StateCheckTab
         failures: vec![],
     };
     if !db.query_row_cached("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_budget_usage')",[],|r|r.get::<_,bool>(0))? {return Ok(report);}
-    let mut statement =
-        db.prepare_cached("SELECT id,agent,kind,tokens,at FROM runtime_budget_usage")?;
+    let has_breakdown: bool = db.query_row_cached(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_budget_usage') WHERE name='breakdown')",
+        [], |row| row.get(0),
+    )?;
+    let mut statement = db.prepare_cached(if has_breakdown {
+        "SELECT id,agent,kind,tokens,at,breakdown FROM runtime_budget_usage"
+    } else {
+        "SELECT id,agent,kind,tokens,at,NULL FROM runtime_budget_usage"
+    })?;
     let mut rows = statement.query([])?;
     let mut failures = std::collections::BTreeMap::new();
     while let Some(row) = rows.next()? {
@@ -207,10 +229,24 @@ pub fn check_usage_readonly(db: &Connection) -> StoreResult<crate::StateCheckTab
             };
             value.insert(name.into(), field);
         }
-        if let Some(problem) =
-            studio_runtime_schema::first_error("PersistedBudgetUsage", &Value::Object(value))
-                .map_err(StoreError::SchemaMismatch)?
-        {
+        let breakdown = match row.get_ref(5)? {
+            rusqlite::types::ValueRef::Null => Value::Null,
+            rusqlite::types::ValueRef::Text(bytes) => serde_json::from_slice::<UsageTokens>(bytes)
+                .ok()
+                .and_then(|tokens| serde_json::to_value(tokens).ok())
+                .unwrap_or_else(|| json!("invalid usage breakdown")),
+            _ => json!("invalid usage breakdown"),
+        };
+        value.insert("breakdown".into(), breakdown);
+        let value = Value::Object(value);
+        let problem = studio_runtime_schema::first_error("PersistedBudgetUsage", &value)
+            .map_err(StoreError::SchemaMismatch)?
+            .or_else(|| {
+                serde_json::from_value::<BudgetUsageRow>(value)
+                    .err()
+                    .map(|_| ("/breakdown".into(), "usageTokens".into()))
+            });
+        if let Some(problem) = problem {
             report.rejected_count += 1;
             *failures.entry(problem).or_insert(0) += 1;
         }

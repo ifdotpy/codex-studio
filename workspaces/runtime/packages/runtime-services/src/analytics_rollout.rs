@@ -425,6 +425,67 @@ mod tests {
     use super::RolloutContext;
     use serde_json::json;
 
+    #[tokio::test]
+    async fn typed_usage_null_rollout_records_import_without_charges() {
+        let root = tempfile::tempdir().expect("isolated import");
+        let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("store");
+        let agent = json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","provider":"codex","accountKey":"default","threadId":"thread"});
+        let seeded = agent.clone();
+        store
+            .transaction(move |tx| {
+                studio_runtime_store::AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(seeded)?,
+                )
+            })
+            .await
+            .expect("seed agent");
+        let mut context = RolloutContext::from_record(json!({"threadId":"thread","turnId":"turn"}))
+            .expect("context");
+        for record in [
+            json!({"type":"event_msg","payload":{"type":"token_count","info":null}}),
+            json!({"type":"compacted","payload":{"latest_token_usage_record":null}}),
+        ] {
+            let actions = context
+                .actions(&record, "null-usage", 1.)
+                .expect("null usage is absent evidence");
+            for action in actions {
+                let super::RolloutAction::Event { method, params, at } = action else {
+                    panic!("only compaction metadata")
+                };
+                assert_ne!(method, "thread/tokenUsage/updated");
+                let prepared = crate::analytics_capture::PreparedCapture::event(
+                    &agent,
+                    &method,
+                    &params,
+                    at,
+                    at,
+                    crate::analytics_capture::CaptureSource::Rollout,
+                )
+                .expect("import event");
+                crate::analytics_capture::capture(&store, prepared)
+                    .await
+                    .expect("import compaction without usage");
+            }
+        }
+        let db = studio_runtime_store::AnalyticsRepository::new(store.root())
+            .open_read_only()
+            .expect("analytics");
+        let usage_rows: i64 = db
+            .query_row("SELECT count(*) FROM analytics_usage", [], |row| row.get(0))
+            .expect("usage count");
+        assert_eq!(usage_rows, 0);
+        let db = store.test_reader().expect("canvas");
+        let charges: i64 = db
+            .query_row("SELECT count(*) FROM runtime_budget_usage", [], |row| {
+                row.get(0)
+            })
+            .expect("charge count");
+        assert_eq!(charges, 0);
+    }
+
     #[test]
     fn typed_usage_rollout_preserves_response_association_for_notices() {
         let mut context =
