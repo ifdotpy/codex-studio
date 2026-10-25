@@ -454,11 +454,21 @@ test.each(["direct", "timer", "success"])(
       expect(await fs.readFile(path.join(bridge.root, "inputs"), "utf8")).toBe(
         mode === "timer" ? "once\nsteer once\n" : "once\n",
       );
-      expect(
-        bridge.notes.filter(
-          (note) => note.method === "thread/tokenUsage/updated",
-        ),
-      ).toHaveLength(1);
+      const usage = bridge.notes.filter(
+        (note) => note.method === "thread/tokenUsage/updated",
+      );
+      expect(usage).toHaveLength(1);
+      expect(usage[0].params.studioUsage).toMatchObject({
+        kind: "cumulative",
+        scope: "claudeQuery",
+        total: {
+          uncachedInput: 1,
+          cacheReadInput: 0,
+          cacheWriteInput: 0,
+          output: 1,
+        },
+      });
+      expect(usage[0].params.tokenUsage).toBeUndefined();
       expect(
         bridge.notes.filter((note) => note.method === "turn/started"),
       ).toHaveLength(1);
