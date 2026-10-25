@@ -50,6 +50,8 @@ pub enum MacSyncError {
 pub struct ResolveResult {
     pub response: Value,
     pub handoff_text: Option<String>,
+    /// Historical payload accepted only when replaying the same saved follow-up.
+    pub legacy_handoff_text: Option<String>,
     pub handoff_id: Option<String>,
 }
 
@@ -185,6 +187,7 @@ pub fn resolve(
     let (kind, data, mode) = fetch_entry(guest, project_id, &main_state, rel)?;
     let mut response = json!({"path":rel,"choice":choice,"mainStateId":main_state});
     let mut handoff_text = None;
+    let mut legacy_handoff_text = None;
     let mut handoff_id = None;
     match choice {
         "vm" => {
@@ -243,6 +246,8 @@ pub fn resolve(
                     &hex_sha(rel.as_bytes())[..16]
                 ));
                 handoff_text = Some(handoff_message(rel, saved_state, saved_line, &kind));
+                legacy_handoff_text =
+                    Some(legacy_handoff_message(rel, saved_state, saved_line, &kind));
             } else {
                 let operation = format!(
                     "mac-{}",
@@ -338,6 +343,7 @@ pub fn resolve(
                     &hex_sha(rel.as_bytes())[..16]
                 ));
                 handoff_text = Some(handoff_message(rel, &state_id, &line, &kind));
+                legacy_handoff_text = Some(legacy_handoff_message(rel, &state_id, &line, &kind));
             }
         }
         _ => unreachable!(),
@@ -394,6 +400,7 @@ pub fn resolve(
     Ok(ResolveResult {
         response,
         handoff_text,
+        legacy_handoff_text,
         handoff_id,
     })
 }
@@ -425,6 +432,18 @@ fn handoff_message(rel: &str, state: &str, line: &str, kind: &str) -> String {
     };
     format!(
         "[Studio folder sync] The user's host folder and main changed {rel} in different ways. The user asked you to combine the two versions. The host version is layr state {state} in the line {line}. {mac} Put one version that keeps both changes in main and commit it. Studio then writes main's file to the host folder."
+    )
+}
+
+// Exact historical payload for the stable handoff identity. New events never use this text.
+fn legacy_handoff_message(rel: &str, state: &str, line: &str, kind: &str) -> String {
+    let mac = if kind == ABSENT {
+        "The Mac deleted this file.".to_owned()
+    } else {
+        format!("Read the Mac version with `layr show {state}:{rel}`.")
+    };
+    format!(
+        "[Studio Mac sync] The user's Mac folder and main changed {rel} in different ways. The user asked you to combine the two versions. The Mac version is layr state {state} in the line {line}. {mac} Put one version that keeps both changes in main and commit it. Studio then writes main's file to the Mac folder."
     )
 }
 
