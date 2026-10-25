@@ -591,20 +591,37 @@ async function runMessageReceiptScenario(
 
     const shortCachedTranscript = await storage.evaluate(async (agentId) => {
       const collection = window.receiptFixtureDb.projections;
-      const [meta] = await collection.storageInstance.findDocumentsById(
-        [`transcript:${agentId}`],
-        false,
-      );
-      const payload = JSON.parse(meta.payload);
-      const items = await collection.storageInstance.findDocumentsById(
-        payload.order.map((key) => `transcript:item:${agentId}:${key}`),
-        false,
-      );
-      return [meta, ...items].map(({ id, payload, seq }) => ({
-        id,
-        payload,
-        seq,
-      }));
+      // Read the committed IndexedDB rows independently of the seed tab's
+      // RxDB instance; the built renderer owns the active projection writer.
+      const name = `rxdb-dexie-${collection.database.name}--${collection.schema.version}--projections`;
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open(name);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const read = (id) =>
+        new Promise((resolve, reject) => {
+          const request = db
+            .transaction("docs", "readonly")
+            .objectStore("docs")
+            .get(id);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+      try {
+        const meta = await read(`transcript:${agentId}`);
+        const payload = JSON.parse(meta.payload);
+        const items = await Promise.all(
+          payload.order.map((key) => read(`transcript:item:${agentId}:${key}`)),
+        );
+        return [meta, ...items].map(({ id, payload, seq }) => ({
+          id,
+          payload,
+          seq,
+        }));
+      } finally {
+        db.close();
+      }
     }, agent.id);
     assert.equal(
       JSON.parse(shortCachedTranscript[0].payload).metadata.truncated,

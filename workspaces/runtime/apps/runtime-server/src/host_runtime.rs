@@ -1637,7 +1637,6 @@ fn vm_claude_keychain_service(config_dir: Option<&str>) -> String {
 #[cfg(test)]
 mod vm_claude_keychain_tests {
     use super::vm_claude_keychain_service;
-    use sha2::{Digest, Sha256};
 
     #[test]
     fn default_claude_keychain_service_stays_unsuffixed() {

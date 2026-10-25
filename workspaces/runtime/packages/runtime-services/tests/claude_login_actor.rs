@@ -460,7 +460,7 @@ fn seed_legacy_receipts(f: &Fixture, key: &str) {
 async fn add_label_and_email_admission_refusals_write_nothing() {
     let long = "x".repeat(33);
     let accented = "é".repeat(33);
-    let cases: Vec<(Option<&str>, Option<&str>, bool, &str, Option<&str>)> = vec![
+    let cases = [
         (None, None, true, "Claude Code", None),
         (Some(""), None, false, "", None),
         (Some(" "), None, false, "", None),

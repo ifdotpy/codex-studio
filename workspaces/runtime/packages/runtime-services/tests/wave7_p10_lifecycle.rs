@@ -817,8 +817,8 @@ fn assert_work_detail_sources(case: &Value, snapshot: &Value) {
         .map(|row| {
             (
                 (
-                    row[0].as_str().unwrap().to_owned(),
-                    row[1].as_str().unwrap().to_owned(),
+                    row[0].as_str().expect("work owner fixture").to_owned(),
+                    row[1].as_str().expect("work kind fixture").to_owned(),
                 ),
                 row[2].clone(),
             )

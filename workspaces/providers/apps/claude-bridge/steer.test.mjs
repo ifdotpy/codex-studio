@@ -96,9 +96,9 @@ const test = baseTest.extend({
   // oxlint-disable-next-line no-empty-pattern
   startBridge: async ({}, use) => {
     const bridges = [];
-    await use(async (env = {}, sdk = FAKE_SDK) => {
+    await use(async (env = {}, sdk = FAKE_SDK, { clock = false } = {}) => {
       const bridge = await startScriptedBridge(sdk, "claude-steer-", {
-        clock: false,
+        clock,
         env: {
           STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "150",
           STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50",
@@ -747,11 +747,14 @@ fsp.appendFile = async(file, data, ...args) => {
       STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50",
     },
     sdk,
+    { clock: true },
   );
   const turn = await running(bridge, "unread-result");
   await steer(bridge, turn, "save-stop");
   await release(bridge, ".hold-final-save");
   await end(bridge);
+  await marker(bridge, ".result-sent");
+  await bridge.advanceTime(150);
   await marker(bridge, ".final-save-held");
   const stopping = bridge.call("turn/interrupt", {
     threadId: bridge.thread,
@@ -763,7 +766,7 @@ fsp.appendFile = async(file, data, ...args) => {
   await completed(bridge, turn);
   await release(bridge, ".release");
   // Let the first turn's stale deadline expire before starting another turn.
-  await new Promise((resolve) => setTimeout(resolve, 250));
+  await bridge.advanceTime(250);
   await release(bridge, ".ignore-interrupt");
   const next = await running(bridge, "running-ignore");
   await read(bridge, "running-ignore");
@@ -771,6 +774,9 @@ fsp.appendFile = async(file, data, ...args) => {
     threadId: bridge.thread,
     turnId: next,
   });
+  await bridge.advanceUntil(
+    (note) => note.method === "turn/completed" && note.params.turn.id === next,
+  );
   const done = await completed(bridge, next);
   assert.equal(done.params.turn.status, "interrupted");
   assert.match(

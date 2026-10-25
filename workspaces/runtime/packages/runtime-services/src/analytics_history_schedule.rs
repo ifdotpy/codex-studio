@@ -978,30 +978,51 @@ mod tests {
         schedule.refresh(&roster).expect("roster");
         for expected in ["actor-0", "actor-1", "actor-2", "actor-3"] {
             let selected = select(&schedule, &roster, 0.)
-                .unwrap()
+                .expect("schedule operation succeeds")
                 .expect("actor")
                 .clone();
             assert_eq!(selected["id"], expected);
             schedule
                 .completed(&selected, &checkpoint_for(&selected, "current"), 0.)
-                .unwrap();
+                .expect("schedule operation succeeds");
         }
-        assert!(schedule.next(1.).unwrap().is_none());
-        schedule.notify("actor-3").unwrap();
+        assert!(
+            schedule
+                .next(1.)
+                .expect("schedule operation succeeds")
+                .is_none()
+        );
+        schedule
+            .notify("actor-3")
+            .expect("schedule operation succeeds");
         let selected = select(&schedule, &roster, 1.)
-            .unwrap()
+            .expect("schedule operation succeeds")
             .expect("notified actor")
             .clone();
         assert_eq!(selected["id"], "actor-3");
-        schedule.block_for_budget_change(&selected, 1.).unwrap();
-        assert!(schedule.next(1.).unwrap().is_none());
+        schedule
+            .block_for_budget_change(&selected, 1.)
+            .expect("schedule operation succeeds");
+        assert!(
+            schedule
+                .next(1.)
+                .expect("schedule operation succeeds")
+                .is_none()
+        );
         schedule.budget_changed();
         assert_eq!(
-            select(&schedule, &roster, 1.).unwrap().unwrap()["id"],
+            select(&schedule, &roster, 1.)
+                .expect("schedule operation succeeds")
+                .expect("schedule operation succeeds")["id"],
             "actor-3"
         );
         schedule.remove("actor-3");
-        assert!(schedule.next(1.).unwrap().is_none());
+        assert!(
+            schedule
+                .next(1.)
+                .expect("schedule operation succeeds")
+                .is_none()
+        );
     }
 
     #[test]

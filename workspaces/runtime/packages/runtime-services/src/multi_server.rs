@@ -867,11 +867,19 @@ mod tests {
             serde_json::from_str(&stored_token_hash).expect("stored invitation JSON");
         assert_eq!(
             data_encoding::HEXLOWER
-                .decode(stored_token_hash["tokenHash"].as_str().unwrap().as_bytes())
-                .unwrap(),
+                .decode(
+                    stored_token_hash["tokenHash"]
+                        .as_str()
+                        .expect("stored token hash")
+                        .as_bytes()
+                )
+                .expect("hexadecimal token hash"),
             ring::digest::digest(
                 &ring::digest::SHA256,
-                first["invitation"]["token"].as_str().unwrap().as_bytes()
+                first["invitation"]["token"]
+                    .as_str()
+                    .expect("invitation token")
+                    .as_bytes()
             )
             .as_ref()
         );

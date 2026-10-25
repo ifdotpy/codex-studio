@@ -73,6 +73,8 @@ let headers: Record<string, string>;
 let server: ReturnType<typeof spawn>;
 let directory: string;
 let stopProjection: (() => void) | undefined;
+// One deadline owns fixture readiness and the enclosing Vitest hook.
+const ENTITY_FIXTURE_READY_TIMEOUT_MS = 30_000;
 beforeAll(async () => {
   const binary =
     process.env.STUDIO_DRAFT_SERVER_BINARY ??
@@ -93,7 +95,9 @@ beforeAll(async () => {
   const lines = createInterface({ input: server.stdout! });
   try {
     const [line] = await Promise.race([
-      once(lines, "line", { signal: AbortSignal.timeout(30_000) }),
+      once(lines, "line", {
+        signal: AbortSignal.timeout(ENTITY_FIXTURE_READY_TIMEOUT_MS),
+      }),
       once(server, "exit").then(([code]) => {
         throw new Error(`Entity fixture exited: ${code}`);
       }),
@@ -108,7 +112,7 @@ beforeAll(async () => {
   } finally {
     lines.close();
   }
-});
+}, ENTITY_FIXTURE_READY_TIMEOUT_MS);
 afterAll(async () => {
   stopProjection?.();
   try {
