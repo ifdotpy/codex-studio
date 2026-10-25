@@ -10,6 +10,7 @@ import type { Agent } from "../../types";
 const h = vi.hoisted(() => ({
   cells: new Map<string, any[]>(),
   scope: "",
+  scoped: "",
   cursor: 0,
   effects: [] as Array<() => unknown>,
   post: vi.fn(),
@@ -35,6 +36,14 @@ vi.mock("react", async (load) => ({
     const cells = h.cells.get(h.scope)!;
     return (cells[h.cursor++] ??= { current: value });
   },
+  useMemo: (compute: () => unknown, deps: unknown[]) => {
+    const cells = h.cells.get(h.scope)!;
+    const index = h.cursor++;
+    const previous = cells[index];
+    if (!previous || deps.some((value, i) => value !== previous.deps[i]))
+      cells[index] = { deps, value: compute() };
+    return cells[index].value;
+  },
   useEffect: (effect: () => unknown, deps: unknown[]) => {
     const cells = h.cells.get(h.scope)!;
     const index = h.cursor++;
@@ -44,8 +53,12 @@ vi.mock("react", async (load) => ({
       !deps ||
       deps.some((value, i) => value !== previous.deps?.[i])
     ) {
-      cells[index] = { deps };
-      h.effects.push(effect);
+      previous?.cleanup?.();
+      const cell = { deps, cleanup: undefined as unknown };
+      cells[index] = cell;
+      h.effects.push(() => {
+        cell.cleanup = effect();
+      });
     }
   },
   useLayoutEffect: () => {},
@@ -130,6 +143,12 @@ function render(agent = initial) {
       typeof node.type === "function" &&
       node.type.name === "ScopedExecutionSettings",
   )!;
+  const scopedKey = "ScopedExecutionSettings" + (scoped.key || "");
+  if (h.scoped && h.scoped !== scopedKey) {
+    for (const cell of h.cells.get(h.scoped) || []) cell.cleanup?.();
+    h.cells.delete(h.scoped);
+  }
+  h.scoped = scopedKey;
   const controls = invoke(scoped);
   const picker = children(controls).find(
     (node) =>
@@ -140,10 +159,18 @@ function render(agent = initial) {
     (node) => node.props.className === "execution-model",
   )!.props.children;
   for (const effect of h.effects.splice(0)) effect();
-  return { model, label: trigger.props["aria-label"], picker: picker.props };
+  return {
+    model,
+    label: trigger.props["aria-label"],
+    picker: picker.props,
+    triggerAgent: menu.props.trigger.props.agent,
+  };
 }
 afterEach(() => {
+  for (const cells of h.cells.values())
+    for (const cell of cells) cell.cleanup?.();
   h.cells.clear();
+  h.scoped = "";
   h.effects = [];
   h.post.mockReset();
   h.refresh.mockClear();
@@ -220,4 +247,110 @@ test("review settings use their canonical response without a refresh", async () 
   expect(render().label).toContain("Review Luna 6 Medium");
   await new Promise<void>(queueMicrotask);
   expect(h.refresh).not.toHaveBeenCalled();
+});
+
+test("unrelated earlier SSE does not suppress a later acknowledged model", async () => {
+  let finish!: (agent: Agent) => void;
+  h.post.mockImplementation(
+    () =>
+      new Promise<Agent>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render().picker.onModel("gpt-6-luna");
+  const intermediate: Agent = {
+    ...initial,
+    workerDefaults: { model: "gpt-6-astra", effort: "high", fastMode: false },
+  };
+  expect(render(intermediate).model).toBe("Astra 6");
+  finish({ ...intermediate, model: "gpt-6-luna" });
+  await Promise.resolve();
+  expect(render(intermediate).model).toBe("Luna 6");
+  expect(render(intermediate).label).toContain("Workers Astra 6 High");
+});
+
+test("switching role before acknowledgment preserves the stable trigger receipt", async () => {
+  let finish!: (agent: Agent) => void;
+  h.post.mockImplementation(
+    () =>
+      new Promise<Agent>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const view = render();
+  view.picker.onModel("gpt-6-luna");
+  view.picker.onRole("worker");
+  render();
+  finish({ ...initial, model: "gpt-6-luna" });
+  await Promise.resolve();
+  expect(render().model).toBe("Luna 6");
+});
+
+test("newer same-field SSE wins over an older in-flight model response", async () => {
+  let finish!: (agent: Agent) => void;
+  h.post.mockImplementation(
+    () =>
+      new Promise<Agent>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render().picker.onModel("gpt-6-luna");
+  const remote = { ...initial, model: "remote-model" };
+  render(remote);
+  finish({ ...initial, model: "gpt-6-luna" });
+  await Promise.resolve();
+  const current = render(remote);
+  expect(current.model).toBe("remote-model");
+  expect(current.picker.model).toBe("remote-model");
+});
+
+for (const changed of [
+  { ...initial, id: "other-chat" },
+  { ...initial, accountKey: "other" },
+]) {
+  test(`an old response cannot cross ${changed.id === initial.id ? "account" : "chat"} scope`, async () => {
+    let finish!: (agent: Agent) => void;
+    h.post.mockImplementation(
+      () =>
+        new Promise<Agent>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render().picker.onModel("gpt-6-luna");
+    render(changed);
+    finish({ ...initial, model: "gpt-6-luna" });
+    await Promise.resolve();
+    expect(render(changed).model).toBe("Astra 6");
+    expect(render(initial).model).toBe("Astra 6");
+  });
+}
+
+test("unchanged settings retain the trigger agent identity", async () => {
+  expect(render().triggerAgent).toBe(initial);
+  h.post.mockResolvedValue({ ...initial, model: "gpt-6-luna" });
+  render().picker.onModel("gpt-6-luna");
+  await Promise.resolve();
+  const first = render().triggerAgent;
+  expect(render().triggerAgent).toBe(first);
+  expect(render().triggerAgent).toBe(first);
+});
+
+test("an older same-domain request cannot replace the latest acknowledgment", async () => {
+  const finish: Array<(agent: Agent) => void> = [];
+  h.post.mockImplementation(
+    () =>
+      new Promise<Agent>((resolve) => {
+        finish.push(resolve);
+      }),
+  );
+  render().picker.onModel("gpt-6-luna");
+  render().picker.onRole("worker");
+  render().picker.onRole("orchestrator");
+  render().picker.onModel("gpt-6-astra");
+  expect(finish).toHaveLength(2);
+  finish[1]({ ...initial, model: "gpt-6-astra" });
+  await Promise.resolve();
+  finish[0]({ ...initial, model: "gpt-6-luna" });
+  await Promise.resolve();
+  expect(render().model).toBe("Astra 6");
 });
