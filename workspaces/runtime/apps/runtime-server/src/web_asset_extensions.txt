@@ -1,0 +1,7 @@
+js
+css
+wasm
+svg
+html
+json
+webmanifest

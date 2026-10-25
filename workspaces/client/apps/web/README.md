@@ -29,6 +29,15 @@ From the repository root, start the selected backend and open
 Build output is local and ignored by Git. Rebuild it after a frontend change.
 The server reports a missing build instead of serving an older client.
 
+Every production Vite build runs [asset precompression](scripts/precompress-assets.ts)
+after the offline shell is finalized. It keeps smaller Brotli and gzip siblings
+for the server-owned [compressible extensions](../../../runtime/apps/runtime-server/src/web_asset_extensions.txt).
+Deploy the whole `dist/` directory, including these siblings. The Rust server
+negotiates `Accept-Encoding`, prefers Brotli, falls back to gzip or identity,
+and varies caches by encoding without compressing requests at runtime. Shell
+build IDs and service-worker URLs refer to original files. Fixtures that rewrite
+built files must rebuild or remove their compressed siblings too.
+
 ## Develop
 
 Keep the selected runtime server on port 4620. Start Vite in another terminal:
