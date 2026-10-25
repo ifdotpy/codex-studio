@@ -3,6 +3,7 @@ import { createResourceEvents } from "./resourceEvents";
 import {
   resourceCoordinationNames,
   RESOURCE_COORDINATION_VERSION,
+  RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS,
 } from "./resourceConnection";
 import { createSubscriptionStore } from "./subscriptions/store";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
@@ -95,16 +96,23 @@ async function fixture(
           locks: {
             request: (
               _name: string,
-              _options: unknown,
+              _options: { signal: AbortSignal },
               callback: (lock: Lock | null) => Promise<void>,
             ) => {
               lockNames.push(_name);
               acquire = callback;
-              return callback(
-                peerOwner
-                  ? ({ name: "fixture", mode: "exclusive" } as Lock)
-                  : null,
-              );
+              if (peerOwner)
+                return callback({ name: "fixture", mode: "exclusive" } as Lock);
+              // A normal exclusive request queues while another owner holds
+              // the lock. It never invokes the callback with a null lock.
+              return new Promise<void>((resolve, reject) => {
+                acquire = (lock) => callback(lock).then(resolve, reject);
+                _options.signal.addEventListener(
+                  "abort",
+                  () => reject(new DOMException("Aborted", "AbortError")),
+                  { once: true },
+                );
+              });
             },
           },
         }
@@ -416,7 +424,11 @@ it("reports a deferred baseline listener failure through normal transport recove
     waitForBaseline: true,
   });
   await vi.advanceTimersByTimeAsync(0);
-  expect(status).toHaveBeenCalledWith("degraded", expect.any(String));
+  expect(status).toHaveBeenCalledWith(
+    "degraded",
+    expect.any(String),
+    expect.objectContaining({ failure: "local-state-error" }),
+  );
   error.mockRestore();
 });
 
@@ -887,7 +899,11 @@ it.each([false, true])(
     expect(resumed).not.toBe(f.source);
     const lateStatus = vi.fn();
     const stopLateStatus = f.transport.watchResourceConnection(lateStatus);
-    expect(lateStatus).toHaveBeenLastCalledWith("degraded", "connecting");
+    expect(lateStatus).toHaveBeenLastCalledWith(
+      "degraded",
+      "connecting",
+      expect.objectContaining({ failure: "stream-error" }),
+    );
     resumed.emit("api-schema", { hash: API_SCHEMA_HASH });
     resumed.emit("resources", { ...baseline, reason: "reconnect" });
     await vi.advanceTimersByTimeAsync(0);
@@ -1616,6 +1632,244 @@ it("connection: browser offline hint preserves a validated stream and online is 
   f.sources[1]!.onopen?.();
   f.sources[1]!.emit("api-schema", { hash: API_SCHEMA_HASH });
   expect(status.mock.lastCall?.[0]).toBe("degraded");
+});
+
+it("connection: a slow cursor read cannot be starved by owner peer heartbeats during recovery", async () => {
+  const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+  disposals.push(() => random.mockRestore());
+  const f = await fixture(false, true, true);
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  f.readCursor.mockImplementation(
+    () => new Promise((resolve) => setTimeout(() => resolve(undefined), 4_000)),
+  );
+  f.readCursor.mockClear();
+  f.source.onerror?.();
+  expect(f.source.closed).toBe(true);
+  expect(status.mock.lastCall?.[0]).toBe("degraded");
+  await vi.advanceTimersByTimeAsync(30_000);
+  // The server is available for every open attempt. Only local cursor reads
+  // delay this path; peer liveness must not cancel their result every 3 seconds.
+  expect(f.sources).toHaveLength(2);
+  expect(f.readCursor).toHaveBeenCalledOnce();
+  const replacement = f.sources[1]!;
+  replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
+  replacement.emit("heartbeat", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 1,
+  });
+  expect(status.mock.lastCall?.[0]).toBe("live");
+});
+
+it("connection: an unfinished cursor read opens a full baseline and cannot later replace its stream", async () => {
+  const f = await fixture(false, true, true);
+  let finish!: (cursor: { workspaceId: string; seq: number }) => void;
+  f.readCursor.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  f.source.onerror?.();
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(f.sources).toHaveLength(2);
+  expect(f.readCursor).toHaveBeenCalledTimes(2);
+  const replacement = f.sources[1]!;
+  expect(new URL(f.urls[1]!, location.origin).searchParams.get("since")).toBe(
+    "[]",
+  );
+  replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
+  replacement.emit("heartbeat", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 1,
+  });
+  finish({ workspaceId: "workspace", seq: 99 });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.sources).toHaveLength(2);
+  expect(replacement.closed).toBe(false);
+  expect(status.mock.lastCall?.[0]).toBe("live");
+});
+
+it("connection: switching Studio screens during cursor preparation opens the latest resource union", async () => {
+  const f = await fixture();
+  f.readCursor.mockImplementation(
+    () => new Promise((resolve) => setTimeout(() => resolve(undefined), 4_000)),
+  );
+  f.readCursor.mockClear();
+  f.source.onerror?.();
+  await vi.advanceTimersByTimeAsync(1_000);
+  const firstChat = { kind: "queue", agentId: "first-chat" } as const;
+  const secondChat = { kind: "queue", agentId: "second-chat" } as const;
+  const stopFirst = f.transport.watchResourceChanges(firstChat, vi.fn());
+  await vi.advanceTimersByTimeAsync(1_000);
+  stopFirst();
+  f.transport.watchResourceChanges(secondChat, vi.fn());
+  await vi.advanceTimersByTimeAsync(3_000);
+  expect(f.sources).toHaveLength(2);
+  const requested = JSON.parse(
+    new URL(f.urls[1]!, location.origin).searchParams.get("resources")!,
+  );
+  expect(requested).toContainEqual({ kind: "state" });
+  expect(requested).toContainEqual(secondChat);
+  expect(requested).not.toContainEqual(firstChat);
+  expect(f.readCursor).toHaveBeenCalledOnce();
+});
+
+it.each(["hide", "dispose", "last-subscriber"] as const)(
+  "connection: %s cancels cursor preparation and late completion cannot reopen",
+  async (action) => {
+    const f = await fixture(false, true, true);
+    let finish!: () => void;
+    f.readCursor.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve(undefined);
+        }),
+    );
+    f.source.onerror?.();
+    await vi.advanceTimersByTimeAsync(1_000);
+    const status = vi.fn();
+    f.transport.watchResourceConnection(status);
+    expect(status.mock.lastCall?.[1]).toBe("preparing");
+    if (action === "hide") {
+      Object.assign(document, { hidden: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    } else if (action === "dispose") f.transport.dispose();
+    else f.stopState();
+    await vi.advanceTimersByTimeAsync(2_000);
+    finish();
+    await vi.advanceTimersByTimeAsync(RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS);
+    expect(f.sources).toHaveLength(1);
+    if (action === "hide") {
+      Object.assign(document, { hidden: false });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(60);
+      expect(f.sources).toHaveLength(2);
+      expect(f.sources[1]!.closed).toBe(false);
+    }
+  },
+);
+
+it("connection: a subscription diff uses a full baseline after bounded cursor preparation", async () => {
+  const f = await fixture();
+  let finish!: () => void;
+  f.readCursor.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve(undefined);
+      }),
+  );
+  const chat = { kind: "queue", agentId: "slow-diff" } as const;
+  f.transport.watchResourceChanges(chat, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  expect(f.post).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS);
+  expect(f.post).toHaveBeenCalledOnce();
+  expect(f.post.mock.calls[0]![1]).toMatchObject({
+    gen: 1,
+    add: [{ resource: chat }],
+    remove: [],
+  });
+  f.source.emit("subscriptions", { gen: 1 });
+  finish();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.post).toHaveBeenCalledOnce();
+  expect(f.sources).toHaveLength(1);
+});
+
+it("connection: retry activity and deadline describe actual work and clear only on validated recovery", async () => {
+  const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+  disposals.push(() => random.mockRestore());
+  const f = await fixture();
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  f.source.onopen?.();
+  expect(status.mock.lastCall?.slice(0, 2)).toEqual(["live", "open"]);
+  let finish!: () => void;
+  f.readCursor.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve(undefined);
+      }),
+  );
+  const failedAt = Date.now();
+  f.source.onerror?.();
+  expect(status.mock.lastCall).toEqual([
+    "degraded",
+    "retry-scheduled",
+    { failure: "stream-error", retryAt: failedAt + 500 },
+  ]);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(status.mock.lastCall).toEqual([
+    "degraded",
+    "preparing",
+    { failure: "stream-error", retryAt: undefined },
+  ]);
+  finish();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(status.mock.lastCall?.slice(0, 2)).toEqual(["degraded", "connecting"]);
+  f.sources[1]!.onopen?.();
+  f.sources[1]!.emit("api-schema", { hash: API_SCHEMA_HASH });
+  expect(status.mock.lastCall?.[2].failure).toBe("stream-error");
+  f.sources[1]!.emit("heartbeat", {
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 1,
+  });
+  expect(status.mock.lastCall).toEqual([
+    "live",
+    "open",
+    { failure: undefined, retryAt: undefined },
+  ]);
+  f.sources[1]!.onerror?.();
+  expect(status.mock.lastCall?.[2].retryAt).toBeGreaterThan(Date.now());
+  Object.assign(document, { hidden: true });
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(status.mock.lastCall).toEqual([
+    "paused",
+    "paused",
+    { failure: "stream-error", retryAt: undefined },
+  ]);
+});
+
+it("connection: browser reachability activity changes without discarding validated stream health", async () => {
+  const f = await fixture();
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  f.source.onopen?.();
+  Object.assign(navigator, { onLine: false });
+  window.dispatchEvent(new Event("offline"));
+  expect(status.mock.lastCall?.slice(0, 2)).toEqual(["live", "offline"]);
+  expect(f.source.closed).toBe(false);
+  Object.assign(navigator, { onLine: true });
+  window.dispatchEvent(new Event("online"));
+  await vi.advanceTimersByTimeAsync(60);
+  expect(status.mock.lastCall?.slice(0, 2)).toEqual(["live", "open"]);
+  expect(f.sources).toHaveLength(1);
+});
+
+it("connection: unchanged server heartbeats do not repeat live observer side effects", async () => {
+  const f = await fixture();
+  f.source.onopen?.();
+  const retryPendingWrites = vi.fn();
+  f.transport.watchResourceConnection((status) => {
+    if (status === "live") retryPendingWrites();
+  });
+  expect(retryPendingWrites).toHaveBeenCalledOnce();
+  for (let revision = 2; revision <= 5; revision++) {
+    f.source.emit("heartbeat", {
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision,
+    });
+  }
+  expect(retryPendingWrites).toHaveBeenCalledOnce();
 });
 
 it("connection: hidden pause is local and real resume events coalesce once", async () => {
