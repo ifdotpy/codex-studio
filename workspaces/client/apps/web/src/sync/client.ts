@@ -582,6 +582,27 @@ export function createSyncClient(options: SyncClientOptions) {
     )
       throw new Error("Invalid subscription cursor interval");
     const selector = resource as unknown as Record<string, unknown>;
+    const selectedAgent = scope.agentField
+      ? selector[scope.agentField]
+      : undefined;
+    const selectedAgents = new Set([selectedAgent]);
+    if (selectedAgent) {
+      const summaries = await db.projections
+        .find({
+          selector: {
+            id: { $gte: "entity:agentSummary:", $lt: "entity:agentSummary;" },
+          },
+        })
+        .exec();
+      for (const row of summaries) {
+        const entity = row.toJSON().entity;
+        if (
+          entity?.collection === "agentSummary" &&
+          entity.value.rootId === selectedAgent
+        )
+          selectedAgents.add(entity.id);
+      }
+    }
     const belongs = (entity: {
       collection: string;
       id: string;
@@ -593,8 +614,7 @@ export function createSyncClient(options: SyncClientOptions) {
         scope.agentField &&
         selector[scope.agentField] &&
         entity.value &&
-        (entity.value as { agent?: string }).agent !==
-          selector[scope.agentField] &&
+        !selectedAgents.has((entity.value as { agent?: string }).agent) &&
         (entity.value as { rootId?: string }).rootId !==
           selector[scope.agentField]
       )

@@ -26,6 +26,18 @@ export function createEntityDataObserver(
         const subscription = db.projections.find().$.subscribe({
           next: (rows) => {
             const reference = ref as unknown as Record<string, unknown>;
+            const selectedAgent = scope.agentField
+              ? reference[scope.agentField]
+              : undefined;
+            const selectedAgents = new Set([selectedAgent]);
+            for (const row of rows) {
+              const entity = row.toJSON().entity;
+              if (
+                entity?.collection === "agentSummary" &&
+                entity.value.rootId === selectedAgent
+              )
+                selectedAgents.add(entity.id);
+            }
             const entities = rows.flatMap((row): SyncEntityPayload[] => {
               const value = row.toJSON();
               const entity = value.entity;
@@ -43,7 +55,7 @@ export function createEntityDataObserver(
                 scope.agentField &&
                 reference[scope.agentField] &&
                 (!("agent" in entity.value) ||
-                  entity.value.agent !== reference[scope.agentField])
+                  !selectedAgents.has(entity.value.agent))
               )
                 return [];
               return [entity];

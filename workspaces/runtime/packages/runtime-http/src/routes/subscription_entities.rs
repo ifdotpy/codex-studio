@@ -180,6 +180,24 @@ mod tests {
         let detail_ref: ResourceRef =
             serde_json::from_value(json!({"kind":"agentDetail","agentId":"chat"}))
                 .expect("detail ref");
+        store.transaction_with(|tx| {
+            AgentRepository::put(tx,&AgentRecord::from_value(json!({"id":"worker","rootId":"chat","parentId":"chat","epoch":1,"status":"idle"}))?)?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",rusqlite::params!["worker-command",json!({"id":"worker-command","agent":"worker","kind":"command","status":"running","created":1}).to_string()])?;
+            Ok::<_, StoreError>(())
+        }).await.expect("worker command source");
+        let tasks_ref: ResourceRef =
+            serde_json::from_value(json!({"kind":"tasks","agentId":"chat"}))
+                .expect("team task ref");
+        let tasks = initial_snapshot(state.clone(), tasks_ref, None)
+            .await
+            .expect("team tasks");
+        assert!(
+            serde_json::to_value(tasks).expect("task frame")["entityChanges"]["documents"]
+                .as_array()
+                .expect("task records")
+                .iter()
+                .any(|row| row["id"] == "worker-command")
+        );
         let before = content_fingerprint(state.clone(), list_ref.clone())
             .await
             .expect("list fingerprint");

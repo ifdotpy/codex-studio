@@ -312,6 +312,7 @@ impl SyncDocumentsRepository {
              WHERE collection NOT LIKE 'transcript:%' AND seq>?1 AND seq<=?2 \
                AND (?3 IS NULL OR collection IN (SELECT value FROM json_each(?3))) AND (?4 IS NULL OR id=?4) \
                AND (?5=0 OR deleted=0) AND (?7 IS NULL OR json_extract(payload,'$.value.agent')=?7 \
+                    OR json_extract(payload,'$.value.agent') IN (SELECT id FROM runtime_agents WHERE root_id=?7) \
                     OR json_extract(payload,'$.value.rootId')=?7 OR deleted=1) ORDER BY seq LIMIT ?6",
         )?;
         let mut rows = statement
