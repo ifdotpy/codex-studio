@@ -15,6 +15,18 @@ pub const USAGE_RESPONSE_SQL: &str = "SELECT record FROM analytics_usage WHERE a
 /// Exact indexed provenance lookup; two records prove ambiguity without scanning a scope.
 pub const USAGE_PROVENANCE_SQL: &str = "SELECT record FROM analytics_usage INDEXED BY analytics_usage_response WHERE agent=?1 AND thread IS ?2 AND json_extract(record,'$.responseId')=?3 LIMIT 2";
 
+/// One checked typed usage record and its migration era.
+pub struct UsageInventoryRow {
+    pub ledger: studio_runtime_schema::usage::ledger::UsageLedgerRow,
+    pub pre_ledger: bool,
+    pub legacy_keys: Vec<String>,
+}
+/// A source-bounded inventory; a truncated inventory cannot prove unique ownership.
+pub struct UsageInventory {
+    pub rows: Vec<UsageInventoryRow>,
+    pub truncated: bool,
+}
+
 /// One existing analytics table; identifiers are never supplied by a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureTable {
@@ -190,6 +202,48 @@ impl AnalyticsCaptureRepository {
             .ok()
             .map(|ledger| (ledger, value["timestampSource"] == "fileModifiedEstimate")),
         )
+    }
+
+    /// Read at most the owner's examination bound through the agent/sequence index.
+    /// Reserve the final source row as lookahead before interpreting any usage kind.
+    pub fn usage_inventory(db: &Connection, agent: &str) -> StoreResult<UsageInventory> {
+        use studio_runtime_schema::usage::{UsageProvider, ledger::UsageLedgerRow};
+        let limit = studio_runtime_schema::usage::ledger::LEGACY_GAP_COVERAGE_ROWS;
+        let mut statement=db.prepare_cached("SELECT record FROM analytics_usage INDEXED BY analytics_usage_migration WHERE agent=?1 ORDER BY seq DESC LIMIT ?2")?;
+        let mut source = statement.query(rusqlite::params![agent, limit as i64])?;
+        let mut result = UsageInventory {
+            rows: Vec::new(),
+            truncated: false,
+        };
+        let mut examined = 0;
+        while let Some(row) = source.next()? {
+            examined += 1;
+            if examined == limit {
+                result.truncated = true;
+                break;
+            }
+            let value: Value = serde_json::from_str(&row.get::<_, String>(0)?)?;
+            match UsageLedgerRow::from_analytics(UsageProvider::Codex, &value) {
+                Ok(ledger) => {
+                    let legacy_keys =
+                        studio_runtime_schema::usage::ledger::legacy_analytics_receipt_keys(
+                            &value,
+                            &ledger.studio_usage,
+                        );
+                    result.rows.push(UsageInventoryRow {
+                        ledger,
+                        pre_ledger: UsageLedgerRow::is_pre_ledger_row(&value),
+                        legacy_keys,
+                    });
+                }
+                Err(error) if value.get("studioUsage").is_some() => {
+                    return Err(StoreError::SchemaValidation(error.to_string()));
+                }
+                // Sparse legacy totals carry no typed response or gap evidence.
+                Err(_) => {}
+            }
+        }
+        Ok(result)
     }
 
     pub fn usage_prior(

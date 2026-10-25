@@ -125,10 +125,15 @@ evidence updates their scope. No startup rebuild of analytics is required.
 
 New cumulative receipts include the thread and counter scope. Supported older
 receipt spellings remain aliases and are reused only after a unique match in
-the budget receipt table. Restoring an old counter without a recoverable key
-adds no debit and marks accounting unknown. Old gap coverage also remains
-explicitly unknown until a complete bounded analytics inventory establishes the
-response identities; an unrelated final cannot clear that uncertainty.
+the budget receipt table with proven thread and scope ownership. Missing or
+ambiguous ownership remains visibly unknown. New analytics rows cannot establish
+ownership of an old scalar alias without an explicit first-receipt link.
+Restoring an old counter without a recoverable key adds no debit and marks
+accounting unknown. That guard uses accounting scope, turn, total and last
+counts; context capacity, model lists and provider cost estimates cannot change it.
+Old gap coverage also remains explicitly unknown until a complete bounded
+inventory establishes the pre-ledger response identities. Post-upgrade gaps do
+not prove that old inventory complete; an unrelated final cannot clear it.
 
 ## Checks
 

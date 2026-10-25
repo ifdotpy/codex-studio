@@ -330,6 +330,320 @@ mod usage_contract_tests {
         json!({"threadId":"thread","turnId":"turn","tokenUsage":{"total":{"inputTokens":10,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":10},"last":{"inputTokens":10,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":10}}})
     }
 
+    async fn delta_unknown_counter() -> (tempfile::TempDir, RuntimeStore, Value) {
+        let (temp, store, agent) = ledger_store("codex").await;
+        ledger_capture(
+            &store,
+            &agent,
+            counter_params(),
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_budget_usage SET id='erased-legacy-key',details=NULL",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("unknown counter");
+        store
+            .analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+                let raw: String =
+                    tx.query_row("SELECT record FROM analytics_usage", [], |row| row.get(0))?;
+                let mut row: Value = serde_json::from_str(&raw)?;
+                row.as_object_mut().expect("row").remove("usageIdentity");
+                row.as_object_mut().expect("row").remove("receiptKey");
+                tx.execute("UPDATE analytics_usage SET record=?1", [row.to_string()])?;
+                Ok(())
+            })
+            .await
+            .expect("pre-v5 row");
+        let sink = crate::analytics_history::StoreHistoryBudgetSink::new(&store);
+        migrate_budget(&store, agent.clone(), &sink, 2.)
+            .await
+            .expect("restore");
+        (temp, store, agent)
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_delta_unknown_receipt_ignores_context_metadata() {
+        let (temp, store, agent) = delta_unknown_counter().await;
+        drop(store);
+        let store = RuntimeStore::open(Some(temp.path()))
+            .await
+            .expect("restart");
+        let mut enriched = counter_params();
+        enriched["tokenUsage"]["modelContextWindow"] = json!(200000);
+        ledger_capture(
+            &store,
+            &agent,
+            enriched,
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        assert_eq!(
+            ledger_tokens(&store).await,
+            10,
+            "context metadata cannot bypass accounting uncertainty"
+        );
+        let original = counter_params();
+        let mut observation = studio_runtime_schema::usage::parse_token_usage(
+            studio_runtime_schema::usage::UsageProvider::Codex,
+            &original,
+        )
+        .expect("counter");
+        if let studio_runtime_schema::usage::UsageObservation::Cumulative {
+            models,
+            model_context_window,
+            ..
+        } = &mut observation
+        {
+            *model_context_window = Some(400000);
+            *models = Some(vec![studio_runtime_schema::usage::CumulativeModelUsage {
+                model: "informational-model".into(),
+                tokens: studio_runtime_schema::usage::UsageTokens::default(),
+                provider_cost_usd: Some(1.25),
+            }]);
+        }
+        ledger_capture(
+            &store,
+            &agent,
+            json!({"threadId":"thread","turnId":"turn","studioUsage":observation}),
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        assert_eq!(
+            ledger_tokens(&store).await,
+            10,
+            "model lists and provider cost never identify a debit"
+        );
+    }
+
+    fn rollout_counter(thread: &str) -> Value {
+        let mut context = crate::analytics_rollout::RolloutContext::from_record(
+            json!({"threadId":thread,"model":"gpt-test"}),
+        )
+        .expect("context");
+        let native = json!({"input_tokens":10,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":10});
+        context.actions(&json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":native,"last_token_usage":native}}}),"counter",1.).expect("real rollout").into_iter().find_map(|action|if let crate::analytics_rollout::RolloutAction::Event{params,..}=action{Some(params)}else{None}).expect("counter event")
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_delta_scalar_alias_requires_thread_ownership() {
+        let (_temp, store, mut agent) = ledger_store("codex").await;
+        agent.as_object_mut().expect("agent").remove("turnId");
+        let seed = agent.clone();
+        store
+            .transaction(move |tx| {
+                studio_runtime_store::budget::BudgetRepository::save_agent(tx, &seed)
+            })
+            .await
+            .expect("no turn");
+        let first = rollout_counter("thread");
+        ledger_capture(
+            &store,
+            &agent,
+            first.clone(),
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        let observation = studio_runtime_schema::usage::parse_token_usage(
+            studio_runtime_schema::usage::UsageProvider::Codex,
+            &first,
+        )
+        .expect("typed counter");
+        let old = studio_runtime_schema::usage::ledger::legacy_receipt_keys(
+            "agent",
+            "default",
+            None,
+            &first,
+            &observation,
+        )
+        .remove(0);
+        store
+            .transaction(move |tx| {
+                tx.execute("UPDATE runtime_budget_usage SET id=?1,details=NULL", [old])?;
+                Ok(())
+            })
+            .await
+            .expect("old scalar receipt");
+        store
+            .analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+                let raw: String =
+                    tx.query_row("SELECT record FROM analytics_usage", [], |row| row.get(0))?;
+                let mut row: Value = serde_json::from_str(&raw)?;
+                row.as_object_mut().expect("row").remove("usageIdentity");
+                row.as_object_mut().expect("row").remove("receiptKey");
+                tx.execute("UPDATE analytics_usage SET record=?1", [row.to_string()])?;
+                Ok(())
+            })
+            .await
+            .expect("old analytics");
+        let sink = crate::analytics_history::StoreHistoryBudgetSink::new(&store);
+        migrate_budget(&store, agent.clone(), &sink, 2.)
+            .await
+            .expect("restore first thread");
+        agent["threadId"] = json!("second-thread");
+        let seed = agent.clone();
+        store
+            .transaction(move |tx| {
+                studio_runtime_store::budget::BudgetRepository::save_agent(tx, &seed)
+            })
+            .await
+            .expect("thread transition");
+        ledger_capture(
+            &store,
+            &agent,
+            rollout_counter("second-thread"),
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        assert_eq!(
+            ledger_tokens(&store).await,
+            20,
+            "a proven first-thread alias cannot suppress another thread"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_delta_unproven_alias_stays_visible_after_new_rows() {
+        let (_temp, store, mut agent) = ledger_store("codex").await;
+        agent.as_object_mut().expect("agent").remove("turnId");
+        let seed = agent.clone();
+        store
+            .transaction(move |tx| {
+                studio_runtime_store::budget::BudgetRepository::save_agent(tx, &seed)
+            })
+            .await
+            .expect("no turn");
+        let first = rollout_counter("thread");
+        ledger_capture(
+            &store,
+            &agent,
+            first.clone(),
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        let observation = studio_runtime_schema::usage::parse_token_usage(
+            studio_runtime_schema::usage::UsageProvider::Codex,
+            &first,
+        )
+        .expect("counter");
+        let old = studio_runtime_schema::usage::ledger::legacy_receipt_keys(
+            "agent",
+            "default",
+            None,
+            &first,
+            &observation,
+        )
+        .remove(0);
+        store
+            .transaction(move |tx| {
+                tx.execute("UPDATE runtime_budget_usage SET id=?1,details=NULL", [old])?;
+                Ok(())
+            })
+            .await
+            .expect("scalar alias");
+        store
+            .analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+                tx.execute("DELETE FROM analytics_usage", [])?;
+                Ok(())
+            })
+            .await
+            .expect("lost ownership evidence");
+        agent["threadId"] = json!("second-thread");
+        let seed = agent.clone();
+        store
+            .transaction(move |tx| {
+                studio_runtime_store::budget::BudgetRepository::save_agent(tx, &seed)
+            })
+            .await
+            .expect("thread transition");
+        for _ in 0..2 {
+            ledger_capture(
+                &store,
+                &agent,
+                rollout_counter("second-thread"),
+                crate::budget::CaptureSource::History,
+                1.,
+            )
+            .await;
+        }
+        let (accounting, state) = store
+            .transaction(|tx| {
+                let agent = studio_runtime_store::budget::BudgetRepository::agent(tx, "agent")?;
+                let raw: String =
+                    tx.query_row("SELECT record FROM runtime_budget", [], |row| row.get(0))?;
+                Ok((
+                    agent["tokenUsageAccounting"].clone(),
+                    serde_json::from_str::<Value>(&raw)?,
+                ))
+            })
+            .await
+            .expect("visible uncertainty");
+        assert_eq!(ledger_tokens(&store).await, 10);
+        assert_eq!(accounting, "provisional");
+        assert!(
+            state["faults"]
+                .as_array()
+                .expect("faults")
+                .iter()
+                .any(|fault| fault == studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT),
+            "new rows cannot manufacture old ownership"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_delta_new_gaps_do_not_prove_missing_old_inventory() {
+        let (_temp, store, agent) = ledger_store("claude").await;
+        ledger_capture(&store,&agent,json!({"threadId":"thread","studioUsage":{"kind":"gap","responseId":"lost-old","reason":"queryClosed"}}),crate::budget::CaptureSource::Live,1.).await;
+        store
+            .transaction(|tx| {
+                let raw: String =
+                    tx.query_row("SELECT record FROM runtime_budget", [], |row| row.get(0))?;
+                let mut state: Value = serde_json::from_str(&raw)?;
+                state
+                    .as_object_mut()
+                    .expect("state")
+                    .remove("unresolvedGaps");
+                state.as_object_mut().expect("state").remove("gapCoverage");
+                tx.execute("UPDATE runtime_budget SET record=?1", [state.to_string()])?;
+                Ok(())
+            })
+            .await
+            .expect("old coverage");
+        store
+            .analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+                tx.execute("DELETE FROM analytics_usage", [])?;
+                Ok(())
+            })
+            .await
+            .expect("lost old inventory");
+        ledger_capture(&store,&agent,json!({"threadId":"thread","studioUsage":{"kind":"gap","responseId":"response","reason":"queryClosed"}}),crate::budget::CaptureSource::Live,2.).await;
+        ledger_capture(
+            &store,
+            &agent,
+            ledger_response("live", 1),
+            crate::budget::CaptureSource::Live,
+            3.,
+        )
+        .await;
+        let accounting=store.transaction(|tx|Ok(studio_runtime_store::budget::BudgetRepository::agent(tx,"agent")?["tokenUsageAccounting"].clone())).await.expect("accounting");
+        assert_eq!(
+            accounting, "provisional",
+            "new gaps never discharge unknown old coverage"
+        );
+    }
+
     #[tokio::test]
     async fn typed_usage_ledger_review_pre_v5_counter_restore_cannot_add_a_debit() {
         let (_temp, store, agent) = ledger_store("codex").await;
@@ -533,6 +847,20 @@ mod usage_contract_tests {
     async fn typed_usage_ledger_review_unrelated_final_does_not_resolve_unknown_old_gaps() {
         let (temp, store, agent) = ledger_store("claude").await;
         ledger_capture(&store,&agent,json!({"threadId":"thread","studioUsage":{"kind":"gap","responseId":"missing","reason":"queryClosed"}}),crate::budget::CaptureSource::Live,1.).await;
+        store
+            .analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+                let raw: String =
+                    tx.query_row("SELECT record FROM analytics_usage", [], |row| row.get(0))?;
+                let mut row: Value = serde_json::from_str(&raw)?;
+                row.as_object_mut()
+                    .expect("old gap")
+                    .remove("usageIdentity");
+                row.as_object_mut().expect("old gap").remove("receiptKey");
+                tx.execute("UPDATE analytics_usage SET record=?1", [row.to_string()])?;
+                Ok(())
+            })
+            .await
+            .expect("pre-ledger gap inventory");
         store
             .transaction(|tx| {
                 let raw: String = tx.query_row(

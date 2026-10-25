@@ -207,14 +207,17 @@ fn capture_into(
             UsageObservation::from_record(&snapshot, params, at, source)?
         };
         let mut receipts = Vec::new();
+        let mut ownership_unknown = false;
         for key in observation.receipt_candidates() {
-            if let Some(row) = BudgetRepository::usage(tx, key)?
-                && observation.accepts_receipt(&row)
-                && !receipts
-                    .iter()
-                    .any(|previous: &budget::UsageRow| previous.id == row.id)
-            {
-                receipts.push(row);
+            if let Some(row) = BudgetRepository::usage(tx, key)? {
+                ownership_unknown |= observation.needs_receipt_ownership(&row);
+                if observation.accepts_receipt(&row)
+                    && !receipts
+                        .iter()
+                        .any(|previous: &budget::UsageRow| previous.id == row.id)
+                {
+                    receipts.push(row);
+                }
             }
         }
         let previous = if receipts.len() == 1 {
@@ -227,6 +230,9 @@ fn capture_into(
             }
             None
         };
+        if ownership_unknown {
+            observation.mark_unknown_receipt();
+        }
         let decision = budget::capture(&snapshot, &observation, previous.as_ref())?;
         if let Some(row) = &decision.usage {
             BudgetRepository::insert_usage(tx, row)?;
@@ -286,42 +292,12 @@ async fn prepare_legacy_gap_coverage(
             let db = studio_runtime_store::AnalyticsRepository::new(root).open_read_only()?;
             let mut proofs = Vec::new();
             for (agent, state) in states {
-                let window = studio_runtime_store::cost_aggregate::reconciliation_usage_window(
-                    &db,
-                    &agent,
-                    studio_runtime_schema::usage::ledger::LEGACY_GAP_COVERAGE_ROWS,
-                )?;
-                if window.truncated {
-                    continue;
-                }
-                let gaps = window
-                    .observations
-                    .iter()
-                    .filter_map(|observation| match observation {
-                        studio_runtime_schema::usage::UsageObservation::Gap {
-                            response_id, ..
-                        } => Some(response_id.clone()),
-                        _ => None,
-                    })
-                    .collect::<std::collections::BTreeSet<_>>();
-                if gaps.is_empty() {
-                    continue;
-                }
-                let finals = window
-                    .responses
-                    .iter()
-                    .filter(|row| {
-                        row.evidence != studio_runtime_schema::usage::UsageEvidence::Legacy
-                    })
-                    .map(|row| row.response_id.as_str())
-                    .collect::<std::collections::BTreeSet<_>>();
-                let pending = gaps
-                    .iter()
-                    .filter(|id| !finals.contains(id.as_str()))
-                    .map(|id| {
-                        studio_runtime_schema::usage::ledger::response_receipt_key(&agent, id)
-                    })
-                    .collect();
+                let inventory=studio_runtime_store::analytics_capture::AnalyticsCaptureRepository::usage_inventory(&db,&agent)?;
+                if inventory.truncated {continue;}
+                let gaps=inventory.rows.iter().filter(|row|row.pre_ledger).filter_map(|row|match &row.ledger.studio_usage {studio_runtime_schema::usage::UsageObservation::Gap{response_id,..}=>Some(response_id.clone()),_=>None}).collect::<std::collections::BTreeSet<_>>();
+                if gaps.is_empty() {continue;}
+                let finals=inventory.rows.iter().filter_map(|row|match &row.ledger.studio_usage {studio_runtime_schema::usage::UsageObservation::Response{response_id,evidence,..} if *evidence!=studio_runtime_schema::usage::UsageEvidence::Legacy=>Some(response_id.as_str()),_=>None}).collect::<std::collections::BTreeSet<_>>();
+                let pending=gaps.iter().filter(|id|!finals.contains(id.as_str())).map(|id|studio_runtime_schema::usage::ledger::response_receipt_key(&agent,id)).collect();
                 proofs.push((agent, state, pending));
             }
             Ok::<_, BudgetError>(proofs)
@@ -347,6 +323,126 @@ async fn prepare_legacy_gap_coverage(
     Ok(())
 }
 
+/// Prove a scalar counter alias's scope from a complete bounded typed inventory.
+/// Missing or cross-scope evidence stays unknown; the capture writer cannot guess.
+async fn prepare_legacy_counter_ownership(
+    store: &studio_runtime_store::RuntimeStore,
+    captures: &[(Value, Value)],
+) -> Result<(), BudgetError> {
+    use studio_runtime_schema::usage::ledger::UsageLedgerRow;
+    use studio_runtime_schema::usage::{UsageObservation as Parsed, UsageProvider, UsageScope};
+    let captures = captures.to_vec();
+    let candidates = store
+        .read_async("budget/legacy-counter-aliases", move |tx| {
+            let mut candidates = Vec::new();
+            for (agent, params) in captures {
+                let provider = if agent["provider"] == "claude" {
+                    UsageProvider::Claude
+                } else {
+                    UsageProvider::Codex
+                };
+                let Ok(observation) =
+                    studio_runtime_schema::usage::parse_token_usage(provider, &params)
+                else {
+                    continue;
+                };
+                if !matches!(
+                    observation,
+                    Parsed::Cumulative {
+                        scope: UsageScope::CodexThread,
+                        ..
+                    }
+                ) {
+                    continue;
+                }
+                let Some(id) = agent["id"].as_str() else {
+                    continue;
+                };
+                let mut keys = if params.get("agentId").is_some() {
+                    studio_runtime_schema::usage::ledger::legacy_analytics_receipt_keys(
+                        &params,
+                        &observation,
+                    )
+                } else {
+                    let turn = match &observation {
+                        Parsed::Cumulative { turn_id, .. } => turn_id.as_deref(),
+                        _ => None,
+                    };
+                    studio_runtime_schema::usage::ledger::legacy_receipt_keys(
+                        id,
+                        agent["accountKey"].as_str().unwrap_or("default"),
+                        turn,
+                        &params,
+                        &observation,
+                    )
+                };
+                if params.get("agentId").is_some()
+                    && let Ok(row) = UsageLedgerRow::from_analytics(provider, &params)
+                    && let Some(key) = row.receipt_key
+                {
+                    keys.push(key);
+                }
+                for key in keys {
+                    if let Some(old) = BudgetRepository::usage(tx, &key)?
+                        && old.agent == id
+                        && old.kind == "notice"
+                        && old.details.is_none()
+                        && !candidates
+                            .iter()
+                            .any(|row: &budget::UsageRow| row.id == old.id)
+                    {
+                        candidates.push(old);
+                    }
+                }
+            }
+            Ok::<_, BudgetError>(candidates)
+        })
+        .await?;
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let root = store.root().to_owned();
+    let proven=studio_runtime_process::blocking_pool::spawn_blocking("budget/legacy-counter-owners",move|| {
+        let db=studio_runtime_store::AnalyticsRepository::new(root).open_read_only()?;
+        let mut inventories=std::collections::BTreeMap::new();
+        let mut proven=Vec::new();
+        for old in candidates {
+            let inventory=match inventories.entry(old.agent.clone()) {
+                std::collections::btree_map::Entry::Occupied(entry)=>entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry)=>entry.insert(studio_runtime_store::analytics_capture::AnalyticsCaptureRepository::usage_inventory(&db,&old.agent)?),
+            };
+            if inventory.truncated {continue;}
+            let mut owner:Option<UsageLedgerRow>=None;let mut ambiguous=false;
+            for row in &inventory.rows {
+                let Parsed::Cumulative{total,last,..}=&row.ledger.studio_usage else {continue};
+                if last.as_ref().unwrap_or(total).total()!=Some(old.tokens) || row.ledger.receipt_key.as_deref()!=Some(old.id.as_str()) && !(row.pre_ledger && row.legacy_keys.contains(&old.id)) {continue;}
+                if owner.as_ref().is_some_and(|previous|previous.usage_identity!=row.ledger.usage_identity) {ambiguous=true;break;}
+                owner=Some(row.ledger.clone());
+            }
+            if !ambiguous && let Some(mut ledger)=owner {
+                ledger.receipt_key=Some(old.id.clone());proven.push((old,studio_runtime_store::budget::BudgetUsageDetails{ledger,before_cutoff:true}));
+            }
+        }
+        Ok::<_,BudgetError>(proven)
+    }).await.map_err(|_|studio_runtime_store::StoreError::ReadTaskFailed)??;
+    if proven.is_empty() {
+        return Ok(());
+    }
+    store
+        .transaction(move |tx| {
+            for (old, details) in proven {
+                if BudgetRepository::usage(tx, &old.id)?.as_ref() == Some(&old) {
+                    let mut row = old;
+                    row.details = Some(details);
+                    BudgetRepository::insert_usage(tx, &row)?;
+                }
+            }
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
 /// Enrich only old scalar receipts before admitting the capture writer. All analytics
 /// IO occurs outside that writer; the metadata transaction compares the exact old row.
 /// It changes no amount, placement totals, agent state, or notification receipt.
@@ -361,6 +457,7 @@ pub async fn prepare_legacy_corrections(
         .into_iter()
         .collect();
     prepare_legacy_gap_coverage(store, agents).await?;
+    prepare_legacy_counter_ownership(store, &captures).await?;
     use studio_runtime_schema::usage::ledger::UsageLedgerRow;
     use studio_runtime_schema::usage::{
         UsageEvidence, UsageObservation as ParsedUsage, UsageProvider, parse_token_usage,

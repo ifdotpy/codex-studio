@@ -333,6 +333,7 @@ pub struct UsageObservation {
     key: String,
     legacy_keys: Vec<String>,
     unresolved_receipt: bool,
+    scoped_capture_key: Option<String>,
     exact: bool,
     amount: Option<u64>,
     counter: Option<u64>,
@@ -542,6 +543,15 @@ impl UsageObservation {
                 }
             })
             .unwrap_or_default();
+        let scoped_capture_key = if !restoring
+            && matches!(
+                ledger.as_ref().map(|row| &row.studio_usage),
+                Some(studio_runtime_schema::usage::UsageObservation::Cumulative { .. })
+            ) {
+            Some(key.clone())
+        } else {
+            None
+        };
         let identity = ledger
             .as_ref()
             .map(|row| row.usage_identity.clone())
@@ -562,6 +572,7 @@ impl UsageObservation {
             key,
             legacy_keys,
             unresolved_receipt,
+            scoped_capture_key,
             ledger,
             identity,
             exact,
@@ -586,10 +597,19 @@ impl UsageObservation {
             .filter(|key| !key.is_empty())
             .chain(self.legacy_keys.iter().map(String::as_str))
     }
+    pub(crate) fn needs_receipt_ownership(&self, row: &UsageRow) -> bool {
+        matches!(
+            self.identity,
+            studio_runtime_schema::usage::ledger::UsageIdentity::Cumulative { .. }
+        ) && row.details.is_none()
+            && self.scoped_capture_key.as_deref() != Some(row.id.as_str())
+    }
     pub(crate) fn accepts_receipt(&self, row: &UsageRow) -> bool {
-        row.details
-            .as_ref()
-            .is_none_or(|details| details.ledger.usage_identity == self.identity)
+        !self.needs_receipt_ownership(row)
+            && row
+                .details
+                .as_ref()
+                .is_none_or(|details| details.ledger.usage_identity == self.identity)
     }
     pub(crate) fn reuse_receipt(&mut self, key: String) {
         self.key = key.clone();

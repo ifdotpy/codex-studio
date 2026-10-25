@@ -102,7 +102,22 @@ impl UsageLedgerRow {
 
     /// Identity of the typed counter evidence, independent of erased legacy wire fields.
     pub fn observation_key(&self) -> String {
-        receipt_hash(&json!([self.usage_identity, self.studio_usage]))
+        let accounting = match &self.studio_usage {
+            UsageObservation::Cumulative {
+                turn_id,
+                total,
+                last,
+                ..
+            } => json!([turn_id, total, last]),
+            UsageObservation::Response { tokens, .. } => json!(tokens),
+            UsageObservation::Gap { .. } => Value::Null,
+        };
+        receipt_hash(&json!([self.usage_identity, accounting]))
+    }
+
+    /// Whether an analytics record predates persisted ledger identity metadata.
+    pub fn is_pre_ledger_row(row: &Value) -> bool {
+        row.get("usageIdentity").is_none() && row.get("receiptKey").is_none()
     }
 
     /// Read typed persisted rows directly; legacy decoding stays at its supported boundary.
