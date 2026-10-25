@@ -187,7 +187,7 @@ test("final stream usage is emitted before turn completion and replaces provisio
       reasoningOutput: 20,
     },
   });
-  await fs.writeFile(path.join(b.root, ".finish"), "");
+  await b.writeSignal(".finish");
   await done(b, id);
   const usageIndex = b.notes.findIndex(
     (n) => n.params?.studioUsage?.kind === "response",
@@ -213,7 +213,7 @@ test("every result is published before a steer echo can discard a deferred resul
   expect(observations(b).filter((o) => o?.kind === "cumulative")).toHaveLength(
     1,
   );
-  await fs.writeFile(path.join(b.root, ".finish"), "");
+  await b.writeSignal(".finish");
   await done(b, id);
   expect(
     observations(b)
@@ -272,7 +272,7 @@ test("background subagent final usage survives completion of its owning Studio t
   const b = await setup();
   const turn = await start(b, "background");
   await done(b, turn);
-  await fs.writeFile(path.join(b.root, ".finish"), "");
+  await b.writeSignal(".finish");
   await b.note(
     (n) =>
       n.method === "item/completed" &&
@@ -552,7 +552,7 @@ for (const scenario of [
           clientUserMessageId: "unread-steer",
           input: [{ type: "text", text: "continue" }],
         });
-        await fs.writeFile(path.join(b.root, ".finish"), "");
+        await b.writeSignal(".finish");
         await b.note((n) => n.params?.studioUsage?.kind === "cumulative");
         await b.advanceTime(2000);
       }
