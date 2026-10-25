@@ -231,11 +231,15 @@ export class ResourceEntityDelivery {
       return;
     }
     if (
-      (event.reason === "change" || event.reason === "initial") &&
+      (event.reason === "change" ||
+        event.reason === "initial" ||
+        event.reason === "reconnect") &&
       !hasState &&
       !hasChanges &&
       this.epoch === event.epoch
     ) {
+      // The producer splits reconnect baselines into per-resource frames.
+      // A passive sibling hint must not cancel an interval still committing.
       this.dispatch(event);
       return;
     }

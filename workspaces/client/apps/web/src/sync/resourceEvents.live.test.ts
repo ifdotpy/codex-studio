@@ -9,6 +9,7 @@ import { createSubscriptionStore } from "./subscriptions/store";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
+import { EventStreamParser } from "../servers/eventSource";
 
 vi.mock("./client", () => ({ syncDatabase: vi.fn() }));
 vi.mock("../usage/tokenRate", () => ({
@@ -430,6 +431,117 @@ it("reports a deferred baseline listener failure through normal transport recove
     expect.objectContaining({ failure: "local-state-error" }),
   );
   error.mockRestore();
+});
+
+it("applies split reconnect data beside passive hints without repeating its durable cursor recovery", async () => {
+  const f = await fixture();
+  const state = { kind: "state" } as const;
+  const passive = { kind: "transcripts" } as const;
+  f.transport.watchResourceChanges(passive, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 1 });
+  let durableSequence = 1;
+  f.readCursor.mockImplementation(async (ref) =>
+    ref.kind === "state"
+      ? { workspaceId: "workspace", seq: durableSequence }
+      : undefined,
+  );
+  const listener = vi.fn();
+  f.transport.watchResourceChanges(state, listener);
+  listener.mockImplementationOnce(() => {
+    throw new Error("first listener application failed");
+  });
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "change",
+    resources: [state],
+    resourceVersions: [{ revision: 2 }],
+  });
+  expect(f.source.closed).toBe(true);
+  await vi.advanceTimersByTimeAsync(1000);
+  listener.mockClear();
+  const replayedCursors: number[] = [];
+  // sync_stream.rs initial_resource_sse_events emits one same-revision frame
+  // per resource, retaining passive entries after the inline entity interval.
+  // A received chunk can contain both while its IndexedDB write is pending.
+  for (let retry = 0; retry < 2; retry++) {
+    const replacement = f.sources.at(-1)!;
+    const query = new URL(f.urls.at(-1)!, "http://studio.test");
+    const since = JSON.parse(query.searchParams.get("since")!);
+    replayedCursors.push(
+      since.find(
+        (entry: { resource: { kind: string } }) =>
+          entry.resource.kind === "state",
+      ).since.seq,
+    );
+    replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
+    let finish!: () => void;
+    f.persist.mockImplementationOnce(async (_event, current) => {
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      if (current()) durableSequence = 3;
+    });
+    const common = {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision: 3,
+      reason: "reconnect",
+    };
+    const frames = [
+      {
+        ...common,
+        resources: [state],
+        resourceVersions: [
+          {
+            resource: state,
+            revision: 3,
+            cursor: { workspaceId: "workspace", seq: 3 },
+            replyKind: "delta",
+            entityChanges: { after: 1, through: 3, documents: [] },
+          },
+        ],
+      },
+      { ...common, resources: [passive], resourceVersions: [{ revision: 3 }] },
+    ];
+    const parser = new EventStreamParser((name, data) => {
+      replacement.listeners.get(name)?.({ data } as MessageEvent<string>);
+    });
+    parser.push(
+      frames
+        .map((frame) => `event: resources\ndata: ${JSON.stringify(frame)}\n\n`)
+        .join(""),
+    );
+    // No durable application receipt is published while the write is pending.
+    expect(listener).not.toHaveBeenCalled();
+    finish();
+    await vi.advanceTimersByTimeAsync(1000);
+    if (!replacement.closed) break;
+  }
+  expect(replayedCursors).toEqual([1]);
+  expect(f.sources).toHaveLength(2);
+  expect(durableSequence).toBe(3);
+  expect(listener).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      cursor: { workspaceId: "workspace", seq: 3 },
+      replyKind: "delta",
+    }),
+  );
+  expect(
+    errors.mock.calls.filter(
+      ([, error]) =>
+        error instanceof Error &&
+        error.message ===
+          "Subscribed entity interval was discarded before application",
+    ),
+  ).toHaveLength(0);
+  expect(f.get).not.toHaveBeenCalled();
+  errors.mockRestore();
 });
 
 it("delivers subscribed auth progress without sending its URL to the entity persister", async () => {

@@ -314,6 +314,12 @@ cursor; a follower asks that owner through browser coordination. Queued deltas
 cannot confirm readiness after their base failed, and a cancelled subscription
 cannot request recovery for its replacement.
 
+The server may split a reconnect baseline into separate resource frames.
+A same-epoch passive notification for another resource must not cancel a
+pending entity write. The entity cursor becomes applied only after that write
+commits; state resets, epoch changes, and failed application retain their
+recovery behavior.
+
 Project deletion uses the dedicated `POST /api/projects/delete` contract in
 [OpenAPI](../workspaces/runtime/packages/runtime-http/openapi.json). The confirmation
 captures the project entity's own `seq` and the applied baseline's `workspaceId`;

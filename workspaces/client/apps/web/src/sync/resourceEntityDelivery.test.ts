@@ -41,37 +41,40 @@ describe("bounded stream entity delivery", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps a pending state interval when an unrelated initial resource arrives", async () => {
-    let finish!: () => void;
-    const persist = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          finish = resolve;
-        }),
-    );
-    const dispatch = vi.fn();
-    const failed = vi.fn();
-    const delivery = new ResourceEntityDelivery(persist, dispatch, failed);
-    delivery.receive(frame(1));
-    delivery.receive({
-      ...frame(2, "initial"),
-      resources: [{ kind: "multi-server" }],
-      resourceVersions: [{ revision: 2 }],
-    });
-    expect(failed).not.toHaveBeenCalled();
-    expect(persist).toHaveBeenCalledOnce();
-    finish();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(
-      dispatch.mock.calls.map(([event]) => [
-        event.reason,
-        event.resources[0].kind,
-      ]),
-    ).toEqual([
-      ["initial", "multi-server"],
-      ["change", "state"],
-    ]);
-  });
+  it.each(["initial", "change", "reconnect"] as const)(
+    "keeps a pending state interval when an unrelated %s resource arrives",
+    async (reason) => {
+      let finish!: () => void;
+      const persist = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const dispatch = vi.fn();
+      const failed = vi.fn();
+      const delivery = new ResourceEntityDelivery(persist, dispatch, failed);
+      delivery.receive(frame(1));
+      delivery.receive({
+        ...frame(2, reason),
+        resources: [{ kind: "multi-server" }],
+        resourceVersions: [{ revision: 2 }],
+      });
+      expect(failed).not.toHaveBeenCalled();
+      expect(persist).toHaveBeenCalledOnce();
+      finish();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        dispatch.mock.calls.map(([event]) => [
+          event.reason,
+          event.resources[0].kind,
+        ]),
+      ).toEqual([
+        [reason, "multi-server"],
+        ["change", "state"],
+      ]);
+    },
+  );
 
   it("requests source recovery after a current timeout and keeps blocked storage degraded", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -86,6 +89,37 @@ describe("bounded stream entity delivery", () => {
     delivery.receive(frame(2));
     expect(failed).toHaveBeenCalledTimes(2);
     expect(persist).toHaveBeenCalledOnce();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("still fences a pending interval when a passive reconnect hint changes epoch", async () => {
+    let finish!: () => void;
+    let current!: () => boolean;
+    const persist = vi.fn((_event, isCurrent) => {
+      current = isCurrent;
+      return new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    });
+    const dispatch = vi.fn();
+    const failed = vi.fn();
+    const delivery = new ResourceEntityDelivery(persist, dispatch, failed);
+    delivery.receive(frame(1));
+    delivery.receive({
+      ...frame(2, "reconnect"),
+      epoch: "replacement",
+      resources: [{ kind: "multi-server" }],
+      resourceVersions: [{ revision: 2 }],
+    });
+    expect(current()).toBe(false);
+    expect(failed).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ resources: [{ kind: "state" }] }),
+      expect.objectContaining({
+        message: "Subscribed entity interval was discarded before application",
+      }),
+    );
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
     expect(dispatch).not.toHaveBeenCalled();
   });
 
