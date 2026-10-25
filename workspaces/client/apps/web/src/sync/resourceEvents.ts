@@ -1555,6 +1555,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   async function prepareResourceCursors(
     resources: ResourceRef[],
     signal: AbortSignal,
+    currentResources?: () => ResourceRef[],
   ) {
     type PreparedCursor = {
       resource: ResourceRef;
@@ -1566,26 +1567,45 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (signal.aborted) return baseline;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let cancel: () => void = () => {};
+    let finished = false;
     const bounded = new Promise<PreparedCursor[]>((resolve) => {
-      cancel = () => resolve(baseline);
+      cancel = () => {
+        finished = true;
+        resolve(baseline);
+      };
       signal.addEventListener("abort", cancel, { once: true });
       timer = setTimeout(cancel, RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS);
     });
     try {
       return await Promise.race([
-        Promise.all(
-          resources.map(async (resource) => ({
-            resource,
-            since: entityDelivery.requiresSnapshot(resource)
-              ? undefined
-              : await options.sync
-                  .readSubscriptionCursor?.(resource)
-                  .catch(() => undefined),
-          })),
-        ),
+        (async () => {
+          const prepared: PreparedCursor[] = [];
+          const seen = new Set<string>();
+          let pending = resources;
+          while (pending.length && !finished) {
+            for (const resource of pending) seen.add(resourceKey(resource));
+            prepared.push(
+              ...(await Promise.all(
+                pending.map(async (resource) => ({
+                  resource,
+                  since: entityDelivery.requiresSnapshot(resource)
+                    ? undefined
+                    : await options.sync
+                        .readSubscriptionCursor?.(resource)
+                        .catch(() => undefined),
+                })),
+              )),
+            );
+            pending = (currentResources?.() ?? []).filter(
+              (resource) => !seen.has(resourceKey(resource)),
+            );
+          }
+          return prepared;
+        })(),
         bounded,
       ]);
     } finally {
+      finished = true;
       clearTimeout(timer);
       signal.removeEventListener("abort", cancel);
     }
@@ -1621,7 +1641,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const attempt = new AbortController();
     openingSource = attempt;
     notifyConnectionListeners();
-    const prepared = await prepareResourceCursors(resources, attempt.signal);
+    const prepared = await prepareResourceCursors(
+      resources,
+      attempt.signal,
+      () => (owner ? aggregateResources() : localResources()),
+    );
     if (openingSource !== attempt) return;
     if (attempt.signal.aborted || !canOpenSource()) {
       openingSource = undefined;
@@ -1629,7 +1653,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       return;
     }
     // Screens can change while optional local cursors are being read. Open
-    // exactly today's union; newly demanded selectors receive a full baseline.
+    // exactly today's union; late selectors share the original cursor budget.
     const currentResources = owner ? aggregateResources() : localResources();
     const currentTokenRates = owner
       ? hasTokenRateInterest()

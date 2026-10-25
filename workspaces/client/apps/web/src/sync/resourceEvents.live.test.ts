@@ -1698,8 +1698,10 @@ it("connection: an unfinished cursor read opens a full baseline and cannot later
 
 it("connection: switching Studio screens during cursor preparation opens the latest resource union", async () => {
   const f = await fixture();
-  f.readCursor.mockImplementation(
-    () => new Promise((resolve) => setTimeout(() => resolve(undefined), 4_000)),
+  f.readCursor.mockImplementation((resource) =>
+    resource.kind === "state"
+      ? new Promise((resolve) => setTimeout(() => resolve(undefined), 4_000))
+      : Promise.resolve(undefined),
   );
   f.readCursor.mockClear();
   f.source.onerror?.();
@@ -1718,8 +1720,102 @@ it("connection: switching Studio screens during cursor preparation opens the lat
   expect(requested).toContainEqual({ kind: "state" });
   expect(requested).toContainEqual(secondChat);
   expect(requested).not.toContainEqual(firstChat);
-  expect(f.readCursor).toHaveBeenCalledOnce();
+  expect(f.readCursor.mock.calls).toEqual([[{ kind: "state" }], [secondChat]]);
 });
+
+it("connection: a cached state selector joining cursor preparation retains its durable resume cursor", async () => {
+  const f = await fixture();
+  f.stopState();
+  f.transport.watchResourceChanges({ kind: "drafts" }, vi.fn());
+  const cursor = { workspaceId: "workspace", seq: 254 };
+  let finishDrafts!: () => void;
+  f.readCursor.mockImplementation((resource) =>
+    resource.kind === "drafts"
+      ? new Promise((resolve) => {
+          finishDrafts = () => resolve(undefined);
+        })
+      : Promise.resolve(cursor),
+  );
+  f.readCursor.mockClear();
+  f.source.onerror?.();
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(f.readCursor.mock.calls).toEqual([[{ kind: "drafts" }]]);
+  f.transport.watchResourceChanges({ kind: "state" }, vi.fn());
+  finishDrafts();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.sources).toHaveLength(2);
+  const query = new URL(f.urls[1]!, location.origin).searchParams;
+  expect(JSON.parse(query.get("resources")!)).toEqual([
+    { kind: "drafts" },
+    { kind: "state" },
+  ]);
+  expect(JSON.parse(query.get("since")!)).toEqual([
+    { resource: { kind: "state" }, since: cursor },
+  ]);
+  expect(f.readCursor.mock.calls).toEqual([
+    [{ kind: "drafts" }],
+    [{ kind: "state" }],
+  ]);
+  expect(f.get.mock.calls.map(([path]) => path)).toEqual([
+    "/api/sync/identity",
+  ]);
+  expect(f.post).not.toHaveBeenCalled();
+});
+
+it.each(["deadline", "hide"] as const)(
+  "connection: late selector preparation shares the opening %s and reads each selector once",
+  async (end) => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    disposals.push(() => random.mockRestore());
+    const f = await fixture(false, true, true);
+    let finishState!: () => void;
+    let finishChat!: () => void;
+    let preparationAt = 0;
+    f.readCursor.mockImplementation(
+      (resource) =>
+        new Promise((resolve) => {
+          const finish = () => resolve({ workspaceId: "workspace", seq: 254 });
+          if (resource.kind === "state") {
+            preparationAt = Date.now();
+            finishState = finish;
+          } else finishChat = finish;
+        }),
+    );
+    f.readCursor.mockClear();
+    f.source.onerror?.();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(
+      RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS - 1_000,
+    );
+    const chat = { kind: "queue", agentId: "late-chat" } as const;
+    const stopChat = f.transport.watchResourceChanges(chat, vi.fn());
+    finishState();
+    await vi.advanceTimersByTimeAsync(0);
+    stopChat();
+    f.transport.watchResourceChanges(chat, vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.sources).toHaveLength(1);
+    expect(f.readCursor.mock.calls).toEqual([[{ kind: "state" }], [chat]]);
+    if (end === "hide") {
+      Object.assign(document, { hidden: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    }
+    await vi.advanceTimersByTimeAsync(
+      RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS - (Date.now() - preparationAt) - 1,
+    );
+    expect(f.sources).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.sources).toHaveLength(end === "deadline" ? 2 : 1);
+    if (end === "deadline")
+      expect(
+        new URL(f.urls[1]!, location.origin).searchParams.get("since"),
+      ).toBe("[]");
+    finishChat();
+    await vi.advanceTimersByTimeAsync(RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS);
+    expect(f.sources).toHaveLength(end === "deadline" ? 2 : 1);
+    expect(f.readCursor).toHaveBeenCalledTimes(2);
+  },
+);
 
 it.each(["hide", "dispose", "last-subscriber"] as const)(
   "connection: %s cancels cursor preparation and late completion cannot reopen",
