@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../api", () => ({
   refreshSession: mocks.sessionRead,
   syncPost: mocks.syncPost,
+  errorText: (error: unknown) =>
+    error instanceof Error ? error.message : String(error),
 }));
 vi.mock("./resume", () => ({ onResume: mocks.resume }));
 vi.mock("./uiPreferenceStore", () => ({

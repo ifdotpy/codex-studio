@@ -487,6 +487,17 @@ The sidebar and Team panel can collapse at any window width.
 the same account manager as the chat menu: add accounts, view saved accounts,
 remove them, and choose the application default. Its Appearance and Hotkeys tabs group per-browser appearance,
 text size, transcript width, message author icons, and sidebar shortcut preferences.
+
+The **Models** tab controls which models appear in this server's pickers. Its
+compact grid fills the available width and wraps to fewer columns on phones.
+**Select all models** includes models added in the future; **Clear selection**
+disables new model choices. Existing chats and saved defaults keep their selected
+model, shown as a disabled current choice if it is hidden. The selection is saved
+on this server and survives reloads and server restarts. Each paired server has
+its own selection. Saving and unsaved errors appear beside the controls; use
+**Retry saving** after a failure. Reconnection also retries pending edits. See the
+[preference write contract](ui-preferences-sync.md#server-model-whitelist-write-contract).
+
 Author icons are hidden by default. Use the composer picker to select the conversation account and model. Chat settings manages its team, project, and permissions.
 
 Prompt history is in the chat header; open **Conversation tools** when space is

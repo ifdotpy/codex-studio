@@ -3131,7 +3131,12 @@ export default function App({ active = true }: { active?: boolean }) {
                 <ServerAccessSettings active={studioSettingsOpen} />
               )}
             </Tabs.Panel>
-            <Tabs.Panel value="models" pt="md" keepMounted={false}>
+            <Tabs.Panel
+              value="models"
+              className="model-whitelist-panel"
+              pt="md"
+              keepMounted={false}
+            >
               <ModelWhitelistSettings />
             </Tabs.Panel>
             <Tabs.Panel value="appearance" pt="md">

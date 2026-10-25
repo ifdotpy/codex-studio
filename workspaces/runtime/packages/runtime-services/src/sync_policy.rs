@@ -1,4 +1,8 @@
 //! Pure sync document, cursor and preference decisions.
+use studio_runtime_schema::shared_values::{
+    MODEL_WHITELIST_KEY_MAX_CODEPOINTS, MODEL_WHITELIST_KEY_PATTERN, MODEL_WHITELIST_MAX_KEYS,
+    MODEL_WHITELIST_PREFERENCE_KEY,
+};
 
 use crate::event_write::truthy;
 pub use crate::sync_views::{
@@ -1992,6 +1996,7 @@ fn validate_preference(
     let key = &parts[0];
     let value = field.get("value").unwrap_or(&Value::Null);
 
+    let model_whitelist = key == MODEL_WHITELIST_PREFERENCE_KEY;
     let appearance = key == "codex-studio-preferences-v1";
     let visual = key.starts_with("codex-project-tree:")
         || key.starts_with("codex-project-compact:")
@@ -2007,7 +2012,7 @@ fn validate_preference(
     let shell = key == "server-order"
         || key.starts_with("server-alias:")
         || key.starts_with("server-label:");
-    if !appearance && !visual && !shell {
+    if !appearance && !visual && !shell && !model_whitelist {
         return Err(SyncPolicyError::InvalidPreferences);
     }
     let expected_user_scope = appearance
@@ -2018,7 +2023,11 @@ fn validate_preference(
         return Err(SyncPolicyError::InvalidPreferences);
     }
 
-    if appearance {
+    if model_whitelist {
+        if parts.len() != 1 || field.get("value").is_none() || !valid_model_whitelist(value) {
+            return Err(SyncPolicyError::InvalidPreferences);
+        }
+    } else if appearance {
         if parts.len() != 2 || !valid_appearance(&parts[1], value) {
             return Err(SyncPolicyError::InvalidPreferences);
         }
@@ -2054,6 +2063,29 @@ fn validate_preference(
         return Err(SyncPolicyError::InvalidPreferences);
     }
     Ok(())
+}
+
+fn valid_model_whitelist(value: &Value) -> bool {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let pattern = PATTERN.get_or_init(|| {
+        // The static runtime-schema pattern is compiled and exercised by contract tests.
+        regex::Regex::new(MODEL_WHITELIST_KEY_PATTERN).expect("valid model identity pattern")
+    });
+    if value.is_null() {
+        return true;
+    }
+    let Some(keys) = value.as_array() else {
+        return false;
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    keys.len() <= MODEL_WHITELIST_MAX_KEYS
+        && keys.iter().all(|key| {
+            key.as_str().is_some_and(|key| {
+                key.chars().count() <= MODEL_WHITELIST_KEY_MAX_CODEPOINTS
+                    && pattern.is_match(key)
+                    && seen.insert(key)
+            })
+        })
 }
 
 fn valid_appearance(name: &str, value: &Value) -> bool {
@@ -2095,7 +2127,9 @@ fn prune_preferences(fields: &mut Map<String, Value>) {
         .iter()
         .filter(|(name, _)| {
             !preference_key(name).is_some_and(|key| {
-                key == "codex-studio-preferences-v1" || key.starts_with("server-")
+                key == "codex-studio-preferences-v1"
+                    || key.starts_with("server-")
+                    || key == MODEL_WHITELIST_PREFERENCE_KEY
             })
         })
         .map(|(name, field)| {
@@ -2115,9 +2149,11 @@ fn prune_preferences(fields: &mut Map<String, Value>) {
         .map(|(_, name)| name)
         .collect::<std::collections::BTreeSet<_>>();
     fields.retain(|name, _| {
-        preference_key(name)
-            .is_some_and(|key| key == "codex-studio-preferences-v1" || key.starts_with("server-"))
-            || retained.contains(name)
+        preference_key(name).is_some_and(|key| {
+            key == "codex-studio-preferences-v1"
+                || key.starts_with("server-")
+                || key == MODEL_WHITELIST_PREFERENCE_KEY
+        }) || retained.contains(name)
     });
 }
 
@@ -3410,11 +3446,145 @@ mod tests {
         }), PreferenceScope::User).is_err());
     }
 
+    #[test]
+    fn model_whitelist_preference_validates_scope_and_value() {
+        let key = r#"["studio-model-whitelist-v1"]"#;
+        for value in [
+            Value::Null,
+            json!([]),
+            json!(["codex:gpt-6-astra", "claude:opus"]),
+        ] {
+            let fields = Value::Object(preference_field(key, value, 1));
+            assert!(parse_preferences(&fields, PreferenceScope::Server).is_ok());
+            assert!(parse_preferences(&fields, PreferenceScope::User).is_err());
+        }
+        for value in [
+            json!(true),
+            json!({}),
+            json!([1]),
+            json!(["astra"]),
+            json!([":opus"]),
+            json!(["codex:"]),
+            json!(["codex:a", "codex:a"]),
+        ] {
+            assert!(
+                parse_preferences(
+                    &Value::Object(preference_field(key, value, 1)),
+                    PreferenceScope::Server
+                )
+                .is_err()
+            );
+        }
+    }
+
     fn preference_field(name: &str, value: Value, timestamp: i64) -> Map<String, Value> {
         Map::from_iter([(
             name.to_owned(),
             json!({"value":value,"timestamp":timestamp,"writer":"sync-policy-test"}),
         )])
+    }
+
+    #[tokio::test]
+    async fn model_whitelist_persists_retries_and_preserves_other_fields_on_reopen() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("open store");
+        let key = r#"["studio-model-whitelist-v1"]"#;
+        let other = r#"["codex-project-tree:/state","/repo"]"#;
+        let user = r#"["codex-studio-preferences-v1","theme"]"#;
+        let apply = |value, version| {
+            parse_preferences(
+                &Value::Object(preference_field(key, value, version)),
+                PreferenceScope::Server,
+            )
+            .expect("valid whitelist")
+        };
+        push_preferences(
+            &store,
+            PreferenceScope::Server,
+            preference_field(other, json!(true), 1),
+            |_| true,
+            || {},
+        )
+        .await
+        .expect("other preference");
+        push_preferences(
+            &store,
+            PreferenceScope::User,
+            preference_field(user, json!("dark"), 1),
+            |_| true,
+            || {},
+        )
+        .await
+        .expect("user preference");
+        let first = apply(json!(["codex:astra"]), 2);
+        let merged = push_preferences(
+            &store,
+            PreferenceScope::Server,
+            first.clone(),
+            |_| true,
+            || {},
+        )
+        .await
+        .expect("first apply");
+        let duplicate = push_preferences(&store, PreferenceScope::Server, first, |_| true, || {})
+            .await
+            .expect("retry after response loss");
+        assert_eq!(duplicate, merged);
+        let changed = push_preferences(
+            &store,
+            PreferenceScope::Server,
+            apply(json!([]), 3),
+            |_| true,
+            || {},
+        )
+        .await
+        .expect("new edit");
+        assert_eq!(changed[key]["value"], json!([]));
+        let stale = push_preferences(
+            &store,
+            PreferenceScope::Server,
+            apply(Value::Null, 1),
+            |_| true,
+            || {},
+        )
+        .await
+        .expect("stale base");
+        assert_eq!(stale[key]["value"], json!([]));
+        assert_eq!(stale[other]["value"], true);
+        drop(store);
+        let reopened = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("reopen SQLite");
+        let reader = reopened.test_reader().expect("reader");
+        let persisted: Value = serde_json::from_str(
+            &SyncDocumentsRepository::preference_payload(&reader, "server")
+                .expect("read")
+                .expect("server row"),
+        )
+        .expect("JSON");
+        assert_eq!(persisted["value"]["fields"][key]["value"], json!([]));
+        assert_eq!(persisted["value"]["fields"][other]["value"], true);
+        let user_row: Value = serde_json::from_str(
+            &SyncDocumentsRepository::preference_payload(&reader, "user")
+                .expect("read user")
+                .expect("user row"),
+        )
+        .expect("JSON");
+        assert_eq!(user_row["value"]["fields"][user]["value"], "dark");
+        assert!(user_row["value"]["fields"].get(key).is_none());
+        drop(reader);
+        let all = push_preferences(
+            &reopened,
+            PreferenceScope::Server,
+            apply(Value::Null, 4),
+            |_| true,
+            || {},
+        )
+        .await
+        .expect("all including future models");
+        assert_eq!(all[key]["value"], Value::Null);
     }
 
     #[tokio::test]
