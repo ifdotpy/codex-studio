@@ -87,6 +87,13 @@ async fn turn_end_closes_its_open_items(status: &str) {
         .await;
     peer.acknowledged(cursor).await;
     assert_eq!(state.record().await["lastCompletedTurn"], "turn");
+    let idle_at = state.record().await["shellPolicyLastActiveAt"]
+        .as_f64()
+        .expect("the accepted terminal turn resets the shell idle clock");
+    assert!(idle_at > 0.0);
+    let replay = peer.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"turn","status":status}}})).await;
+    peer.acknowledged(replay).await;
+    assert_eq!(state.record().await["shellPolicyLastActiveAt"], idle_at);
     assert_closed(&state, &["cmd", "tool"]).await;
     // The provider can still run it as a background terminal.
     assert_eq!(task(&state, "bg").await["status"], "running");

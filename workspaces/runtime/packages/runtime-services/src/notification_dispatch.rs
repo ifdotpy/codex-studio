@@ -2245,57 +2245,6 @@ mod tests {
         RuntimeStore, SchedulerRepository, StoreError, TranscriptRepository,
     };
 
-    #[test]
-    fn turn_lifecycle_updates_shell_idle_clock_before_service_dispatch() {
-        let mut connection = database();
-        let tx = connection.transaction().unwrap();
-        let mut streams = NotificationStreamBuffer::default();
-        for (cursor, method, at) in [(1, "turn/started", 10.0), (2, "turn/completed", 20.0)] {
-            let event = frame(
-                &json!({"method":method,"params":{"threadId":"thread","turnId":"turn","turn":{"id":"turn","status":"completed"}}}),
-            );
-            assert!(matches!(
-                dispatch_notification(
-                    &tx,
-                    "agent",
-                    "",
-                    &mut streams,
-                    &identity(cursor),
-                    &event,
-                    at
-                )
-                .unwrap(),
-                DispatchOutcome::RequiresService {
-                    service: super::NotificationDependency::TurnLifecycle
-                }
-            ));
-            assert_eq!(
-                AgentRepository::get(&tx, &"agent".into())
-                    .unwrap()
-                    .unwrap()
-                    .value()["shellPolicyLastActiveAt"],
-                at
-            );
-            dispatch_notification(
-                &tx,
-                "agent",
-                "",
-                &mut streams,
-                &identity(cursor),
-                &event,
-                at + 100.0,
-            )
-            .unwrap();
-            assert_eq!(
-                AgentRepository::get(&tx, &"agent".into())
-                    .unwrap()
-                    .unwrap()
-                    .value()["shellPolicyLastActiveAt"],
-                at
-            );
-        }
-    }
-
     #[tokio::test]
     async fn typed_usage_dispatch_reaches_priced_cost_groups() {
         use super::NotificationPostCommit;

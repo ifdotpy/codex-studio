@@ -109,10 +109,7 @@ pub(super) fn apply(
         _ => None,
     };
     if let Some(dependency) = dependency {
-        if dependency == NotificationDependency::TurnLifecycle {
-            agent["shellPolicyLastActiveAt"] = json!(at);
-            persist_agent(tx, &id, agent)?;
-        } else if dependency == NotificationDependency::Realtime {
+        if dependency == NotificationDependency::Realtime {
             // With no configured voice session, Python retains these as thread events.
             update_common_agent_fields(agent, method, p, at)?;
             persist_agent(tx, &id, agent)?;

@@ -18,6 +18,17 @@ use studio_runtime_store::{
 };
 use tokio::sync::watch;
 
+/// Called by the journal's accepted turn transitions, in their transaction.
+pub(crate) fn note_activity(tx: &Transaction<'_>, id: &str, at: f64) -> Result<(), StoreError> {
+    if let Some(mut agent) = AgentRepository::get(tx, &id.into())? {
+        agent
+            .extra
+            .insert("shellPolicyLastActiveAt".into(), json!(at));
+        AgentRepository::put(tx, &agent)?;
+    }
+    Ok(())
+}
+
 /// Same guard is used at selection and immediately before provider hand-off.
 /// Queued input and any live descendant prevent cleanup.
 pub fn eligible(db: &Connection, agent: &Value) -> Result<bool, StoreError> {
@@ -352,12 +363,12 @@ async fn sweep(
                 eligible(db, &check)
             })
             .await?;
-        let _ = port.provider_request(ProviderRequest {
+        drop(port.provider_request(ProviderRequest {
             account: account.into(), operation: format!("shell-policy:{id}:{}", uuid::Uuid::new_v4()), actor: Some(RequestActor {agent: id, epoch}), expected_scope: Some(scope), deleted_actor_session: None,
             method: studio_runtime_providers::Method::ClaudeShellPolicy,
             params: json!({"threadId":agent["threadId"],"settings":settings,"eligible":allowed,"critical":critical}),
             deadline: Instant::now() + Duration::from_secs(2),
-        }).await;
+        }).await);
     }
     Ok(())
 }
