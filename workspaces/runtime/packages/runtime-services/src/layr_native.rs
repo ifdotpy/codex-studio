@@ -332,8 +332,7 @@ mod receipt_tests {
         );
         let again = migration::migrate(state.path(), source.path(), false).unwrap();
         assert_eq!(imported["lines"], again["lines"]);
-        // Layr states have immutable flags. Keep the isolated store for inspection.
-        println!("native host evidence store: {}", state.keep().display());
+        println!("native host evidence store: {}", state.path().display());
     }
 }
 
