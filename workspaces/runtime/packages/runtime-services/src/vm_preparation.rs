@@ -47,11 +47,6 @@ pub fn vm_project_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
     code_archive(source, false)
 }
 
-/// Native migration takes worktree files with the VM code rules, without its external Git pointer.
-pub(crate) fn native_worktree_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
-    code_archive(source, true)
-}
-
 fn code_archive(source: &Path, worktree: bool) -> std::io::Result<VmProjectArchive> {
     let source = CanonicalPath::existing(source)?;
     if !source.is_dir() {
@@ -104,31 +99,6 @@ fn code_archive(source: &Path, worktree: bool) -> std::io::Result<VmProjectArchi
     })
 }
 
-/// Repositories admitted by the same code rules as the project archive.
-pub(crate) fn import_repository_roots(root: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let exclusions = vm_archive_exclusions(root)?;
-    let mut repositories = Vec::new();
-    let mut pending = vec![root.to_owned()];
-    while let Some(folder) = pending.pop() {
-        if folder.join(".git").exists() {
-            repositories.push(folder.clone());
-        }
-        for entry in fs::read_dir(&folder)? {
-            let entry = entry?;
-            let path = entry.path();
-            if entry.file_name() == ".git" || !entry.file_type()?.is_dir() {
-                continue;
-            }
-            let relative = path.strip_prefix(root).map_err(std::io::Error::other)?;
-            if !vm_archive_skip(root, relative, &path, &exclusions) {
-                pending.push(path);
-            }
-        }
-    }
-    repositories.sort();
-    Ok(repositories)
-}
-
 fn add_vm_tar_directory<W: Write>(
     output: &mut TarGzipWriter<W>,
     root: &Path,
@@ -171,7 +141,7 @@ fn add_vm_tar_directory<W: Write>(
 
 type VmArchiveIdentity = (u64, u64, u64, i128, i128);
 
-fn vm_archive_identity(metadata: &fs::Metadata) -> VmArchiveIdentity {
+pub(crate) fn vm_archive_identity(metadata: &fs::Metadata) -> VmArchiveIdentity {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -198,6 +168,7 @@ struct VmArchiveExclusions {
     clippy::disallowed_methods,
     reason = "archive creation runs on the labeled vm-project-archive blocking worker"
 )]
+#[cfg(test)]
 fn vm_archive_exclusions(root: &Path) -> std::io::Result<VmArchiveExclusions> {
     archive_exclusions(root, false)
 }
@@ -520,7 +491,10 @@ fn vm_archive_excluded_by_ancestor(
     false
 }
 
-fn read_gitdir_pointer(directory: &Path, marker: &Path) -> std::io::Result<CanonicalPath> {
+pub(crate) fn read_gitdir_pointer(
+    directory: &Path,
+    marker: &Path,
+) -> std::io::Result<CanonicalPath> {
     let contents = fs::read_to_string(marker)?;
     let line = contents
         .strip_suffix("\r\n")
@@ -545,7 +519,7 @@ fn read_gitdir_pointer(directory: &Path, marker: &Path) -> std::io::Result<Canon
     CanonicalPath::existing(directory.join(target))
 }
 
-fn validate_vm_repository_objects(root: &Path, directory: &Path) -> std::io::Result<()> {
+pub(crate) fn validate_vm_repository_objects(root: &Path, directory: &Path) -> std::io::Result<()> {
     let marker = directory.join(".git");
     let marker_metadata = fs::symlink_metadata(&marker)?;
     let git_dir = if marker_metadata.is_dir() && !marker_metadata.file_type().is_symlink() {
@@ -623,7 +597,7 @@ fn validate_vm_git_object_store(git_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn validate_vm_git_modules(modules: &Path) -> std::io::Result<()> {
+pub(crate) fn validate_vm_git_modules(modules: &Path) -> std::io::Result<()> {
     if !modules.is_dir() {
         return Ok(());
     }
@@ -679,6 +653,11 @@ fn vm_archive_skip(
     if parts.contains(&".git".into()) {
         return false;
     }
+    regenerable_path(path)
+}
+
+/// Build-output names shared by VM exclusion and native cache admission.
+pub(crate) fn regenerable_path(path: &Path) -> bool {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     if matches!(
         name.as_ref(),

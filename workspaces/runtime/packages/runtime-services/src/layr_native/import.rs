@@ -1,47 +1,581 @@
-//! Native archive admission must finish before writing any imported entry.
+//! Select and admit the complete tree before writing imported entries.
 use super::NativeLayrError;
+use crate::vm_preparation::vm_archive_identity;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
-    path::Path,
+    fs::{self, File},
+    path::{Path, PathBuf},
 };
 
-pub(super) fn unpack(archive: &Path, destination: &Path) -> Result<(), NativeLayrError> {
-    unpack_with_case_policy(archive, destination, case_sensitive(destination)?)
+type Result<T> = std::result::Result<T, NativeLayrError>;
+/// Safety factor for measured metadata growth, dimensionless.
+const METADATA_SAFETY_FACTOR: u64 = 2;
+/// Peak metadata growth and entry count from the APFS cache fixture, in bytes and entries.
+const CACHE_MEASURED_PEAK_BYTES: u64 = 4_079_616;
+const CACHE_MEASURED_ENTRIES: u64 = 4_161;
+/// Peak growth and source entries from the APFS line-new fixture, in bytes and entries.
+const LINE_NEW_MEASURED_PEAK_BYTES: u64 = 3_575_808;
+const LINE_NEW_MEASURED_ENTRIES: u64 = 8_502;
+/// Final import metadata allowance per entry, in bytes; also covers the migrated-line fixture.
+const ENTRY_METADATA_BYTES: u64 =
+    (METADATA_SAFETY_FACTOR * CACHE_MEASURED_PEAK_BYTES).div_ceil(CACHE_MEASURED_ENTRIES);
+/// Temporary main-tree clone allowance per entry, in bytes.
+const LINE_NEW_ENTRY_METADATA_BYTES: u64 =
+    (METADATA_SAFETY_FACTOR * LINE_NEW_MEASURED_PEAK_BYTES).div_ceil(LINE_NEW_MEASURED_ENTRIES);
+/// Minimum unused capacity retained after estimated allocations, in bytes.
+const SPACE_MARGIN_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Clone, Copy, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Size {
+    pub files: u64,
+    pub entries: u64,
+    pub cache_entries: u64,
+    pub metadata_bytes: u64,
+    pub inherited_entries: u64,
+    pub inherited_metadata_bytes: u64,
+    pub transient_metadata_bytes: u64,
+    pub cross_volume_bytes: u64,
+    pub git_head_bytes: u64,
+    pub git_transfer_bytes: u64,
+    pub logical_bytes: u64,
+    pub tracked_bytes: u64,
+    pub cache_bytes: u64,
+    pub estimated_new_bytes: u64,
 }
 
-pub(super) fn validate(archive: &Path, destination: &Path) -> Result<(), NativeLayrError> {
-    validate_case_policy(
-        archive,
-        case_sensitive(destination)?,
-        cfg!(target_os = "macos"),
+impl Size {
+    pub fn include(&mut self, other: Self) {
+        self.files = self.files.saturating_add(other.files);
+        self.entries = self.entries.saturating_add(other.entries);
+        self.cache_entries = self.cache_entries.saturating_add(other.cache_entries);
+        self.metadata_bytes = self.metadata_bytes.saturating_add(other.metadata_bytes);
+        self.inherited_entries = self
+            .inherited_entries
+            .saturating_add(other.inherited_entries);
+        self.inherited_metadata_bytes = self
+            .inherited_metadata_bytes
+            .saturating_add(other.inherited_metadata_bytes);
+        // Each migration runs sequentially, so temporary line clones need only the largest allowance.
+        self.transient_metadata_bytes = self
+            .transient_metadata_bytes
+            .max(other.transient_metadata_bytes);
+        self.cross_volume_bytes = self
+            .cross_volume_bytes
+            .saturating_add(other.cross_volume_bytes);
+        self.git_head_bytes = self.git_head_bytes.saturating_add(other.git_head_bytes);
+        self.git_transfer_bytes = self
+            .git_transfer_bytes
+            .saturating_add(other.git_transfer_bytes);
+        self.logical_bytes = self.logical_bytes.saturating_add(other.logical_bytes);
+        self.tracked_bytes = self.tracked_bytes.saturating_add(other.tracked_bytes);
+        self.cache_bytes = self.cache_bytes.saturating_add(other.cache_bytes);
+        self.refresh_estimate();
+    }
+    fn refresh_estimate(&mut self) {
+        self.estimated_new_bytes = self
+            .metadata_bytes
+            .saturating_add(self.transient_metadata_bytes)
+            .saturating_add(self.cross_volume_bytes)
+            .saturating_add(self.git_head_bytes)
+            .saturating_add(self.git_transfer_bytes);
+    }
+    pub fn preflight(&self, destination: &Path) -> Result<()> {
+        let at = existing_ancestor(destination)?;
+        let free = crate::disk_space::free_bytes(at).ok_or_else(|| {
+            NativeLayrError::Refused(format!("Cannot read free space at {}", at.display()))
+        })?;
+        self.require_free(free)
+    }
+    fn require_free(&self, free: u64) -> Result<()> {
+        let margin = SPACE_MARGIN_BYTES.max(self.estimated_new_bytes / 10);
+        let required = self.estimated_new_bytes.saturating_add(margin);
+        if free < required {
+            return Err(NativeLayrError::Refused(format!(
+                "Insufficient free space for native Layr import: {free} bytes available; {required} bytes required ({estimate} estimated new bytes plus {margin} bytes margin). Git HEAD materialization and Git object transfer require new storage.",
+                estimate = self.estimated_new_bytes
+            )));
+        }
+        Ok(())
+    }
+}
+
+pub(super) struct Plan {
+    source: PathBuf,
+    project_root: PathBuf,
+    repository_relative: PathBuf,
+    entries: Vec<Entry>,
+    pub caches: Vec<PathBuf>,
+    pub repositories: Vec<Repository>,
+    pub refusals: Vec<String>,
+    pub excluded_worktree_folders: Vec<PathBuf>,
+    pub plain_git_metadata: Vec<metadata::PlainMetadata>,
+    git_backed: bool,
+    ignore_directories: BTreeSet<PathBuf>,
+    pub size: Size,
+    destination_volume: u64,
+}
+
+impl Plan {
+    #[cfg(test)]
+    pub fn new(source: &Path, worktree: bool, destination: &Path) -> Result<Self> {
+        Self::new_with_git_policy(source, worktree, destination, false)
+    }
+
+    pub fn new_with_git_policy(
+        source: &Path,
+        worktree: bool,
+        destination: &Path,
+        without_git: bool,
+    ) -> Result<Self> {
+        Self::select(source, worktree, destination, without_git, None)
+    }
+
+    pub fn worktree(
+        source: &Path,
+        project: &Path,
+        repository: &Path,
+        destination: &Path,
+    ) -> Result<Self> {
+        Self::select(
+            source,
+            true,
+            destination,
+            false,
+            Some((project, repository)),
+        )
+    }
+
+    fn select(
+        source: &Path,
+        worktree: bool,
+        destination: &Path,
+        without_git: bool,
+        project: Option<(&Path, &Path)>,
+    ) -> Result<Self> {
+        let source = fs::canonicalize(source)?;
+        if !source.is_dir() {
+            return Err(NativeLayrError::Refused(
+                "Project source is not a directory".into(),
+            ));
+        }
+        let project_root = fs::canonicalize(project.map_or(source.as_path(), |(root, _)| root))?;
+        let repository_relative =
+            project.map_or_else(PathBuf::new, |(_, relative)| relative.to_owned());
+        let mut tree = Selection {
+            project_root: project_root.clone(),
+            without_git,
+            ..Selection::default()
+        };
+        collect_tree(&source, Path::new(""), false, false, worktree, &mut tree)?;
+        let git_backed = !worktree
+            && tree
+                .repositories
+                .iter()
+                .any(|repo| repo.relative.as_os_str().is_empty() && repo.included);
+        let mut entries = tree.entries;
+        if fs::symlink_metadata(source.join(".studio-native-import")).is_ok() {
+            tree.refusals.push(format!(
+                "Reserved native import path already exists: {}",
+                source.join(".studio-native-import").display()
+            ));
+        }
+        for directory in &tree.ignore_directories {
+            let path = source.join(directory).join(".layrignore");
+            if fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file() || m.file_type().is_symlink())
+            {
+                tree.refusals.push(format!(
+                    "Cannot override ignore rules through a link: {}",
+                    path.display()
+                ));
+            }
+        }
+        tree.ignore_directories.insert(PathBuf::new());
+        for cache in &tree.caches {
+            tree.ignore_directories
+                .insert(cache.parent().unwrap_or(Path::new("")).to_owned());
+        }
+        let mut generated_names = Vec::new();
+        // Layr creates this bridge even when the source is a plain folder.
+        generated_names.push(PathBuf::from(".git"));
+        generated_names.extend(
+            tree.ignore_directories
+                .iter()
+                .map(|directory| directory.join(".layrignore")),
+        );
+        generated_names.extend(entries.iter().filter_map(|entry| {
+            entry
+                .relative
+                .strip_prefix(".git")
+                .ok()
+                .map(|suffix| Path::new(GIT_BACKUP).join(suffix))
+        }));
+        let destination_case_sensitive = case_sensitive(destination)?;
+        validate_names(
+            entries
+                .iter()
+                .map(|entry| entry.relative.as_path())
+                .chain(generated_names.iter().map(PathBuf::as_path)),
+            destination_case_sensitive,
+            cfg!(target_os = "macos"),
+        )?;
+        let destination_volume = volume_id(existing_ancestor(destination)?)?;
+        let mut volumes = BTreeMap::new();
+        let mut size = Size::default();
+        let git_objects = if git_backed {
+            metadata::object_paths(&project_root, &source)?
+        } else {
+            BTreeSet::new()
+        };
+        let mut git_bytes = 0u64;
+        for entry in &mut entries {
+            let meta = &entry.metadata;
+            size.entries = size.entries.saturating_add(1);
+            size.cache_entries = size.cache_entries.saturating_add(u64::from(entry.cache));
+            size.metadata_bytes = size.metadata_bytes.saturating_add(ENTRY_METADATA_BYTES);
+            if !meta.is_dir() {
+                if entry.cache {
+                    size.cache_bytes = size.cache_bytes.saturating_add(meta.len());
+                } else {
+                    size.tracked_bytes = size.tracked_bytes.saturating_add(meta.len());
+                }
+                size.files += 1;
+                size.logical_bytes = size.logical_bytes.saturating_add(meta.len());
+            }
+            if meta.is_file() {
+                let volume = match volumes.get(&meta.dev()) {
+                    Some(value) => *value,
+                    None => {
+                        let value = volume_id(&source.join(&entry.relative))?;
+                        volumes.insert(meta.dev(), value);
+                        value
+                    }
+                };
+                entry.cloneable = volume == destination_volume;
+            }
+            if meta.is_file() && !entry.cloneable {
+                let copies =
+                    stage_destinations(&entry.relative, entry.cache, git_backed).len() as u64;
+                size.cross_volume_bytes = size
+                    .cross_volume_bytes
+                    .saturating_add(meta.len().saturating_mul(copies));
+            }
+            if meta.is_file()
+                && (entry.relative.starts_with(".git")
+                    || git_objects
+                        .iter()
+                        .any(|objects| source.join(&entry.relative).starts_with(objects)))
+            {
+                git_bytes = git_bytes.saturating_add(meta.len());
+            }
+        }
+        if git_backed {
+            match git_allocation(
+                &source,
+                &entries,
+                &tree.ignore_directories,
+                super::LAYR_VERSION,
+                destination_case_sensitive,
+            ) {
+                Ok(bytes) => size.git_head_bytes = bytes,
+                Err(error) => tree.refusals.push(error.to_string()),
+            }
+            // Fetch can create a new pack and its temporary output before removing it.
+            size.git_transfer_bytes = git_bytes.saturating_mul(2);
+        }
+        size.refresh_estimate();
+        Ok(Self {
+            source,
+            project_root,
+            repository_relative,
+            entries,
+            size,
+            destination_volume,
+            caches: tree.caches,
+            repositories: tree.repositories,
+            refusals: tree.refusals,
+            excluded_worktree_folders: tree.excluded_worktree_folders,
+            plain_git_metadata: tree.plain_git_metadata,
+            git_backed,
+            ignore_directories: tree.ignore_directories,
+        })
+    }
+
+    pub fn line_new_metadata_bytes(&self) -> u64 {
+        self.size
+            .entries
+            .saturating_mul(LINE_NEW_ENTRY_METADATA_BYTES)
+    }
+
+    pub fn migration_size(&self, main: &Self, repository: &Path) -> Size {
+        let mut size = self.size;
+        // collect_tree records entries in component order, with each subtree contiguous.
+        let first = main
+            .entries
+            .partition_point(|entry| entry.relative.as_path() < repository);
+        let replaced =
+            main.entries[first..].partition_point(|entry| entry.relative.starts_with(repository));
+        size.inherited_entries = main.size.entries.saturating_sub(replaced as u64);
+        size.inherited_metadata_bytes = size.inherited_entries.saturating_mul(ENTRY_METADATA_BYTES);
+        size.metadata_bytes = size
+            .metadata_bytes
+            .saturating_add(size.inherited_metadata_bytes);
+        size.transient_metadata_bytes = main
+            .line_new_metadata_bytes()
+            .saturating_sub(size.metadata_bytes);
+        size.refresh_estimate();
+        size
+    }
+
+    pub fn has_versioned_files_under(&self, path: &Path) -> bool {
+        self.entries.iter().any(|entry| {
+            !entry.cache && !entry.metadata.is_dir() && entry.relative.starts_with(path)
+        })
+    }
+
+    pub fn files(&self) -> impl Iterator<Item = &Path> {
+        self.entries
+            .iter()
+            .filter(|e| !e.metadata.is_dir() && !e.cache && !e.relative.starts_with(".git"))
+            .map(|e| e.relative.as_path())
+    }
+
+    /// Clone failures never silently become unbudgeted byte copies.
+    pub fn admit(&self) -> Result<()> {
+        if !self.refusals.is_empty() {
+            return Err(NativeLayrError::Refused(self.refusals.join("\n")));
+        }
+        Ok(())
+    }
+
+    pub fn stage(&self, destination: &Path) -> Result<()> {
+        self.stage_entries(destination, false)?;
+        self.write_ignores(destination)?;
+        self.rewrite_submodules(destination, false)
+    }
+
+    fn stage_entries(&self, destination: &Path, caches: bool) -> Result<()> {
+        self.admit()?;
+        self.verify_source()?;
+        if volume_id(destination)? != self.destination_volume {
+            return Err(NativeLayrError::Refused(
+                "The staging volume changed after the space preflight".into(),
+            ));
+        }
+        if caches {
+            let estimated_new_bytes =
+                self.entries
+                    .iter()
+                    .filter(|entry| entry.cache)
+                    .fold(0u64, |sum, entry| {
+                        sum.saturating_add(ENTRY_METADATA_BYTES).saturating_add(
+                            if entry.metadata.is_file() && !entry.cloneable {
+                                entry.metadata.len()
+                            } else {
+                                0
+                            },
+                        )
+                    });
+            Size {
+                estimated_new_bytes,
+                ..Size::default()
+            }
+            .preflight(destination)?;
+        } else {
+            self.size.preflight(destination)?;
+        }
+        for entry in &self.entries {
+            if entry.cache != caches {
+                continue;
+            }
+            for relative in stage_destinations(&entry.relative, caches, self.git_backed) {
+                let target = destination.join(&relative);
+                let meta = &entry.metadata;
+                if entry.relative.as_os_str().is_empty() {
+                    continue;
+                }
+                if meta.is_dir() {
+                    fs::create_dir_all(&target)?;
+                } else if meta.file_type().is_symlink() {
+                    std::os::unix::fs::symlink(
+                        fs::read_link(self.source.join(&entry.relative))?,
+                        &target,
+                    )?;
+                } else {
+                    let source = open_source(&self.source, &entry.relative)?;
+                    if vm_archive_identity(&source.metadata()?) != vm_archive_identity(meta) {
+                        return Err(source_changed());
+                    }
+                    if entry.cloneable {
+                        clone_file(&source, &target).map_err(|error| NativeLayrError::Refused(format!(
+                        "Cannot clone {}: {error}. Native import does not fall back to an unbudgeted byte copy.", self.source.join(&entry.relative).display()
+                    )))?;
+                    } else {
+                        let mut copy = fs::OpenOptions::new()
+                            .create_new(true)
+                            .write(true)
+                            .open(&target)?;
+                        std::io::copy(&mut &source, &mut copy)?;
+                    }
+                    fs::set_permissions(&target, fs::Permissions::from_mode(meta.mode() & 0o7777))?;
+                    File::open(&target)?
+                        .set_times(fs::FileTimes::new().set_modified(meta.modified()?))?;
+                }
+            }
+        }
+        // Set folder permissions last, so read-only folders can receive children.
+        // Retain the private destination root instead of copying the source root mode.
+        for entry in self.entries.iter().rev().filter(|e| {
+            e.metadata.is_dir() && e.cache == caches && !e.relative.as_os_str().is_empty()
+        }) {
+            for relative in stage_destinations(&entry.relative, caches, self.git_backed) {
+                fs::set_permissions(
+                    destination.join(relative),
+                    fs::Permissions::from_mode(entry.metadata.mode() & 0o7777),
+                )?;
+            }
+        }
+        self.verify_source()
+    }
+
+    fn verify_source(&self) -> Result<()> {
+        for entry in &self.entries {
+            let after = fs::symlink_metadata(self.source.join(&entry.relative))?;
+            if vm_archive_identity(&after) != vm_archive_identity(&entry.metadata) {
+                return Err(source_changed());
+            }
+        }
+        Ok(())
+    }
+}
+
+fn stage_destinations(relative: &Path, caches: bool, git_backed: bool) -> Vec<PathBuf> {
+    if !caches && let Ok(suffix) = relative.strip_prefix(".git") {
+        let backup = Path::new(GIT_BACKUP).join(suffix);
+        if git_backed {
+            vec![relative.to_owned(), backup]
+        } else {
+            vec![backup]
+        }
+    } else {
+        vec![relative.to_owned()]
+    }
+}
+
+fn source_changed() -> NativeLayrError {
+    NativeLayrError::Refused(
+        "Project source changed during native Layr import. Keep the source quiet and retry.".into(),
     )
 }
 
-#[cfg(target_os = "macos")]
-fn case_sensitive(destination: &Path) -> Result<bool, NativeLayrError> {
-    let probe = tempfile::Builder::new()
-        .prefix(".studio-Case-A-")
-        .tempfile_in(destination)?;
-    let lowercase = probe.path().with_file_name(
-        probe
-            .path()
+fn open_source(root: &Path, relative: &Path) -> std::io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    let directory = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut parent = open(root, directory, Mode::empty())?;
+    for component in relative.parent().unwrap_or(Path::new("")).components() {
+        parent = openat(&parent, component.as_os_str(), directory, Mode::empty())?;
+    }
+    let fd = openat(
+        parent,
+        relative
             .file_name()
-            .expect("temporary file has a basename")
-            .to_string_lossy()
-            .to_lowercase(),
-    );
-    Ok(!lowercase.exists())
+            .ok_or_else(|| std::io::Error::other("Missing source name"))?,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )?;
+    Ok(File::from(fd))
 }
 
+#[cfg(target_os = "macos")]
+#[allow(
+    unsafe_code,
+    reason = "isolates APFS descriptor clone and read-only volume policy APIs"
+)]
+fn clone_file(source: &File, destination: &Path) -> std::io::Result<()> {
+    use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};
+    let parent = File::open(
+        destination
+            .parent()
+            .ok_or_else(|| std::io::Error::other("Missing clone parent"))?,
+    )?;
+    let name = std::ffi::CString::new(
+        destination
+            .file_name()
+            .ok_or_else(|| std::io::Error::other("Missing clone name"))?
+            .as_bytes(),
+    )?;
+    // SAFETY: both descriptors and the NUL-terminated basename remain live for this call.
+    // CLONE_NOOWNERCOPY keeps ownership with the Studio user.
+    if unsafe {
+        libc::fclonefileat(
+            source.as_raw_fd(),
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            0x0002,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn clone_file(source: &File, destination: &Path) -> std::io::Result<()> {
+    let copy = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(destination)?;
+    rustix::fs::ioctl_ficlone(&copy, source)?;
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn clone_file(_source: &File, _destination: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Native Layr requires APFS or btrfs",
+    ))
+}
+
+pub(super) fn existing_ancestor(path: &Path) -> std::io::Result<&Path> {
+    let mut at = path;
+    loop {
+        match fs::metadata(at) {
+            Ok(_) => return Ok(at),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                at = at.parent().ok_or(error)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(
+    unsafe_code,
+    reason = "read-only filesystem case policy without a probe file"
+)]
+fn case_sensitive(destination: &Path) -> Result<bool> {
+    use std::os::unix::ffi::OsStrExt;
+    let at = existing_ancestor(destination)?;
+    let path = std::ffi::CString::new(at.as_os_str().as_bytes()).map_err(std::io::Error::other)?;
+    // SAFETY: the path is NUL-terminated and lives until pathconf returns.
+    match unsafe { libc::pathconf(path.as_ptr(), libc::_PC_CASE_SENSITIVE) } {
+        -1 => Err(std::io::Error::last_os_error().into()),
+        0 => Ok(false),
+        _ => Ok(true),
+    }
+}
 #[cfg(not(target_os = "macos"))]
-fn case_sensitive(_destination: &Path) -> Result<bool, NativeLayrError> {
+fn case_sensitive(_destination: &Path) -> Result<bool> {
     Ok(true)
 }
 
 fn case_key(path: &str) -> String {
     let normalizer = icu_normalizer::DecomposingNormalizerBorrowed::new_nfd();
-    // Match Layr 0.2.0 APFS fsutil::case_key, including compatibility case variants.
+    // Match the vendored Layr APFS case key, including compatibility case variants.
     let folded: String = normalizer
         .normalize(path)
         .chars()
@@ -62,140 +596,518 @@ fn case_key(path: &str) -> String {
     normalizer.normalize(&folded).into_owned()
 }
 
-fn validate_case_policy(
-    archive: &Path,
+fn validate_names<'a>(
+    paths: impl Iterator<Item = &'a Path>,
     case_sensitive: bool,
     unicode_normalizing: bool,
-) -> Result<(), NativeLayrError> {
-    if case_sensitive && !unicode_normalizing {
-        return Ok(());
-    }
-    let mut seen: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for entry in tar::Archive::new(flate2::read::GzDecoder::new(File::open(archive)?)).entries()? {
-        let entry = entry?;
-        let path = entry.path()?;
-        let path = path
-            .to_str()
-            .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 archive path".into()))?;
-        let mut prefix = String::new();
-        for component in path.split('/').filter(|part| !part.is_empty()) {
-            if !prefix.is_empty() {
-                prefix.push('/')
-            }
-            prefix.push_str(component);
-            let key = if case_sensitive {
+) -> Result<()> {
+    // Component order keeps each directory's descendants together. Retain only
+    // sibling tables along the current path, and normalize each entry once.
+    let mut paths: Vec<_> = paths.collect();
+    paths.sort_unstable();
+    let mut previous = Vec::new();
+    let mut levels = vec![std::collections::HashMap::<String, String>::new()];
+    let mut collisions = BTreeSet::new();
+    for path in paths {
+        path.to_str()
+            .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 import path".into()))?;
+        let components: Vec<_> = path.components().collect();
+        let common = previous
+            .iter()
+            .zip(&components)
+            .take_while(|(a, b)| a == b)
+            .count();
+        levels.truncate(common + 1);
+        for (depth, component) in components.iter().enumerate().skip(common) {
+            let name = component
+                .as_os_str()
+                .to_str()
+                .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 import path".into()))?;
+            let key = if !case_sensitive {
+                case_key(name)
+            } else if unicode_normalizing {
                 icu_normalizer::DecomposingNormalizerBorrowed::new_nfd()
-                    .normalize(&prefix)
+                    .normalize(name)
                     .into_owned()
             } else {
-                case_key(&prefix)
+                name.to_owned()
             };
-            seen.entry(key).or_default().insert(prefix.clone());
+            if let Some(old) = levels[depth].get(&key) {
+                if old != name {
+                    let parent: PathBuf = components[..depth].iter().collect();
+                    collisions.insert(format!(
+                        "{}, {}",
+                        parent.join(old).display(),
+                        parent.join(name).display()
+                    ));
+                }
+            } else {
+                levels[depth].insert(key, name.to_owned());
+            }
+            levels.push(std::collections::HashMap::new());
         }
+        previous = components;
     }
-    let collisions: Vec<String> = seen
-        .into_values()
-        .filter(|paths| paths.len() > 1)
-        .map(|paths| paths.into_iter().collect::<Vec<_>>().join(", "))
-        .collect();
+    let collisions: Vec<_> = collisions.into_iter().collect();
     if !collisions.is_empty() {
         return Err(NativeLayrError::Refused(format!(
-            "Archive paths differ only in case or Unicode form and cannot coexist on this volume:\n{}",
+            "Import paths differ only in case or Unicode form and cannot coexist on this volume:\n{}",
             collisions.join("\n")
         )));
     }
     Ok(())
 }
 
-fn unpack_with_case_policy(
-    archive: &Path,
-    destination: &Path,
-    case_sensitive: bool,
-) -> Result<(), NativeLayrError> {
-    validate_case_policy(archive, case_sensitive, cfg!(target_os = "macos"))?;
-    tar::Archive::new(flate2::read::GzDecoder::new(File::open(archive)?)).unpack(destination)?;
+/// Native selection includes ignored data. VM archive admission stays unchanged.
+struct Entry {
+    relative: PathBuf,
+    metadata: fs::Metadata,
+    cache: bool,
+    cloneable: bool,
+}
+pub(super) struct Repository {
+    pub relative: PathBuf,
+    pub kind: &'static str,
+    pub included: bool,
+    pub cache: bool,
+    pub git_directory: Option<PathBuf>,
+}
+#[derive(Default)]
+struct Selection {
+    project_root: PathBuf,
+    without_git: bool,
+    entries: Vec<Entry>,
+    caches: Vec<PathBuf>,
+    repositories: Vec<Repository>,
+    plain_git_metadata: Vec<metadata::PlainMetadata>,
+    refusals: Vec<String>,
+    excluded_worktree_folders: Vec<PathBuf>,
+    ignore_directories: BTreeSet<PathBuf>,
+}
+/// Reserved history directory for the source repository's complete Git metadata.
+const GIT_BACKUP: &str = ".studio-native-import/git";
+
+/// A repeat migration can skip only commits retained by the earlier import.
+pub(super) fn verify_imported_head(main: &Path, repository: &Path, head: &str) -> Result<()> {
+    if !matches!(head.len(), 40 | 64) || !head.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(NativeLayrError::Refused("Invalid skipped HEAD".into()));
+    }
+    let main = fs::canonicalize(main)?;
+    let folder = main.join(repository);
+    let marker = if repository.as_os_str().is_empty() {
+        main.join(GIT_BACKUP)
+    } else {
+        folder.join(".git")
+    };
+    let git = if marker.is_dir() {
+        marker
+    } else {
+        crate::vm_preparation::read_gitdir_pointer(&folder, &marker)?.into_path_buf()
+    };
+    metadata::validate_stored_git(&main, &git)?;
+    let git = git
+        .to_str()
+        .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 imported Git path".into()))?;
+    super::inventory::git(
+        &main,
+        &[
+            "--git-dir",
+            git,
+            "cat-file",
+            "-e",
+            &format!("{head}^{{commit}}"),
+        ],
+    )?;
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn native_import_always_rejects_unicode_aliases_on_apfs() {
-        let archive = tempfile::NamedTempFile::new().expect("fixture operation succeeds");
-        let gzip = flate2::write::GzEncoder::new(
-            File::create(archive.path()).expect("fixture operation succeeds"),
-            flate2::Compression::default(),
-        );
-        let mut builder = tar::Builder::new(gzip);
-        for name in ["café", "cafe\u{301}"] {
-            let mut header = tar::Header::new_gnu();
-            header.set_size(0);
-            header.set_mode(0o644);
-            header.set_cksum();
-            builder
-                .append_data(&mut header, name, &b""[..])
-                .expect("fixture operation succeeds");
-        }
-        builder
-            .into_inner()
-            .expect("fixture operation succeeds")
-            .finish()
-            .expect("fixture operation succeeds");
-        assert!(validate_case_policy(archive.path(), true, true).is_err());
-        assert!(validate_case_policy(archive.path(), true, false).is_ok());
+fn collect_tree(
+    root: &Path,
+    relative: &Path,
+    mut cache: bool,
+    inside_git: bool,
+    worktree: bool,
+    tree: &mut Selection,
+) -> Result<()> {
+    if tree.project_root.as_os_str().is_empty() {
+        tree.project_root = root.to_owned();
     }
-
-    #[test]
-    fn native_layr_import_refuses_case_and_unicode_collisions_before_any_write() {
-        for names in [["Src/one", "src/two"], ["café", "cafe\u{301}"]] {
-            let archive = tempfile::NamedTempFile::new().expect("fixture operation succeeds");
-            let gzip = flate2::write::GzEncoder::new(
-                File::create(archive.path()).expect("fixture operation succeeds"),
-                flate2::Compression::default(),
-            );
-            let mut builder = tar::Builder::new(gzip);
-            for name in names {
-                let mut header = tar::Header::new_gnu();
-                header.set_size(4);
-                header.set_mode(0o644);
-                header.set_cksum();
-                builder
-                    .append_data(&mut header, name, &b"data"[..])
-                    .expect("fixture operation succeeds");
+    let path = root.join(relative);
+    let metadata = fs::symlink_metadata(&path)?;
+    let directory = metadata.is_dir();
+    if !inside_git && directory {
+        if relative == Path::new(".studio-native-import") {
+            tree.refusals.push(format!(
+                "Reserved native import path already exists: {}",
+                path.display()
+            ));
+        }
+        if !relative.as_os_str().is_empty()
+            && !cache
+            && crate::vm_preparation::regenerable_path(&path)
+        {
+            cache = true;
+            tree.caches.push(relative.to_owned());
+        }
+        let marker = path.join(".git");
+        if let Ok(marker_metadata) = fs::symlink_metadata(&marker)
+            && !(relative.as_os_str().is_empty() && tree.without_git)
+        {
+            // Root metadata retains its explicit admission policy and --without-git choice.
+            let classification = if relative.as_os_str().is_empty() {
+                Ok(None)
+            } else {
+                metadata::plain_reason(&path, &marker)
+            };
+            match classification {
+                Ok(Some(reason)) => tree.plain_git_metadata.push(metadata::PlainMetadata {
+                    relative_path: relative.join(".git"),
+                    reason,
+                    cache,
+                }),
+                Err(error) => tree.refusals.push(error.to_string()),
+                Ok(None) => {
+                    let mut kind = "plain";
+                    let mut included = true;
+                    let mut git_directory = None;
+                    if marker_metadata.file_type().is_symlink() {
+                        included = false;
+                        tree.refusals
+                            .push(format!("External Git metadata link: {}", marker.display()));
+                    } else if marker_metadata.is_file() {
+                        kind = "worktree";
+                        if relative.as_os_str().is_empty() && worktree {
+                            // Validate this pointer against the original project boundary below.
+                        } else {
+                            match crate::vm_preparation::read_gitdir_pointer(&path, &marker) {
+                                Ok(target)
+                                    if internal_worktree(tree.project_root.as_path(), &target) =>
+                                {
+                                    tree.repositories.push(Repository {
+                                        relative: relative.to_owned(),
+                                        kind,
+                                        included: false,
+                                        cache,
+                                        git_directory: Some(target.into_path_buf()),
+                                    });
+                                    return Ok(());
+                                }
+                                Ok(target) if target.starts_with(&tree.project_root) => {
+                                    kind = "submodule";
+                                    git_directory = Some(target.into_path_buf());
+                                }
+                                Ok(target) => {
+                                    included = false;
+                                    tree.refusals.push(format!(
+                                        "External Git object store: {} -> {}",
+                                        marker.display(),
+                                        target.display()
+                                    ));
+                                }
+                                Err(error) => {
+                                    included = false;
+                                    tree.refusals.push(format!(
+                                        "Cannot read Git pointer {}: {error}",
+                                        marker.display()
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    if included {
+                        if let Err(error) = metadata::validate_repository(&tree.project_root, &path)
+                        {
+                            included = false;
+                            tree.refusals
+                                .push(format!("Git metadata at {}: {error}", marker.display()));
+                        }
+                    }
+                    tree.repositories.push(Repository {
+                        relative: relative.to_owned(),
+                        kind,
+                        included,
+                        cache,
+                        git_directory,
+                    });
+                }
             }
-            builder
-                .into_inner()
-                .expect("fixture operation succeeds")
-                .finish()
-                .expect("fixture operation succeeds");
-            let destination = tempfile::tempdir().expect("fixture operation succeeds");
-            let error = unpack_with_case_policy(archive.path(), destination.path(), false)
-                .expect_err("operation must fail")
-                .to_string();
-            assert!(
-                error.contains(
-                    names[0]
-                        .split('/')
-                        .next()
-                        .expect("fixture operation succeeds")
-                )
-            );
-            assert!(
-                error.contains(
-                    names[1]
-                        .split('/')
-                        .next()
-                        .expect("fixture operation succeeds")
-                )
-            );
-            assert_eq!(
-                std::fs::read_dir(destination.path())
-                    .expect("fixture operation succeeds")
-                    .count(),
-                0
-            );
         }
     }
+    if !directory && !metadata.is_file() && !metadata.file_type().is_symlink() {
+        tree.refusals.push(format!(
+            "Special file cannot be imported: {}",
+            path.display()
+        ));
+        return Ok(());
+    }
+    tree.entries.push(Entry {
+        relative: relative.to_owned(),
+        metadata,
+        cache,
+        cloneable: false,
+    });
+    if directory {
+        let mut children = fs::read_dir(&path)?.collect::<std::io::Result<Vec<_>>>()?;
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            let name = child.file_name();
+            if !inside_git && name == ".worktrees" && child.file_type()?.is_dir() {
+                tree.excluded_worktree_folders
+                    .push(child_relative_path(root, &child.path())?);
+                inspect_excluded_worktrees(root, &child.path(), tree)?;
+                continue;
+            }
+            if relative.as_os_str().is_empty() && (worktree || tree.without_git) && name == ".git" {
+                continue;
+            }
+            let child_relative = relative.join(&name);
+            if !inside_git && !cache && matches!(name.to_str(), Some(".gitignore" | ".layrignore"))
+            {
+                tree.ignore_directories.insert(relative.to_owned());
+            }
+            collect_tree(
+                root,
+                &child_relative,
+                cache,
+                inside_git || name == ".git",
+                worktree,
+                tree,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn escape_pattern(name: &str) -> String {
+    name.chars()
+        .flat_map(|c| {
+            if matches!(c, '\\' | '*' | '?' | '[' | ']' | '!' | '#' | ' ') {
+                vec!['\\', c]
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
+impl Plan {
+    fn write_ignores(&self, destination: &Path) -> Result<()> {
+        use std::io::Write;
+        for directory in &self.ignore_directories {
+            let file = destination.join(directory).join(".layrignore");
+            if fs::symlink_metadata(&file).is_ok_and(|m| !m.is_file() || m.file_type().is_symlink())
+            {
+                return Err(NativeLayrError::Refused(format!(
+                    "Cannot override ignore rules through a link: {}",
+                    file.display()
+                )));
+            }
+            if file.exists() {
+                fs::set_permissions(&file, fs::Permissions::from_mode(0o644))?;
+            }
+            let parent = file
+                .parent()
+                .ok_or_else(|| NativeLayrError::Refused("Missing ignore parent".into()))?;
+            let parent_mode = fs::metadata(parent)?.permissions().mode();
+            fs::set_permissions(parent, fs::Permissions::from_mode(parent_mode | 0o700))?;
+            let mut output = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file)?;
+            writeln!(
+                output,
+                "\n# Studio native import: version data; retain build caches.\n!*"
+            )?;
+            for cache in &self.caches {
+                if cache.parent().unwrap_or(Path::new("")) == directory {
+                    let name = cache
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 cache path".into()))?;
+                    writeln!(output, "/{}/", escape_pattern(name))?;
+                }
+            }
+            fs::set_permissions(parent, fs::Permissions::from_mode(parent_mode))?;
+        }
+        Ok(())
+    }
+
+    fn rewrite_submodules(&self, destination: &Path, caches: bool) -> Result<()> {
+        for repo in &self.repositories {
+            if repo.kind != "submodule" || repo.cache != caches {
+                continue;
+            }
+            let Some(git_dir) = &repo.git_directory else {
+                continue;
+            };
+            let (relative, base) = if let Ok(relative) = git_dir.strip_prefix(&self.source) {
+                (relative, destination.to_owned())
+            } else {
+                let relative = git_dir
+                    .strip_prefix(&self.project_root)
+                    .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
+                let base = destination
+                    .ancestors()
+                    .nth(self.repository_relative.components().count())
+                    .ok_or_else(|| NativeLayrError::Refused("Missing project destination".into()))?
+                    .to_owned();
+                (relative, base)
+            };
+            let mapped = if let Ok(suffix) = relative.strip_prefix(".git") {
+                Path::new(GIT_BACKUP).join(suffix)
+            } else {
+                relative.to_owned()
+            };
+            let module = destination.join(&repo.relative);
+            let metadata = base.join(&mapped);
+            let git_pointer = relative_path(&module, &metadata);
+            fs::write(
+                module.join(".git"),
+                format!("gitdir: {}\n", git_pointer.display()),
+            )?;
+            let worktree = relative_path(&metadata, &module);
+            let config = metadata.join("config");
+            let args = [
+                "config",
+                "--file",
+                config
+                    .to_str()
+                    .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 Git config path".into()))?,
+                "core.worktree",
+                worktree
+                    .to_str()
+                    .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 submodule path".into()))?,
+            ];
+            crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
+                program: std::ffi::OsStr::new("git"),
+                git_directory: Some(destination.as_os_str()),
+                args: &args,
+                environment: &[("GIT_OPTIONAL_LOCKS", "0")],
+                input: None,
+                stdout_limit: 64 * 1024,
+                stderr_limit: 64 * 1024,
+                timeout: std::time::Duration::from_secs(60),
+            })
+            .map_err(|error| {
+                NativeLayrError::Refused(format!("Cannot set cloned submodule worktree: {error:?}"))
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn warm_caches(&self, state: &Path, cwd: &Path, relative: &Path) -> Result<()> {
+        for cache in &self.caches {
+            let name = relative.join(cache).to_string_lossy().into_owned();
+            super::run(state, cwd, &["cache", "add", &name])?;
+        }
+        self.stage_entries(&cwd.join(relative), true)?;
+        self.rewrite_submodules(&cwd.join(relative), true)?;
+        if !self.caches.is_empty() {
+            super::run(state, cwd, &["save", "--caches"])?;
+        }
+        Ok(())
+    }
+}
+
+fn relative_path(from: &Path, to: &Path) -> PathBuf {
+    let from: Vec<_> = from.components().collect();
+    let to: Vec<_> = to.components().collect();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut path = PathBuf::new();
+    for _ in common..from.len() {
+        path.push("..");
+    }
+    for part in &to[common..] {
+        path.push(part.as_os_str());
+    }
+    path
+}
+
+fn volume_id(path: &Path) -> std::io::Result<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(rustix::fs::statvfs(path)?.f_fsid as u64)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(fs::metadata(path)?.dev())
+    }
+}
+
+pub(super) fn allocation_model() -> serde_json::Value {
+    serde_json::json!({
+        "cacheEntryMetadataBytes":ENTRY_METADATA_BYTES,
+        "versionedEntryMetadataBytes":ENTRY_METADATA_BYTES,
+        "lineNewEntryMetadataBytes":LINE_NEW_ENTRY_METADATA_BYTES,
+        "metadataSafetyFactor":METADATA_SAFETY_FACTOR,
+        "cacheMeasuredPeakBytes":CACHE_MEASURED_PEAK_BYTES,
+        "cacheMeasuredEntries":CACHE_MEASURED_ENTRIES,
+        "lineNewMeasuredPeakBytes":LINE_NEW_MEASURED_PEAK_BYTES,
+        "lineNewMeasuredEntries":LINE_NEW_MEASURED_ENTRIES,
+        "minimumSpaceMarginBytes":SPACE_MARGIN_BYTES
+    })
+}
+
+mod metadata;
+mod sizing;
+use sizing::git_allocation;
+#[cfg(test)]
+include!("import/tests.rs");
+
+fn internal_worktree(root: &Path, target: &Path) -> bool {
+    target.strip_prefix(root).is_ok_and(|relative| {
+        let parts: Vec<_> = relative.components().collect();
+        parts
+            .windows(2)
+            .any(|parts| parts[0].as_os_str() == ".git" && parts[1].as_os_str() == "worktrees")
+    })
+}
+
+fn child_relative_path(root: &Path, path: &Path) -> Result<PathBuf> {
+    path.strip_prefix(root)
+        .map(Path::to_owned)
+        .map_err(|error| NativeLayrError::Refused(error.to_string()))
+}
+
+fn inspect_excluded_worktrees(root: &Path, folder: &Path, tree: &mut Selection) -> Result<()> {
+    let marker = folder.join(".git");
+    if let Ok(metadata) = fs::symlink_metadata(&marker) {
+        let relative = child_relative_path(root, folder)?;
+        let mut git_directory = None;
+        if metadata.is_file() {
+            match crate::vm_preparation::read_gitdir_pointer(folder, &marker) {
+                Ok(target) if target.starts_with(&tree.project_root) => {
+                    git_directory = Some(target.into_path_buf());
+                }
+                Ok(target) => tree.refusals.push(format!(
+                    "External Git object store: {} -> {}",
+                    marker.display(),
+                    target.display()
+                )),
+                Err(error) => tree.refusals.push(format!(
+                    "Cannot read Git pointer {}: {error}",
+                    marker.display()
+                )),
+            }
+        } else {
+            tree.refusals.push(format!(
+                "Excluded worktree folder has no admitted parent repository: {}",
+                folder.display()
+            ));
+        }
+        tree.repositories.push(Repository {
+            relative,
+            kind: "worktree",
+            included: false,
+            cache: false,
+            git_directory,
+        });
+        return Ok(());
+    }
+    for child in fs::read_dir(folder)? {
+        let child = child?;
+        if child.file_type()?.is_dir() && !crate::vm_preparation::regenerable_path(&child.path()) {
+            inspect_excluded_worktrees(root, &child.path(), tree)?;
+        }
+    }
+    Ok(())
 }

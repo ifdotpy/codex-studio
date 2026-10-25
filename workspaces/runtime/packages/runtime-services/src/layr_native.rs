@@ -7,7 +7,7 @@ pub use studio_runtime_store::NATIVE_LAYR_DIRECTORY;
 /// Store directory below the native installation directory, outside project checkouts.
 pub const STORE_DIRECTORY: &str = "store";
 /// Host Layr release required by Studio's command contract.
-pub const LAYR_VERSION: &str = "0.2.1";
+pub const LAYR_VERSION: &str = "0.2.2";
 
 pub fn store_path(state_dir: &Path) -> PathBuf {
     state_dir.join(NATIVE_LAYR_DIRECTORY).join(STORE_DIRECTORY)
@@ -121,6 +121,7 @@ fn transport_environment(state_root: &Path, uses_service: bool) -> serde_json::M
     environment
 }
 mod import;
+mod inventory;
 pub mod migration;
 
 #[cfg(test)]
@@ -226,7 +227,7 @@ mod receipt_tests {
     }
 
     #[test]
-    #[ignore = "requires a real Layr 0.2.0 host binary and APFS or btrfs"]
+    #[ignore = "requires the vendored Layr host binary and APFS or btrfs"]
     fn real_host_import_worker_merge_archive_and_warm_caches() {
         use std::{fs, path::PathBuf};
         let binary = PathBuf::from(
@@ -246,7 +247,7 @@ mod receipt_tests {
         fs::write(source.path().join(".env"), "TEST_VALUE=local\n")
             .expect("fixture operation succeeds");
         fs::create_dir(source.path().join("node_modules")).expect("fixture operation succeeds");
-        fs::write(source.path().join("node_modules/old"), "excluded\n")
+        fs::write(source.path().join("node_modules/old"), "warm import\n")
             .expect("fixture operation succeeds");
         let git = |args: &[&str]| {
             crate::bounded_child::run(crate::bounded_child::Request {
@@ -297,7 +298,16 @@ mod receipt_tests {
         }
         let main = PathBuf::from(lead["cwd"].as_str().expect("fixture operation succeeds"));
         assert!(main.join(".env").is_file());
-        assert!(!main.join("node_modules/old").exists());
+        assert_eq!(
+            fs::read_to_string(main.join("node_modules/old")).expect("imported cache"),
+            "warm import\n"
+        );
+        assert!(
+            run(state.path(), &main, &["cache", "list"])
+                .expect("cache list")
+                .lines()
+                .any(|line| line == "node_modules\tcache")
+        );
         let real_git: PathBuf = serde_json::from_slice(
             &fs::read(binary_path(state.path()).with_file_name("git-real.json"))
                 .expect("saved real Git path"),
@@ -329,10 +339,6 @@ mod receipt_tests {
                 "native Git commit guard: {result:?}"
             );
         }
-        fs::create_dir_all(main.join("node_modules")).expect("fixture operation succeeds");
-        fs::write(main.join("node_modules/warm"), "warm cache\n")
-            .expect("fixture operation succeeds");
-        run(state.path(), &main, &["save", "--caches"]).expect("fixture operation succeeds");
         let mut worker = json!({"id":"worker","role":"implementer","autoWake":true,"isLead":false});
         configure_child(&mut worker, &lead, &lead);
         let ready =
@@ -342,8 +348,8 @@ mod receipt_tests {
         }
         let cwd = PathBuf::from(worker["cwd"].as_str().expect("fixture operation succeeds"));
         assert_eq!(
-            fs::read_to_string(cwd.join("node_modules/warm")).expect("fixture operation succeeds"),
-            "warm cache\n"
+            fs::read_to_string(cwd.join("node_modules/old")).expect("imported warm cache"),
+            "warm import\n"
         );
         fs::write(cwd.join("code.txt"), "worker result\n").expect("fixture operation succeeds");
         run(state.path(), &cwd, &["add", "code.txt"]).expect("fixture operation succeeds");
@@ -771,7 +777,7 @@ esac
     }
 
     #[test]
-    #[ignore = "requires real Layr 0.2.0 on APFS or root on btrfs"]
+    #[ignore = "requires the vendored Layr on APFS or root on btrfs"]
     fn native_layr_unchanged_turn_save_and_previously_failed_save_can_finish() {
         let (state, _source, _lead, worker) = fixture();
         let expected = run(
@@ -803,7 +809,7 @@ esac
     }
 
     #[test]
-    #[ignore = "requires real Layr 0.2.0 on APFS or root on btrfs"]
+    #[ignore = "requires the vendored Layr on APFS or root on btrfs"]
     fn native_layr_archive_pins_an_unmerged_automatic_state_without_expiry() {
         let (state, _source, lead, worker) = fixture();
         fs::write(

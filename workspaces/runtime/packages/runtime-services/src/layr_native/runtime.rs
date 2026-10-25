@@ -192,15 +192,36 @@ pub fn main_path(state_dir: &Path, project: &str) -> PathBuf {
         .join("lines/main")
 }
 
+pub(super) fn admit_git_policy(state_dir: &Path, project: &str, without_git: bool) -> Result<()> {
+    let ready_path = state_dir
+        .join(NATIVE_LAYR_DIRECTORY)
+        .join(format!("{project}.json"));
+    if without_git && ready_path.exists() {
+        let receipt: Value = serde_json::from_slice(&fs::read(&ready_path)?)
+            .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
+        if receipt["withoutGit"] != true {
+            return Err(NativeLayrError::Refused("This project was already imported with Git metadata. The --without-git option cannot change an existing import.".into()));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn prepare_files(state_dir: &Path, record: &Value) -> Result<Value> {
-    super::install::ensure_binary(state_dir)?;
+    prepare_files_with_git_policy(state_dir, record, false)
+}
+
+pub(super) fn prepare_files_with_git_policy(
+    state_dir: &Path,
+    record: &Value,
+    without_git: bool,
+) -> Result<Value> {
     let project = project_id(record)?;
-    let _project_lock = lock(state_dir, &format!("project:{project}"))?;
     let main = main_path(state_dir, &project);
     let ready_path = state_dir
         .join(NATIVE_LAYR_DIRECTORY)
         .join(format!("{project}.json"));
-    if !ready_path.exists() {
+    admit_git_policy(state_dir, &project, without_git)?;
+    let plan = if !ready_path.exists() {
         let source = CanonicalPath::existing(text(record, "hostProjectPath")?)
             .map(CanonicalPath::into_path_buf)?;
         if state_dir.starts_with(&source) {
@@ -208,37 +229,54 @@ pub(super) fn prepare_files(state_dir: &Path, record: &Value) -> Result<Value> {
                 "The Studio state directory must be outside the project".into(),
             ));
         }
-        let archive = crate::vm_preparation::vm_project_archive(&source)?;
-        let staging = tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?;
-        super::import::validate(archive.file.path(), staging.path())?;
-        operation(
-            state_dir,
-            &format!("import:{project}"),
-            &json!({"project":project,"source":source}),
-            || {
-                super::import::unpack(archive.file.path(), staging.path())?;
-                run(
-                    state_dir,
-                    state_dir,
-                    &[
-                        "init",
-                        &project,
-                        "--from",
-                        staging.path().to_str().unwrap_or_default(),
-                        "--include-ignored",
-                    ],
-                )?;
-                run(state_dir, &main, &["protect", "main", "--direct"])?;
-                let receipt = json!({"projectId":project,"source":source,"mainPath":main});
-                crate::atomic_file::replace(
-                    &ready_path,
-                    receipt.to_string().as_bytes(),
-                    Some(0o600),
-                    true,
-                )?;
-                Ok(receipt)
-            },
+        let plan = super::import::Plan::new_with_git_policy(
+            &source,
+            false,
+            &state_dir.join(NATIVE_LAYR_DIRECTORY),
+            without_git,
         )?;
+        plan.admit()?;
+        plan.size
+            .preflight(&state_dir.join(NATIVE_LAYR_DIRECTORY))?;
+        Some((source, plan))
+    } else {
+        None
+    };
+    super::install::ensure_binary(state_dir)?;
+    let _project_lock = lock(state_dir, &format!("project:{project}"))?;
+    admit_git_policy(state_dir, &project, without_git)?;
+    if !ready_path.exists() {
+        let (source, plan) =
+            plan.ok_or_else(|| NativeLayrError::Refused("Native import readiness changed".into()))?;
+        let mut input = json!({"project":project,"source":source});
+        if without_git {
+            input["withoutGit"] = json!(true);
+        }
+        operation(state_dir, &format!("import:{project}"), &input, || {
+            let staging = tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?;
+            plan.stage(staging.path())?;
+            run(
+                state_dir,
+                state_dir,
+                &[
+                    "init",
+                    &project,
+                    "--from",
+                    staging.path().to_str().unwrap_or_default(),
+                    "--include-ignored",
+                ],
+            )?;
+            run(state_dir, &main, &["protect", "main", "--direct"])?;
+            plan.warm_caches(state_dir, &main, Path::new(""))?;
+            let receipt = json!({"projectId":project,"source":source,"mainPath":main,"withoutGit":without_git});
+            crate::atomic_file::replace(
+                &ready_path,
+                receipt.to_string().as_bytes(),
+                Some(0o600),
+                true,
+            )?;
+            Ok(receipt)
+        })?;
     }
     let reviewer = record["role"] == "reviewer";
     let lead = record["isLead"] == true;

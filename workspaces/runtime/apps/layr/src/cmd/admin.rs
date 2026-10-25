@@ -1225,7 +1225,13 @@ pub fn reindex(ctx: &Ctx, _args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-fn copy_folder(ctx: &Ctx, src: &std::path::Path, dst: &std::path::Path, include_ignored: bool) -> Result<usize> {
+fn copy_folder(
+    ctx: &Ctx,
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    include_ignored: bool,
+    tracked: Option<&BTreeSet<String>>,
+) -> Result<usize> {
     let rules = crate::ignore_rules::Rules::new(src);
     let mut n = 0;
     let mut entries = Vec::new();
@@ -1234,7 +1240,7 @@ fn copy_folder(ctx: &Ctx, src: &std::path::Path, dst: &std::path::Path, include_
             if rel == ".git" || rel.starts_with(".git/") {
                 return Ok(false);
             }
-            if !include_ignored && rules.ignored(rel, m.is_dir()) {
+            if !include_ignored && rules.ignored(rel, m.is_dir()) && !tracked.is_some_and(|paths| paths.contains(rel)) {
                 return Ok(false);
             }
             entries.push((rel.to_string(), m.clone()));
@@ -1243,13 +1249,17 @@ fn copy_folder(ctx: &Ctx, src: &std::path::Path, dst: &std::path::Path, include_
     })?;
     // On a store volume that ignores case, README and Readme would become one file.
     fsutil::refuse_case_collisions(dst, entries.iter().map(|(rel, _)| rel.as_str()))?;
-    for (rel, m) in entries {
+    for (rel, m) in &entries {
         if m.is_dir() {
             fsutil::make_parents(dst, &format!("{rel}/x"), None)?;
             continue;
         }
         crate::privs::as_caller_fs(ctx, || fsutil::copy_entry(src, &rel, dst, &rel, None))?;
         n += 1;
+    }
+    // Set directory modes after their children, so a restrictive mode cannot block the copy.
+    for (rel, m) in entries.iter().rev().filter(|(_, m)| m.is_dir()) {
+        fsutil::set_mode(dst, rel, m.mode)?;
     }
     Ok(n)
 }
@@ -1311,7 +1321,7 @@ pub fn init(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 .find(|(b, _)| b == &format!("origin/{branch}") || b.ends_with(&format!("/{branch}")))
                 .map(|x| x.1.clone());
             let state = state.ok_or_else(|| exit(128, format!("fatal: remote has no branch '{branch}'")))?;
-            let (st, _) = crate::gitbridge::import_commit(ctx, &repo, &state, &format!("origin/{branch}"), owner)?;
+            let (st, _) = crate::gitbridge::import_commit(ctx, &repo, &state, &format!("origin/{branch}"), owner, None)?;
             drop(cleanup);
             return Ok((st, branch));
         }
@@ -1336,16 +1346,30 @@ pub fn init(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
                 let _ = (s, refs);
                 if !head.is_empty() && head != "HEAD" {
-                    let (st, _) = crate::gitbridge::import_commit(ctx, &repo, &head, &format!("local/{branch}"), owner)?;
+                    // Keep force-added paths and their parents even when ignore rules match.
+                    let tracked = caller_git(ctx, &src, &["ls-tree", "-r", "-t", "-z", "--name-only", &head])?;
+                    if !tracked.status.success() {
+                        bail!("cannot list source HEAD paths: {}", String::from_utf8_lossy(&tracked.stderr));
+                    }
+                    let tracked: BTreeSet<String> = tracked
+                        .stdout
+                        .split(|b| *b == 0)
+                        .filter(|p| !p.is_empty())
+                        .map(|p| String::from_utf8_lossy(p).into_owned())
+                        .collect();
+                    // Copy as the caller, then freeze the bytes used by both the HEAD import
+                    // and the folder content. A source edit cannot race the blob comparison.
+                    let tmp = repo.p.work_dir().join(ids::new_id());
+                    btrfs::create_subvolume(&tmp)?;
+                    let _t2 = crate::repo::Temp { path: tmp.clone() };
+                    copy_folder(ctx, &src, &tmp, a.has("--include-ignored"), Some(&tracked))?;
+                    let snap = repo.temp_snapshot(&tmp, true)?;
+                    let (st, _) =
+                        crate::gitbridge::import_commit(ctx, &repo, &head, &format!("local/{branch}"), owner, Some(&snap.path))?;
                     parents.push(st.clone());
                     // The folder content on top (unsaved changes, if any).
                     btrfs::delete_tree(&work)?;
                     repo.snapshot_state(&st, &work, false)?;
-                    let tmp = repo.p.work_dir().join(ids::new_id());
-                    btrfs::create_subvolume(&tmp)?;
-                    let _t2 = crate::repo::Temp { path: tmp.clone() };
-                    copy_folder(ctx, &src, &tmp, a.has("--include-ignored"))?;
-                    let snap = repo.temp_snapshot(&tmp, true)?;
                     let imported = repo.state_root(&st)?;
                     let diffs = changes::file_changes(&imported, &snap.path);
                     // Different file systems give no common lineage: compare by walking instead.
@@ -1354,41 +1378,51 @@ pub fn init(ctx: &Ctx, args: &[String]) -> Result<i32> {
                     let mut seen = BTreeSet::new();
                     let mut files = Vec::new();
                     fsutil::walk(&snap.path, "", &mut |rel, m| {
-                        if !m.is_dir() {
-                            seen.insert(rel.to_string());
-                            files.push((rel.to_string(), m.mode));
-                        }
+                        seen.insert(rel.to_string());
+                        files.push((rel.to_string(), m.mode, m.is_dir()));
                         Ok(true)
                     })?;
                     let mut gone = Vec::new();
-                    fsutil::walk(&imported, "", &mut |rel, m| {
-                        if !m.is_dir() && !skip_path(rel) && !seen.contains(rel) {
+                    fsutil::walk(&imported, "", &mut |rel, _| {
+                        if !skip_path(rel) && !seen.contains(rel) {
                             gone.push(rel.to_string());
                         }
                         Ok(true)
                     })?;
                     let mut copies = Vec::new();
-                    for (rel, mode) in &files {
+                    let mut directories = Vec::new();
+                    for (rel, mode, is_dir) in &files {
                         if !fsutil::same_entry(&imported, rel, &snap.path, rel, None)?
                             || fsutil::lmeta(&imported, rel).map(|x| x.mode != *mode).unwrap_or(true)
                         {
-                            copies.push(rel.clone());
+                            if *is_dir {
+                                directories.push(rel.clone());
+                            } else {
+                                copies.push(rel.clone());
+                            }
                         }
                     }
-                    let gone_paths: Vec<&str> = gone.iter().map(String::as_str).collect();
-                    let copy_paths: Vec<&str> = copies.iter().map(String::as_str).collect();
+                    // This private tree has no user file handles to preserve. Remove replaced
+                    // entries too, so APFS can clone the current bytes into new inodes.
+                    let replaced_directories: Vec<&String> =
+                        directories.iter().filter(|p| fsutil::lmeta(&imported, p).is_some_and(|m| !m.is_dir())).collect();
+                    let gone_paths: Vec<&str> =
+                        gone.iter().chain(&copies).chain(replaced_directories).map(String::as_str).collect();
+                    // Apply directory modes last, from children to parents. Existing directories
+                    // keep unchanged children when only their mode differs.
+                    let copy_paths: Vec<&str> = copies.iter().chain(directories.iter().rev()).map(String::as_str).collect();
                     fsutil::replace_entries(&snap.path, &work, &gone_paths, &copy_paths, None)?;
-                    changed |= !copies.is_empty() || !gone.is_empty();
+                    changed |= !copies.is_empty() || !directories.is_empty() || !gone.is_empty();
                     if !changed {
                         drop(cleanup);
                         return Ok((st, branch));
                     }
                     msg = "unsaved changes of the imported folder".into();
                 } else {
-                    copy_folder(ctx, &src, &work, a.has("--include-ignored"))?;
+                    copy_folder(ctx, &src, &work, a.has("--include-ignored"), None)?;
                 }
             } else {
-                copy_folder(ctx, &src, &work, a.has("--include-ignored"))?;
+                copy_folder(ctx, &src, &work, a.has("--include-ignored"), None)?;
             }
         }
         let st = repo.new_state(ctx, &work, StateKind::Commit, parents, &msg, None)?;

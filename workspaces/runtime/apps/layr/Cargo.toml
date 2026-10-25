@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "layr"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Local version control on btrfs, APFS and OverlayFS"
 license = "MIT"
