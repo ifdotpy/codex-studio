@@ -90,6 +90,13 @@ type EntityFor<C extends EntityCollection> = Extract<
   { collection: C }
 >["value"];
 type EntityValues = { [C in EntityCollection]: Map<string, EntityFor<C>> };
+type MergedAgentCache = WeakMap<
+  EntityFor<"agentSummary">,
+  {
+    detail: EntityFor<"agentDetail"> | undefined;
+    value: Snapshot["threads"][number];
+  }
+>;
 type EntityRowState = {
   seq: number;
   collection?: EntityCollection;
@@ -105,6 +112,7 @@ export type EntityProjection = {
   values: EntityValues;
   snapshot: Snapshot | null;
   agentSummarySeen: boolean;
+  mergedAgents: MergedAgentCache;
 };
 
 function emptyEntityValues(): EntityValues {
@@ -182,6 +190,7 @@ function projectSnapshotCollections(
   changed: ReadonlySet<EntityCollection>,
   values: EntityValues,
   agentSummarySeen: boolean,
+  mergedAgents: MergedAgentCache,
 ): Snapshot {
   const agents =
     prior &&
@@ -190,10 +199,14 @@ function projectSnapshotCollections(
     !changed.has("agentDetail")
       ? prior.runtime.agents
       : agentSummarySeen
-        ? entityValues(values, "agentSummary").map((summary) => ({
-            ...values.agentDetail.get(summary.id),
-            ...summary,
-          }))
+        ? entityValues(values, "agentSummary").map((summary) => {
+            const detail = values.agentDetail.get(summary.id);
+            const cached = mergedAgents.get(summary);
+            if (cached && cached.detail === detail) return cached.value;
+            const value = { ...detail, ...summary };
+            mergedAgents.set(summary, { detail, value });
+            return value;
+          })
         : entityValues(values, "agent");
   const chats =
     prior && !changed.has("chat") ? prior.chats : entityValues(values, "chat");
@@ -354,6 +367,9 @@ export function emptyEntityProjection(): EntityProjection {
     values: emptyEntityValues(),
     snapshot: null,
     agentSummarySeen: false,
+    // Unchanged agents keep their identity when another agent streams a change.
+    // Weak keys release entries once their summary leaves the projection.
+    mergedAgents: new WeakMap(),
   };
 }
 
@@ -547,6 +563,7 @@ export function applyEntityChanges(
     changed,
     state.values,
     state.agentSummarySeen,
+    state.mergedAgents,
   );
   changed.clear();
   state.snapshot = next;

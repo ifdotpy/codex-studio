@@ -15,6 +15,54 @@ import {
 
 import { it } from "vitest";
 
+it("retains other agents when one streamed summary or detail changes", () => {
+  const state = emptyEntityProjection();
+  const row = (collection, id, value, seq) => ({
+    id: `entity:${collection}:${id}`,
+    seq,
+    payload: "",
+    entity: { collection, id, value },
+  });
+  const first = applyEntityChanges(
+    state,
+    [
+      row("agentSummary", "a", { id: "a", status: "idle" }, 1),
+      row("agentSummary", "b", { id: "b", status: "running" }, 2),
+    ],
+    true,
+  );
+  const untouched = first.runtime.agents[1];
+  const updated = applyEntityChanges(
+    state,
+    [row("agentSummary", "a", { id: "a", status: "running" }, 3)],
+    true,
+  );
+  assert.notEqual(updated.runtime.agents[0], first.runtime.agents[0]);
+  assert.equal(updated.runtime.agents[0].status, "running");
+  assert.equal(updated.runtime.agents[1], untouched);
+  const detailed = applyEntityChanges(
+    state,
+    [row("agentDetail", "a", { id: "a", lastAnswer: "Progress" }, 4)],
+    true,
+  );
+  assert.equal(detailed.runtime.agents[0].lastAnswer, "Progress");
+  assert.equal(detailed.runtime.agents[1], untouched);
+  const closed = applyEntityChanges(
+    state,
+    [{ id: "entity:agentDetail:a", seq: 5, payload: "", _deleted: true }],
+    true,
+  );
+  assert.equal(closed.runtime.agents[0].lastAnswer, undefined);
+  assert.equal(closed.runtime.agents[1], untouched);
+  const removed = applyEntityChanges(
+    state,
+    [{ id: "entity:agentSummary:a", seq: 6, payload: "", _deleted: true }],
+    true,
+  );
+  assert.deepEqual(removed.runtime.agents, [untouched]);
+  assert.equal(removed.runtime.agents[0], untouched);
+});
+
 it("renders the list from summaries and adds detail without losing unread state", () => {
   const state = emptyEntityProjection();
   const summary = {
