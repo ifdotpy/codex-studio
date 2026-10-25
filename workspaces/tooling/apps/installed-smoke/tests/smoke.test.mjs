@@ -1272,3 +1272,90 @@ test("failed analytics collection persists its latency before a provider row exi
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("recorded usage separates gaps and cumulative rows from responses", async () => {
+  const { recordedUsage, recordedResponses, sumTokens } =
+    await import("../usage.mjs");
+  const tokens = {
+    uncachedInput: 10,
+    cacheReadInput: 2,
+    cacheWriteInput: 0,
+    output: 3,
+  };
+  const response = {
+    kind: "response",
+    responseId: "typed",
+    model: "haiku",
+    tokens,
+  };
+  const gap = { kind: "gap", responseId: "gap", reason: "queryClosed" };
+  const analytics = {
+    timeline: [
+      { responseId: "stale", studioUsage: response },
+      { responseId: "gap", studioUsage: gap, last: {} },
+      {
+        responseId: "associated",
+        studioUsage: {
+          kind: "cumulative",
+          scope: "claudeQuery",
+          total: tokens,
+        },
+        last: {},
+      },
+      { responseId: "notice", counterDomain: "nativeNotice", last: {} },
+    ],
+  };
+  assert.equal(recordedResponses(analytics, "claude").length, 1);
+  const recorded = recordedUsage(analytics, "claude");
+  assert.equal(recorded.responses[0].responseId, "typed");
+  assert.deepEqual(recorded.gaps, [
+    { ...gap, tokens: null, costUsd: null, record: analytics.timeline[1] },
+  ]);
+  assert.equal(sumTokens(recorded.responses).output, 3);
+});
+
+test("legacy recorded categories stay unknown and use persisted adapter precedence", async () => {
+  const { recordedResponses, sumTokens, totalTokens } =
+    await import("../usage.mjs");
+  const complete = {
+    inputTokens: 10,
+    cachedInputTokens: 2,
+    cacheWriteInputTokens: 1,
+    outputTokens: 3,
+  };
+  for (const source of ["delta", "requestUsage", "last"]) {
+    for (const missing of [undefined, null]) {
+      const responses = recordedResponses(
+        {
+          timeline: [
+            {
+              responseId: "old",
+              last: complete,
+              [source]: { ...complete, cachedInputTokens: missing },
+            },
+          ],
+        },
+        "codex",
+      );
+      assert.equal(responses[0].tokens.cacheReadInput, null);
+      assert.equal(responses[0].tokens.uncachedInput, null);
+      assert.equal(sumTokens(responses).cacheReadInput, null);
+      assert.equal(totalTokens(sumTokens(responses)), null);
+    }
+  }
+  const [response] = recordedResponses(
+    {
+      timeline: [
+        {
+          responseId: "old",
+          usageSource: "claudeResponse",
+          last: complete,
+          requestUsage: { ...complete, inputTokens: 50 },
+          delta: complete,
+        },
+      ],
+    },
+    "claude",
+  );
+  assert.equal(response.tokens.uncachedInput, 10);
+});

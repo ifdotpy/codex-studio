@@ -46,12 +46,16 @@ export function sumTokens(rows) {
   return Object.fromEntries(
     TOKEN_CATEGORIES.map((key) => [
       key,
-      rows.reduce((sum, row) => sum + (row.tokens[key] ?? 0), 0),
+      rows.some((row) => row.tokens[key] == null)
+        ? null
+        : rows.reduce((sum, row) => sum + row.tokens[key], 0),
     ]),
   );
 }
 
 export function totalTokens(tokens) {
+  if (TOKEN_CATEGORIES.slice(0, 4).some((key) => tokens[key] == null))
+    return null;
   return (
     tokens.uncachedInput +
     tokens.cacheReadInput +
@@ -173,22 +177,75 @@ export function nativeEvidence(state, agent, account, history) {
   return { files: [...files], responses, tokens: sumTokens(responses) };
 }
 
-export function recordedResponses(analytics, provider) {
-  return (analytics.timeline ?? [])
-    .filter((row) => row.responseId)
-    .map((row) => ({
+/** Canonical observations take precedence, including identity and non-response kinds. */
+export function recordedUsage(analytics) {
+  const responses = [];
+  const gaps = [];
+  for (const row of analytics.timeline ?? []) {
+    if (Object.hasOwn(row, "studioUsage")) {
+      const observation = row.studioUsage;
+      if (observation?.kind === "response") {
+        responses.push({ ...observation, record: row });
+      } else if (observation?.kind === "gap") {
+        gaps.push({ ...observation, tokens: null, costUsd: null, record: row });
+      }
+      continue;
+    }
+    // Pre-contract persisted rows only: mirror runtime-schema/src/usage/persisted.rs.
+    // Retained for OLD evidence and bridges that started before typed usage delivery.
+    if (
+      !row.responseId ||
+      ["nativeNotice", "codexThread", "claudeQuery"].includes(row.counterDomain)
+    )
+      continue;
+    const known = (key) =>
+      Number.isSafeInteger(selected?.[key]) && selected[key] >= 0;
+    const selected =
+      row.delta?.inputTokens != null && row.delta?.outputTokens != null
+        ? row.delta
+        : row.requestUsage && typeof row.requestUsage === "object"
+          ? row.requestUsage
+          : row.last;
+    const input = known("inputTokens") ? selected.inputTokens : null;
+    const read = known("cachedInputTokens") ? selected.cachedInputTokens : null;
+    const write = known("cacheWriteInputTokens")
+      ? selected.cacheWriteInputTokens
+      : null;
+    const uncached =
+      row.inputTokensAreUncached === true ||
+      row.usageSource === "claudeResponse";
+    const cacheReadInput =
+      uncached || input == null || read == null ? read : Math.min(input, read);
+    const cacheWriteInput =
+      uncached || input == null || cacheReadInput == null || write == null
+        ? write
+        : Math.min(input - cacheReadInput, write);
+    responses.push({
       responseId: row.responseId,
       turnId: row.turnId,
       model: row.model,
-      tokens:
-        row.studioUsage?.tokens ??
-        row.tokens ??
-        nativeTokens(
-          row.requestUsage ?? row.delta ?? row.last,
-          row.inputTokensAreUncached ? "claude" : provider,
-        ),
+      tokens: {
+        uncachedInput: uncached
+          ? input
+          : [input, cacheReadInput, cacheWriteInput].includes(null)
+            ? null
+            : input - cacheReadInput - cacheWriteInput,
+        cacheReadInput,
+        cacheWriteInput,
+        output: known("outputTokens") ? selected.outputTokens : null,
+        reasoningOutput: known("reasoningOutputTokens")
+          ? selected.reasoningOutputTokens
+          : null,
+      },
+      evidence: "legacy",
       record: row,
-    }));
+    });
+  }
+  return { responses, gaps };
+}
+
+export function recordedResponses(analytics) {
+  return recordedUsage(analytics).responses;
 }
 
 export function usageTable(evidence, label) {
@@ -200,10 +257,13 @@ export function usageTable(evidence, label) {
       (key) => row.truth.tokens[key],
     ).join("/"),
     "recorded input/read/write/output/reasoning": TOKEN_CATEGORIES.map(
-      (key) => row.recorded.tokens[key],
+      (key) => row.recorded.tokens[key] ?? "unknown",
     ).join("/"),
     "recorded/truth":
-      totalTokens(row.recorded.tokens) / totalTokens(row.truth.tokens),
+      totalTokens(row.recorded.tokens) == null
+        ? null
+        : totalTokens(row.recorded.tokens) / totalTokens(row.truth.tokens),
+    "unpriced gaps": row.recorded.gaps?.length ?? 0,
     "budget tokens": row.budget.tokensUsed,
     accounting: row.budget.tokenUsageAccounting,
     "truth priced USD": row.truth.costUsd ?? null,
