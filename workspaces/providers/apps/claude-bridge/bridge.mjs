@@ -928,8 +928,8 @@ async function content(input) {
         ".webp": "image/webp",
       }[ext];
       if (!media_type) throw new Error("Unsupported image format for Claude");
-      // Large screenshots are scaled down; the API removes oversized images.
-      const image = await claudeImage(item.path, media_type);
+      // Refuse input before it reaches Claude if portable preprocessing fails.
+      const image = await claudeImage(item.path);
       result.push({
         type: "image",
         source: {
