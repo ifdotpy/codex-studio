@@ -128,6 +128,16 @@ async function fixture(follower = false, session = true, peerOwner = false) {
         event,
       },
     } as MessageEvent);
+  const control = (kind: string, fields: Record<string, unknown>) =>
+    deliverPeer?.({
+      data: {
+        workspaceId: "workspace",
+        tabId: "owner",
+        apiSchemaHash: API_SCHEMA_HASH,
+        kind,
+        ...fields,
+      },
+    } as MessageEvent);
   const sources: Source[] = [];
   const urls: string[] = [];
   const post = vi.fn().mockResolvedValue({ gen: 1 });
@@ -206,6 +216,8 @@ async function fixture(follower = false, session = true, peerOwner = false) {
     takeOwnership: () => {
       void acquire?.({ name: "fixture", mode: "exclusive" } as Lock);
     },
+    messages: posted,
+    control,
   };
 }
 
@@ -1321,4 +1333,64 @@ it("a late terminal follower consumes owner merged views without repeated recove
   expect(failed.resourceVersions[0].replyKind).toBeUndefined();
   quiet.mockRestore();
   stop();
+});
+
+it.each([false, true])(
+  "a follower scoped application failure requests owner recovery only while subscribed (cancelled=%s)",
+  async (cancelled) => {
+    const f = await fixture(true);
+    const ref = { kind: "work", agentId: "lead" } as const;
+    const stop = f.transport.watchResourceChanges(ref, () => {});
+    let reject!: (error: Error) => void;
+    f.persist.mockReturnValueOnce(
+      new Promise((_resolve, failed) => {
+        reject = failed;
+      }),
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    f.source.emit("resources", {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision: 2,
+      reason: "initial",
+      resources: [ref],
+      resourceVersions: [
+        {
+          resource: ref,
+          revision: 2,
+          cursor: { workspaceId: "workspace", seq: 2 },
+          replyKind: "snapshot",
+          entityChanges: { after: 0, through: 2, documents: [] },
+        },
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    if (cancelled) stop();
+    reject(new Error("local follower write unavailable"));
+    await vi.advanceTimersByTimeAsync(0);
+    const requests = f.messages.filter(
+      (message) => (message as { kind: string }).kind === "resource-recovery",
+    );
+    expect(requests).toHaveLength(cancelled ? 0 : 1);
+    if (!cancelled) expect(requests[0]).toMatchObject({ resources: [ref] });
+    expect(f.get).not.toHaveBeenCalled();
+    error.mockRestore();
+  },
+);
+
+it("the owner coalesces a subscribed peer recovery request into its bounded cursor reconnect", async () => {
+  const f = await fixture(false, true, true);
+  const ref = { kind: "state" };
+  f.control("subscriptions", {
+    resources: [ref],
+    tokenRates: false,
+    reset: false,
+  });
+  f.control("resource-recovery", { resources: [ref] });
+  expect(f.source.closed).toBe(true);
+  f.control("resource-recovery", { resources: [ref] });
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(f.sources).toHaveLength(2);
+  expect(f.get).not.toHaveBeenCalled();
 });

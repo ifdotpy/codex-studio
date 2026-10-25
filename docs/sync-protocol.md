@@ -307,6 +307,13 @@ startup alone does not request recovery. Schema mismatch pauses synchronization
 without using recovery reads to bypass it. Recovery errors remain visible and
 do not create a polling loop.
 
+Cursorless process, complaint, and legacy-room views become ready only after
+their current inline value is applied by the view adapter. A failed inline
+entity application asks the stream owner to reconnect from the durable per-ref
+cursor; a follower asks that owner through browser coordination. Queued deltas
+cannot confirm readiness after their base failed, and a cancelled subscription
+cannot request recovery for its replacement.
+
 ### Connection loss and recovery
 
 Named `heartbeat` events prove liveness and never trigger resource reads.

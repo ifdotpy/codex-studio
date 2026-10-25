@@ -22,6 +22,35 @@ const mocks = vi.hoisted(() => ({
   watch: vi.fn(),
   watchConnection: vi.fn(),
   stagingWrite: vi.fn(),
+  sources: [] as {
+    url: string;
+    closed: boolean;
+    emit(name: string, value: unknown): void;
+  }[],
+}));
+vi.mock("../servers/eventSource", () => ({
+  openServerEvents: vi.fn(),
+  SignedEventSource: class {
+    listeners = new Map<string, (event: Event) => void>();
+    onopen = null;
+    onerror = null;
+    closed = false;
+    constructor(readonly url: string) {
+      mocks.sources.push(this);
+    }
+    addEventListener(name: string, accept: (event: Event) => void) {
+      this.listeners.set(name, accept);
+    }
+    close() {
+      this.closed = true;
+    }
+    emit(name: string, value: unknown) {
+      if (!this.closed)
+        this.listeners.get(name)?.({
+          data: JSON.stringify(value),
+        } as MessageEvent);
+    }
+  },
 }));
 vi.mock("rxdb", async (original) => {
   const actual = await original<typeof import("rxdb")>();
@@ -115,6 +144,7 @@ afterEach(async () => {
   mocks.watch.mockReset();
   mocks.watchConnection.mockReset();
   mocks.stagingWrite.mockReset();
+  mocks.sources = [];
   mocks.changes.clear();
   mocks.connections.clear();
   vi.restoreAllMocks();
@@ -495,6 +525,116 @@ it.each([false, true])(
       await interval?.dispose();
       await assembler.invalidate();
     }
+  },
+);
+
+it.each([false, true])(
+  "the actual Work adapter recovers a failed inline baseline and queued delta through SSE (durable base=%s)",
+  async (durableBase) => {
+    const f = await setup();
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("BroadcastChannel", undefined);
+    const { createServerSubscriptions } =
+      await import("./subscriptions/server");
+    const api = await import("../api");
+    const subscriptions = createServerSubscriptions({
+      owner: { id: "local", origin: "http://studio.test" },
+      api: { ...api, fetchApiRequest: vi.fn() },
+      tokenRates: {
+        configureTokenRateStream: vi.fn(),
+        receiveResourceTokenRates: vi.fn(() => true),
+        getWorkspaceTokenRates: vi.fn(() => ({ records: [] })),
+      },
+      sync: () => f.client,
+    } as unknown as Parameters<typeof createServerSubscriptions>[0]);
+    const ref = { kind: "work", agentId: "lead" } as const;
+    const stop = subscriptions.subscribe(ref, () => {}, { graceMs: 0 });
+    stops.push(stop, subscriptions.dispose);
+    await vi.waitFor(() => expect(mocks.sources).toHaveLength(1));
+    const source = mocks.sources[0];
+    source.emit("api-schema", { hash: API_SCHEMA_HASH });
+    const frame = (seq: number, snapshot: boolean): ResourceChangeEvent => ({
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: f.workspaceId,
+      epoch: "server",
+      revision: seq,
+      reason: snapshot ? "initial" : "change",
+      resources: [ref],
+      resourceVersions: [
+        {
+          resource: ref,
+          revision: seq,
+          cursor: { workspaceId: f.workspaceId, seq },
+          replyKind: snapshot ? "snapshot" : "delta",
+          entityChanges: {
+            after: snapshot ? 0 : 5,
+            through: seq,
+            documents: [
+              {
+                op: "upsert",
+                collection: "workDetail",
+                id: "assignment",
+                seq,
+                value: {
+                  id: "assignment",
+                  rootId: "lead",
+                  title: "Assignment",
+                  created: 1,
+                  updated: 1,
+                  version: 1,
+                  status: snapshot && seq === 5 ? "ready" : "review",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    if (durableBase)
+      await f.client.persistResourceEntityChanges(frame(4, true), () => true);
+    vi.spyOn(
+      f.db.projections.storageInstance,
+      "bulkWrite",
+    ).mockRejectedValueOnce(new Error("inline storage unavailable"));
+    source.emit("resources", frame(5, true));
+    source.emit("resources", frame(6, false));
+    await vi.waitFor(() => expect(mocks.sources).toHaveLength(2), {
+      timeout: 2500,
+    });
+    expect(source.closed).toBe(true);
+    expect(await f.client.readSubscriptionCursor(ref)).toEqual(
+      durableBase ? { workspaceId: f.workspaceId, seq: 4 } : undefined,
+    );
+    const replacement = mocks.sources[1];
+    const query = new URL(replacement.url).searchParams;
+    if (durableBase)
+      expect(JSON.parse(query.get("since")!)).toContainEqual({
+        resource: ref,
+        since: { workspaceId: f.workspaceId, seq: 4 },
+      });
+    else
+      expect(JSON.parse(query.get("since")!)).not.toContainEqual(
+        expect.objectContaining({ resource: ref }),
+      );
+    replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
+    replacement.emit("resources", frame(6, true));
+    await vi.waitFor(() =>
+      expect(subscriptions.getSnapshot(ref)).toMatchObject({
+        status: "live",
+        data: { items: [expect.objectContaining({ status: "review" })] },
+      }),
+    );
+    expect(subscriptions.getSnapshot(ref).status).toBe("live");
+    expect(await f.client.readSubscriptionCursor(ref)).toEqual({
+      workspaceId: f.workspaceId,
+      seq: 6,
+    });
+    expect(f.pulls()).toEqual([]);
+    expect(
+      mocks.syncGet.mock.calls.every(([path]) => path === "/api/sync/identity"),
+    ).toBe(true);
+    error.mockRestore();
   },
 );
 

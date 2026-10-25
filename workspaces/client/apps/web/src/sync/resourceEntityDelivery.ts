@@ -100,6 +100,10 @@ export class ResourceEntityDelivery {
       isCurrent: () => boolean,
     ) => Promise<void>,
     private readonly dispatch: (event: ResourceChangeEvent) => void,
+    private readonly failed?: (
+      event: ResourceChangeEvent,
+      error: unknown,
+    ) => void,
   ) {}
 
   /** Cancel reads from an earlier subscription set and retain active pull hints. */
@@ -183,6 +187,15 @@ export class ResourceEntityDelivery {
     const hasState = event.resources.some(
       (resource) => resource.kind === "state",
     );
+    if (this.storageBlocked && hasChanges && this.failed) {
+      // A timed-out write may still own storage. Keep the stream degraded and
+      // its reconnect bounded until that write settles; never confirm a hint.
+      this.failed(
+        revokeCursorProof(event),
+        new Error("Stream entity storage is still unavailable"),
+      );
+      return;
+    }
     if (
       event.reason === "change" &&
       !hasState &&
@@ -228,6 +241,8 @@ export class ResourceEntityDelivery {
         this.current = event;
         const generation = this.generation;
         let expired = false;
+        let persistenceFailed = false;
+        let persistenceError: unknown;
         let timer: ReturnType<typeof setTimeout> | undefined;
         const isCurrent = () => !expired && generation === this.generation;
         try {
@@ -251,6 +266,8 @@ export class ResourceEntityDelivery {
             }),
           ]);
         } catch (error) {
+          persistenceFailed = true;
+          persistenceError = error;
           this.revoke(event);
           console.error("Stream entity persistence failed", error);
         } finally {
@@ -258,8 +275,15 @@ export class ResourceEntityDelivery {
         }
         // A later baseline or overflow already requests the complete range.
         if (isCurrent()) this.restoreTerminalBases(event);
-        if (generation === this.generation) this.dispatch(event);
         this.current = undefined;
+        if (generation === this.generation) {
+          if (persistenceFailed && this.failed) {
+            // A fresh subscription must recover the whole missed interval.
+            // Queued deltas have no applied base and cannot prove liveness.
+            this.pending = [];
+            this.failed(event, persistenceError);
+          } else this.dispatch(event);
+        }
         if (expired) {
           for (const pending of this.pending)
             this.dispatch(this.revoke(pending));

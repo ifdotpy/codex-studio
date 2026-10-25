@@ -41,6 +41,40 @@ describe("bounded stream entity delivery", () => {
     vi.restoreAllMocks();
   });
 
+  it("requests source recovery after a current timeout and keeps blocked storage degraded", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const persist = vi.fn(() => new Promise<void>(() => {}));
+    const dispatch = vi.fn();
+    const failed = vi.fn();
+    const delivery = new ResourceEntityDelivery(persist, dispatch, failed);
+    delivery.receive(frame(1));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(failed).toHaveBeenCalledOnce();
+    expect(dispatch).not.toHaveBeenCalled();
+    delivery.receive(frame(2));
+    expect(failed).toHaveBeenCalledTimes(2);
+    expect(persist).toHaveBeenCalledOnce();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("a cancelled persistence rejection cannot request recovery for a new subscription", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let reject!: (error: Error) => void;
+    const persist = vi.fn(
+      () =>
+        new Promise<void>((_resolve, failed) => {
+          reject = failed;
+        }),
+    );
+    const failed = vi.fn();
+    const delivery = new ResourceEntityDelivery(persist, vi.fn(), failed);
+    delivery.receive(frame(1));
+    delivery.invalidate();
+    reject(new Error("old subscriber write failed"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failed).not.toHaveBeenCalled();
+  });
+
   it("persists in order before listeners can request a pull", async () => {
     let finish!: () => void;
     const first = new Promise<void>((resolve) => {

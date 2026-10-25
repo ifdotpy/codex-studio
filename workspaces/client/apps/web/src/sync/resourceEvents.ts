@@ -149,6 +149,12 @@ type TabSubscriptionDiscovery = {
   workspaceId: string;
   tabId: string;
 };
+type TabResourceRecovery = {
+  kind: "resource-recovery";
+  workspaceId: string;
+  tabId: string;
+  resources: ResourceRef[];
+};
 
 type TabMessage = (
   | TabSubscriptions
@@ -164,6 +170,7 @@ type TabMessage = (
   | LeaderHeartbeat
   | TabStatus
   | TabSubscriptionDiscovery
+  | TabResourceRecovery
 ) & { apiSchemaHash: string };
 
 type OutgoingMessage =
@@ -179,7 +186,8 @@ type OutgoingMessage =
   | { kind: "tab-heartbeat" }
   | { kind: "leader-heartbeat" }
   | { kind: "discover-subscriptions" }
-  | { kind: "status"; status: ResourceConnectionState };
+  | { kind: "status"; status: ResourceConnectionState }
+  | { kind: "resource-recovery"; resources: ResourceRef[] };
 export type ResourceEventsOptions = {
   api: Pick<
     import("../api").ServerApi,
@@ -840,16 +848,34 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
   }
 
-  const entityDelivery = new ResourceEntityDelivery((event, isCurrent) => {
-    const generation = subscriptionGeneration;
-    return persistResourceEntityChanges(
-      event,
-      () =>
-        isCurrent() &&
-        event.workspaceId === workspaceId &&
-        generation === subscriptionGeneration,
-    );
-  }, dispatchEvent);
+  const entityDelivery = new ResourceEntityDelivery(
+    (event, isCurrent) => {
+      const generation = subscriptionGeneration;
+      return persistResourceEntityChanges(
+        event,
+        () =>
+          isCurrent() &&
+          event.workspaceId === workspaceId &&
+          generation === subscriptionGeneration,
+      );
+    },
+    dispatchEvent,
+    (event, error) => {
+      const active = new Set(aggregateResources().map(resourceKey));
+      const resources = event.resources.filter((ref) =>
+        active.has(resourceKey(ref)),
+      );
+      if (!resources.length || !coordinatorActive) return;
+      if (owner || independent) frameFailed(error);
+      else {
+        // Followers cannot reopen the owner's stream. Request its existing
+        // cursor-based reconnect path without issuing a resource GET.
+        setStatus("degraded");
+        entityDelivery.invalidate();
+        broadcast({ kind: "resource-recovery", resources });
+      }
+    },
+  );
 
   let transferAssembler: EntityTransferAssembler | undefined;
   let transferEpoch: string | undefined;
@@ -1123,6 +1149,25 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         )
           broadcast({ kind: "token-rates", event: tokenRateReplay()! });
         scheduleCoordinatorIdleStop();
+      }
+    } else if (record.kind === "resource-recovery") {
+      const peer = peerSubscriptions.get(record.tabId);
+      if (
+        owner &&
+        source &&
+        peer &&
+        Array.isArray(record.resources) &&
+        record.resources.some(
+          (requested) =>
+            requested !== null &&
+            typeof requested === "object" &&
+            !Array.isArray(requested) &&
+            peer.resources.some((ref) => sameResource(ref, requested)),
+        )
+      ) {
+        // Reconnect once for the current source. Repeated requests while its
+        // replacement is pending do not reset the bounded retry schedule.
+        reconnectNow();
       }
     } else if (record.kind === "tab-heartbeat") {
       const peer = peerSubscriptions.get(record.tabId);
