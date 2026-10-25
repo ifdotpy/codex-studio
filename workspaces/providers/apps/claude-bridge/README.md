@@ -56,11 +56,16 @@ unknown outcome and is never automatically resent. Before completing a turn
 with such input, the bridge closes the CLI and reconciles its final native
 history. A split input is delivered only if every part is recorded; no recorded
 parts proves it unapplied, while partial or unavailable evidence stays unknown.
-Malformed, torn, or changed native history and a bounded tail without the
-opening input anchor, unique record UUIDs, or ancestry to the session root
-remain uncertain. Malformed queued-command UUIDs also stay unknown.
-Main-session attachments remain valid links in the native parent chain, and
-complete large records use the [native reader](native-history.mjs) tail budget.
+The [history index](history-index.mjs) owns input identity for stall recovery,
+restart, fork, and rollback. It reads the current native session through SDK
+metadata and conversation APIs, and the SDK's typed transcript-store import.
+The import preserves hidden service parts that the conversation API omits;
+each part keeps its original SDK UUID and prompt framing. A pinned complete
+file read guards against the SDK silently skipping malformed or unknown rows.
+Missing sessions, unsupported structures, torn or changed files, broken ancestry,
+and files outside the [reader's coverage](native-history.mjs) remain unknown.
+Only complete authoritative absence permits redelivery. Each snapshot builds
+one UUID index that all retained inputs reuse.
 The bridge shows an uncertainty notice
 and never authorizes redelivery from that evidence.
 The next start resumes a fresh CLI, and retries reuse recorded user-message
@@ -88,6 +93,19 @@ across an unverified fork. Every retained input mapping is checked before a
 native fork is submitted. Legacy delivered inputs without supported provenance
 require recovery instead of creating an unvalidated native branch.
 
+`system/init` and the typed `SessionStart` clear/fork hook own native session
+transitions. The bridge persists the new native ID before continuing; conversation
+reset IDs are never used for resume. Checkpoints from the previous session are
+invalidated. Earlier mirror turns remain visible, while new native history
+controls use only turns belonging to the current session. A local clear command
+has no native input boundary and cannot be selected for a history operation.
+
+Run `node testing/cli-history-witness.mjs` from this directory for the installed
+SDK/CLI witness. It uses disposable configuration below the user's cache and a
+local HTTP provider fixture, verifies both composite orders through fork,
+rollback and recovery, and proves clear/resume with three distinct identities.
+It makes no real model request and prints its retained evidence directory.
+
 ## Restart recovery
 
 Session load checks stale `inProgress` turns against the native transcript.
@@ -98,8 +116,8 @@ Unreadable, changed, unrelated, or unsupported native evidence becomes
 Recovery also accepts an initial input receipt or marks a steer delivered only
 when all its native UUIDs appear in order on the proven transcript chain. Partial
 or unproven inputs keep their ambiguous receipts, including after another restart.
-The reader shares the bounded file and identity checks used for historical
-Bash receipts. The mirror journal still discards a torn final record.
+Input receipts use the same verified SDK history index as stall recovery.
+Reply reconstruction stays in [restart reconciliation](restart-reconcile.mjs). The mirror journal still discards a torn final record.
 
 A malformed complete journal row requires native transcript evidence before
 repair. Automatic repair supports complete text histories with exact message

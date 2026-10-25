@@ -1,9 +1,10 @@
 import { nativeInputIds } from "./input-messages.mjs";
-import { readNativeHistory, nativeUuid } from "./native-history.mjs";
+import { nativeUuid } from "./native-history.mjs";
+import { readHistoryIndex } from "./history-index.mjs";
 
 // A native user UUID binds the mirror turn to one transcript chain. Text and
 // timestamps alone cannot distinguish an earlier reply or a different branch.
-function outcome(session, turn, records, proven) {
+function outcome(session, turn, records) {
   const initial = turn.items.find((item) => item.type === "userMessage");
   const userId = nativeInputIds(initial)?.[0];
   if (!nativeUuid(userId) || !records) return null;
@@ -14,7 +15,6 @@ function outcome(session, turn, records, proven) {
   if (
     anchor.type !== "user" ||
     anchor.isSidechain !== false ||
-    anchor.isMeta ||
     anchor.isCompactSummary
   )
     return null;
@@ -53,7 +53,12 @@ function outcome(session, turn, records, proven) {
       row.sessionId !== (session.nativeId || session.id) ||
       row.cwd !== (session.nativeHistoryCwd || session.cwd) ||
       row.isSidechain !== false ||
-      row.isMeta ||
+      (row.isMeta &&
+        !turn.items.some(
+          (item) =>
+            item.type === "userMessage" &&
+            nativeInputIds(item)?.includes(row.uuid),
+        )) ||
       row.isVisibleInTranscriptOnly ||
       (previous && row.parentUuid !== previous)
     )
@@ -62,7 +67,6 @@ function outcome(session, turn, records, proven) {
     previous = row.uuid;
     last = row;
     if (row === anchor) {
-      proven.add(row.uuid);
       continue;
     }
     const blocks = row.message?.content;
@@ -83,7 +87,6 @@ function outcome(session, turn, records, proven) {
         (!blocks.length || blocks.some((block) => block.type !== "tool_result"))
       )
         return null;
-      if (steer) proven.add(row.uuid);
       for (const block of blocks) {
         if (block.type === "tool_result" && !pending.delete(block.tool_use_id))
           return null;
@@ -141,27 +144,19 @@ function outcome(session, turn, records, proven) {
 export async function reconcileRestartTurns(session, options) {
   const stale = session.turns.filter((turn) => turn.status === "inProgress");
   if (!stale.length) return;
-  const records = await readNativeHistory(session, options).catch(() => null);
+  const index = await readHistoryIndex(session, options);
+  const records = index?.entries.map((row) => ({ row }));
   for (const turn of stale) {
-    const proven = new Set();
-    const result = outcome(session, turn, records, proven);
-    for (const [index, item] of turn.items.entries()) {
+    const result = outcome(session, turn, records);
+    const initial = turn.items.find((item) => item.type === "userMessage");
+    for (const [itemIndex, item] of turn.items.entries()) {
       if (item.type !== "userMessage") continue;
-      const ids = nativeInputIds(item);
-      if (!ids) continue;
-      const positions = ids.map(
-        (id) => records?.findIndex(({ row }) => row.uuid === id) ?? -1,
-      );
       if (
-        !ids.length ||
-        !ids.every((id) => nativeUuid(id) && proven.has(id)) ||
-        positions.some(
-          (position, i) =>
-            position < 0 || (i > 0 && position <= positions[i - 1]),
-        )
+        index?.outcome(nativeInputIds(item), nativeInputIds(initial)) !==
+        "delivered"
       )
         continue;
-      if (index === 0 && turn.startOutcome === "preparing")
+      if (itemIndex === 0 && turn.startOutcome === "preparing")
         turn.startOutcome = "accepted";
       if (
         item.delivery === "steer" &&

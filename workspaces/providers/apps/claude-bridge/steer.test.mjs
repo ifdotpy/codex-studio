@@ -807,7 +807,7 @@ function historySdk(mode) {
     .replace(
       "fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\\n');",
       `fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\\n');
- if(input.value.message.content[0].text==='pulled'||'${mode}'==='all'||('${mode}'==='partial'&&input.value.shouldQuery===false)){fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:historyParent,sessionId:options.sessionId||options.resume,cwd,isSidechain:false})+'\\n');historyParent=input.value.uuid;}`,
+ if(input.value.message.content[0].text==='pulled'||'${mode}'==='all'||('${mode}'==='partial'&&input.value.shouldQuery===false)){fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:historyParent,sessionId:options.sessionId||options.resume,cwd,isSidechain:false,message:input.value.message,timestamp:new Date().toISOString()})+'\\n');historyParent=input.value.uuid;}`,
     )
     .replace(
       "close(){abort.abort();}",
@@ -916,6 +916,8 @@ for (const mode of ["empty", "partial", "all"]) {
           sessionId: bridge.thread,
           cwd: bridge.root,
           isSidechain: false,
+          message: { role: "user", content: "human-tail" },
+          timestamp: new Date().toISOString(),
         }) + "\n",
       );
     }

@@ -16,7 +16,11 @@ import {
   rewindSessionFiles,
 } from "./file-checkpoints.mjs";
 import { createAccountCheck } from "./account-identity.mjs";
-import { readNativeHistory } from "./native-history.mjs";
+import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.mjs";
+import {
+  transitionNativeSession,
+  sessionStartHook,
+} from "./session-identity.mjs";
 import {
   inputGroups,
   sdkInputMessages,
@@ -31,7 +35,6 @@ import {
   createSdkMcpServer,
   tool,
   forkSession,
-  getSessionMessages,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   InputQueue,
@@ -71,7 +74,6 @@ import {
   declaredTimeoutMs,
   durationText,
   watchStalls,
-  inputHistoryOutcome,
   stallLimits,
   stallMessage,
 } from "./stall-watch.mjs";
@@ -1274,18 +1276,12 @@ async function reconcileClosedSteers(s, turn, unapplied) {
       item.deliveryStatus === "submitted",
   );
   if (!open.length) return;
-  const records = await readNativeHistory(s);
+  const index = await readHistoryIndex(s);
   const initial = turn.items.find((item) => item.type === "userMessage");
   for (const item of open) {
-    const outcome = inputHistoryOutcome(
-      records?.map(({ row }) => row),
-      {
-        sessionId: s.nativeId || s.id,
-        cwd: s.nativeHistoryCwd || s.cwd,
-        anchorIds: nativeInputIds(initial),
-        inputIds: nativeInputIds(item),
-      },
-    );
+    const outcome =
+      index?.outcome(nativeInputIds(item), nativeInputIds(initial)) ??
+      "unknown";
     if (outcome === "delivered") {
       item.deliveryStatus = "delivered";
       turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
@@ -1495,6 +1491,11 @@ async function startSession(s, active, p) {
           ...externalMcpServers,
           studio: studioTools(s, () => active.turn),
         },
+        hooks: {
+          SessionStart: [
+            { hooks: [sessionStartHook(s, () => active.turn, persist)] },
+          ],
+        },
         supportedDialogKinds: ["resume_return"],
         perTaskStopAffordance: true,
         onUserDialog: async (value, options) => {
@@ -1606,10 +1607,11 @@ async function startSession(s, active, p) {
       active.lastEventAt = Date.now();
       armStallWatch();
       if (m.type === "system" && m.subtype === "init") {
+        transitionNativeSession(s, m.session_id, "init", active.turn);
         s.started = true;
         s.claudeVersion = m.claude_code_version;
         active.commands = m.slash_commands || [];
-        persistLater(s, active);
+        await persist(s);
         continue;
       }
       if (m.type === "system" && m.subtype === "background_tasks_changed") {
@@ -2178,6 +2180,7 @@ function newActive(turn) {
   return active;
 }
 function userMessage(s, turn, groups, id) {
+  turn.nativeSessionId = s.nativeId || s.id;
   const messages = sdkInputMessages(
     s.nativeId || s.id,
     id || turn.id,
@@ -2461,8 +2464,9 @@ async function handle(method, p) {
     discardQuery(s.id, active);
     return rollbackSession(s, p, {
       persist,
-      getSessionMessages,
       forkSession,
+      getSessionMessages: (id, options) =>
+        verifiedHistoryMessages({ id, cwd: options.dir }),
       prepareFileRestore: (session, messages, messageId) =>
         prepareFileRestore(session, messages, messageId, root),
       verifyFileRestore,
@@ -2612,7 +2616,8 @@ async function handle(method, p) {
       );
     const s = await forkAtTurn(old, p, {
       forkSession,
-      getSessionMessages,
+      getSessionMessages: (id, options) =>
+        verifiedHistoryMessages({ id, cwd: options.dir }),
       persist,
     });
     sessions.set(s.id, s);

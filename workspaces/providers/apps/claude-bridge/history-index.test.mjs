@@ -1,0 +1,207 @@
+import { afterEach, expect, test } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import * as sdk from "@anthropic-ai/claude-agent-sdk";
+import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.mjs";
+import { forkAtTurn, rollbackSession } from "./controls.mjs";
+
+const roots = [];
+const previous = process.env.CLAUDE_CONFIG_DIR;
+afterEach(async () => {
+  if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = previous;
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => fs.rm(root, { recursive: true, force: true })),
+  );
+});
+async function fixture(serviceFirst = true) {
+  const base = path.join(os.homedir(), ".cache/codex-studio/pivot1-v5-history");
+  await fs.mkdir(base, { recursive: true });
+  const cwd = await fs.mkdtemp(path.join(base, "sdk-"));
+  roots.push(cwd);
+  const configDir = path.join(cwd, "config");
+  process.env.CLAUDE_CONFIG_DIR = configDir;
+  const nativeId = randomUUID();
+  const ids = Array.from({ length: 6 }, () => randomUUID());
+  const rows = ids.map((uuid, index) => ({
+    type: index === 2 || index === 5 ? "assistant" : "user",
+    uuid,
+    parentUuid: index ? ids[index - 1] : null,
+    sessionId: nativeId,
+    cwd,
+    isSidechain: false,
+    timestamp: new Date().toISOString(),
+    ...(index % 3 === (serviceFirst ? 0 : 1)
+      ? { isMeta: true, origin: { kind: "unclassified" } }
+      : {}),
+    message: {
+      role: index === 2 || index === 5 ? "assistant" : "user",
+      content: [
+        {
+          type: "text",
+          text:
+            index === 2 || index === 5
+              ? "reply"
+              : index % 3 === (serviceFirst ? 0 : 1)
+                ? "service"
+                : "human",
+        },
+      ],
+      ...(index === 2 || index === 5
+        ? { id: `msg_${index}`, stop_reason: "end_turn" }
+        : {}),
+    },
+  }));
+  const file = path.join(
+    configDir,
+    "projects",
+    cwd.replace(/[^a-zA-Z0-9]/g, "-"),
+    `${nativeId}.jsonl`,
+  );
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, rows.map(JSON.stringify).join("\n") + "\n");
+  const session = {
+    id: randomUUID(),
+    nativeId,
+    cwd,
+    started: true,
+    turns: [0, 3].map((index) => ({
+      id: `turn${index}`,
+      status: "completed",
+      nativeMessageId: ids[index],
+      items: [
+        {
+          type: "userMessage",
+          nativeId: ids[index + 1],
+          nativeIds: ids.slice(index, index + 2),
+        },
+      ],
+    })),
+  };
+  return { cwd, configDir, file, rows, session, ids };
+}
+
+for (const damage of ["malformed uuid", "unknown record"])
+  test(`SDK history rejects ${damage} before authorizing redelivery`, async () => {
+    const f = await fixture();
+    const rows = f.rows.slice(0, 3);
+    rows.push({
+      ...rows[2],
+      uuid: damage === "malformed uuid" ? "bad-uuid" : randomUUID(),
+      parentUuid: rows[2].uuid,
+      ...(damage === "unknown record" ? { type: "future-input" } : {}),
+    });
+    await fs.writeFile(f.file, rows.map(JSON.stringify).join("\n") + "\n");
+    // The installed SDK silently skips unknown rows and accepts malformed UUIDs.
+    expect(
+      (await sdk.getSessionMessages(f.session.nativeId, { dir: f.cwd })).length,
+    ).toBeGreaterThan(0);
+    expect(await readHistoryIndex(f.session)).toBeNull();
+  });
+for (const serviceFirst of [true, false])
+  test(`SDK composite ${serviceFirst ? "service/human" : "human/service"} survives fork and rollback`, async () => {
+    const f = await fixture(serviceFirst);
+    const visible = await sdk.getSessionMessages(f.session.nativeId, {
+      dir: f.cwd,
+    });
+    expect(visible).toHaveLength(4);
+    const deps = {
+      ...sdk,
+      getSessionMessages: (id, options) =>
+        verifiedHistoryMessages({ id, cwd: options.dir }),
+      persist: async () => {},
+    };
+    const fork = await forkAtTurn(f.session, { lastTurnId: "turn0" }, deps);
+    expect(fork.turns).toHaveLength(1);
+    expect(fork.turns[0].items[0].nativeIds).toHaveLength(2);
+    await rollbackSession(
+      f.session,
+      { requestId: randomUUID(), turnId: "turn3" },
+      deps,
+    );
+    expect(f.session.turns).toHaveLength(1);
+    expect(f.session.turns[0].items[0].nativeIds).toHaveLength(2);
+  });
+
+for (const damage of ["malformed uuid", "unknown record"])
+  test(`restart preserves uncertain input receipts after ${damage}`, async () => {
+    const f = await fixture(false);
+    const rows = [
+      f.rows[0],
+      {
+        ...f.rows[2],
+        parentUuid: f.ids[0],
+        uuid: damage === "malformed uuid" ? "bad-uuid" : randomUUID(),
+        ...(damage === "unknown record" ? { type: "future-input" } : {}),
+      },
+    ];
+    await fs.writeFile(f.file, rows.map(JSON.stringify).join("\n") + "\n");
+    const { createSessionStore } = await import("./session-store.mjs");
+    f.session.turns = [
+      {
+        id: "stale",
+        status: "inProgress",
+        startOutcome: "preparing",
+        items: [
+          { id: "initial", type: "userMessage", nativeId: f.ids[0] },
+          {
+            id: "steer",
+            type: "userMessage",
+            nativeId: f.ids[3],
+            delivery: "steer",
+            deliveryStatus: "submitted",
+          },
+        ],
+      },
+    ];
+    const root = path.join(f.cwd, "state");
+    await createSessionStore(root).persist(f.session);
+    const restored = await createSessionStore(root).get(f.session.id);
+    expect(restored.turns[0].status).toBe("uncertain");
+    expect(restored.turns[0].startOutcome).toBe("preparing");
+    expect(restored.turns[0].items[1].deliveryStatus).toBe("submitted");
+    expect(restored.turns[0].unappliedSteers).toBeUndefined();
+  });
+
+test("post-clear controls use current native turns while preserving earlier mirror history", async () => {
+  const f = await fixture();
+  for (const turn of f.session.turns) turn.nativeSessionId = f.session.nativeId;
+  const earlier = {
+    id: "before-clear",
+    nativeSessionId: randomUUID(),
+    status: "completed",
+    items: [{ type: "userMessage", nativeId: randomUUID() }],
+  };
+  const clear = {
+    id: "clear",
+    nativeSessionId: f.session.nativeId,
+    nativeHistoryDetached: true,
+    status: "completed",
+    items: [{ type: "userMessage", nativeId: randomUUID() }],
+  };
+  f.session.turns.unshift(earlier, clear);
+  const deps = {
+    ...sdk,
+    getSessionMessages: (id, options) =>
+      verifiedHistoryMessages({ id, cwd: options.dir }),
+    persist: async () => {},
+  };
+  const fork = await forkAtTurn(f.session, { lastTurnId: "turn0" }, deps);
+  expect(fork.turns.map((turn) => turn.id)).toEqual([
+    "before-clear",
+    "clear",
+    "turn0",
+  ]);
+  expect(fork.turns[0]).toEqual(earlier);
+  await rollbackSession(
+    f.session,
+    { requestId: randomUUID(), turnId: "turn0" },
+    deps,
+  );
+  expect(f.session.turns).toEqual([earlier, clear]);
+  expect(f.session.started).toBe(false);
+});

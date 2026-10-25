@@ -19,17 +19,25 @@ export { HANG_GUARD_MS };
 export async function startBridge(
   fakeSdk,
   prefix = "claude-bridge-",
-  { env = {}, thread = {}, clock = false } = {},
+  { env = {}, thread = {}, clock = false, temporaryBase = os.tmpdir() } = {},
 ) {
   const root = await fs.realpath(
-    await fs.mkdtemp(path.join(os.tmpdir(), prefix)),
+    await fs.mkdtemp(path.join(temporaryBase, prefix)),
   );
   for (const name of await fs.readdir(BRIDGE)) {
     if (!name.endsWith(".mjs") || name.endsWith(".test.mjs")) continue;
     const source = await fs.readFile(path.join(BRIDGE, name), "utf8");
     await fs.writeFile(
       path.join(root, name),
-      source.replaceAll("@anthropic-ai/claude-agent-sdk", "./fake.mjs"),
+      source.replaceAll(
+        "@anthropic-ai/claude-agent-sdk",
+        name === "history-index.mjs"
+          ? path.join(
+              BRIDGE,
+              "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
+            )
+          : "./fake.mjs",
+      ),
     );
   }
   await fs.writeFile(
