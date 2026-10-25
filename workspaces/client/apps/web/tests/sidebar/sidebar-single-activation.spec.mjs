@@ -301,6 +301,7 @@ for (const mode of ["direct", "combined"]) {
       page.getByRole("menuitem", { name: "Delete project…", exact: true }),
     ).toBeVisible();
     await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
     await group("/active").hover();
     await group("/active")
       .getByRole("button", { name: /Options for project/ })
@@ -310,6 +311,7 @@ for (const mode of ["direct", "combined"]) {
       page.getByRole("menuitem", { name: "Delete project…", exact: true }),
     ).toHaveCount(0);
     await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
 
     await filter.fill("archive-only");
     await expect(page.locator(".sidebar-project")).toHaveCount(0);
