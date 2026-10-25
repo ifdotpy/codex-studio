@@ -2387,13 +2387,14 @@ export function createSyncClient(options: SyncClientOptions) {
     fail: (e: unknown) => void,
     acceptUiPreferences?: (preferences: UiPreferenceProjection) => void,
   ) {
-    const { db, state, release } = await acquireProjection("state");
+    const { db, state, release, workspaceId } =
+      await acquireProjection("state");
     state.listeners.add(fail);
     let stopEntities: (() => void) | undefined;
     try {
       stopEntities = await observeEntityProjection(
         db.projections,
-        accept,
+        (snapshot) => accept({ ...snapshot, entityWorkspaceId: workspaceId }),
         fail,
         acceptUiPreferences,
       );
@@ -2485,7 +2486,7 @@ export function createSyncClient(options: SyncClientOptions) {
       );
       if (!snapshot) throw new Error("The entity projection is unavailable.");
       options.onWorkspaceId?.(handle.workspaceId);
-      return snapshot;
+      return { ...snapshot, entityWorkspaceId: handle.workspaceId };
     } finally {
       await handle.release();
     }

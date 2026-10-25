@@ -69,6 +69,8 @@ type SnapshotRuntime = WorkspaceEntityDto & {
   requests: Request[];
   rules: Rule[];
   projects: Project[];
+  /** Project entity sequence by native ID, owned by the entity projection; stale-delete guard. */
+  projectSequences?: Record<string, number>;
   peerTeams: PeerTeam[];
   events: Event[];
   work: Work[];
@@ -95,6 +97,8 @@ export type TranscriptPageData = Omit<GetResult<"/api/transcript">, "items"> & {
 
 /** Fields assembled for renderer consumers from entity collections. */
 type ProjectionSnapshotFields = {
+  /** Workspace of the applied entity rows, stamped by their projection handle. */
+  entityWorkspaceId?: string;
   token: string;
   stateDir: string;
   threads: Agent[];

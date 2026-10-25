@@ -4,6 +4,8 @@ import type { LocationProject, ProjectLocation } from "./projectLocations";
 export type LogicalProject = LocationProject & {
   key: string;
   owner: string;
+  /** Native registered project on the owner; inferred chat groups have no deletion target. */
+  deleteTarget?: string;
   chats: (ServerNavigation["chats"][number] & { serverId: string })[];
 };
 const keyFor = (server: string, id: string) => JSON.stringify([server, id]);
@@ -53,11 +55,13 @@ export function logicalProjects(
         owner,
         canonical?.projectId || project.path,
       );
+      group.deleteTarget ||= canonical?.projectId || project.id;
       if (!canonical) {
         group.name = project.name;
         group.path = project.path;
         group.owner = source;
         group.compact = project.compact;
+        group.deleteTarget = project.id;
       }
       const rows = project.locations || [
         { serverId: source, path: project.path, projectId: id },

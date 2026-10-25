@@ -128,6 +128,7 @@ export type SidebarProps = {
   changeProject: (agent: Agent) => void;
   projectAccount: (path: string) => void;
   projectFolders?: (path: string) => void;
+  deleteProject?: (path: string) => void;
   creating: boolean;
   rename: (id: string, name: string) => Promise<void>;
   remove: (id: string, room: boolean) => void;
@@ -1619,24 +1620,13 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                       >
                         Project account
                       </Menu.Item>
-                      {group.registered && !group.hasChats && (
+                      {group.registered && p.deleteProject && (
                         <Menu.Item
+                          color="red"
                           disabled={!canEdit(projectTarget(group.path))}
-                          onClick={async () => {
-                            try {
-                              await services
-                                .owner({ kind: "project", path: group.path })
-                                .post("/api/projects", {
-                                  action: "remove",
-                                  path: group.path,
-                                });
-                              await p.refresh?.();
-                            } catch (error) {
-                              p.notify?.(errorText(error));
-                            }
-                          }}
+                          onClick={() => p.deleteProject?.(group.path)}
                         >
-                          Remove from sidebar
+                          Delete project…
                         </Menu.Item>
                       )}
                     </Menu.Dropdown>

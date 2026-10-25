@@ -295,6 +295,7 @@ it("waits for the applied cold SSE baseline and publishes it without a speculati
     expect(f.snapshots.at(-1)?.threads[0]?.name).toBe("SSE baseline"),
   );
   expect(f.snapshots.at(-1)?.entitiesComplete).toBe(true);
+  expect(f.snapshots.at(-1)?.entityWorkspaceId).toBe(f.workspaceId);
   expect(f.dispatch).toHaveBeenCalledOnce();
   expect(f.pulls()).toEqual([]);
   expect(

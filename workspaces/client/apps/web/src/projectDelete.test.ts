@@ -110,6 +110,34 @@ describe("project deletion intention", () => {
   });
 });
 
+it("does not overwrite another unresolved confirmed intention", () => {
+  const store = storage();
+  new ProjectDeleteIntent(body, "Example", [], store);
+  expect(
+    () =>
+      new ProjectDeleteIntent(
+        { ...body, request_id: "new-intention" },
+        "Another",
+        [],
+        store,
+      ),
+  ).toThrow("saved project deletion");
+  expect(ProjectDeleteIntent.restore(store, "workspace")?.request).toEqual(
+    body,
+  );
+});
+
+it("keeps a confirmed receipt successful if clearing local storage fails", async () => {
+  const store = storage();
+  const intent = new ProjectDeleteIntent(body, "Example", [], store);
+  store.removeItem = () => {
+    throw new Error("Storage unavailable");
+  };
+  await intent.submit(vi.fn().mockResolvedValue(reply));
+  expect(intent.phase).toBe("deleted");
+  expect(intent.result).toEqual(reply);
+});
+
 describe("project reader suspension", () => {
   it("covers bound chats, archived chats, descendants, legacy exact paths and owned rooms, without prefix matching", () => {
     const agents = [
