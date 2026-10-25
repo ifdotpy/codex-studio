@@ -171,3 +171,52 @@ it("retains explicit null and none through projected updates, ignoring older ser
   expect(readPreferenceFields("server", storage)[key].value).toBeNull();
   expect(readModelWhitelist(storage)).toBeNull();
 });
+
+it("saves the server whitelist when user preferences are rejected and retries only the failed scope", async () => {
+  const storage = preferenceStorageForServer("local");
+  const userKey = '["codex-studio-preferences-v1","theme"]';
+  receivePreferenceFields(
+    "user",
+    {
+      [userKey]: { value: "dark", timestamp: 1, writer: "other-client" },
+    },
+    storage,
+  );
+  writeModelWhitelist(["codex:astra"], storage);
+  const post = vi.fn<typeof syncPost<"/api/sync/preferences">>(
+    async (_path, body) => {
+      if (body.scope === "user") throw new Error("User preferences rejected");
+      return { fields: body.fields ?? {} };
+    },
+  );
+  const bridge = createUiPreferenceBridge(storage, post);
+  const stop = bridge.start();
+  try {
+    bridge.receiveProjection({});
+    await expectState(storage, "saved");
+    expect(readPreferenceWriteStatus(storage, "user")).toEqual({
+      state: "error",
+      error: "User preferences rejected",
+    });
+    expect(post.mock.calls.map((call) => call[1].scope)).toEqual([
+      "user",
+      "server",
+    ]);
+    expect(readPreferenceFields("user", storage)[userKey].value).toBe("dark");
+    expect(readModelWhitelist(storage)).toEqual(["codex:astra"]);
+    retryPreferenceWrites(storage);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() =>
+      expect(readPreferenceWriteStatus(storage, "user").state).toBe("error"),
+    );
+    expect(post.mock.calls[2]).toEqual(post.mock.calls[0]);
+    expect(post.mock.calls.map((call) => call[1].scope)).toEqual([
+      "user",
+      "server",
+      "user",
+    ]);
+    expect(readPreferenceWriteStatus(storage, "server").state).toBe("saved");
+  } finally {
+    stop();
+  }
+});
