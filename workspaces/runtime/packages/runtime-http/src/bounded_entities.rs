@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use studio_runtime_services::resource_notify::{self, BoundedSource};
+use studio_runtime_services::usage::PricingRefreshOutcome;
 use studio_runtime_store::{ObservedTable, RuntimeStore, StoreError, SyncDocumentsRepository};
 use tokio::sync::mpsc;
 
@@ -22,6 +23,72 @@ enum Publication {
     Desktop,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PricingReadiness {
+    Loading,
+    Settled,
+}
+
+// One task per publisher may check the durable daily admission and fetch pricing.
+// Keeping its permit across the blocking job prevents a burst of source commits
+// from queuing more pricing jobs while a fetch is pending.
+struct PricingRefresh<F> {
+    state: HttpState,
+    fetch: F,
+    publications: mpsc::UnboundedSender<Publication>,
+    single_flight: Arc<tokio::sync::Semaphore>,
+    readiness: tokio::sync::watch::Sender<PricingReadiness>,
+}
+
+impl<F> PricingRefresh<F>
+where
+    F: Fn() -> Option<Value> + Clone + Send + Sync + 'static,
+{
+    fn new(state: HttpState, fetch: F, publications: mpsc::UnboundedSender<Publication>) -> Self {
+        Self {
+            state,
+            fetch,
+            publications,
+            single_flight: Arc::new(tokio::sync::Semaphore::new(1)),
+            readiness: tokio::sync::watch::channel(PricingReadiness::Loading).0,
+        }
+    }
+
+    fn readiness(&self) -> PricingReadiness {
+        *self.readiness.borrow()
+    }
+
+    fn request(&self) -> Option<tokio::task::JoinHandle<()>> {
+        let permit = self.single_flight.clone().try_acquire_owned().ok()?;
+        let state = self.state.clone();
+        let fetch = self.fetch.clone();
+        let publications = self.publications.clone();
+        let worker = state.track_cost_refresh_worker();
+        let readiness = self.readiness.clone();
+        Some(tokio::spawn(async move {
+            let _worker = worker;
+            let _permit = permit;
+            let outcome = refresh_session_pricing(&state, fetch).await;
+            let first_check =
+                readiness.send_replace(PricingReadiness::Settled) == PricingReadiness::Loading;
+            let republish = match outcome {
+                Ok(PricingRefreshOutcome::Changed) => true,
+                // The initial missing-catalog seed must leave loading even after
+                // a failed fetch or a check suppressed by the daily attempt TTL.
+                Ok(PricingRefreshOutcome::Unavailable) => first_check,
+                Ok(PricingRefreshOutcome::Unchanged) => false,
+                Err(error) => {
+                    eprintln!("Could not refresh session pricing: {error}");
+                    first_check
+                }
+            };
+            if republish {
+                let _sent = publications.send(Publication::SessionCosts(None));
+            }
+        }))
+    }
+}
+
 /// One ordered writer owns the durable summaries for this HTTP workspace.
 /// Source observers only enqueue; filesystem reads remain outside SQL callbacks.
 pub(crate) async fn start(state: &HttpState) -> Result<(), StoreError> {
@@ -30,17 +97,21 @@ pub(crate) async fn start(state: &HttpState) -> Result<(), StoreError> {
         studio_runtime_services::usage::fetch_models_dev_catalog,
     )
     .await
+    .map(|_| ())
 }
 
-async fn start_with_pricing_fetch<F>(state: &HttpState, fetch: F) -> Result<(), StoreError>
+async fn start_with_pricing_fetch<F>(
+    state: &HttpState,
+    fetch: F,
+) -> Result<mpsc::UnboundedSender<Publication>, StoreError>
 where
-    F: FnOnce() -> Option<Value> + Send + 'static,
+    F: Fn() -> Option<Value> + Clone + Send + Sync + 'static,
 {
+    let (sender, mut receiver) = mpsc::unbounded_channel();
     let Some(store) = state.store.clone() else {
-        return Ok(());
+        return Ok(sender);
     };
     let runtime = tokio::runtime::Handle::current();
-    let (sender, mut receiver) = mpsc::unbounded_channel();
     let usage_sender = sender.clone();
     store.add_table_change_observer(ObservedTable::UsageResumes, move || {
         let _queued = usage_sender.send(Publication::Accounts);
@@ -118,10 +189,12 @@ where
     });
     // Register the observers before seeding, and finish the initial projection
     // before the server admits requests. Router construction never owns writes.
+    let pricing = PricingRefresh::new(state.clone(), fetch, sender.clone());
+    let _refresh = pricing.request();
     let mut agent_roots = read_agent_roots(&store).await?;
     publish_accounts(state).await?;
     publish_costs(state).await?;
-    publish_session_roots_with_fetch(state, None, fetch).await?;
+    publish_session_roots(state, None, pricing.readiness()).await?;
     publish_desktop(state).await?;
     let state = state.clone();
     runtime.spawn(async move {
@@ -159,14 +232,17 @@ where
                     eprintln!("Could not publish bounded entities: {error}");
                 }
             }
+            if full || !roots.is_empty() {
+                let _refresh = pricing.request();
+            }
             let result = if full {
                 match read_agent_roots(&store).await {
                     Ok(current) => agent_roots = current,
                     Err(error) => eprintln!("Could not rebuild cost root identities: {error}"),
                 }
-                publish_sessions(&state).await
+                publish_session_roots(&state, None, pricing.readiness()).await
             } else if !roots.is_empty() {
-                publish_session_roots(&state, Some(roots)).await
+                publish_session_roots(&state, Some(roots), pricing.readiness()).await
             } else {
                 Ok(())
             };
@@ -175,7 +251,7 @@ where
             }
         }
     });
-    Ok(())
+    Ok(sender)
 }
 
 async fn accounts(
@@ -519,7 +595,10 @@ async fn settle_cost_worker_failure(state: &HttpState, key: &str) -> Result<(), 
 
 // Fetching is bounded by the catalog owner's request timeout and daily attempt TTL.
 // Both startup (even without teams) and source-driven session publication use this path.
-async fn refresh_session_pricing<F>(state: &HttpState, fetch: F) -> Result<(), StoreError>
+async fn refresh_session_pricing<F>(
+    state: &HttpState,
+    fetch: F,
+) -> Result<PricingRefreshOutcome, StoreError>
 where
     F: FnOnce() -> Option<Value> + Send + 'static,
 {
@@ -530,29 +609,19 @@ where
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0.0, |time| time.as_secs_f64());
-            studio_runtime_services::usage::refresh_pricing_with_fetch(&root, now, fetch);
+            studio_runtime_services::usage::refresh_pricing_with_fetch(&root, now, fetch)
         },
     )
     .await
     .map_err(|_| StoreError::ReadTaskFailed)
 }
 
+#[cfg(test)]
 async fn publish_sessions(state: &HttpState) -> Result<(), StoreError> {
-    publish_session_roots(state, None).await
+    publish_session_roots(state, None, PricingReadiness::Settled).await
 }
 
-async fn publish_session_roots(
-    state: &HttpState,
-    roots: Option<BTreeSet<String>>,
-) -> Result<(), StoreError> {
-    publish_session_roots_with_fetch(
-        state,
-        roots,
-        studio_runtime_services::usage::fetch_models_dev_catalog,
-    )
-    .await
-}
-
+#[cfg(test)]
 async fn publish_session_roots_with_fetch<F>(
     state: &HttpState,
     roots: Option<BTreeSet<String>>,
@@ -561,12 +630,20 @@ async fn publish_session_roots_with_fetch<F>(
 where
     F: FnOnce() -> Option<Value> + Send + 'static,
 {
+    let _changed = refresh_session_pricing(state, fetch).await?;
+    publish_session_roots(state, roots, PricingReadiness::Settled).await
+}
+
+async fn publish_session_roots(
+    state: &HttpState,
+    roots: Option<BTreeSet<String>>,
+    readiness: PricingReadiness,
+) -> Result<(), StoreError> {
     let store = state
         .store
         .as_ref()
         .ok_or(StoreError::ReadTaskFailed)?
         .clone();
-    refresh_session_pricing(state, fetch).await?;
     let selected = roots.clone();
     let ids = store.read_async("bounded-entities/session-roots", move |tx| {
         if let Some(roots) = selected {
@@ -599,7 +676,10 @@ where
             // estimate (ready + null total), rather than work still loading.
             let pricing_state = match error {
                 studio_runtime_services::costs::CostsError::Dependency(_)
-                | studio_runtime_services::costs::CostsError::InvalidPricing => "ready",
+                | studio_runtime_services::costs::CostsError::InvalidPricing => match readiness {
+                    PricingReadiness::Loading => "loading",
+                    PricingReadiness::Settled => "ready",
+                },
                 _ => "loading",
             };
             json!({"rootId":id,"totalUSD":null,"pricedSamples":0,"breakdown":{"models":{},"providers":{}},"unknownModels":[],"estimated":true,"pricingState":pricing_state,"cacheAgeSeconds":0,"refreshing":false,"method":error.to_string()})});
@@ -656,10 +736,12 @@ mod tests {
             Some(Arc::new(policy)),
         );
         let pricing = root.path().join("model-pricing");
-        std::fs::create_dir_all(&pricing).expect("pricing directory");
-        std::fs::write(pricing.join("refresh-state.json"),
+        tokio::fs::create_dir_all(&pricing)
+            .await
+            .expect("pricing directory");
+        tokio::fs::write(pricing.join("refresh-state.json"),
             json!({"lastAttemptAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("time").as_secs_f64()}).to_string()
-        ).expect("fixture suppresses upstream pricing requests");
+        ).await.expect("fixture suppresses upstream pricing requests");
         (root, state)
     }
 
@@ -689,9 +771,10 @@ mod tests {
     }
 
     async fn pricing_team(state: &HttpState) {
-        std::fs::remove_file(
+        tokio::fs::remove_file(
             std::path::Path::new(&state.state_dir).join("model-pricing/refresh-state.json"),
         )
+        .await
         .expect("enable injected refresh");
         state
             .store
@@ -717,19 +800,31 @@ mod tests {
         pricing_team(&state).await;
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let fetched = calls.clone();
+        let mut changes = commits(&state);
         start_with_pricing_fetch(&state, move || {
             fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Some(pricing_providers())
         })
         .await
         .expect("startup");
+        wait_for_entity(
+            &state,
+            &mut changes,
+            "sessionCost",
+            "pricing-team",
+            |value| value["pricingState"] == "ready",
+        )
+        .await
+        .expect("startup pricing completion");
         assert_eq!(
             entity(&state, "sessionCost", "pricing-team")["pricingState"],
             "ready"
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
         assert!(
-            !root.path().join("account-costs").exists(),
+            !tokio::fs::try_exists(root.path().join("account-costs"))
+                .await
+                .expect("account cache metadata"),
             "no account scan"
         );
     }
@@ -739,7 +834,9 @@ mod tests {
         let (root, state) = state().await;
         pricing_team(&state).await;
         let directory = root.path().join("model-pricing");
-        std::fs::create_dir_all(&directory).expect("pricing directory");
+        tokio::fs::create_dir_all(&directory)
+            .await
+            .expect("pricing directory");
         let artifact = directory.join("models-dev-v1.json");
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -747,7 +844,9 @@ mod tests {
             .as_secs_f64();
         let mut value =
             json!({"version":1,"fetchedAtEpoch":now,"catalog":{"providers":pricing_providers()}});
-        std::fs::write(&artifact, value.to_string()).expect("fresh artifact");
+        tokio::fs::write(&artifact, value.to_string())
+            .await
+            .expect("fresh artifact");
         publish_session_roots_with_fetch(&state, None, || panic!("fresh catalog must not fetch"))
             .await
             .expect("fresh publication");
@@ -756,7 +855,9 @@ mod tests {
             "ready"
         );
         value["fetchedAtEpoch"] = json!(1);
-        std::fs::write(&artifact, value.to_string()).expect("expired artifact");
+        tokio::fs::write(&artifact, value.to_string())
+            .await
+            .expect("expired artifact");
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let fetched = calls.clone();
         publish_session_roots_with_fetch(&state, None, move || {
@@ -797,10 +898,241 @@ mod tests {
         .expect("attempt TTL publication");
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
         assert!(
-            root.path()
-                .join("model-pricing/refresh-state.json")
-                .exists()
+            tokio::fs::try_exists(root.path().join("model-pricing/refresh-state.json"))
+                .await
+                .expect("attempt metadata")
         );
+    }
+
+    fn commits(state: &HttpState) -> mpsc::UnboundedReceiver<()> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .add_commit_observer(move || {
+                let _sent = sender.send(());
+            });
+        receiver
+    }
+
+    async fn wait_for_entity(
+        state: &HttpState,
+        changes: &mut mpsc::UnboundedReceiver<()>,
+        collection: &str,
+        id: &str,
+        matches: impl Fn(&Value) -> bool,
+    ) -> Result<Value, tokio::time::error::Elapsed> {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let value = entity(state, collection, id);
+                if matches(&value) {
+                    return value;
+                }
+                changes.recv().await.expect("commit observer");
+            }
+        })
+        .await
+    }
+
+    async fn pricing_roots(state: &HttpState) {
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .transaction(|tx| {
+                for id in ["a", "b"] {
+                    tx.execute(
+                        "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                        [id, &json!({"id":id,"rootId":id,"isLead":true}).to_string()],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("pricing roots");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn startup_pricing_refresh_seeds_while_fetch_is_pending_then_republishes() {
+        for response in [Some(pricing_providers()), None] {
+            let (root, state) = state().await;
+            pricing_roots(&state).await;
+            tokio::fs::remove_file(root.path().join("model-pricing/refresh-state.json"))
+                .await
+                .expect("missing pricing at startup");
+            let (release, blocked) = std::sync::mpsc::channel();
+            let blocked = Arc::new(std::sync::Mutex::new(blocked));
+            let mut changes = commits(&state);
+            let seeded = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                start_with_pricing_fetch(&state, move || {
+                    blocked
+                        .lock()
+                        .expect("release receiver")
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .expect("release startup fetch");
+                    response.clone()
+                }),
+            )
+            .await;
+            if seeded.is_ok() {
+                assert_eq!(
+                    entity(&state, "sessionCost", "b")["pricingState"],
+                    "loading"
+                );
+                assert_eq!(
+                    entity(&state, "desktop", "current")["application"],
+                    "codex-agents"
+                );
+            }
+            release.send(()).expect("finish startup fetch");
+            seeded
+                .expect("startup must finish seeding while the pricing fetch is gated")
+                .expect("seeded source publisher");
+            wait_for_entity(&state, &mut changes, "sessionCost", "b", |value| {
+                value["pricingState"] == "ready"
+            })
+            .await
+            .expect("refresh completion reprices the seeded roots");
+            state
+                .shutdown_services()
+                .await
+                .expect("startup refresh settled");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pricing_refresh_pending_does_not_block_unrelated_publication() {
+        let (root, state) = state().await;
+        pricing_roots(&state).await;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let fetch_started = started.clone();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let blocked = Arc::new(std::sync::Mutex::new(blocked));
+        let sender = start_with_pricing_fetch(&state, move || {
+            fetch_started.notify_one();
+            blocked
+                .lock()
+                .expect("release receiver")
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("release fetch");
+            Some(pricing_providers())
+        })
+        .await
+        .expect("startup skips recent attempt");
+        tokio::fs::remove_file(root.path().join("model-pricing/refresh-state.json"))
+            .await
+            .expect("expire attempt");
+        let mut changes = commits(&state);
+        sender
+            .send(Publication::SessionCosts(Some("a".into())))
+            .expect("request session");
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+            .await
+            .expect("fetch started");
+        let mut desktop = entity(&state, "desktop", "current");
+        desktop["application"] = json!("pending-refresh-witness");
+        put(
+            state.store.as_ref().expect("store"),
+            "desktop",
+            vec![("current".into(), desktop)],
+        )
+        .await
+        .expect("desktop marker");
+        sender
+            .send(Publication::Desktop)
+            .expect("unrelated desktop publication");
+        let published = wait_for_entity(&state, &mut changes, "desktop", "current", |value| {
+            value["application"] == "codex-agents"
+        })
+        .await;
+        release.send(()).expect("finish fetch");
+        state
+            .shutdown_services()
+            .await
+            .expect("pricing task settled");
+        assert!(
+            published.is_ok(),
+            "the ordered publisher must continue while pricing fetch is blocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn pricing_refresh_triggered_by_one_root_republishes_other_roots() {
+        let (root, state) = state().await;
+        pricing_roots(&state).await;
+        let sender = start_with_pricing_fetch(&state, || Some(pricing_providers()))
+            .await
+            .expect("startup skips recent attempt");
+        let unavailable = entity(&state, "sessionCost", "b")["method"].clone();
+        tokio::fs::remove_file(root.path().join("model-pricing/refresh-state.json"))
+            .await
+            .expect("expire attempt");
+        let mut changes = commits(&state);
+        sender
+            .send(Publication::SessionCosts(Some("a".into())))
+            .expect("only a changes");
+        wait_for_entity(&state, &mut changes, "sessionCost", "b", |value| {
+            value["method"] != unavailable
+        })
+        .await
+        .expect("new catalog republishes inactive root b");
+    }
+
+    #[tokio::test]
+    async fn pricing_refresh_unchanged_catalog_does_not_request_full_republication() {
+        let (root, state) = state().await;
+        pricing_team(&state).await;
+        assert_eq!(
+            refresh_session_pricing(&state, || Some(pricing_providers()))
+                .await
+                .expect("initial catalog"),
+            PricingRefreshOutcome::Changed
+        );
+        let artifact = root.path().join("model-pricing/models-dev-v1.json");
+        let mut saved: Value =
+            serde_json::from_slice(&tokio::fs::read(&artifact).await.expect("artifact"))
+                .expect("artifact JSON");
+        saved["lastAttemptAt"] = json!(1);
+        saved["fetchedAtEpoch"] = json!(1);
+        tokio::fs::write(&artifact, saved.to_string())
+            .await
+            .expect("stale artifact");
+        let (sender, mut publications) = mpsc::unbounded_channel();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetched = calls.clone();
+        let pricing = PricingRefresh::new(
+            state.clone(),
+            move || {
+                fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Some(pricing_providers())
+            },
+            sender,
+        );
+        pricing
+            .request()
+            .expect("admitted refresh")
+            .await
+            .expect("completed refresh");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(
+            matches!(
+                publications.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ),
+            "unchanged pricing must not invalidate any session roots"
+        );
+        pricing
+            .request()
+            .expect("TTL check")
+            .await
+            .expect("completed TTL check");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(matches!(
+            publications.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]
@@ -1064,9 +1396,13 @@ mod tests {
         put(store, "sessionCost", vec![("b".into(), untouched.clone())])
             .await
             .expect("saved unrelated estimate");
-        publish_session_roots(&state, Some(BTreeSet::from(["a".into()])))
-            .await
-            .expect("scoped update");
+        publish_session_roots(
+            &state,
+            Some(BTreeSet::from(["a".into()])),
+            PricingReadiness::Settled,
+        )
+        .await
+        .expect("scoped update");
         assert_eq!(entity(&state, "sessionCost", "b"), untouched);
         let mut roots = read_agent_roots(store).await.expect("root identities");
         let rowid = *roots
@@ -1085,7 +1421,7 @@ mod tests {
             .await
             .expect("old root retained after delete");
         assert_eq!(changed, BTreeSet::from(["a".into()]));
-        publish_session_roots(&state, Some(changed))
+        publish_session_roots(&state, Some(changed), PricingReadiness::Settled)
             .await
             .expect("explicit scoped delete");
         assert_eq!(entity(&state, "sessionCost", "b"), untouched);

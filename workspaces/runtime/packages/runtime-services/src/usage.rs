@@ -992,15 +992,33 @@ fn pricing_refresh_due(state_dir: &Path, now: f64) -> bool {
     now - catalog_attempt.max(failed_attempt) >= PRICING_CATALOG_TTL_SECONDS
 }
 
+/// Result of a bounded pricing check, including the no-catalog failure state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PricingRefreshOutcome {
+    Changed,
+    Unchanged,
+    Unavailable,
+}
+
 /// Ensure session pricing independently of account scans. The cached artifact metadata
 /// avoids reparsing the catalog on each publication; the existing lock and durable
 /// attempt TTL fence concurrent session and account callers, including failed fetches.
-pub fn refresh_pricing_with_fetch<F>(state_dir: &Path, now: f64, fetch: F)
+/// Changed means a persisted catalog has different pricing contents.
+pub fn refresh_pricing_with_fetch<F>(state_dir: &Path, now: f64, fetch: F) -> PricingRefreshOutcome
 where
     F: FnOnce() -> Option<Value>,
 {
+    let previous =
+        crate::pricing::load_pricing(state_dir).and_then(|loaded| loaded.signature.clone());
     if pricing_refresh_due(state_dir, now) {
         let _catalog = pricing_catalog_with_fetch(state_dir, now, fetch);
+    }
+    let current =
+        crate::pricing::load_pricing(state_dir).and_then(|loaded| loaded.signature.clone());
+    match current {
+        None => PricingRefreshOutcome::Unavailable,
+        Some(_) if current != previous => PricingRefreshOutcome::Changed,
+        Some(_) => PricingRefreshOutcome::Unchanged,
     }
 }
 
