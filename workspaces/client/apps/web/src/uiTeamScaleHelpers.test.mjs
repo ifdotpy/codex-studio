@@ -11,6 +11,8 @@ import {
   cleanupVerified,
   readTeamUiCounts,
   approvedModelUiValues,
+  approvedStoredModel,
+  assertCreatedTeamProfiles,
   OWNED_CLEANUP_VERIFIED_STATE,
   summaryText,
   cpuDeltaMs,
@@ -691,4 +693,91 @@ it("states the unknown owned-thread cleanup boundary explicitly", () => {
   });
   expect(summary).toContain(OWNED_CLEANUP_VERIFIED_STATE);
   expect(summary).not.toMatch(/cleanup\s+verified/);
+});
+
+it("validates stored model aliases against only catalogue-proven approved identities", () => {
+  const role = {
+    model: "claude-sonnet-5-5",
+    uiModelValues: ["sonnet", "claude-sonnet-5-5"],
+  };
+  expect(approvedStoredModel("sonnet", role)).toBe("claude-sonnet-5-5");
+  expect(approvedStoredModel("claude-sonnet-5-5", role)).toBe(
+    "claude-sonnet-5-5",
+  );
+  expect(() => approvedStoredModel("default", role)).toThrow(/approved/);
+  expect(() => approvedStoredModel("opus", role)).toThrow(/approved/);
+  expect(() => approvedStoredModel(undefined, role)).toThrow(/approved/);
+});
+
+it("reports the evidence-only queue baseline, end and delta in the summary", () => {
+  const summary = summaryText({
+    runTag: "fixture",
+    result: { passed: true, failures: [] },
+    options: { workers: 3 },
+    metrics: {},
+    audit: {
+      failures: [],
+      anomalies: [],
+      queueGauges: [
+        {
+          path: "/queues/durableInputPending",
+          before: 13,
+          after: 14,
+          delta: 1,
+        },
+      ],
+    },
+  });
+  expect(summary).toContain("durableInputPending");
+  expect(summary).toContain("13 / 14 / 1");
+});
+
+it("validates the actual post-create lead and worker defaults through proven aliases", () => {
+  const lead = {
+    model: "claude-sonnet-5-5",
+    uiModelValues: ["sonnet", "claude-sonnet-5-5"],
+    effort: "low",
+    accountKey: "claude",
+    profile: { fastMode: false },
+  };
+  const worker = {
+    model: "claude-haiku-5-5",
+    uiModelValues: ["haiku", "default", "claude-haiku-5-5"],
+    effort: "low",
+  };
+  const entity = {
+    id: "lead",
+    model: "sonnet",
+    accountKey: "claude",
+    effort: "low",
+    fastMode: false,
+    workerDefaults: { model: "default", effort: "low" },
+  };
+  expect(() => assertCreatedTeamProfiles(entity, lead, worker)).not.toThrow();
+  expect(() =>
+    assertCreatedTeamProfiles(
+      {
+        ...entity,
+        workerDefaults: { ...entity.workerDefaults, model: "haiku" },
+      },
+      lead,
+      worker,
+    ),
+  ).not.toThrow();
+  expect(() =>
+    assertCreatedTeamProfiles({ ...entity, model: "opus" }, lead, worker),
+  ).toThrow(/approved/);
+  expect(() =>
+    assertCreatedTeamProfiles(
+      {
+        ...entity,
+        workerDefaults: { ...entity.workerDefaults, model: "opus" },
+      },
+      lead,
+      worker,
+    ),
+  ).toThrow(/approved/);
+  expect(() =>
+    assertCreatedTeamProfiles({ ...entity, fastMode: true }, lead, worker),
+  ).toThrow(/fastMode/);
 });

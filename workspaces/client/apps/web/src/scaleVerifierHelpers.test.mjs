@@ -1,5 +1,5 @@
 import {
-  auditDiagnostics,
+  auditTeamDiagnostics,
   pendingTeamInputs,
 } from "../scripts/uiTeamScaleAudit.mjs";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
@@ -1601,16 +1601,20 @@ describe("scale verifier retained-input audit", () => {
       "/queues/recoveryPending": 0,
     };
     // Another chat drained one input while this team's retained input stayed.
-    const audit = auditDiagnostics(
-      gauges,
-      { ...gauges, "/queues/durableInputPending": 12 },
-      pending,
-    );
+    const audit = auditTeamDiagnostics({
+      before: gauges,
+      after: { ...gauges, "/queues/durableInputPending": 12 },
+      stateDir: directory,
+      workspaceId: "workspace",
+      agentIds: ["lead", "worker"],
+      deadlineAt: performance.now() + 5000,
+    });
     expect(audit.failures).toContainEqual({
       kind: "teamInputsPending",
       count: 1,
       inputs: pending,
     });
+    expect(audit.teamInputAudit.pending).toEqual(pending);
     expect(pending).toEqual([
       { id: "child:worker:1", agent: "lead", status: "pending" },
     ]);

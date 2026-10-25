@@ -1,4 +1,5 @@
 import { RETAINED_INPUT_STATUSES } from "./scaleVerifierHelpers.mjs";
+import { readRetainedInputRows } from "./verify-rust-chat-scale.mjs";
 
 // Strict post-run audit of verify-ui-team-scale.mjs: pure functions over the
 // lead and worker transcripts, the lead's tool requests, the backend journal,
@@ -54,7 +55,7 @@ export const DIAGNOSTICS_ZERO_DELTA_PATHS = Object.freeze([
   "/sqliteContention/slowTransactions/activeTracking/untrackedStarts",
   "/httpRequestMetrics/untrackedRoutes",
 ]);
-// Shared-server queue gauges: existing work may remain, but queues must not grow.
+// Shared-server queue gauges are evidence only; owned snapshot rows decide pass.
 export const DIAGNOSTICS_QUEUE_GAUGE_PATHS = Object.freeze([
   "/queues/durableInputPending",
   "/queues/recoveryPending",
@@ -77,7 +78,7 @@ export function diagnosticsCounters(diagnostics) {
   );
 }
 
-// The event entity publishes the same durable input status as diagnostics.
+// The fenced snapshot publishes the same durable input status as diagnostics.
 // Keep only identities and status; never retain another chat's input content.
 export function pendingTeamInputs(events, agentIds) {
   const owned = new Set(agentIds);
@@ -90,8 +91,8 @@ export function pendingTeamInputs(events, agentIds) {
     .map(({ id, agent, status }) => ({ id, agent, status }));
 }
 
-// Global growth remains a failure; owned pending inputs fail independently,
-// even when another chat draining its queue masks the team's global growth.
+// Shared gauges cannot attribute growth. Only the complete snapshot of owned
+// pending inputs decides this audit, regardless of activity in other chats.
 export function auditDiagnostics(before, after, pendingInputs = []) {
   const failures = [];
   const anomalies = [];
@@ -103,21 +104,45 @@ export function auditDiagnostics(before, after, pendingInputs = []) {
     else if (to > from)
       failures.push({ kind: "diagnosticsCounterGrew", path, from, to });
   }
-  for (const path of DIAGNOSTICS_QUEUE_GAUGE_PATHS) {
+  const queueGauges = DIAGNOSTICS_QUEUE_GAUGE_PATHS.map((path) => {
     const from = before?.[path] ?? null;
     const to = after?.[path] ?? null;
-    if (from === null || to === null)
-      anomalies.push({ kind: "diagnosticsCounterMissing", path });
-    else if (to > from + pendingInputs.length)
-      failures.push({ kind: "diagnosticsGaugeGrew", path, from, to });
-  }
+    return {
+      path,
+      before: from,
+      after: to,
+      delta: from === null || to === null ? null : to - from,
+    };
+  });
   if (pendingInputs.length)
     failures.push({
       kind: "teamInputsPending",
       count: pendingInputs.length,
       inputs: pendingInputs,
     });
-  return { failures, anomalies };
+  return { failures, anomalies, queueGauges };
+}
+
+// The final-audit caller uses this complete source, never bounded event SSE.
+export function auditTeamDiagnostics({
+  before,
+  after,
+  stateDir,
+  workspaceId,
+  agentIds,
+  deadlineAt,
+}) {
+  const pending = pendingTeamInputs(
+    readRetainedInputRows(stateDir, workspaceId, deadlineAt),
+    agentIds,
+  );
+  return {
+    ...auditDiagnostics(before, after, pending),
+    teamInputAudit: {
+      source: "readRetainedInputRows: fenced read-only runtime_events snapshot",
+      pending,
+    },
+  };
 }
 
 function parseJson(text) {

@@ -366,9 +366,9 @@ with unexplained extra turns or an error, a `child_result` delivered twice or ne
 any input delivered twice, a tool call or request without a result, a tool request
 applied while the model was told it failed, a lead final report made before the
 last worker reply, a backend restart, an `ERROR` or panic journal line, a growing
-error counter, pending durable inputs on the run's own lead or workers, or a
-shared-server input/recovery gauge that grows beyond its baseline plus the run's
-pending inputs (which must themselves be zero). The scoped input audit reads
+error counter, or pending durable inputs on the run's own lead or workers.
+Shared-server input/recovery gauges are evidence only: the summary reports their
+baseline, end and delta, without attributing other chats' work to this team. The scoped input audit reads
 a fenced, read-only snapshot of every retained `runtime_events` row through
 `readRetainedInputRows` in
 [`verify-rust-chat-scale.mjs`](../workspaces/client/apps/web/scripts/verify-rust-chat-scale.mjs).

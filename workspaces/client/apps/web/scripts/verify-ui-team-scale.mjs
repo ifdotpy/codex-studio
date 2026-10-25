@@ -4,7 +4,6 @@
 // Chromium only; no window is activated and no operating-system input is sent.
 import assert from "node:assert/strict";
 import { runScaleVerifier } from "./scaleVerifierTeardown.mjs";
-import { readRetainedInputRows } from "./verify-rust-chat-scale.mjs";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -16,7 +15,6 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
-  assertStoredScaleProfile,
   readProcessTable,
   requireScaleModel,
   sampleProviderProcesses,
@@ -42,6 +40,7 @@ import {
   cleanupVerified,
   readTeamUiCounts,
   approvedModelUiValues,
+  assertCreatedTeamProfiles,
   OWNED_CLEANUP_VERIFIED_STATE,
   evaluateCriteria,
   firstReachedMs,
@@ -57,8 +56,7 @@ import {
   AUDIT_FETCH_CONCURRENCY,
   JOURNAL_GREP,
   TRANSCRIPT_PAGE_LIMIT,
-  auditDiagnostics,
-  pendingTeamInputs,
+  auditTeamDiagnostics,
   auditJournalResult,
   auditLead,
   auditLeadReport,
@@ -434,16 +432,9 @@ async function main({ setCleanup, setRemaining }) {
         await pull();
         pull.assertComplete();
         const identity = await api("GET", "/api/sync/identity");
-        const pendingInputs = pendingTeamInputs(
-          readRetainedInputRows(
-            desktop.stateDir,
-            identity.workspaceId,
-            performance.now() + REQUEST_DEADLINE_MS,
-          ),
-          [leadId, ...(tracker?.workers() ?? []).map((row) => row.id)],
-        );
         journal.audit = await auditRun({
-          pendingInputs,
+          stateDir: desktop.stateDir,
+          workspaceId: identity.workspaceId,
           origin: options.origin,
           token: session.token,
           backendPid,
@@ -733,27 +724,7 @@ async function main({ setCleanup, setRemaining }) {
       await sleep(POLL_MS);
       leadEntity = agents.get(leadId);
     }
-    assertStoredScaleProfile(leadEntity, {
-      id: leadId,
-      model: lead.model,
-      effort: lead.effort,
-      fastMode: false,
-    });
-    assert.equal(
-      leadEntity.accountKey,
-      lead.accountKey,
-      "The lead is not on the selected account.",
-    );
-    assert.equal(
-      leadEntity.workerDefaults?.model,
-      workerRole.model,
-      "Worker default model differs from the approved model.",
-    );
-    assert.equal(
-      leadEntity.workerDefaults?.effort,
-      workerRole.effort,
-      "Worker default effort differs from the approved effort.",
-    );
+    assertCreatedTeamProfiles(leadEntity, lead, workerRole);
 
     // The team limit is a user setting; raise it in the UI when it is too low.
     if (!(leadEntity.concurrency >= options.workers)) {
@@ -1020,7 +991,8 @@ async function main({ setCleanup, setRemaining }) {
 // requests, backend journal and diagnostics of the run window. Its requests
 // are kept out of the run's API latency journal.
 async function auditRun({
-  pendingInputs,
+  stateDir,
+  workspaceId,
   origin,
   token,
   backendPid,
@@ -1094,9 +1066,15 @@ async function auditRun({
   });
   if (throttling.events)
     parts.push({ anomalies: [{ kind: "providerRetries", ...throttling }] });
-  parts.push(
-    auditDiagnostics(diagnostics.before, diagnostics.after, pendingInputs),
-  );
+  const diagnosticsAudit = auditTeamDiagnostics({
+    before: diagnostics.before,
+    after: diagnostics.after,
+    stateDir,
+    workspaceId,
+    agentIds: [leadId, ...workerIds],
+    deadlineAt: performance.now() + REQUEST_DEADLINE_MS,
+  });
+  parts.push(diagnosticsAudit);
   const journalRead = spawnSync(
     "journalctl",
     [
@@ -1118,10 +1096,8 @@ async function auditRun({
   parts.push(auditJournalResult(journalRead, journalUnit));
   return {
     ...mergeAudits(parts),
-    teamInputAudit: {
-      source: "readRetainedInputRows: fenced read-only runtime_events snapshot",
-      pending: pendingInputs,
-    },
+    teamInputAudit: diagnosticsAudit.teamInputAudit,
+    queueGauges: diagnosticsAudit.queueGauges,
     leadTurns: lead.turns,
     leadChildResults: lead.childResults,
     leadMaxInputWaitMs: lead.maxInputWaitMs,

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { assertStoredScaleProfile } from "./scaleVerifierHelpers.mjs";
 import { auditSummaryLines } from "./uiTeamScaleAudit.mjs";
 
 // Helpers of verify-ui-team-scale.mjs. Every value below has one owner:
@@ -350,6 +351,45 @@ export function approvedModelUiValues(catalog, candidate) {
         .map((row) => row.model),
     ),
   ];
+}
+
+export function approvedStoredModel(value, role) {
+  assert.ok(
+    value === role.model || role.uiModelValues.includes(value),
+    `Stored model ${value} does not resolve to the approved ${role.model}.`,
+  );
+  return role.model;
+}
+
+// Shared by the actual post-create path and its regression witness. The
+// backend stores aliases; all other profile fields remain exact assertions.
+export function assertCreatedTeamProfiles(entity, lead, worker) {
+  assertStoredScaleProfile(
+    entity
+      ? { ...entity, model: approvedStoredModel(entity.model, lead) }
+      : entity,
+    {
+      id: entity?.id,
+      model: lead.model,
+      effort: lead.effort,
+      fastMode: lead.profile.fastMode,
+    },
+  );
+  assert.equal(
+    entity.accountKey,
+    lead.accountKey,
+    "The lead is not on the selected account.",
+  );
+  assert.equal(
+    approvedStoredModel(entity.workerDefaults?.model, worker),
+    worker.model,
+    "Worker default model differs from the approved model.",
+  );
+  assert.equal(
+    entity.workerDefaults?.effort,
+    worker.effort,
+    "Worker default effort differs from the approved effort.",
+  );
 }
 
 export async function configureNewChat(dialog, lead, worker) {
@@ -805,6 +845,12 @@ export function summaryText(journal) {
     line(
       "provider CPU% peak / RSS MiB peak",
       `${m.providerCpuPercentPeak} / ${m.providerRssMiBPeak}`,
+    ),
+    ...(journal.audit?.queueGauges ?? []).map((gauge) =>
+      line(
+        `global ${gauge.path.split("/").at(-1)} before/end/delta`,
+        `${gauge.before} / ${gauge.after} / ${gauge.delta}`,
+      ),
     ),
     line("cleanup", journal.cleanup?.state ?? "not run"),
     ...(journal.audit ? auditSummaryLines(journal.audit) : ["audit: not run"]),

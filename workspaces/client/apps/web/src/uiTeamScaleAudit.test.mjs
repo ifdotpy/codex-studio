@@ -318,12 +318,6 @@ describe("diagnostics audit", () => {
         from: 0,
         to: 2,
       },
-      {
-        kind: "diagnosticsGaugeGrew",
-        path: "/queues/durableInputPending",
-        from: 0,
-        to: 1,
-      },
     ]);
     expect(
       anomalyKinds(audit).every((kind) => kind === "diagnosticsCounterMissing"),
@@ -394,7 +388,7 @@ describe("helpers", () => {
   });
 });
 
-it("allows baseline queues from other chats but rejects global growth and retained team inputs", () => {
+it("records global queue growth as evidence and rejects only retained team inputs", () => {
   const before = diagnosticsCounters({
     queues: { durableInputPending: 13, recoveryPending: 2 },
   });
@@ -420,14 +414,13 @@ it("allows baseline queues from other chats but rejects global growth and retain
   const grown = diagnosticsCounters({
     queues: { durableInputPending: 14, recoveryPending: 2 },
   });
-  expect(auditDiagnostics(before, grown).failures).toEqual([
-    {
-      kind: "diagnosticsGaugeGrew",
-      path: "/queues/durableInputPending",
-      from: 13,
-      to: 14,
-    },
-  ]);
+  expect(auditDiagnostics(before, grown).failures).toEqual([]);
+  expect(auditDiagnostics(before, grown).queueGauges).toContainEqual({
+    path: "/queues/durableInputPending",
+    before: 13,
+    after: 14,
+    delta: 1,
+  });
   expect(
     auditDiagnostics(before, grown, pending).failures.map(({ kind }) => kind),
   ).toContain("teamInputsPending");
