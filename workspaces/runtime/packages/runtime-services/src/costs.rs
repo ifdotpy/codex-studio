@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -106,7 +106,7 @@ fn session_cost_inner(
     if has_claude_history && !has_account_profiles {
         return Err(CostsError::AccountProfilesRequired);
     }
-    let local_claude = read_local_claude_usage(store.root(), &members, accounts)?;
+    let mut local_claude = read_local_claude_usage(store.root(), &members, accounts)?;
     let receipts = local_claude
         .iter()
         .map(|row| {
@@ -117,7 +117,16 @@ fn session_cost_inner(
             )
         })
         .collect::<BTreeSet<CostReceipt>>();
-    let groups = cost_groups(&tx, &root, &receipts)?;
+    let partition =
+        studio_runtime_store::cost_aggregate::partition_journal_receipts(&tx, &receipts)?;
+    local_claude.retain(|row| {
+        partition.accepted.contains(&(
+            row.account_key.clone(),
+            row.thread_id.clone(),
+            row.usage.id.clone(),
+        ))
+    });
+    let groups = cost_groups(&tx, &root, &partition.accepted)?;
     tx.commit()?;
 
     let loaded = crate::pricing::load_pricing(store.root())
@@ -214,6 +223,390 @@ fn session_cost_inner(
     }))
 }
 
+/// Compare the exact agent's stored response facts with native evidence. This never
+/// imports history, repairs analytics, or contacts a provider.
+pub fn usage_reconciliation(
+    store: &RuntimeStore,
+    agent_id: &str,
+    accounts: &BTreeMap<String, Value>,
+) -> Result<Value, CostsError> {
+    use rusqlite::OptionalExtension;
+    use studio_runtime_schema::usage::{UsageObservation, UsageScope};
+    use studio_runtime_store::cost_aggregate::recorded_responses_bounded;
+
+    let repository = AnalyticsRepository::new(store.root());
+    let mut db = repository.open_read_only()?;
+    let tx = db.transaction()?;
+    // Analytics preserves archived/deleted agents after the runtime row disappears.
+    let raw: Option<String> = tx.query_row(
+        "SELECT record FROM analytics_agents WHERE id=?1 UNION ALL SELECT record FROM canvas.runtime_agents WHERE id=?1 LIMIT 1",
+        [agent_id], |row| row.get(0),
+    ).optional()?;
+    let raw = raw.ok_or(CostsError::Analytics(
+        analytics::SessionCostError::InvalidRequest("Unknown chat"),
+    ))?;
+    let member: CostMember =
+        serde_json::from_str(&raw).map_err(|_| CostsError::InvalidSessionState)?;
+    let mut budget = EvidenceBudget::default();
+    let (recorded, truncated) =
+        recorded_responses_bounded(&tx, &[agent_id.to_owned()], MAX_RECONCILIATION_RESPONSES)?;
+    budget.truncated |= truncated;
+    let mut gaps = BTreeMap::new();
+    let mut provider_costs = BTreeMap::new();
+    let mut statement = tx.prepare("SELECT json_extract(record,'$.studioUsage') FROM analytics_usage WHERE agent=?1 AND json_extract(record,'$.studioUsage.kind') IN ('gap','cumulative') ORDER BY at,seq LIMIT ?2")?;
+    let observations = statement.query_map(
+        rusqlite::params![agent_id, (MAX_RECONCILIATION_RESPONSES + 1) as i64],
+        |row| row.get::<_, String>(0),
+    )?;
+    for (index, raw) in observations.enumerate() {
+        if index == MAX_RECONCILIATION_RESPONSES {
+            budget.truncated = true;
+            break;
+        }
+        let observation: UsageObservation =
+            serde_json::from_str(&raw?).map_err(|_| CostsError::InvalidSessionState)?;
+        match observation {
+            UsageObservation::Gap {
+                ref response_id, ..
+            } => {
+                gaps.insert(response_id.clone(), observation);
+            }
+            UsageObservation::Cumulative {
+                scope: UsageScope::ClaudeQuery,
+                models: Some(models),
+                ..
+            } => {
+                // These are cumulative observations: the latest per model wins, never sum them.
+                for model in models {
+                    if let Some(cost) = model.provider_cost_usd {
+                        provider_costs.insert(model.model, cost);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    drop(statement);
+    tx.commit()?;
+
+    let mut native = BTreeMap::<String, NativeResponse>::new();
+    let members = vec![(agent_id.to_owned(), member.clone())];
+    for row in read_local_claude_usage_inner(store.root(), &members, accounts, Some(&mut budget))? {
+        let tokens = log_tokens(row.usage.tokens);
+        if tokens.is_none() {
+            budget.incomplete = true;
+        }
+        merge_native(
+            &mut native,
+            row.usage.id,
+            NativeResponse {
+                model: Some(row.usage.model),
+                tokens,
+                conflict: row.usage.conflicting_usage,
+            },
+        );
+    }
+    read_codex_evidence(&member, accounts, &mut native, &mut budget)?;
+    if native.is_empty() {
+        budget.incomplete = true;
+    }
+    let loaded = crate::pricing::load_pricing(store.root());
+    let catalog = loaded.as_ref().and_then(|loaded| loaded.catalog.as_ref());
+    let mut rows = BTreeMap::<
+        String,
+        (
+            Option<studio_runtime_store::cost_aggregate::RecordedResponse>,
+            Option<NativeResponse>,
+        ),
+    >::new();
+    for row in recorded {
+        gaps.remove(&row.response_id);
+        match rows.entry(row.response_id.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert((Some(row), None));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                // A provisional replay cannot replace final evidence. Within final
+                // observations retain the first, just like the response owner.
+                if entry.get().0.as_ref().is_some_and(|existing| {
+                    existing.evidence == studio_runtime_schema::usage::UsageEvidence::Legacy
+                }) && row.evidence != studio_runtime_schema::usage::UsageEvidence::Legacy
+                {
+                    entry.get_mut().0 = Some(row);
+                }
+            }
+        }
+    }
+    for (id, evidence) in native {
+        if rows.len() >= MAX_RECONCILIATION_RESPONSES && !rows.contains_key(&id) {
+            budget.truncated = true;
+            continue;
+        }
+        rows.entry(id).or_insert((None, None)).1 = Some(evidence);
+    }
+    let mut missing_recorded = 0;
+    let mut missing_evidence = 0;
+    let mut mismatched = 0;
+    let mut recorded_token_total = Some(studio_runtime_schema::usage::UsageTokens {
+        reasoning_output: Some(0),
+        ..Default::default()
+    });
+    let mut evidence_token_total = Some(studio_runtime_schema::usage::UsageTokens {
+        reasoning_output: Some(0),
+        ..Default::default()
+    });
+    let mut recorded_total = Some(0.0);
+    let mut evidence_total = Some(0.0);
+    let responses = rows.into_iter().map(|(id, (recorded, native))| {
+        missing_recorded += usize::from(recorded.is_none());
+        missing_evidence += usize::from(native.is_none());
+        let recorded_tokens = recorded.as_ref().and_then(|row| row.tokens.as_ref());
+        let evidence_tokens = native.as_ref().and_then(|row| row.tokens.as_ref());
+        let recorded_model = recorded.as_ref().and_then(|row| row.model.as_deref());
+        let evidence_model = native.as_ref().and_then(|row| row.model.as_deref());
+        let conflict = native.as_ref().is_some_and(|row| row.conflict);
+        let mismatch = conflict || (recorded.is_some() && native.is_some()
+            && (!same_billable_tokens(recorded_tokens, evidence_tokens) || recorded_model != evidence_model));
+        mismatched += usize::from(mismatch);
+        let recorded_cost = price_response(catalog, recorded_model, recorded_tokens);
+        let evidence_cost = price_response(catalog, evidence_model, evidence_tokens);
+        if recorded.is_some() { recorded_token_total = add_tokens(recorded_token_total.take(), recorded_tokens); recorded_total = recorded_total.zip(recorded_cost).map(|(total, cost)| total + cost); }
+        if native.is_some() { evidence_token_total = add_tokens(evidence_token_total.take(), evidence_tokens); evidence_total = evidence_total.zip(evidence_cost).map(|(total, cost)| total + cost); }
+        json!({"responseId": id, "model":recorded_model.or(evidence_model),
+            "recordedTokens":recorded_tokens,"recordedEvidence":recorded.as_ref().map(|row| row.evidence),
+            "evidenceTokens":evidence_tokens,"recordedCostUsd":recorded_cost,"evidenceCostUsd":evidence_cost,
+            "journalConflict":conflict,"mismatched":mismatch})
+    }).collect::<Vec<_>>();
+    let unresolved_gaps = !gaps.is_empty();
+    Ok(
+        json!({"agentId":agent_id,"counts":{"responses":responses.len(),"missingRecorded":missing_recorded,
+        "missingEvidence":missing_evidence,"mismatched":mismatched},"responses":responses,
+        "gaps":gaps.into_values().collect::<Vec<_>>(),"providerCosts":provider_costs.into_iter().map(|(model,cost)|json!({"model":model,"providerCostUsd":cost})).collect::<Vec<_>>(),
+        "totals":{"recordedCostUsd":recorded_total,"evidenceCostUsd":evidence_total,"recordedTokens":recorded_token_total,"evidenceTokens":evidence_token_total},
+        "incomplete":budget.incomplete || budget.truncated || missing_evidence > 0 || unresolved_gaps,"truncated":budget.truncated}),
+    )
+}
+
+#[derive(Debug)]
+struct NativeResponse {
+    model: Option<String>,
+    tokens: Option<studio_runtime_schema::usage::UsageTokens>,
+    conflict: bool,
+}
+
+fn add_tokens(
+    total: Option<studio_runtime_schema::usage::UsageTokens>,
+    tokens: Option<&studio_runtime_schema::usage::UsageTokens>,
+) -> Option<studio_runtime_schema::usage::UsageTokens> {
+    let total = total?;
+    let tokens = tokens?;
+    Some(studio_runtime_schema::usage::UsageTokens {
+        uncached_input: total.uncached_input.checked_add(tokens.uncached_input)?,
+        cache_read_input: total
+            .cache_read_input
+            .checked_add(tokens.cache_read_input)?,
+        cache_write_input: total
+            .cache_write_input
+            .checked_add(tokens.cache_write_input)?,
+        output: total.output.checked_add(tokens.output)?,
+        reasoning_output: total
+            .reasoning_output
+            .zip(tokens.reasoning_output)
+            .and_then(|(a, b)| a.checked_add(b)),
+    })
+}
+
+fn same_billable_tokens(
+    left: Option<&studio_runtime_schema::usage::UsageTokens>,
+    right: Option<&studio_runtime_schema::usage::UsageTokens>,
+) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            left.uncached_input == right.uncached_input
+                && left.cache_read_input == right.cache_read_input
+                && left.cache_write_input == right.cache_write_input
+                && left.output == right.output
+                && left
+                    .reasoning_output
+                    .zip(right.reasoning_output)
+                    .is_none_or(|(a, b)| a == b)
+        }
+        _ => false,
+    }
+}
+
+fn merge_native(rows: &mut BTreeMap<String, NativeResponse>, id: String, row: NativeResponse) {
+    if let Some(first) = rows.get_mut(&id) {
+        first.conflict |= row.conflict
+            || !same_billable_tokens(first.tokens.as_ref(), row.tokens.as_ref())
+            || first.model != row.model;
+    } else {
+        rows.insert(id, row);
+    }
+}
+
+fn log_tokens(tokens: CostTokens) -> Option<studio_runtime_schema::usage::UsageTokens> {
+    let count = |number: Option<f64>| {
+        number
+            .filter(|n| {
+                n.is_finite()
+                    && *n >= 0.0
+                    && n.fract() == 0.0
+                    && *n <= studio_runtime_schema::shared_values::MAX_SAFE_INTEGER as f64
+            })
+            .map(|n| n as u64)
+    };
+    Some(studio_runtime_schema::usage::UsageTokens {
+        uncached_input: count(tokens.input_tokens)?,
+        cache_read_input: count(tokens.cached_input_tokens)?,
+        cache_write_input: count(tokens.cache_write_input_tokens)?,
+        output: count(tokens.output_tokens)?,
+        reasoning_output: None,
+    })
+}
+
+fn price_response(
+    catalog: Option<&crate::pricing::PricingCatalog>,
+    model: Option<&str>,
+    tokens: Option<&studio_runtime_schema::usage::UsageTokens>,
+) -> Option<f64> {
+    let model = model?;
+    let tokens = tokens?;
+    let usage = TokenUsage {
+        input_tokens: Some(tokens.uncached_input as f64),
+        cached_input_tokens: Some(tokens.cache_read_input as f64),
+        cache_write_input_tokens: Some(tokens.cache_write_input as f64),
+        output_tokens: Some(tokens.output as f64),
+    };
+    let context = tokens
+        .uncached_input
+        .checked_add(tokens.cache_read_input)?
+        .checked_add(tokens.cache_write_input)?;
+    catalog?
+        .price_usage(
+            provider_for(model)?,
+            model,
+            usage,
+            Some(context as f64),
+            true,
+        )
+        .amount_usd
+        .filter(|cost| cost.is_finite())
+}
+
+fn read_codex_evidence(
+    member: &CostMember,
+    accounts: &BTreeMap<String, Value>,
+    rows: &mut BTreeMap<String, NativeResponse>,
+    budget: &mut EvidenceBudget,
+) -> Result<(), CostsError> {
+    use crate::analytics_history::{RolloutPath, discover};
+    use crate::analytics_rollout::{RolloutAction, RolloutContext};
+    use studio_runtime_schema::usage::{UsageObservation, UsageProvider, parse_token_usage};
+    let mut sessions = BTreeSet::new();
+    if let Some(thread) = &member.thread_id {
+        sessions.insert((
+            member
+                .account_key
+                .as_deref()
+                .unwrap_or(DEFAULT_ACCOUNT)
+                .to_owned(),
+            thread.clone(),
+        ));
+    }
+    for entry in member.account_history.iter().flatten() {
+        if let (Some(account), Some(thread)) = (&entry.account_key, &entry.thread_id) {
+            sessions.insert((account.clone(), thread.clone()));
+        }
+    }
+    for (account, thread) in sessions {
+        if !budget.visit() {
+            break;
+        }
+        let Some(profile) = accounts
+            .get(&account)
+            .filter(|account| account["provider"] == "codex")
+            .and_then(|account| account["home"].as_str())
+        else {
+            continue;
+        };
+        let path = match discover(
+            &expand_home(PathBuf::from(profile)),
+            &thread,
+            &std::sync::atomic::AtomicBool::new(false),
+        ) {
+            Ok(RolloutPath::Found(path)) => path,
+            _ => {
+                budget.incomplete = true;
+                continue;
+            }
+        };
+        let Some(bytes) = budget.read(&path) else {
+            budget.incomplete = true;
+            continue;
+        };
+        let mut context = RolloutContext::from_record(json!({"threadId":thread}))
+            .map_err(|_| CostsError::InvalidSessionState)?;
+        for (index, line) in bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .enumerate()
+        {
+            let Ok(record) = serde_json::from_slice::<Value>(line) else {
+                budget.incomplete = true;
+                continue;
+            };
+            let actions = match context.actions(&record, &format!("diagnostic:{index}"), 0.0) {
+                Ok(actions) => actions,
+                Err(_) => {
+                    budget.incomplete = true;
+                    continue;
+                }
+            };
+            for action in actions {
+                if let RolloutAction::Event {
+                    method, mut params, ..
+                } = action
+                {
+                    if method != "thread/tokenUsage/updated" {
+                        continue;
+                    }
+                    if params.get("model").is_none() {
+                        params["model"] = context.record()["model"].clone();
+                    }
+                    match parse_token_usage(UsageProvider::Codex, &params) {
+                        Ok(UsageObservation::Response {
+                            response_id,
+                            model,
+                            tokens,
+                            ..
+                        }) => {
+                            if rows.len() >= MAX_RECONCILIATION_RESPONSES
+                                && !rows.contains_key(&response_id)
+                            {
+                                budget.truncated = true;
+                                continue;
+                            }
+                            merge_native(
+                                rows,
+                                response_id,
+                                NativeResponse {
+                                    model: Some(model),
+                                    tokens: Some(tokens),
+                                    conflict: false,
+                                },
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(_) => budget.incomplete = true,
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // Session identifier and state-file byte caps for local cost scans.
 const MAX_SESSION_ID_BYTES: usize = 100;
 
@@ -224,6 +617,8 @@ struct LogUsage {
     model: String,
     /// Input counts are all known or all `None`; known input is uncached.
     tokens: CostTokens,
+    /// A later journal line disagreed with the retained first value.
+    conflicting_usage: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -239,10 +634,89 @@ static CLAUDE_LOGS: LazyLock<FileDerived<Vec<LogUsage>>> = LazyLock::new(FileDer
 static SESSION_NATIVE_IDS: LazyLock<FileDerived<Result<Vec<String>, ()>>> =
     LazyLock::new(FileDerived::default);
 
+/// Maximum distinct responses in one diagnostic comparison (unit: responses).
+const MAX_RECONCILIATION_RESPONSES: usize = 10_000;
+/// Maximum native bytes read from one file (unit: bytes).
+const MAX_NATIVE_EVIDENCE_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum native filesystem entries and files examined in one comparison (unit: entries).
+const MAX_EVIDENCE_ENTRIES: usize = 10_000;
+/// Maximum native bytes read across a comparison (unit: bytes).
+const MAX_COMPARISON_NATIVE_BYTES: u64 = 128 * 1024 * 1024;
+
+#[derive(Default)]
+struct EvidenceBudget {
+    entries: usize,
+    bytes: u64,
+    incomplete: bool,
+    truncated: bool,
+}
+
+impl EvidenceBudget {
+    fn visit(&mut self) -> bool {
+        self.entries += 1;
+        if self.entries > MAX_EVIDENCE_ENTRIES {
+            self.truncated = true;
+            return false;
+        }
+        true
+    }
+
+    fn read(&mut self, path: &Path) -> Option<Vec<u8>> {
+        if !self.visit() {
+            return None;
+        }
+        if path.metadata().is_ok_and(|metadata| !metadata.is_file()) {
+            self.incomplete = true;
+            return None;
+        }
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    self.incomplete = true;
+                }
+                return None;
+            }
+        };
+        let mut bytes = Vec::new();
+        let limit =
+            MAX_NATIVE_EVIDENCE_BYTES.min(MAX_COMPARISON_NATIVE_BYTES.saturating_sub(self.bytes));
+        if limit == 0 {
+            self.truncated = true;
+            return None;
+        }
+        if file.take(limit + 1).read_to_end(&mut bytes).is_err() {
+            self.incomplete = true;
+            return None;
+        }
+        self.bytes += bytes.len() as u64;
+        if bytes.len() as u64 > limit {
+            self.truncated = true;
+            bytes.truncate(limit as usize);
+            // A partial last line cannot be evidence of a final response.
+            if let Some(end) = bytes.iter().rposition(|byte| *byte == b'\n') {
+                bytes.truncate(end + 1);
+            } else {
+                bytes.clear();
+            }
+        }
+        Some(bytes)
+    }
+}
+
 fn read_local_claude_usage(
     state_root: &Path,
     members: &[(String, CostMember)],
     accounts: &BTreeMap<String, Value>,
+) -> Result<Vec<LocalClaudeUsage>, CostsError> {
+    read_local_claude_usage_inner(state_root, members, accounts, None)
+}
+
+fn read_local_claude_usage_inner(
+    state_root: &Path,
+    members: &[(String, CostMember)],
+    accounts: &BTreeMap<String, Value>,
+    mut budget: Option<&mut EvidenceBudget>,
 ) -> Result<Vec<LocalClaudeUsage>, CostsError> {
     let mut sessions = BTreeSet::new();
     for (_, member) in members {
@@ -268,6 +742,11 @@ fn read_local_claude_usage(
 
     let mut rows = BTreeMap::new();
     for (account_key, thread_id) in sessions {
+        if let Some(budget) = budget.as_deref_mut()
+            && !budget.visit()
+        {
+            break;
+        }
         if !valid_session_id(&account_key) || !valid_session_id(&thread_id) {
             continue;
         }
@@ -279,7 +758,14 @@ fn read_local_claude_usage(
         let state_path = server_root
             .join("sessions")
             .join(format!("{thread_id}.json"));
-        if let Some(native) = SESSION_NATIVE_IDS.get_or_load(&state_path, read_session_native_ids) {
+        let native = if let Some(budget) = budget.as_deref_mut() {
+            budget
+                .read(&state_path)
+                .map(|bytes| std::sync::Arc::new(parse_session_native_ids(bytes.as_slice())))
+        } else {
+            SESSION_NATIVE_IDS.get_or_load(&state_path, read_session_native_ids)
+        };
+        if let Some(native) = native {
             let native = native
                 .as_ref()
                 .as_ref()
@@ -291,17 +777,46 @@ fn read_local_claude_usage(
             continue;
         };
         for project in project_entries.flatten() {
+            if let Some(budget) = budget.as_deref_mut()
+                && !budget.visit()
+            {
+                break;
+            }
             let project_path = project.path();
             if !project.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
             }
             for id in &ids {
                 let path = project_path.join(format!("{id}.jsonl"));
-                let Some(log) = CLAUDE_LOGS.get_or_load(&path, parse_claude_log) else {
-                    continue;
+                let log = if let Some(budget) = budget.as_deref_mut() {
+                    let Some(bytes) = budget.read(&path) else {
+                        continue;
+                    };
+                    {
+                        let (rows, incomplete) =
+                            parse_claude_log_reader(std::io::Cursor::new(bytes));
+                        budget.incomplete |= incomplete;
+                        std::sync::Arc::new(rows)
+                    }
+                } else {
+                    let Some(log) = CLAUDE_LOGS.get_or_load(&path, parse_claude_log) else {
+                        continue;
+                    };
+                    log
                 };
                 for usage in log.iter() {
+                    if rows.len() >= MAX_RECONCILIATION_RESPONSES && budget.is_some() {
+                        if let Some(budget) = budget.as_deref_mut() {
+                            budget.truncated = true;
+                        }
+                        break;
+                    }
                     rows.entry((account_key.clone(), thread_id.clone(), usage.id.clone()))
+                        .and_modify(|first: &mut LocalClaudeUsage| {
+                            first.usage.conflicting_usage |= usage.conflicting_usage
+                                || first.usage.tokens != usage.tokens
+                                || first.usage.model != usage.model;
+                        })
                         .or_insert_with(|| LocalClaudeUsage {
                             account_key: account_key.clone(),
                             thread_id: thread_id.clone(),
@@ -412,17 +927,22 @@ struct ControlRequest {
 /// The file holds every turn, so it is read as a stream: the turns are skipped, not kept.
 fn read_session_native_ids(path: &Path) -> Option<Result<Vec<String>, ()>> {
     let file = File::open(path).ok()?;
-    let Ok(saved) =
-        serde_json::from_reader::<_, SessionFile>(BufReader::with_capacity(1 << 16, file))
-    else {
-        return Some(Err(()));
+    Some(parse_session_native_ids(BufReader::with_capacity(
+        1 << 16,
+        file,
+    )))
+}
+
+fn parse_session_native_ids(reader: impl Read) -> Result<Vec<String>, ()> {
+    let Ok(saved) = serde_json::from_reader::<_, SessionFile>(reader) else {
+        return Err(());
     };
     let state = match saved.format {
         Some(format) if format == claude_session_format() => match saved.session {
             Some(session) => session,
-            None => return Some(Err(())),
+            None => return Err(()),
         },
-        Some(_) => return Some(Err(())),
+        Some(_) => return Err(()),
         None => SessionState {
             native_id: saved.native_id,
             history_branches: saved.history_branches,
@@ -445,7 +965,7 @@ fn read_session_native_ids(path: &Path) -> Option<Result<Vec<String>, ()>> {
         .flatten()
         .filter(|id| valid_session_id(id))
         .collect::<BTreeSet<_>>();
-    Some(Ok(ids.into_iter().collect()))
+    Ok(ids.into_iter().collect())
 }
 
 /// Just the line kind: Claude writes many kinds of line and only assistant responses matter.
@@ -492,17 +1012,26 @@ pub fn claude_log_lines_skipped() -> u64 {
 /// The first usage row of every response id in one session log, in file order.
 fn parse_claude_log(path: &Path) -> Option<Vec<LogUsage>> {
     let file = File::open(path).ok()?;
-    let mut rows = Vec::new();
-    let mut seen = BTreeSet::new();
-    let mut reader = BufReader::new(file);
+    Some(parse_claude_log_reader(BufReader::new(file)).0)
+}
+
+fn parse_claude_log_reader(mut reader: impl BufRead) -> (Vec<LogUsage>, bool) {
+    let mut incomplete = false;
+    let mut rows: Vec<LogUsage> = Vec::new();
+    let mut seen = BTreeMap::<String, usize>::new();
     let mut line = Vec::new();
     loop {
         line.clear();
         match reader.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
+            Err(_) => {
+                incomplete = true;
+                break;
+            }
             Ok(_) => {}
         }
-        let skipped = || {
+        let mut skipped = || {
+            incomplete = true;
             CLAUDE_LOG_LINES_SKIPPED.fetch_add(1, Ordering::Relaxed);
         };
         match serde_json::from_slice::<LogLineKind>(&line) {
@@ -557,21 +1086,26 @@ fn parse_claude_log(path: &Path) -> Option<Vec<LogUsage>> {
             } else {
                 (None, None, None)
             };
-        if !seen.insert(id.clone()) {
+        let tokens = CostTokens {
+            input_tokens,
+            cached_input_tokens: cached_tokens,
+            cache_write_input_tokens: write_tokens,
+            output_tokens: usage.output_tokens,
+        };
+        if let Some(&index) = seen.get(&id) {
+            rows[index].conflicting_usage |=
+                rows[index].tokens != tokens || rows[index].model != model;
             continue;
         }
+        seen.insert(id.clone(), rows.len());
         rows.push(LogUsage {
             id,
             model,
-            tokens: CostTokens {
-                input_tokens,
-                cached_input_tokens: cached_tokens,
-                cache_write_input_tokens: write_tokens,
-                output_tokens: usage.output_tokens,
-            },
+            tokens,
+            conflicting_usage: false,
         });
     }
-    Some(rows)
+    (rows, incomplete)
 }
 
 fn valid_claude_timestamp(value: Option<&str>) -> bool {
@@ -635,6 +1169,142 @@ mod tests {
         SKIPPED_LINE_COUNTER
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[tokio::test]
+    async fn usage_reconciliation_prefers_final_recorded_response_to_later_legacy_rows() {
+        let directory = tempfile::tempdir().expect("temporary analytics");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        store.analytics_transaction::<_,StoreError>(|tx,_| {
+            AnalyticsCaptureRepository::write(tx,CaptureTable::Agents,&json!({"id":"agent","rootId":"agent"}))?;
+            let mut final_row = json!({"id":"final","agentId":"agent","rootId":"agent","at":1,"model":"gpt-5","responseId":"response",
+                "last":{"inputTokens":10,"outputTokens":50},"total":{},"studioUsage":{"kind":"response","responseId":"response","model":"gpt-5",
+                    "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":50},"evidence":"live"}});
+            AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&final_row)?;
+            final_row.as_object_mut().expect("row").remove("studioUsage");
+            final_row["id"] = json!("legacy");
+            final_row["at"] = json!(2);
+            final_row["last"]["outputTokens"] = json!(10);
+            AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&final_row)?;
+            Ok(())
+        }).await.expect("response records");
+        let result =
+            super::usage_reconciliation(&store, "agent", &BTreeMap::new()).expect("reconciliation");
+        assert_eq!(result["responses"][0]["recordedEvidence"], "live");
+        assert_eq!(result["responses"][0]["recordedTokens"]["output"], 50);
+    }
+
+    #[test]
+    fn usage_reconciliation_codex_evidence_uses_the_existing_rollout_importer() {
+        let directory = tempfile::tempdir().expect("temporary rollout profile");
+        fs::create_dir(directory.path().join("sessions")).expect("sessions");
+        let context = json!({"type":"turn_context","payload":{"turn_id":"turn","model":"gpt-5"}});
+        let usage = json!({"type":"token_usage_record","payload":{"thread_id":"thread","response_id":"response",
+            "usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20,"reasoning_output_tokens":7}}});
+        fs::write(
+            directory.path().join("sessions/rollout-test-thread.jsonl"),
+            format!("{context}\n{usage}\n"),
+        )
+        .expect("rollout");
+        let member = member(json!({"provider":"codex","accountKey":"codex","threadId":"thread"}));
+        let accounts = BTreeMap::from([(
+            "codex".into(),
+            json!({"provider":"codex","home":directory.path()}),
+        )]);
+        let mut native = BTreeMap::new();
+        let mut budget = super::EvidenceBudget::default();
+        super::read_codex_evidence(&member, &accounts, &mut native, &mut budget)
+            .expect("native evidence");
+        let response = native.get("response").expect("response from native parser");
+        assert_eq!(response.model.as_deref(), Some("gpt-5"));
+        let tokens = response.tokens.as_ref().expect("known tokens");
+        assert_eq!(
+            (
+                tokens.uncached_input,
+                tokens.cache_read_input,
+                tokens.output
+            ),
+            (70, 30, 20)
+        );
+        assert_eq!(tokens.reasoning_output, Some(7));
+        assert!(!budget.incomplete);
+        assert!(!budget.truncated);
+    }
+
+    #[test]
+    fn usage_reconciliation_prices_request_tiers_and_keeps_unknown_tokens() {
+        use studio_runtime_schema::usage::UsageTokens;
+        let catalog = crate::pricing::PricingCatalog::from_value(&json!({"providers":{
+            "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2,"cache_read":0.5,"cache_write":1.5,
+                "tiers":[{"tier":{"type":"context","size":100},"input":3,"output":4,"cache_read":1,"cache_write":2}]}}}},
+            "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":1}}}}
+        }})).expect("catalog");
+        let tokens = UsageTokens {
+            uncached_input: 70,
+            cache_read_input: 20,
+            cache_write_input: 10,
+            output: 5,
+            reasoning_output: Some(2),
+        };
+        assert_eq!(
+            super::price_response(Some(&catalog), Some("gpt-test"), Some(&tokens)),
+            Some(0.00027)
+        );
+        assert_eq!(
+            super::price_response(Some(&catalog), Some("gpt-test"), None),
+            None
+        );
+        let mut unknown_reasoning = tokens.clone();
+        unknown_reasoning.reasoning_output = None;
+        assert!(super::same_billable_tokens(
+            Some(&tokens),
+            Some(&unknown_reasoning)
+        ));
+        assert!(!super::same_billable_tokens(Some(&tokens), None));
+        assert!(super::log_tokens(super::CostTokens::default()).is_none());
+    }
+
+    #[test]
+    fn usage_reconciliation_native_reader_stops_at_entry_budget() {
+        let directory = tempfile::tempdir().expect("temporary evidence");
+        let path = directory.path().join("journal");
+        fs::write(&path, b"{}\n").expect("evidence");
+        let mut budget = super::EvidenceBudget {
+            entries: super::MAX_EVIDENCE_ENTRIES,
+            ..Default::default()
+        };
+        assert!(budget.read(&path).is_none());
+        assert!(budget.truncated);
+        assert_eq!(budget.bytes, 0);
+        let mut budget = super::EvidenceBudget {
+            bytes: super::MAX_COMPARISON_NATIVE_BYTES,
+            ..Default::default()
+        };
+        assert!(budget.read(&path).is_none());
+        assert!(budget.truncated);
+    }
+
+    #[test]
+    fn usage_reconciliation_detects_differing_journal_replays() {
+        let directory = tempfile::tempdir().expect("temporary journal");
+        let path = directory.path().join("thread.jsonl");
+        let row = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z",
+            "message":{"id":"response","model":"claude-sonnet-4-5",
+            "usage":{"input_tokens":10,"output_tokens":2}}});
+        fs::write(&path, format!("{row}\n{row}\n")).expect("identical journal rows");
+        assert!(!super::parse_claude_log(&path).expect("journal")[0].conflicting_usage);
+        let mut differing = row.clone();
+        differing["message"]["usage"]["output_tokens"] = json!(7);
+        fs::write(&path, format!("{row}\n{row}\n{differing}\n")).expect("journal");
+        let rows = super::parse_claude_log(&path).expect("parsed journal");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tokens.output_tokens, Some(2.0));
+        assert!(
+            rows[0].conflicting_usage,
+            "a later different usage must remain visible"
+        );
     }
 
     #[test]
@@ -929,7 +1599,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_cost_prices_claude_history_and_suppresses_analytics_receipts() {
+    async fn usage_reconciliation_session_cost_preserves_final_rows_and_fills_legacy_history() {
         let temp = tempdir().expect("temporary fixture directory");
         let store = RuntimeStore::open(Some(temp.path()))
             .await
@@ -1080,5 +1750,25 @@ mod tests {
         let repriced = session_cost_with_account_profiles(&store, "agent", &accounts)
             .expect("session cost after the rates changed");
         assert_eq!(repriced["totalUSD"], json!(0.00054));
+        // A final response is authoritative even if a journal reports different usage.
+        for evidence in ["live", "recovered"] {
+            store.analytics_transaction::<_,StoreError>(move |tx,_| {
+                let raw: String = tx.query_row("SELECT record FROM analytics_usage WHERE id='usage-receipt'", [], |row|row.get(0))?;
+                let mut row: Value = serde_json::from_str(&raw)?;
+                row["inputTokensAreUncached"] = json!(true);
+                row["last"]["outputTokens"] = json!(50);
+                row["studioUsage"] = json!({"kind":"response","responseId":"response-1","model":"claude-sonnet-4-5",
+                    "tokens":{"uncachedInput":100,"cacheReadInput":20,"cacheWriteInput":5,"output":50},"evidence":evidence});
+                AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&row)?;
+                Ok(())
+            }).await.expect("record final response");
+            let final_cost =
+                session_cost_with_account_profiles(&store, "agent", &accounts).expect("final cost");
+            assert_eq!(
+                final_cost["totalUSD"],
+                json!(0.0007),
+                "{evidence} final response must override journal estimates"
+            );
+        }
     }
 }

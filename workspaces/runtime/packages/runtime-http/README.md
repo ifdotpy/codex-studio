@@ -374,3 +374,14 @@ envelopes whose identity does not match their key.
 
 The sync protocol, pull, draft-conflict, and preference responses are validated
 through the generated response DTOs before serialization.
+
+## Usage evidence diagnostics
+
+`GET /api/diagnostics/usage-reconciliation?agent=<id>` is an explicit read of
+one agent's usage, including archived agents. Its response contract is owned by
+[`openapi.json`](openapi.json). It returns recorded and native tokens, evidence
+kind, request-level catalog costs, missing/mismatched counts, unresolved gaps,
+and the latest recorded Claude cumulative provider cost per model. Provider costs
+are informational and are never used as catalog pricing. Null tokens or costs
+remain unknown; `incomplete` and `truncated` describe evidence coverage. This route
+performs no repairs, provider requests, or background refreshes.

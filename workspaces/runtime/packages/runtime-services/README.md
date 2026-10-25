@@ -598,3 +598,17 @@ Final response replays preserve the first token counts and report conflicts in
 analytics coverage. Native rollout responses carry recovered evidence, while
 running counters remain separate observations. Historical budget repair uses
 the parser-owned [persisted-row adapter](../runtime-schema/src/usage/persisted.rs).
+
+## Usage reconciliation
+
+[`costs::usage_reconciliation`](src/costs.rs) compares one agent's recorded
+responses with native Claude journals or Codex rollout records, including archived
+agents retained in analytics. It never imports or repairs records. The native
+reader uses the existing journal and rollout parsers, retains first journal usage,
+and reports later differing usage as a conflict. Final live or recovered database
+responses remain authoritative in session cost estimates; journals fill only
+missing or legacy responses through the store's journal partition.
+
+Costs use the existing catalog's request-level context tiers. Missing token counts
+or prices remain null. Native scan and response bounds are owned by `costs.rs`;
+truncation and incomplete evidence are visible in the diagnostic result.

@@ -892,6 +892,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/diagnostics/usage-reconciliation": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Reconcile one agent usage against native evidence
+     * @description Read-only bounded diagnostic for current or archived agents. Costs use request-level catalog tiers; null means unavailable pricing or tokens. Incomplete evidence and truncated scans are explicit.
+     */
+    get: operations["usage_reconciliation_api_diagnostics_usage_reconciliation_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/directories": {
     parameters: {
       query?: never;
@@ -24869,6 +24889,40 @@ export interface components {
           /** @description Native turn identifier; dimensionless. */
           turnId?: string | null;
         };
+    UsageReconciliationResponse: {
+      agentId: string;
+      counts: {
+        mismatched: number;
+        missingEvidence: number;
+        missingRecorded: number;
+        responses: number;
+      };
+      gaps: components["schemas"]["UsageObservation"][];
+      incomplete: boolean;
+      providerCosts: {
+        model: string;
+        providerCostUsd: number;
+      }[];
+      responses: components["schemas"]["UsageReconciliationRow"][];
+      totals: {
+        evidenceCostUsd: number | null;
+        evidenceTokens: components["schemas"]["UsageTokens"] | null;
+        recordedCostUsd: number | null;
+        recordedTokens: components["schemas"]["UsageTokens"] | null;
+      };
+      truncated: boolean;
+    };
+    UsageReconciliationRow: {
+      evidenceCostUsd: number | null;
+      evidenceTokens: components["schemas"]["UsageTokens"] | null;
+      journalConflict: boolean;
+      mismatched: boolean;
+      model: string | null;
+      recordedCostUsd: number | null;
+      recordedEvidence: components["schemas"]["UsageEvidence"] | null;
+      recordedTokens: components["schemas"]["UsageTokens"] | null;
+      responseId: string;
+    };
     /**
      * UsageResumeCause
      * @enum {string}
@@ -30446,6 +30500,55 @@ export interface operations {
       500: components["responses"]["ApiError500"];
       /** @description Not Implemented */
       501: components["responses"]["ApiError501"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  usage_reconciliation_api_diagnostics_usage_reconciliation_get: {
+    parameters: {
+      query: {
+        agent: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["UsageReconciliationResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Unknown agent */
+      404: components["responses"]["ApiError404"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
