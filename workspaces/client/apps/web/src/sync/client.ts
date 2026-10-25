@@ -1015,6 +1015,8 @@ export function createSyncClient(options: SyncClientOptions) {
         !entry.entityChanges
       ) {
         const applied = await readSubscriptionCursor(resource);
+        // Delivery revokes the cursor of a frame that a new subscription superseded.
+        if (!isCurrent()) return;
         if (!applied || applied.seq < entry.cursor.seq)
           throw new Error("Empty subscription delta has no applied local base");
         continue;
@@ -1049,6 +1051,7 @@ export function createSyncClient(options: SyncClientOptions) {
               [`transcript:${resource.agentId}`],
               false,
             );
+          if (!isCurrent()) return;
           if (stored?.seq === entry.cursor.seq)
             await persistSubscriptionCursor(resource, entry.cursor, isCurrent);
         }
@@ -1086,6 +1089,7 @@ export function createSyncClient(options: SyncClientOptions) {
               [`transcript:${resource.agentId}`],
               false,
             );
+          if (!isCurrent()) return;
           if (stored?.seq === entry.cursor.seq)
             await persistSubscriptionCursor(resource, entry.cursor, isCurrent);
         }
