@@ -1173,6 +1173,37 @@ fn timestamp_source(q: &PreparedCapture) -> Value {
 fn hash(v: &Value) -> String {
     sha256_hex(python_json_compact(v).as_bytes())
 }
+
+#[cfg(test)]
+mod usage_contract_tests {
+    use super::*;
+
+    #[test]
+    fn typed_usage_capture_persists_normalized_response() {
+        let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread","model":"claude-sonnet-4-5"});
+        let observation = json!({"kind":"response","responseId":"response","model":"claude-sonnet-4-5","evidence":"live","tokens":{"uncachedInput":10,"cacheReadInput":3,"cacheWriteInput":2,"output":7}});
+        let prepared = PreparedCapture::event(
+            &agent,
+            "thread/tokenUsage/updated",
+            &json!({"threadId":"thread","turnId":"turn","studioUsage":observation}),
+            1.0,
+            2.0,
+            CaptureSource::Live,
+        )
+        .expect("capture input");
+        let snapshot = CaptureSnapshot::from_records(Arc::new(prepared), CaptureRows::default())
+            .expect("snapshot");
+        let decision = decide(snapshot).expect("capture decision");
+        let row = &decision
+            .rows
+            .iter()
+            .find(|(table, _)| *table == CaptureTable::Usage)
+            .expect("usage row")
+            .1;
+        assert_eq!(row["studioUsage"], observation);
+        assert_eq!(row["responseId"], "response");
+    }
+}
 fn domain(p: &Value) -> &str {
     if studio_runtime_store::truthy(Some(&p["rawTokenUsageRecord"])) {
         "response"

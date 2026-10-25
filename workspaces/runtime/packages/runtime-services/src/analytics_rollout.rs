@@ -407,6 +407,42 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn typed_usage_rollout_emits_recovered_response_and_scoped_cumulative() {
+        let mut context = RolloutContext::from_record(
+            json!({"threadId":"thread","model":"gpt-5","turnId":"turn"}),
+        )
+        .expect("context");
+        for (record, kind) in [
+            (
+                json!({"type":"token_usage_record","payload":{"response_id":"response","usage":{"input_tokens":10,"cached_input_tokens":3,"output_tokens":2}}}),
+                "response",
+            ),
+            (
+                json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":3,"output_tokens":2},"last_token_usage":{"input_tokens":10,"cached_input_tokens":3,"output_tokens":2}}}}),
+                "cumulative",
+            ),
+        ] {
+            let actions = context
+                .actions(&record, "record", 1.0)
+                .expect("rollout actions");
+            let super::RolloutAction::Event { params, .. } = &actions[0] else {
+                panic!("usage event")
+            };
+            assert_eq!(params["studioUsage"]["kind"], kind);
+            assert!(
+                params.get("tokenUsage").is_none(),
+                "import emits canonical observations"
+            );
+            if kind == "response" {
+                assert_eq!(params["studioUsage"]["evidence"], "recovered");
+                assert_eq!(params["studioUsage"]["tokens"]["uncachedInput"], 7);
+            } else {
+                assert_eq!(params["studioUsage"]["scope"], "codexThread");
+            }
+        }
+    }
+
+    #[test]
     fn context_window_import_accepts_only_schema_owned_number_or_null() {
         let mut context = RolloutContext::from_record(json!({"threadId":"thread"}))
             .expect("fixture context is valid");

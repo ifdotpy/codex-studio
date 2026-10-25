@@ -692,6 +692,51 @@ mod tests {
     use serde_json::json;
     use std::path::Path;
 
+    #[tokio::test]
+    async fn typed_usage_cumulative_never_contributes_response_costs() {
+        let temp = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            let row = json!({
+                "id":"cumulative", "agentId":"agent", "rootId":"root", "threadId":"thread",
+                "turnId":"turn", "at":1, "model":"gpt-5", "last":{"inputTokens":10,"outputTokens":2},
+                "total":{"inputTokens":100,"outputTokens":20},
+                "studioUsage":{"kind":"cumulative","scope":"codexThread","total":{
+                    "uncachedInput":100,"cacheReadInput":0,"cacheWriteInput":0,"output":20
+                }}
+            });
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &row)?;
+            let groups = super::cost_groups(tx, "root", &Default::default())?;
+            assert!(groups.is_empty(), "running totals must never become response cost samples");
+            Ok(())
+        }).await.expect("verify cumulative accounting");
+    }
+
+    #[tokio::test]
+    async fn typed_usage_journal_replaces_legacy_but_preserves_final_response() {
+        let temp = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            for (id, evidence) in [("legacy", "legacy"), ("final", "live")] {
+                let row = json!({
+                    "id":id,"agentId":"agent","rootId":"root","threadId":"thread",
+                    "turnId":id,"at":1,"model":"claude-sonnet-4-5","accountKey":"acct",
+                    "responseId":id,"last":{"inputTokens":10,"outputTokens":2},"total":{},
+                    "studioUsage":{"kind":"response","responseId":id,"model":"claude-sonnet-4-5",
+                        "evidence":evidence,"tokens":{
+                            "uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2
+                        }}
+                });
+                AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &row)?;
+            }
+            let receipts = ["legacy", "final"].map(|id| ("acct".to_owned(), "thread".to_owned(), id.to_owned())).into();
+            let groups = super::cost_groups(tx, "root", &receipts)?;
+            assert_eq!(groups.iter().map(|group| group.count).sum::<u64>(), 1,
+                "journal evidence replaces provisional legacy only; the final response remains counted");
+            Ok(())
+        }).await.expect("verify journal replacement");
+    }
+
     /// Every aggregate row, ordered, without SQLite row ids.
     fn dump(path: &Path) -> (Vec<String>, Vec<String>) {
         let db = Connection::open(path).expect("analytics database");

@@ -57,8 +57,11 @@ inherits = "ci"
 # Vault readiness witness: OS metadata notifications replace renderer polls without reading keys.
 # Limit failures refresh the account and stream rateLimit entities without a renderer GET.
 # Actor timing uses a deterministic clock; registry durability observes completed SQLite checkpoints.
+# Typed usage analytics: cumulative exclusion, final evidence preservation, and rollout normalization.
 default-filter = '''
-    ((package(=studio-runtime-server)) & ((kind(lib) | kind(bin) | kind(test))) & (test(operator_cli::)))
+    (package(=studio-runtime-store) & kind(lib) & test(repositories::cost_aggregate::tests::typed_usage_))
+    | (package(=studio-runtime-services) & kind(lib) & (test(analytics_capture::usage_contract_tests::) | test(analytics_rollout::tests::typed_usage_)))
+    | ((package(=studio-runtime-server)) & ((kind(lib) | kind(bin) | kind(test))) & (test(operator_cli::)))
     | (package(=studio-runtime-server) & kind(bin) & test(web_assets::tests::))
     | ((package(=studio-runtime-services)) & (kind(lib)) & (test(/^(host_exec(_service)?|layr_read)::/) | test(/^thread_prepare::vm_catalog_tests::/) | test(/::context::tests::the_tools_topic_lists_the_tools_of_a_vm_agent$/) | test(/::a_vm_agent_on_an_old_thread_gets_the_current_catalog$/)))
     | ((package(=studio-runtime-server)) & ((kind(lib) | kind(bin) | kind(test))) & (test(/^host_exec_service::/)))
