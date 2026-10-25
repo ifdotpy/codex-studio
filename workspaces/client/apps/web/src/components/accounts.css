@@ -947,3 +947,40 @@
   display: block;
   overflow-wrap: anywhere;
 }
+
+.server-account-login-actions {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs);
+  min-width: 0;
+}
+.server-account-row .account-status-markers {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  flex-wrap: wrap;
+}
+.server-account-login-actions > button {
+  max-width: 100%;
+  min-height: var(--studio-touch-target);
+  height: auto;
+}
+.server-account-login-actions .mantine-Button-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.server-account-row .account-expanded {
+  grid-row: 4;
+}
+@container account-list (max-width: 22rem) {
+  .server-account-row .account-status-markers {
+    grid-row: 3;
+  }
+  .server-account-login-actions {
+    grid-row: 4;
+  }
+  .server-account-row .account-expanded {
+    grid-row: 5;
+  }
+}

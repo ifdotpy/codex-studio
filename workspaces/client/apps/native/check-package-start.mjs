@@ -12,7 +12,8 @@ import { identity } from "../desktop/backend.cjs";
 const startupTimeoutMs = 60_000;
 const startupPollMs = 100;
 const hostStopTimeoutMs = 10_000;
-const bundle = path.resolve(process.argv[2]);
+// The host must use the canonical bundle path for its resource access.
+const bundle = await realpath(path.resolve(process.argv[2]));
 const executableName = execFileSync(
   "plutil",
   [

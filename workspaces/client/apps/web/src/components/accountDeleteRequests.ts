@@ -9,6 +9,7 @@ export type AccountDeleteTarget = {
 };
 
 export type ExternalAccountIdentity = {
+  accountKey?: string;
   provider: "codex" | "claude";
   email: string | null;
   label: string;
@@ -61,19 +62,28 @@ function saveDeleteRequest(
   }
 }
 
+export function matchingAccountsForExternalCommand<
+  T extends AccountDeleteTarget,
+>(accounts: T[], identity: ExternalAccountIdentity) {
+  return accounts.filter(
+    (candidate) =>
+      (candidate.provider === "claude" ? "claude" : "codex") ===
+        identity.provider &&
+      (identity.accountKey !== undefined
+        ? candidate.id === identity.accountKey
+        : identity.email
+          ? candidate.email?.toLocaleLowerCase() ===
+            identity.email.toLocaleLowerCase()
+          : candidate.label === identity.label),
+  );
+}
+
 export function accountForExternalCommand<T extends AccountDeleteTarget>(
   accounts: T[],
   identity: ExternalAccountIdentity,
 ) {
-  return accounts.find(
-    (candidate) =>
-      (candidate.provider === "claude" ? "claude" : "codex") ===
-        identity.provider &&
-      (identity.email
-        ? candidate.email?.toLocaleLowerCase() ===
-          identity.email.toLocaleLowerCase()
-        : candidate.label === identity.label),
-  );
+  const matches = matchingAccountsForExternalCommand(accounts, identity);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export function getOrCreateAccountDeleteRequest(

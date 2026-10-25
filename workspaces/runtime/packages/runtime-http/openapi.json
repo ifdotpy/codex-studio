@@ -48518,6 +48518,11 @@
       "SummaryAccount": {
         "additionalProperties": false,
         "properties": {
+          "accountKey": {
+            "minLength": 1,
+            "title": "Account Key",
+            "type": "string"
+          },
           "email": {
             "anyOf": [
               {

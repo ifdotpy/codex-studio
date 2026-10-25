@@ -42,6 +42,11 @@ const POLL_MS = 100;
 const guest = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(guest, "../../../..");
 
+/** Base directory for owned suite folders; Mac socket paths require a short base. */
+export function suiteTemporaryBase() {
+  return process.platform === "darwin" ? "/private/tmp" : os.tmpdir();
+}
+
 function fail(message) {
   console.error(`run-guest-suite: ${message}`);
   process.exit(1);
@@ -94,10 +99,7 @@ function workingFolders(pids) {
     ],
     { encoding: "utf8", timeout: PROBE_TIMEOUT_MS },
   );
-  if (
-    pids !== undefined &&
-    (listed.error || listed.status !== 0 || listed.signal)
-  )
+  if (listed.error || listed.status !== 0 || listed.signal)
     throw new Error(
       `lsof did not list the selected working folders: ${listed.error?.message || listed.stderr || listed.signal || `exit ${listed.status}`}`,
     );
@@ -113,7 +115,7 @@ function workingFolders(pids) {
 /**
  * The processes that belong to a suite run in `folder`: they name the folder in their
  * arguments, or they work in it. Optional PIDs bound both probes to a caller's
- * known process set. The production suite omits them to find every leaked process.
+ * known process set. The ordinary suite omits them to inspect this operator's processes.
  */
 export function suiteProcesses(folder, { pids } = {}) {
   if (pids !== undefined) {
@@ -129,7 +131,9 @@ export function suiteProcesses(folder, { pids } = {}) {
   const listed = spawnSync(
     "ps",
     [
-      ...(pids === undefined ? ["-A"] : ["-p", pids.join(",")]),
+      ...(pids === undefined
+        ? ["-u", String(os.userInfo().uid)]
+        : ["-p", pids.join(",")]),
       "-ww",
       "-o",
       "pid=",
@@ -244,8 +248,7 @@ function main() {
       `${supervisor} is missing; run cargo build -p studio-process-supervisor --locked first`,
     );
 
-  const base = process.platform === "darwin" ? "/private/tmp" : os.tmpdir();
-  const temporary = mkdtempSync(path.join(base, "g"));
+  const temporary = mkdtempSync(path.join(suiteTemporaryBase(), "g"));
   let run;
   let leaked = [];
   try {
@@ -263,11 +266,18 @@ function main() {
       timeout: SUITE_TIMEOUT_MS,
     });
   } finally {
+    process.stderr.write(run?.stderr ?? "");
+    console.error(
+      `run-guest-suite: Python result: ${JSON.stringify({
+        status: run?.status ?? null,
+        signal: run?.signal ?? null,
+        error: run?.error?.message ?? null,
+      })}`,
+    );
     leaked = stopSuiteProcesses(temporary);
     rmSync(temporary, { recursive: true, force: true });
   }
   const output = run.stderr ?? "";
-  process.stderr.write(output);
   for (const { pid, command } of leaked)
     console.error(
       `run-guest-suite: stopped a process that the suite left running: ${pid} ${command}`,

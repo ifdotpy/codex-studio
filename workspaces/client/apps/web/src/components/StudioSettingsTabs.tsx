@@ -47,12 +47,14 @@ export function StudioSettingsLayout({
   value,
   onChange,
   children,
+  initialDetail = false,
 }: {
   value: StudioSettingsTab;
   onChange: (value: string | null) => void;
   children: ReactNode;
+  initialDetail?: boolean;
 }) {
-  const [detail, setDetail] = useState(value !== "accounts");
+  const [detail, setDetail] = useState(initialDetail || value !== "accounts");
   const heading = useRef<HTMLHeadingElement>(null);
   const navigation = useRef<HTMLDivElement>(null);
   const title = studioSettingsTabs.find(([id]) => id === value)?.[1];

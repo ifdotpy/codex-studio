@@ -14,6 +14,7 @@ import { publishServerAliases } from "./serverAliases";
 import {
   isServerCommand,
   navigationSnapshot,
+  readServerAccounts,
   type ServerAccount,
   type ServerCommand,
 } from "./navigation";
@@ -98,18 +99,11 @@ export function useServerFrame(
     now,
   ]);
   useEffect(() => {
+    const safeAccounts = readServerAccounts(accounts);
+    if (!safeAccounts) return;
     screen?.publish({
       kind: "studio-server-accounts",
-      accounts: accounts.map(
-        ({ provider, email, plan, status, label, isDefault }) => ({
-          provider,
-          email,
-          plan,
-          status,
-          label,
-          isDefault,
-        }),
-      ),
+      accounts: safeAccounts,
     });
   }, [screen, accounts]);
   useEffect(() => {
@@ -306,14 +300,8 @@ export function useServerFrame(
   }, [data, opened, error, [...unread].join(":"), creating, now]);
   useEffect(() => {
     if (screen || !serverViewId || window.parent === window) return;
-    const safeAccounts = accounts.map((account) => ({
-      provider: account.provider,
-      email: account.email,
-      plan: account.plan,
-      status: account.status,
-      label: account.label,
-      isDefault: account.isDefault,
-    }));
+    const safeAccounts = readServerAccounts(accounts);
+    if (!safeAccounts) return;
     window.parent.postMessage(
       {
         kind: "studio-server-accounts",

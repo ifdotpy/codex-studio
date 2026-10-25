@@ -146,7 +146,7 @@ pub fn ui_summary(
 ) -> Result<Value, StoreError> {
     let accounts=account_snapshot.map_or_else(Vec::new,|snapshot|snapshot.accounts.iter().filter_map(|account|{
         let provider=studio_runtime_providers::ProviderKind::of_record(account).ok()?.key();
-        Some(json!({"provider":provider,"email":account["email"],"plan":account["plan"],"status":if truthy(account.get("disconnected")){"signedOut"}else{account["status"].as_str().unwrap_or("error")},"label":account["label"].as_str().unwrap_or("Account"),"isDefault":account["id"]==snapshot.default_account_key}))
+        Some(json!({"accountKey":account["id"],"provider":provider,"email":account["email"],"plan":account["plan"],"status":if truthy(account.get("disconnected")){"signedOut"}else{account["status"].as_str().unwrap_or("error")},"label":account["label"].as_str().unwrap_or("Account"),"isDefault":account["id"]==snapshot.default_account_key}))
     }).collect::<Vec<_>>());
     let system = if cfg!(target_os = "macos") {
         "Darwin"
@@ -412,7 +412,7 @@ mod tests {
             rusqlite::Connection::open_in_memory().expect("fixture operation succeeds");
         let snapshot = crate::account_policy::AccountsSnapshot {
             accounts: vec![
-                json!({"id":"z","provider":"claude","status":"","label":"","email":null,"plan":null}),
+                json!({"id":"z","provider":"claude","status":"","label":"","email":null,"plan":null,"home":"/private/profile","credentials":{"accessToken":"must-not-leak"}}),
                 json!({"id":"a","provider":"codex","disconnected":true,"label":"A"}),
                 json!({"id":"other","provider":"unsupported"}),
             ],
@@ -427,8 +427,8 @@ mod tests {
         assert_eq!(
             value["accounts"],
             json!([
-                {"provider":"claude","status":"","label":"","email":null,"plan":null,"isDefault":false},
-                {"provider":"codex","status":"signedOut","label":"A","email":null,"plan":null,"isDefault":true}
+                {"accountKey":"z","provider":"claude","status":"","label":"","email":null,"plan":null,"isDefault":false},
+                {"accountKey":"a","provider":"codex","status":"signedOut","label":"A","email":null,"plan":null,"isDefault":true}
             ])
         );
     }

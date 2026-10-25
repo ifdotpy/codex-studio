@@ -19,41 +19,72 @@ export function useServerFullAccounts(
 ) {
   const [accounts, setAccounts] = useState<Accounts>({});
   const fallback = useServerSync();
-  const latest = useRef({ servicesFor, fallback });
-  latest.current = { servicesFor, fallback };
-  const key = serverIds.join("\n");
+  const current = serverIds.map((id) => ({
+    id,
+    sync: servicesFor ? servicesFor(id)?.sync : fallback,
+  }));
+  const readers = useRef(current);
+  if (
+    readers.current.length !== current.length ||
+    readers.current.some(
+      (reader, index) =>
+        reader.id !== current[index]?.id ||
+        reader.sync !== current[index]?.sync,
+    )
+  )
+    readers.current = current;
+  const sources = readers.current;
+  const settledOwners = useRef(new Map<string, typeof fallback>());
   useEffect(() => {
-    const stops = (key ? key.split("\n") : []).map((id) => {
-      const { servicesFor, fallback } = latest.current;
-      return (servicesFor?.(id)?.sync ?? fallback).subscribeStateProjection(
-        (snapshot) => {
-          const summary = snapshot?.runtime.accountsSummary;
-          if (summary)
-            setAccounts((old) => ({ ...old, [id]: summary.accounts }));
-        },
-        (failure) => {
-          if (failure) console.warn(errorText(failure));
-        },
-      );
+    let stopped = false;
+    const stops = sources.flatMap(({ id, sync }) => {
+      if (!sync) return [];
+      return [
+        sync.subscribeStateProjection(
+          (snapshot) => {
+            const summary = snapshot?.runtime.accountsSummary;
+            if (!stopped && summary) {
+              settledOwners.current.set(id, sync);
+              setAccounts((old) => ({ ...old, [id]: summary.accounts }));
+            }
+          },
+          (failure) => {
+            if (!stopped && failure) console.warn(errorText(failure));
+          },
+        ),
+      ];
     });
-    return () => stops.forEach((stop) => stop());
-  }, [key]);
-
-  return [accounts, setAccounts] as const;
+    return () => {
+      stopped = true;
+      stops.forEach((stop) => stop());
+    };
+  }, [sources]);
+  const visible: Accounts = Object.fromEntries(
+    sources.flatMap(({ id, sync }) =>
+      sync && settledOwners.current.get(id) === sync && accounts[id]
+        ? [[id, accounts[id]]]
+        : [],
+    ),
+  );
+  return [visible, setAccounts] as const;
 }
 
 /** The server's own account that a panel row stands for. */
 export const matchServerAccount = (
   accounts: Account[] | undefined,
-  row: Pick<ServerAccount, "provider" | "email" | "label">,
-) =>
-  accounts?.find(
+  row: Pick<ServerAccount, "provider" | "email" | "label" | "accountKey">,
+) => {
+  const matches = accounts?.filter(
     (account) =>
       account.provider === row.provider &&
-      (row.email
-        ? account.email?.toLocaleLowerCase() === row.email.toLocaleLowerCase()
-        : account.label === row.label),
+      (row.accountKey !== undefined
+        ? account.id === row.accountKey
+        : row.email
+          ? account.email?.toLocaleLowerCase() === row.email.toLocaleLowerCase()
+          : account.label === row.label),
   );
+  return matches?.length === 1 ? matches[0] : undefined;
+};
 
 /** Requests in this subtree go to the given server, or to the default API. */
 function ServerScope({

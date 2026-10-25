@@ -8,6 +8,8 @@ import { randomUUID } from "./uuid";
 afterEach(() => vi.unstubAllGlobals());
 
 function uuidAccessCandidate(source: string): boolean {
+  // Escaped identifier and string spellings always contain a backslash.
+  if (!/randomUUID|\\/.test(source)) return false;
   const scanner = ts.createScanner(
     ts.ScriptTarget.Latest,
     false,

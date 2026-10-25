@@ -67,7 +67,8 @@ import type { ResourceConnectionState } from "../sync/subscriptions/events";
 import ServerManager from "./ServerManager";
 import ServerAccountsPanel from "./ServerAccountsPanel";
 import { accountServers } from "./accountServers";
-import type { ServerAccount } from "./navigation";
+import { readServerAccounts, type ServerAccount } from "./navigation";
+import { serverAccountRows } from "./serverAccountRows";
 import {
   studioPreferencesStorageKey,
   parseStudioPreferences,
@@ -695,28 +696,8 @@ function MultiServerShell({
       if (value.ready) readyScreens.current.add(id);
       applyNavigationRef.current(id, value);
     } else if (data.kind === "studio-server-accounts") {
-      if (!Array.isArray(data.accounts) || data.accounts.length > 500) return;
-      const accounts: ServerAccount[] = [];
-      for (const row of data.accounts) {
-        if (
-          !row ||
-          (row.provider !== "codex" && row.provider !== "claude") ||
-          (row.email !== null && typeof row.email !== "string") ||
-          (row.plan !== null && typeof row.plan !== "string") ||
-          typeof row.status !== "string" ||
-          typeof row.label !== "string" ||
-          typeof row.isDefault !== "boolean"
-        )
-          return;
-        accounts.push({
-          provider: row.provider,
-          email: row.email,
-          plan: row.plan,
-          status: row.status,
-          label: row.label,
-          isDefault: row.isDefault,
-        });
-      }
+      const accounts = readServerAccounts(data.accounts);
+      if (!accounts) return;
       setAccountsByServer((old) => ({ ...old, [id]: accounts }));
     } else if (
       data.kind === "studio-server-status" &&
@@ -772,32 +753,38 @@ function MultiServerShell({
       accountsByServer={accountsByServer}
     />
   );
-  const restoreAccountFocus = () => {
-    const identity = restoreAccountActionFocus.current;
-    if (!identity || managerTab !== "accounts") return;
-    restoreAccountActionFocus.current = null;
-    requestAnimationFrame(() => {
-      const row = [
-        ...document.querySelectorAll<HTMLElement>("[data-account-identity]"),
-      ].find((candidate) => candidate.dataset.accountIdentity === identity);
-      row
-        ?.querySelector<HTMLButtonElement>('[aria-label^="Actions for "]')
-        ?.focus({ preventScroll: true });
-    });
+  const rememberAccountFocus = (
+    serverId: string,
+    command: Extract<
+      ServerCommand,
+      { action: "account-sign-in" | "account-action" }
+    >,
+  ) => {
+    const exact = command.accountKey
+      ? serverAccountRows(accountsServers, accountsByServer).find(
+          (row) => row.byServer[serverId]?.accountKey === command.accountKey,
+        )
+      : undefined;
+    restoreAccountActionFocus.current =
+      exact?.key ||
+      `${command.provider}:${(command.email || command.label).toLocaleLowerCase()}`;
   };
   const settings = (
     <Modal
       opened={manager}
       transitionProps={{ duration: 0 }}
-      onClose={() => setManager(false)}
+      onClose={() => {
+        restoreAccountActionFocus.current = null;
+        setManager(false);
+      }}
       size={modalSizes.settings}
       title="Studio settings"
       classNames={{ body: "studio-settings-body" }}
-      onEnterTransitionEnd={restoreAccountFocus}
     >
       <div className="studio-settings-panel" data-testid="studio-settings">
         <StudioSettingsLayout
           value={managerTab}
+          initialDetail={!!restoreAccountActionFocus.current}
           onChange={(tab) => {
             if (!isStudioSettingsTab(tab)) return;
             setManagerTab(tab);
@@ -809,6 +796,12 @@ function MultiServerShell({
           <Tabs.Panel value="accounts" pt="md">
             {discovery.error && <p role="alert">{discovery.error}</p>}
             <ServerAccountsPanel
+              initialFocusIdentity={
+                restoreAccountActionFocus.current || undefined
+              }
+              onInitialFocus={() => {
+                restoreAccountActionFocus.current = null;
+              }}
               servicesFor={(id) => services.get(id)}
               servers={accountsServers}
               accountsByServer={accountsByServer}
@@ -826,7 +819,7 @@ function MultiServerShell({
               }}
               startAccount={(id, command) => {
                 restoreManagerAfterAccountDialog.current = manager;
-                restoreAccountActionFocus.current = `${command.provider}:${(command.email || command.label).toLocaleLowerCase()}`;
+                rememberAccountFocus(id, command);
                 if (servers.some((server) => server.id === id))
                   setManager(false);
                 else discovery.addAgain(id);
@@ -834,7 +827,7 @@ function MultiServerShell({
               }}
               accountAction={(id, command) => {
                 restoreManagerAfterAccountDialog.current = manager;
-                restoreAccountActionFocus.current = `${command.provider}:${(command.email || command.label).toLocaleLowerCase()}`;
+                rememberAccountFocus(id, command);
                 setManager(false);
                 send(id, command);
               }}

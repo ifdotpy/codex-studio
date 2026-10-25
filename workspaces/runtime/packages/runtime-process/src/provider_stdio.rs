@@ -1046,6 +1046,7 @@ mod tests {
     /// and left a finished turn stuck as disconnected.
     #[tokio::test]
     async fn shutdown_delivers_frames_written_on_stdin_eof_before_the_kill() {
+        let root = tempfile::tempdir().expect("owned child directory");
         let mut attachment = StdioProviderTaskFactory {
             deadline: None,
             max_frame_bytes: 1024,
@@ -1066,7 +1067,7 @@ mod tests {
                             .into(),
                     ],
                     std::collections::BTreeMap::new(),
-                    std::env::temp_dir(),
+                    root.path().to_path_buf(),
                 ),
             },
             Shutdown::default(),

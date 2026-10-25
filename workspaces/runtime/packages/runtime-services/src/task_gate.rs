@@ -254,11 +254,11 @@ mod tests {
 
     #[test]
     fn acceptance_gate_command_checks_revision_source_changes_and_exit_code() {
-        use crate::bounded_child::{Request, run_without_git_environment};
+        use crate::bounded_child::{Request, run_with_isolated_git_config};
         use std::ffi::OsStr;
         let root = tempfile::tempdir().expect("temporary repository creates");
         let git = |args: &[&str]| {
-            run_without_git_environment(Request {
+            run_with_isolated_git_config(Request {
                 program: OsStr::new("git"),
                 git_directory: Some(root.path().as_os_str()),
                 args,
@@ -268,7 +268,7 @@ mod tests {
                 stderr_limit: 4096,
                 timeout: std::time::Duration::from_secs(5),
             })
-            .expect("Git command executes")
+            .unwrap_or_else(|error| panic!("fixture git {args:?} failed: {error:?}"))
         };
         git(&["init", "-q"]);
         git(&[
@@ -291,7 +291,7 @@ mod tests {
             let wrapped =
                 revision_command(command, revision).expect("full revision produces a gate command");
             let script = format!("cd '{}' && {}", root.path().display(), wrapped);
-            run_without_git_environment(Request {
+            run_with_isolated_git_config(Request {
                 program: OsStr::new("sh"),
                 git_directory: None,
                 args: &["-c", &script],
@@ -301,6 +301,7 @@ mod tests {
                 stderr_limit: 4096,
                 timeout: std::time::Duration::from_secs(5),
             })
+            .inspect_err(|error| eprintln!("fixture sh -c {script:?} failed: {error:?}"))
         };
         assert!(run("printf 'verified'", &revision).is_ok());
         assert!(run("exit 7", &revision).is_err());

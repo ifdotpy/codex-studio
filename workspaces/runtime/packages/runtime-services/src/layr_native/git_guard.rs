@@ -945,8 +945,9 @@ fn main() {
     #[test]
     fn proxy_global_options_do_not_hide_a_later_native_target() {
         let (root, wrapper, line) = review_proxy_fixture();
+        let exec_path = format!("--exec-path={}", root.path().display());
         for prefix in [
-            vec!["--exec-path=/tmp"],
+            vec![exec_path.as_str()],
             vec!["-p"],
             vec!["--namespace", "test"],
             vec!["--namespace=test"],
