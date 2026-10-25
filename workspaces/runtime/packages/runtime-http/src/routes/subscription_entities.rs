@@ -104,15 +104,21 @@ pub(super) async fn content_fingerprint(
     state: HttpState,
     resource: ResourceRef,
 ) -> Option<Vec<u8>> {
-    let page = read_page(&state, &resource, None).await.ok()?;
-    serde_json::to_vec(
-        &page
-            .rows
-            .iter()
-            .map(|row| (&row.collection, &row.id, row.sequence))
-            .collect::<Vec<_>>(),
-    )
-    .ok()
+    let (scope, id, agent) = selection(&resource).ok()?;
+    let collections = serde_json::to_string(&scope.collections).ok()?;
+    let fingerprint = state
+        .store?
+        .read_async("runtime-http/subscription-entity-fingerprint", move |tx| {
+            SyncDocumentsRepository::entity_scope_fingerprint(
+                tx,
+                Some(&collections),
+                id.as_deref(),
+                agent.as_deref(),
+            )
+        })
+        .await
+        .ok()?;
+    Some(fingerprint.to_vec())
 }
 
 /// Live panel frames carry a bounded replacement snapshot. This also conveys an
@@ -156,6 +162,116 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
+
+    #[tokio::test]
+    async fn view_scoped_entities_fingerprint_detects_changes_beyond_the_stream_page() {
+        let directory = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        studio_runtime_services::entity_publication::install(&store)
+            .await
+            .expect("publisher");
+        store
+            .transaction(|tx| {
+                // A full first page precedes the worker whose source changes below.
+                for index in 0..=SYNC_ENTITY_STREAM_MAX_DOCUMENTS {
+                    let id = format!("older-{index}");
+                    SyncDocumentsRepository::put_entity(
+                        tx,
+                        "agentSummary",
+                        &id,
+                        json!({"id":id,"status":"idle","source":"managed"}),
+                        false,
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("bounded prefix");
+        let workspace = store
+            .test_read_transaction(|tx| SyncDocumentsRepository::workspace_id(tx))
+            .expect("workspace");
+        let state = HttpState::new(
+            "token".into(),
+            workspace,
+            directory.path().display().to_string(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let resource: ResourceRef =
+            serde_json::from_value(json!({"kind":"state"})).expect("state ref");
+        let before = content_fingerprint(state.clone(), resource.clone())
+            .await
+            .expect("fingerprint");
+        store.transaction_with(|tx| {
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"new-worker","rootId":"lead","parentId":"lead","epoch":1,"status":"idle","name":"New worker"}))?)
+        }).await.expect("source commit publishes worker");
+        let after = content_fingerprint(state.clone(), resource.clone())
+            .await
+            .expect("fingerprint");
+        assert!(
+            before != after,
+            "a new worker beyond the first page must wake the state subscription"
+        );
+        store
+            .transaction_with(|tx| {
+                let mut agent =
+                    AgentRepository::get(tx, &studio_runtime_store::AgentId::from("new-worker"))?
+                        .expect("worker")
+                        .value();
+                agent["status"] = json!("running");
+                agent["model"] = json!("changed-model");
+                AgentRepository::put(tx, &AgentRecord::from_value(agent)?)
+            })
+            .await
+            .expect("status/settings source publication");
+        let changed = content_fingerprint(state.clone(), resource.clone())
+            .await
+            .expect("updated fingerprint");
+        assert_ne!(
+            after, changed,
+            "same-count status and settings updates must publish"
+        );
+        store
+            .transaction_with(|tx| {
+                let mut agent =
+                    AgentRepository::get(tx, &studio_runtime_store::AgentId::from("new-worker"))?
+                        .expect("worker")
+                        .value();
+                agent["lastAnswer"] = json!("offscreen detail");
+                AgentRepository::put(tx, &AgentRecord::from_value(agent)?)
+            })
+            .await
+            .expect("detail-only publication");
+        assert_eq!(
+            changed,
+            content_fingerprint(state.clone(), resource.clone())
+                .await
+                .expect("unchanged list")
+        );
+        store
+            .transaction_with(|tx| {
+                let mut agent =
+                    AgentRepository::get(tx, &studio_runtime_store::AgentId::from("new-worker"))?
+                        .expect("worker")
+                        .value();
+                agent["deletedAt"] = json!(123.0);
+                AgentRepository::put(tx, &AgentRecord::from_value(agent)?)
+            })
+            .await
+            .expect("worker retirement");
+        assert_ne!(
+            changed,
+            content_fingerprint(state, resource)
+                .await
+                .expect("retired fingerprint")
+        );
+    }
 
     #[tokio::test]
     async fn view_scoped_entities_publish_list_and_detail_through_real_handlers() {

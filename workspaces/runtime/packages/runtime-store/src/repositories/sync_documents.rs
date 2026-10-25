@@ -1,7 +1,7 @@
 //! Synchronous access to the durable sync document and entity tables.
 
 use crate::CachedSql;
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, named_params, params};
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{
     SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT, SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
@@ -15,6 +15,14 @@ use crate::{StoreError, StoreResult};
 pub const ENTITY_TOMBSTONE_LIMIT: i64 = 10_000;
 /// Tombstones removed by one short writer transaction. Unit: rows.
 pub const ENTITY_TOMBSTONE_PRUNE_BATCH: i64 = 500;
+
+/// Selection shared by complete fingerprints and bounded subscription pages.
+const ENTITY_SCOPE_PREDICATE: &str = "collection NOT LIKE 'transcript:%' \
+     AND (:collections IS NULL OR collection IN (SELECT value FROM json_each(:collections))) \
+     AND (:id IS NULL OR id=:id) \
+     AND (:agent IS NULL OR json_extract(payload,'$.value.agent')=:agent \
+          OR json_extract(payload,'$.value.agent') IN (SELECT id FROM sync_entities WHERE collection='agentSummary' AND deleted=0 AND json_extract(payload,'$.value.rootId')=:agent) \
+          OR json_extract(payload,'$.value.rootId')=:agent OR deleted=1)";
 
 /// Selection and initial list ordering shared by the page reader.
 #[derive(Clone, Copy)]
@@ -321,25 +329,22 @@ impl SyncDocumentsRepository {
         let reset = since.is_none_or(|seq| seq < tombstone_floor || seq > max_sequence || seq < 0);
         let after = if reset { 0 } else { since.unwrap_or(0) };
         let limit = limit.clamp(1, SYNC_ENTITY_STREAM_MAX_DOCUMENTS);
-        let mut statement = transaction.prepare_cached(
+        let mut statement = transaction.prepare_cached(&format!(
             "SELECT collection,id,seq,payload,deleted FROM sync_entities \
-             WHERE collection NOT LIKE 'transcript:%' AND seq>?1 AND seq<=?2 \
-               AND (?3 IS NULL OR collection IN (SELECT value FROM json_each(?3))) AND (?4 IS NULL OR id=?4) \
-               AND (?5=0 OR deleted=0) AND (?7 IS NULL OR json_extract(payload,'$.value.agent')=?7 \
-                    OR json_extract(payload,'$.value.agent') IN (SELECT id FROM sync_entities WHERE collection='agentSummary' AND deleted=0 AND json_extract(payload,'$.value.rootId')=?7) \
-                    OR json_extract(payload,'$.value.rootId')=?7 OR deleted=1) ORDER BY seq LIMIT ?6",
-        )?;
+             WHERE {ENTITY_SCOPE_PREDICATE} AND seq>:after AND seq<=:through \
+               AND (:snapshot=0 OR deleted=0) ORDER BY seq LIMIT :limit"
+        ))?;
         let mut rows = statement
             .query_map(
-                params![
-                    after,
-                    max_sequence,
-                    collections_json,
-                    id,
-                    i64::from(reset),
-                    limit + 1,
-                    agent
-                ],
+                named_params! {
+                    ":after": after,
+                    ":through": max_sequence,
+                    ":collections": collections_json,
+                    ":id": id,
+                    ":snapshot": i64::from(reset),
+                    ":limit": limit + 1,
+                    ":agent": agent,
+                },
                 entity_row,
             )?
             .collect::<Result<Vec<_>, _>>()?;
@@ -357,6 +362,35 @@ impl SyncDocumentsRepository {
             checkpoint,
             reset,
         })
+    }
+
+    /// Complete live selection, independent of the stream page bound. Stream
+    /// ordered identities and sequences into a digest so changes to root/team
+    /// membership are detected even when the row count and maximum are equal.
+    /// No DTO payloads or unbounded result lists cross the store boundary.
+    pub fn entity_scope_fingerprint(
+        transaction: &Transaction<'_>,
+        collections_json: Option<&str>,
+        id: Option<&str>,
+        agent: Option<&str>,
+    ) -> StoreResult<[u8; 32]> {
+        use sha2::{Digest, Sha256};
+        let mut statement = transaction.prepare_cached(&format!(
+            "SELECT collection,id,seq FROM sync_entities WHERE {ENTITY_SCOPE_PREDICATE} AND deleted=0 ORDER BY seq"
+        ))?;
+        let mut rows = statement.query(named_params! {
+            ":collections": collections_json, ":id": id, ":agent": agent
+        })?;
+        let mut digest = Sha256::new();
+        while let Some(row) = rows.next()? {
+            for column in [0, 1] {
+                let text: String = row.get(column)?;
+                digest.update((text.len() as u64).to_be_bytes());
+                digest.update(text.as_bytes());
+            }
+            digest.update(row.get::<_, i64>(2)?.to_be_bytes());
+        }
+        Ok(digest.finalize().into())
     }
 
     pub fn draft(transaction: &Transaction<'_>, id: &str) -> StoreResult<Option<SyncDocument>> {
@@ -783,6 +817,87 @@ inventory::submit! {
 mod tests {
     use super::SyncDocumentsRepository;
     use rusqlite::Connection;
+
+    #[test]
+    fn resume_entities_fingerprint_tracks_membership_swaps_with_equal_count_and_maximum() {
+        let mut connection = Connection::open_in_memory().expect("memory SQLite");
+        connection.execute_batch(
+            "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,payload TEXT,deleted INTEGER);
+             CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO sync_entities VALUES
+             ('agentSummary','a',20,'{\"value\":{\"rootId\":\"lead\"}}',0),
+             ('agentSummary','b',21,'{\"value\":{\"rootId\":\"other\"}}',0),
+             ('task','a-task',1,'{\"value\":{\"agent\":\"a\"}}',0),
+             ('task','b-task',2,'{\"value\":{\"agent\":\"b\"}}',0),
+             ('task','latest',10,'{\"value\":{\"agent\":\"lead\"}}',0);"
+        ).expect("scope fixture");
+        let transaction = connection.transaction().expect("snapshot");
+        let fingerprint = |id, agent| {
+            SyncDocumentsRepository::entity_scope_fingerprint(
+                &transaction,
+                Some(r#"["task"]"#),
+                id,
+                agent,
+            )
+            .expect("complete fingerprint")
+        };
+        let before = fingerprint(None, Some("lead"));
+        let selected = |agent| {
+            SyncDocumentsRepository::resume_entity_scope(
+                &transaction,
+                None,
+                Some(r#"["task"]"#),
+                None,
+                Some(agent),
+                100,
+            )
+            .expect("selected rows")
+            .rows
+            .into_iter()
+            .map(|row| row.id)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(selected("lead"), ["a-task", "latest"]);
+        let exact = fingerprint(Some("latest"), Some("lead"));
+        let empty =
+            SyncDocumentsRepository::entity_scope_fingerprint(&transaction, Some("[]"), None, None)
+                .expect("empty scope");
+        transaction.execute("UPDATE sync_entities SET payload=json_set(payload,'$.value.rootId',CASE id WHEN 'a' THEN 'other' ELSE 'lead' END),seq=seq+100 WHERE collection='agentSummary'", []).expect("swap team members");
+        assert_eq!(selected("lead"), ["b-task", "latest"]);
+        let swapped = fingerprint(None, Some("lead"));
+        assert_ne!(
+            before, swapped,
+            "equal count and maximum do not prove equal membership"
+        );
+        assert_eq!(
+            exact,
+            fingerprint(Some("latest"), Some("lead")),
+            "row identity filtering excludes the swap"
+        );
+        assert_eq!(
+            empty,
+            SyncDocumentsRepository::entity_scope_fingerprint(&transaction, Some("[]"), None, None)
+                .expect("empty scope")
+        );
+        transaction
+            .execute(
+                "UPDATE sync_entities SET seq=200 WHERE collection='task' AND id='b-task'",
+                [],
+            )
+            .expect("task status publication");
+        let changed = fingerprint(None, Some("lead"));
+        assert_ne!(
+            swapped, changed,
+            "an update with unchanged count must publish"
+        );
+        transaction.execute("UPDATE sync_entities SET deleted=1,seq=201 WHERE collection='task' AND id='latest'", []).expect("task removal");
+        assert_ne!(
+            changed,
+            fingerprint(None, Some("lead")),
+            "a removal must publish"
+        );
+        assert_eq!(selected("lead"), ["b-task"]);
+    }
 
     #[test]
     fn resume_entities_current_old_and_expired_cursors() {

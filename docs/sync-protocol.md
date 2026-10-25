@@ -68,6 +68,11 @@ diagnostic key. A parity witness requires exactly one handler and data contract
 for every generated resource kind. Business services publish domain changes
 without tracking sessions or subscribers.
 
+Entity change fingerprints cover every selected row, including rows beyond the
+stream's bounded initial page. The store hashes ordered identities and durable
+sequences using the same scope filter as delivery; unrelated view changes stay
+suppressed without hiding a newly appended worker or a changed team member.
+
 Transcript history uses a typed `transcript` reference with an optional `tail`
 window. Its [default item count](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs)
 is generated for the renderer and checked against OpenAPI. The subscription
