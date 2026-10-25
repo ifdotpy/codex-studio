@@ -28,6 +28,49 @@ pub fn analytics_usage_notification(
     }
 }
 
+/// Preserve the legacy cost reader's structural checks while allowing unknown categories.
+/// Canonical observations own their validation and take precedence over legacy columns.
+pub fn validate_legacy_analytics_cost_fields(row: &Value) -> Result<(), UsageParseError> {
+    if row.get("studioUsage").is_some() {
+        return Ok(());
+    }
+    for key in ["last", "delta"] {
+        let Some(value) = row.get(key) else {
+            continue;
+        };
+        if key == "delta" && value.is_null() {
+            continue;
+        }
+        let object = value
+            .as_object()
+            .ok_or_else(|| UsageParseError(format!("invalid legacy analytics {key} object")))?;
+        for field in [
+            "inputTokens",
+            "cachedInputTokens",
+            "cacheWriteInputTokens",
+            "outputTokens",
+        ] {
+            if object
+                .get(field)
+                .is_some_and(|value| !value.is_null() && !value.is_number())
+            {
+                return Err(UsageParseError(format!(
+                    "invalid legacy analytics {key}.{field}"
+                )));
+            }
+        }
+    }
+    if row
+        .get("inputTokensAreUncached")
+        .is_some_and(|value| !value.is_null() && !value.is_boolean())
+    {
+        return Err(UsageParseError(
+            "invalid legacy analytics inputTokensAreUncached".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Decode canonical observations first, retaining legacy rows without rewriting them.
 /// Legacy response evidence remains provisional until native journal recovery replaces it.
 pub fn parse_analytics_usage_row(

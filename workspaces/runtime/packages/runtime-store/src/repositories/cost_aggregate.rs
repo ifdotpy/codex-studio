@@ -115,6 +115,8 @@ impl From<&UsageTokens> for CostTokens {
 }
 
 fn cost_observation(record: &serde_json::Value) -> StoreResult<Option<UsageObservation>> {
+    studio_runtime_schema::usage::persisted::validate_legacy_analytics_cost_fields(record)
+        .map_err(|error| StoreError::SchemaValidation(error.to_string()))?;
     match parse_analytics_usage_row(UsageProvider::Codex, record) {
         Ok(observation) => Ok(Some(observation)),
         Err(error) if record.get("studioUsage").is_some() => {
