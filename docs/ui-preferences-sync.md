@@ -46,6 +46,7 @@ Server preferences stay on their own server.
 | Read state and team message seen state                                      | Existing read-state API and `TeamChats` seen cache                                                                                      | Existing behavior, not a visual preference                                    |
 | Pending command IDs, pairing attempts, operation receipts and outbox fences | `request-id:*`, operation-specific pending keys, pairing cache, upload fences                                                           | Device                                                                        |
 | Runtime and cost caches                                                     | Sync database identity, transcript cache, progress cache, session cost cache                                                            | Device                                                                        |
+| Model picker whitelist                                                      | Session-only model whitelist map                                                                                                        | Server, versioned scalar in uiPreferences/server                              |
 | Account, model, permission and worker concurrency choices                   | Existing server APIs and their entities                                                                                                 | Server, already synced; not UI preference fields                              |
 
 `workspaces/client/apps/web/src/servers/storage.ts` adds the server namespace to local keys in server views.
@@ -150,3 +151,52 @@ Updated backend and runtime log:
 `/Users/igor/.local/state/codex-agents/monitor-logs/28acd2b1-6747-58b7-8a34-911007e941c7.log`.
 Updated build and unit logs: `/tmp/prefs-sync-review-build.log` and
 `/tmp/prefs-sync-review-unit.log`.
+
+## Server model whitelist write contract
+
+The Models settings control uses the existing `uiPreferences/server` entity and
+`POST /api/sync/preferences`; it does not change chat model settings. The field
+name and validation limits are owned by [runtime-schema shared values](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs) and emitted
+to the renderer by `studio-contracts`. A missing field or `null` allows all models,
+including future catalog entries; an empty array allows none. Array members are
+provider-qualified resolved model identities. Aliases share their resolved key.
+Unknown but well-formed keys remain valid when catalogs change. The former
+session-only map has no durable state to migrate.
+
+The caller controls only the whitelist value and the existing preference field
+version (timestamp in milliseconds and writer identity). The authenticated API
+context determines permission and server ownership. The server owns the stored
+entity and transaction commit time; the client writer is a merge identity, not an
+authenticated audit actor. This feature introduces no separate audit claim.
+Only this field is changed; unrelated server and user preferences are preserved.
+Server fields are never federated as user preferences.
+
+The logical retry identity is the existing canonical preference body digest plus
+its unchanged field versions. A successful response lost in transit is retried
+with the same body and request identity; field merge is idempotent. Changed
+business content is a new edit with a newer version and a different digest, never
+a replay under the old identity. Server clock corrections apply only while the
+exact submitted version is current. Stale versions lose to the stored version;
+there is no compare-and-swap base revision in this existing API. Retrying does
+not refresh provenance or timestamps. Edits during a write remain queued and are
+sent after it, without replacing unrelated fields.
+
+The existing server-specific browser cache is an optimistic view and durable
+outbox, not the authority. SSE entity projections reconcile it with SQLite after
+reconnect, reload, or restart; no preference polling is added. Pending edits show
+saving status; failed HTTP writes show an unsaved error and a retry control.
+A failed user-scope write does not block server-scope writes, or vice versa.
+Each failed scope keeps its own error and pending field versions. A drain attempts
+each rejected payload once per explicit retry generation; successful writes in
+the other scope do not trigger an unbounded retry loop. A new field value or an
+explicit retry, reconnect, or resume advances that guard even during an active
+drain. An unchanged retry keeps the existing identity and field versions.
+Reconnect/resume retries the existing outbox. Rapid toggles read the latest cache
+before changing one selection, avoiding a stale React-render overwrite.
+
+The field extends the existing preference protocol without a new storage version.
+Older servers reject the unrecognized field through existing validation/schema
+gating, leaving the error visible. Malformed values are rejected without changing
+stored preferences. Checks cover first apply, duplicate retry, stale versions,
+new edit identity, malformed input, scope isolation, unrelated fields, SQLite
+reopen, client projection/reload, and pending edits during transport failure.

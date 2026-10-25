@@ -938,34 +938,98 @@ for line in sys.stdin:
         self.assertEqual(first_events, second_events)
 
     async def test_helper_deadline_terminates_process_group(self):
-        marker = self.home / "deadline-child"
         helper = str(Path(__file__).with_name("deadline.py"))
-        source = (f"import subprocess,sys,signal,json; sys.path.insert(0,{str(Path(__file__).parent)!r}); "
-                  "from common import process_identity; "
-                  "p=subprocess.Popen([sys.executable,'-c','import signal; signal.pause()']); "
-                  f"open({str(marker)!r},'w').write(json.dumps({{'pid':p.pid,'start':process_identity(p.pid)}})); "
-                  "print('ready',flush=True); signal.pause()")
-        # Advance the helper's monotonic clock only after a real descendant exists. This
-        # checks deadline/group cleanup without racing interpreter startup against 100 ms.
-        wrapper = f"""import pathlib,runpy,subprocess,sys
-from unittest.mock import Mock,patch
-marker=pathlib.Path({str(marker)!r})
-clock=Mock(side_effect=lambda: int(clock.call_count > 1 and marker.exists()))
+        owner, control = socket.socketpair()
+        owner.setblocking(False)
+        self.addCleanup(owner.close)
+        self.addCleanup(control.close)
+        # The descendant signals readiness itself, so neither interpreter startup nor
+        # fixture setup consumes the deadline/group-kill assertion's watchdog.
+        source = ("import subprocess,sys,signal; "
+                  "p=subprocess.Popen([sys.executable,'-c',"
+                  "'import signal; print(\"ready\",flush=True); signal.pause()'],stdout=subprocess.PIPE); "
+                  "assert p.stdout.readline()==b'ready\\n'; "
+                  "print(p.pid,flush=True); signal.pause()")
+        wrapper = f"""import json,os,runpy,signal,socket,subprocess,sys
+sys.path.insert(0,{str(Path(__file__).parent)!r})
+from common import process_identity
+from unittest.mock import patch
+control=socket.socket(fileno={control.fileno()})
+spawn=subprocess.Popen
+owned=[]
+def stop(signum,frame):
+    raise SystemExit(125)
+signal.signal(signal.SIGTERM,stop)
+def start(*args,**kwargs):
+    # Defer termination until the newly created process has an ownership record.
+    previous=signal.pthread_sigmask(signal.SIG_BLOCK,{{signal.SIGTERM}})
+    try:
+        process=spawn(*args,**kwargs)
+        owned.append(process)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK,previous)
+    child=int(process.stdout.readline())
+    control.sendall(json.dumps({{'group':process.pid,'child':child,
+        'start':process_identity(child)}}).encode()+b'\\n')
+    assert control.recv(1)==b'x'
+    return process
+clock=iter([0,1])
 sys.argv=[{helper!r}, '0.1', sys.executable, '-c', {source!r}]
-with patch('time.monotonic',clock):
-    runpy.run_path({helper!r},run_name='__main__')
+completed=False
+try:
+    with patch('subprocess.Popen',start), patch('time.monotonic',lambda: next(clock,1)):
+        runpy.run_path({helper!r},run_name='__main__')
+except SystemExit as error:
+    completed=error.code==124
+    raise
+finally:
+    # A normal deadline exit must prove its own group kill before test cleanup.
+    for process in ([] if completed else owned):
+        try:
+            os.killpg(process.pid,signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
 """
         process = await asyncio.create_subprocess_exec(sys.executable, "-c", wrapper,
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
-        await asyncio.wait_for(process.communicate(b"{}"), 5)
-        self.assertEqual(process.returncode, 124)
-        child = json.loads(marker.read_text())
-        self.assertIsNotNone(child["start"])
+            pass_fds=(control.fileno(),), stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        control.close()
+        communication = asyncio.create_task(process.communicate(b"{}"))
+        child = None
+        async def child_stopped():
+            while process_identity(child["child"]) == child["start"]:
+                await asyncio.sleep(0.01)
         try:
-            self.assertIsNone(process_identity(child["pid"]))
+            loop = asyncio.get_running_loop()
+            readiness = bytearray()
+            async def ready():
+                while not readiness.endswith(b"\n"):
+                    block = await loop.sock_recv(owner, 4096)
+                    self.assertTrue(block, "deadline fixture exited before readiness")
+                    readiness.extend(block)
+                return json.loads(readiness)
+            child = await asyncio.wait_for(ready(), 5)
+            self.assertIsNotNone(child["start"])
+            self.assertEqual(process_identity(child["child"]), child["start"])
+            await loop.sock_sendall(owner, b"x")
+            stdout, stderr = await asyncio.wait_for(asyncio.shield(communication), 5)
+            self.assertEqual(process.returncode, 124, stderr.decode())
+            self.assertEqual(stdout, b"")
+            self.assertIsNone(process_identity(child["group"]))
+            await asyncio.wait_for(child_stopped(), 5)
+            self.assertIsNone(process_identity(child["child"]))
         finally:
-            if process_identity(child["pid"]) == child["start"]:
-                os.kill(child["pid"], signal.SIGKILL)
+            # The wrapper owns and reaps the helper group on every failure path, even
+            # before readiness. Let its finally block run, then drain and reap it here.
+            if process.returncode is None:
+                process.terminate()
+            try:
+                if child is not None and process_identity(child["child"]) == child["start"]:
+                    os.kill(child["child"], signal.SIGKILL)
+                    await asyncio.wait_for(child_stopped(), 5)
+            finally:
+                await asyncio.wait_for(communication, 5)
 
     async def test_helper_keeps_the_error_output_of_a_failed_command(self):
         # A failed layr command reports its reason on stderr; without it the guest error is empty.

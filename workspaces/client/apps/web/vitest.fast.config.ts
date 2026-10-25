@@ -8,6 +8,7 @@ export default {
     name: "fast",
     include: [
       "src/precompressedAssets.test.mjs",
+      "src/scrollbars.test.mjs",
       "src/sync/subscriptions/store.test.ts",
       "src/sync/subscriptions/viewData.test.ts",
       "src/sync/subscriptions/terminalOutput.test.ts",
@@ -75,6 +76,7 @@ export default {
       "src/components/sidebarOrder.migration.test.ts",
       "src/components/ProjectServerCards.test.ts",
       "src/components/models/modelWhitelist.test.ts",
+      "src/components/models/modelWhitelist.persistence.test.ts",
       // Read a stable baseline once and retain the full-disk notice across failed reads.
       "src/components/SupervisorRecoveryNotice.test.ts",
       "src/components/desktopNotices.test.ts",

@@ -56,6 +56,22 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
+                "MODEL_WHITELIST_PREFERENCE_KEY",
+                json_string(values::MODEL_WHITELIST_PREFERENCE_KEY),
+            ),
+            (
+                "MODEL_WHITELIST_MAX_KEYS",
+                values::MODEL_WHITELIST_MAX_KEYS.to_string(),
+            ),
+            (
+                "MODEL_WHITELIST_KEY_MAX_CODEPOINTS",
+                values::MODEL_WHITELIST_KEY_MAX_CODEPOINTS.to_string(),
+            ),
+            (
+                "MODEL_WHITELIST_KEY_PATTERN",
+                json_string(values::MODEL_WHITELIST_KEY_PATTERN),
+            ),
+            (
                 "SYNC_TERMINAL_STREAM_MAX_CHARS",
                 values::SYNC_TERMINAL_STREAM_MAX_CHARS.to_string(),
             ),
