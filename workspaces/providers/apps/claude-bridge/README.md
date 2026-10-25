@@ -11,6 +11,41 @@ are owned by this app's source and [`package.json`](package.json). Focused check
 `pnpm run test:server:bridge` from the repository root, as defined by the
 [root manifest](../../../../package.json).
 
+## Image input
+
+The [image module](images.mjs) owns the default Claude image limits: 2000 pixels
+per side, 5,242,880 base64 bytes, and the derived 3,932,160 raw bytes. The source
+is Claude Code 2.1.302, `chunk-sp5b4hyj.js:475` and `chunk-hqtnbrjd.js:124661`.
+Its separate 512,000-byte budget is best effort (`chunk-sp5b4hyj.js:453`).
+
+The bridge uses sharp on macOS and Linux. Small PNG, JPEG, GIF, and WebP images
+keep their bytes. A resize keeps PNG and WebP formats and selects the first
+animation frame. A resized GIF becomes PNG. PNG compression tries a palette
+before JPEG. JPEG compression tries qualities 80, 60, 40, and 20, then a final
+resize to at most 1000 pixels wide at quality 20. The byte budget adds at most
+one quality-90 conversion and five binary-search passes. These steps follow
+`chunk-ft699e6v.js:460`, `:539`, `:578`, and `:650`.
+
+The bridge verifies the final dimensions, format, raw bytes, and base64 bytes.
+It refuses an unreadable image, an unsupported format, an unavailable codec,
+or a result above the limits. The error reaches the send caller before an SDK
+query or turn exists. The existing message delivery error displays the refusal
+and keeps the draft. The source file never changes.
+
+The bridge manifest pins sharp and its required native modules for darwin-arm64,
+linux-arm64, and linux-x64. These are regular dependencies because the desktop
+resource step uses `pnpm deploy --no-optional`. The Tauri package uses that same
+resource step, then removes the Linux codec pairs from its Mac bridge directory.
+It keeps the source manifests and lockfile for guest and standalone Linux
+installs. The ARM64 guest launches its own
+`/opt/codex-studio/claude_bridge/bridge.mjs`. Linux x64 modules support standalone
+x64 servers.
+
+Run `node testing/image-codec-witness.mjs` inside a deployed production bridge
+to verify the codecs without a model request. Run
+`node --test workspaces/client/apps/native/bridge-image-package.test.mjs` from
+the repository root to verify the Mac prune and its native codec load.
+
 ## Steer completion and Stop
 
 A successful result waits briefly for pending steer echoes. An echo during the
