@@ -436,8 +436,11 @@ export default function App({ active = true }: { active?: boolean }) {
   );
   useEffect(() => {
     const stopBridge = preferenceBridge.start();
+    let wasLive = false;
     const stopConnection = watchResourceConnection((status) => {
-      if (status === "live") preferenceBridge.retryPendingWrites();
+      const reconnected = status === "live" && !wasLive;
+      wasLive = status === "live";
+      if (reconnected) preferenceBridge.retryPendingWrites();
     });
     return () => {
       stopConnection();

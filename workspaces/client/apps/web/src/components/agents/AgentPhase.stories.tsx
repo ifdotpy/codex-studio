@@ -2,11 +2,12 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
 import AgentPhase from "./AgentPhase";
 import type { Agent } from "../../types";
+import { selectMessageConnection } from "../../hooks/messageConnection";
 
 const meta = {
   title: "Agents/Status",
   component: AgentPhase,
-  args: { connection: "connected" },
+  args: { connection: selectMessageConnection("live", "open") },
 } satisfies Meta<typeof AgentPhase>;
 
 export default meta;
@@ -55,11 +56,13 @@ export const WaitingForAnswer: Story = {
 export const Reconnecting: Story = {
   args: {
     agent: { ...thinkingAgent, activity: { phase: "tool" } },
-    connection: "reconnecting",
+    connection: selectMessageConnection("degraded", "connecting", {
+      failure: "stream-error",
+    }),
   },
   play: async ({ canvasElement }) => {
     expect(
-      within(canvasElement).getByText("Connection lost. Reconnecting…", {
+      within(canvasElement).getByText("Connection failed. Reconnecting…", {
         exact: true,
       }),
     ).toBeVisible();

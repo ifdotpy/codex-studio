@@ -396,10 +396,15 @@ A ready history appears immediately on selection, including its saved scroll pos
 After a network change or a return to Studio, sync restores updates when needed.
 Browser network hints do not interrupt a working server stream. A hidden tab
 pauses its updates deliberately; this pause is not reported as a lost connection.
-`Reconnecting` means that the live update connection needs recovery. A saved
-message awaiting delivery confirmation has its own notice, so it does not imply
-that the connection is lost. The notice clears after the server acknowledges
-the message.
+`No network.` takes precedence when the browser reports that it is offline.
+When it reports online, the notice distinguishes the observed failure from the
+current recovery action. An unknown cause is stated as unknown. `Reconnecting`
+means that a new live update connection is being opened. Preparation, a scheduled
+retry with its retry time, and waiting for another window have distinct notices;
+interrupted updates alone do not imply an active connection attempt. Switching chats keeps the shared connection and reconciles
+the current subscriptions. A saved message awaiting delivery confirmation has
+its own notice, so it does not imply that the connection is lost. The notice
+clears after the server acknowledges the message.
 A cached workspace cannot send drafts to a different workspace before verification.
 
 Run `pnpm --filter codex-agents-web run test:mobile` for the mobile regression suite.
