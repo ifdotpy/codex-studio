@@ -8,6 +8,7 @@ use crate::{
     },
     scheduler::{self, TurnIntent, TurnStart},
 };
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
