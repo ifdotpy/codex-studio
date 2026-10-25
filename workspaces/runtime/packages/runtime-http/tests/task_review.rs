@@ -47,6 +47,9 @@ async fn write(app: &axum::Router, body: Value) -> Value {
 async fn task_review_projects_default_and_current_refusals_through_http() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    studio_runtime_services::entity_publication::install(&store)
+        .await
+        .unwrap();
     store.transaction(|tx| {
         for agent in [
             json!({"id":"lead","rootId":"lead","parentId":null,"epoch":1,"status":"running","autoWake":true,"isLead":true,"name":"lead"}),
@@ -88,6 +91,14 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
     assert_eq!(listed["items"].as_array().unwrap().len(), 1);
     assert_eq!(listed["items"][0]["gate"], default);
     assert_eq!(listed["items"][0]["submissionRefusal"]["failedSubmits"], 0);
+    assert_eq!(
+        projected(&store, "agentDetail", "lead")["taskDefaultGate"],
+        default
+    );
+    assert_eq!(
+        projected(&store, "workDetail", task)["version"],
+        created["version"]
+    );
 
     let limit = studio_runtime_schema::task_results::MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT;
     for index in 0..limit {
@@ -106,6 +117,11 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
         assert_eq!(view["submissionRefusal"]["retryAllowed"], index + 1 < limit);
         assert_eq!(view["submissionRefusal"]["errors"][0]["path"], "/count");
         assert_eq!(listed["items"], listed["tasks"]);
+        assert_eq!(
+            projected(&store, "workDetail", task)["submissionRefusal"],
+            view["submissionRefusal"],
+            "refused submissions publish current typed evidence without changing task version"
+        );
     }
     let (status, _) = call(&app, "POST", Some(json!({"action":"submit","agent":"worker","id":"over-cap","task_id":task,"result":{"count":1},"checks":"checked","revision":"abc","files":[]}))).await;
     assert_eq!(status, 400);
@@ -145,6 +161,10 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
         new_epoch["items"][0]["submissionRefusal"]["failedSubmits"],
         0
     );
+    assert_eq!(
+        projected(&store, "workDetail", task)["submissionRefusal"]["failedSubmits"],
+        0
+    );
     write(
         &app,
         json!({"action":"set_default_gate","agent":"lead","id":"clear-default","gate":null}),
@@ -152,8 +172,22 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
     .await;
     let (_, cleared) = call(&app, "GET", None).await;
     assert!(cleared["taskDefaultGate"].is_null());
+    assert!(projected(&store, "agentDetail", "lead")["taskDefaultGate"].is_null());
     assert_eq!(
         cleared["items"][0]["gate"], default,
         "existing task keeps its gate"
     );
+}
+
+fn projected(store: &RuntimeStore, collection: &str, id: &str) -> Value {
+    store
+        .test_read_transaction(|tx| {
+            let raw: String = tx.query_row(
+                "SELECT payload FROM sync_entities WHERE collection=?1 AND id=?2 AND deleted=0",
+                [collection, id],
+                |row| row.get(0),
+            )?;
+            Ok(serde_json::from_str::<Value>(&raw)?["value"].clone())
+        })
+        .unwrap()
 }

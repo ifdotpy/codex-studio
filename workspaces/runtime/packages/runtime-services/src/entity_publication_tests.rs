@@ -11,6 +11,95 @@ use studio_runtime_store::{AgentRecord, AgentRepository, StoreError};
 const CHAT: &str = "published-chat";
 
 #[tokio::test]
+async fn work_detail_publishes_full_review_state_at_commit_and_retires_on_delete() {
+    let (_dir, store) = store().await;
+    seed_chat(
+        &store,
+        chat(json!({"taskDefaultGate":{"command":"check","timeout_ms":1234}})),
+    )
+    .await;
+    let work = json!({"id":"assignment","rootId":CHAT,"title":"Inspect delivery","description":"Review evidence","status":"running","owner":null,"dependencies":[],"created":1,"updated":1,"version":1,"gate":null,"results":[{"id":"result","agent":CHAT,"text":"Full review evidence","checks":"Checked","revision":"abc","files":[],"created":1}],"decisions":[{"decision":"reject","reason":"Add evidence","by":CHAT,"created":1}],"releases":[{"reason":"Retry"}]});
+    write(
+        &store,
+        "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",
+        vec!["assignment".into(), work.to_string()],
+    )
+    .await;
+    let detail = client_entity(&store, "workDetail", "assignment")
+        .expect("source commit publishes scoped review detail")
+        .1;
+    assert_eq!(detail["description"], work["description"]);
+    assert_eq!(detail["version"], 1);
+    assert_eq!(detail["submissionRefusal"]["failedSubmits"], 0);
+    assert_eq!(detail["results"], json!([]));
+    assert_eq!(
+        client_entity(&store, "workResult", "assignment:0")
+            .expect("result history")
+            .1["value"],
+        work["results"][0]
+    );
+    let history_seq = store
+        .test_read_transaction(|tx| {
+            tx.query_row(
+                "SELECT seq FROM sync_entities WHERE collection='workResult' AND id='assignment:0'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(StoreError::from)
+        })
+        .expect("result sequence");
+    assert_eq!(
+        client_entity(&store, "agentDetail", CHAT)
+            .expect("root detail")
+            .1["taskDefaultGate"]["command"],
+        "check"
+    );
+    let summary = client_entity(&store, "work", "assignment")
+        .expect("global summary")
+        .1;
+    assert!(
+        summary.get("description").is_none(),
+        "review histories stay outside the global list"
+    );
+    write(&store, "UPDATE runtime_work SET record=json_set(record,'$.status','review','$.version',2) WHERE id=?1", vec!["assignment".into()]).await;
+    assert_eq!(
+        client_entity(&store, "workDetail", "assignment")
+            .expect("updated detail")
+            .1["status"],
+        "review"
+    );
+    assert_eq!(store.test_read_transaction(|tx| tx.query_row("SELECT seq FROM sync_entities WHERE collection='workResult' AND id='assignment:0'", [], |row| row.get::<_, i64>(0)).map_err(StoreError::from)).expect("unchanged result sequence"), history_seq, "status changes do not replay full histories");
+    write(
+        &store,
+        "DELETE FROM runtime_work WHERE id=?1",
+        vec!["assignment".into()],
+    )
+    .await;
+    for collection in [
+        "work",
+        "workDetail",
+        "workResult",
+        "workDecision",
+        "workRelease",
+    ] {
+        assert!(
+            client_entity(
+                &store,
+                collection,
+                if matches!(collection, "work" | "workDetail") {
+                    "assignment"
+                } else {
+                    "assignment:0"
+                }
+            )
+            .expect("retired assignment")
+            .0,
+            "{collection}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn agent_projections_attention_rejects_stale_requests_and_clears() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({"epoch":2}))).await;

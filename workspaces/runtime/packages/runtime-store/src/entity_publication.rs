@@ -37,6 +37,7 @@ pub struct PendingEntities {
     pub plans: BTreeSet<String>,
     pub annotations: BTreeSet<String>,
     pub tasks: BTreeSet<String>,
+    pub work: BTreeSet<String>,
     /// Source rows of the derived Studio error list that changed.
     pub studio_errors: StudioErrorSources,
     pub queues: BTreeSet<String>,
@@ -52,6 +53,7 @@ impl PendingEntities {
             && self.plans.is_empty()
             && self.annotations.is_empty()
             && self.tasks.is_empty()
+            && self.work.is_empty()
             && self.studio_errors.is_empty()
             && self.queues.is_empty()
             && self.terminals.is_empty()
@@ -94,6 +96,7 @@ enum Source {
     Plan,
     Annotation,
     Task,
+    Work,
     QueueAsset,
     Terminal,
     /// Read only by the Studio error list.
@@ -113,6 +116,7 @@ impl Source {
             "runtime_plans" => Some(Self::Plan),
             "runtime_annotations" => Some(Self::Annotation),
             "runtime_tasks" => Some(Self::Task),
+            "runtime_work" => Some(Self::Work),
             "runtime_assets" => Some(Self::QueueAsset),
             "user_terminals" => Some(Self::Terminal),
             "runtime_monitors" => Some(Self::Monitor),
@@ -128,6 +132,7 @@ impl Source {
             "plan" => Some(Self::Plan),
             "annotation" => Some(Self::Annotation),
             "task" => Some(Self::Task),
+            "work" | "workDetail" => Some(Self::Work),
             _ => None,
         }
     }
@@ -142,6 +147,7 @@ impl Source {
             Self::Plan => "runtime_plans",
             Self::Annotation => "runtime_annotations",
             Self::Task => "runtime_tasks",
+            Self::Work => "runtime_work",
             Self::QueueAsset => "runtime_assets",
             Self::Terminal => "user_terminals",
             Self::Monitor => "runtime_monitors",
@@ -207,7 +213,7 @@ pub(crate) fn mark_published(collection: &str, id: &str) {
 }
 
 /// Journal that `collection/id` needs a full publication before commit.
-pub(crate) fn mark_stale(collection: &str, id: &str) {
+pub fn mark_stale(collection: &str, id: &str) {
     if let Some(source) = Source::of_collection(collection) {
         push(Event::Stale(source, id.to_owned()));
     }
@@ -238,6 +244,21 @@ pub(crate) fn pending(
         }
     }
     let mut pending = PendingEntities::default();
+    for ((source, _), id) in &ids {
+        if *source != Source::Work {
+            continue;
+        }
+        if let Some(id) = id {
+            pending.work.insert(id.clone());
+        } else {
+            let mut statement = transaction.prepare(
+                "SELECT DISTINCT id FROM sync_entities WHERE collection IN ('work','workDetail') AND deleted=0 AND NOT EXISTS(SELECT 1 FROM runtime_work WHERE runtime_work.id=sync_entities.id)",
+            )?;
+            for row in statement.query_map([], |row| row.get::<_, String>(0))? {
+                pending.work.insert(row?);
+            }
+        }
+    }
     for ((source, _), id) in &ids {
         if matches!(
             source,
@@ -358,6 +379,7 @@ pub(crate) fn pending(
             Source::Plan => pending.plans.insert(id),
             Source::Annotation => pending.annotations.insert(id),
             Source::Task => pending.tasks.insert(id),
+            Source::Work => pending.work.insert(id),
             Source::QueueAsset | Source::Terminal | Source::Monitor | Source::Receipt => false,
         };
     }

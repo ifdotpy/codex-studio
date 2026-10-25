@@ -118,13 +118,25 @@ epoch, revision, and ordering checks.
 
 The renderer reads chats and cards only from their `sync_entities` rows, and a
 pull does not rebuild a complete projection. Every writer transaction therefore
-publishes the `runtime_agents` and `runtime_requests` rows it changed before it
+publishes the `runtime_agents`, `runtime_requests`, and `runtime_work` rows it changed before it
 commits. The [store journal](../workspaces/runtime/packages/runtime-store/src/entity_publication.rs)
 records each changed row, and the services publisher projects it through
 `sync_policy::publish_entity_changes`. A write path needs no publish call of its
 own. A path that publishes after its last write is not published twice.
 Volatile agent fields are outside this rule: their writers leave
 `runtime_agents` unchanged on purpose.
+
+Visible Team rows retain an `agentDetail` subscription for command progress,
+errors, and result excerpts; their summaries remain authoritative for status and
+membership. Collapsed finished rows do not retain detail subscriptions.
+
+The assignment Tasks view subscribes to its team's existing `work` resource
+and the root agent's detail for `taskDefaultGate`. Its scoped `workDetail` metadata
+and `workResult`, `workDecision`, and `workRelease` history records reconstruct the
+canonical OpenAPI `WorkItem`. The global `work` summary excludes histories.
+Unchanged history records keep their durable sequences, and unrelated cached
+updates do not notify the Tasks consumer. Task actions retain their existing
+request identities and receive their resulting view through the stream.
 
 Retained cleanup folders have their own `retainedWorktree` entities, including
 folders of deleted workers. Question answers remain in `questionHistory` entities

@@ -20,6 +20,7 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
     plugins: [
       {
         name: "task-review-fixture",
+        enforce: "pre",
         configureServer(server) {
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
@@ -32,8 +33,14 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
           if (id === "/task-review-fixture.tsx") return entry;
           if (id.endsWith("/servers/ServerServicesContext"))
             return "\0task-review-api";
+          if (id.endsWith("/sync/subscriptions")) return "\0task-review-stream";
         },
         load(id) {
+          if (id === "\0task-review-stream")
+            return `
+            import {useSyncExternalStore} from 'react';
+            const subscribe=accept=>{window.addEventListener('task-review-frame',accept);return()=>window.removeEventListener('task-review-frame',accept)};
+            export const useSubscription=ref=>useSyncExternalStore(subscribe,()=>window.taskReviewFrames[ref.kind]);`;
           if (id === "\0task-review-api")
             return `
           const api={
@@ -50,7 +57,7 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
           import {MantineProvider} from '@mantine/core';
           import '@mantine/core/styles.css';
           import Tasks from '/src/components/shell/Tasks.tsx';
-          createRoot(document.getElementById('root')).render(<MantineProvider><main style={{maxWidth:1100,margin:'0 auto',padding:8}}><h1>Tasks</h1><Tasks agentId="worker"/></main></MantineProvider>);`;
+          createRoot(document.getElementById('root')).render(<MantineProvider><main style={{maxWidth:1100,margin:'0 auto',padding:8}}><h1>Tasks</h1><Tasks agentId="worker" rootId="lead"/></main></MantineProvider>);`;
         },
       },
     ],
@@ -134,16 +141,39 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
       status: "ready",
       displayStatus: "blocked",
       owner: null,
-      dependencies: ["review-task"],
+      dependencies: ["ready-task"],
     },
   ];
   const writes = [];
   let taskDefaultGate = gate;
+  const frames = () => ({
+    agentDetail: {
+      data: { id: "lead", taskDefaultGate },
+      status: "live",
+      error: null,
+    },
+    work: {
+      data: { rootId: "lead", taskDefaultGate, items: tasks, tasks },
+      status: "live",
+      error: null,
+    },
+  });
+  const reads = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "GET" &&
+      new URL(request.url()).pathname === "/api/work"
+    )
+      reads.push(request.url());
+  });
   let lostAccept = true;
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
     await server.listen();
+    await page.addInitScript((value) => {
+      window.taskReviewFrames = value;
+    }, frames());
     await page.route("**/api/work*", async (route) => {
       if (route.request().method() === "GET")
         return route.fulfill({
@@ -195,6 +225,10 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
         tasks[0].status = "ready";
         tasks[0].version++;
       }
+      await page.evaluate((value) => {
+        window.taskReviewFrames = value;
+        window.dispatchEvent(new Event("task-review-frame"));
+      }, frames());
       return route.fulfill({ json: { ok: true } });
     });
     await page.setViewportSize({ width: 320, height: 800 });
@@ -336,6 +370,7 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
     });
     expect(writes.at(-1)).not.toHaveProperty("gate");
     expect(errors).toEqual([]);
+    expect(reads).toEqual([]);
   } finally {
     await server.close();
     await rm(cacheDir, { recursive: true, force: true });

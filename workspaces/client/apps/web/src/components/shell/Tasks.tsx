@@ -5,7 +5,7 @@ import {
   Textarea,
   TextInput,
 } from "@mantine/core";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { errorText, type GetResult, type PostBody } from "../../api";
 import {
   useServerApi,
@@ -519,22 +519,35 @@ function TaskDetail({
 
 export default function Tasks({
   agentId,
+  rootId = agentId,
 }: {
   agentId: string;
-  revision?: number;
+  rootId?: string;
 }) {
   const { get, post } = useServerApi();
   const storage = useServerStorage();
-  const subscription = useSubscription({ kind: "work", agentId });
+  const assignments = useSubscription({ kind: "work", agentId: rootId });
+  const root = useSubscription({ kind: "agentDetail", agentId: rootId });
   const [manual, setManual] = useState<{
-    agentId: string;
+    rootId: string;
+    baseline: typeof assignments.data;
     data: GetResult<"/api/work">;
   } | null>(null);
-  useEffect(() => setManual(null), [subscription.data, agentId]);
+  const current =
+    manual?.rootId === rootId && manual.baseline === assignments.data
+      ? manual.data
+      : assignments.data;
   const resource = {
-    data: manual?.agentId === agentId ? manual.data : subscription.data,
-    loading: subscription.status === "loading",
-    error: subscription.error ? errorText(subscription.error) : "",
+    data:
+      current === undefined || !root.data
+        ? null
+        : {
+            ...current,
+            rootId,
+            taskDefaultGate: root.data.taskDefaultGate ?? null,
+          },
+    error: assignments.error?.message || root.error?.message || "",
+    loading: assignments.data === undefined || !root.data,
   };
   const [selectedId, setSelectedId] = useState("");
   const [status, setStatus] = useState("");
@@ -544,7 +557,7 @@ export default function Tasks({
   const busyRef = useRef(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const tasks = resource.data?.items || [];
+  const tasks = resource.data?.items ?? [];
   const selected = tasks.find((task) => task.id === selectedId);
   const visibleTasks = tasks.filter(
     (task) =>
@@ -591,8 +604,9 @@ export default function Tasks({
           variant="default"
           disabled={busy}
           onClick={() => {
+            const baseline = assignments.data;
             void get("/api/work", { query: { agent: agentId } })
-              .then((data) => setManual({ agentId, data }))
+              .then((data) => setManual({ rootId, baseline, data }))
               .catch((error) => setError(errorText(error)));
           }}
         >

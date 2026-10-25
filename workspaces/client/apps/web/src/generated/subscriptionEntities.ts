@@ -74,4 +74,9 @@ export const SUBSCRIPTION_ENTITY_SCOPES = {
     idField: null,
     agentField: null,
   },
+  work: {
+    collections: ["workDetail", "workResult", "workDecision", "workRelease"],
+    idField: null,
+    agentField: "agentId",
+  },
 } as const;

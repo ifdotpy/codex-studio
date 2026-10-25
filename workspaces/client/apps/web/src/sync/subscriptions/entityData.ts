@@ -3,6 +3,7 @@ import type { SyncEntityPayload } from "../../generated/api";
 import { SUBSCRIPTION_ENTITY_SCOPES } from "../../generated/subscriptionEntities";
 import type { ResourceData, ResourceRef } from "./contracts";
 import type { ObserveSubscriptionData } from "./module";
+import { createWorkDataSelector } from "./workData";
 
 type ScopeKind = keyof typeof SUBSCRIPTION_ENTITY_SCOPES;
 
@@ -20,11 +21,21 @@ export function createEntityDataObserver(
     if (!scope) return () => {};
     let stopped = false;
     let stop = () => {};
+    let retained = new Map<
+      string,
+      { seq: number; entity: SyncEntityPayload }
+    >();
+    let previousEntities: SyncEntityPayload[] | undefined;
+    const selectWork = createWorkDataSelector();
     void database()
       .then(({ db }) => {
         if (stopped) return;
         const subscription = db.projections.find().$.subscribe({
           next: (rows) => {
+            const nextRetained = new Map<
+              string,
+              { seq: number; entity: SyncEntityPayload }
+            >();
             const reference = ref as unknown as Record<string, unknown>;
             const selectedAgent = scope.agentField
               ? reference[scope.agentField]
@@ -55,13 +66,40 @@ export function createEntityDataObserver(
                 scope.agentField &&
                 reference[scope.agentField] &&
                 (!("agent" in entity.value) ||
-                  !selectedAgents.has(entity.value.agent))
+                  !selectedAgents.has(entity.value.agent)) &&
+                (!("rootId" in entity.value) ||
+                  entity.value.rootId !== selectedAgent)
               )
                 return [];
-              return [entity];
+              const prior = retained.get(value.id);
+              const selected =
+                typeof value.seq === "number" &&
+                prior &&
+                prior.seq === value.seq
+                  ? prior.entity
+                  : entity;
+              if (typeof value.seq === "number")
+                nextRetained.set(value.id, {
+                  seq: value.seq,
+                  entity: selected,
+                });
+              return [selected];
             });
+            retained = nextRetained;
+            if (
+              previousEntities &&
+              previousEntities.length === entities.length &&
+              entities.every(
+                (entity, index) => entity === previousEntities![index],
+              )
+            )
+              return;
+            previousEntities = entities;
             let data: unknown;
             switch (ref.kind) {
+              case "work":
+                data = selectWork(entities, ref.agentId);
+                break;
               case "agentDetail":
               case "task":
               case "session-cost":

@@ -709,6 +709,7 @@ fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, St
 
 fn subscription_scopes_ts(
     scopes: &std::collections::BTreeMap<String, crate::sync_protocol::SubscriptionEntityScope>,
+    print_width: usize,
 ) -> String {
     let mut text = format!("// {HEADER}\nexport const SUBSCRIPTION_ENTITY_SCOPES = {{\n");
     for (kind, scope) in scopes {
@@ -718,13 +719,17 @@ fn subscription_scopes_ts(
             json_string(kind)
         };
         writeln!(text, "  {key}: {{").expect("String write");
-        if scope.collections.len() == 1 {
-            writeln!(
-                text,
-                "    collections: [{}],",
-                json_string(&scope.collections[0])
-            )
-            .expect("String write");
+        let inline = format!(
+            "    collections: [{}],",
+            scope
+                .collections
+                .iter()
+                .map(|collection| json_string(collection))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        if inline.chars().count() <= print_width {
+            writeln!(text, "{inline}").expect("String write");
         } else {
             text.push_str("    collections: [\n");
             for collection in &scope.collections {
@@ -791,7 +796,13 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let mut rendered = vec![
         Rendered {
             path: web("subscriptionEntities.ts"),
-            text: subscription_scopes_ts(&scopes),
+            text: subscription_scopes_ts(
+                &scopes,
+                read_json(root, ".oxfmtrc.json")?["printWidth"]
+                    .as_u64()
+                    .and_then(|width| usize::try_from(width).ok())
+                    .ok_or("root Oxfmt printWidth is missing")?,
+            ),
         },
         Rendered {
             path: web("taskReview.ts"),

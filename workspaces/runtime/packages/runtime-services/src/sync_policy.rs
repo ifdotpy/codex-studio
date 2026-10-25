@@ -44,6 +44,7 @@ const AGENT_ORGANIZATION_FIELDS_MARKER: &str = "agent_organization_fields";
 const AGENT_ORGANIZATION_FIELDS_VERSION: i64 = 3;
 use studio_runtime_store::{
     AGENT_PROJECTIONS_SEED_MARKER, CONVERSATION_DETAILS_SEED_MARKER, SUMMARY_ENTITIES_SEED_MARKER,
+    WORK_DETAILS_SEED_MARKER,
 };
 
 /// Whether Python's durable seed and entity-view upgrade markers prove the
@@ -83,6 +84,11 @@ pub fn has_complete_entity_seed(connection: &Connection) -> StoreResult<bool> {
     complete &= connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
         [AGENT_PROJECTIONS_SEED_MARKER],
+        |row| row.get::<_, bool>(0),
+    )?;
+    complete &= connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
+        [WORK_DETAILS_SEED_MARKER],
         |row| row.get::<_, bool>(0),
     )?;
     let table_exists = |name: &str| {
@@ -475,6 +481,10 @@ pub fn maintain_entity_projections_with_server_id(
         "INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES(?1,'1')",
         [CONVERSATION_DETAILS_SEED_MARKER],
     )?;
+    transaction.execute(
+        "INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES(?1,'1')",
+        [WORK_DETAILS_SEED_MARKER],
+    )?;
     crate::diagnostics::measure_runtime_stage("projection.canvas_chat_entities", || {
         maintain_canvas_chat_entities(transaction, &validate_projection)
     })?;
@@ -640,6 +650,13 @@ pub fn publish_entity_changes(
         project_server_id,
         validate,
     )?;
+    // A new owner epoch/provider attempt resets its current submission refusal
+    // without changing the stored task version.
+    for (id, raw) in &owned_work {
+        if !changes.work.contains(id) {
+            publish_work_metadata(transaction, id, &serde_json::from_str(raw)?, validate)?;
+        }
+    }
     if !liveness_changed.is_empty() {
         publish_rooms_of(transaction, &liveness_changed, &changed_roots, validate)?;
     }
@@ -648,6 +665,14 @@ pub fn publish_entity_changes(
     }
     for (id, raw) in &work {
         publish_direct(transaction, "work", id, raw, validate)?;
+    }
+    let present_work: BTreeSet<_> = work.iter().map(|(id, _)| id).collect();
+    for id in &changes.work {
+        if !present_work.contains(id) {
+            retire_if_live(transaction, "work", id, validate)?;
+            retire_if_live(transaction, "workDetail", id, validate)?;
+            retire_work_history(transaction, id, validate)?;
+        }
     }
     if !liveness_changed.is_empty() {
         maintain_task_window(transaction, validate)?;
@@ -951,6 +976,9 @@ fn publish_direct(
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
     let record = serde_json::from_str::<Value>(raw)?;
+    if collection == "work" {
+        publish_work_detail(transaction, id, &record, validate)?;
+    }
     if collection == "request" {
         let question = crate::questions_reads::question_history_entity(raw)
             .map_err(|_| StoreError::RecordContract("invalid question history entity"))?;
@@ -968,6 +996,123 @@ fn publish_direct(
         Some(projected) => put_projection(transaction, collection, id, projected, false, validate),
         None => Ok(()),
     }
+}
+
+fn publish_work_detail(
+    transaction: &Transaction<'_>,
+    id: &str,
+    record: &Value,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    publish_work_history(transaction, id, record, validate)?;
+    publish_work_metadata(transaction, id, record, validate)
+}
+
+fn publish_work_metadata(
+    transaction: &Transaction<'_>,
+    id: &str,
+    record: &Value,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    let mut detail = Value::Object(
+        record
+            .as_object()
+            .ok_or(StoreError::RecordContract(
+                "work detail source is not an object",
+            ))?
+            .iter()
+            .filter(|(field, _)| !matches!(field.as_str(), "results" | "decisions" | "releases"))
+            .map(|(field, value)| (field.clone(), value.clone()))
+            .collect(),
+    );
+    for field in ["results", "decisions", "releases"] {
+        detail[field] = json!([]);
+    }
+    detail["submissionRefusal"] =
+        crate::work_write::current_submission_refusal(transaction, record).map_err(|error| {
+            match error {
+                crate::work_write::WorkWriteError::Store(error) => error,
+                other => StoreError::SchemaValidation(other.to_string()),
+            }
+        })?;
+    put_projection(transaction, "workDetail", id, detail, false, validate)
+}
+
+/// Per-task history hashes prevent ordinary metadata writes from rereading or
+/// republishing every stored evidence row. Unit: durable metadata-key prefix.
+const WORK_HISTORY_HASHES_PREFIX: &str = "work_history_hashes:";
+
+fn work_history_hashes(
+    transaction: &Transaction<'_>,
+    id: &str,
+) -> StoreResult<BTreeMap<String, BTreeMap<String, String>>> {
+    let raw: Option<String> = transaction
+        .query_row(
+            "SELECT value FROM sync_entity_meta WHERE key=?1",
+            [format!("{WORK_HISTORY_HASHES_PREFIX}{id}")],
+            |row| row.get(0),
+        )
+        .optional()?;
+    raw.map(|raw| serde_json::from_str(&raw).map_err(StoreError::from))
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+fn retire_work_history(
+    transaction: &Transaction<'_>,
+    id: &str,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    for (collection, entries) in work_history_hashes(transaction, id)? {
+        for id in entries.keys() {
+            retire_if_live(transaction, &collection, id, validate)?;
+        }
+    }
+    transaction.execute(
+        "DELETE FROM sync_entity_meta WHERE key=?1",
+        [format!("{WORK_HISTORY_HASHES_PREFIX}{id}")],
+    )?;
+    Ok(())
+}
+
+fn publish_work_history(
+    transaction: &Transaction<'_>,
+    id: &str,
+    record: &Value,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    let previous = work_history_hashes(transaction, id)?;
+    let mut next = BTreeMap::new();
+    for (field, collection) in [
+        ("results", "workResult"),
+        ("decisions", "workDecision"),
+        ("releases", "workRelease"),
+    ] {
+        let mut hashes = BTreeMap::new();
+        for (index, value) in record[field].as_array().into_iter().flatten().enumerate() {
+            let entry_id = format!("{id}:{index}");
+            let entry = json!({"id":entry_id,"taskId":id,"rootId":record["rootId"],"index":index,"value":value});
+            let hash = studio_runtime_store::sha256_hex(&serde_json::to_vec(&entry)?);
+            if previous
+                .get(collection)
+                .and_then(|entries| entries.get(&entry_id))
+                != Some(&hash)
+            {
+                put_projection(transaction, collection, &entry_id, entry, false, validate)?;
+            }
+            hashes.insert(entry_id, hash);
+        }
+        if let Some(old) = previous.get(collection) {
+            for id in old.keys().filter(|id| !hashes.contains_key(*id)) {
+                retire_if_live(transaction, collection, id, validate)?;
+            }
+        }
+        next.insert(collection.to_owned(), hashes);
+    }
+    if next != previous {
+        transaction.execute("INSERT INTO sync_entity_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params![format!("{WORK_HISTORY_HASHES_PREFIX}{id}"), serde_json::to_string(&next)?])?;
+    }
+    Ok(())
 }
 
 /// Reproject rooms whose view can name an agent whose liveness changed.

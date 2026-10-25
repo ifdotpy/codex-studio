@@ -4047,6 +4047,7 @@ export interface components {
       subagentConcurrencyVersion?: number | null;
       /** Tail */
       tail?: null | string;
+      taskDefaultGate?: components["schemas"]["TaskAcceptanceGate"];
       /** Tokensused */
       tokensUsed?: number | null;
       turnStatus?: components["schemas"]["AgentStatus"] | null;
@@ -4370,6 +4371,7 @@ export interface components {
       subagentConcurrencyVersion?: number | null;
       /** Tail */
       tail?: null | string;
+      taskDefaultGate?: components["schemas"]["TaskAcceptanceGate"];
       /** Threadid */
       threadId?: null | string;
       /** Tokensused */
@@ -22338,7 +22340,11 @@ export interface components {
             | "retainedWorktree"
             | "questionHistory"
             | "agentSummary"
-            | "agentDetail";
+            | "agentDetail"
+            | "workDetail"
+            | "workResult"
+            | "workDecision"
+            | "workRelease";
           /** @constant */
           op: "delete";
         }
@@ -22412,6 +22418,34 @@ export interface components {
           op: "upsert";
           value: components["schemas"]["AgentDetailEntityDto"];
         }
+      | {
+          /** @constant */
+          collection: "workDetail";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["WorkItem"];
+        }
+      | {
+          /** @constant */
+          collection: "workResult";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["WorkResultEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "workDecision";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["WorkDecisionEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "workRelease";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["WorkReleaseEntityDto"];
+        }
     );
     SyncEntityPayload:
       | components["schemas"]["SyncAgentEntityPayload"]
@@ -22444,7 +22478,11 @@ export interface components {
       | components["schemas"]["SyncRetainedWorktreeEntityPayload"]
       | components["schemas"]["SyncQuestionHistoryEntityPayload"]
       | components["schemas"]["SyncAgentSummaryEntityPayload"]
-      | components["schemas"]["SyncAgentDetailEntityPayload"];
+      | components["schemas"]["SyncAgentDetailEntityPayload"]
+      | components["schemas"]["SyncWorkDetailEntityPayload"]
+      | components["schemas"]["SyncWorkResultEntityPayload"]
+      | components["schemas"]["SyncWorkDecisionEntityPayload"]
+      | components["schemas"]["SyncWorkReleaseEntityPayload"];
     /** SyncEventEntityPayload */
     SyncEventEntityPayload: {
       /**
@@ -22766,6 +22804,28 @@ export interface components {
       id: string;
       value: components["schemas"]["UiPreferencesDto"];
     };
+    /** SyncWorkDecisionEntityPayload */
+    SyncWorkDecisionEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "workDecision";
+      /** Id */
+      id: string;
+      value: components["schemas"]["WorkDecisionEntityDto"];
+    };
+    /** SyncWorkDetailEntityPayload */
+    SyncWorkDetailEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "workDetail";
+      /** Id */
+      id: string;
+      value: components["schemas"]["WorkItem"];
+    };
     /** SyncWorkEntityPayload */
     SyncWorkEntityPayload: {
       /**
@@ -22776,6 +22836,28 @@ export interface components {
       /** Id */
       id: string;
       value: components["schemas"]["WorkEntityDto"];
+    };
+    /** SyncWorkReleaseEntityPayload */
+    SyncWorkReleaseEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "workRelease";
+      /** Id */
+      id: string;
+      value: components["schemas"]["WorkReleaseEntityDto"];
+    };
+    /** SyncWorkResultEntityPayload */
+    SyncWorkResultEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "workResult";
+      /** Id */
+      id: string;
+      value: components["schemas"]["WorkResultEntityDto"];
     };
     /** SyncWorkspaceEntityPayload */
     SyncWorkspaceEntityPayload: {
@@ -25894,6 +25976,14 @@ export interface components {
        */
       resultId?: null | string;
     };
+    /** WorkDecisionEntityDto */
+    WorkDecisionEntityDto: {
+      id: string;
+      index: number;
+      rootId: string;
+      taskId: string;
+      value: components["schemas"]["WorkDecisionRecord"];
+    };
     /** WorkDecisionRecord */
     WorkDecisionRecord: {
       /** By */
@@ -26168,6 +26258,14 @@ export interface components {
       /** Tasks */
       tasks: components["schemas"]["WorkItem"][];
     };
+    /** WorkReleaseEntityDto */
+    WorkReleaseEntityDto: {
+      id: string;
+      index: number;
+      rootId: string;
+      taskId: string;
+      value: components["schemas"]["JsonValue"];
+    };
     /** WorkResource */
     WorkResource: {
       agentId: string;
@@ -26210,6 +26308,14 @@ export interface components {
       runId?: null | string;
       /** Text */
       text: string;
+    };
+    /** WorkResultEntityDto */
+    WorkResultEntityDto: {
+      id: string;
+      index: number;
+      rootId: string;
+      taskId: string;
+      value: components["schemas"]["WorkResultRecord"];
     };
     /** WorkResultRecord */
     WorkResultRecord: {
@@ -37920,7 +38026,12 @@ export type SessionCostEntityDto =
   components["schemas"]["SessionCostEntityDto"];
 export type TaskEntityDto = components["schemas"]["TaskEntityDto"];
 export type TerminalEntityDto = components["schemas"]["TerminalEntityDto"];
+export type WorkDecisionEntityDto =
+  components["schemas"]["WorkDecisionEntityDto"];
 export type WorkEntityDto = components["schemas"]["WorkEntityDto"];
+export type WorkReleaseEntityDto =
+  components["schemas"]["WorkReleaseEntityDto"];
+export type WorkResultEntityDto = components["schemas"]["WorkResultEntityDto"];
 export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
 

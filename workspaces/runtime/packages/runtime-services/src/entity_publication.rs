@@ -19,6 +19,7 @@ impl EntityPublisher for DefaultPublisher {
         let changes = crate::sync_policy::EntityChanges {
             agents: pending.agents.clone(),
             requests: pending.requests.clone(),
+            work: pending.work.clone(),
             ..Default::default()
         };
         let server_id = RuntimeStore::transaction_local_server_id(transaction)?;

@@ -4433,6 +4433,9 @@
             ],
             "title": "Tail"
           },
+          "taskDefaultGate": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
+          },
           "tokensUsed": {
             "anyOf": [
               {
@@ -6031,6 +6034,9 @@
               }
             ],
             "title": "Tail"
+          },
+          "taskDefaultGate": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
           },
           "threadId": {
             "anyOf": [
@@ -50735,7 +50741,11 @@
                   "retainedWorktree",
                   "questionHistory",
                   "agentSummary",
-                  "agentDetail"
+                  "agentDetail",
+                  "workDetail",
+                  "workResult",
+                  "workDecision",
+                  "workRelease"
                 ],
                 "type": "string"
               },
@@ -50959,6 +50969,90 @@
               "value"
             ],
             "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "workDetail",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkItem"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "workResult",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkResultEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "workDecision",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkDecisionEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "workRelease",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkReleaseEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
           }
         ],
         "properties": {
@@ -51025,6 +51119,10 @@
             "terminal": "#/components/schemas/SyncTerminalEntityPayload",
             "uiPreferences": "#/components/schemas/SyncUiPreferencesEntityPayload",
             "work": "#/components/schemas/SyncWorkEntityPayload",
+            "workDecision": "#/components/schemas/SyncWorkDecisionEntityPayload",
+            "workDetail": "#/components/schemas/SyncWorkDetailEntityPayload",
+            "workRelease": "#/components/schemas/SyncWorkReleaseEntityPayload",
+            "workResult": "#/components/schemas/SyncWorkResultEntityPayload",
             "workspace": "#/components/schemas/SyncWorkspaceEntityPayload"
           },
           "propertyName": "collection"
@@ -51122,6 +51220,18 @@
           },
           {
             "$ref": "#/components/schemas/SyncAgentDetailEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncWorkDetailEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncWorkResultEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncWorkDecisionEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncWorkReleaseEntityPayload"
           }
         ]
       },
@@ -51929,6 +52039,54 @@
         "title": "SyncUiPreferencesEntityPayload",
         "type": "object"
       },
+      "SyncWorkDecisionEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "workDecision",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/WorkDecisionEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncWorkDecisionEntityPayload",
+        "type": "object"
+      },
+      "SyncWorkDetailEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "workDetail",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/WorkItem"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncWorkDetailEntityPayload",
+        "type": "object"
+      },
       "SyncWorkEntityPayload": {
         "additionalProperties": false,
         "properties": {
@@ -51951,6 +52109,54 @@
           "value"
         ],
         "title": "SyncWorkEntityPayload",
+        "type": "object"
+      },
+      "SyncWorkReleaseEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "workRelease",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/WorkReleaseEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncWorkReleaseEntityPayload",
+        "type": "object"
+      },
+      "SyncWorkResultEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "workResult",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/WorkResultEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncWorkResultEntityPayload",
         "type": "object"
       },
       "SyncWorkspaceEntityPayload": {
@@ -59481,6 +59687,36 @@
         "title": "WorkDecisionDto",
         "type": "object"
       },
+      "WorkDecisionEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rootId": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/WorkDecisionRecord"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "rootId",
+          "index",
+          "value"
+        ],
+        "title": "WorkDecisionEntityDto",
+        "type": "object"
+      },
       "WorkDecisionRecord": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -59954,6 +60190,36 @@
         "title": "WorkList",
         "type": "object"
       },
+      "WorkReleaseEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rootId": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/JsonValue"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "rootId",
+          "index",
+          "value"
+        ],
+        "title": "WorkReleaseEntityDto",
+        "type": "object"
+      },
       "WorkResource": {
         "additionalProperties": false,
         "properties": {
@@ -59971,7 +60237,16 @@
           "agentId"
         ],
         "title": "WorkResource",
-        "type": "object"
+        "type": "object",
+        "x-studio-entity-scope": {
+          "agentField": "agentId",
+          "collections": [
+            "workDetail",
+            "workResult",
+            "workDecision",
+            "workRelease"
+          ]
+        }
       },
       "WorkResultDto": {
         "additionalProperties": false,
@@ -60060,6 +60335,36 @@
           "created"
         ],
         "title": "WorkResultDto",
+        "type": "object"
+      },
+      "WorkResultEntityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rootId": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/WorkResultRecord"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "rootId",
+          "index",
+          "value"
+        ],
+        "title": "WorkResultEntityDto",
         "type": "object"
       },
       "WorkResultRecord": {

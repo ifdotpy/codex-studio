@@ -458,7 +458,7 @@ export function Workspace(props: Props) {
                     <Tasks
                       key={selected.id}
                       agentId={selected.id}
-                      revision={revision}
+                      rootId={selected.rootId || selected.id}
                     />
                   )}
                   {section === "checkpoints" && <Checkpoints {...context} />}
