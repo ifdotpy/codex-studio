@@ -692,7 +692,16 @@ fn scope_rows(
             .query_map(params![root, agent], CostRow::from_sql)?
             .collect();
     }
-    let mut statement = db.prepare_cached(&format!("SELECT {ROW_COLUMNS} FROM analytics_cost_rows WHERE root=?1 AND agent=?2 AND ((thread IS ?3 AND turn IS ?4) OR (response IS NOT NULL AND response=?5))"))?;
+    // Every selected response must bring all its counterparts, including responses
+    // merely sharing the touched turn; otherwise a suppressed legacy row can revive.
+    let mut statement = db.prepare_cached(&format!(
+        "WITH affected AS (
+            SELECT response FROM analytics_cost_rows WHERE root=?1 AND agent=?2
+            AND ((thread IS ?3 AND turn IS ?4) OR response=?5)
+         )
+         SELECT {ROW_COLUMNS} FROM analytics_cost_rows WHERE root=?1 AND agent=?2
+         AND ((thread IS ?3 AND turn IS ?4) OR response IN (SELECT response FROM affected))"
+    ))?;
     let mut rows = BTreeMap::new();
     for (thread, turn, response) in turns {
         for row in statement.query_map(
@@ -889,14 +898,14 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         store.analytics_transaction::<_,StoreError>(|tx,_| {
-            for (id,response,evidence,input) in [("old","r1","legacy",900),("final","r1","live",10),("large","r2","recovered",250001)] {
-                AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&json!({"id":id,"agentId":"agent","rootId":"root","threadId":"thread","turnId":id,"at":1,"last":{},"total":{},
+            for (id,response,evidence,input) in [("old","r1","legacy",900),("final","r1","live",10),("large","r2","recovered",250001),("later","r3","live",20)] {
+                AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&json!({"id":id,"agentId":"agent","rootId":"root","threadId":"thread","turnId":if id=="later"{"old"}else{id},"at":1,"last":{},"total":{},
                     "studioUsage":{"kind":"response","responseId":response,"model":"m","evidence":evidence,"tokens":{"uncachedInput":input,"cacheReadInput":3,"cacheWriteInput":2,"output":1}}}))?;
             }
             let groups=super::cost_groups(tx,"root",&Default::default())?;
             let mut inputs=groups.iter().map(|group| { assert_eq!(group.count,1); assert!(group.input_uncached); group.tokens.input_tokens.expect("normalized input") as u64 }).collect::<Vec<_>>();
             inputs.sort();
-            assert_eq!(inputs,vec![10,250001],"keep separate request sizes for pricing thresholds, count each final response once");
+            assert_eq!(inputs,vec![10,20,250001],"keep separate request sizes for pricing thresholds, count each final response once");
             Ok(())
         }).await.expect("typed request costs");
     }
