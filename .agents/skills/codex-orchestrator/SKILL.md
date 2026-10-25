@@ -40,21 +40,21 @@ Supply an override only when the user explicitly requests it. Codex and Claude
 workers can share a team. Honor the user's explicit model or account constraints.
 See the [execution contract](../../../docs/orchestration.md) for fallback precedence.
 
-Chat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.
-Mac servers default to `layr`. Linux servers support `worktree` only.
+Chat creation selects `workspaceMode`.
 
-| Chat mode  | Agent environment | Worker workspace         |
-| ---------- | ----------------- | ------------------------ |
-| `layr`     | Studio Linux VM   | Separate owned layr line |
-| `image`    | Native macOS      | ASIF image               |
-| `worktree` | Native host       | Git worktree             |
+| Mode          | UI label | Agent environment                | Worker workspace         |
+| ------------- | -------- | -------------------------------- | ------------------------ |
+| `layr-native` | Layr     | Native macOS APFS or Linux btrfs | Separate owned host line |
+| `layr`        | Layr VM  | Studio Linux VM                  | Separate owned VM line   |
+| `worktree`    | WT       | Native host                      | Git worktree             |
 
-Workers inherit the chat mode. In a native chat, use `workspace` to select
-`image`, `worktree`, or deliberate `shared` edits. Image workspaces require macOS.
-A native reviewer uses the selected folder with read-only access.
-A layr reviewer uses a read-only line in the VM.
-Use the layr reference for VM state IDs, exact-state review, and acceptance.
-Use `server` with an absolute remote `cwd` for a native worker on a paired machine.
+Workers inherit the chat mode. Use deliberate `shared` edits only within an assigned file boundary.
+Worktrees require Git and use a committed base. Submit their results on a named Git branch.
+Both layr modes use exact state IDs for submission and review.
+
+Read [native Layr](../codex-workspace/references/layr-native.md) or [Layr VM](../codex-workspace/references/layr.md) for readiness, tools, and acceptance.
+Use only workspace choices that the current tool schema exposes.
+Use `server` with an absolute remote `cwd` for native work on a paired machine.
 
 Define each implementation assignment with:
 
@@ -110,12 +110,11 @@ Base reports of continued work on an active worker, command, or automatic contin
   not only into chat. A chat message can arrive late.
 - Give every shared branch and every shared file one owner. State who may merge
   into an integration branch.
-- Give workers the folder that contains their task. Supported platforms copy
-  its Git root, or the folder itself outside Git, including uncommitted changes.
-  Other platforms use a Git worktree when possible, or the original folder.
-  New workers have read-only access until the image base is ready. Ask workers
-  to commit on a named branch. Integrate by reading the copy path or fetching
-  the branch, for example `git fetch <path> <branch>`.
+- Give workers the folder that contains their task. Wait for workspace readiness before edits.
+  In both layr modes, assign owned lines and review exact saved states.
+  Acceptance merges with expect. The lead owns main.
+  In worktree mode, ask workers to commit on a named branch.
+  Inspect the branch in the returned workspace before integration.
 - Do not run two live verifications that change the same system state at the
   same time. Schedule them, or give them independent criteria.
 
