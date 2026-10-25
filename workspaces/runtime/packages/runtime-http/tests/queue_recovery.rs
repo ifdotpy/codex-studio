@@ -198,8 +198,18 @@ async fn send_now_refuses_unproven_failed_batches_without_any_write() {
                 "provider"=>{tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.provider','claude') WHERE id=?1",[ACTOR])?;},
                 "payload"=>{tx.execute("UPDATE runtime_events SET text='changed' WHERE id=?1",[USER])?;},
                 "metadata"=>{tx.execute("UPDATE runtime_event_meta SET record=json_set(record,'$.delivery','next_turn') WHERE id=?1",[USER])?;},
-                "extra-event"=>{tx.execute("INSERT INTO runtime_events VALUES('extra',?1,'followup','new input','pending',6,0,NULL,NULL)",[ACTOR])?;},
-                "uncertain-event"=>{tx.execute("INSERT INTO runtime_events VALUES('extra',?1,'user','unknown earlier input','uncertain',6,0,NULL,'unknown outcome')",[ACTOR])?;},
+                "extra-event"|"uncertain-event"=>{
+                    let uncertain=case=="uncertain-event";
+                    QueueEventRepository::put(tx,&QueueEvent{
+                        id:QueueEventId::from("extra"),agent:AgentId::from(ACTOR),
+                        kind:if uncertain{"user"}else{"followup"}.into(),
+                        text:if uncertain{"unknown earlier input"}else{"new input"}.into(),
+                        status:if uncertain{"uncertain"}else{"pending"}.into(),
+                        created:6.0,epoch:0,turn_id:None,
+                        error:uncertain.then(||"unknown outcome".into()),
+                    })?;
+                    QueueWriteRepository::put_metadata(tx,"extra",&json!({"delivery":"current_turn","acceptedAt":6,"assets":[]}))?;
+                },
                 "missing-receipt"=>{tx.execute("UPDATE runtime_execution_attempts SET record=json_remove(record,'$.receipts') WHERE id=?1",[FIRST])?;},
                 "later-run"=>{tx.execute("INSERT INTO runtime_execution_runs SELECT 'later',agent,account,epoch,thread,turn,created+1,json_set(record,'$.id','later','$.status','unknown') FROM runtime_execution_runs LIMIT 1",[])?;},
                 _=>unreachable!(),

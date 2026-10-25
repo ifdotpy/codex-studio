@@ -233,6 +233,8 @@ struct Scripted {
     opened_notice: Arc<Notify>,
     ready_notice: Arc<Notify>,
     initialize_holds: InitializeHolds,
+    /// Read-only history of the retained turn in the callback restart witness.
+    retained_history: std::sync::OnceLock<(String, String)>,
 }
 /// Provider handles whose `initialize` reply waits for the paired release.
 type InitializeHolds = Arc<Mutex<BTreeMap<String, Arc<Notify>>>>;
@@ -288,6 +290,7 @@ impl AccountLauncher for Scripted {
                 opened_notice: self.opened_notice.clone(),
                 ready_notice: self.ready_notice.clone(),
                 initialize_holds: self.initialize_holds.clone(),
+                retained_history: self.retained_history.get().cloned(),
             });
             Ok(AccountLaunch {
                 factory,
@@ -331,6 +334,7 @@ struct WireFactory {
     unknown_writes: bool,
     record_resumes: bool,
     initialize_holds: InitializeHolds,
+    retained_history: Option<(String, String)>,
 }
 impl ProviderTaskFactory for WireFactory {
     fn open(&self, handle: ProviderHandle, _: OpenOptions, shutdown: Shutdown) -> OpenFuture<'_> {
@@ -349,6 +353,7 @@ impl ProviderTaskFactory for WireFactory {
             .unwrap()
             .get(handle.as_str())
             .cloned();
+        let retained_history = self.retained_history.clone();
         Box::pin(async move {
             let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(16);
             let (events, journal) = mpsc::channel(16);
@@ -480,6 +485,40 @@ impl ProviderTaskFactory for WireFactory {
                                     ready_notice.notify_one();
                                 }
                                 if let Some(message) = observed_message {
+                                    if let Some((thread, turn)) = &retained_history {
+                                        let result = match message["method"].as_str() {
+                                            Some("thread/read") => Some(
+                                                json!({"thread":{"id":thread,"status":{"type":"active"}}}),
+                                            ),
+                                            Some("thread/turns/list") => Some(
+                                                json!({"data":[{"id":turn,"threadId":thread,"status":"inProgress","itemsView":"full","items":[]}],"nextCursor":null}),
+                                            ),
+                                            _ => None,
+                                        };
+                                        if let Some(result) = result {
+                                            assert_eq!(message["params"]["threadId"], *thread);
+                                            sequence += 1;
+                                            events
+                                                .send(JournalEntry {
+                                                    received_at_ms: 0,
+                                                    cursor: EventCursor(sequence),
+                                                    generation: Generation(7),
+                                                    payload: JournalPayload::Frame(
+                                                        Frame::Response {
+                                                            id: serde_json::from_value(
+                                                                message["id"].clone(),
+                                                            )
+                                                            .unwrap(),
+                                                            body: ResponseBody::Result(result),
+                                                            fields: Default::default(),
+                                                        },
+                                                    ),
+                                                })
+                                                .await
+                                                .unwrap();
+                                            continue;
+                                        }
+                                    }
                                     if message["method"] == "turn/start" && !unknown_writes {
                                         sequence += 1;
                                         events
@@ -604,6 +643,7 @@ fn scripted_with_policy(
             opened_notice: Arc::default(),
             ready_notice: Arc::default(),
             initialize_holds: Arc::default(),
+            retained_history: std::sync::OnceLock::new(),
         }),
         rx,
     )
@@ -1524,8 +1564,12 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
     store.transaction(move |tx| {
         let actor = json!({"id":"managed-actor","rootId":"managed-actor","epoch":0,"status":"running","autoWake":true,"inFlight":true,
             "provider":"claude","accountKey":"default","threadId":"retained-thread","turnId":"retained-turn","parentId":null,"role":"implementer","isLead":true,
-            "startAttempt":{"connectionGeneration":7,"connectionId":"reattached-connection"}});
+            "turnEpoch":0,"startAttempt":{"id":"retained-attempt","epoch":0,"accountKey":"default",
+                "threadId":"retained-thread","turnId":"retained-turn","submitted":true,"created":1.0,
+                "events":["delivered-input"],"activeAtReservation":false,"settingsFixed":true,
+                "requestTicket":"retained-start","connectionGeneration":7,"connectionId":"reattached-connection"}});
         tx.execute("INSERT INTO runtime_agents(id,record) VALUES ('managed-actor',?1)", [actor.to_string()])?;
+        tx.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created,turn_id) VALUES ('delivered-input','managed-actor',0,'user','original input','delivered',1.0,'retained-turn')", [])?;
         let accepted = json!({"account":"default","journalScope":"default","generation":7,"cursor":1,
             "requestId":"saved-tool-reply","method":"item/tool/call",
             "frame":"{\"id\":\"saved-tool-reply\",\"method\":\"item/tool/call\",\"params\":{\"threadId\":\"retained-thread\",\"turnId\":\"retained-turn\",\"callId\":\"saved-spawn\",\"tool\":\"orchestration_spawn\",\"arguments\":{}}}\n",
@@ -1557,6 +1601,10 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
     );
     drop(db);
     let (scripted, mut writes) = scripted_with_unknown_writes(false);
+    scripted
+        .retained_history
+        .set(("retained-thread".into(), "retained-turn".into()))
+        .unwrap();
     let mut registry = AccountRegistry::new(
         store.clone(),
         Arc::new(CallbackRecoveryLauncher(scripted)),
@@ -1565,7 +1613,23 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
     .await
     .unwrap();
     registry.reconcile(None).await.unwrap();
-    let (handle, delivered) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
+    let progress = async {
+        loop {
+            let reader = store.test_reader().unwrap();
+            let refused: bool = reader.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id='account-worker:callback:default:7:1:unknown')", [], |row| row.get(0)).unwrap();
+            assert!(
+                !refused,
+                "the saved callback must retain valid actor authority through startup recovery"
+            );
+            drop(reader);
+            tokio::select! {
+                write = writes.recv() => break write,
+                changed = changes.changed() => changed.unwrap(),
+            }
+        }
+    };
+    let (handle, delivered) = tokio::time::timeout(TEST_HANG_GUARD, progress)
         .await
         .unwrap_or_else(|_| {
             let db = store.test_reader().unwrap();
@@ -1593,6 +1657,20 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
             changes.changed().await.unwrap();
         }
     }).await.unwrap();
+    let actor: String = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id='managed-actor'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let actor: Value = serde_json::from_str(&actor).unwrap();
+    assert_eq!(actor["startAttempt"]["id"], "retained-attempt");
+    assert_eq!(actor["status"], "running");
+    assert_eq!(actor["autoWake"], true);
+    assert_eq!(actor["inFlight"], true);
     registry.shutdown().await.unwrap();
     assert!(writes.try_recv().is_err());
 }
