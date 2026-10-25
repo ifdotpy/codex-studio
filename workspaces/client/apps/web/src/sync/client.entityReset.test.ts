@@ -1442,6 +1442,138 @@ describe("entity pull reset wiring", () => {
     expect(dispatch).toHaveBeenCalledWith(event);
     expect(event.resourceVersions[0]?.cursor).toBeUndefined();
   });
+  it.each(["snapshot", "batch"])(
+    "stops quietly when delivery revokes a transcript %s during its stored read",
+    async (scenario) => {
+      const workspaceId = "8".repeat(32);
+      const rows = new Map<string, Record<string, unknown>>([
+        [
+          "transcript:agent",
+          {
+            id: "transcript:agent",
+            seq: 1,
+            payload: JSON.stringify({
+              format: 3,
+              epoch: "epoch",
+              metadata: { truncated: false, nextCursor: null },
+              order: ["answer"],
+            }),
+          },
+        ],
+        [
+          "transcript:item:agent:answer",
+          {
+            id: "transcript:item:agent:answer",
+            seq: 1,
+            payload: JSON.stringify({ id: "answer", text: "before" }),
+          },
+        ],
+      ]);
+      const { ResourceEntityDelivery } =
+        await import("./resourceEntityDelivery");
+      let delivery: InstanceType<typeof ResourceEntityDelivery>;
+      const written: string[] = [];
+      let revoked = 0;
+      const storageInstance = {
+        findDocumentsById: vi.fn(async (ids: string[]) => {
+          // A subscription change supersedes the frame after the transcript
+          // write, during the read that decides whether to save its cursor.
+          if (
+            ids.length === 1 &&
+            ids[0] === "transcript:agent" &&
+            rows.get("transcript:agent")?.seq === 2 &&
+            !revoked++
+          )
+            delivery.invalidate();
+          return ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : []));
+        }),
+        bulkWrite: vi.fn(
+          async (writes: { document: Record<string, unknown> }[]) => {
+            for (const { document } of writes) {
+              rows.set(String(document.id), document);
+              written.push(String(document.id));
+            }
+            return { error: [] };
+          },
+        ),
+      };
+      const projections = {
+        database: { name: "revoked-transcript" },
+        storageInstance,
+        $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
+      };
+      mocks.createRxDatabase
+        .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+        .mockResolvedValueOnce({
+          addCollections: vi.fn(async () => ({ projections })),
+        });
+      mocks.syncGet.mockResolvedValue({ workspaceId });
+      vi.stubGlobal("window", { addEventListener: vi.fn() });
+      vi.stubGlobal("navigator", {
+        onLine: true,
+        locks: {
+          request: (_key: string, callback: () => Promise<unknown>) =>
+            callback(),
+        },
+      });
+      const client = await import("./client");
+      let persisted: Promise<void> | undefined;
+      const dispatch = vi.fn();
+      delivery = new ResourceEntityDelivery((frame, isCurrent) => {
+        persisted = client.persistResourceEntityChanges(frame, isCurrent);
+        return persisted;
+      }, dispatch);
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const items = [{ id: "answer", role: "assistant", text: "streamed" }];
+      const event = {
+        protocol: SYNC_PROTOCOL_VERSION,
+        workspaceId,
+        epoch: "epoch",
+        revision: 2,
+        reason: scenario === "snapshot" ? "initial" : "change",
+        resources: [{ kind: "transcript", agentId: "agent" }],
+        resourceVersions: [
+          {
+            resource: { kind: "transcript", agentId: "agent" },
+            revision: 2,
+            cursor: { workspaceId, seq: 2 },
+            ...(scenario === "snapshot"
+              ? {
+                  replyKind: "snapshot",
+                  transcriptSnapshot: { items, truncated: false },
+                }
+              : {
+                  replyKind: "delta",
+                  transcriptChanges: {
+                    after: 1,
+                    through: 2,
+                    delta: {
+                      delta: true,
+                      items,
+                      removed: [],
+                      truncated: false,
+                    },
+                  },
+                }),
+          },
+        ],
+      } as ResourceChangeEvent;
+      delivery.receive(event);
+      await expect(persisted).resolves.toBeUndefined();
+      await Promise.resolve();
+      expect(consoleError).not.toHaveBeenCalled();
+      // The transcript itself is saved; the revoked cursor is not.
+      expect(revoked).toBe(1);
+      expect(rows.get("transcript:agent")?.seq).toBe(2);
+      expect(written).not.toContainEqual(
+        expect.stringMatching(/^subscription:cursor:/),
+      );
+      expect(dispatch).toHaveBeenCalledWith(event);
+      expect(event.resourceVersions[0]?.cursor).toBeUndefined();
+    },
+  );
   it("persists terminal records and cursor atomically, replays without duplicate output, and leaves the old cursor on failure", async () => {
     const workspaceId = "8".repeat(32);
     const rows = new Map<string, Record<string, any>>();
