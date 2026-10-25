@@ -10,6 +10,7 @@ import {
   readFileSync,
   mkdirSync,
   rmSync,
+  realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -366,7 +367,12 @@ require('node:fs').appendFileSync(process.env.CAPTURE, JSON.stringify({args: pro
     ]);
     assert.equal(
       recorded.supervisor,
-      path.join(root, "target", "debug", "codex-process-supervisor"),
+      path.join(
+        realpathSync(root),
+        "target",
+        "debug",
+        "codex-process-supervisor",
+      ),
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
