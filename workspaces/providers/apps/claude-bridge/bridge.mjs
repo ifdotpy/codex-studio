@@ -1811,8 +1811,10 @@ async function startSession(s, active, p) {
         }
       }
       if (!turn) continue;
-      if (m.type === "stream_event")
-        for (const studioUsage of active.usage.observe(m, turn.id))
+      if (m.type === "stream_event" || m.type === "assistant")
+        for (const studioUsage of m.type === "stream_event"
+          ? active.usage.observe(m, turn.id)
+          : active.usage.observeAssistant(m, turn.id))
           emit("thread/tokenUsage/updated", {
             threadId: s.id,
             turnId: studioUsage.turnId,

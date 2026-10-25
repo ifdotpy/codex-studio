@@ -24,11 +24,11 @@ export interface components {
      * @enum {string}
      */
     UsageEvidence: "live" | "recovered" | "legacy";
-    /**
-     * @description Why final response accounting is unavailable.
-     * @enum {string}
-     */
-    UsageGapReason: "streamInterrupted" | "queryClosed";
+    /** @description Why final response accounting is unavailable. */
+    UsageGapReason:
+      | ("streamInterrupted" | "queryClosed")
+      | "unconfirmedStop"
+      | "noStream";
     /** @description Accounting evidence, preserving response identity and cumulative counter scope. */
     UsageObservation:
       | {

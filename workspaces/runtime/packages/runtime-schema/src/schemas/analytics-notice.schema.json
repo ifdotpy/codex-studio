@@ -219,11 +219,25 @@
     },
     "UsageGapReason": {
       "description": "Why final response accounting is unavailable.",
-      "enum": [
-        "streamInterrupted",
-        "queryClosed"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "streamInterrupted",
+            "queryClosed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "unconfirmedStop",
+          "description": "Stream stopped without a provider delta confirming completion.",
+          "type": "string"
+        },
+        {
+          "const": "noStream",
+          "description": "Assistant message arrived without any stream for its response identity.",
+          "type": "string"
+        }
+      ]
     },
     "UsageObservation": {
       "description": "Accounting evidence, preserving response identity and cumulative counter scope.",
