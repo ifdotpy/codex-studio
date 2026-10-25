@@ -1,61 +1,16 @@
 import { useLayoutEffect, useState } from "react";
 import { touchPointerMedia } from "./touchCapability";
+import { layoutValues } from "../layout/layout-contract.generated";
+import { viewportGestureCountAttribute } from "./mobileViewport";
+import { createLayoutFrameBuffer } from "./layoutFrameBuffer";
 import "./layout-debug.css";
 
 /** Temporary device diagnostic. The normal application does not mount its probes. */
 export function LayoutDebug() {
   const enabled =
     new URLSearchParams(window.location.search).get("layoutDebug") === "1";
-  const noPan =
-    new URLSearchParams(window.location.search).get("kbdNoPan") === "1";
   const [values, setValues] = useState("");
-  useLayoutEffect(() => {
-    if (!noPan) return;
-    let intercepted: HTMLTextAreaElement | null = null;
-    const focusWithoutPan = (event: Event) => {
-      const target = event.target;
-      if (
-        !(target instanceof HTMLTextAreaElement) ||
-        !target.matches("#composer textarea")
-      )
-        return;
-      if (document.activeElement === target && intercepted !== target) return;
-      event.preventDefault();
-      if (intercepted !== target) {
-        intercepted = target;
-        target.focus({ preventScroll: true });
-      }
-    };
-    const end = () => {
-      intercepted = null;
-    };
-    document.addEventListener("pointerdown", focusWithoutPan, {
-      capture: true,
-      passive: false,
-    });
-    document.addEventListener("touchstart", focusWithoutPan, {
-      capture: true,
-      passive: false,
-    });
-    for (const type of [
-      "pointerup",
-      "pointercancel",
-      "touchend",
-      "touchcancel",
-    ])
-      document.addEventListener(type, end, true);
-    return () => {
-      document.removeEventListener("pointerdown", focusWithoutPan, true);
-      document.removeEventListener("touchstart", focusWithoutPan, true);
-      for (const type of [
-        "pointerup",
-        "pointercancel",
-        "touchend",
-        "touchcancel",
-      ])
-        document.removeEventListener(type, end, true);
-    };
-  }, [noPan]);
+  const [frameValues, setFrameValues] = useState("[]");
   useLayoutEffect(() => {
     if (!enabled) return;
     const root = document.getElementById("root");
@@ -108,8 +63,9 @@ export function LayoutDebug() {
       setValues(
         [
           `pointer coarse: ${primary.matches}`,
+          `intercepted gestures: ${document.documentElement.getAttribute(viewportGestureCountAttribute) || 0}`,
           `frame samples: ${samples}; root moved frames: ${rootMoved}; sidebar moved frames: ${sidebarMoved}`,
-          `vv pan events this open: ${panEvents}; kbdNoPan experiment: ${noPan ? "on" : "off"}`,
+          `vv pan events this open: ${panEvents}; keyboard gesture interception: product`,
           `last moved frame: ${lastMoved}`,
           `any-pointer coarse: ${any.matches}`,
           `maxTouchPoints: ${navigator.maxTouchPoints}`,
@@ -128,9 +84,67 @@ export function LayoutDebug() {
         ].join("\n"),
       );
     };
+    let captureStart = 0,
+      captureUntil = -1,
+      capturePhase = "idle",
+      capturePending = false;
+    // Samples per diagnostic window, in frames: before the pan, after it, and at close.
+    const recordWindowFrames = 90;
+    const records = createLayoutFrameBuffer(recordWindowFrames);
+    const record = (time: number) => {
+      const composer = document
+        .querySelector("#composer")
+        ?.getBoundingClientRect();
+      records.push({
+        time: Math.round(time - captureStart),
+        interceptedGestures: Number(
+          document.documentElement.getAttribute(
+            viewportGestureCountAttribute,
+          ) || 0,
+        ),
+        phase: capturePhase,
+        innerHeight: window.innerHeight,
+        height: window.visualViewport?.height,
+        offsetTop: window.visualViewport?.offsetTop,
+        pageTop: window.visualViewport?.pageTop,
+        scrollY: window.scrollY,
+        rootTop: root.getBoundingClientRect().top,
+        sidebar: sidebarRect(),
+        composer: composer ? [composer.top, composer.bottom] : null,
+      });
+      capturePending = true;
+    };
+    const beginCapture = (event: FocusEvent) => {
+      if (
+        !(event.target instanceof HTMLTextAreaElement) ||
+        !event.target.matches("#composer textarea")
+      )
+        return;
+      const now = performance.now();
+      if (event.type === "focusin") {
+        records.reset();
+        captureStart = now;
+      }
+      capturePhase = event.type === "focusin" ? "focus" : "blur";
+      captureUntil =
+        event.type === "focusin"
+          ? Infinity
+          : now + layoutValues.keyboard.focusSampleWindow;
+      record(now);
+    };
+    document.addEventListener("focusin", beginCapture);
+    document.addEventListener("focusout", beginCapture);
     // Frames between passive counter refreshes, about half a second at 60 Hz.
     const counterRefreshFrames = 30;
-    const sample = () => {
+    const sample = (time: number) => {
+      if (time <= captureUntil) record(time);
+      if (
+        capturePending &&
+        (time > captureUntil || samples % counterRefreshFrames === 0)
+      ) {
+        capturePending = false;
+        setFrameValues(JSON.stringify(records.snapshot()));
+      }
       const top = Math.round(root.getBoundingClientRect().top);
       const side = sidebarRect();
       if (rootBaseline === null && !keyboard) rootBaseline = top;
@@ -171,6 +185,8 @@ export function LayoutDebug() {
     frame = requestAnimationFrame(sample);
     return () => {
       cancelAnimationFrame(frame);
+      document.removeEventListener("focusin", beginCapture);
+      document.removeEventListener("focusout", beginCapture);
       resize.disconnect();
       mutation.disconnect();
       probe.remove();
@@ -182,10 +198,20 @@ export function LayoutDebug() {
       window.visualViewport?.removeEventListener("resize", update);
       window.visualViewport?.removeEventListener("scroll", pan);
     };
-  }, [enabled, noPan]);
+  }, [enabled]);
   return enabled ? (
-    <pre className="layout-debug" aria-hidden="true">
-      {values}
-    </pre>
+    <>
+      <pre className="layout-debug" aria-hidden="true">
+        {values}
+      </pre>
+      <textarea
+        id="layout-debug-frames"
+        className="layout-debug-frames"
+        aria-label="Keyboard frame samples"
+        readOnly
+        tabIndex={-1}
+        value={frameValues}
+      />
+    </>
   ) : null;
 }

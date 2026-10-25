@@ -221,6 +221,7 @@ test("Duo uses the bottom band for passive status and keeps every target above H
       });
       n.dispatchEvent(event);
       n.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      document.documentElement.setAttribute("data-viewport-keyboard", "");
       const again = new PointerEvent("pointerdown", {
         bubbles: true,
         cancelable: true,
@@ -241,8 +242,60 @@ test("Duo uses the bottom band for passive status and keeps every target above H
       secondPrevented: false,
     });
     await expect(page.locator(".layout-debug")).toContainText(
-      "kbdNoPan experiment: on",
+      "keyboard gesture interception: product",
     );
+    const frames = page.getByRole("textbox", {
+      name: "Keyboard frame samples",
+    });
+    await expect
+      .poll(async () => JSON.parse(await frames.inputValue()).length)
+      .toBeGreaterThan(0);
+    const recorded = JSON.parse(await frames.inputValue());
+    expect(
+      recorded.some(
+        (row) =>
+          row.phase === "focus" && row.height === 669 && row.offsetTop === 0,
+      ),
+    ).toBe(true);
+    await page.locator("#message").evaluate((n) => n.blur());
+    await expect
+      .poll(async () =>
+        JSON.parse(await frames.inputValue()).some(
+          (row) => row.phase === "blur",
+        ),
+      )
+      .toBe(true);
+    await expect(frames).toHaveAttribute("readonly", "");
+    await expect(frames).toHaveAttribute("tabindex", "-1");
+    const refocused = await page.locator("#message").evaluate((n) => {
+      document.documentElement.removeAttribute("data-viewport-keyboard");
+      n.focus();
+      let blurs = 0;
+      n.addEventListener("blur", () => blurs++, { once: true });
+      const event = new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        pointerType: "touch",
+      });
+      n.dispatchEvent(event);
+      n.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      return {
+        prevented: event.defaultPrevented,
+        blurs,
+        focused: document.activeElement === n,
+      };
+    });
+    expect(refocused).toEqual({ prevented: true, blurs: 1, focused: true });
+    await expect(page.locator(".layout-debug")).toContainText(
+      "intercepted gestures: 2",
+    );
+    await expect
+      .poll(async () =>
+        JSON.parse(await frames.inputValue()).some(
+          (row) => row.interceptedGestures === 2,
+        ),
+      )
+      .toBe(true);
   } finally {
     await page.close();
     await server.close();
