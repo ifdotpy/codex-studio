@@ -223,7 +223,10 @@
       "properties": {
         "receiptKey": {
           "description": "First-capture deduplication key; retained across restore and re-import.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "studioUsage": {
           "$ref": "#/$defs/UsageObservation",
@@ -566,7 +569,10 @@
     },
     "receiptKey": {
       "description": "First-capture deduplication key; retained across restore and re-import.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "responseId": {
       "anyOf": [

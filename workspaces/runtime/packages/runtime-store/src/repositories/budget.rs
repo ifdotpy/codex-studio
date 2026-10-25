@@ -193,7 +193,7 @@ fn validate_usage(value: &Value) -> StoreResult<()> {
                 ("notice", last.as_ref().unwrap_or(total).total())
             }
         };
-        if ledger.receipt_key != row.id
+        if ledger.receipt_key.as_deref() != Some(row.id.as_str())
             || ledger.usage_identity != UsageIdentity::new(&row.agent, thread, &ledger.studio_usage)
             || row.kind != kind
             || total != Some(row.tokens)

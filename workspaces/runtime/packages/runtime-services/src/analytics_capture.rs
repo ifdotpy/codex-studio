@@ -1455,6 +1455,7 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
     );
     if let Some(old) =
         existing.and_then(|row| UsageLedgerRow::from_analytics(usage_provider(&q.agent), row).ok())
+        && old.receipt_key.is_some()
     {
         ledger.receipt_key = old.receipt_key;
     }

@@ -25010,7 +25010,7 @@ export interface components {
      */
     UsageLedgerRow: {
       /** @description First-capture deduplication key; retained across restore and re-import. */
-      receiptKey: string;
+      receiptKey: string | null;
       /** @description Provider-neutral evidence; token fields have units of tokens. */
       studioUsage: components["schemas"]["UsageObservation"];
       /** @description Immutable logical usage identity; dimensionless. */

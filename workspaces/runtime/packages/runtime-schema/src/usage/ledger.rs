@@ -10,6 +10,23 @@ pub const MISSING_FINAL_USAGE: &str = "missingFinalUsage";
 /// Conflict fault when a recorded response's immutable token tuple changes.
 pub const RESPONSE_REPLAY_CONFLICT: &str = "responseReplayConflict";
 
+/// Maximum analytics source rows examined to establish old gap identities; rows.
+pub const LEGACY_GAP_COVERAGE_ROWS: usize = 256;
+
+/// Whether the budget knows every unresolved response identity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum GapCoverage {
+    #[default]
+    Complete,
+    LegacyUnknown,
+}
+
+/// Immutable response receipt key, shared by responses and their gaps.
+pub fn response_receipt_key(agent: &str, response: &str) -> String {
+    receipt_hash(&json!([agent, "response", response]))
+}
+
 /// Logical owner of usage, independent of capture time, account, turn and provenance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(
@@ -53,7 +70,7 @@ pub struct UsageLedgerRow {
     /// Immutable logical usage identity; dimensionless.
     pub usage_identity: UsageIdentity,
     /// First-capture deduplication key; retained across restore and re-import.
-    pub receipt_key: String,
+    pub receipt_key: Option<String>,
     /// Provider-neutral evidence; token fields have units of tokens.
     pub studio_usage: UsageObservation,
 }
@@ -71,16 +88,21 @@ impl UsageLedgerRow {
         let usage_identity = UsageIdentity::new(agent, thread, &observation);
         let receipt = match &usage_identity {
             UsageIdentity::Response { response_id, .. } => json!([agent, "response", response_id]),
-            UsageIdentity::Cumulative { .. } => {
-                super::legacy_notice_identity(agent, account, turn, params)
-                    .unwrap_or_else(|| json!([agent, account, "notice", turn, observation]))
-            }
+            UsageIdentity::Cumulative { .. } => json!([
+                usage_identity,
+                legacy_counter_preimage(agent, account, turn, params, &observation)
+            ]),
         };
         Self {
             usage_identity,
-            receipt_key: receipt_hash(&receipt),
+            receipt_key: Some(receipt_hash(&receipt)),
             studio_usage: observation,
         }
+    }
+
+    /// Identity of the typed counter evidence, independent of erased legacy wire fields.
+    pub fn observation_key(&self) -> String {
+        receipt_hash(&json!([self.usage_identity, self.studio_usage]))
     }
 
     /// Read typed persisted rows directly; legacy decoding stays at its supported boundary.
@@ -90,22 +112,102 @@ impl UsageLedgerRow {
             let ledger: Self = serde_json::from_value(row.clone())?;
             let identity =
                 UsageIdentity::new(agent, row["threadId"].as_str(), &ledger.studio_usage);
-            if ledger.usage_identity != identity || ledger.receipt_key.is_empty() {
+            if ledger.usage_identity != identity
+                || ledger.receipt_key.as_deref().is_none_or(str::is_empty)
+            {
                 return Err(UsageParseError("persisted usage identity mismatch".into()));
             }
             return Ok(ledger);
         }
         let observation = super::persisted::parse_analytics_usage_row(provider, row)?;
-        Ok(Self::capture(
-            agent,
-            row["accountKey"].as_str().unwrap_or("default"),
-            row["threadId"].as_str(),
-            row["turnId"].as_str(),
-            &Value::Null,
-            observation,
-        ))
+        let usage_identity = UsageIdentity::new(agent, row["threadId"].as_str(), &observation);
+        let receipt_key = match &usage_identity {
+            UsageIdentity::Response { response_id, .. } => {
+                Some(receipt_hash(&json!([agent, "response", response_id])))
+            }
+            // A counter's original wire receipt may contain fields no longer in the row.
+            // Only the budget receipt table can establish a legacy key unambiguously.
+            UsageIdentity::Cumulative { .. } => None,
+        };
+        Ok(Self {
+            usage_identity,
+            receipt_key,
+            studio_usage: observation,
+        })
     }
 }
+
+fn legacy_counter_preimage(
+    agent: &str,
+    account: &str,
+    turn: Option<&str>,
+    params: &Value,
+    observation: &UsageObservation,
+) -> Value {
+    super::legacy_notice_identity(agent, account, turn, params)
+        .unwrap_or_else(|| json!([agent, account, "notice", turn, observation]))
+}
+
+/// Exact pre-v5 receipt aliases, checked against durable receipts before reuse.
+pub fn legacy_receipt_keys(
+    agent: &str,
+    account: &str,
+    turn: Option<&str>,
+    params: &Value,
+    observation: &UsageObservation,
+) -> Vec<String> {
+    if !matches!(observation, UsageObservation::Cumulative { .. }) {
+        return Vec::new();
+    }
+    vec![receipt_hash(&legacy_counter_preimage(
+        agent,
+        account,
+        turn,
+        params,
+        observation,
+    ))]
+}
+
+/// Recover supported old counter spellings from persisted typed facts, never by
+/// reparsing a fabricated notification. Unknown wire extensions remain unknown.
+pub fn legacy_analytics_receipt_keys(row: &Value, observation: &UsageObservation) -> Vec<String> {
+    let UsageObservation::Cumulative {
+        turn_id,
+        total,
+        last,
+        ..
+    } = observation
+    else {
+        return Vec::new();
+    };
+    let agent = row["agentId"].as_str().unwrap_or_default();
+    let account = row["accountKey"].as_str().unwrap_or("default");
+    let native = |tokens: &super::UsageTokens| json!({"inputTokens":tokens.uncached_input.saturating_add(tokens.cache_read_input).saturating_add(tokens.cache_write_input),"cachedInputTokens":tokens.cache_read_input,"outputTokens":tokens.output,"reasoningOutputTokens":tokens.reasoning_output,"totalTokens":tokens.total()});
+    let mut keys = Vec::new();
+    for turn in [row["turnId"].as_str(), turn_id.as_deref()] {
+        for preimage in [
+            json!([agent, account, "notice", turn, row["total"], row["last"]]),
+            json!([
+                agent,
+                account,
+                "notice",
+                turn,
+                native(total),
+                last.as_ref().map(native)
+            ]),
+            json!([agent, account, "notice", turn, observation]),
+        ] {
+            let key = receipt_hash(&preimage);
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    keys
+}
+
+/// Fault when an old counter's original debit cannot be identified safely.
+pub const UNKNOWN_USAGE_RECEIPT: &str = "unknownUsageReceipt";
 
 /// Stable digest of a receipt's canonical JSON representation; dimensionless.
 pub fn receipt_hash(value: &Value) -> String {

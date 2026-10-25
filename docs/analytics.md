@@ -123,6 +123,13 @@ never stored the original categories, analytics remains unknown rather than
 creating a typed response from a total alone. Existing cost groups retain their interpretation and price until new
 evidence updates their scope. No startup rebuild of analytics is required.
 
+New cumulative receipts include the thread and counter scope. Supported older
+receipt spellings remain aliases and are reused only after a unique match in
+the budget receipt table. Restoring an old counter without a recoverable key
+adds no debit and marks accounting unknown. Old gap coverage also remains
+explicitly unknown until a complete bounded analytics inventory establishes the
+response identities; an unrelated final cannot clear that uncertainty.
+
 ## Checks
 
 The former Python backend command has been removed. See [testing](testing.md)
