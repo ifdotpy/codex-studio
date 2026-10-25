@@ -20,9 +20,13 @@ Later chats for that folder reuse its main line.
 
 Studio installs Layr 0.2.1 at `<Studio state>/layr-native/bin/layr`.
 It never selects `~/.cargo/bin/layr` for runtime operations.
-The installer verifies the vendored source manifest and runs Cargo with the lock file and four jobs.
-Build output stays below the Studio state directory.
-The first native turn installs the binary if it is absent.
+The package build compiles the vendored source once and includes the signed executable, version, and SHA-256 manifest.
+The first native turn verifies that manifest and copies the executable into the managed binary folder.
+Later turns verify the package and the managed copy.
+A missing or invalid packaged executable returns an error and never starts Cargo.
+The installer waits at most 60 seconds for its lock and reports a timeout.
+Outside an installed package, the developer fallback verifies the source manifest and builds with Cargo, the lock file, and four jobs.
+Developer build output stays below the Studio state directory.
 To install it before a chat, run:
 
 ```sh
@@ -30,7 +34,7 @@ studio-runtime-server native-layr install --state /path/to/studio-state
 studio-runtime-server native-layr paths --state /path/to/studio-state
 ```
 
-Before the vendored update is available, select the approved upstream source explicitly:
+For a developer build outside an installed package, select the approved upstream source explicitly:
 
 ```sh
 studio-runtime-server native-layr install --state /path/to/studio-state \
