@@ -569,7 +569,10 @@ pub(in crate::account_worker) async fn recover(
             if let Some(value) = store::receipt(tx, &call.key(), "result")?
                 && value["result"] != json!("Unknown")
                 && value["cursor"].as_u64().is_some_and(|c| c <= checkpoint) { continue; }
-            let request = store::decode(&store::receipt(tx, &call.key(), "written")?.unwrap_or(value["request"].clone()))?;
+            let mut request = store::decode(&store::receipt(tx, &call.key(), "written")?.unwrap_or(value["request"].clone()))?;
+            // Older retained calls marked every method lightweight. Recover
+            // ownership from the call itself, including Submitted-only intent.
+            request.lightweight = !studio_runtime_schema::provider_method_policy::is_thread_serialized(&call.method, &call.params);
             // The answer comes back on the lane the request was sent on, as
             // in `retained_request`: a host request keeps no actor lane.
             let actor_id = match call.actor.as_ref() {
@@ -610,6 +613,133 @@ mod replay_identity_tests {
             deleted_actor_session: None,
             method: "thread/read".into(),
             params: json!({"threadId":"thread-1","includeTurns":false}),
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_lightweight_mutations_recover_all_owners_without_replay() {
+        use studio_runtime_providers::{Action, Frame, ResponseBody, SessionState};
+        let root = tempfile::tempdir().expect("root");
+        let database = RuntimeStore::open(Some(root.path())).await.expect("store");
+        database
+            .transaction_with(|tx| {
+                for (index, method) in [
+                    Method::ClaudeSettings,
+                    Method::ClaudeState,
+                    Method::ThreadRead,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let mut call = call();
+                    call.actor = None;
+                    call.operation = format!("legacy:{index}");
+                    call.method = method.as_str().into();
+                    call.params = json!({"threadId":"thread-1","includeTurns":true});
+                    let key = call.key();
+                    let request = RecoveredRequest {
+                        ticket: RequestTicket {
+                            generation: 4,
+                            id: studio_runtime_providers::RequestId::String(key.clone()),
+                            method,
+                        },
+                        operation_id: studio_runtime_process::OperationId(key.clone()),
+                        thread_id: Some("thread-1".into()),
+                        lightweight: true,
+                        deadline_ms: 1000,
+                        unknown: true,
+                        remote_id: None,
+                    };
+                    store::save(
+                        tx,
+                        &key,
+                        "submitted",
+                        json!({"call":call,"request":store::record(&request)}),
+                    )?;
+                    if index == 1 {
+                        store::save(tx, &key, "written", store::record(&request))?;
+                    }
+                }
+                Ok::<_, WorkerError>(())
+            })
+            .await
+            .expect("persist legacy submitted and written receipts");
+        let restored = recover(&database, "default", 4)
+            .await
+            .expect("recover legacy records");
+        assert_eq!(restored.len(), 3);
+        let (mut session, initialize) = SessionState::new(
+            4,
+            studio_runtime_providers::ProviderKind::Claude.wire(),
+            0,
+            1000,
+            studio_runtime_providers::initialize_params(
+                studio_runtime_providers::ClientName::AccountSession,
+            ),
+        )
+        .expect("session");
+        for (_, request) in &restored {
+            session
+                .restore_request(
+                    &request.ticket,
+                    request.thread_id.clone(),
+                    request.deadline_ms,
+                    request.unknown,
+                    request.lightweight,
+                )
+                .expect("restore owner");
+        }
+        let [Action::Write(Frame::Request(initialize))] = initialize.as_slice() else {
+            panic!("only initialization may write");
+        };
+        session
+            .receive(Frame::Response {
+                id: initialize.id.clone(),
+                body: ResponseBody::Result(json!({})),
+                fields: Default::default(),
+            })
+            .expect("initialize");
+        session
+            .mark_initialized_notification_written()
+            .expect("ready");
+        let (fresh, actions) = session
+            .submit(
+                Method::ThreadCompactStart,
+                json!({"threadId":"thread-1"}),
+                0,
+                1000,
+                Some("thread-1".into()),
+                false,
+            )
+            .expect("fresh work");
+        assert!(
+            actions.is_empty(),
+            "legacy lightweight flags must not bypass restored ownership"
+        );
+        for (index, (_, request)) in restored.into_iter().rev().enumerate() {
+            let actions = session
+                .receive(Frame::Response {
+                    id: request.ticket.id,
+                    body: ResponseBody::Result(json!({})),
+                    fields: Default::default(),
+                })
+                .expect("settle owner");
+            let writes = actions
+                .iter()
+                .filter_map(|action| match action {
+                    Action::Write(Frame::Request(frame)) => Some(frame),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if index < 2 {
+                assert!(writes.is_empty());
+            } else {
+                assert_eq!(writes.len(), 1);
+                assert_eq!(
+                    writes[0].id, fresh.id,
+                    "only fresh work writes; legacy identities never replay"
+                );
+            }
         }
     }
 

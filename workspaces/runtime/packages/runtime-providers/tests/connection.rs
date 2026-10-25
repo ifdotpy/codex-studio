@@ -1310,3 +1310,37 @@ fn recovered_same_thread_requests_hold_fresh_work_until_every_owner_settles() {
         }
     }
 }
+
+#[test]
+fn recovered_unknown_owner_refuses_cancellation_and_keeps_fresh_work_waiting() {
+    let mut session = state(true);
+    let restored = RequestTicket {
+        generation: 9,
+        id: RequestId::Number(80),
+        method: Method::ClaudeSettings,
+    };
+    session
+        .restore_request(&restored, Some("t".into()), 10, true, false)
+        .expect("restore unknown owner");
+    let (_, actions) = session
+        .submit(
+            Method::TurnStart,
+            json!({"threadId":"t"}),
+            0,
+            100,
+            Some("t".into()),
+            false,
+        )
+        .expect("fresh work");
+    assert!(actions.is_empty());
+    assert!(matches!(
+        session.cancel(&restored),
+        Err(studio_runtime_providers::SessionError::Book(
+            studio_runtime_providers::BookError::DuplicateResponse
+        ))
+    ));
+    let actions = session
+        .receive(reply_for_test(restored.id))
+        .expect("late reply releases ownership");
+    assert_eq!(outgoing(&actions).len(), 1);
+}

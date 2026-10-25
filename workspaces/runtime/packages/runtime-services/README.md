@@ -325,7 +325,11 @@ is reported. Recovery does not start a fresh timeout or repeat prior Unknown.
 Recovery restores serialized thread ownership; a lightweight request does not
 reserve its thread. Multiple unresolved serialized requests can restore ownership
 of the same thread without replaying their writes. Fresh serialized work waits
-until every restored identity settles; an unknown deadline retains its reservation. All 32 unresolved requests can be recovered; initialization has a separate
+until every restored identity settles; an unknown deadline retains its reservation.
+Cancellation of an Unknown request is refused. A late reply or proven-unsent
+rejection can release its ownership. Retained recovery derives serialization from
+the persisted call's method and parameters using the shared method policy, so
+legacy lightweight flags cannot bypass ownership. All 32 unresolved requests can be recovered; initialization has a separate
 record slot. Merge late Written evidence by request/operation identity, preserving
 any durable Unknown flag. A late write receipt must not resurrect a request already
 durably resolved; restore only unresolved records.

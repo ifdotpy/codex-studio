@@ -34,7 +34,9 @@ selected operations within each thread while allowing independent threads to
 proceed. `studio-contracts` generates the bridge's copy of the same policy. Cancellation and definitely unsent
 rejection release that request's ownership. Recovery restores all unresolved
 owners of a thread without replaying requests; fresh serialized work waits until
-every owner settles. Unknown deadlines keep their reservations.
+every owner settles. Unknown deadlines keep their reservations. Cancelling an
+Unknown request is refused; a late reply or positive evidence that it was unsent
+is required to release that owner's reservation.
 
 ## Callers and checks
 
