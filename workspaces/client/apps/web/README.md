@@ -143,6 +143,10 @@ sidebar is open. Wide composers show all role names and models; medium composers
 keep the lead model and secondary provider marks; phones show the lead model and
 a compact count of the other roles. Open the summary for the full settings;
 its accessible name also retains every role, model, provider, and reasoning level.
+After a model save, the summary immediately uses the server's acknowledged
+settings while the typed SSE projection catches up. Later projected settings,
+including remote changes and reconnect baselines, take ownership again. Model
+and review saves do not trigger a follow-up settings read.
 Account-move status appears above the input so it cannot crowd the send controls.
 On narrow composers, saved draft copies and then Stop move into the upper tools
 corner, preserving the lead name and the bottom-row send action.

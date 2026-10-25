@@ -329,10 +329,10 @@ export const ComposerRolePopover: Story = {
             retry: () => {},
           }}
           refresh={async () => {}}
-          renderTrigger={({ opened, ref, onClick }) => (
+          renderTrigger={({ agent, opened, ref, onClick }) => (
             <ExecutionSummaryTrigger
               ref={ref}
-              agent={previewAgent}
+              agent={agent}
               team={[]}
               aria-expanded={opened}
               onOpen={onClick}

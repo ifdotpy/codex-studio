@@ -98,6 +98,7 @@ const fastTier = (info?: WorkerModelInfo) =>
 type SettingsProps = {
   presentation?: "menu" | "panel";
   renderTrigger?: (props: {
+    agent: Agent;
     opened: boolean;
     ref: RefObject<HTMLButtonElement | null>;
     onClick: () => void;
@@ -236,6 +237,37 @@ type ControllerProps = SettingsProps & {
   section?: "delegation" | "permissions";
 };
 function ExecutionSettingsController(props: ControllerProps) {
+  const [confirmed, setConfirmed] = useState<{
+    baseline: Agent;
+    value: Agent;
+  } | null>(null);
+  const sameAgentSettings = (left: Agent, right: Agent) =>
+    left.id === right.id &&
+    accountOf(left) === accountOf(right) &&
+    sameSettings(settingsFor(left, false), settingsFor(right, false)) &&
+    sameSettings(settingsFor(left, true), settingsFor(right, true)) &&
+    left.reviewDefaults?.model === right.reviewDefaults?.model &&
+    left.reviewDefaults?.effort === right.reviewDefaults?.effort;
+  const awaitingProjection =
+    confirmed && sameAgentSettings(confirmed.baseline, props.agent);
+  useEffect(() => {
+    if (confirmed && !awaitingProjection) setConfirmed(null);
+  }, [confirmed, awaitingProjection]);
+  // Only execution fields bridge the response-to-SSE interval. Status and
+  // other agent fields continue to come from the workspace projection.
+  const triggerAgent = awaitingProjection
+    ? {
+        ...props.agent,
+        model: confirmed.value.model,
+        effort: confirmed.value.effort,
+        fastMode: confirmed.value.fastMode,
+        daybreakEnabled: confirmed.value.daybreakEnabled,
+        pendingSettings: confirmed.value.pendingSettings,
+        pendingSettingsAccountKey: confirmed.value.pendingSettingsAccountKey,
+        workerDefaults: confirmed.value.workerDefaults,
+        reviewDefaults: confirmed.value.reviewDefaults,
+      }
+    : props.agent;
   const [role, setRole] = useState<SetupRole>(
     props.initialRole || (props.agent.isLead ? "orchestrator" : "worker"),
   );
@@ -285,6 +317,9 @@ function ExecutionSettingsController(props: ControllerProps) {
     <ScopedExecutionSettings
       key={scope}
       {...props}
+      onSettingsConfirmed={(value) =>
+        setConfirmed({ baseline: props.agent, value })
+      }
       presentation={props.renderTrigger ? "panel" : props.presentation}
       agent={agent}
       inheritedUnavailable={inheritedRole && !props.lead}
@@ -313,6 +348,7 @@ function ExecutionSettingsController(props: ControllerProps) {
         role === "review" || (role === "worker" && !!agent.isLead),
       )}
       trigger={props.renderTrigger({
+        agent: triggerAgent,
         opened,
         ref: triggerRef,
         onClick: () => changeOpened(!opened),
@@ -352,7 +388,9 @@ function ScopedExecutionSettings({
   opened,
   triggerRef,
   setOpened,
+  onSettingsConfirmed,
 }: ControllerProps & {
+  onSettingsConfirmed: (agent: Agent) => void;
   teamDefaults: boolean;
   readOnlyReason?: string;
   inheritedUnavailable: boolean;
@@ -690,7 +728,7 @@ function ScopedExecutionSettings({
     setSaving(true);
     setError("");
     setStatus({ kind: "saving", text: "" });
-    const generation = ++refreshGeneration.current;
+    ++refreshGeneration.current;
     if (request.next_turn) {
       save(receiptKey, request);
       setUnconfirmed(request);
@@ -724,12 +762,12 @@ function ScopedExecutionSettings({
         if (mounted.current) setUnconfirmed(null);
       }
       if (!mounted.current) return;
+      onSettingsConfirmed(canonical);
       setPending({
         values: settingsFor(canonical, teamDefaults),
         baseline: stored,
       });
       setStatus({ kind: "saved", text: notice });
-      refreshConfirmed(generation);
     } catch (failure) {
       const rejected =
         failure instanceof ApiError &&
@@ -1063,7 +1101,7 @@ function ScopedExecutionSettings({
     setSaving(true);
     setError("");
     setStatus({ kind: "saving", text: "" });
-    const generation = ++refreshGeneration.current;
+    ++refreshGeneration.current;
     try {
       const canonical = await post(
         "/api/conversation",
@@ -1083,6 +1121,7 @@ function ScopedExecutionSettings({
           "The settings account changed. Check the current settings.",
         );
       if (!mounted.current) return;
+      onSettingsConfirmed(canonical);
       setReviewPending({
         values: {
           model: canonical.reviewDefaults?.model ?? null,
@@ -1091,7 +1130,6 @@ function ScopedExecutionSettings({
         baseline: reviewStored,
       });
       setStatus({ kind: "saved", text: "" });
-      refreshConfirmed(generation);
     } catch (failure) {
       if (!mounted.current) return;
       setReviewPending(previousPending);

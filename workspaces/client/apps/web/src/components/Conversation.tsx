@@ -706,10 +706,10 @@ export default function Conversation(p: {
           openRequest={
             modelCommandRequest.id === p.id ? modelCommandRequest.serial : 0
           }
-          renderTrigger={({ opened, ref, onClick }) => (
+          renderTrigger={({ agent, opened, ref, onClick }) => (
             <ExecutionSummaryTrigger
               ref={ref}
-              agent={p.agent!}
+              agent={agent}
               lead={p.lead}
               team={p.data.runtime?.agents || []}
               aria-expanded={opened}
