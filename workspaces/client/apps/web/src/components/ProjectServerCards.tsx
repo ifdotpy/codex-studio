@@ -8,6 +8,7 @@ import {
 } from "../servers/projectLocations";
 import "./project-locations.css";
 import NewChatModelSettings from "./NewChatModelSettings";
+import type { ServerServices } from "../servers/serverServices";
 import {
   defaultWorkspaceMode,
   readNewChatResource,
@@ -17,6 +18,7 @@ import {
 export default function ProjectServerCards({
   project,
   servers,
+  servicesFor,
   lastServer,
   onChoose,
   onAdd,
@@ -24,6 +26,7 @@ export default function ProjectServerCards({
 }: {
   project: LocationProject;
   servers: ProjectServerChoice[];
+  servicesFor?: (id: string) => ServerServices | undefined;
   lastServer?: string;
   onChoose: (location: ProjectLocation, settings: NewChatSettings) => void;
   onAdd: (server: string) => void;
@@ -194,6 +197,7 @@ export default function ProjectServerCards({
         <NewChatModelSettings
           key={selected}
           server={server.connection}
+          serverServices={servicesFor?.(selected)}
           projectId={project.id}
           path={location.path}
           onChange={setModels}

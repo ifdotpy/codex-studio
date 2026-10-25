@@ -4,7 +4,10 @@ import {
   ServerServicesProvider,
   useServerServices,
 } from "../servers/ServerServicesContext";
-import { createServerServices } from "../servers/serverServices";
+import {
+  createServerServices,
+  type ServerServices,
+} from "../servers/serverServices";
 import { subscribeStateProjection } from "../sync/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Stack } from "@mantine/core";
@@ -30,6 +33,7 @@ import {
 
 type Props = {
   server?: StudioServer;
+  serverServices?: ServerServices;
   projectId: string;
   path: string;
   onChange: (settings: Omit<NewChatSettings, "workspaceMode"> | null) => void;
@@ -44,16 +48,22 @@ export default function NewChatModelSettings(props: Props) {
   const owner = props.server ?? inherited?.owner;
   const serverKey = serverIdentity(owner);
   const services = useMemo(() => {
+    if (props.serverServices) return props.serverServices;
     if (!owner) return undefined;
     return inherited && serverIdentity(inherited.owner) === serverKey
       ? inherited
       : createServerServices(owner);
-  }, [serverKey, inherited]);
+  }, [serverKey, inherited, props.serverServices]);
   useEffect(
     () => () => {
-      if (services && services !== inherited) services.close();
+      if (
+        services &&
+        services !== inherited &&
+        services !== props.serverServices
+      )
+        services.close();
     },
-    [services, inherited],
+    [services, inherited, props.serverServices],
   );
   const server = useRef(owner);
   server.current = owner;

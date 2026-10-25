@@ -1036,6 +1036,7 @@ function MultiServerShell({
       >
         {newChatDialog && (
           <ProjectServerCards
+            servicesFor={(id) => services.get(id)}
             project={newChatDialog.project}
             servers={projectServerChoices(
               servers,
