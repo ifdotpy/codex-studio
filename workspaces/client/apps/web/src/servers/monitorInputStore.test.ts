@@ -15,6 +15,75 @@ const barriers = {
   queued: "monitor-input:transaction-queued",
 };
 
+type FixtureResource = { close(): Promise<void> };
+
+function createBrowserFixtureCleanup(
+  browser: FixtureResource,
+  context: () => FixtureResource | undefined,
+) {
+  let pending: Promise<void> | undefined;
+  return () =>
+    (pending ??= (async () => {
+      const errors: unknown[] = [];
+      try {
+        await context()?.close();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await browser.close();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1)
+        throw new AggregateError(
+          errors,
+          "The browser fixture could not close.",
+        );
+    })());
+}
+
+it("closes the browser fixture context before the browser with one cleanup owner", async () => {
+  const closed: string[] = [];
+  let releaseContext!: () => void;
+  const contextClosed = new Promise<void>((resolve) => {
+    releaseContext = resolve;
+  });
+  const context = {
+    close: vi.fn(async () => {
+      closed.push("context");
+      await contextClosed;
+    }),
+  };
+  const browser = {
+    close: vi.fn(async () => {
+      closed.push("browser");
+    }),
+  };
+  const close = createBrowserFixtureCleanup(browser, () => context);
+  const first = close();
+  const second = close();
+  releaseContext();
+  await Promise.all([first, second]);
+  expect(first).toBe(second);
+  expect(closed).toEqual(["context", "browser"]);
+  expect(context.close).toHaveBeenCalledOnce();
+  expect(browser.close).toHaveBeenCalledOnce();
+});
+
+it("closes the fixture browser after a context close failure and keeps both errors", async () => {
+  const contextError = new Error("context close failed");
+  const browserError = new Error("browser close failed");
+  const context = { close: vi.fn().mockRejectedValue(contextError) };
+  const browser = { close: vi.fn().mockRejectedValue(browserError) };
+  const close = createBrowserFixtureCleanup(browser, () => context);
+  const result = close().catch((error: unknown) => error);
+  expect(await result).toMatchObject({ errors: [contextError, browserError] });
+  expect(context.close).toHaveBeenCalledOnce();
+  expect(browser.close).toHaveBeenCalledOnce();
+});
+
 it("reports a blocked database and closes a late connection without using it", async () => {
   const request = {} as IDBOpenDBRequest;
   vi.stubGlobal("indexedDB", { open: () => request });
@@ -53,11 +122,18 @@ it(
         ? { executablePath: process.env.CHROME_BIN }
         : {}),
     });
-    // Vitest runs this hook even when its outer timeout interrupts the test.
-    onTestFinished(() => browser.close());
-    let releaseHold: (() => Promise<unknown>) | undefined;
-    try {
+    let ownedContext: FixtureResource | undefined;
+    // One hook owns cleanup, so teardown cannot replace an assertion failure.
+    // Close the context before Chromium to release its active page resources.
+    const close = createBrowserFixtureCleanup(browser, () => ownedContext);
+    onTestFinished(async () => {
+      await close();
+      if (performance.now() > deadline)
+        throw new Error("The browser fixture exceeded its total time budget.");
+    });
+    {
       const context = await browser.newContext();
+      ownedContext = context;
       await context.route("http://studio-monitor-fixture.invalid/**", (route) =>
         route.fulfill({
           contentType: "text/html",
@@ -66,12 +142,6 @@ it(
       );
       const first = await context.newPage();
       const second = await context.newPage();
-      releaseHold = () =>
-        first.evaluate(() => {
-          const fixture = window as any;
-          fixture.hold = false;
-          clearTimeout(fixture.holdTimer);
-        });
       for (const page of [first, second]) {
         vi.spyOn(page, "waitForFunction").mockImplementation(() => {
           throw new Error(
@@ -241,9 +311,6 @@ it(
       );
       for (const page of [first, second])
         expect(page.waitForFunction).not.toHaveBeenCalled();
-    } finally {
-      await releaseHold?.().catch(() => {});
-      await browser.close();
     }
   },
   BROWSER_TEST_TIMEOUT_MS,
