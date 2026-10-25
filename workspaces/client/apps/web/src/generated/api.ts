@@ -12327,11 +12327,14 @@ export interface components {
       runId: string;
       /**
        * Status
+       * @description The status of the referenced record: a tool request stage, a request card status, or a spawned agent status.
        * @default null
        */
       status?:
         | components["schemas"]["ExecutionStatus"]
-        | ("answered" | "expired" | "lost" | "approved")
+        | components["schemas"]["RequestStatus"]
+        | components["schemas"]["AgentStatus"]
+        | ("answered" | "expired" | "lost" | "approved" | "deleted")
         | null;
       /**
        * Taskid
@@ -12598,7 +12601,10 @@ export interface components {
        */
       supersededAt?: null | number;
       /** @default null */
-      supervisor?: components["schemas"]["SupervisorIdentity"] | null;
+      supervisor?:
+        | components["schemas"]["SupervisorIdentity"]
+        | components["schemas"]["RecoveryConnectionGeneration"]
+        | null;
       /**
        * Threadid
        * @default null
@@ -17971,6 +17977,14 @@ export interface components {
        * @enum {string}
        */
       kind: "receipts";
+    };
+    /**
+     * RecoveryConnectionGeneration
+     * @description A recovery receipt `supervisor` that earlier releases wrote when the start attempt had no supervisor identity. It holds only the start attempt's `connectionGeneration` and identifies no supervisor; current releases write null instead.
+     */
+    RecoveryConnectionGeneration: {
+      /** Generation */
+      generation: number | null;
     };
     /**
      * RecoveryOutcome

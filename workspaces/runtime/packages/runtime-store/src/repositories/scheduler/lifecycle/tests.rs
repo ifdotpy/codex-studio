@@ -748,3 +748,36 @@ fn a_retained_host_provider_disconnects_only_the_vm_actors() {
     assert_eq!(vm["status"], "interrupted");
     assert_eq!(vm["error"], PROVIDER_DISCONNECTED_TURN_ERROR);
 }
+
+#[test]
+fn a_restart_of_an_attempt_without_a_supervisor_identity_records_no_supervisor() {
+    // A Rust start attempt has a connection generation but no supervisor
+    // identity. Its restart receipt once stored `{"generation": N}` as the
+    // supervisor, which is not an identity and made `/api/diagnostics` fail
+    // (live run of 25 October 2026 with `supervisor: {"generation": 96}`).
+    // The receipt keeps the generation in its start attempt only.
+    let mut connection = database();
+    put(
+        &connection,
+        json!({
+            "status": "running", "autoWake": true, "inFlight": true, "turnId": "turn-live",
+            "turnEpoch": 0, "error": null,
+            "startAttempt": {
+                "id": "rust", "epoch": 0, "submitted": true, "turnId": "turn-live",
+                "threadId": "thread", "accountKey": ACCOUNT, "events": ["message"],
+                "created": 1.0, "connectionGeneration": 96, "requestTicket": "ticket"
+            }
+        }),
+    );
+    with(&mut connection, |tx| {
+        SchedulerRepository::recover_submitted(tx).expect("startup recovery runs")
+    });
+    let agent = stored(&connection);
+    for key in ["restartRecovery", "disconnectRecovery"] {
+        assert_eq!(agent[key]["supervisor"], Value::Null, "{key}: {agent}");
+        assert_eq!(
+            agent[key]["startAttempt"]["connectionGeneration"], 96,
+            "{key}: {agent}"
+        );
+    }
+}
