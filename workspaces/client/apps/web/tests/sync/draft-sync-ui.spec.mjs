@@ -170,9 +170,6 @@ test("Draft sync ui", async ({
       expect(page.locator("#message")).toHaveValue(text, { timeout: 15_000 });
     await phone.goto(origin);
     await phone
-      .getByRole("button", { name: "Back to chats", exact: true })
-      .click();
-    await phone
       .getByRole("button", { name: /^Other project/ })
       .first()
       .click();
@@ -259,6 +256,7 @@ test("Draft sync ui", async ({
       0,
     );
     await phone.reload();
+    await phone.locator(`[data-chat="${session}"]`).click();
     await waitText(phone, "Current draft");
     assert.equal(
       await phone.getByRole("button", { name: /^Other drafts/ }).count(),
@@ -518,6 +516,10 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       "Draft sync paused. Retrying automatically.",
       "a healthy pull cannot hide the failed push",
     );
+    assert.ok(
+      (await status.boundingBox()).height < 50,
+      "failure is a compact status",
+    );
     const recovered = savedText(remoteText);
     failPush = false;
     await page.clock.runFor(
@@ -542,6 +544,8 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       ),
       "conflict retry uses the latest remote master as assumed master",
     );
+    await page.clock.fastForward(DRAFT_SYNC_TIMING_MS.noticeDelay);
+    await expect(status).toBeHidden();
     assert.deepEqual(pageErrors, []);
   } finally {
     fixture.kill("SIGTERM");
