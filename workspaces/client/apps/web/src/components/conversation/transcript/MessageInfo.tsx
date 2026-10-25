@@ -67,6 +67,7 @@ export default function MessageInfo({
     agentId && message.id.startsWith(`${agentId}:`)
       ? message.id.slice(agentId.length + 1)
       : message.id;
+  // Read this detail once per open. Streamed fields continue to render below.
   useEffect(() => {
     if (!open || !agentId) return;
     let active = true;
@@ -93,15 +94,7 @@ export default function MessageInfo({
     return () => {
       active = false;
     };
-  }, [
-    open,
-    agentId,
-    itemId,
-    message.turnId,
-    threadId,
-    message.streaming,
-    message.turnStatus,
-  ]);
+  }, [open, agentId, itemId]);
   const close = () => {
     setOpen(false);
     target.current?.focus({ preventScroll: true });

@@ -1,0 +1,286 @@
+import { afterEach, expect, it, vi } from "vitest";
+import type { ReactElement, ReactNode } from "react";
+import type { Agent, Message } from "../types";
+
+const h = vi.hoisted(() => ({
+  cursor: 0,
+  cells: [] as any[],
+  effects: [] as Array<() => void>,
+  get: vi.fn(),
+  post: vi.fn(),
+}));
+vi.mock("react", async (original) => ({
+  ...(await original<typeof import("react")>()),
+  useState: (initial: unknown) => {
+    const index = h.cursor++;
+    h.cells[index] ??= {
+      value: typeof initial === "function" ? initial() : initial,
+    };
+    return [
+      h.cells[index].value,
+      (value: any) => {
+        h.cells[index].value =
+          typeof value === "function" ? value(h.cells[index].value) : value;
+      },
+    ];
+  },
+  useRef: (initial: unknown) => {
+    const index = h.cursor++;
+    h.cells[index] ??= { current: initial };
+    return h.cells[index];
+  },
+  useMemo: (compute: () => unknown) => compute(),
+  useCallback: (callback: unknown) => callback,
+  useEffect: (effect: () => unknown, deps: unknown[]) => {
+    const index = h.cursor++;
+    const previous = h.cells[index];
+    if (
+      !previous ||
+      deps.some((value, i) => !Object.is(value, previous.deps[i]))
+    ) {
+      previous?.cleanup?.();
+      h.cells[index] = { deps };
+      h.effects.push(() => {
+        h.cells[index].cleanup = effect();
+      });
+    }
+  },
+}));
+vi.mock("../servers/ServerServicesContext", () => ({
+  useServerApi: () => ({ get: h.get, post: h.post, saved: () => null }),
+  useServerStorage: () => ({}),
+  useServerSessionCosts: () => ({ peekSessionCost: () => null }),
+}));
+vi.mock("./agents/WorkerModelPicker", () => ({
+  useWorkerModels: () => ({ models: [], loading: false }),
+}));
+vi.mock("./ClaudeFileBackups", () => ({ default: "file-backups" }));
+vi.mock("./AccountSignInNotice", () => ({ default: "sign-in" }));
+vi.mock("./ProjectDirectoryPicker", () => ({ default: "directory-picker" }));
+
+import { useTurnErrors } from "./useTurnErrors";
+import MessageInfo from "./conversation/transcript/MessageInfo";
+import { ClaudeSettings } from "./ClaudeSettings";
+import ClaudeRepairNotice from "./ClaudeRepairNotice";
+import ProjectLocationsSettings from "./ProjectLocationsSettings";
+
+function render<T>(read: () => T) {
+  h.cursor = 0;
+  const value = read();
+  for (const effect of h.effects.splice(0)) effect();
+  return value;
+}
+async function settle() {
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+}
+function find(
+  node: ReactNode,
+  predicate: (node: ReactElement<any>) => boolean,
+): ReactElement<any> | undefined {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = find(child, predicate);
+      if (match) return match;
+    }
+  } else if (node && typeof node === "object" && "props" in node) {
+    const element = node as ReactElement<any>;
+    return predicate(element)
+      ? element
+      : find(element.props.children, predicate);
+  }
+}
+afterEach(() => {
+  for (const cell of h.cells) cell?.cleanup?.();
+  h.cells = [];
+  h.effects = [];
+  h.get.mockReset();
+  h.post.mockReset();
+});
+
+const agent: Agent = {
+  id: "detail-agent",
+  threadId: "thread",
+  accountKey: "claude",
+  epoch: 1,
+};
+
+it("new failed and uncertain turns use inline errors without analytics reads", async () => {
+  h.get.mockResolvedValue({ turns: [] });
+  render(() => useTurnErrors([], agent, "live-turns"));
+  await settle();
+  for (const turnStatus of ["failed", "uncertain"] as const) {
+    const items: Message[] = [
+      {
+        id: turnStatus,
+        role: "assistant",
+        text: "answer",
+        turnId: turnStatus,
+        turnStatus,
+      },
+    ];
+    const result = render(() => useTurnErrors(items, agent, "live-turns"));
+    await settle();
+    expect(result.loading.size).toBe(0);
+    expect(h.get).not.toHaveBeenCalled();
+    const inline = render(() =>
+      useTurnErrors(
+        [{ ...items[0], turnError: "Streamed failure" }],
+        agent,
+        "live-turns",
+      ),
+    );
+    expect(
+      inline.items.some(
+        (item) =>
+          item.nativeError === "Streamed failure" ||
+          item.turnError === "Streamed failure",
+      ),
+    ).toBe(true);
+  }
+});
+
+it("historical error first load and an explicit retry still read once each", async () => {
+  h.get
+    .mockRejectedValueOnce(new Error("unavailable"))
+    .mockResolvedValue({ turns: [] });
+  const items: Message[] = [
+    {
+      id: "past",
+      role: "assistant",
+      text: "",
+      turnId: "past",
+      turnStatus: "failed",
+    },
+  ];
+  const read = () => useTurnErrors(items, agent, "past-turns");
+  render(read);
+  await settle();
+  const result = render(read);
+  expect(result.loading.size).toBe(0);
+  expect(result.failed.has("past")).toBe(true);
+  result.retry("past");
+  render(read);
+  await settle();
+  expect(h.get).toHaveBeenCalledTimes(2);
+});
+
+it("message info reads on open and reopen but not streamed turn metadata changes", async () => {
+  h.get.mockResolvedValue({ model: "model" });
+  let message: Message = {
+    id: "item",
+    role: "assistant",
+    text: "answer",
+    streaming: true,
+  };
+  const read = () =>
+    MessageInfo({
+      message,
+      agentId: agent.id,
+      stateDir: "fixture",
+      onCopy: vi.fn(),
+    });
+  let view = render(read);
+  expect(h.get).not.toHaveBeenCalled();
+  view.props.onChange(true);
+  render(read);
+  await settle();
+  message = {
+    ...message,
+    turnId: "turn",
+    threadId: "thread",
+    streaming: false,
+    turnStatus: "completed",
+  };
+  view = render(read);
+  await settle();
+  expect(h.get).toHaveBeenCalledTimes(1);
+  view.props.onChange(false);
+  view = render(read);
+  view.props.onChange(true);
+  render(read);
+  await settle();
+  expect(h.get).toHaveBeenCalledTimes(2);
+});
+
+it("Claude account status and key updates do not reload settings; explicit retry does", async () => {
+  h.post.mockRejectedValue(new Error("Sign in with claude auth login first"));
+  let currentAgent = agent;
+  let account = {
+    key: "claude",
+    id: "claude",
+    home: "/fixture",
+    source: "fixture",
+    status: "signed_out",
+    provider: "claude",
+    label: "Claude",
+  };
+  const read = () => ClaudeSettings({ agent: currentAgent, account });
+  render(read);
+  await settle();
+  account = { ...account, status: "ready" };
+  currentAgent = { ...agent, accountKey: "other" };
+  const view = render(read);
+  await settle();
+  expect(h.post).toHaveBeenCalledTimes(1);
+  const retry = find(
+    view,
+    (node) => node.props.children === "Retry Claude settings",
+  );
+  expect(retry).toBeDefined();
+  h.post.mockResolvedValue({ settings: {}, turns: [], tasks: [] });
+  retry!.props.onClick();
+  render(read);
+  await settle();
+  expect(h.post).toHaveBeenCalledTimes(2);
+});
+
+it("repair scope changes hide old evidence without reads; refresh uses the current agent", async () => {
+  h.get.mockResolvedValue({ status: "none" });
+  let currentAgent = { ...agent, error: "CLAUDE_SESSION_REPAIR_REQUIRED" };
+  const read = () => ClaudeRepairNotice({ agent: currentAgent });
+  render(read);
+  await settle();
+  for (const patch of [
+    { epoch: 2 },
+    { accountKey: "other" },
+    { threadId: "new-thread" },
+  ]) {
+    currentAgent = { ...currentAgent, ...patch };
+    render(read);
+    await settle();
+    expect(h.get).toHaveBeenCalledTimes(1);
+  }
+  const refresh = find(
+    render(read),
+    (node) => node.props.children === "Refresh saved report",
+  );
+  refresh!.props.onClick();
+  render(read);
+  await settle();
+  expect(h.get).toHaveBeenCalledTimes(2);
+});
+
+it("location array replacements, additions and path changes do not refetch folder info", async () => {
+  h.get.mockResolvedValue({ gitHead: "initial-head" });
+  const location = { serverId: "local", path: "/one", projectId: "project" };
+  let project = {
+    id: "project",
+    name: "Project",
+    path: "/one",
+    locations: [location],
+  };
+  const read = () => ProjectLocationsSettings({ project, saved: vi.fn() });
+  render(read);
+  await settle();
+  expect(h.get).toHaveBeenCalledTimes(1);
+  for (const locations of [
+    [{ ...location }],
+    [{ ...location, path: "/two" }],
+    [location, { ...location, serverId: "remote" }],
+  ]) {
+    project = { ...project, locations };
+    render(read);
+    await settle();
+    expect(h.get).toHaveBeenCalledTimes(1);
+  }
+});

@@ -62,6 +62,7 @@ export default {
       "src/components/shell/WorkerPermissions.test.ts",
       "src/components/agents/RetainedWorktrees.test.ts",
       "src/components/liveRequestConsumers.test.ts",
+      "src/components/detailReads.noRefetch.test.ts",
       "src/components/readState.noRefetch.test.ts",
       "src/components/sidebarOrder.migration.test.ts",
       "src/components/ProjectServerCards.test.ts",
