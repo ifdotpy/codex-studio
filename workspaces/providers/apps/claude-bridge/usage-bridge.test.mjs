@@ -459,3 +459,14 @@ test("scripted Rust SDK close ends an aborted wait without inventing a successfu
     false,
   );
 });
+
+test("intentional shutdown preserves an unfinished turn for reconciliation instead of publishing failure", async () => {
+  const b = await setup();
+  await start(b, "shutdown");
+  await b.note((n) => n.method === "provider/generationStarted");
+  await b.close();
+  expect(b.notes.filter((n) => n.method === "turn/completed")).toEqual([]);
+  expect(observations(b)).toMatchObject([
+    { kind: "gap", reason: "queryClosed" },
+  ]);
+});

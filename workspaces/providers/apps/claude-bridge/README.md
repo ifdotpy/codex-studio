@@ -87,7 +87,9 @@ window candidates remain unknown. A persisted query-wide window has unknown mode
 seed response accounting after a restart. Background responses retain the
 turn that created their parent tool, even after that turn completes. Shutdown
 waits for the SDK consumer within the short shutdown drain deadline, reports remaining gaps,
-and flushes queued notifications before exiting. The bridge integration tests
+and flushes queued notifications before exiting. Intentional shutdown leaves an
+unfinished turn in progress for restart reconciliation rather than publishing a
+terminal failure. The bridge integration tests
 and inline scripted SDK remain outside the strict TypeScript program because
 the shared bridge harness is untyped; SDK data fixtures and normalizer unit tests
 remain strictly checked.

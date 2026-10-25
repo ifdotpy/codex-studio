@@ -2035,11 +2035,12 @@ async function startSession(s, active, p) {
       }
     }
     drainUsage(s.id, active);
-    if (active.turn) throw new Error("Claude ended without a completed turn");
+    if (active.turn && !closing)
+      throw new Error("Claude ended without a completed turn");
   } catch (error) {
     active.readyReject(error);
     drainUsage(s.id, active);
-    if (active.turn) await finishTurn(s, active, null, error);
+    if (active.turn && !closing) await finishTurn(s, active, null, error);
   } finally {
     clearTurnTimers(active);
     allowed = false;
