@@ -85,6 +85,8 @@ test.describe("legacy schema mismatch", () => {
     let allowPendingChangeEvent = false;
     let firstPullFails = false;
     let pullFailureCount = 0;
+    const resetPullResponseHeld = Promise.withResolvers();
+    const allowResetPullResponse = Promise.withResolvers();
     const rendererHashes = [];
     const apiRequests = [];
     const streamDiagnostics = [];
@@ -317,6 +319,17 @@ test.describe("legacy schema mismatch", () => {
           headers: requestHeaders,
         });
         if (
+          route.request().frame().page() === newPage &&
+          requestUrl.pathname === "/api/sync/pull" &&
+          requestUrl.searchParams.get("scope") === "state:entities:v1" &&
+          requestUrl.searchParams.get("reset") === "1" &&
+          requestUrl.searchParams.get("after") === "0" &&
+          response.status() === 200
+        ) {
+          resetPullResponseHeld.resolve();
+          await allowResetPullResponse.promise;
+        }
+        if (
           requestUrl.pathname === "/api/sync/pull" &&
           requestUrl.searchParams.get("scope")?.startsWith("transcript:")
         ) {
@@ -525,6 +538,13 @@ test.describe("legacy schema mismatch", () => {
       await newPageSession.send("Network.setCacheDisabled", {
         cacheDisabled: true,
       });
+      await newPage.goto(appOrigin);
+      await resetPullResponseHeld.promise;
+      // Prove startup while the successful retry is held, before its reset
+      // baseline can commit and remove this transient screen.
+      await expect(newPage.locator(".startup")).toBeVisible({
+        timeout: 10_000,
+      });
       const newPageResetPull = newPage.waitForResponse((response) => {
         const url = new URL(response.url());
         return (
@@ -535,11 +555,8 @@ test.describe("legacy schema mismatch", () => {
           response.status() === 200
         );
       });
-      await newPage.goto(appOrigin);
+      allowResetPullResponse.resolve();
       await newPageResetPull;
-      await expect(newPage.locator(".startup")).toBeVisible({
-        timeout: 10_000,
-      });
       await expect(leadChat(newPage)).toBeVisible({ timeout: 60_000 });
       await leadChat(newPage).click();
       await expect(newPage.locator("#message")).toBeVisible({
@@ -804,6 +821,8 @@ test.describe("legacy schema mismatch", () => {
       );
       throw error;
     } finally {
+      allowResetPullResponse.resolve();
+      allowPendingChangeEventResolve?.();
       fixture.kill();
       await context.close();
       streamServer.closeAllConnections();
