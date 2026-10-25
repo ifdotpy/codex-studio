@@ -199,7 +199,12 @@ pub struct GuestProviderTaskFactory {
     store: Arc<RuntimeStore>,
     guest: Arc<dyn GuestRpc>,
     identity: GuestProviderIdentity,
-    profile: String,
+    source: GuestProviderSource,
+}
+
+enum GuestProviderSource {
+    Launch(String),
+    Existing(GuestProviderSession),
 }
 
 impl GuestProviderTaskFactory {
@@ -213,8 +218,24 @@ impl GuestProviderTaskFactory {
             store,
             guest,
             identity,
-            profile: profile.into(),
+            source: GuestProviderSource::Launch(profile.into()),
         }
+    }
+
+    /// Inspect a proved existing process without resolving or reserving a launch.
+    pub(crate) async fn existing(
+        store: Arc<RuntimeStore>,
+        guest: Arc<dyn GuestRpc>,
+        identity: GuestProviderIdentity,
+    ) -> Result<Self> {
+        let session =
+            GuestProviderSession::existing(store.clone(), guest.clone(), &identity).await?;
+        Ok(Self {
+            store,
+            guest,
+            identity,
+            source: GuestProviderSource::Existing(session),
+        })
     }
 }
 
@@ -228,19 +249,26 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
         Box::pin(async move {
             if handle != ProviderHandle::for_account(&self.identity.agent_id)
                 || options.expected_generation != Some(Generation(self.identity.generation))
-                || options.launch.command.is_empty()
+                || match &self.source {
+                    GuestProviderSource::Launch(_) => options.launch.command.is_empty(),
+                    GuestProviderSource::Existing(_) => !options.launch.command.is_empty(),
+                }
             {
                 return Err(AdapterError::InvalidConfiguration);
             }
-            let session = GuestProviderSession::open(
-                self.store.clone(),
-                self.guest.clone(),
-                self.identity.clone(),
-                self.profile.clone(),
-                options.launch.clone(),
-            )
-            .await
-            .map_err(|_| AdapterError::TaskFailed)?;
+            let existing_only = matches!(&self.source, GuestProviderSource::Existing(_));
+            let session = match &self.source {
+                GuestProviderSource::Existing(session) => session.clone(),
+                GuestProviderSource::Launch(profile) => GuestProviderSession::open(
+                    self.store.clone(),
+                    self.guest.clone(),
+                    self.identity.clone(),
+                    profile.clone(),
+                    options.launch.clone(),
+                )
+                .await
+                .map_err(|_| AdapterError::TaskFailed)?,
+            };
             // The guest supervisor generation is private to its retained
             // process. SessionHandle tickets use the host account worker's
             // generation, supplied by its launch options.
@@ -277,6 +305,7 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
                         .map(|(remote, local)| (remote, Value::from(local)))
                         .collect(),
                     session_generation: generation,
+                    existing_only,
                 },
             ));
             Ok(ProviderAttachment::from_task(
@@ -291,6 +320,8 @@ struct GuestAttachmentContext {
     /// Guest supervisor remote request ID to the host's local request ID.
     response_ids: BTreeMap<u64, Value>,
     session_generation: Generation,
+    /// The active submitted turn already completed native initialization.
+    existing_only: bool,
 }
 
 async fn run_guest_attachment(
@@ -362,7 +393,15 @@ async fn run_guest_attachment(
                         Some(Value::String(_)) | None if initialize => Some(Value::from(1)),
                         _ => local_id.clone(),
                     };
-                    let receipt = match session.write(&write.operation_id().0,
+                    let receipt = if context.existing_only && method.as_deref() == Some("initialized") {
+                        // Complete only the new host session's cached handshake.
+                        // Never repeat initialization on the retained guest process.
+                        initialization = InitializationStatus::Ready;
+                        let mut published = status.borrow().clone();
+                        published.initialization = initialization;
+                        status.send_replace(published);
+                        CommandReceipt::Written { remote_id: None, duplicate: true }
+                    } else { match session.write(&write.operation_id().0,
                         native_id.as_ref().unwrap_or(&Value::Null), message).await {
                         Ok(value) if value.get("accepted") == Some(&Value::Bool(true)) => {
                             let remote_id = value.get("remoteId").and_then(Value::as_u64);
@@ -387,7 +426,7 @@ async fn run_guest_attachment(
                         Ok(_) => CommandReceipt::Unknown,
                         Err(GuestProviderError::Unknown) => CommandReceipt::Unknown,
                         Err(_) => CommandReceipt::NotSent,
-                    };
+                    }};
                     let observe = receipt.requires_observation();
                     let _sent = reply.send(receipt);
                     if observe && let Err(error) = observed_or_stopped(observed, &mut stop).await {
@@ -512,6 +551,82 @@ async fn observed_or_stopped(
 }
 
 impl GuestProviderSession {
+    async fn existing(
+        store: Arc<RuntimeStore>,
+        guest: Arc<dyn GuestRpc>,
+        actor: &GuestProviderIdentity,
+    ) -> Result<Self> {
+        let expected = actor.clone();
+        let (identity, original) = store
+            .read_async(
+                "runtime-services/linux_vm_provider",
+                move |connection| -> Result<_> {
+                    if !vm_actor_matches(
+                        connection,
+                        &expected.agent_id,
+                        expected.epoch,
+                        &expected.account_key,
+                        Some(&expected.provider),
+                    )? {
+                        return Err(GuestProviderError::Refused);
+                    }
+                    let key = format!(
+                        "{START_RECEIPT_PREFIX}{}:{}",
+                        expected.agent_id, expected.epoch
+                    );
+                    let saved = EventWriteRepository::receipt(connection, &key)?
+                        .ok_or(GuestProviderError::Unknown)?;
+                    let PersistedStart::Started { identity, info } =
+                        serde_json::from_str(&saved.result)?
+                    else {
+                        return Err(GuestProviderError::Unknown);
+                    };
+                    if identity.agent_id != expected.agent_id
+                        || identity.epoch != expected.epoch
+                        || identity.handle
+                            != format!("{LINUX_VM_PROVIDER_HANDLE_PREFIX}{}", expected.agent_id)
+                        || identity.request_id.is_empty()
+                        || identity.request_id.len() > START_REQUEST_ID_MAX_BYTES
+                        || identity.launch_fingerprint.len() != 64
+                        || !identity
+                            .launch_fingerprint
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                        || saved.signature
+                            != format!(
+                                "agent={};epoch={};launch={}",
+                                identity.agent_id, identity.epoch, identity.launch_fingerprint
+                            )
+                    {
+                        return Err(GuestProviderError::Unknown);
+                    }
+                    Ok((identity, info))
+                },
+            )
+            .await?;
+        let current = call_guest(
+            guest.clone(),
+            "provider.rpc",
+            json!({"handle":identity.handle,"action":"info"}),
+            None,
+            PROVIDER_RPC_TIMEOUT,
+        )
+        .await?;
+        let info = parse_info(&identity.handle, &current, Some(&original))?;
+        if current["state"] != "running" || !info.init_result.as_ref().is_some_and(Value::is_object)
+        {
+            return Err(GuestProviderError::Unknown);
+        }
+        let cursor = info.acknowledged;
+        Ok(Self {
+            guest,
+            identity,
+            info,
+            read_cursor: Arc::new(AtomicU64::new(cursor)),
+            cursor: Arc::new(AtomicU64::new(cursor)),
+        })
+    }
+
     /// Reserve the start identity in the host store before dispatching to guest.
     /// A persisted pending identity is reconciled by `info`; start is never
     /// resent when a previous call may have reached the guest.

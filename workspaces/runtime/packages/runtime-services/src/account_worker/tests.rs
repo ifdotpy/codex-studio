@@ -45,6 +45,7 @@ mod unknown_thread_retry;
 mod unsent_start;
 mod vm_attachments;
 mod vm_notifications;
+mod vm_reattach;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
 use std::{
@@ -559,9 +560,12 @@ impl Peer {
                 provider_retained: supervised && !*provider_stopped.borrow(),
             }
         });
-        let factory = Arc::new(Factory(std::sync::Mutex::new(Some(
-            ProviderAttachment::from_task(commands, journal, observed, attachment, task),
-        ))));
+        let mut provider =
+            ProviderAttachment::from_task(commands, journal, observed, attachment, task);
+        if supervised {
+            provider = provider.with_supervisor_write_deduplication();
+        }
+        let factory = Arc::new(Factory(std::sync::Mutex::new(Some(provider))));
         Self {
             wire: studio_runtime_providers::ProviderKind::Codex.wire(),
             account: account.into(),

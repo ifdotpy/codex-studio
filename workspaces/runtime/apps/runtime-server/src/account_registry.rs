@@ -1072,7 +1072,21 @@ impl AccountRegistry {
         pending_agents: Vec<(String, i64, Option<String>)>,
         shutdown: Option<&Shutdown>,
     ) -> Result<AccountPageDispatch, WorkerError> {
-        if !allow_dormant_reconcile(&mut self.idle_dormant, account, !pending_agents.is_empty()) {
+        let callback_demand = if pending_agents.is_empty() && self.idle_dormant.contains(account) {
+            let account = account.to_owned();
+            self.store
+                .read_async("runtime-server/account_registry", move |db| {
+                    studio_runtime_services::account_worker::has_callback_reply_demand(db, &account)
+                })
+                .await?
+        } else {
+            false
+        };
+        if !allow_dormant_reconcile(
+            &mut self.idle_dormant,
+            account,
+            !pending_agents.is_empty() || callback_demand,
+        ) {
             self.after_agent.remove(account);
             return Ok(AccountPageDispatch::Exhausted);
         }
@@ -1298,13 +1312,21 @@ impl AccountRegistry {
                 "runtime-server/account_registry",
                 move |db| -> Result<AccountTargetPage, WorkerError> {
                     let accounts = changed_accounts(db, &changes)?;
-                    SchedulerRepository::account_wake_for_accounts(
+                    let mut targets = SchedulerRepository::account_wake_for_accounts(
                         db,
                         accounts.iter().map(String::as_str),
                         WAKE_PAGE,
                         event_time(),
                     )
-                    .map_err(Into::into)
+                    .map_err(WorkerError::from)?;
+                    for account in accounts {
+                        if studio_runtime_services::account_worker::has_callback_reply_demand(
+                            db, &account,
+                        )? {
+                            targets.entry(account).or_default();
+                        }
+                    }
+                    Ok(targets)
                 },
             )
             .await?;
@@ -1871,7 +1893,7 @@ pub fn target_page(
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
 ) -> Result<AccountTargetPage, WorkerError> {
-    SchedulerRepository::account_wake_page(
+    let targets = SchedulerRepository::account_wake_page(
         db,
         after_account,
         after_agent,
@@ -1879,7 +1901,26 @@ pub fn target_page(
         WAKE_PAGE,
         event_time(),
     )
-    .map_err(Into::into)
+    .map_err(WorkerError::from)?;
+    with_callback_reply_targets(db, targets, after_account)
+}
+
+fn with_callback_reply_targets(
+    db: &rusqlite::Connection,
+    mut targets: AccountTargetPage,
+    after_account: &str,
+) -> Result<AccountTargetPage, WorkerError> {
+    for account in studio_runtime_services::account_worker::callback_reply_accounts(
+        db,
+        after_account,
+        MAX_ACCOUNTS,
+    )? {
+        targets.entry(account).or_default();
+    }
+    while targets.len() > MAX_ACCOUNTS {
+        targets.pop_last();
+    }
+    Ok(targets)
 }
 
 fn target_page_after(
@@ -1887,7 +1928,7 @@ fn target_page_after(
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
 ) -> Result<AccountTargetPage, WorkerError> {
-    SchedulerRepository::account_wake_page_after(
+    let targets = SchedulerRepository::account_wake_page_after(
         db,
         after_account,
         after_agent,
@@ -1895,7 +1936,8 @@ fn target_page_after(
         WAKE_PAGE,
         event_time(),
     )
-    .map_err(Into::into)
+    .map_err(WorkerError::from)?;
+    with_callback_reply_targets(db, targets, after_account)
 }
 
 struct RuntimeRadioIngress;

@@ -999,6 +999,7 @@ mod tests {
         let generation = Generation(7);
         let handle = ProviderHandle::for_account("default");
         let mut status = SessionStatus {
+            supervisor_write_deduplication: false,
             generation,
             initialization: InitializationStatus::Ready,
             initialize_result: None,

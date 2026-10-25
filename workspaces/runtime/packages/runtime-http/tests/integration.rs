@@ -9,6 +9,7 @@ mod multi_server_incoming;
 mod orchestration_settings;
 mod process_controls;
 mod project_preparation;
+mod queue_recovery;
 mod recovery_http;
 mod remote_access_origin;
 mod retained_worktrees;

@@ -422,6 +422,98 @@ async fn callback_context(
         .await
 }
 
+/// Actor identity and permission scope of one managed reply. Backend connection
+/// IDs change on reattach; the physical process proof lives in SavedReply.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ManagedReplyAuthority {
+    context: crate::provider_callbacks::CallbackContext,
+    root: String,
+    provider: String,
+    parent: Option<String>,
+    role: Option<String>,
+    is_lead: bool,
+    execution_mode: Option<String>,
+    moving: bool,
+}
+
+impl ManagedReplyAuthority {
+    pub(super) fn same_actor(&self, current: &Self) -> bool {
+        let mut expected = self.clone();
+        expected
+            .context
+            .connection
+            .clone_from(&current.context.connection);
+        expected == *current
+    }
+}
+
+/// Reuse the tool context and active snapshot owners without dispatching a tool.
+pub(super) fn managed_reply_authority_in(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    generation: u64,
+    frame: &Frame,
+) -> Result<Option<ManagedReplyAuthority>, studio_runtime_store::StoreError> {
+    let Frame::Request(request) = frame else {
+        return Ok(None);
+    };
+    if request.method.as_str() != "item/tool/call" {
+        return Ok(None);
+    }
+    let (Some(thread), Some(turn)) = (
+        request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("threadId"))
+            .and_then(Value::as_str),
+        request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("turnId"))
+            .and_then(Value::as_str),
+    ) else {
+        return Ok(None);
+    };
+    let Some(context) = callback_context_in(tx, account, generation, None, thread, Some(turn))?
+    else {
+        return Ok(None);
+    };
+    let Some(actor) = studio_runtime_store::AgentRepository::get(
+        tx,
+        &studio_runtime_store::AgentId::from(context.agent.as_str()),
+    )?
+    else {
+        return Ok(None);
+    };
+    let value = actor.value();
+    if studio_runtime_store::truthy(value.get("executionMove"))
+        || crate::account_transfer::before_start(&value).is_err()
+    {
+        return Ok(None);
+    }
+    let snapshot =
+        crate::provider_callbacks::CallbackSnapshot::from_record(&value.to_string(), &context);
+    if !snapshot.is_ok_and(|snapshot| snapshot.active().is_ok()) {
+        return Ok(None);
+    }
+    let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+    let provider = text("provider").unwrap_or_else(|| "codex".to_owned());
+    if !matches!(provider.as_str(), "claude" | "codex") {
+        return Ok(None);
+    }
+    Ok(Some(ManagedReplyAuthority {
+        context,
+        root: actor.root_id.0,
+        provider,
+        parent: text("parentId"),
+        role: text("role"),
+        is_lead: value.get("isLead") == Some(&Value::Bool(true)),
+        execution_mode: text("executionMode"),
+        moving: studio_runtime_store::truthy(value.get("executionMove")),
+    }))
+}
+
 fn callback_context_in(
     db: &rusqlite::Connection,
     account: &str,

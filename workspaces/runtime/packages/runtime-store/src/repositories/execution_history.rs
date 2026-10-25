@@ -115,6 +115,19 @@ impl ExecutionHistoryRepository {
         .map(|s| decode("runtime_execution_attempts", id, &s))
         .transpose()
     }
+    /// The newest created run of this actor, across every account and epoch.
+    /// Filtering scope first could select stale evidence after an account move.
+    pub fn latest_run(tx: &Transaction<'_>, agent: &str) -> StoreResult<Option<Value>> {
+        tx.query_row(
+            "SELECT id,record FROM runtime_execution_runs WHERE agent=?1 ORDER BY created DESC,rowid DESC LIMIT 1",
+            [agent],
+            |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)),
+        ).optional()?.map(|(id,raw)|{
+            let run=decode("runtime_execution_runs",&id,&raw)?;
+            if run["agent"]!=agent {return Err(Self::invalid("runtime_execution_runs",&id));}
+            Ok(run)
+        }).transpose()
+    }
     pub(crate) fn invalid(table: &str, id: &str) -> StoreError {
         StoreError::InvalidSyncObject {
             scope: table.into(),

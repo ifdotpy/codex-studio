@@ -371,6 +371,12 @@ async fn a_submitted_answer_is_never_sent_again_after_restart() {
             .await
             .unwrap()
     );
+    assert!(
+        callback_reply_accounts(&state.bridge.store.test_reader().unwrap(), "", 10)
+            .unwrap()
+            .is_empty(),
+        "legacy uncertainty is not account recovery demand"
+    );
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     peer.frame(request("callback")).await;
@@ -384,6 +390,437 @@ async fn a_submitted_answer_is_never_sent_again_after_restart() {
         [true, true, false],
         "the uncertainty is kept"
     );
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn submitted_callback_recovery_sends_exact_saved_reply_without_dispatching_the_tool() {
+    let state = State::new().await;
+    journal(&state, vec![entry(GENERATION, 1, &request("saved-spawn"))]).await;
+    let operation = callback_record::operation(SCOPE, GENERATION, 1);
+    let response =
+        json!({"id":"saved-spawn","result":{"existingChild":"already-created","success":true}});
+    let encoded = format!("{}\n", serde_json::to_string(&response).unwrap());
+    let saved = json!({"version":1,"handle":"account:default","generation":GENERATION,"pid":1,
+        "frame":encoded,"sha256":studio_runtime_store::sha256_hex(encoded.as_bytes())});
+    state
+        .bridge
+        .store
+        .transaction_with(move |tx| store::save(tx, &operation, "submitted", saved))
+        .await
+        .unwrap();
+    let reader = state.bridge.store.test_reader().unwrap();
+    assert_eq!(
+        callback_reply_accounts(&reader, "", 1).unwrap(),
+        ["default"]
+    );
+    assert!(
+        callback_reply_accounts(&reader, "default", 1)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(callback_reply_accounts(&reader, "", 0).unwrap().is_empty());
+    drop(reader);
+    let mut peer = Peer::supervised();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let wire = tokio::time::timeout(std::time::Duration::from_secs(5), peer.next_write())
+        .await
+        .expect("the retained worker recovers the saved callback reply");
+    assert_eq!(
+        wire.value, response,
+        "never rebuild or redispatch the business operation"
+    );
+    wire.receipt
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        })
+        .unwrap_or_else(|_| panic!("the receipt has an owner"));
+    worker_barrier(&worker).await;
+    assert_eq!(phases(&state, GENERATION, 1), [false, false, false]);
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "one callback response only"
+    );
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn saved_callback_recovery_refuses_changed_identity_digest_and_direct_transport() {
+    for case in [
+        "handle",
+        "generation",
+        "pid",
+        "digest",
+        "rpc-id",
+        "direct",
+        "unknown",
+        "recoverable-pid",
+    ] {
+        let state = State::new().await;
+        journal(&state, vec![entry(GENERATION, 1, &request("saved-answer"))]).await;
+        let operation = callback_record::operation(SCOPE, GENERATION, 1);
+        let id = if case == "rpc-id" {
+            "another-request"
+        } else {
+            "saved-answer"
+        };
+        let encoded = format!("{}\n", json!({"id":id,"result":{"success":true}}));
+        let mut saved = json!({"version":1,"handle":"account:default","generation":GENERATION,"pid":1,
+            "frame":encoded,"sha256":studio_runtime_store::sha256_hex(encoded.as_bytes())});
+        match case {
+            "handle" => saved["handle"] = json!("account:other"),
+            "generation" => saved["generation"] = json!(GENERATION + 1),
+            "pid" | "recoverable-pid" => saved["pid"] = json!(2),
+            "digest" => saved["sha256"] = json!("incorrect"),
+            _ => {}
+        }
+        state
+            .bridge
+            .store
+            .transaction_with(move |tx| {
+                store::save(tx, &operation, "submitted", saved)?;
+                if case == "unknown" {
+                    store::save(tx, &operation, "unknown", json!(true))?;
+                }
+                if case == "recoverable-pid" {
+                    store::save(tx, &operation, "recoverable", json!(true))?;
+                }
+                Ok::<_, WorkerError>(())
+            })
+            .await
+            .unwrap();
+        let mut peer = if case == "direct" {
+            Peer::new()
+        } else {
+            Peer::supervised()
+        };
+        let mut worker = peer.worker(state.bridge.clone()).await;
+        worker_barrier(&worker).await;
+        assert!(
+            peer.writes.try_recv().is_err(),
+            "{case} must not authorize a write"
+        );
+        assert_eq!(
+            phases(&state, GENERATION, 1),
+            [true, true, true],
+            "{case} stays uncertain"
+        );
+        worker.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn duplicate_callback_receipt_keeps_uncertainty_and_never_repeats_the_answer() {
+    let state = State::new().await;
+    let mut peer = Peer::supervised();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let cursor = peer.frame(request("duplicate-answer")).await;
+    let answer = peer.next_write().await;
+    answer
+        .receipt
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: true,
+        })
+        .unwrap_or_else(|_| panic!("the receipt has an owner"));
+    let result = tokio::time::timeout(SHUTDOWN_GRACE, worker.completion())
+        .await
+        .unwrap();
+    assert!(
+        matches!(result, Err(WorkerError::CallbackUnknown)),
+        "accepted does not prove stdin written: {result:?}"
+    );
+    assert_eq!(phases(&state, GENERATION, cursor), [true, true, true]);
+    assert!(peer.writes.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn missing_callback_receipt_recovers_exact_saved_answer_once_after_same_generation_reattach()
+{
+    let state = State::new().await;
+    let mut peer = Peer::supervised();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let cursor = peer.frame(request("lost-receipt")).await;
+    let answer = peer.next_write().await;
+    worker_barrier(&worker).await;
+    tokio::time::pause();
+    tokio::time::advance(
+        callback_record::WRITE_RECEIPT_TIMEOUT + std::time::Duration::from_secs(1),
+    )
+    .await;
+    // The adapter still owns the response, so its absence cannot prove NotSent.
+    let result = worker.completion().await;
+    tokio::time::resume();
+    assert!(
+        matches!(result, Err(WorkerError::CallbackUnknown)),
+        "missing receipt stays uncertain: {result:?}"
+    );
+    assert_eq!(phases(&state, GENERATION, cursor), [true, true, false]);
+    assert!(peer.writes.try_recv().is_err());
+    let response = answer.value.clone();
+    drop(answer);
+    let mut retained = Peer::supervised();
+    let mut resumed = retained.worker(state.bridge.clone()).await;
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), retained.next_write())
+        .await
+        .expect("the first lost handoff recovers on the retained connection");
+    assert_eq!(reply.value, response);
+    reply
+        .receipt
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        })
+        .unwrap_or_else(|_| panic!("the resumed receipt has an owner"));
+    worker_barrier(&resumed).await;
+    assert_eq!(phases(&state, GENERATION, cursor), [false, false, false]);
+    assert!(retained.writes.try_recv().is_err());
+    resumed.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_second_lost_callback_receipt_stays_unknown_without_another_replay() {
+    let state = State::new().await;
+    journal(&state, vec![entry(GENERATION, 1, &request("second-loss"))]).await;
+    let operation = callback_record::operation(SCOPE, GENERATION, 1);
+    let encoded = format!(
+        "{}\n",
+        json!({"id":"second-loss","result":{"success":true}})
+    );
+    let saved = json!({"version":1,"handle":"account:default","generation":GENERATION,"pid":1,
+        "frame":encoded,"sha256":studio_runtime_store::sha256_hex(encoded.as_bytes())});
+    state
+        .bridge
+        .store
+        .transaction_with(move |tx| store::save(tx, &operation, "submitted", saved))
+        .await
+        .unwrap();
+    let mut peer = Peer::supervised();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let answer = peer.next_write().await;
+    worker_barrier(&worker).await;
+    tokio::time::pause();
+    tokio::time::advance(
+        callback_record::WRITE_RECEIPT_TIMEOUT + std::time::Duration::from_secs(1),
+    )
+    .await;
+    let result = worker.completion().await;
+    tokio::time::resume();
+    assert!(matches!(result, Err(WorkerError::CallbackUnknown)));
+    assert_eq!(phases(&state, GENERATION, 1), [true, true, true]);
+    assert!(
+        callback_reply_accounts(&state.bridge.store.test_reader().unwrap(), "", 10)
+            .unwrap()
+            .is_empty(),
+        "an exhausted retry never starts another account attachment"
+    );
+    drop(answer);
+    let mut retained = Peer::supervised();
+    let mut resumed = retained.worker(state.bridge.clone()).await;
+    worker_barrier(&resumed).await;
+    assert!(
+        retained.writes.try_recv().is_err(),
+        "the retry budget is durable"
+    );
+    assert_eq!(phases(&state, GENERATION, 1), [true, true, true]);
+    resumed.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_direct_callback_receipt_timeout_never_authorizes_replay() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let cursor = peer.frame(request("direct-loss")).await;
+    let answer = peer.next_write().await;
+    worker_barrier(&worker).await;
+    tokio::time::pause();
+    tokio::time::advance(
+        callback_record::WRITE_RECEIPT_TIMEOUT + std::time::Duration::from_secs(1),
+    )
+    .await;
+    let result = worker.completion().await;
+    tokio::time::resume();
+    assert!(matches!(result, Err(WorkerError::CallbackUnknown)));
+    assert_eq!(phases(&state, GENERATION, cursor), [true, true, true]);
+    drop(answer);
+    assert!(unsent(&state).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_late_not_sent_receipt_does_not_reopen_explicit_callback_uncertainty() {
+    let state = State::new().await;
+    journal(
+        &state,
+        vec![entry(GENERATION, 1, &request("late-not-sent"))],
+    )
+    .await;
+    let operation = callback_record::operation(SCOPE, GENERATION, 1);
+    assert!(
+        !callback_record::admit(&state.bridge.store, &operation)
+            .await
+            .unwrap()
+    );
+    callback_record::written(&state.bridge.store, &operation, WriteOutcome::Unknown)
+        .await
+        .unwrap();
+    callback_record::written(&state.bridge.store, &operation, WriteOutcome::NotSent)
+        .await
+        .unwrap();
+    assert_eq!(phases(&state, GENERATION, 1), [true, true, true]);
+    assert!(unsent(&state).await.is_empty());
+    // Older states can retain Unknown without their Submitted marker.
+    state
+        .bridge
+        .store
+        .transaction_with(move |tx| store::delete_receipt(tx, &operation, "submitted"))
+        .await
+        .unwrap();
+    assert!(
+        unsent(&state).await.is_empty(),
+        "Unknown alone never permits another handler dispatch"
+    );
+}
+
+#[tokio::test]
+async fn managed_saved_callback_cannot_resume_a_stopped_changed_or_deleted_actor() {
+    for case in [
+        "stopped",
+        "epoch",
+        "account",
+        "deleted",
+        "provider",
+        "root",
+        "lead",
+        "role",
+        "parent",
+        "execution",
+        "move",
+        "move-before",
+        "transfer",
+        "lazy",
+    ] {
+        for captured in [false, true] {
+            let state = State::new().await;
+            let actor = state.agent.clone();
+            let epoch = state.epoch;
+            state.bridge.store.transaction(move |tx| {
+                tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.status','running','$.autoWake',json('true'),'$.inFlight',json('true'),'$.provider','claude','$.rootId',?1,'$.threadId','managed-thread','$.turnId','managed-turn','$.parentId',null,'$.role','implementer','$.isLead',json('true'),'$.executionMode',null,'$.executionMove',json('false'),'$.startAttempt',json(?2)) WHERE id=?1",
+                    rusqlite::params![actor,json!({"connectionGeneration":GENERATION,"connectionId":"original-connection"}).to_string()])?;
+                Ok(())
+            }).await.unwrap();
+            let call = json!({"id":"managed-reply","method":"item/tool/call","params":{
+                "threadId":"managed-thread","turnId":"managed-turn","callId":"saved-spawn","tool":"orchestration_spawn","arguments":{}}});
+            journal(&state, vec![entry(GENERATION, 1, &call)]).await;
+            let operation = callback_record::operation(SCOPE, GENERATION, 1);
+            let encoded = format!(
+                "{}\n",
+                json!({"id":"managed-reply","result":{"existingChild":"already-created","success":true}})
+            );
+            let mut saved = json!({"version":1,"handle":"account:default","generation":GENERATION,"pid":1,
+                "frame":encoded,"sha256":studio_runtime_store::sha256_hex(encoded.as_bytes())});
+            if captured {
+                saved["authority"] = json!({"context":{"agent":state.agent,"account":"default","connection":"original-connection",
+                    "generation":GENERATION,"epoch":epoch,"thread":"managed-thread","turn":"managed-turn"},"provider":"claude","root":state.agent,
+                    "parent":null,"role":"implementer","isLead":true,"executionMode":null,"moving":false});
+                if case == "move-before" {
+                    saved["authority"]["moving"] = json!(true);
+                }
+            }
+            let actor = state.agent.clone();
+            state
+                .bridge
+                .store
+                .transaction_with(move |tx| {
+                    store::save(tx, &operation, "submitted", saved)?;
+                    let mutation = match case {
+                        "stopped" => {
+                            "record=json_set(record,'$.status','paused','$.autoWake',json('false'))"
+                                .to_owned()
+                        }
+                        "epoch" => format!("record=json_set(record,'$.epoch',{})", epoch + 1),
+                        "account" => "record=json_set(record,'$.accountKey','other')".to_owned(),
+                        "deleted" => "record=json_set(record,'$.deletedAt',1)".to_owned(),
+                        "provider" => "record=json_set(record,'$.provider','codex')".to_owned(),
+                        "root" => "record=json_set(record,'$.rootId','another-root')".to_owned(),
+                        "lead" => "record=json_set(record,'$.isLead',json('false'))".to_owned(),
+                        "role" => "record=json_set(record,'$.role','reviewer')".to_owned(),
+                        "parent" => {
+                            "record=json_set(record,'$.parentId','another-parent')".to_owned()
+                        }
+                        "execution" => "record=json_set(record,'$.executionMode','vm')".to_owned(),
+                        "move" | "move-before" => {
+                            "record=json_set(record,'$.executionMove',json('true'))".to_owned()
+                        }
+                        "transfer" => "record=json_set(record,'$.accountTransferId','pending-transfer')".to_owned(),
+                        "lazy" => "record=json_set(record,'$.lazyAccountTransfer',json('{\"id\":\"pending-transfer\"}'))".to_owned(),
+                        _ => unreachable!(),
+                    };
+                    tx.execute(
+                        &format!("UPDATE runtime_agents SET {mutation} WHERE id=?1"),
+                        [actor],
+                    )?;
+                    Ok::<_, WorkerError>(())
+                })
+                .await
+                .unwrap();
+            let mut peer = Peer::supervised();
+            let mut worker = peer.worker(state.bridge.clone()).await;
+            worker_barrier(&worker).await;
+            assert!(
+                peer.writes.try_recv().is_err(),
+                "{case}, captured={captured}: no reply or new turn"
+            );
+            assert_eq!(
+                phases(&state, GENERATION, 1),
+                [true, true, true],
+                "{case}, captured={captured}"
+            );
+            worker.shutdown().await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn managed_callback_first_handoff_captures_the_current_actor_authority() {
+    let state = State::new().await;
+    let mut peer = Peer::supervised();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    worker_barrier(&worker).await;
+    let actor = state.record().await;
+    let cursor = peer
+        .frame(
+            json!({"id":"capture-authority","method":"item/tool/call","params":{
+        "threadId":actor["threadId"],"turnId":actor["turnId"],"callId":"capture-authority",
+        "tool":"unsupported-fixture-tool","arguments":{}}}),
+        )
+        .await;
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), peer.next_write())
+        .await
+        .expect("an active actor can receive its first callback answer");
+    let operation = callback_record::operation(SCOPE, GENERATION, cursor);
+    let submitted = state
+        .bridge
+        .store
+        .transaction_with(move |tx| store::receipt(tx, &operation, "submitted"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(submitted["authority"]["context"]["agent"], actor["id"]);
+    assert_eq!(submitted["authority"]["context"]["epoch"], actor["epoch"]);
+    assert_eq!(submitted["authority"]["context"]["turn"], actor["turnId"]);
+    answer
+        .receipt
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        })
+        .unwrap_or_else(|_| panic!("the first reply receipt has an owner"));
+    worker_barrier(&worker).await;
+    assert_eq!(phases(&state, GENERATION, cursor), [false, false, false]);
     worker.shutdown().await.unwrap();
 }
 

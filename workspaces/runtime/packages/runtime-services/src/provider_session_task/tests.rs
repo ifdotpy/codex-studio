@@ -20,6 +20,7 @@ fn lifecycle_capability_requires_exact_ready_connection_and_boolean_proof() {
     let handle = ProviderHandle::for_account("owner");
     let generation = Generation(7);
     let status = SessionStatus {
+        supervisor_write_deduplication: false,
         generation,
         initialization: InitializationStatus::Ready,
         initialize_result: Some(Arc::new(

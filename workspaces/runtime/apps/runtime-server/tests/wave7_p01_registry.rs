@@ -471,6 +471,9 @@ impl ProviderTaskFactory for WireFactory {
                             };
                             if observed {
                                 if write.message()["method"] == "initialized" {
+                                    status.send_modify(|status| {
+                                        status.initialization = InitializationStatus::Ready
+                                    });
                                     ready_notice.notify_one();
                                 }
                                 if let Some(message) = observed_message {
@@ -1472,6 +1475,112 @@ mod runtime_shutdown;
 struct SupervisorDetachLauncher {
     scripted: Arc<Scripted>,
     root: PathBuf,
+}
+
+struct CallbackRecoveryLauncher(Arc<Scripted>);
+struct CallbackRecoveryFactory(Arc<dyn ProviderTaskFactory>);
+
+impl ProviderTaskFactory for CallbackRecoveryFactory {
+    fn open(
+        &self,
+        handle: ProviderHandle,
+        options: OpenOptions,
+        shutdown: Shutdown,
+    ) -> OpenFuture<'_> {
+        Box::pin(async move {
+            self.0
+                .open(handle, options, shutdown)
+                .await
+                .map(ProviderAttachment::with_supervisor_write_deduplication)
+        })
+    }
+}
+
+impl AccountLauncher for CallbackRecoveryLauncher {
+    fn launch(&self, account: String) -> LaunchFuture<'_> {
+        Box::pin(async move {
+            let mut launch = self.0.launch(account).await?;
+            launch.factory = Arc::new(CallbackRecoveryFactory(launch.factory));
+            Ok(launch)
+        })
+    }
+}
+
+#[tokio::test]
+async fn callback_only_saved_reply_starts_its_account_without_any_pending_input() {
+    let root = tempfile::tempdir().unwrap();
+    let (store, mut changes) = store_with_change_signal(root.path()).await;
+    let response =
+        json!({"id":"saved-tool-reply","result":{"existingChild":"created-once","success":true}});
+    let encoded = format!("{response}\n");
+    let saved = json!({"version":1,"handle":"account:default","generation":7,"pid":1,
+        "frame":encoded,"sha256":studio_runtime_store::sha256_hex(encoded.as_bytes()),
+        "authority":{"context":{"agent":"managed-actor","account":"default","connection":"original-connection",
+            "generation":7,"epoch":0,"thread":"retained-thread","turn":"retained-turn"},"root":"managed-actor","provider":"claude",
+            "parent":null,"role":"implementer","isLead":true,"executionMode":null,"moving":false}});
+    store.transaction(move |tx| {
+        let actor = json!({"id":"managed-actor","rootId":"managed-actor","epoch":0,"status":"running","autoWake":true,"inFlight":true,
+            "provider":"claude","accountKey":"default","threadId":"retained-thread","turnId":"retained-turn","parentId":null,"role":"implementer","isLead":true,
+            "startAttempt":{"connectionGeneration":7,"connectionId":"reattached-connection"}});
+        tx.execute("INSERT INTO runtime_agents(id,record) VALUES ('managed-actor',?1)", [actor.to_string()])?;
+        let accepted = json!({"account":"default","journalScope":"default","generation":7,"cursor":1,
+            "requestId":"saved-tool-reply","method":"item/tool/call",
+            "frame":"{\"id\":\"saved-tool-reply\",\"method\":\"item/tool/call\",\"params\":{\"threadId\":\"retained-thread\",\"turnId\":\"retained-turn\",\"callId\":\"saved-spawn\",\"tool\":\"orchestration_spawn\",\"arguments\":{}}}\n",
+            "actor":null,"epoch":null});
+        for (phase, value) in [("accepted",accepted),("submitted",saved),("recoverable",json!(true))] {
+            studio_runtime_store::EventWriteRepository::put_receipt(tx,
+                &format!("account-worker:callback:default:7:1:{phase}"), phase, &value.to_string())?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let db = store.test_reader().unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM runtime_events WHERE status='pending'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        account_registry::target_page(&db, "", &BTreeMap::new())
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["default"],
+        "the callback itself supplies durable account demand"
+    );
+    drop(db);
+    let (scripted, mut writes) = scripted_with_unknown_writes(false);
+    let mut registry = AccountRegistry::new(
+        store.clone(),
+        Arc::new(CallbackRecoveryLauncher(scripted)),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
+    registry.reconcile(None).await.unwrap();
+    let (handle, delivered) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(handle, "account:default");
+    assert_eq!(
+        delivered, response,
+        "send only the existing result, never the spawn request"
+    );
+    tokio::time::timeout(TEST_HANG_GUARD, async {
+        loop {
+            let remaining = store.test_reader().unwrap().query_row(
+                "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:default:7:1:%'", [], |row| row.get::<_, i64>(0)).unwrap();
+            if remaining == 0 { break; }
+            changes.changed().await.unwrap();
+        }
+    }).await.unwrap();
+    registry.shutdown().await.unwrap();
+    assert!(writes.try_recv().is_err());
 }
 
 impl AccountLauncher for SupervisorDetachLauncher {
