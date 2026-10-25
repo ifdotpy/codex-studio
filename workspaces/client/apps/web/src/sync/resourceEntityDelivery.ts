@@ -1,5 +1,5 @@
-import { subscriptionKey } from "./subscriptions/cursors";
 import type { ResourceChangeEvent } from "./subscriptions/events";
+import { subscriptionKey } from "./subscriptions/contracts";
 
 const MAX_PENDING_FRAMES = 8;
 const PERSIST_DEADLINE_MS = 1000;
@@ -103,15 +103,49 @@ export class ResourceEntityDelivery {
     private readonly failed?: (
       event: ResourceChangeEvent,
       error: unknown,
-    ) => void,
+    ) => boolean | void,
   ) {}
 
   /** Cancel reads from an earlier subscription set and retain active pull hints. */
-  invalidate() {
+  invalidate(recover = false) {
     this.generation++;
-    if (this.current) this.dispatch(this.revoke(this.current));
-    for (const pending of this.pending) this.dispatch(this.revoke(pending));
+    const discarded = [
+      ...(this.current ? [this.current] : []),
+      ...this.pending,
+    ];
+    this.current = undefined;
     this.pending = [];
+    if (recover && this.recoverDiscarded(discarded)) return;
+    for (const event of discarded) this.dispatch(this.revoke(event));
+  }
+
+  private recoverDiscarded(frames: ResourceChangeEvent[]): boolean {
+    const typed = frames.filter((frame) =>
+      frame.resourceVersions?.some(
+        (entry) =>
+          entry.cursor ||
+          entry.entityChanges ||
+          entry.transcriptChanges ||
+          entry.transcriptSnapshot,
+      ),
+    );
+    if (!this.failed || !typed.length) return false;
+    const resources = [
+      ...new Map(
+        typed
+          .flatMap((frame) => frame.resources)
+          .map((ref) => [subscriptionKey(ref), ref]),
+      ).values(),
+    ];
+    for (const frame of typed) this.revoke(frame);
+    return (
+      this.failed(
+        { ...typed[0], resources },
+        new Error(
+          "Subscribed entity interval was discarded before application",
+        ),
+      ) !== false
+    );
   }
 
   private hasPendingTerminalSnapshot(
@@ -191,7 +225,7 @@ export class ResourceEntityDelivery {
       // A timed-out write may still own storage. Keep the stream degraded and
       // its reconnect bounded until that write settles; never confirm a hint.
       this.failed(
-        revokeCursorProof(event),
+        this.revoke(event),
         new Error("Stream entity storage is still unavailable"),
       );
       return;
@@ -217,11 +251,16 @@ export class ResourceEntityDelivery {
       this.generation++;
       // Preserve all resource hints when data delivery falls back to pull.
       // A frame can also contain transcript, panel or queue invalidations.
-      if (this.current) this.dispatch(this.revoke(this.current));
-      for (const pending of this.pending) this.dispatch(this.revoke(pending));
+      const discarded = [
+        ...(this.current ? [this.current] : []),
+        ...this.pending,
+        event,
+      ];
+      this.current = undefined;
       this.pending = [];
       this.epoch = event.epoch;
-      this.dispatch(this.revoke(event));
+      if (!this.recoverDiscarded(discarded))
+        for (const frame of discarded) this.dispatch(this.revoke(frame));
       return;
     }
     this.epoch = event.epoch;
@@ -281,13 +320,16 @@ export class ResourceEntityDelivery {
             // A fresh subscription must recover the whole missed interval.
             // Queued deltas have no applied base and cannot prove liveness.
             this.pending = [];
-            this.failed(event, persistenceError);
+            if (this.failed(event, persistenceError) === false)
+              this.dispatch(event);
           } else this.dispatch(event);
         }
         if (expired) {
-          for (const pending of this.pending)
-            this.dispatch(this.revoke(pending));
+          const discarded = this.pending;
           this.pending = [];
+          if (!this.recoverDiscarded(discarded))
+            for (const pending of discarded)
+              this.dispatch(this.revoke(pending));
           break;
         }
       }

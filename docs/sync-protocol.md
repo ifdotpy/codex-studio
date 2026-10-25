@@ -308,7 +308,7 @@ without using recovery reads to bypass it. Recovery errors remain visible and
 do not create a polling loop.
 
 Cursorless process, complaint, and legacy-room views become ready only after
-their current inline value is applied by the view adapter. A failed inline
+their current inline value is applied by the view adapter. A failed or discarded inline
 entity application asks the stream owner to reconnect from the durable per-ref
 cursor; a follower asks that owner through browser coordination. Queued deltas
 cannot confirm readiness after their base failed, and a cancelled subscription

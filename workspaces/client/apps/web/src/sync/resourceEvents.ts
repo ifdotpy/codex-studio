@@ -34,6 +34,7 @@ import {
 } from "./client";
 import { subscriptionKey } from "./subscriptions/cursors";
 import { hasAppliedResourceBaseline } from "./subscriptions/contracts";
+import { SUBSCRIPTION_ENTITY_SCOPES } from "../generated/subscriptionEntities";
 
 import { ResourceEntityDelivery } from "./resourceEntityDelivery";
 import { EntityTransferAssembler } from "./entityTransfer";
@@ -848,6 +849,28 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
   }
 
+  function recoverResourceApplication(
+    refs: ResourceRef[],
+    error: unknown,
+  ): boolean {
+    const active = new Set(aggregateResources().map(resourceKey));
+    const resources = refs.filter(
+      (ref) =>
+        active.has(resourceKey(ref)) &&
+        (ref.kind in SUBSCRIPTION_ENTITY_SCOPES ||
+          ref.kind === "transcript" ||
+          ref.kind === "terminal-output" ||
+          (ref.kind === "room" && !ref.legacy)),
+    );
+    if (!resources.length || !coordinatorActive) return false;
+    if (owner || independent) frameFailed(error);
+    else {
+      setStatus("degraded");
+      entityDelivery.invalidate();
+      broadcast({ kind: "resource-recovery", resources });
+    }
+    return true;
+  }
   const entityDelivery = new ResourceEntityDelivery(
     (event, isCurrent) => {
       const generation = subscriptionGeneration;
@@ -860,29 +883,21 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       );
     },
     dispatchEvent,
-    (event, error) => {
-      const active = new Set(aggregateResources().map(resourceKey));
-      const resources = event.resources.filter((ref) =>
-        active.has(resourceKey(ref)),
-      );
-      if (!resources.length || !coordinatorActive) return;
-      if (owner || independent) frameFailed(error);
-      else {
-        // Followers cannot reopen the owner's stream. Request its existing
-        // cursor-based reconnect path without issuing a resource GET.
-        setStatus("degraded");
-        entityDelivery.invalidate();
-        broadcast({ kind: "resource-recovery", resources });
-      }
-    },
+    (event, error) => recoverResourceApplication(event.resources, error),
   );
 
   let transferAssembler: EntityTransferAssembler | undefined;
   let transferEpoch: string | undefined;
   let transferTail: Promise<void> = Promise.resolve();
   let transferPending = 0;
-  function cancelEntityTransfers() {
+  const transferResources = new Map<
+    string,
+    { ref: ResourceRef; transferId: string }
+  >();
+  function cancelEntityTransfers(recover = false) {
     const previous = transferAssembler;
+    const discarded = [...transferResources.values()].map((entry) => entry.ref);
+    transferResources.clear();
     transferAssembler = undefined;
     transferEpoch = undefined;
     transferTail = Promise.resolve();
@@ -893,6 +908,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         .catch((error) =>
           console.error("Entity staging cleanup failed", error),
         );
+    if (recover && discarded.length)
+      recoverResourceApplication(
+        discarded,
+        new Error("Subscribed staged entity interval was discarded"),
+      );
   }
   function receiveEntityTransfer(value: unknown) {
     if (!hasRevisionFrame(value) || value.workspaceId !== workspaceId)
@@ -905,6 +925,10 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const assembler = (transferAssembler ??= new EntityTransferAssembler());
     const generation = subscriptionGeneration;
     const transferSource = source;
+    transferResources.set(key, {
+      ref: frame.resource,
+      transferId: frame.transferId,
+    });
     transferPending++;
     const work = transferTail
       .then(async () => {
@@ -942,6 +966,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             ],
           });
         } finally {
+          if (
+            assembler === transferAssembler &&
+            generation === subscriptionGeneration &&
+            transferResources.get(key)?.transferId === frame.transferId
+          )
+            transferResources.delete(key);
           await interval.dispose();
         }
       })
@@ -1293,8 +1323,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     if (removed) {
       blockedSelectors = [...blockedResources.values()];
-      entityDelivery.invalidate();
-      cancelEntityTransfers();
+      entityDelivery.invalidate(true);
+      cancelEntityTransfers(true);
+      if (!source && reconnectTimer !== undefined) return;
     }
     const generation = ++streamUpdateGeneration;
     queueMicrotask(() => {
@@ -2066,8 +2097,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         baselineReconciliations.delete(key);
         if (!owner && !independent) {
           subscriptionGeneration++;
-          entityDelivery.invalidate();
-          cancelEntityTransfers();
+          entityDelivery.invalidate(true);
+          cancelEntityTransfers(true);
         }
       }
       if (

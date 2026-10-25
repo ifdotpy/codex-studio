@@ -553,6 +553,7 @@ it.each([false, true])(
     await vi.waitFor(() => expect(mocks.sources).toHaveLength(1));
     const source = mocks.sources[0];
     source.emit("api-schema", { hash: API_SCHEMA_HASH });
+    source.emit("session", { sessionId: "quiet-work-session" });
     const frame = (seq: number, snapshot: boolean): ResourceChangeEvent => ({
       protocol: SYNC_PROTOCOL_VERSION,
       workspaceId: f.workspaceId,
@@ -828,5 +829,159 @@ it.each([
       seq: 5,
     });
     expect(f.pulls()).toEqual([]);
+  },
+);
+
+it.each(["overflow", "inline removal", "staged removal"])(
+  "the actual Work adapter recovers a still-active interval discarded by %s",
+  async (cause) => {
+    const f = await setup();
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("BroadcastChannel", undefined);
+    const { createServerSubscriptions } =
+      await import("./subscriptions/server");
+    const api = await import("../api");
+    const subscriptions = createServerSubscriptions({
+      owner: { id: "local", origin: "http://studio.test" },
+      api: { ...api, fetchApiRequest: vi.fn() },
+      tokenRates: {
+        configureTokenRateStream: vi.fn(),
+        receiveResourceTokenRates: vi.fn(() => true),
+        getWorkspaceTokenRates: vi.fn(() => ({ records: [] })),
+      },
+      sync: () => f.client,
+    } as unknown as Parameters<typeof createServerSubscriptions>[0]);
+    const ref = { kind: "work", agentId: "lead" } as const;
+    const stop = subscriptions.subscribe(ref, () => {}, { graceMs: 0 });
+    const others = Array.from(
+      { length: 10 },
+      (_, index) =>
+        ({ kind: "agentDetail", agentId: `other-${index}` }) as const,
+    );
+    const stopOthers = others.map((other) =>
+      subscriptions.watchResourceChanges(other, () => {}, { graceMs: 0 }),
+    );
+    stops.push(stop, ...stopOthers, subscriptions.dispose);
+    await vi.waitFor(() => expect(mocks.sources).toHaveLength(1));
+    const source = mocks.sources[0];
+    source.emit("api-schema", { hash: API_SCHEMA_HASH });
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    stops.push(finish);
+    const staged = cause === "staged removal";
+    const originalInline = f.client.persistResourceEntityChanges;
+    const originalStaged = f.client.persistStagedEntityTransfer;
+    const held = staged
+      ? vi
+          .spyOn(f.client, "persistStagedEntityTransfer")
+          .mockImplementationOnce(async (...args) => {
+            await gate;
+            return originalStaged(...args);
+          })
+      : vi
+          .spyOn(f.client, "persistResourceEntityChanges")
+          .mockImplementationOnce(async (...args) => {
+            await gate;
+            return originalInline(...args);
+          });
+    const frame: ResourceChangeEvent = {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: f.workspaceId,
+      epoch: "server",
+      revision: 5,
+      reason: "initial",
+      resources: [ref],
+      resourceVersions: [
+        {
+          resource: ref,
+          revision: 5,
+          cursor: { workspaceId: f.workspaceId, seq: 5 },
+          replyKind: "snapshot",
+          entityChanges: {
+            after: 0,
+            through: 5,
+            documents: [
+              {
+                op: "upsert",
+                collection: "workDetail",
+                id: "assignment",
+                seq: 5,
+                value: {
+                  id: "assignment",
+                  rootId: "lead",
+                  title: "Quiet assignment",
+                  created: 1,
+                  updated: 1,
+                  version: 1,
+                  status: "ready",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    };
+    if (staged)
+      source.emit("entity-transfer", {
+        protocol: frame.protocol,
+        workspaceId: f.workspaceId,
+        epoch: frame.epoch,
+        revision: 5,
+        reason: "initial",
+        resource: ref,
+        cursor: { workspaceId: f.workspaceId, seq: 5 },
+        replyKind: "snapshot",
+        transferId: "quiet-work",
+        pageIndex: 0,
+        partIndex: 0,
+        partCount: 1,
+        complete: true,
+        data: JSON.stringify(frame.resourceVersions[0].entityChanges),
+      });
+    else source.emit("resources", frame);
+    await vi.waitFor(() => expect(held).toHaveBeenCalledOnce());
+    if (cause === "overflow") {
+      for (const [index, other] of others.entries())
+        source.emit("resources", {
+          protocol: frame.protocol,
+          workspaceId: f.workspaceId,
+          epoch: frame.epoch,
+          revision: 6 + index,
+          reason: "initial",
+          resources: [other],
+          resourceVersions: [
+            {
+              resource: other,
+              revision: 6 + index,
+              cursor: { workspaceId: f.workspaceId, seq: 6 + index },
+              replyKind: "snapshot",
+              entityChanges: { after: 0, through: 6 + index, documents: [] },
+            },
+          ],
+        });
+    } else stopOthers[0]();
+    expect(source.closed).toBe(true);
+    finish();
+    await vi.waitFor(() => expect(mocks.sources).toHaveLength(2), {
+      timeout: 2500,
+    });
+    expect(await f.client.readSubscriptionCursor(ref)).toBeUndefined();
+    const replacement = mocks.sources[1];
+    replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
+    replacement.emit("resources", structuredClone(frame));
+    await vi.waitFor(() =>
+      expect(subscriptions.getSnapshot(ref)).toMatchObject({
+        status: "live",
+        data: {
+          items: [expect.objectContaining({ title: "Quiet assignment" })],
+        },
+      }),
+    );
+    expect(f.pulls()).toEqual([]);
+    expect(
+      mocks.syncGet.mock.calls.every(([path]) => path === "/api/sync/identity"),
+    ).toBe(true);
   },
 );
