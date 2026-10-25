@@ -264,8 +264,8 @@ mod tests {
                 cursor,
                 "thread/tokenUsage/updated",
                 json!({"threadId":"thread","turnId":"turn","tokenUsage":{
-                    "total":{"inputTokens":total,"outputTokens":10,"totalTokens":total + 10},
-                    "last":{"inputTokens":total,"outputTokens":10,"totalTokens":total + 10}}}),
+                    "total":{"inputTokens":total,"cachedInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0,"totalTokens":total + 10},
+                    "last":{"inputTokens":total,"cachedInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0,"totalTokens":total + 10}}}),
             )
         };
         vec![

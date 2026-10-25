@@ -229,7 +229,11 @@ fn schema_check(directory: &Path) -> Result<Value, CompatibilityRefusal> {
     {
         return Err(CompatibilityRefusal::ProtocolSchema);
     }
-    Ok(json!({"methods":required,"daybreak":true}))
+    let usage = read("v2/ThreadTokenUsageUpdatedNotification.json")?;
+    if !studio_runtime_schema::usage::codex_usage_schema_compatible(&usage) {
+        return Err(CompatibilityRefusal::ProtocolSchema);
+    }
+    Ok(json!({"methods":required,"daybreak":true,"usage":true}))
 }
 
 async fn smoke(executable: &Path, home: &Path) -> Result<(), ()> {
@@ -528,6 +532,93 @@ mod tests {
     }
 
     #[test]
+    fn schema_check_refuses_changed_usage_fragment() {
+        let directory = tempfile::tempdir().expect("schema fixture");
+        let methods = [
+            "initialize",
+            "config/read",
+            "thread/loaded/list",
+            "turn/start",
+            "thread/metadata/update",
+            "thread/queue/list",
+            "thread/backgroundTerminals/list",
+            "thread/settings/update",
+            "model/list",
+        ];
+        let usage: serde_json::Value =
+            serde_json::from_str(studio_runtime_schema::usage::CODEX_USAGE_SCHEMA).expect("vendor");
+        for (name, value) in [
+            (
+                "ClientRequest.json",
+                json!({"oneOf":methods.map(|method|json!({"properties":{"method":{"enum":[method]}}}))}),
+            ),
+            (
+                "v2/TurnStartParams.json",
+                json!({"properties":{"cyberAccessProgram":{}},"definitions":{"CyberAccessProgram":{"enum":["standard","daybreakBlue","daybreakRed"]}}}),
+            ),
+            (
+                "v2/ModelListResponse.json",
+                json!({"definitions":{"Model":{"properties":{"availableAccessPrograms":{}}}}}),
+            ),
+            ("v2/ThreadTokenUsageUpdatedNotification.json", usage.clone()),
+        ] {
+            let path = directory.path().join(name);
+            fs::create_dir_all(path.parent().expect("parent")).expect("fixture directory");
+            fs::write(path, value.to_string()).expect("schema file");
+        }
+        assert!(super::schema_check(directory.path()).is_ok());
+        let path = directory
+            .path()
+            .join("v2/ThreadTokenUsageUpdatedNotification.json");
+        let mut description = usage.clone();
+        description["description"] = json!("Updated provider documentation");
+        let mut documented = description.clone();
+        documented["title"] = json!("New title");
+        documented["definitions"]["TokenUsageBreakdown"]["properties"]["inputTokens"]["format"] =
+            json!("new-format-hint");
+        documented["definitions"]["TokenUsageBreakdown"]["properties"]["cacheWriteInputTokens"]["default"] =
+            json!(99);
+        let mut extended = usage.clone();
+        extended["properties"]["futureNotification"] = json!({"type":"string"});
+        extended["definitions"]["ThreadTokenUsage"]["properties"]["futureContext"] =
+            json!({"type":"string"});
+        for compatible in [description, documented, extended] {
+            fs::write(&path, compatible.to_string()).expect("compatible schema");
+            assert!(
+                super::schema_check(directory.path()).is_ok(),
+                "documentation and unrelated additions are compatible"
+            );
+        }
+        let mut category = usage.clone();
+        category["definitions"]["TokenUsageBreakdown"]["properties"]["futureTokens"] =
+            json!({"type":"integer"});
+        let mut retyped = usage.clone();
+        retyped["definitions"]["TokenUsageBreakdown"]["properties"]["inputTokens"]["type"] =
+            json!("number");
+        let mut optional = usage.clone();
+        optional["definitions"]["TokenUsageBreakdown"]["required"] = json!([
+            "cachedInputTokens",
+            "outputTokens",
+            "reasoningOutputTokens",
+            "totalTokens"
+        ]);
+        let mut missing = usage.clone();
+        missing["definitions"]["ThreadTokenUsage"]["properties"]
+            .as_object_mut()
+            .expect("properties")
+            .remove("last");
+        let mut notification_type = usage;
+        notification_type["properties"]["turnId"]["type"] = json!("integer");
+        for incompatible in [category, retyped, optional, missing, notification_type] {
+            fs::write(&path, incompatible.to_string()).expect("incompatible schema");
+            assert!(matches!(
+                super::schema_check(directory.path()),
+                Err(studio_runtime_services::native_runtime::CompatibilityRefusal::ProtocolSchema)
+            ));
+        }
+    }
+
+    #[test]
     fn version_probe_runs_candidate_with_isolated_home() {
         let directory = tempfile::tempdir().expect("temporary fixture directory");
         let executable = directory.path().join("codex");
@@ -556,6 +647,11 @@ mod tests {
     fn compatibility_probe_checks_companion_schema_and_isolated_provider() {
         let directory = tempfile::tempdir().expect("temporary fixture directory");
         let bundle = directory.path().to_owned();
+        fs::write(
+            bundle.join("usage-schema.json"),
+            studio_runtime_schema::usage::CODEX_USAGE_SCHEMA,
+        )
+        .expect("usage fixture");
         let codex = bundle.join("codex");
         write_executable(
             &codex,
@@ -575,6 +671,7 @@ if (process.argv.includes('--version')) {
         'thread/settings/update', 'model/list'];
     const schemas = {
         'ClientRequest.json': {oneOf: methods.map(method => ({properties: {method: {enum: [method]}}}))},
+        'v2/ThreadTokenUsageUpdatedNotification.json': JSON.parse(fs.readFileSync(path.join(__dirname, 'usage-schema.json'), 'utf8')),
         'v2/TurnStartParams.json': {properties: {cyberAccessProgram: {}},
             definitions: {CyberAccessProgram: {enum: ['standard', 'daybreakBlue', 'daybreakRed']}}},
         'v2/ModelListResponse.json': {definitions: {Model: {properties: {availableAccessPrograms: {}}}}},

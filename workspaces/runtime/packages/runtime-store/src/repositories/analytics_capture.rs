@@ -7,6 +7,11 @@ use rusqlite::{
 };
 use serde_json::Value;
 
+/// Indexed capture record lookup template; the table name comes only from CaptureTable.
+pub const CAPTURE_RECORD_BY_ID_SQL: &str = "SELECT record FROM {table} WHERE id=?";
+/// Indexed pre-contract response lookup within its original agent/thread scope.
+pub const USAGE_RESPONSE_SQL: &str = "SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND json_extract(record,'$.responseId')=? LIMIT 1";
+
 /// One existing analytics table; identifiers are never supplied by a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureTable {
@@ -128,7 +133,7 @@ impl AnalyticsCaptureRepository {
     }
     pub fn read(db: &Connection, table: CaptureTable, id: &str) -> StoreResult<Option<Value>> {
         let raw: Option<String> = db
-            .prepare_cached(&format!("SELECT record FROM {} WHERE id=?", table.name()))?
+            .prepare_cached(&CAPTURE_RECORD_BY_ID_SQL.replace("{table}", table.name()))?
             .query_row([id], |r| r.get(0))
             .optional()?;
         raw.map(|raw| {
@@ -147,7 +152,13 @@ impl AnalyticsCaptureRepository {
         thread: &Value,
         response: &Value,
     ) -> StoreResult<Option<Value>> {
-        let raw: Option<String> = db.query_row_cached("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND json_extract(record,'$.responseId')=? LIMIT 1",params![agent,thread.as_str(),response.as_str()],|r|r.get(0)).optional()?;
+        let raw: Option<String> = db
+            .query_row_cached(
+                USAGE_RESPONSE_SQL,
+                params![agent, thread.as_str(), response.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
         Self::usage_raw(raw)
     }
     pub fn usage_prior(
@@ -216,6 +227,113 @@ impl AnalyticsCaptureRepository {
         Ok(())
     }
 }
+// Bound per-transaction scheduling hints; overflow keeps full reconciliation.
+const COST_ROOT_HINT_LIMIT: usize = 1024;
+
+struct CostRootHintState {
+    rows: Option<std::collections::BTreeSet<i64>>,
+    cost_rows_written: bool,
+}
+
+impl CostRootHintState {
+    fn write(&mut self, table: &str, deleted: bool, rowid: Option<i64>) {
+        match table {
+            // These projections never contribute to a session cost estimate.
+            "analytics_items"
+            | "analytics_turns"
+            | "analytics_history"
+            | "analytics_notifications"
+            | "analytics_limits"
+            | "analytics_meta"
+            | "sqlite_sequence" => {}
+            "analytics_usage_roots" if !deleted => {
+                if let (Some(rows), Some(rowid)) = (&mut self.rows, rowid) {
+                    rows.insert(rowid);
+                    if rows.len() > COST_ROOT_HINT_LIMIT {
+                        self.rows = None;
+                    }
+                }
+            }
+            // Usage and its aggregate are scoped by generation writes in the
+            // same transaction. Without those writes their scope is unknown.
+            "analytics_usage" | "analytics_cost_rows" | "analytics_cost_groups" => {
+                self.cost_rows_written = true;
+            }
+            // Agent account/thread/provider changes and unrecognized tables
+            // have no proven roots. Deleting a root loses its old identity too.
+            _ => self.rows = None,
+        }
+    }
+}
+
+struct CostRootHints(std::sync::Arc<std::sync::Mutex<CostRootHintState>>);
+impl CostRootHints {
+    fn install(db: &Connection) -> StoreResult<Self> {
+        let hints = std::sync::Arc::new(std::sync::Mutex::new(CostRootHintState {
+            rows: Some(std::collections::BTreeSet::new()),
+            cost_rows_written: false,
+        }));
+        let written = hints.clone();
+        db.update_hook(Some(
+            move |action: rusqlite::hooks::Action, database: &str, table: &str, rowid: i64| {
+                if database == "main" {
+                    written
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .write(
+                            table,
+                            action == rusqlite::hooks::Action::SQLITE_DELETE,
+                            Some(rowid),
+                        );
+                }
+            },
+        ))?;
+        let deleted = hints.clone();
+        db.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
+            if context.database_name == Some("main")
+                && let rusqlite::hooks::AuthAction::Delete { table_name } = context.action
+            {
+                // SQLite's truncate optimization may skip update_hook.
+                deleted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .write(table_name, true, None);
+            }
+            rusqlite::hooks::Authorization::Allow
+        }))?;
+        Ok(Self(hints))
+    }
+
+    fn committed(&self, db: &Connection) -> crate::ChangedRoots {
+        let hints = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(rows) = hints
+            .rows
+            .as_ref()
+            .filter(|rows| !rows.is_empty() || !hints.cost_rows_written)
+        else {
+            return crate::ChangedRoots::Full;
+        };
+        let mut roots = std::collections::BTreeSet::new();
+        for rowid in rows {
+            let root = db.query_row_cached(
+                "SELECT root FROM analytics_usage_roots WHERE rowid=?1",
+                [rowid],
+                |row| row.get::<_, String>(0),
+            );
+            match root {
+                Ok(root) if !root.is_empty() => {
+                    roots.insert(root);
+                }
+                _ => return crate::ChangedRoots::Full,
+            }
+        }
+        crate::ChangedRoots::Roots(roots)
+    }
+}
+
 impl RuntimeStore {
     /// Run one analytics projection transaction on the blocking pool without
     /// Canvas writer admission: it locks only the analytics connection, and the
@@ -235,19 +353,24 @@ impl RuntimeStore {
         let notifiers = std::sync::Arc::clone(&self.analytics_commit_notifiers);
         crate::blocking_pool::spawn_blocking("analytics/projection", move || {
             let mut db = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+            let root_hints = CostRootHints::install(&db)?;
             let changed_before = db.total_changes();
             let outcome: Result<T, E> = (|| {
                 let tx = db
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(StoreError::from)?;
                 let value = crate::sql_callback(|| operation(&tx))?;
-                tx.commit().map_err(StoreError::commit_outcome_unknown)?;
+                let commit = tx.commit();
+                if commit.is_err() {
+                    crate::fire_analytics_commit_observers(&notifiers, crate::ChangedRoots::Full);
+                }
+                commit.map_err(StoreError::commit_outcome_unknown)?;
                 Ok(value)
             })();
             if outcome.is_ok() {
                 wal_flush.request();
                 if db.total_changes() != changed_before {
-                    crate::fire_commit_observers(&notifiers);
+                    crate::fire_analytics_commit_observers(&notifiers, root_hints.committed(&db));
                 }
             }
             outcome
@@ -309,6 +432,7 @@ impl RuntimeStore {
         let notifiers = std::sync::Arc::clone(&self.analytics_commit_notifiers);
         let transaction_job = move |canvas: &mut Connection| -> Result<Result<T, E>, StoreError> {
             let mut db = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+            let root_hints = CostRootHints::install(&db)?;
             let changed_before = db.total_changes();
             let tx = db
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -316,7 +440,14 @@ impl RuntimeStore {
             match crate::sql_callback(|| operation(&tx, canvas)) {
                 Ok(result) => {
                     let commit_started = diagnostics_enabled.then(std::time::Instant::now);
-                    tx.commit().map_err(StoreError::commit_outcome_unknown)?;
+                    let commit = tx.commit();
+                    if commit.is_err() {
+                        crate::fire_analytics_commit_observers(
+                            &notifiers,
+                            crate::ChangedRoots::Full,
+                        );
+                    }
+                    commit.map_err(StoreError::commit_outcome_unknown)?;
                     if let Some(started) = commit_started {
                         crate::emit_diagnostic(crate::StoreDiagnosticsEvent::CommitDuration {
                             database: crate::StoreDatabaseKind::Analytics,
@@ -324,7 +455,10 @@ impl RuntimeStore {
                         });
                     }
                     if db.total_changes() != changed_before {
-                        crate::fire_commit_observers(&notifiers);
+                        crate::fire_analytics_commit_observers(
+                            &notifiers,
+                            root_hints.committed(&db),
+                        );
                     }
                     Ok(Ok(result))
                 }
@@ -530,4 +664,92 @@ fn finish_analytics_report(
             count,
         })
         .collect();
+}
+
+#[cfg(test)]
+mod cost_hint_tests {
+    use super::*;
+    use crate::ChangedRoots;
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn neutral_commits_enqueue_no_cost_roots() {
+        let root = tempfile::tempdir().expect("isolated store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let changes = Arc::new(Mutex::new(Vec::new()));
+        let recorded = changes.clone();
+        store.add_analytics_root_change_observer(move |scope| {
+            recorded.lock().expect("events").push(scope);
+        });
+        store.analytics_transaction(|tx, _| {
+            AnalyticsCaptureRepository::set_projection_cursor(tx, 1)?;
+            tx.execute("INSERT INTO analytics_items VALUES ('item','agent','root',NULL,NULL,1,'text',NULL,0,'{}')", [])?;
+            Ok::<_, StoreError>(())
+        }).await.expect("metadata commit");
+        store
+            .analytics_projection_transaction(|tx| {
+                AnalyticsCaptureRepository::set_projection_cursor(tx, 2)
+            })
+            .await
+            .expect("cursor commit");
+        assert_eq!(
+            *changes.lock().expect("events"),
+            vec![ChangedRoots::Roots(BTreeSet::new()); 2]
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_roots_are_exact_and_unknown_or_overflow_is_full() {
+        let root = tempfile::tempdir().expect("isolated store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let changes = Arc::new(Mutex::new(Vec::new()));
+        let recorded = changes.clone();
+        store.add_analytics_root_change_observer(move |scope| {
+            recorded.lock().expect("events").push(scope);
+        });
+        store
+            .analytics_projection_transaction(|tx| {
+                tx.execute("INSERT INTO analytics_usage(id,agent,root,at,record) VALUES ('scoped','agent','a',1,'{}')", [])?;
+                AnalyticsCaptureRepository::generation(tx, &["a".into(), "b".into()])
+            })
+            .await
+            .expect("usage roots commit");
+        store
+            .analytics_projection_transaction(|tx| {
+                tx.execute("INSERT INTO analytics_agents VALUES ('unknown','{}')", [])?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("unknown root commit");
+        store.analytics_projection_transaction(|tx| {
+            tx.execute("INSERT INTO analytics_usage(id,agent,root,at,record) VALUES ('unscoped','agent','c',1,'{}')", [])?;
+            Ok::<_, StoreError>(())
+        }).await.expect("usage without generation is unknown");
+        store.analytics_projection_transaction(|tx| {
+            tx.execute_batch("CREATE TABLE unknown_cost_source (value TEXT); INSERT INTO unknown_cost_source VALUES ('unknown');")?;
+            AnalyticsCaptureRepository::generation(tx, &["a".into()])
+        }).await.expect("unknown source cannot be hidden by known roots");
+        store
+            .analytics_projection_transaction(|tx| {
+                AnalyticsCaptureRepository::generation(
+                    tx,
+                    &(0..=COST_ROOT_HINT_LIMIT)
+                        .map(|i| format!("overflow-{i}"))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .await
+            .expect("overflow commit");
+        assert_eq!(
+            *changes.lock().expect("events"),
+            vec![
+                ChangedRoots::Roots(BTreeSet::from(["a".into(), "b".into()])),
+                ChangedRoots::Full,
+                ChangedRoots::Full,
+                ChangedRoots::Full,
+                ChangedRoots::Full,
+            ]
+        );
+    }
 }

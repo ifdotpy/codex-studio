@@ -498,8 +498,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
           (node) => node.scrollWidth <= node.clientWidth + 1,
         ),
       );
-      // The open model list stays inside the window at every width.
+      // The open model list stays inside the window at every width. A width
+      // change remounts the responsive sheet; measure after it is visible.
       await openModelList(defaultModel);
+      await defaultModel.waitFor({ state: "visible" });
       const box = await defaultModel.boundingBox();
       assert.ok(
         box.x >= 0 && box.x + box.width <= width + 1,

@@ -5607,6 +5607,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "studio-runtime-schema",
  "thiserror 2.0.21",
 ]
 

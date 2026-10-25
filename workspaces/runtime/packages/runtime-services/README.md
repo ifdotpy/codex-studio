@@ -308,9 +308,11 @@ restarts it. The prepared record is intent, not evidence of a provider write.
 `AdmissionUnknown` means the admission
 receipt was lost; never resubmit. Other admission errors mean no write was admitted.
 Accepted requests report Written, NotSent, or Unknown via `SessionOutcome::Write`.
-Keep each admission future pinned/owned across unrelated select outcomes. Dropping
-its owner before observing the result fences the session, including a buffered
-result; ordinary polling by mutable reference does not fence it.
+Keep each admission future pinned/owned across unrelated select outcomes. Once
+its command enters the bounded lane, dropping its owner before observing the
+result fences the session, including a buffered result. Dropping a submission
+still waiting for lane capacity leaves the shared session running; ordinary
+polling by mutable reference does not fence it.
 
 Written request outcomes include `recovery: Some(RecoveredRequest)` containing
 `ticket`, `operation_id`, `thread_id`, `lightweight`, `deadline_ms`, `unknown`, and
@@ -321,8 +323,15 @@ remote-to-local ID mapping after reattach. Supply these records through
 opening. Preserve the original deadline and update `unknown` when durable Unknown
 is reported. Recovery does not start a fresh timeout or repeat prior Unknown.
 Recovery restores serialized thread ownership; a lightweight request does not
-reserve its thread. Conflicting recovered serialized owners are refused before
-open. All 32 unresolved requests can be recovered; initialization has a separate
+reserve its thread. Multiple unresolved serialized requests can restore ownership
+of the same thread without replaying their writes. Fresh serialized work waits
+until every restored identity settles; an unknown deadline retains its reservation.
+Cancellation of an Unknown request is refused. A late reply or proven-unsent
+rejection can release its ownership. Retained recovery derives serialization from
+the persisted call's method and parameters using the shared method policy, so
+legacy lightweight flags cannot bypass ownership. Unreadable recovered policy
+parameters conservatively retain ownership; valid objects keep the normal
+parameter predicate. All 32 unresolved requests can be recovered; initialization has a separate
 record slot. Merge late Written evidence by request/operation identity, preserving
 any durable Unknown flag. A late write receipt must not resurrect a request already
 durably resolved; restore only unresolved records.
@@ -588,3 +597,75 @@ complete store-boundary matrix. Its mutation manifest is
 [`tests/monitors/mutations.json`](tests/monitors/mutations.json), consumed by the
 shared `tests/turn_lifecycle/mutation_check.py` runner with `--manifest` and
 `--filter 'test(/^monitor_(corpus|recovery)::/)'`.
+
+## Usage analytics
+
+Analytics capture and rollout import consume the shared
+[`usage` contract](../runtime-schema/src/usage.rs). New usage rows retain the
+canonical observation in `studioUsage`; chart fields are presentation projections.
+Final response replays preserve the first token counts and report conflicts in
+analytics coverage. Native rollout responses carry recovered evidence, while
+running counters remain separate observations. Historical budget repair uses
+the parser-owned [persisted-row adapter](../runtime-schema/src/usage/persisted.rs).
+Imported `token_count` notices retain their original counter objects and response
+association metadata so pre-upgrade budget receipts and ambiguity handling replay
+unchanged. Their interpretation and receipt identity belong to the shared parser.
+
+Usage notifications pass through `runtime-schema::usage::parse_token_usage` before
+budget, context-gauge, and move-cache consumers run. Budget response rows retain the
+first total for each agent/response identity. An identical total replay is a no-op;
+a conflicting total records `responseReplayConflict` and leaves notification
+dispatch running. Gaps mark accounting provisional. Codex thread cumulative
+observations retain the existing reset detection and maximum-based settlement with
+response records. Canonical Claude query totals are informational and never charge
+budget, because continuity across query restarts is unknown.
+
+Pre-contract Claude bridges and their journal replay remain readable through the
+usage owner's transitional `parse_legacy_totals` projection. This old-total path
+retains its existing budget treatment for migration compatibility. It preserves unknown
+token categories as unknown. Analytics also persists these sparse notifications
+without inventing category counts or canonical observations; remove this path after
+those bridges and their replay window have retired. Codex live notifications use its generated native schema.
+
+## Account cost scans
+
+The usage service reserves an account scan before dispatching blocking
+work. Reservation identity includes the workspace state directory; a concurrent
+interest joins the existing refresh. Cache ages in `usage.rs` decide whether an
+explicit interest needs work and bound failed attempts; they do not schedule a
+timer. Saved scan results continue to notify the bounded entity publisher.
+
+## Usage reconciliation
+
+[`costs::usage_reconciliation`](src/costs.rs) compares one agent's recorded
+responses with native Claude journals or Codex rollout records, including archived
+agents retained in analytics. It never imports or repairs records. The native
+reader uses the existing journal and rollout parsers, retains first journal usage,
+and reports later differing usage as a conflict. Final live or recovered database
+responses remain authoritative in session cost estimates; journals fill only
+missing or legacy responses through the store's journal partition.
+
+Costs use the existing catalog's request-level context tiers. Missing token counts
+or prices remain null. Native scan and response bounds are owned by `costs.rs`;
+truncation and incomplete evidence are visible in the diagnostic result.
+
+Reconciliation and history import share `analytics_history::open_confined_native_file`
+and the native rollout header validator. Diagnostic reads reuse bounded parsed
+evidence by the validated open file's identity and parser inputs. One request
+shares the byte, entry and response allowances in `costs.rs` across every state,
+journal and rollout file. A damaged, unreadable or truncated file contributes a
+`files` coverage report; other valid evidence stays available.
+
+Configured native roots and their ancestors may be symlinks; validation rejects
+symlinks only on traversed descendant paths. Discovery charges examined entries
+to the same diagnostic request allowance, and response parsers retain at most the
+remaining response allowance while still detecting conflicting retained replays.
+The diagnostic counts unknown recorded responses separately: absent/null categories
+remain unknown, contribute no known totals, and do not create token mismatches.
+
+Diagnostic Codex discovery validates session roots and candidate paths before
+traversal and ambiguity resolution, returning counted rejection reasons while
+continuing through valid siblings. Its opt-in validation leaves ordinary importer
+discovery unchanged. Recorded usage is classified from one indexed recent source
+window; the source-row examination bound applies before JSON-kind filtering and
+is shared by responses, gaps and cumulative observations.

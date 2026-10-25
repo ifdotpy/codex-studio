@@ -354,3 +354,41 @@ completed retention may replace an old large `tail` with a preview and
 `outputTruncated` / `outputPreviewOnly` flags. Rust preserves either record
 shape. `analytics_meta.fileMigrationV1` is accepted only when its JSON phase is
 `complete`; an absent marker is `NotStarted`.
+
+## Scoped analytics cost notifications
+
+`add_analytics_root_change_observer` reports the roots written to
+`analytics_usage_roots` by a committed usage-generation change. Both analytics
+transaction adapters collect bounded row hints and resolve roots after commit.
+Rollback emits nothing; unknown scope, deleted roots, hint overflow, or uncertain
+commit emits `ChangedRoots::Full`. The existing unscoped commit observers remain
+available. Observers enqueue work and never read the database within callbacks.
+
+## Usage cost evidence
+
+The [cost aggregate](src/repositories/cost_aggregate.rs) prices response rows from
+the shared normalized token contract and excludes running totals and gaps. It
+retains request token tuples so context pricing tiers apply per request. Native
+journal receipts replace provisional legacy evidence and add missing responses;
+final live or recovered evidence takes precedence. The typed response reader
+provides a bounded variant for diagnostics. Legacy response rows with absent or
+null cache counts keep unknown tokens and are not newly priced; explicit zero
+counts remain priceable. Migrated-row suppression precomputes responded turns
+once, so predicate work grows linearly with the selected scope. Old analytics rows remain readable
+through the [shared adapter](../runtime-schema/src/usage/persisted.rs). Opening an
+existing aggregate adds nullable eligibility and final-evidence columns without
+reading usage records or rebuilding groups. NULL eligibility preserves the prior
+derived interpretation; newly written responses suppress matching legacy rows.
+Historical totals can therefore retain previously counted cumulative observations
+until their affected scopes receive new evidence. This delivery does not recalculate
+all historical costs.
+
+Journal partitioning batches receipts through current and historical agent scopes
+and the existing usage response index. Capture checks canonical response IDs before
+the existing thread-scoped legacy lookup. Neither path adds a startup index.
+
+Reconciliation uses `cost_aggregate::reconciliation_usage_window`: a single recent
+source window read through the existing agent/sequence index, before usage-kind
+filtering. Responses, gaps and cumulative observations share its examination
+budget, including one lookahead row for truncation. The response decoder is shared
+with the existing recorded-response readers; aggregate interpretation is unchanged.

@@ -498,10 +498,12 @@ impl SessionControl {
         command: Command,
         receipt: oneshot::Receiver<Result<T, SessionTaskError>>,
     ) -> Result<T, SessionTaskError> {
-        let mut guard = AdmissionGuard(Some(self.stop.clone()));
         lane.send(command)
             .await
             .map_err(|_| SessionTaskError::Closed)?;
+        // No suspension is allowed between successful admission and arming:
+        // only an admitted command can have an uncertain outcome on drop.
+        let mut guard = AdmissionGuard(Some(self.stop.clone()));
         let result = receipt
             .await
             .map_err(|_| SessionTaskError::AdmissionUnknown)?;

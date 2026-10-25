@@ -27,7 +27,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use studio_runtime_providers::supervisor_protocol::{
-    Command, HANDLE_LIMIT, Ownership, Request, StartMatch, WriteDecision,
+    Command, ConnectionCapabilities, HANDLE_LIMIT, Ownership, Request, StartMatch, WriteDecision,
 };
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::supervisor_journal::{
@@ -150,7 +150,8 @@ impl Supervisor {
             .handle(handle)?
             .ok_or(Error::Refused("Unknown supervisor handle"))
     }
-    fn handle(&self, command: Command, operator: bool) -> Result<Value> {
+    fn handle(&self, command: Command, capabilities: &ConnectionCapabilities) -> Result<Value> {
+        capabilities.authorize(&command)?;
         command.validate()?;
         match command {
             Command::Health => {
@@ -312,11 +313,6 @@ impl Supervisor {
                 expected_start_time,
                 expected_signature,
             } => {
-                if !operator {
-                    return Err(Error::Refused(
-                        "adminCloseHandle is available only through the operator CLI",
-                    ));
-                }
                 let slot = self.child_slot(&handle, false)?;
                 let _operation = slot
                     .as_ref()
@@ -874,7 +870,7 @@ fn batch_response_with_limit(
 async fn v2_connection_loop(
     supervisor: Arc<Supervisor>,
     socket: tokio::net::UnixStream,
-    operator: bool,
+    capabilities: Arc<ConnectionCapabilities>,
     budget: Duration,
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
@@ -883,7 +879,12 @@ async fn v2_connection_loop(
     while let Some(raw) = read_v2_frame(&mut reader, budget).await? {
         let request_id = raw.get("requestId").cloned();
         let bytes = if raw.get("action").and_then(Value::as_str) == Some("nextBatch") {
-            match serde_json::from_value::<NextBatchRequestEnvelope>(raw) {
+            match capabilities
+                .authorize_journal()
+                .map_err(Error::from)
+                .and_then(|()| {
+                    serde_json::from_value::<NextBatchRequestEnvelope>(raw).map_err(Error::from)
+                }) {
                 Ok(envelope) if envelope.action == crate::SupervisorAction::NextBatch => {
                     match supervisor.child_slot(&envelope.request.handle.0, false) {
                         Ok(Some(slot)) => {
@@ -954,10 +955,11 @@ async fn v2_connection_loop(
             }
         } else {
             let worker = supervisor.clone();
+            let command_capabilities = capabilities.clone();
             let result = crate::blocking_pool::spawn_blocking("supervisor/command", move || {
                 serde_json::from_value::<Request>(raw)
                     .map_err(Error::from)
-                    .and_then(|request| worker.handle(request.command, operator))
+                    .and_then(|request| worker.handle(request.command, &command_capabilities))
             })
             .await
             .map_err(|_| Error::Refused("Supervisor command worker failed"))?;
@@ -992,13 +994,12 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
         if first.protocol != SUPERVISOR_PROTOCOL_V2 {
             return Err(Error::Refused("Supervisor protocol mismatch"));
         }
-        let operator = first.operator;
-        admitted = lock(&supervisor.ownership)?.attach(
+        let capabilities = Arc::new(lock(&supervisor.ownership)?.attach(
             &first.state_dir,
-            first.backend_id.as_ref().map(|backend| backend.0.as_str()),
-            first.probe,
+            first.connection_identity()?,
             &supervisor.root,
-        )?;
+        )?);
+        admitted = Some(capabilities.clone());
         write_frame(
             &mut socket,
             &json!({"ok":true,"protocol":SUPERVISOR_PROTOCOL_V2}),
@@ -1014,7 +1015,7 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
         let runtime_supervisor = supervisor.clone();
         runtime.block_on(async move {
             let async_socket = tokio::net::UnixStream::from_std(async_socket)?;
-            v2_connection_loop(runtime_supervisor, async_socket, operator, budget).await
+            v2_connection_loop(runtime_supervisor, async_socket, capabilities, budget).await
         })
     })();
     let _ignored = socket.set_nonblocking(false);
@@ -1026,7 +1027,11 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
     // Keep the original socket open until ownership is released: clients
     // half-close and await our EOF as the backend-detach acknowledgement.
     if let Ok(mut ownership) = supervisor.ownership.lock() {
-        ownership.detach(admitted.as_deref());
+        ownership.detach(
+            admitted
+                .as_ref()
+                .and_then(|capabilities| capabilities.backend_owner()),
+        );
     }
     supervisor.connections.fetch_sub(1, Ordering::AcqRel);
 }

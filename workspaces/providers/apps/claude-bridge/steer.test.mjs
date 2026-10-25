@@ -425,7 +425,12 @@ test.concurrent("input origin survives turn/steer: studio_event,human,studio_eve
     ],
   );
   await end(bridge);
-  assert.equal((await completed(bridge, turn)).params.turn.status, "completed");
+  // All input has echoed; completion now waits on real journal I/O, not a
+  // grace timer. Advancing virtual deadlines can outrun that I/O under contention.
+  const done = await bridge.note(
+    (note) => note.method === "turn/completed" && note.params.turn.id === turn,
+  );
+  assert.equal(done.params.turn.status, "completed");
 });
 
 test.concurrent("a failed split prefix closes its query without submitting the remaining parts", async ({
@@ -791,8 +796,9 @@ function historySdk(mode) {
     "const abort=new AbortController(),cwd=options.cwd;",
     `
  const abort=new AbortController(),cwd=options.cwd;
- const directory=process.env.CLAUDE_CONFIG_DIR+'/projects/fake';
+ const directory=process.env.CLAUDE_CONFIG_DIR+'/projects/'+cwd.replace(/[^a-zA-Z0-9]/g,'-');
  fs.mkdirSync(directory,{recursive:true});
+ let historyParent=null;
  const history=directory+'/'+(options.sessionId||options.resume)+'.jsonl';
  if(!fs.existsSync(history))fs.writeFileSync(history,'');
  fs.appendFileSync(cwd+'/.queries','q');
@@ -801,7 +807,7 @@ function historySdk(mode) {
     .replace(
       "fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\\n');",
       `fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\\n');
- if('${mode}'==='all'||('${mode}'==='partial'&&input.value.shouldQuery===false))fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid})+'\\n');`,
+ if(input.value.message.content[0].text==='pulled'||'${mode}'==='all'||('${mode}'==='partial'&&input.value.shouldQuery===false)){fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:historyParent,sessionId:options.sessionId||options.resume,cwd,isSidechain:false})+'\\n');historyParent=input.value.uuid;}`,
     )
     .replace(
       "close(){abort.abort();}",
@@ -898,12 +904,19 @@ for (const mode of ["empty", "partial", "all"]) {
         bridge.root,
         "native-config",
         "projects",
-        "fake",
+        bridge.root.replace(/[^a-zA-Z0-9]/g, "-"),
       );
       const [file] = await fs.readdir(directory);
       await fs.appendFile(
         path.join(directory, file),
-        JSON.stringify({ type: "user", uuid: item.nativeId }) + "\n",
+        JSON.stringify({
+          type: "user",
+          uuid: item.nativeId,
+          parentUuid: item.nativeIds[0],
+          sessionId: bridge.thread,
+          cwd: bridge.root,
+          isSidechain: false,
+        }) + "\n",
       );
     }
     await end(bridge);

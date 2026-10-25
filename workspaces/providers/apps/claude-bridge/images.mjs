@@ -1,80 +1,190 @@
-import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 
-const run = promisify(execFile);
-// Anthropic recommends at most 1568 px on the long side. Requests with many
-// images reject any image above 2000 px and remove it from the conversation.
-export const MAX_IMAGE_SIDE = 1568;
-export const MAX_IMAGE_BYTES = 3_750_000;
+// Claude Code 2.1.302: chunk-sp5b4hyj.js:453,475; chunk-hqtnbrjd.js:124661.
+// These limits own the bridge's default image dimensions (pixels) and byte budgets.
+export const MAX_IMAGE_SIDE = 2000;
+export const MAX_IMAGE_BASE64_BYTES = 5 * 1024 * 1024;
+export const MAX_IMAGE_BYTES = (MAX_IMAGE_BASE64_BYTES / 4) * 3;
+export const IMAGE_BYTE_BUDGET = 512_000;
+const JPEG_QUALITIES = [80, 60, 40, 20];
+const BYTE_BUDGET_PASSES = 5;
+const FINAL_IMAGE_WIDTH = 1000;
+const MEDIA_TYPES = new Map([
+  ["jpeg", "image/jpeg"],
+  ["png", "image/png"],
+  ["gif", "image/gif"],
+  ["webp", "image/webp"],
+]);
 
-async function dimensions(file) {
-  const { stdout } = await run(
-    "sips",
-    ["-g", "pixelWidth", "-g", "pixelHeight", file],
-    {
-      timeout: 15000,
-    },
-  );
-  const width = Number(/pixelWidth:\s*(\d+)/.exec(stdout)?.[1]);
-  const height = Number(/pixelHeight:\s*(\d+)/.exec(stdout)?.[1]);
-  return Number.isFinite(width) && Number.isFinite(height)
-    ? { width, height }
-    : null;
+class ImagePreparationError extends Error {
+  constructor(message, options) {
+    super("Cannot send image: " + message, options);
+    this.name = "ImagePreparationError";
+  }
 }
 
-/** Return image bytes that the Claude API accepts in long conversations.
- * The source file is never changed. Without sips the original bytes are kept. */
-export async function claudeImage(file, mediaType) {
-  const bytes = await fs.readFile(file);
-  if (mediaType === "image/gif") return { bytes, mediaType };
-  let size;
+async function loadSharp() {
+  // Keep the bridge usable for text if a native codec is absent or cannot load.
   try {
-    size = await dimensions(file);
-  } catch {
-    return { bytes, mediaType };
+    return (await import("sharp")).default;
+  } catch (cause) {
+    throw new ImagePreparationError(
+      "the image processor is unavailable. Reinstall Studio and try again.",
+      { cause },
+    );
   }
-  if (!size) return { bytes, mediaType };
-  const large = Math.max(size.width, size.height) > MAX_IMAGE_SIDE;
-  if (!large && bytes.length <= MAX_IMAGE_BYTES) return { bytes, mediaType };
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "studio-claude-image-"),
-  );
-  try {
-    const png = path.join(directory, randomUUID() + ".png");
-    const args = large ? ["-Z", String(MAX_IMAGE_SIDE)] : [];
-    await run("sips", [...args, "-s", "format", "png", file, "--out", png], {
-      timeout: 30000,
+}
+
+function dimensions(metadata) {
+  const { width, height } = metadata;
+  if (
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    width < 1 ||
+    height < 1
+  )
+    throw new ImagePreparationError(
+      "the image dimensions cannot be verified. Use a valid PNG, JPEG, GIF, or WebP image.",
+    );
+  return { width, height };
+}
+
+function targetDimensions({ width, height }) {
+  if (width > MAX_IMAGE_SIDE) {
+    height = Math.max(1, Math.round((height * MAX_IMAGE_SIDE) / width));
+    width = MAX_IMAGE_SIDE;
+  }
+  if (height > MAX_IMAGE_SIDE) {
+    width = Math.max(1, Math.round((width * MAX_IMAGE_SIDE) / height));
+    height = MAX_IMAGE_SIDE;
+  }
+  return { width, height };
+}
+
+async function reduceImage(sharp, bytes, metadata) {
+  const original = dimensions(metadata);
+  const target = targetDimensions(original);
+  const resize =
+    target.width !== original.width || target.height !== original.height;
+  if (!resize && bytes.length <= MAX_IMAGE_BYTES) return bytes;
+  // Sharp's default input selects the first frame, as the native Claude pipeline does.
+  const image = () =>
+    sharp(bytes).resize(target.width, target.height, {
+      fit: "inside",
+      withoutEnlargement: true,
     });
-    let result = { bytes: await fs.readFile(png), mediaType: "image/png" };
-    if (result.bytes.length > MAX_IMAGE_BYTES) {
-      const jpeg = path.join(directory, randomUUID() + ".jpg");
-      await run(
-        "sips",
-        [
-          "-s",
-          "format",
-          "jpeg",
-          "-s",
-          "formatOptions",
-          "85",
-          png,
-          "--out",
-          jpeg,
-        ],
-        {
-          timeout: 30000,
-        },
-      );
-      result = { bytes: await fs.readFile(jpeg), mediaType: "image/jpeg" };
+  const compress = async () => {
+    if (metadata.format === "png") {
+      const palette = await image()
+        .png({ compressionLevel: 9, palette: true })
+        .toBuffer();
+      if (palette.length <= MAX_IMAGE_BYTES) return palette;
     }
-    return result;
-  } catch {
-    return { bytes, mediaType };
-  } finally {
-    await fs.rm(directory, { recursive: true, force: true });
+    for (const quality of JPEG_QUALITIES) {
+      const jpeg = await image().jpeg({ quality }).toBuffer();
+      if (jpeg.length <= MAX_IMAGE_BYTES) return jpeg;
+    }
+  };
+  // Try compression before a format conversion when only the byte limit is exceeded.
+  if (!resize) {
+    const compressed = await compress();
+    if (compressed) return compressed;
+  }
+  const resized = metadata.format === "gif" ? image().png() : image();
+  const result = await resized.toBuffer();
+  if (result.length <= MAX_IMAGE_BYTES) return result;
+  if (resize) {
+    const compressed = await compress();
+    if (compressed) return compressed;
+  }
+  const width = Math.min(target.width, FINAL_IMAGE_WIDTH);
+  const height = Math.max(
+    1,
+    Math.round((target.height * width) / target.width),
+  );
+  return sharp(bytes)
+    .resize(width, height, { fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 20 })
+    .toBuffer();
+}
+
+// Claude's secondary byte budget is best effort. Retain the smallest candidate if
+// no quality meets it. The API's hard byte and dimension limits are checked below.
+async function budgetImage(sharp, bytes) {
+  if (bytes.length <= IMAGE_BYTE_BUDGET) return bytes;
+  let smallest = bytes;
+  let upper = 90;
+  const encode = (quality) => sharp(bytes).jpeg({ quality }).toBuffer();
+  if ((await sharp(bytes).metadata()).format !== "jpeg") {
+    const jpeg = await encode(90);
+    if (jpeg.length < smallest.length) smallest = jpeg;
+    if (jpeg.length <= IMAGE_BYTE_BUDGET) return jpeg;
+    upper = 89;
+  }
+  let lower = 1;
+  let withinBudget;
+  for (let attempt = 0; attempt < BYTE_BUDGET_PASSES; attempt++) {
+    const quality = Math.floor((lower + upper) / 2);
+    const jpeg = await encode(quality);
+    if (jpeg.length < smallest.length) smallest = jpeg;
+    if (jpeg.length <= IMAGE_BYTE_BUDGET) {
+      withinBudget = jpeg;
+      lower = quality + 1;
+    } else upper = quality - 1;
+    if (lower > upper) break;
+  }
+  return withinBudget ?? smallest;
+}
+
+/** Prepare bytes with portable codecs. A codec loader permits deterministic failure tests. */
+export async function prepareClaudeImage(bytes, codecLoader = loadSharp) {
+  try {
+    if (!bytes.length)
+      throw new ImagePreparationError("the image file is empty.");
+    const sharp = await codecLoader();
+    const metadata = await sharp(bytes).metadata();
+    if (!MEDIA_TYPES.has(metadata.format))
+      throw new ImagePreparationError(
+        "the image format is unsupported. Use PNG, JPEG, GIF, or WebP.",
+      );
+    const result = await budgetImage(
+      sharp,
+      await reduceImage(sharp, bytes, metadata),
+    );
+    const final = await sharp(result).metadata();
+    const { width, height } = dimensions(final);
+    const mediaType = MEDIA_TYPES.get(final.format);
+    // Validate the actual final bytes, including base64 padding, after every encode.
+    if (
+      !mediaType ||
+      width > MAX_IMAGE_SIDE ||
+      height > MAX_IMAGE_SIDE ||
+      result.length > MAX_IMAGE_BYTES ||
+      4 * Math.ceil(result.length / 3) > MAX_IMAGE_BASE64_BYTES
+    )
+      throw new ImagePreparationError(
+        `compression could not meet the ${MAX_IMAGE_SIDE}x${MAX_IMAGE_SIDE}px and ${MAX_IMAGE_BASE64_BYTES}-byte base64 limits. Use a smaller image.`,
+      );
+    return { bytes: result, mediaType };
+  } catch (cause) {
+    if (cause instanceof ImagePreparationError) throw cause;
+    throw new ImagePreparationError(
+      "the image processor could not read or compress this image. Use a smaller PNG, JPEG, GIF, or WebP image.",
+      { cause },
+    );
+  }
+}
+
+/** The source file is never changed. Unchecked bytes never reach the SDK. */
+export async function claudeImage(file) {
+  try {
+    return await prepareClaudeImage(await fs.readFile(file));
+  } catch (cause) {
+    const message =
+      cause instanceof ImagePreparationError
+        ? cause.message
+        : "Cannot send image: the image file cannot be read.";
+    throw new Error(`${path.basename(file)}: ${message}`, { cause });
   }
 }

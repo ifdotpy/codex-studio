@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 use super::*;
 use std::sync::mpsc;
+use studio_runtime_providers::supervisor_protocol::ConnectionIdentity;
 
 pub(super) fn fixture() -> (tempfile::TempDir, Arc<Supervisor>) {
     let root = tempfile::tempdir().unwrap();
@@ -21,6 +22,18 @@ pub(super) fn fixture() -> (tempfile::TempDir, Arc<Supervisor>) {
     (root, supervisor)
 }
 
+// Direct command unit tests have no socket lifetime; their capabilities use a
+// separate admission registry so they do not retain a synthetic connection.
+pub(super) fn backend_capabilities(supervisor: &Supervisor) -> ConnectionCapabilities {
+    Ownership::default()
+        .attach(
+            &supervisor.root,
+            ConnectionIdentity::Backend("fixture"),
+            &supervisor.root,
+        )
+        .unwrap()
+}
+
 // The durable supervisor uses Linux kernel process identities.
 #[cfg(target_os = "linux")]
 #[test]
@@ -39,7 +52,7 @@ fn blocked_write_on_one_handle_does_not_block_another_handle() {
                     env: BTreeMap::new(),
                     cwd: Some(supervisor.root.to_string_lossy().into_owned()),
                 },
-                false,
+                &backend_capabilities(&supervisor),
             )
             .unwrap();
         supervisor
@@ -179,7 +192,9 @@ fn health_skips_a_child_while_open_is_installing_it() {
         .reserve("opening-child", "signature", now().unwrap())
         .unwrap();
 
-    let health = supervisor.handle(Command::Health, false).unwrap();
+    let health = supervisor
+        .handle(Command::Health, &backend_capabilities(&supervisor))
+        .unwrap();
     assert!(health["handles"].as_array().unwrap().is_empty());
 }
 
@@ -205,8 +220,7 @@ fn stalled_handshake_releases_connection_slot() {
             .unwrap()
             .attach(
                 &supervisor.root,
-                Some("replacement"),
-                false,
+                ConnectionIdentity::Backend("replacement"),
                 &supervisor.root
             )
             .is_ok()
@@ -342,7 +356,7 @@ fn v2_wait_disconnect_preserves_child_and_shared_backend_owner() {
                 env: BTreeMap::new(),
                 cwd: Some(root.path().to_string_lossy().into_owned()),
             },
-            false,
+            &backend_capabilities(&supervisor),
         )
         .unwrap();
     let child = supervisor
@@ -447,7 +461,7 @@ async fn v2_batches_do_not_mark_terminal_until_the_exit_sequence_is_returned() {
                 env: BTreeMap::new(),
                 cwd: Some(root.path().to_string_lossy().into_owned()),
             },
-            false,
+            &backend_capabilities(&supervisor),
         )
         .unwrap();
     let child = supervisor
@@ -529,7 +543,7 @@ fn empty_batch_queried_before_exit_commit_is_not_terminal_after_commit() {
                 env: BTreeMap::new(),
                 cwd: Some(root.path().to_string_lossy().into_owned()),
             },
-            false,
+            &backend_capabilities(&supervisor),
         )
         .unwrap();
     let child = supervisor

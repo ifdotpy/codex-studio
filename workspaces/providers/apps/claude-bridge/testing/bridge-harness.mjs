@@ -68,6 +68,9 @@ export async function startBridge(
       },
     );
   let child;
+  // One exit observation per launched child, registered at spawn so cleanup can
+  // never miss an exit that already happened (including a signal exit).
+  let exited;
   let stderr = "";
   const notes = [];
   const waiting = new Map();
@@ -75,6 +78,7 @@ export async function startBridge(
   const attach = () => {
     child = launch();
     const attached = child;
+    exited = new Promise((resolve) => attached.once("exit", resolve));
     child.stderr.on("data", (chunk) => (stderr += chunk));
     child.once("close", () => {
       if (child !== attached) return;
@@ -94,6 +98,9 @@ export async function startBridge(
   const bridge = {
     root,
     notes,
+    get process() {
+      return child;
+    },
     async writeSignal(name, content = "") {
       const file = path.join(root, name);
       const temporary = path.join(root, `.signal-${++signalSequence}.tmp`);
@@ -106,17 +113,22 @@ export async function startBridge(
       });
     },
     async advanceTime(ms) {
+      if (child.exitCode !== null) return;
       const controller = new AbortController();
       const timer = setTimeout(
         () => controller.abort(new Error("virtual clock hung")),
         HANG_GUARD_MS,
       );
       try {
-        const advanced = once(child, "message", { signal: controller.signal });
+        const advanced = Promise.race([
+          once(child, "message", { signal: controller.signal }),
+          once(child, "exit", { signal: controller.signal }),
+        ]);
         child.send({ advance: ms });
         await advanced;
       } finally {
         clearTimeout(timer);
+        controller.abort();
       }
     },
     async advanceUntil(predicate) {
@@ -195,9 +207,7 @@ export async function startBridge(
       }
     },
     async restart() {
-      child.stdin.end();
-      if (child.exitCode === null)
-        await new Promise((resolve) => child.once("exit", resolve));
+      await stop();
       notes.length = 0;
       waiting.clear();
       stderr = "";
@@ -205,19 +215,37 @@ export async function startBridge(
       await bridge.call("thread/resume", { threadId: bridge.thread });
     },
     async close() {
-      child.stdin.end();
-      // A failed virtual-clock scenario can leave teardown waiting on a frozen timer.
-      // Always reap this fixture's child, including when the test itself timed out.
-      const guard = setTimeout(() => child.kill("SIGKILL"), HANG_GUARD_MS);
       try {
-        if (child.exitCode === null && child.signalCode === null)
-          await new Promise((resolve) => child.once("exit", resolve));
+        await stop();
       } finally {
-        clearTimeout(guard);
         await fs.rm(root, { recursive: true, force: true });
       }
     },
   };
+  // Ends the current child for close() and restart(): drives a virtual clock
+  // until exit, reaps a child whose clock can no longer be driven, and always
+  // observes the exit registered at spawn.
+  async function stop() {
+    child.stdin.end();
+    // A failed virtual-clock scenario can leave teardown waiting on a frozen timer.
+    // Always reap this fixture's child, including when the test itself timed out.
+    const guard = setTimeout(() => child.kill("SIGKILL"), HANG_GUARD_MS);
+    try {
+      // Bounded shutdown timers run on the virtual clock; advance it until exit.
+      // A clock that can no longer be driven cannot finish the child: reap it.
+      if (clock)
+        while (child.exitCode === null && child.signalCode === null)
+          try {
+            await bridge.advanceTime(VIRTUAL_STEP_MS);
+          } catch {
+            child.kill("SIGKILL");
+            break;
+          }
+      await exited;
+    } finally {
+      clearTimeout(guard);
+    }
+  }
   bridge.thread = (
     await bridge.call("thread/start", {
       cwd: root,

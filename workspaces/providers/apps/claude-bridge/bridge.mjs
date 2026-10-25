@@ -1,3 +1,5 @@
+import { ResponseUsage, cumulativeUsage } from "./usage.mjs";
+import { isThreadSerialized } from "./provider-method-policy.generated.mjs";
 import {
   cacheReport,
   idleRefusal,
@@ -14,7 +16,12 @@ import {
   rewindSessionFiles,
 } from "./file-checkpoints.mjs";
 import { createAccountCheck } from "./account-identity.mjs";
-import { inputGroups, sdkInputMessages } from "./input-messages.mjs";
+import { readNativeHistory } from "./native-history.mjs";
+import {
+  inputGroups,
+  sdkInputMessages,
+  nativeInputIds,
+} from "./input-messages.mjs";
 // Claude Agent SDK adapter for Studio's existing local session protocol.
 import { interruptInputQueue } from "./stop-inputs.mjs";
 import { browserEnvironment } from "./browser-environment.mjs";
@@ -31,7 +38,6 @@ import {
   usageLimits,
   limitEvent,
   nativeItem,
-  usageTokens,
   overageAllowed,
   claudeErrorInfo,
   providerNotice,
@@ -65,7 +71,7 @@ import {
   declaredTimeoutMs,
   durationText,
   watchStalls,
-  recordedInputIds,
+  inputHistoryOutcome,
   stallLimits,
   stallMessage,
 } from "./stall-watch.mjs";
@@ -958,8 +964,8 @@ async function content(input) {
         ".webp": "image/webp",
       }[ext];
       if (!media_type) throw new Error("Unsupported image format for Claude");
-      // Large screenshots are scaled down; the API removes oversized images.
-      const image = await claudeImage(item.path, media_type);
+      // Refuse input before it reaches Claude if portable preprocessing fails.
+      const image = await claudeImage(item.path);
       result.push({
         type: "image",
         source: {
@@ -972,12 +978,11 @@ async function content(input) {
   }
   return result;
 }
-function turnEvent(s, turn, method, item, tokenRateUsage, receiptTimes) {
+function turnEvent(s, turn, method, item, receiptTimes) {
   emit(method, {
     threadId: s.id,
     turnId: turn?.id,
     item,
-    ...(tokenRateUsage ? { tokenRateUsage } : {}),
     ...receiptTimes,
   });
 }
@@ -995,12 +1000,12 @@ function submittedSteer(s, nativeId) {
   }
   return null;
 }
-function finishItem(s, turn, item, tokenRateUsage, receiptTimes) {
+function finishItem(s, turn, item, receiptTimes) {
   if (!turn) return;
   const i = turn.items.findIndex((old) => old.id === item.id);
   if (i < 0) turn.items.push(item);
   else turn.items[i] = item;
-  turnEvent(s, turn, "item/completed", item, tokenRateUsage, receiptTimes);
+  turnEvent(s, turn, "item/completed", item, receiptTimes);
 }
 function notice(s, turn, text, id = randomUUID()) {
   finishItem(s, turn, { id, type: "agentMessage", phase: "commentary", text });
@@ -1072,7 +1077,14 @@ function lifecycleFailure(s, active, error) {
   process.stderr.write(
     "Claude turn finalization failed: " + error.message + "\n",
   );
-  discardQuery(s, active);
+  // Watchdog failures must end a visible turn, even if the SDK never yields
+  // again. A finalizer already owns its completion and cannot be repeated.
+  if (!active.turn || finishingTurns.has(active.turn)) return;
+  return finishTurn(s, active, null, error).catch((failure) => {
+    process.stderr.write(
+      "Claude turn finalization failed: " + failure.message + "\n",
+    );
+  });
 }
 function deferResult(s, active, result) {
   active.deferredResult = result;
@@ -1086,19 +1098,71 @@ function deferResult(s, active, result) {
   }, limits.steerEchoGraceMs);
   active.resultTimer.unref();
 }
-async function finishTurn(s, active, result, error) {
+function finishTurn(s, active, result, error) {
   const turn = active.turn;
-  if (!turn) return;
+  if (!turn) return active.finalization || Promise.resolve();
   const finishing = finishingTurns.get(turn);
-  if (finishing) {
-    await finishing;
-    return;
-  }
-  let finished;
-  finishingTurns.set(turn, new Promise((resolve) => (finished = resolve)));
-  const stall = active.stall?.turnId === turn.id ? active.stall : null;
-  let closeError;
-  let closed = Boolean(stall?.closed);
+  if (finishing) return finishing;
+  // Shutdown preserves unfinished turns for restart reconciliation. Every
+  // terminal caller shares this admission, including SDK errors and timers.
+  if (closing) return Promise.resolve();
+  const state = { closed: false, stall: null, unappliedSteers: [] };
+  // Install the shared outcome before finalization can await or throw.
+  const operation = Promise.resolve().then(async () => {
+    try {
+      await finalizeTurn(s, active, turn, result, error, state);
+    } catch (failure) {
+      active.persistFailure = failure;
+      turn.status = "failed";
+      turn.error = {
+        message: "Claude turn finalization failed: " + failure.message,
+      };
+      state.closed = true;
+      throw failure;
+    } finally {
+      clearTurnTimers(active);
+      active.toolClocks.clear();
+      if (active.turn === turn) active.turn = null;
+      if (state.stall) {
+        active.stall = null;
+        state.stall.ended();
+      }
+      catalogCache.activityChanged();
+      active.pendingSteers.clear();
+      active.assistantBlocks.clear();
+      if (state.closed) discardQuery(s.id, active);
+      emit("turn/completed", {
+        threadId: s.id,
+        turn: {
+          id: turn.id,
+          status: turn.status,
+          error: turn.error,
+          ...(state.unappliedSteers.length
+            ? { unappliedSteers: state.unappliedSteers }
+            : {}),
+          ...(turn.startOutcome === "not_applied"
+            ? {
+                startOutcome: "not_applied",
+                clientUserMessageId: turn.clientUserMessageId,
+              }
+            : {}),
+        },
+      });
+    }
+  });
+  finishingTurns.set(turn, operation);
+  active.finalization = operation;
+  // Every caller still receives this rejection, including callers joining
+  // after cleanup. Avoid an unobserved promise while a closed SDK unwinds.
+  operation.catch(() => {});
+  return operation;
+}
+async function finalizeTurn(s, active, turn, result, error, state) {
+  const stall = (state.stall =
+    active.stall?.turnId === turn.id ? active.stall : null);
+  let closeError = stall?.closeError;
+  error ||= closeError;
+  let closed = (state.closed = Boolean(stall?.closed));
   if (closed) await stall.closed;
   // A handed-off steer without an echo cannot coexist with a later turn on
   // this CLI. Stop it before finishing; only its final native history can
@@ -1112,7 +1176,7 @@ async function finishTurn(s, active, result, error) {
       ),
   );
   if (unknown && !closed) {
-    closed = true;
+    closed = state.closed = true;
     active.input.close();
     closeError = closeQuery(active);
     error ||= closeError;
@@ -1201,7 +1265,7 @@ async function finishTurn(s, active, result, error) {
   // Steer input still queued here was never read by Claude. Withdraw it so a
   // later turn cannot consume it, and report it; Studio queues it again once.
   // Input already handed to Claude without an echo has an unknown outcome.
-  const unappliedSteers = [];
+  const unappliedSteers = state.unappliedSteers;
   for (const item of turn.items) {
     if (item.delivery === "steer" && item.deliveryStatus === "cancelled") {
       unappliedSteers.push(item.id);
@@ -1223,110 +1287,16 @@ async function finishTurn(s, active, result, error) {
     // A failed close cannot prove that the SDK stopped applying input.
     if (!closeError) await reconcileClosedSteers(s, turn, unappliedSteers);
   }
-  for (const response of active.responseUsages.values()) {
-    const total =
-      response.requestUsage.inputTokens +
-      response.requestUsage.cachedInputTokens +
-      response.requestUsage.cacheWriteInputTokens +
-      response.requestUsage.outputTokens;
+  for (const studioUsage of active.usage.finish("streamInterrupted", turn.id))
     emit("thread/tokenUsage/updated", {
       threadId: s.id,
       turnId: turn.id,
-      responseId: response.responseId,
-      responseOutputTokens: response.responseOutputTokens,
-      model: response.model,
-      usageSource: "claudeResponse",
-      requestUsage: response.requestUsage,
-      tokenUsage: {
-        total: { totalTokens: total },
-        last: response.usage,
-        modelContextWindow: s.contextWindow,
-      },
+      studioUsage,
     });
-  }
-  const usage = usageTokens(result?.usage);
-  if (usage) {
-    // SDK result usage is cumulative over a persistent query. Keep the delta.
-    const aggregate = Number.isFinite(result.usage.total_tokens)
-      ? result.usage.total_tokens
-      : usage.totalTokens;
-    const delta = Math.max(0, aggregate - active.reportedUsage);
-    active.reportedUsage = aggregate;
-    s.totalTokens = (s.totalTokens || 0) + delta;
-    const window =
-      Math.max(
-        0,
-        ...Object.values(result?.modelUsage || {}).map(
-          (m) => m.contextWindow || 0,
-        ),
-      ) || s.contextWindow;
-    s.contextWindow = window;
-    const output = result?.usage?.output_tokens;
-    const turnOutputDelta =
-      Number.isFinite(output) && output >= 0
-        ? Math.max(0, output - active.reportedOutput)
-        : undefined;
-    if (turnOutputDelta !== undefined) {
-      active.reportedOutput = output;
-      active.reportedTurnOutput += turnOutputDelta;
-    }
-    emit("thread/tokenUsage/updated", {
-      threadId: s.id,
-      ...(turnOutputDelta !== undefined
-        ? { turnOutputTokens: active.reportedTurnOutput }
-        : {}),
-      ...(Number.isFinite(active.lastUsage?.outputTokens) &&
-      active.lastUsage.outputTokens >= 0
-        ? { responseOutputTokens: active.lastUsage.outputTokens }
-        : {}),
-      turnId: turn.id,
-      model: active.lastModel,
-      responseId: active.lastMessageId,
-      ...(active.lastMessageId &&
-      Number.isFinite(active.lastUsage?.outputTokens)
-        ? { responseOutputTokens: active.lastUsage.outputTokens }
-        : {}),
-      tokenUsage: {
-        total: { totalTokens: s.totalTokens },
-        last: active.lastUsage || usage,
-        modelContextWindow: window,
-      },
-    });
-  }
   s.updatedAt = Math.floor(Date.now() / 1000);
-  try {
-    await persistLive(s, turn);
-    // This save diffed from the last saved state, so it also covers an
-    // earlier background save of this turn that failed.
-    active.persistFailure = null;
-  } finally {
-    finished();
-  }
-  active.turn = null;
-  if (stall) {
-    active.stall = null;
-    stall.ended();
-  }
-  catalogCache.activityChanged();
-  active.pendingSteers.clear();
-  active.assistantBlocks.clear();
-  active.responseUsages.clear();
-  if (closed) discardQuery(s, active);
-  emit("turn/completed", {
-    threadId: s.id,
-    turn: {
-      id: turn.id,
-      status: turn.status,
-      error: turn.error,
-      ...(unappliedSteers.length ? { unappliedSteers } : {}),
-      ...(turn.startOutcome === "not_applied"
-        ? {
-            startOutcome: "not_applied",
-            clientUserMessageId: turn.clientUserMessageId,
-          }
-        : {}),
-    },
-  });
+  await persistLive(s, turn);
+  // This save also covers any earlier background save of this turn.
+  active.persistFailure = null;
 }
 // Steer input handed to a CLI that the watchdog closed. The dead process can no
 // longer apply it, and Claude Code records a queued message without its text,
@@ -1340,26 +1310,35 @@ async function reconcileClosedSteers(s, turn, unapplied) {
       item.deliveryStatus === "submitted",
   );
   if (!open.length) return;
-  let recorded;
-  try {
-    const file = await nativeFile(s.nativeId || s.id, undefined, s.cwd);
-    recorded = recordedInputIds((await fs.readFile(file, "utf8")).split("\n"));
-  } catch (error) {
-    // Without history the outcome stays unknown; it is never sent again.
-    process.stderr.write(
-      "Claude stall: steer outcome unknown: " + error.message + "\n",
-    );
-    return;
-  }
+  const records = await readNativeHistory(s);
+  const initial = turn.items.find((item) => item.type === "userMessage");
   for (const item of open) {
-    const ids = item.nativeIds || [item.nativeId];
-    if (ids.every((id) => recorded.has(id))) {
+    const outcome = inputHistoryOutcome(
+      records?.map(({ row }) => row),
+      {
+        sessionId: s.nativeId || s.id,
+        cwd: s.nativeHistoryCwd || s.cwd,
+        anchorIds: nativeInputIds(initial),
+        inputIds: nativeInputIds(item),
+      },
+    );
+    if (outcome === "delivered") {
       item.deliveryStatus = "delivered";
       turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
-    } else if (ids.every((id) => !recorded.has(id))) {
+    } else if (outcome === "not_applied") {
       item.deliveryStatus = "not_applied";
       item.error = "Claude stopped before reading this steer";
       unapplied.push(item.id);
+    } else {
+      item.error =
+        "Claude steer outcome unknown: native history is incomplete or uncertain";
+      finishItem(s, turn, {
+        id: "uncertain-input:" + item.id,
+        type: "agentMessage",
+        phase: "commentary",
+        studioNotice: true,
+        text: item.error,
+      });
     }
   }
 }
@@ -1369,7 +1348,7 @@ async function reconcileClosedSteers(s, turn, unapplied) {
 async function recoverStall(s, active, found) {
   const turn = active.turn;
   const item = active.tools.get(found.id);
-  if (!turn || active.stall || finishingTurns.has(turn)) return;
+  if (closing || !turn || active.stall || finishingTurns.has(turn)) return;
   const message = found.stop
     ? "Studio stopped this turn: Claude Code did not end the turn after Stop."
     : stallMessage({ ...found, tool: item?.tool || found.tool });
@@ -1413,10 +1392,13 @@ async function recoverStall(s, active, found) {
   try {
     await persist(s);
   } catch (error) {
-    process.stderr.write(
-      "Claude stall: persist failed: " + error.message + "\n",
-    );
+    if (!closing)
+      process.stderr.write(
+        "Claude stall: persist failed: " + error.message + "\n",
+      );
   }
+  // A save already in flight may settle after shutdown closes the query.
+  if (closing) return;
   let timer;
   const deadline = new Promise(
     (resolve) =>
@@ -1425,7 +1407,9 @@ async function recoverStall(s, active, found) {
   // An interrupt keeps queued steers: Claude Code runs them next.
   if (!found.stop)
     Promise.resolve()
-      .then(() => active.q?.interrupt())
+      .then(() => {
+        if (!closing) return active.q?.interrupt();
+      })
       .catch((error) =>
         process.stderr.write(
           "Claude stall: interrupt failed: " + error.message + "\n",
@@ -1434,6 +1418,7 @@ async function recoverStall(s, active, found) {
   await Promise.race([finished, deadline]);
   clearTimeout(timer);
   if (
+    closing ||
     active.turn !== turn ||
     finishingTurns.has(turn) ||
     queries.get(s.id) !== active
@@ -1445,21 +1430,33 @@ async function recoverStall(s, active, found) {
     setTimeout(resolve, limits.exitWaitMs),
   );
   active.input.close();
-  active.q?.close();
+  stall.closeError = closeQuery(active);
+  if (stall.closeError)
+    turn.stallError = {
+      ...turn.stallError,
+      message: message + " " + stall.closeError.message,
+    };
   await stall.closed;
   // Closing normally ends the SDK stream, and its owner finishes the turn.
   // If the stream still has not ended, finish it here and drop the query.
   await new Promise((resolve) => setImmediate(resolve));
-  if (active.turn !== turn || finishingTurns.has(turn)) return;
-  discardQuery(s, active);
+  if (closing || active.turn !== turn || finishingTurns.has(turn)) return;
   await finishTurn(
     s,
     active,
     null,
-    new Error("Claude did not stop after Studio closed it"),
-  );
+    stall.closeError || new Error("Claude did not stop after Studio closed it"),
+  ).catch((error) => lifecycleFailure(s, active, error));
 }
-const armStallWatch = watchStalls(queries, studioWaits, limits, recoverStall);
+const armStallWatch = watchStalls(
+  queries,
+  studioWaits,
+  limits,
+  (s, active, found) =>
+    recoverStall(s, active, found).catch((error) =>
+      lifecycleFailure(s, active, error),
+    ),
+);
 async function startSession(s, active, p) {
   const initial = active.turn;
   const startedAt = Date.now();
@@ -1670,7 +1667,7 @@ async function startSession(s, active, p) {
             item === active.turn.items[0] &&
             !process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING
           ) {
-            active.turn.nativeMessageId = m.uuid;
+            active.turn.nativeMessageId = item.nativeIds?.[0] || m.uuid;
             active.turn.fileCheckpointMessageId = m.uuid;
             active.turn.fileCheckpointSource = {
               nativeId: s.nativeId || s.id,
@@ -1709,7 +1706,6 @@ async function startSession(s, active, p) {
           synthetic: true,
         };
         active.idleRequestStartedAt = Date.now();
-        active.reportedTurnOutput = 0;
         s.turns.push(active.turn);
         emit("turn/started", {
           threadId: s.id,
@@ -1751,7 +1747,6 @@ async function startSession(s, active, p) {
             compactionMetadata: m.compact_metadata,
           };
           finishItem(s, turn, item);
-          active.lastUsage = null;
           persistLater(s, active);
         } else if (
           m.subtype === "status" &&
@@ -1838,7 +1833,34 @@ async function startSession(s, active, p) {
           notice(s, turn, m.text || m.content || m.error || m.subtype, m.uuid);
         continue;
       }
+      if (m.type === "result") {
+        active.usage.recordModels(m.modelUsage);
+        const studioUsage = cumulativeUsage(m, turn?.id);
+        if (studioUsage) {
+          if (studioUsage.modelContextWindow)
+            s.contextWindow = studioUsage.modelContextWindow;
+          emit("thread/tokenUsage/updated", {
+            threadId: s.id,
+            turnId: turn?.id,
+            studioUsage,
+          });
+        }
+      }
       if (!turn) continue;
+      if (m.type === "stream_event")
+        for (const studioUsage of active.usage.observe(m, turn.id))
+          emit("thread/tokenUsage/updated", {
+            threadId: s.id,
+            turnId: studioUsage.turnId,
+            studioUsage,
+          });
+      if (m.type === "assistant")
+        for (const block of m.message.content || [])
+          if (block.type === "tool_use")
+            active.usage.registerTool(
+              block.id,
+              active.usage.turnFor(m.parent_tool_use_id, turn.id),
+            );
       if (m.parent_tool_use_id) {
         if (m.type === "assistant")
           for (const [index, block] of (m.message.content || []).entries()) {
@@ -1962,7 +1984,6 @@ async function startSession(s, active, p) {
             limitReached(s, turn, info);
         }
         active.lastModel = m.message.model || active.lastModel;
-        active.lastMessageId = m.message.id || active.lastMessageId;
         if (
           turn &&
           !turn.idleCompaction &&
@@ -1990,39 +2011,6 @@ async function startSession(s, active, p) {
           });
           persistLater(s, active);
         }
-        const responseUsage = usageTokens(m.message.usage);
-        active.lastUsage = responseUsage || active.lastUsage;
-        const output = m.message.usage?.output_tokens;
-        if (m.message.id && m.message.usage && responseUsage) {
-          const raw = m.message.usage;
-          const requestUsage = {
-            inputTokens: Number.isFinite(raw.input_tokens)
-              ? raw.input_tokens
-              : 0,
-            cachedInputTokens: Number.isFinite(raw.cache_read_input_tokens)
-              ? raw.cache_read_input_tokens
-              : 0,
-            cacheWriteInputTokens: Number.isFinite(
-              raw.cache_creation_input_tokens,
-            )
-              ? raw.cache_creation_input_tokens
-              : 0,
-            outputTokens: Number.isFinite(raw.output_tokens)
-              ? raw.output_tokens
-              : 0,
-          };
-          active.responseUsages.set(m.message.id, {
-            responseId: m.message.id,
-            responseOutputTokens: requestUsage.outputTokens,
-            model: active.lastModel,
-            requestUsage,
-            usage: responseUsage,
-          });
-        }
-        const tokenRateUsage =
-          m.message.id && Number.isFinite(output) && output >= 0
-            ? { responseId: m.message.id, outputTokens: output }
-            : undefined;
         const mergeBlocks = (kind, field) => {
           const state = assistantBlockState(active, m.message.id, kind);
           for (const [index, block] of m.message.content.entries()) {
@@ -2043,32 +2031,22 @@ async function startSession(s, active, p) {
         };
         const text = mergeBlocks("text", "text");
         if (text)
-          finishItem(
-            s,
-            turn,
-            {
-              id: m.message.id,
-              nativeId: m.uuid,
-              type: "agentMessage",
-              text,
-              phase: "commentary",
-            },
-            tokenRateUsage,
-          );
+          finishItem(s, turn, {
+            id: m.message.id,
+            nativeId: m.uuid,
+            type: "agentMessage",
+            text,
+            phase: "commentary",
+          });
         const thinking = mergeBlocks("thinking", "thinking");
         if (thinking)
-          finishItem(
-            s,
-            turn,
-            {
-              id: m.message.id + ":thinking",
-              nativeId: m.uuid,
-              type: "agentMessage",
-              text: thinking,
-              phase: "commentary",
-            },
-            tokenRateUsage,
-          );
+          finishItem(s, turn, {
+            id: m.message.id + ":thinking",
+            nativeId: m.uuid,
+            type: "agentMessage",
+            text: thinking,
+            phase: "commentary",
+          });
         for (const b of m.message.content.filter(
           (b) => b.type === "tool_use",
         )) {
@@ -2081,7 +2059,7 @@ async function startSession(s, active, p) {
           });
           armStallWatch();
           turn.items.push(item);
-          turnEvent(s, turn, "item/started", item, tokenRateUsage);
+          turnEvent(s, turn, "item/started", item);
           if (b.name === "TodoWrite")
             emit("turn/plan/updated", {
               threadId: s.id,
@@ -2155,22 +2133,25 @@ async function startSession(s, active, p) {
         await finishTurn(s, active, m);
       }
     }
+    drainUsage(s.id, active);
     if (active.turn) throw new Error("Claude ended without a completed turn");
   } catch (error) {
     active.readyReject(error);
-    if (active.turn) await finishTurn(s, active, null, error);
+    drainUsage(s.id, active);
+    if (active.turn) {
+      try {
+        await finishTurn(s, active, null, error);
+      } catch (failure) {
+        lifecycleFailure(s, active, failure);
+      }
+    } else if (active.persistFailure)
+      lifecycleFailure(s, active, active.persistFailure);
   } finally {
-    clearTurnTimers(active);
     allowed = false;
     admit();
-    active.input.close();
-    closeQuery(active);
-    if (queries.get(s.id) === active) {
-      queries.delete(s.id);
-      armStallWatch();
-      catalogCache.activityChanged();
-      void sessionStore.evict(s.id);
-    }
+    const owned = queries.get(s.id) === active;
+    discardQuery(s.id, active);
+    if (owned) void sessionStore.evict(s.id);
   }
 }
 // The SDK reports a closed or aborted Claude process with these messages.
@@ -2187,12 +2168,23 @@ function closeQuery(active) {
     return error;
   }
 }
-function discardQuery(s, active) {
+// One query-close accounting owner; a late SDK unwind cannot publish it twice.
+function drainUsage(threadId, active) {
+  for (const studioUsage of active.usage.finish("queryClosed"))
+    emit("thread/tokenUsage/updated", {
+      threadId,
+      turnId: studioUsage.turnId,
+      studioUsage,
+    });
+}
+function discardQuery(threadId, active) {
+  if (!active) return;
+  drainUsage(threadId, active);
   clearTurnTimers(active);
   active.input.close();
   closeQuery(active);
-  if (queries.get(s.id) === active) {
-    queries.delete(s.id);
+  if (queries.get(threadId) === active) {
+    queries.delete(threadId);
     armStallWatch();
   }
   catalogCache.activityChanged();
@@ -2206,12 +2198,8 @@ function newActive(turn) {
     tools: new Map(),
     pendingSteers: new Set(),
     assistantBlocks: new Map(),
-    responseUsages: new Map(),
+    usage: new ResponseUsage(),
     idleRequestStartedAt: Date.now(),
-    reportedUsage: 0,
-    reportedOutput: 0,
-    reportedTurnOutput: 0,
-    lastUsage: null,
     // Stall watchdog state: the newest CLI message time, the running tool
     // calls of the current turn, and the recovery of a stalled turn.
     lastEventAt: Date.now(),
@@ -2234,6 +2222,7 @@ function userMessage(s, turn, groups, id) {
   );
   const message = messages.at(-1);
   const item = turn.items.find((item) => item.id === id) || turn.items[0];
+  if (item === turn.items[0]) turn.nativeMessageId = messages[0].uuid;
   if (messages.length > 1) {
     item.nativeIds = messages.map((part) => part.uuid);
     // The queue removes this whole submission before yielding its first part.
@@ -2434,10 +2423,7 @@ async function handle(method, p) {
       throw new Error(
         "The effective target tool options changed before import",
       );
-    active?.input.close();
-    active?.q?.close();
-    queries.delete(p.session.id);
-    armStallWatch();
+    discardQuery(p.session.id, active);
     await publishNative(
       p.path,
       nativeDestination(s.nativeId || s.id, p.cwd),
@@ -2498,11 +2484,7 @@ async function handle(method, p) {
       active = queries.get(s.id);
     if (active && (active.turn || active.tasks.size || queryHasInput(active)))
       throw new Error("Pause Claude before changing these settings");
-    active?.input.close();
-    active?.q?.close();
-    queries.delete(s.id);
-    armStallWatch();
-    catalogCache.activityChanged();
+    discardQuery(s.id, active);
     s.claude = p.settings;
     await persist(s);
     return { settings: s.claude };
@@ -2512,11 +2494,7 @@ async function handle(method, p) {
       active = queries.get(s.id);
     if (active && (active.turn || active.tasks.size || queryHasInput(active)))
       throw new Error("Pause Claude before rollback");
-    active?.input.close();
-    active?.q?.close();
-    queries.delete(s.id);
-    armStallWatch();
-    catalogCache.activityChanged();
+    discardQuery(s.id, active);
     return rollbackSession(s, p, {
       persist,
       getSessionMessages,
@@ -2614,8 +2592,7 @@ async function handle(method, p) {
       if (idle())
         await reconcileHistoricalBash(s, {
           isIdle: idle,
-          complete: (turn, item, times) =>
-            finishItem(s, turn, item, undefined, times),
+          complete: (turn, item, times) => finishItem(s, turn, item, times),
           persist,
         });
       // Reattach to a live query without changing its settings or background work.
@@ -2624,12 +2601,7 @@ async function handle(method, p) {
         !active ||
         (!active.turn && !active.tasks.size && !queryHasInput(active))
       ) {
-        if (active) clearTurnTimers(active);
-        active?.input.close();
-        active?.q?.close();
-        queries.delete(s.id);
-        armStallWatch();
-        catalogCache.activityChanged();
+        discardQuery(s.id, active);
         Object.assign(
           s,
           p,
@@ -2657,12 +2629,8 @@ async function handle(method, p) {
     const active = queries.get(p.threadId);
     if (active && queryBusy(p.threadId, active))
       throw new Error("Pause the Claude turn before detaching");
-    active?.input.close();
-    active?.q?.close();
-    queries.delete(p.threadId);
-    armStallWatch();
+    discardQuery(p.threadId, active);
     if (active) studioUnloaded.add(p.threadId);
-    catalogCache.activityChanged();
     await sessionStore.evict(p.threadId);
     return { status: active ? "unsubscribed" : "notLoaded" };
   }
@@ -2831,7 +2799,7 @@ async function handle(method, p) {
             !active.turn &&
             !active.tasks.size
           )
-            discardQuery(s, active);
+            discardQuery(s.id, active);
         },
         phase,
         startedAt,
@@ -2848,7 +2816,7 @@ async function handle(method, p) {
         await control(() => active.ready, "active_ready");
       } catch (error) {
         if (!deadQuery(error)) throw error;
-        discardQuery(s, active);
+        discardQuery(s.id, active);
         active = null;
       }
     }
@@ -2889,7 +2857,7 @@ async function handle(method, p) {
         );
       } catch (error) {
         if (!deadQuery(error) || active.turn || active.tasks.size) throw error;
-        discardQuery(s, active);
+        discardQuery(s.id, active);
         active = null;
       }
     }
@@ -2901,8 +2869,8 @@ async function handle(method, p) {
           "Claude background work started a turn; wait or steer that turn",
         );
       active.turn = turn;
+      active.finalization = null;
       active.idleRequestStartedAt = Date.now();
-      active.reportedTurnOutput = 0;
       active.reservingInput = true;
     }
     s.model = p.model || s.model;
@@ -2940,11 +2908,15 @@ async function handle(method, p) {
           data: { turnStartOutcome: "not_applied" },
         });
       }
-      active.lastUsage = null;
     } else {
       active = newActive(turn);
       queries.set(s.id, active);
-      setImmediate(() => void startSession(s, active, p));
+      active.consumer = new Promise((resolve, reject) => {
+        setImmediate(() => startSession(s, active, p).then(resolve, reject));
+      });
+      active.consumer.catch((error) =>
+        process.stderr.write("Claude consumer: " + error.message + "\n"),
+      );
     }
     catalogCache.activityChanged();
     emit("turn/started", {
@@ -3211,21 +3183,7 @@ lines.on("line", (line) => {
   const params = message.params || {};
   // Serialize session mutations, but keep interrupt and permission replies independent.
   const key = params.threadId;
-  const ordered =
-    key &&
-    !(message.method === "thread/read" && params.includeTurns !== true) &&
-    [
-      "turn/start",
-      "turn/steer",
-      "thread/resume",
-      "thread/fork",
-      "thread/read",
-      "thread/rollback",
-      "claude/settings",
-      "claude/state",
-      "claude/fileBackups",
-      "thread/compact/start",
-    ].includes(message.method);
+  const ordered = key && isThreadSerialized(message.method, params);
   const before = ordered
     ? operations.get(key) || Promise.resolve()
     : Promise.resolve();
@@ -3242,7 +3200,8 @@ lines.on("line", (line) => {
   }
   operation.then(
     (result) => {
-      if (message.id !== undefined) send({ id: message.id, result });
+      if (message.id !== undefined)
+        send({ id: message.id, result: result ?? null });
     },
     (error) => {
       if (message.id !== undefined)
@@ -3260,17 +3219,52 @@ lines.on("line", (line) => {
 let closing;
 function shutdown() {
   if (closing) return closing;
+  armStallWatch.dispose();
   closing = (async () => {
-    for (const { q, input } of queries.values()) {
+    const activeQueries = [...queries.entries()];
+    // Maximum graceful shutdown drain, in milliseconds; never wait for the
+    // CLI process-exit budget when its SDK consumer cannot finish.
+    const SHUTDOWN_DRAIN_LIMIT_MS = 2_000;
+    const deadline =
+      Date.now() + Math.min(limits.exitWaitMs, SHUTDOWN_DRAIN_LIMIT_MS);
+    const bounded = async (operation) => {
+      let timer;
       try {
-        input.close();
-        q?.close();
-      } catch (error) {
-        process.stderr.write("Claude shutdown: " + error.message + "\n");
+        await Promise.race([
+          operation,
+          new Promise((resolve) => {
+            timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
       }
+    };
+    for (const [, active] of activeQueries) {
+      clearTurnTimers(active);
+      active.input.close();
+      closeQuery(active);
     }
-    await commands.close();
-    await sessionStore.drain();
+    await bounded(
+      Promise.allSettled(activeQueries.map(([, active]) => active.consumer)),
+    );
+    // If the SDK did not settle, final accounting remains explicitly unknown.
+    for (const [threadId, active] of activeQueries)
+      drainUsage(threadId, active);
+    await bounded(commands.close());
+    await bounded(sessionStore.drain());
+    await bounded(
+      (async () => {
+        while (stdoutLines.length || stdoutDraining) {
+          if (stdoutDraining)
+            await new Promise((resolve) =>
+              process.stdout.once("drain", resolve),
+            );
+          flushStdout();
+        }
+        await new Promise((resolve) => process.stdout.write("", resolve));
+      })(),
+    );
     process.exit(0);
   })();
   return closing;

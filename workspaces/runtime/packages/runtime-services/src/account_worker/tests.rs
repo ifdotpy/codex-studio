@@ -727,10 +727,16 @@ fn journal_frame(
         cursor: EventCursor(cursor),
         generation,
         payload: JournalPayload::Frame(
-            studio_runtime_providers::LineDecoder::new()
-                .push(format!("{value}\n").as_bytes())
-                .unwrap()
-                .remove(0),
+            match studio_runtime_providers::decode_journal_entry_borrowed(
+                1,
+                1,
+                format!("{value}\n").as_bytes(),
+            )
+            .payload
+            {
+                studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame,
+                other => panic!("fixture must decode: {other:?}"),
+            },
         ),
     }
 }
@@ -3513,10 +3519,16 @@ async fn stop_and_wake_progress_with_a_replenished_event_lane() {
                     generation: Generation(1),
                     received_at_ms: clock.now_ms(),
                     payload: JournalPayload::Frame(
-                        studio_runtime_providers::LineDecoder::new()
-                            .push(b"{\"method\":\"test/barrier\",\"params\":{}}\n")
-                            .unwrap()
-                            .remove(0),
+                        match studio_runtime_providers::decode_journal_entry_borrowed(
+                            1,
+                            1,
+                            b"{\"method\":\"test/barrier\",\"params\":{}}\n",
+                        )
+                        .payload
+                        {
+                            studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame,
+                            other => panic!("fixture must decode: {other:?}"),
+                        },
                     ),
                 })
                 .await
@@ -3602,10 +3614,16 @@ async fn callback_burst_is_answered_without_worker_exit() {
                     generation: Generation(1),
                     received_at_ms: clock.now_ms(),
                     payload: JournalPayload::Frame(
-                        studio_runtime_providers::LineDecoder::new()
-                            .push(line.as_bytes())
-                            .unwrap()
-                            .remove(0),
+                        match studio_runtime_providers::decode_journal_entry_borrowed(
+                            1,
+                            1,
+                            line.as_bytes(),
+                        )
+                        .payload
+                        {
+                            studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame,
+                            other => panic!("fixture must decode: {other:?}"),
+                        },
                     ),
                 })
                 .await

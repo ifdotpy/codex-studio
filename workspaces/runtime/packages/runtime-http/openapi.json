@@ -22684,6 +22684,20 @@
         "title": "CostBreakdown",
         "type": "object"
       },
+      "CostInterestRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "account_key": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_key"
+        ],
+        "title": "CostInterestRequest",
+        "type": "object"
+      },
       "CostsResource": {
         "additionalProperties": false,
         "properties": {
@@ -23227,6 +23241,33 @@
           "local_members"
         ],
         "title": "CreateRoomRequest",
+        "type": "object"
+      },
+      "CumulativeModelUsage": {
+        "additionalProperties": false,
+        "description": "One model's cumulative contribution to a Claude query.",
+        "properties": {
+          "model": {
+            "description": "Provider model identifier; dimensionless.",
+            "type": "string"
+          },
+          "providerCostUsd": {
+            "description": "Provider's informational cost estimate; USD.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tokens": {
+            "$ref": "#/components/schemas/UsageTokens",
+            "description": "Disjoint cumulative token counts; tokens."
+          }
+        },
+        "required": [
+          "model",
+          "tokens"
+        ],
         "type": "object"
       },
       "DefaultAccountGroupsRequest": {
@@ -55932,6 +55973,65 @@
         ],
         "type": "object"
       },
+      "UsageEvidence": {
+        "description": "Provenance of a final response; legacy observations may be provisional.",
+        "enum": [
+          "live",
+          "recovered",
+          "legacy"
+        ],
+        "type": "string"
+      },
+      "UsageEvidenceFile": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "description": "Native evidence file name; never file contents.",
+            "type": "string"
+          },
+          "incomplete": {
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "claudeState",
+              "claudeJournal",
+              "codexRollout"
+            ],
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Human-readable coverage failure or refusal reason."
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "file",
+          "kind",
+          "incomplete",
+          "truncated",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "UsageGapReason": {
+        "description": "Why final response accounting is unavailable.",
+        "enum": [
+          "streamInterrupted",
+          "queryClosed"
+        ],
+        "type": "string"
+      },
       "UsageLimitsData": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -56125,6 +56225,413 @@
           "accountKey"
         ],
         "title": "UsageLimitsResponse",
+        "type": "object"
+      },
+      "UsageObservation": {
+        "description": "Accounting evidence, preserving response identity and cumulative counter scope.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "Final usage for one response, keyed by agent and response ID.",
+            "properties": {
+              "evidence": {
+                "$ref": "#/components/schemas/UsageEvidence",
+                "description": "How the final usage was collected."
+              },
+              "kind": {
+                "const": "response",
+                "type": "string"
+              },
+              "model": {
+                "description": "Provider model identifier; dimensionless.",
+                "type": "string"
+              },
+              "modelContextWindow": {
+                "description": "Model context capacity; tokens.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "parentToolUseId": {
+                "description": "Parent tool identifier; absent means main loop.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "responseId": {
+                "description": "Native response identifier; dimensionless.",
+                "type": "string"
+              },
+              "tokens": {
+                "$ref": "#/components/schemas/UsageTokens",
+                "description": "Final disjoint token counts; tokens."
+              },
+              "turnId": {
+                "description": "Native turn identifier; dimensionless.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "responseId",
+              "model",
+              "tokens",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Running provider counter; never added to response records.",
+            "properties": {
+              "kind": {
+                "const": "cumulative",
+                "type": "string"
+              },
+              "last": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/UsageTokens"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Most recent response without an identity; tokens."
+              },
+              "modelContextWindow": {
+                "description": "Model context capacity; tokens.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "models": {
+                "description": "Per-model running counters and informational provider costs.",
+                "items": {
+                  "$ref": "#/components/schemas/CumulativeModelUsage"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "scope": {
+                "$ref": "#/components/schemas/UsageScope",
+                "description": "Counter's reset and accumulation domain."
+              },
+              "total": {
+                "$ref": "#/components/schemas/UsageTokens",
+                "description": "Running disjoint category counts; tokens."
+              },
+              "turnId": {
+                "description": "Native turn identifier; dimensionless.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "scope",
+              "total"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A response with no final usage; unknown rather than zero tokens.",
+            "properties": {
+              "kind": {
+                "const": "gap",
+                "type": "string"
+              },
+              "model": {
+                "description": "Provider model identifier, when known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reason": {
+                "$ref": "#/components/schemas/UsageGapReason",
+                "description": "Final-usage loss reason."
+              },
+              "responseId": {
+                "description": "Native response identifier; dimensionless.",
+                "type": "string"
+              },
+              "turnId": {
+                "description": "Native turn identifier; dimensionless.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "responseId",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "UsageReconciliationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "counts": {
+            "additionalProperties": false,
+            "properties": {
+              "mismatched": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "missingEvidence": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "missingRecorded": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rejectedEntries": {
+                "description": "Native paths refused by configured-root or regular-file validation.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "responses": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknownRecorded": {
+                "description": "Recorded responses with absent or null token categories; excluded from known totals and token mismatch comparisons.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "responses",
+              "missingRecorded",
+              "missingEvidence",
+              "mismatched",
+              "unknownRecorded",
+              "rejectedEntries"
+            ],
+            "type": "object"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/UsageEvidenceFile"
+            },
+            "type": "array"
+          },
+          "gaps": {
+            "items": {
+              "$ref": "#/components/schemas/UsageObservation"
+            },
+            "type": "array"
+          },
+          "incomplete": {
+            "type": "boolean"
+          },
+          "providerCosts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "model": {
+                  "type": "string"
+                },
+                "providerCostUsd": {
+                  "minimum": 0,
+                  "type": "number"
+                }
+              },
+              "required": [
+                "model",
+                "providerCostUsd"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "responses": {
+            "items": {
+              "$ref": "#/components/schemas/UsageReconciliationRow"
+            },
+            "type": "array"
+          },
+          "totals": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceCostUsd": {
+                "anyOf": [
+                  {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "evidenceTokens": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/UsageTokens"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "recordedCostUsd": {
+                "anyOf": [
+                  {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "recordedTokens": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/UsageTokens"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "recordedCostUsd",
+              "evidenceCostUsd",
+              "recordedTokens",
+              "evidenceTokens"
+            ],
+            "type": "object"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "agentId",
+          "responses",
+          "gaps",
+          "providerCosts",
+          "totals",
+          "counts",
+          "incomplete",
+          "truncated",
+          "files"
+        ],
+        "type": "object"
+      },
+      "UsageReconciliationRow": {
+        "additionalProperties": false,
+        "properties": {
+          "evidenceCostUsd": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidenceTokens": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsageTokens"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "journalConflict": {
+            "type": "boolean"
+          },
+          "mismatched": {
+            "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recordedCostUsd": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recordedEvidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsageEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recordedTokens": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsageTokens"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "responseId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "responseId",
+          "model",
+          "recordedTokens",
+          "recordedEvidence",
+          "evidenceTokens",
+          "recordedCostUsd",
+          "evidenceCostUsd",
+          "journalConflict",
+          "mismatched"
+        ],
         "type": "object"
       },
       "UsageResumeCause": {
@@ -56541,6 +57048,60 @@
         ],
         "title": "UsageResumeStatus",
         "type": "string"
+      },
+      "UsageScope": {
+        "description": "Counter ownership: a native Codex thread or one Claude SDK query.",
+        "enum": [
+          "codexThread",
+          "claudeQuery"
+        ],
+        "type": "string"
+      },
+      "UsageTokens": {
+        "additionalProperties": false,
+        "description": "Disjoint billable token categories; reasoning is already included in output.",
+        "properties": {
+          "cacheReadInput": {
+            "description": "Input served from the prompt cache; tokens.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cacheWriteInput": {
+            "description": "Input written to the prompt cache; tokens.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "output": {
+            "description": "All generated output, including reasoning; tokens.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reasoningOutput": {
+            "description": "Known reasoning subset of output; tokens, absent when unknown.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "uncachedInput": {
+            "description": "Base-rate input, excluding cache reads and writes; tokens.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "uncachedInput",
+          "cacheReadInput",
+          "cacheWriteInput",
+          "output"
+        ],
+        "type": "object"
       },
       "VaultAwsProfileDto": {
         "additionalProperties": false,
@@ -67271,6 +67832,35 @@
         "summary": "Costs"
       }
     },
+    "/api/costs/interest": {
+      "post": {
+        "operationId": "cost_interest_api_costs_interest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CostInterestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Interest accepted; joins an existing refresh when one is active"
+          }
+        },
+        "summary": "Request an on-demand account cost refresh; results arrive through sync entities"
+      }
+    },
     "/api/desktop": {
       "get": {
         "operationId": "desktop_api_desktop_get",
@@ -67455,6 +68045,106 @@
           }
         },
         "summary": "Diagnostics"
+      }
+    },
+    "/api/diagnostics/usage-reconciliation": {
+      "get": {
+        "description": "Read-only bounded diagnostic for current or archived agents. Costs use request-level catalog tiers; null means unavailable pricing or tokens. Incomplete evidence and truncated scans are explicit.",
+        "operationId": "usage_reconciliation_api_diagnostics_usage_reconciliation_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent",
+            "required": true,
+            "schema": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageReconciliationResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError404",
+            "description": "Unknown agent"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Reconcile one agent usage against native evidence"
       }
     },
     "/api/directories": {

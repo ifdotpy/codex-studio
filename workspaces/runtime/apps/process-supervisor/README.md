@@ -41,7 +41,15 @@ by the shared limit in [`runtime-process/src/protocol.rs`](../../packages/runtim
 The frame-size limit is consumed through the
 [`runtime-process` supervisor contract](../../packages/runtime-process/src/supervisor_contract.rs). A
 disconnected event-wait connection does not stop the child. Only one backend
-identity may own connections at a time; probes do not acquire ownership.
+identity may own connections at a time. Admission gives each connection one
+typed capability set: backend, probe, or operator. A backend supplies a nonempty
+`backendId`; missing identities and mixed probe handshakes are refused. For
+compatibility, an operator handshake from an older guest may include `backendId`,
+which is ignored and never grants backend ownership. Probes
+do not acquire ownership and may only request `health`. Journal reads, writes,
+ACK, and ordinary child actions require admitted backend ownership, including
+the separate `nextBatch` connection. Operator connections do not acquire backend
+ownership and allow only `health`, `finishFallback`, and `adminCloseHandle`.
 Operator-close requests require the operator handshake and exact
 recorded PID, start time, and launch signature. Backend disconnect, detach and
 backend process death leave children and their journal intact.

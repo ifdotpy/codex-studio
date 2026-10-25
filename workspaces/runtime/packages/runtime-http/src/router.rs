@@ -26,6 +26,8 @@ const HTTP_BROTLI_QUALITY: i32 = 4;
 
 #[derive(Default)]
 struct CostRefreshWorkers {
+    // This lock serializes admission with closure; active/idle own the drain.
+    admission_closed: std::sync::Mutex<bool>,
     active: AtomicUsize,
     idle: Notify,
 }
@@ -44,6 +46,26 @@ impl CostRefreshWorkers {
     fn track(self: &Arc<Self>) -> CostRefreshWorkerGuard {
         self.active.fetch_add(1, Ordering::AcqRel);
         CostRefreshWorkerGuard(Arc::clone(self))
+    }
+
+    fn try_track(self: &Arc<Self>) -> Option<CostRefreshWorkerGuard> {
+        let closed = self
+            .admission_closed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *closed {
+            return None;
+        }
+        // Increment while holding the admission lock, so shutdown cannot see
+        // an idle count between accepting this worker and tracking it.
+        Some(self.track())
+    }
+
+    fn close_admission(&self) {
+        *self
+            .admission_closed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     }
 
     async fn wait_idle(&self) {
@@ -497,6 +519,7 @@ impl HttpState {
     }
 
     pub async fn shutdown_services(&self) -> std::io::Result<()> {
+        self.cost_refresh_workers.close_admission();
         self.credentials.shutdown().await;
         self.cost_scan_cancelled
             .store(true, std::sync::atomic::Ordering::Release);
@@ -559,8 +582,8 @@ impl HttpState {
         Arc::clone(&self.cost_scan_cancelled)
     }
 
-    pub(crate) fn track_cost_refresh_worker(&self) -> CostRefreshWorkerGuard {
-        self.cost_refresh_workers.track()
+    pub(crate) fn try_track_cost_refresh_worker(&self) -> Option<CostRefreshWorkerGuard> {
+        self.cost_refresh_workers.try_track()
     }
 
     /// Shared post-commit signal for durable event writers and the scheduler.
@@ -2075,7 +2098,9 @@ mod cost_refresh_worker_tests {
             None,
         );
         let cancelled = Arc::clone(&state.cost_scan_cancelled);
-        let guard = state.track_cost_refresh_worker();
+        let guard = state
+            .try_track_cost_refresh_worker()
+            .expect("open admission");
         let shutdown = tokio::spawn(async move { state.shutdown_services().await });
         tokio::task::yield_now().await;
         assert!(cancelled.load(Ordering::Acquire));

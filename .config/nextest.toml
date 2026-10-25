@@ -15,9 +15,11 @@ failure-output = "immediate-final"
 slow-timeout = { period = "30s", terminate-after = 3 }
 junit.path = "junit.xml"
 
+# Usage reconciliation witnesses preserve journal first values and final response authority.
 # Single owner of fast Rust witnesses. Cargo still builds the complete workspace;
 # this nextest execution profile changes selection only, never Cargo's feature graph.
 [profile.fast]
+# Supervisor admission witnesses cover typed capabilities and exact operator recovery.
 # T17 clauses cover transactional errors, startup readiness, and native delivery.
 inherits = "ci"
 # Clause 1: Rust operator CLI witnesses: Check isolated user service managers, delivery layout, safe link migration, and idempotent retries without touching host services.
@@ -57,7 +59,29 @@ inherits = "ci"
 # Vault readiness witness: OS metadata notifications replace renderer polls without reading keys.
 # Limit failures refresh the account and stream rateLimit entities without a renderer GET.
 # Actor timing uses a deterministic clock; registry durability observes completed SQLite checkpoints.
+# Typed accounting mappings, strict ingress and native SDK schema parity.
+# Typed usage analytics: cumulative exclusion, final evidence preservation, and rollout normalization.
+
+# Typed usage legacy compatibility, budget replay, gap, reset and dispatch witnesses.
+# Transport safety: unsent cancellation, strict replies, and shared per-thread ordering.
 default-filter = '''
+    (package(=studio-runtime-http) & kind(lib) & test(pricing_refresh)) |
+    (package(=studio-runtime-services) & kind(lib) & (test(usage::tests::codex_session_fixture_) | test(restored_claude_query_total_keeps_the_pending_estimate_until_response))) |
+    (package(=studio-runtime-services) & ((kind(lib) & test(analytics_projection::tests::projection_equals_the_direct_capture_of_a_turn)) | (kind(test) & binary(=integration) & test(session_cost_golden::session_cost_matches_the_row_scanning_golden_answers)))) |
+    (package(=studio-runtime-store) & kind(lib) & test(repositories::analytics_capture::cost_hint_tests::)) |
+    (package(=studio-runtime-services) & kind(test) & binary(integration) & (test(legacy_notice_association_clears_reset_ambiguity_without_response_charge) | test(pre_and_post_upgrade_rollout_notices_produce_identical_budget_state))) |
+    (package(=studio-runtime-services) & kind(lib) & (test(budget::typed_usage_tests::) | test(agent_move::usage_tests::) | test(typed_usage_conflict_keeps_first_charge_and_dispatches_context) | test(typed_usage_bridge_golden_frames_reach_budget_and_context))) |
+    (package(=studio-runtime-store) & kind(lib) & test(feature_schema::tests::budget_usage_schema_refuses_a_missing_tokens_column)) |
+    (package(=studio-runtime-services) & kind(test) & binary(integration) & (test(budget_corpus::reasoning_counter_decrease_starts_a_new_budget_epoch) | test(relocation_corpus::python_location_and_move_corpus_through_consumers))) |
+    (package(=studio-runtime-store) & kind(lib) & test(feature_schema::tests::budget_usage_breakdown_upgrade_preserves_legacy_rows_and_is_idempotent)) |
+    (package(=studio-runtime-services) & kind(lib) & test(typed_usage_dispatch_reaches_priced_cost_groups)) |
+    (package(=studio-runtime-services) & kind(test) & test(budget_corpus::exact_response_replay_is_noop_and_conflicting_replay_records_fault)) |
+    (package(=studio-runtime-schema) & kind(lib) & test(usage::legacy_tests::)) |
+    (package(=studio-runtime-server) & kind(bin) & test(native_probe::tests::schema_check_refuses_changed_usage_fragment)) |
+    (package(=studio-runtime-schema) & kind(lib) & test(usage::tests::)) |
+    (package(=studio-runtime-store) & kind(lib) & test(repositories::cost_aggregate::tests::typed_usage_)) |
+    (package(=studio-runtime-services) & kind(lib) & (test(analytics_capture::usage_contract_tests::) | test(analytics_history_repair::usage_contract_tests::) | test(analytics_rollout::tests::typed_usage_))) |
+    (package(=studio-runtime-schema) & kind(lib) & test(usage::persisted::tests::)) |
     (package(=studio-runtime-services) & kind(lib) & test(/::(managed_reviewer_defaults_reach_public_spawn_tool|reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance)$/))
     | (package(=studio-runtime-schema) & kind(lib) & test(workspace_modes::tests::))
     | (package(=studio-runtime-services) & kind(lib) & (test(legacy_image_workspace::tests::) | test(legacy_finished_worker_archives_without_a_native_executor) | test(native_child_requires_a_native_parent) | test(legacy_worker_archives_through_current_tool_without_losing_its_row) | test(review_regression_) | test(platform_defaults_require_the_native_linux_capability) | test(native_capability_)))
@@ -111,6 +135,20 @@ default-filter = '''
     | (package(=studio-runtime-store) & kind(lib) & test(/^diagnostics_hook_tests::(writer_job_timing_separates_queue_and_hold|optional_hook_observes_writer_and_sql_timing_and_can_be_cleared)$/))
     | (package(=studio-runtime-server) & kind(test) & binary(=integration) & test(/^wave7_p01_registry::a_commit_without_a_registry_wake_is_flushed_after_one_interval$/))
     | (package(=studio-runtime-server) & kind(test) & binary(=integration) & test(/^wave7_p01_registry::restart_provider_requests_/))
+    | (package(=studio-process-supervisor) & kind(test) & binary(=clients) & test(/^admission::supervisor_admission_/))
+    | (package(=studio-process-supervisor) & kind(test) & binary(=recovery) & test(/^unknown_ownership_survives_restart_until_exact_operator_close$/))
+    | (package(=studio-runtime-services) & binary(=integration) & test(/^provider_session_task::(dropping_submission_waiting_for_full_lane_keeps_shared_session_alive|review_dropped_buffered_submission_fences_session|callback_admission_drop_fences_but_retained_future_survives_select)$/))
+    | (package(=studio-runtime-services) & kind(lib) & test(retained_claude_mutation_waits_while_lightweight_read_can_progress))
+    | (package(=studio-runtime-providers) & binary(=codec) & test(/^(response_requires_exactly_one_body_and_preserves_explicit_null|wire_envelope_round_trips_valid_objects_and_refuses_malformed_ones|journal_decode_keeps_cursor_generation_and_malformed_stdout_bytes)$/))
+    | (package(=studio-runtime-providers) & binary(=connection) & test(/^(every_claude_serialized_method_waits_behind_same_thread_operation|claude_thread_read_serializes_only_when_include_turns_is_true|malformed_reply_does_not_consume_pending_request_before_real_reply)$/))
+    | (package(=studio-runtime-schema) & kind(lib) & test(provider_method_policy_matches_generated_bridge_for_parameter_shapes))
+    | (package(=studio-runtime-providers) & binary(=connection) & test(recovered_same_thread_requests_hold_fresh_work_until_every_owner_settles))
+    | (package(=studio-runtime-services) & binary(=integration) & test(/^provider_session_task::multiple_recovered_thread_owners_open_without_replay_and_hold_fresh_work$/))
+    | (package(=studio-runtime-services) & kind(lib) & test(legacy_lightweight_mutations_recover_all_owners_without_replay))
+    | (package(=studio-runtime-providers) & binary(=connection) & test(recovered_unknown_owner_refuses_cancellation_and_keeps_fresh_work_waiting))
+    | (package(=studio-runtime-schema) & kind(lib) & test(provider_method_policy::tests::recovered_policy_keeps_unreadable_parameters_owned))
+    | ((package(=studio-runtime-services) | package(=studio-runtime-http)) & kind(lib) & test(usage_reconciliation))
+    | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(conflicting_header_alias_does_not_authorize_a_foreign_file))
 '''
 
 # Nextest platform overrides replace the whole filter and have no filter aliases.
@@ -124,7 +162,26 @@ platform = 'cfg(target_os = "linux")'
 # Vault readiness witness: OS metadata notifications replace renderer polls without reading keys.
 # Limit failures refresh the account and stream rateLimit entities without a renderer GET.
 # Actor timing uses a deterministic clock; registry durability observes completed SQLite checkpoints.
+# Typed accounting mappings, strict ingress and native SDK schema parity.
+# Transport safety: unsent cancellation, strict replies, and shared per-thread ordering.
 default-filter = '''
+    (package(=studio-runtime-http) & kind(lib) & test(pricing_refresh)) |
+    (package(=studio-runtime-services) & kind(lib) & (test(usage::tests::codex_session_fixture_) | test(restored_claude_query_total_keeps_the_pending_estimate_until_response))) |
+    (package(=studio-runtime-services) & ((kind(lib) & test(analytics_projection::tests::projection_equals_the_direct_capture_of_a_turn)) | (kind(test) & binary(=integration) & test(session_cost_golden::session_cost_matches_the_row_scanning_golden_answers)))) |
+    (package(=studio-runtime-store) & kind(lib) & test(repositories::analytics_capture::cost_hint_tests::)) |
+    (package(=studio-runtime-services) & kind(test) & binary(integration) & (test(legacy_notice_association_clears_reset_ambiguity_without_response_charge) | test(pre_and_post_upgrade_rollout_notices_produce_identical_budget_state))) |
+    (package(=studio-runtime-services) & kind(lib) & (test(budget::typed_usage_tests::) | test(agent_move::usage_tests::) | test(typed_usage_conflict_keeps_first_charge_and_dispatches_context) | test(typed_usage_bridge_golden_frames_reach_budget_and_context))) |
+    (package(=studio-runtime-store) & kind(lib) & test(feature_schema::tests::budget_usage_schema_refuses_a_missing_tokens_column)) |
+    (package(=studio-runtime-services) & kind(test) & binary(integration) & (test(budget_corpus::reasoning_counter_decrease_starts_a_new_budget_epoch) | test(relocation_corpus::python_location_and_move_corpus_through_consumers))) |
+    (package(=studio-runtime-store) & kind(lib) & test(feature_schema::tests::budget_usage_breakdown_upgrade_preserves_legacy_rows_and_is_idempotent)) |
+    (package(=studio-runtime-services) & kind(lib) & test(typed_usage_dispatch_reaches_priced_cost_groups)) |
+    (package(=studio-runtime-services) & kind(test) & test(budget_corpus::exact_response_replay_is_noop_and_conflicting_replay_records_fault)) |
+    (package(=studio-runtime-schema) & kind(lib) & test(usage::legacy_tests::)) |
+    (package(=studio-runtime-server) & kind(bin) & test(native_probe::tests::schema_check_refuses_changed_usage_fragment)) |
+    (package(=studio-runtime-schema) & kind(lib) & test(usage::tests::)) |
+    (package(=studio-runtime-store) & kind(lib) & test(repositories::cost_aggregate::tests::typed_usage_)) |
+    (package(=studio-runtime-services) & kind(lib) & (test(analytics_capture::usage_contract_tests::) | test(analytics_history_repair::usage_contract_tests::) | test(analytics_rollout::tests::typed_usage_))) |
+    (package(=studio-runtime-schema) & kind(lib) & test(usage::persisted::tests::)) |
     (package(=studio-runtime-services) & kind(lib) & test(/::(managed_reviewer_defaults_reach_public_spawn_tool|reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance)$/))
     | (package(=studio-runtime-schema) & kind(lib) & test(workspace_modes::tests::))
     | (package(=studio-runtime-services) & kind(lib) & (test(legacy_image_workspace::tests::) | test(legacy_finished_worker_archives_without_a_native_executor) | test(native_child_requires_a_native_parent) | test(legacy_worker_archives_through_current_tool_without_losing_its_row) | test(review_regression_) | test(platform_defaults_require_the_native_linux_capability) | test(native_capability_)))
@@ -178,6 +235,20 @@ default-filter = '''
     | (package(=studio-runtime-store) & kind(lib) & test(/^diagnostics_hook_tests::(writer_job_timing_separates_queue_and_hold|optional_hook_observes_writer_and_sql_timing_and_can_be_cleared)$/))
     | (package(=studio-runtime-server) & kind(test) & binary(=integration) & test(/^wave7_p01_registry::a_commit_without_a_registry_wake_is_flushed_after_one_interval$/))
     | (package(=studio-runtime-server) & kind(test) & binary(=integration) & test(/^wave7_p01_registry::restart_provider_requests_/))
+    | (package(=studio-process-supervisor) & kind(test) & binary(=clients) & test(/^admission::supervisor_admission_/))
+    | (package(=studio-process-supervisor) & kind(test) & binary(=recovery) & test(/^unknown_ownership_survives_restart_until_exact_operator_close$/))
+    | (package(=studio-runtime-services) & binary(=integration) & test(/^provider_session_task::(dropping_submission_waiting_for_full_lane_keeps_shared_session_alive|review_dropped_buffered_submission_fences_session|callback_admission_drop_fences_but_retained_future_survives_select)$/))
+    | (package(=studio-runtime-services) & kind(lib) & test(retained_claude_mutation_waits_while_lightweight_read_can_progress))
+    | (package(=studio-runtime-providers) & binary(=codec) & test(/^(response_requires_exactly_one_body_and_preserves_explicit_null|wire_envelope_round_trips_valid_objects_and_refuses_malformed_ones|journal_decode_keeps_cursor_generation_and_malformed_stdout_bytes)$/))
+    | (package(=studio-runtime-providers) & binary(=connection) & test(/^(every_claude_serialized_method_waits_behind_same_thread_operation|claude_thread_read_serializes_only_when_include_turns_is_true|malformed_reply_does_not_consume_pending_request_before_real_reply)$/))
+    | (package(=studio-runtime-schema) & kind(lib) & test(provider_method_policy_matches_generated_bridge_for_parameter_shapes))
+    | (package(=studio-runtime-providers) & binary(=connection) & test(recovered_same_thread_requests_hold_fresh_work_until_every_owner_settles))
+    | (package(=studio-runtime-services) & binary(=integration) & test(/^provider_session_task::multiple_recovered_thread_owners_open_without_replay_and_hold_fresh_work$/))
+    | (package(=studio-runtime-services) & kind(lib) & test(legacy_lightweight_mutations_recover_all_owners_without_replay))
+    | (package(=studio-runtime-providers) & binary(=connection) & test(recovered_unknown_owner_refuses_cancellation_and_keeps_fresh_work_waiting))
+    | (package(=studio-runtime-schema) & kind(lib) & test(provider_method_policy::tests::recovered_policy_keeps_unreadable_parameters_owned))
+    | ((package(=studio-runtime-services) | package(=studio-runtime-http)) & kind(lib) & test(usage_reconciliation))
+    | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(conflicting_header_alias_does_not_authorize_a_foreign_file))
     | ((package(=studio-process-supervisor)) & ((kind(test) & binary(=clients))) & (test(supervisor_rejects_retired_protocol_before_admission)))
     | ((package(=studio-runtime-providers)) & (kind(lib)) & (test(supervisor_rejects_python_identity_adoption)))
     | ((package(=studio-runtime-process) | package(=studio-runtime-server)) & ((kind(test) & binary(=integration))) & (test(/^provider_stdio::final_stdout_is_journaled_when_the_child_exits_before_the_owner_is_polled$/) | test(/^provider_stdio::writes_after_confirmed_exit_are_not_sent_and_do_not_block_ack_or_stdout$/) | test(/^provider_stdio::a_reserved_write_arriving_after_completion_is_rejected_without_delaying_reap$/) | test(/^provider_stdio::stdin_epipe_before_leader_exit_still_drains_final_stdout$/) | test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/) | test(/^provider_stdio::cancellation_stops_the_entire_owned_process_group$/) | test(/^wave7_p01_factory::running_child_started_with_a_previous_command_reattaches$/) | test(/^wave7_p01_registry::running_app_server_started_with_the_frozen_command_reattaches$/) | test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/) | test(/^wave7_p01_registry::rust_direct_claude_launch_runs_the_scripted_bridge_turn$/) | test(/^state_check::state_check_reads_fixture_rows_without_changing_or_disclosing_them$/)))

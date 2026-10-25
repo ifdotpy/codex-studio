@@ -1064,10 +1064,45 @@ describe("scale verifier cleanup and served-model witnesses", () => {
             usageSource: "claudeResponse",
           }),
         );
+      for (const kind of ["response", "cumulative", "gap"]) {
+        insert.run(
+          "owned",
+          kind,
+          JSON.stringify({
+            model: "stale-model",
+            responseId: kind,
+            usageSource: "claudeResponse",
+            studioUsage: {
+              kind,
+              responseId: "typed-response",
+              model: "claude-haiku-fixture",
+            },
+          }),
+        );
+      }
+      insert.run(
+        "owned",
+        "canonical",
+        JSON.stringify({
+          studioUsage: {
+            kind: "response",
+            responseId: "canonical-response",
+            model: "claude-haiku-fixture",
+          },
+        }),
+      );
       insert.run(
         "codex-owned",
         "turn-1",
         JSON.stringify({ model: "gpt-6-luna" }),
+      );
+      insert.run(
+        "codex-owned",
+        "typed-counter",
+        JSON.stringify({
+          model: "gpt-6-luna",
+          studioUsage: { kind: "cumulative", scope: "codexThread", total: {} },
+        }),
       );
     } finally {
       analytics.close();
@@ -1083,6 +1118,17 @@ describe("scale verifier cleanup and served-model witnesses", () => {
     expect(records.get("owned").map((row) => row.turnId)).toEqual([
       "first",
       "second",
+      "response",
+      "canonical",
+    ]);
+    expect(
+      records
+        .get("owned")
+        .slice(2)
+        .map((row) => [row.responseId, row.model]),
+    ).toEqual([
+      ["typed-response", "claude-haiku-fixture"],
+      ["canonical-response", "claude-haiku-fixture"],
     ]);
     expect(() =>
       assertServedModelEvidence(records.get("owned"), "owned", 2),
@@ -1091,12 +1137,15 @@ describe("scale verifier cleanup and served-model witnesses", () => {
     const codex = readServedModelRecords(
       directory,
       "workspace",
-      ["owned", "codex-owned"],
+      ["codex-owned"],
       performance.now() + 5000,
       null,
     );
     expect([...codex.keys()]).toEqual(["codex-owned"]);
-    expect(codex.get("codex-owned")[0].model).toBe("gpt-6-luna");
+    expect(codex.get("codex-owned").map((row) => row.model)).toEqual([
+      "gpt-6-luna",
+      "gpt-6-luna",
+    ]);
     expect(() =>
       readServedModelRecords(
         directory,
