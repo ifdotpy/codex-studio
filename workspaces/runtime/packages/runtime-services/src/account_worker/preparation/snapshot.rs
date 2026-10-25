@@ -615,6 +615,15 @@ fn flag(record: &Value, key: &str) -> Result<bool, WorkerError> {
 fn text(record: &Value, key: &str) -> Result<Option<String>, WorkerError> {
     optional(record, key)
 }
+// Only text can match a native catalog notice. Structured provider errors
+// remain in the stored agent and do not match that notice.
+fn catalog_notice_error(record: &Value) -> Result<Option<String>, WorkerError> {
+    match record.get("error") {
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        None | Some(Value::Null | Value::Object(_)) => Ok(None),
+        Some(_) => Err(invalid("error")),
+    }
+}
 fn stored<T: DeserializeOwned>(
     record: &Value,
     key: &str,
@@ -1097,7 +1106,7 @@ pub(super) fn thread_snapshot(
             native_role_guidance: text(record, "nativeRoleGuidance")?,
             native_tool_source: optional(record, "nativeToolSource")?,
             native_tool_update: optional(record, "nativeToolUpdate")?,
-            error: text(record, "error")?,
+            error: catalog_notice_error(record)?,
             native_release: optional(record, "nativeRelease")?,
             root_id: root_id.into(),
             parent_id: text(record, "parentId")?,
@@ -1461,6 +1470,61 @@ mod resource_tests {
     }
 
     use super::*;
+
+    #[tokio::test]
+    async fn structured_native_errors_keep_thread_preparation_and_holds() {
+        let directory = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        store.transaction_with(move |tx| {
+            for (error, context_wait) in [(Value::Null, Value::Null), (json!("plain error"), Value::Null),
+                (json!({"message":"Claude Code process exited with code 143"}), Value::Null),
+                (json!({"message":"context error","codexErrorInfo":"misalignmentPolicyViolation"}), json!("repair"))] {
+                let record = json!({"id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                    "isLead":true,"autoWake":true,"provider":"claude","accountKey":"default",
+                    "cwd":"/project","threadId":"existing-thread","error":error,
+                    "lastCompletedTurn":"old-turn","lastCompletedTurnStatus":"interrupted",
+                    "lastCompletedTurnError":error,"contextRepairWait":context_wait});
+                AgentRepository::put(tx, &AgentRecord::from_value(record.clone()).expect("agent"))?;
+                let snapshot = thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"), None)?;
+                assert_eq!(snapshot.actor.error.as_deref(), error.as_str());
+                let plan = thread::plan(&snapshot, "next-attempt", "next-ticket");
+                assert_eq!(native_thread_blocked(&record), error["codexErrorInfo"] == "misalignmentPolicyViolation");
+                if !context_wait.is_null() {
+                    assert_eq!(plan, thread::Outcome::Hold(thread::HoldReason::ContextRepair));
+                } else {
+                    assert!(matches!(plan, thread::Outcome::Resume(_)), "{plan:?}");
+                }
+                let saved = agent(tx, "lead")?.value();
+                assert_eq!(saved["error"], error);
+                assert_eq!(saved["lastCompletedTurnError"], error);
+            }
+            Ok::<_, WorkerError>(())
+        }).await.expect("valid structured errors preserve preparation and holds");
+    }
+
+    #[tokio::test]
+    async fn malformed_native_error_types_still_block_thread_preparation() {
+        let directory = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        store.transaction_with(move |tx| {
+            for error in [json!(false), json!(42), json!([])] {
+                let record = json!({"id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                    "isLead":true,"provider":"claude","cwd":"/project","threadId":"existing-thread","error":error});
+                AgentRepository::put(tx, &AgentRecord::from_value(record.clone()).expect("agent"))?;
+                assert!(matches!(thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"), None),
+                    Err(WorkerError::Store(StoreError::InvalidStoredObject { table: "turn_preparation", id })) if id == "error"));
+            }
+            Ok::<_, WorkerError>(())
+        }).await.expect("invalid error shapes remain rejected");
+    }
 
     /// igor-mbp rehearsal 2026-10-22: two moved Claude agents carried Python's
     /// `frozenNativeParams`; Rust refused them (`thread-preparation/FrozenImport`)

@@ -88,6 +88,8 @@ pub struct Actor {
     pub native_role_guidance: Option<String>,
     pub native_tool_source: Option<CatalogSource>,
     pub native_tool_update: Option<Value>,
+    /// Plain error text for exact native catalog notice matching. Structured
+    /// provider errors stay in the stored record, outside this projection.
     pub error: Option<String>,
     /// Includes failed unsubmitted inspections, retired by successful resume.
     pub native_release: Option<Map<String, Value>>,
