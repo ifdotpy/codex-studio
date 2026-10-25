@@ -1,45 +1,56 @@
-import { expect, it } from "vitest";
-import { chromium } from "playwright";
-import { createServer } from "vite";
+import { expect, test } from "../playwright.mjs";
+import { createRequire } from "node:module";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-it("real IndexedDB staging removes crash orphans while preserving another tab's owner lease and cleans cancellation", async () => {
+test("real IndexedDB staging removes crash orphans while preserving another tab's owner lease and cleans cancellation", async ({
+  context,
+}) => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
-  const server = await createServer({
-    configFile: false,
-    root,
-    server: { host: "127.0.0.1", port: 0, fs: { allow: [root] } },
-  });
-  server.middlewares.use((request, response, next) => {
-    if (request.url !== "/transfer-check") return next();
-    response.setHeader("Content-Type", "text/html");
-    response.end("<!doctype html><title>Transfer storage fixture</title>");
-  });
-  await server.listen();
-  const address = server.httpServer!.address();
-  if (!address || typeof address === "string")
-    throw new Error("Fixture address unavailable");
-  const browser = await chromium.launch({ headless: true });
+  const cacheDir = await mkdtemp(join(tmpdir(), "studio-transfer-storage-"));
+  let server;
   try {
-    const context = await browser.newContext();
+    const require = createRequire(
+      new URL("../../package.json", import.meta.url),
+    );
+    const { createServer } = await import(require.resolve("vite"));
+    server = await createServer({
+      cacheDir,
+      configFile: false,
+      root,
+      optimizeDeps: { noDiscovery: true },
+      server: { host: "127.0.0.1", port: 0, fs: { allow: [root] } },
+    });
+    server.middlewares.stack.unshift({
+      route: "",
+      handle(request, response, next) {
+        if (request.url !== "/transfer-check") return next();
+        response.setHeader("Content-Type", "text/html");
+        response.end("<!doctype html><title>Transfer storage fixture</title>");
+      },
+    });
+    await server.listen();
+    const address = server.httpServer.address();
+    if (!address || typeof address === "string")
+      throw new Error("Fixture address unavailable");
+
     const first = await context.newPage();
     const second = await context.newPage();
     const url = `http://127.0.0.1:${address.port}/transfer-check`;
     await Promise.all([first.goto(url), second.goto(url)]);
-    const module = `/@fs${fileURLToPath(new URL("./entityTransfer.ts", import.meta.url))}`;
+    const module = `/@fs${fileURLToPath(new URL("../../src/sync/entityTransfer.ts", import.meta.url))}`;
     const owner = await first.evaluate(async (module) => {
-      const { IndexedTransferStorage } = await new Function(
-        "path",
-        "return import(path)",
-      )(module);
+      const { IndexedTransferStorage } = await import(module);
       const storage = new IndexedTransferStorage();
       await storage.put("owner", "active");
-      (window as unknown as { staging: typeof storage }).staging = storage;
+      window.staging = storage;
       const databases = await indexedDB.databases();
       const name = databases.find((database) =>
         database.name?.startsWith("studio-entity-transfer-"),
-      )!.name!;
-      await new Promise<void>((resolve, reject) => {
+      ).name;
+      await new Promise((resolve, reject) => {
         const request = indexedDB.open("studio-entity-transfer-orphan", 1);
         request.onsuccess = () => {
           request.result.close();
@@ -51,10 +62,7 @@ it("real IndexedDB staging removes crash orphans while preserving another tab's 
     }, module);
     const status = await second.evaluate(
       async ({ module, owner }) => {
-        const { IndexedTransferStorage } = await new Function(
-          "path",
-          "return import(path)",
-        )(module);
+        const { IndexedTransferStorage } = await import(module);
         const storage = new IndexedTransferStorage();
         await storage.put("second", "active");
         // Wait for the once-per-owner cleanup's exclusive lock callback rather
@@ -83,14 +91,7 @@ it("real IndexedDB staging removes crash orphans while preserving another tab's 
     });
     expect(
       await first.evaluate(async () => {
-        const storage = (
-          window as unknown as {
-            staging: {
-              get(key: string): Promise<string>;
-              close(): Promise<void>;
-            };
-          }
-        ).staging;
+        const storage = window.staging;
         const value = await storage.get("owner");
         await storage.close();
         return {
@@ -101,9 +102,8 @@ it("real IndexedDB staging removes crash orphans while preserving another tab's 
         };
       }),
     ).toEqual({ value: "active", remaining: 0 });
-    await context.close();
   } finally {
-    await browser.close();
-    await server.close();
+    await server?.close();
+    await rm(cacheDir, { recursive: true, force: true });
   }
-}, 30000);
+});
