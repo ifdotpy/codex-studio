@@ -8,6 +8,7 @@ import {
 } from "../playwright.mjs";
 // Isolated server and headless browser. No model requests or user state.
 import assert from "node:assert/strict";
+import { fixtureStateDirectory } from "../fixtures/rust-ui-fixture.mjs";
 import { mkdtemp, mkdir, writeFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -485,6 +486,32 @@ async function setupMobile320Composer(testBrowser) {
   const state = await mkdtemp(join(tmpdir(), "codex-mobile-composer-"));
   const fixture = spawn(process.execPath, [rustUiFixture, state], {
     stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      FIXTURE_AGENT_STEPS: JSON.stringify({
+        "Release lead": [
+          {
+            notify: {
+              method: "thread/tokenUsage/updated",
+              params: {
+                studioUsage: {
+                  kind: "response",
+                  responseId: "mobile-cost-response",
+                  model: "gpt-5.6-sol",
+                  evidence: "live",
+                  tokens: {
+                    uncachedInput: 1000000,
+                    cacheReadInput: 0,
+                    cacheWriteInput: 0,
+                    output: 1000000,
+                  },
+                },
+              },
+            },
+          },
+        ],
+      }),
+    },
   });
   let log = "";
   fixture.stderr.on("data", (chunk) => {
@@ -498,13 +525,33 @@ async function setupMobile320Composer(testBrowser) {
       );
       fixture.once("exit", () => reject(new Error(log)));
     });
+    // The real SSE cost projection needs a pricing artifact. The former GET
+    // stub cannot supply a sessionCost entity to the current client.
+    const pricing = join(fixtureStateDirectory(state), "model-pricing");
+    await mkdir(pricing, { recursive: true });
+    await writeFile(
+      join(pricing, "models-dev-v1.json"),
+      JSON.stringify({
+        version: 1,
+        fetchedAtEpoch: Date.now() / 1000,
+        catalog: {
+          providers: {
+            openai: {
+              models: { "gpt-5.6-sol": { cost: { input: 1, output: 1 } } },
+            },
+            anthropic: {
+              models: { "claude-test": { cost: { input: 1, output: 1 } } },
+            },
+          },
+        },
+      }),
+    );
     const page = await testBrowser.newPage({
       viewport: { width: 390, height: 844 },
       isMobile: true,
       hasTouch: true,
     });
     ownedContext = page.context();
-    await stubSessionCost(page);
     await page.goto(`http://127.0.0.1:${port}`);
     await page
       .locator("#sidebar .project-chats .chat-row")
@@ -573,6 +620,21 @@ async function setupMobile320Composer(testBrowser) {
       await usage
         .getByRole("button", { name: "Account limits", exact: true })
         .waitFor({ state: "visible" });
+      const interest = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/costs/interest" &&
+          response.request().method() === "POST",
+      );
+      await usage
+        .getByRole("button", { name: "Account limits", exact: true })
+        .click();
+      assert.equal((await interest).ok(), true);
+      await expect(usage.locator(".session-cost-summary")).toContainText(
+        "$2.00",
+      );
+      await usage
+        .getByRole("button", { name: "Account limits", exact: true })
+        .click();
       await expect(usage.locator(".session-cost-summary")).toHaveAttribute(
         "aria-busy",
         "false",

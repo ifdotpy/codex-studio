@@ -917,8 +917,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn failed_claude_refresh_preserves_the_saved_result_age() {
+    #[tokio::test]
+    async fn failed_claude_refresh_preserves_the_saved_result_age() {
         let root = tempfile::tempdir().expect("isolated cost state");
         let home = root.path().join("missing-profile");
         let account = json!({"home":home,"provider":"claude","status":"ready"});
@@ -928,11 +928,14 @@ mod tests {
                 .join(studio_runtime_store::sha256_hex(
                     format!("age-witness{}", home.display()).as_bytes(),
                 ));
-        std::fs::create_dir_all(&cache).expect("cache directory");
-        std::fs::write(
+        tokio::fs::create_dir_all(&cache)
+            .await
+            .expect("cache directory");
+        tokio::fs::write(
             cache.join("claude-costs.json"),
             json!({"config":home,"checked":1,"error":null,"data":{"last30DaysUSD":3}}).to_string(),
         )
+        .await
         .expect("saved estimate");
         let (saved, result) = studio_runtime_services::usage::refresh_account_costs_report(
             root.path(),
