@@ -2113,13 +2113,28 @@ async fn rename(
             let driver = state.account_driver.clone();
             let catalog = state.model_catalog.clone();
             let event_wake = state.event_wake.clone();
+            let notifications = state.resource_notifications.clone();
             let agent_id = agent_id.clone();
             let request_id = request_id.clone();
             drop(tokio::spawn(async move {
                 finish_title_request(
-                    store, provider, driver, catalog, event_wake, agent_id, request_id,
+                    store,
+                    provider,
+                    driver,
+                    catalog,
+                    event_wake,
+                    agent_id.clone(),
+                    request_id.clone(),
                 )
                 .await;
+                // Receipt-only commits deliberately do not wake entity readers.
+                // Publish this exact selector after every finisher exit, including failure.
+                if let Err(error) = notifications.publish_once(&serde_json::json!({
+                    "requestId":format!("rename-result:{request_id}"),
+                    "resources":[{"kind":"rename-progress", "agentId":agent_id, "requestId":request_id}]
+                })) {
+                    eprintln!("Could not publish rename completion: {error}");
+                }
             }));
         }
         let response =

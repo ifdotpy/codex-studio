@@ -1137,58 +1137,68 @@ async fn linked_worktree_and_submodule_sources_preserve_git_identity() {
 
 #[cfg(unix)]
 #[tokio::test]
-#[allow(clippy::disallowed_methods)]
 async fn running_git_deadline_kills_child_and_keeps_durable_identity() {
+    use std::io::{BufRead, Read};
+
     let fixture = Fixture::new().await;
     let plan = fixture.plan().identity;
     fixture.reserve(&plan).await;
+    // A short-lived fixture tool, like the `command` Git helper above.
+    #[allow(clippy::disallowed_methods)]
+    let fifos = Command::new("mkfifo")
+        .args(["running-handshake", "never-released"])
+        .current_dir(&fixture.repo)
+        .status()
+        .expect("child handshake FIFOs");
+    assert!(fifos.success());
     command(
         &fixture.repo,
         &[
             "config",
             "alias.workspace-stall",
-            "!echo $$ > running-marker; exec sleep 300",
+            "!exec 9>running-handshake; echo $$ >&9; IFS= read -r _ < never-released",
         ],
     );
-    // Startup is not the behavior under test. Expire the runner's clock only
-    // after the real child has published its PID, then exercise real termination.
-    let marker = fixture.repo.join("running-marker");
-    crate::bounded_child::DEADLINE_OVERRIDE.set(Some(Box::new(move || {
-        let guard = Instant::now() + Duration::from_secs(120);
-        while Instant::now() < guard {
-            if std::fs::read_to_string(&marker).is_ok_and(|pid| pid.trim().parse::<u32>().is_ok()) {
-                break;
-            }
-            std::thread::park_timeout(Duration::from_millis(1));
-        }
+    let fifo = fixture.repo.join("running-handshake");
+    let (ready, started) = std::sync::mpsc::channel();
+    let (closed, exited) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut pipe = std::io::BufReader::new(std::fs::File::open(fifo).expect("open handshake"));
+        let mut pid = String::new();
+        pipe.read_line(&mut pid).expect("child PID");
+        ready
+            .send(pid.trim().parse::<u32>().expect("running child PID"))
+            .expect("report child readiness");
+        let mut rest = Vec::new();
+        pipe.read_to_end(&mut rest).expect("child EOF");
+        assert!(rest.is_empty());
+        closed.send(()).expect("report closed child pipe");
+    });
+    let expired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = expired.clone();
+    crate::bounded_child::RUNNING_DEADLINE_OVERRIDE.set(Some(Box::new(move || {
+        let ready = started.recv_timeout(Duration::from_secs(10)).is_ok();
+        observed.store(ready, std::sync::atomic::Ordering::SeqCst);
         std::time::Instant::now()
     })));
+    crate::bounded_child::LEADER_UNREAPED_AT_SIGNAL.set(None);
     let result = Git {
-        deadline: Instant::now() + Duration::from_secs(120),
+        deadline: Instant::now() + Duration::from_millis(500),
     }
     .run(&fixture.repo, &["workspace-stall"]);
     assert!(matches!(result, Err(WorkspaceError::Deadline(_))));
     assert!(
-        fixture.repo.join("running-marker").exists(),
-        "child actually started before the readiness hang guard"
+        expired.load(std::sync::atomic::Ordering::SeqCst),
+        "execution deadline expires after child readiness"
     );
-    let pid =
-        std::fs::read_to_string(fixture.repo.join("running-marker")).expect("child PID marker");
-    let guard = Instant::now() + Duration::from_secs(120);
-    loop {
-        let status = Command::new("ps")
-            .args(["-p", pid.trim(), "-o", "stat="])
-            .output()
-            .expect("check child termination");
-        let status = String::from_utf8(status.stdout).expect("process status");
-        // An orphan may await init's reaper after group termination; a zombie
-        // has already stopped executing and cannot retain the worktree lock.
-        if status.trim().is_empty() || status.trim().starts_with('Z') {
-            break;
-        }
-        assert!(Instant::now() < guard, "timed-out child remains alive");
-        std::thread::park_timeout(Duration::from_millis(1));
-    }
+    exited
+        .recv_timeout(Duration::from_secs(10))
+        .expect("killed child closes its pipe");
+    reader.join().expect("handshake reader joins");
+    assert_eq!(
+        crate::bounded_child::LEADER_UNREAPED_AT_SIGNAL.get(),
+        Some(true)
+    );
     assert!(
         WorkspaceReadyRepository::journal(&fixture.store.test_reader().expect("read"), &plan.id)
             .expect("journal")

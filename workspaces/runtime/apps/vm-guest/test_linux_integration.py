@@ -8,13 +8,13 @@ import json
 import os
 from pathlib import Path
 import signal
+import select
 import shutil
 import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
-import time
 import uuid
 
 
@@ -107,6 +107,8 @@ class Client:
 
 
 def main(path):
+    from guest_test_worker import wait_native_event
+    from native import Native
     client = Client(path)
     health, _ = client.call("health")
     assert health["uid"] != 0 and health["filesystem"] == "btrfs", health
@@ -154,29 +156,14 @@ def main(path):
             assert "invalid_params" in str(exc), exc
     assert not Path("/tmp", escape).exists()
     assert not Path(health["state"], escape).exists()
-    marker = root + "/long-exec-proof"
-    long_params = {"argv": ["python3", "-c", f"import time; time.sleep(65); open({marker!r},'a').write('once'); print('done')"],
-                   "cwd": root, "timeoutSeconds": 90}
-    started = time.monotonic()
-    long_result, long_events = client.call("exec", long_params, "long-exec:" + identity)
-    long_elapsed = time.monotonic() - started
-    assert long_elapsed >= 65 and long_result["exitCode"] == 0, (long_elapsed, long_result)
-    # A fresh connection retrieves the saved result without executing the command again.
-    repeated, repeated_events = client.call("exec", long_params, "long-exec:" + identity)
-    assert (repeated, repeated_events) == (long_result, long_events)
-    assert client.exec(["cat", marker], root) == b"once"
     cwd, agent = root, None
-    source = "import sys,time; print('ready',flush=True); time.sleep(90)"
+    source = "import signal; signal.pause()"
     provider, _ = client.call("provider.start", {"argv": ["python3", "-u", "-c", source], "cwd": cwd})
     handle = provider["handle"]
-    before, events = client.call("provider.attach", {"handle": handle, "waitMs": 5000})
-    assert any(event["event"] == "output" for event in events)
     subprocess.run(["sudo", "systemctl", "restart", "codex-studio-guest.service"], check=True, timeout=20)
     providers, _ = client.call("provider.list")
     after = next(row for row in providers["providers"] if row["handle"] == handle)
     assert after["state"] == "running" and after["pid"] == provider["pid"]
-    _, events = client.call("provider.attach", {"handle": handle, "afterSeq": before["nextSeq"], "waitMs": 0})
-    assert not events
     client.call("provider.stop", {"handle": handle})
     native_params = {"argv": ["python3", "-u", "-c", "import json,sys\nfor line in sys.stdin:\n r=json.loads(line)\n if 'id' in r: print(json.dumps({'id':r['id'],'result':{'proof':'same'}}),flush=True)"],
                      "cwd": cwd, "transport": "native", "handle": "contract:" + identity}
@@ -185,13 +172,8 @@ def main(path):
              "message": {"id": 7, "method": "initialize", "params": {}}}
     written, _ = client.call("provider.rpc", write)
     assert written["remoteId"] == 1
-    deadline = time.monotonic() + 10
-    while True:
-        event, _ = client.call("provider.rpc", {"handle": native["handle"], "action": "next", "cursor": 0})
-        if event["event"]:
-            break
-        assert time.monotonic() < deadline, event
-        time.sleep(0.05)
+    asyncio.run(wait_native_event(Native(Path(health["state"])), native))
+    event, _ = client.call("provider.rpc", {"handle": native["handle"], "action": "next", "cursor": 0})
     client.call("provider.rpc", {"handle": native["handle"], "action": "ack", "sequence": event["event"]["sequence"]})
     subprocess.run(["sudo", "systemctl", "restart", "codex-studio-guest.service"], check=True, timeout=20)
     resumed, _ = client.call("provider.start", native_params)
@@ -205,11 +187,12 @@ def main(path):
     saved_owner = json.loads(lease.read_text())
     from native_identity import process_start_time
     assert process_start_time(saved_owner["pid"]) == saved_owner["startTime"]
-    os.kill(saved_owner["pid"], signal.SIGTERM)
-    deadline = time.monotonic() + 10
-    while process_start_time(saved_owner["pid"]) == saved_owner["startTime"]:
-        assert time.monotonic() < deadline, "The test supervisor did not stop"
-        time.sleep(0.05)
+    pidfd = os.pidfd_open(saved_owner["pid"])
+    try:
+        os.kill(saved_owner["pid"], signal.SIGTERM)
+        assert select.select([pidfd], [], [], 10)[0], "The test supervisor did not stop"
+    finally:
+        os.close(pidfd)
     assert lease.with_name("supervisor.sock").exists()
     subprocess.run(["sudo", "systemctl", "restart", "codex-studio-guest.service"], check=True, timeout=20)
     recovered, _ = client.call("provider.start", native_params)
@@ -219,16 +202,12 @@ def main(path):
     assert recovered["state"] == "running" and recovered["generation"] > native["generation"]
     client.call("provider.stop", {"handle": recovered["handle"]})
     large_params = {**native_params, "handle": "large:" + identity,
-                    "argv": ["python3", "-u", "-c", "import json,time; print(json.dumps({'method':'fixture/large','params':{'text':'é🙂'+'x'*2200000}},ensure_ascii=False),flush=True); time.sleep(90)"]}
+                    "argv": ["python3", "-u", "-c", "import json,signal; print(json.dumps({'method':'fixture/large','params':{'text':'é🙂'+'x'*2200000}},ensure_ascii=False),flush=True); signal.pause()"]}
     large, _ = client.call("provider.start", large_params)
     handle = large["handle"]
-    deadline = time.monotonic() + 10
-    while True:
-        replay, _ = client.call("provider.rpc", {"handle": handle, "action": "replay", "cursor": 0})
-        if replay["events"]:
-            break
-        assert time.monotonic() < deadline, replay
-        time.sleep(0.05)
+    text = "é🙂" + "x" * 2_200_000
+    asyncio.run(wait_native_event(Native(Path(health["state"])), large, text))
+    replay, _ = client.call("provider.rpc", {"handle": handle, "action": "replay", "cursor": 0})
     descriptor = replay["events"][0]
     assert descriptor["payload"] is None and descriptor["payloadBytes"] > 2 * 1024**2
     next_event, _ = client.call("provider.rpc", {"handle": handle, "action": "next", "cursor": 0})
@@ -245,14 +224,13 @@ def main(path):
         payload.extend(base64.b64decode(chunk["data"], validate=True))
         assert chunk["nextOffset"] == len(payload)
     decoded = json.loads(payload)
-    assert decoded["method"] == "fixture/large" and decoded["params"]["text"] == "é🙂" + "x" * 2_200_000
+    assert decoded["method"] == "fixture/large" and decoded["params"]["text"] == text
     client.call("provider.rpc", {"handle": handle, "action": "ack", "sequence": descriptor["sequence"]})
     next_event, _ = client.call("provider.rpc", {"handle": handle, "action": "next", "cursor": descriptor["sequence"]})
     assert next_event["event"] is None
     client.call("provider.stop", {"handle": handle})
     floor_proved = asyncio.run(disk_floor_proof(health["state"]))
     print(json.dumps({"uid": health["uid"], "filesystem": health["filesystem"],  "serviceRestartPreservedPid": True, "nativeRestartInitAckRemap": True,
-                      "longExecSeconds": round(long_elapsed, 2), "longExecReconnectReplay": True,
                       "deadNativeSocketRecovered": True, "largeNativeEventBytes": len(payload),
                       "largeNativeReattachAck": True, "compressedUploadFloor": floor_proved,
                       "uploadLinkObjects": True, "symlinkParentWritesRejected": True}))

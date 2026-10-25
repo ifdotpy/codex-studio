@@ -406,7 +406,7 @@ test("a filtered Claude lead keeps the server's Codex worker default without inj
       .uncheck();
     await page.keyboard.press("Escape");
     await page
-      .locator(".sidebar-nav")
+      .locator("#sidebar .projects-heading")
       .getByRole("button", { name: "New chat", exact: true })
       .click();
     await expect(

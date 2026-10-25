@@ -1601,129 +1601,136 @@ async fn managed_reads_preserve_corrupt_record_identity() {
     );
 }
 
-#[tokio::test]
-async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content() {
+async fn managed_write_rollback(case_index: usize, table: &str, operation: &str, timing: &str) {
     let seed = &template().value;
     let cases = seed["managedToolCases"].as_array().unwrap();
-    let matrix = [
-        (0, "runtime_events", "INSERT"),
-        (0, "runtime_event_meta", "INSERT"),
-        (1, "runtime_rooms", "INSERT"),
-        (1, "runtime_chat_messages", "INSERT"),
-        (5, "runtime_complaints", "INSERT"),
-        (5, "runtime_events", "INSERT"),
-        (6, "runtime_complaints", "UPDATE"),
-        (7, "runtime_complaints", "UPDATE"),
-        (7, "runtime_events", "UPDATE"),
-        (7, "runtime_events", "INSERT"),
-    ];
-    for (case_index, table, operation) in matrix {
-        for timing in ["BEFORE", "AFTER"] {
-            let (_root, store, _) = fixture().await;
-            for previous in &cases[..case_index] {
-                assert!(matches!(
-                    dispatch_case(&store, seed, previous, None).await.unwrap(),
-                    CallbackDecision::Answer(_)
-                ));
-            }
-            let trigger = format!("p05_fail_{case_index}_{timing}_{operation}");
-            let hits = Arc::new(AtomicUsize::new(0));
-            let observed = Arc::clone(&hits);
-            let create_sql = format!(
-                "CREATE TRIGGER {trigger} {timing} {operation} ON {table} BEGIN SELECT p05_fault_reached(); SELECT RAISE(ABORT,'injected {table} {timing} {operation}'); END"
-            );
-            store
-                .transaction_with::<_, StoreError>(move |tx| {
-                    tx.create_scalar_function(
-                        "p05_fault_reached",
-                        0,
-                        rusqlite::functions::FunctionFlags::SQLITE_UTF8,
-                        move |_| {
-                            observed.fetch_add(1, Ordering::SeqCst);
-                            Ok(1)
-                        },
-                    )?;
-                    tx.execute_batch(&create_sql)?;
-                    Ok(())
-                })
-                .await
-                .unwrap();
-            let before = application_table_snapshot(&store);
-            let expected = &cases[case_index];
-            let first_attempt = dispatch_case(&store, seed, expected, None).await;
-            assert_eq!(
-                hits.load(Ordering::SeqCst),
-                1,
-                "{table} {timing} {operation} must reach its failpoint: {first_attempt:?}"
-            );
-            let saved_failure = match first_attempt {
-                Err(_) => None,
-                Ok(CallbackDecision::Answer(reply)) => {
-                    assert!(
-                        matches!(&reply.body, ResponseBody::Result(result) if result["success"] == false),
-                        "{} {timing} {operation} on {table} unexpectedly succeeded",
-                        expected["tool"]
-                    );
-                    Some(reply.body)
-                }
-                Ok(other) => panic!("unexpected failure decision: {other:?}"),
-            };
-            let drop_sql = format!("DROP TRIGGER {trigger}");
-            store
-                .transaction_with::<_, StoreError>(move |tx| {
-                    tx.execute_batch(&drop_sql)?;
-                    Ok(())
-                })
-                .await
-                .unwrap();
-            assert_eq!(
-                before,
-                application_table_snapshot(&store),
-                "partial write: {table}"
-            );
-            let first = match dispatch_case(&store, seed, expected, None).await.unwrap() {
-                CallbackDecision::Answer(reply) => reply,
-                _ => panic!("retry must answer"),
-            };
-            if let Some(saved) = saved_failure {
-                assert_eq!(first.body, saved, "failed reply is durable for {table}");
-                assert_eq!(
-                    before,
-                    application_table_snapshot(&store),
-                    "failed operation wrote: {table}"
-                );
-            }
-            let committed = application_table_snapshot(&store);
-            let replay = dispatch_case(&store, seed, expected, None).await.unwrap();
-            let CallbackDecision::Answer(replay) = replay else {
-                panic!("replay must return saved answer")
-            };
-            assert_eq!(first.body, replay.body, "saved answer for {table}");
-            assert_eq!(
-                committed,
-                application_table_snapshot(&store),
-                "duplicate effect: {table}"
-            );
-            let mut changed = expected["arguments"].clone();
-            if let Some(text) = changed["text"].as_str() {
-                changed["text"] = json!(format!("{text} changed"));
-            } else if let Some(id) = changed["monitor_id"].as_str() {
-                changed["monitor_id"] = json!(format!("{id}-changed"));
-            } else {
-                changed["action"] = json!("changed");
-            }
-            assert!(
-                dispatch_case(&store, seed, expected, Some(changed))
-                    .await
-                    .is_err()
-            );
-            assert_eq!(
-                committed,
-                application_table_snapshot(&store),
-                "changed identity wrote: {table}"
-            );
-        }
+    let (_root, store, _) = fixture().await;
+    if matches!(case_index, 6 | 7) {
+        // Complaint read/respond need the submit; earlier sends and reads are independent.
+        assert!(matches!(
+            dispatch_case(&store, seed, &cases[5], None).await.unwrap(),
+            CallbackDecision::Answer(_)
+        ));
     }
+    let trigger = format!("p05_fail_{case_index}_{timing}_{operation}");
+    let hits = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&hits);
+    let create_sql = format!(
+        "CREATE TRIGGER {trigger} {timing} {operation} ON {table} BEGIN SELECT p05_fault_reached(); SELECT RAISE(ABORT,'injected {table} {timing} {operation}'); END"
+    );
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            tx.create_scalar_function(
+                "p05_fault_reached",
+                0,
+                rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+                move |_| {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    Ok(1)
+                },
+            )?;
+            tx.execute_batch(&create_sql)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let before = application_table_snapshot(&store);
+    let expected = &cases[case_index];
+    let first_attempt = dispatch_case(&store, seed, expected, None).await;
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "{table} {timing} {operation} must reach its failpoint: {first_attempt:?}"
+    );
+    let saved_failure = match first_attempt {
+        Err(_) => None,
+        Ok(CallbackDecision::Answer(reply)) => {
+            assert!(
+                matches!(&reply.body, ResponseBody::Result(result) if result["success"] == false),
+                "{} {timing} {operation} on {table} unexpectedly succeeded",
+                expected["tool"]
+            );
+            Some(reply.body)
+        }
+        Ok(other) => panic!("unexpected failure decision: {other:?}"),
+    };
+    let drop_sql = format!("DROP TRIGGER {trigger}");
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            tx.execute_batch(&drop_sql)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        before,
+        application_table_snapshot(&store),
+        "partial write: {table}"
+    );
+    let first = match dispatch_case(&store, seed, expected, None).await.unwrap() {
+        CallbackDecision::Answer(reply) => reply,
+        _ => panic!("retry must answer"),
+    };
+    if let Some(saved) = saved_failure {
+        assert_eq!(first.body, saved, "failed reply is durable for {table}");
+        assert_eq!(
+            before,
+            application_table_snapshot(&store),
+            "failed operation wrote: {table}"
+        );
+    }
+    let committed = application_table_snapshot(&store);
+    let replay = dispatch_case(&store, seed, expected, None).await.unwrap();
+    let CallbackDecision::Answer(replay) = replay else {
+        panic!("replay must return saved answer")
+    };
+    assert_eq!(first.body, replay.body, "saved answer for {table}");
+    assert_eq!(
+        committed,
+        application_table_snapshot(&store),
+        "duplicate effect: {table}"
+    );
+    let mut changed = expected["arguments"].clone();
+    if let Some(text) = changed["text"].as_str() {
+        changed["text"] = json!(format!("{text} changed"));
+    } else if let Some(id) = changed["monitor_id"].as_str() {
+        changed["monitor_id"] = json!(format!("{id}-changed"));
+    } else {
+        changed["action"] = json!("changed");
+    }
+    assert!(
+        dispatch_case(&store, seed, expected, Some(changed))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        committed,
+        application_table_snapshot(&store),
+        "changed identity wrote: {table}"
+    );
+}
+
+// Keep an operation's fault cells together to amortize the process-local
+// schema validators. Separate operations still run in parallel under nextest.
+macro_rules! managed_write_cases {
+    ($($name:ident: ($index:expr, [$(($table:literal, $operation:literal)),+ $(,)?])),+ $(,)?) => {
+        $(#[tokio::test]
+        async fn $name() {
+            for (table, operation) in [$(($table, $operation)),+] {
+                for timing in ["BEFORE", "AFTER"] {
+                    managed_write_rollback($index, table, operation, timing).await;
+                }
+            }
+        })+
+    };
+}
+
+managed_write_cases! {
+    managed_durable_writes_send_input: (0, [("runtime_events", "INSERT"), ("runtime_event_meta", "INSERT")]),
+    managed_durable_writes_send_chat: (1, [("runtime_rooms", "INSERT"), ("runtime_chat_messages", "INSERT")]),
+    managed_durable_writes_complaint_submit: (5, [("runtime_complaints", "INSERT"), ("runtime_events", "INSERT")]),
+    managed_durable_writes_complaint_read: (6, [("runtime_complaints", "UPDATE")]),
+    managed_durable_writes_complaint_respond: (7, [("runtime_complaints", "UPDATE"), ("runtime_events", "UPDATE"), ("runtime_events", "INSERT")]),
 }
 
 #[tokio::test]

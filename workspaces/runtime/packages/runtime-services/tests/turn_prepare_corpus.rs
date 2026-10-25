@@ -18,45 +18,16 @@ impl CapturedExpectations {
             "turn_prepare/expected.json"
         )))
     }
-    fn call(&mut self, value: Value) -> Value {
-        #[derive(serde::Deserialize)]
-        #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
-        enum Request {
-            Case {
-                case: Value,
-            },
-            Normalize {
-                segments: Option<Vec<Segment>>,
-                value: Value,
-            },
-            ReceiptSequence {
-                order: Vec<usize>,
-            },
-        }
-        match serde_json::from_value(value).expect("typed fixture request") {
-            Request::Case { case } => self
-                .0
-                .iter()
-                .find(|row| {
-                    row.case == case
-                        || (case.get("id").is_some() && row.case.get("id") == case.get("id"))
-                })
-                .expect("captured preparation case")
-                .response
-                .clone(),
-            Request::Normalize { segments, value } => {
-                normalize_prepared(value, &segments.unwrap_or_default())
-            }
-            Request::ReceiptSequence { order } => {
-                let rows: Vec<ReceiptSequence> = crate::turn_fixtures::load(include_bytes!(
-                    "turn_prepare/receipt_sequences.json"
-                ));
-                rows.into_iter()
-                    .find(|row| row.order == order)
-                    .expect("captured receipt order")
-                    .expected
-            }
-        }
+    fn case(&self, case: &Value) -> &Value {
+        &self
+            .0
+            .iter()
+            .find(|row| {
+                row.case == *case
+                    || (case.get("id").is_some() && row.case.get("id") == case.get("id"))
+            })
+            .expect("captured preparation case")
+            .response
     }
 }
 #[derive(serde::Deserialize)]
@@ -218,7 +189,7 @@ fn python_submission_compiler_corpus() {
         serde_json::from_str(include_str!("turn_prepare/cases.json")).expect("corpus data");
     let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
     let filter = std::env::var("TURN_PREPARE_CASE").ok();
-    let mut oracle = CapturedExpectations::new();
+    let fixtures = CapturedExpectations::new();
     let mut count = 0;
     for case in cases.iter().filter(|c| {
         (full || c["fast"] == true)
@@ -226,7 +197,7 @@ fn python_submission_compiler_corpus() {
                 .as_ref()
                 .is_none_or(|s| c["id"].as_str().is_some_and(|id| id.contains(s)))
     }) {
-        let fixture = oracle.call(json!({"command":"case","case":case}));
+        let fixture = fixtures.case(case);
         let snapshot: PreparationSnapshot =
             serde_json::from_value(fixture["snapshot"].clone()).expect("typed snapshot");
         let rows: Vec<Event> =
@@ -360,7 +331,9 @@ fn python_submission_compiler_corpus() {
         } else {
             fixture["segments"].clone()
         };
-        actual = oracle.call(json!({"command":"normalize","segments":segments,"value":actual}));
+        let segments: Option<Vec<Segment>> =
+            serde_json::from_value(segments).expect("captured segments");
+        actual = normalize_prepared(actual, &segments.unwrap_or_default());
         let mut expected = fixture["expected"].clone();
         if aggregate_projection {
             for value in [&mut actual, &mut expected] {
@@ -399,8 +372,8 @@ fn python_submission_compiler_corpus() {
 
 #[test]
 fn malformed_snapshot_fields_are_refused_at_the_typed_boundary() {
-    let mut oracle = CapturedExpectations::new();
-    let fixture = oracle.call(json!({"command":"case","case":{}}));
+    let fixtures = CapturedExpectations::new();
+    let fixture = fixtures.case(&json!({}));
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("turn_prepare/invalid_snapshots.json"))
             .expect("invalid fixture data");
@@ -425,13 +398,13 @@ fn malformed_snapshot_fields_are_refused_at_the_typed_boundary() {
 
 #[test]
 fn competing_preparations_cannot_roll_back_either_receipt_order() {
-    let mut oracle = CapturedExpectations::new();
+    let fixtures = CapturedExpectations::new();
     let mut preparations = Vec::new();
     for (index, role) in ["First role", "Second role"].iter().enumerate() {
-        let fixture = oracle.call(json!({"command":"case","case":{
+        let fixture = fixtures.case(&json!({
             "snapshot":{"guidance":{"role":role},"operation_id":format!("op-{index}")},
             "events":[{"id":format!("event-{index}")}]
-        }}));
+        }));
         let snapshot = serde_json::from_value(fixture["snapshot"].clone()).expect("snapshot");
         let events: Vec<Event> = serde_json::from_value(fixture["events"].clone()).expect("events");
         preparations.push(compile(&snapshot, &events).expect("prepared"));
@@ -440,15 +413,21 @@ fn competing_preparations_cannot_roll_back_either_receipt_order() {
     for order in [[0, 1, 2, 0], [1, 0, 2, 1]] {
         preparations.truncate(2);
         let prior_role = ["First role", "Second role"][order[0]];
-        let fixture = oracle.call(json!({"command":"case","case":{
+        let fixture = fixtures.case(&json!({
             "snapshot":{"guidance":{"role":"Successive role"},"operation_id":"op-2"},
             "prior":{"guidance":{"role":prior_role}},"events":[{"id":"event-2"}]
-        }}));
+        }));
         let snapshot =
             serde_json::from_value(fixture["snapshot"].clone()).expect("successive snapshot");
         let events: Vec<Event> = serde_json::from_value(fixture["events"].clone()).expect("events");
         preparations.push(compile(&snapshot, &events).expect("successive preparation"));
-        let expected = oracle.call(json!({"command":"receipt_sequence","order":order}));
+        let sequences: Vec<ReceiptSequence> =
+            crate::turn_fixtures::load(include_bytes!("turn_prepare/receipt_sequences.json"));
+        let expected = &sequences
+            .iter()
+            .find(|row| row.order == order)
+            .expect("captured receipt order")
+            .expected;
         let mut current = None;
         let mut turns = [None, None, None];
         for (step, index) in order.iter().copied().enumerate() {
@@ -478,9 +457,8 @@ fn competing_preparations_cannot_roll_back_either_receipt_order() {
 
 #[test]
 fn reference_floor_is_soft_but_transcript_ceiling_is_hard() {
-    let mut oracle = CapturedExpectations::new();
-    let fixture =
-        oracle.call(json!({"command":"case","case":{"id":"summary-result-file-soft-limit"}}));
+    let fixtures = CapturedExpectations::new();
+    let fixture = fixtures.case(&json!({"id":"summary-result-file-soft-limit"}));
     let snapshot = serde_json::from_value(fixture["snapshot"].clone()).expect("snapshot");
     let rows: Vec<Event> = serde_json::from_value(fixture["events"].clone()).expect("events");
     let prepared = compile(&snapshot, &rows).expect("prepared");

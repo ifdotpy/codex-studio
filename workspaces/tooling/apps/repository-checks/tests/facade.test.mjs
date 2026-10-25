@@ -39,6 +39,12 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   for (const recipe of [fast, comprehensive]) {
     assert.match(recipe.command, /build:wasm/);
     assert.match(recipe.command, /build:bundle:prepared/);
+    for (const once of [
+      /build:wasm/g,
+      /build:bundle:prepared/g,
+      /'nextest' 'run'/g,
+    ])
+      assert.equal([...recipe.command.matchAll(once)].length, 1);
     assert.match(recipe.command, /'nextest' 'run' '--workspace'/);
     assert.match(recipe.command, /studio-contracts/);
     assert.match(recipe.command, /boundaries-check/);
@@ -936,6 +942,10 @@ test("check-affected selects a changed package and transitive workspace dependen
     fixture.add("desktop-b", "workspaces/client/apps/b", {
       dependencies: { "web-a": "workspace:*" },
     });
+    fixture.add("consumer-c", "workspaces/client/apps/c", {
+      dependencies: { "desktop-b": "workspace:*" },
+    });
+    fixture.add("unrelated-d", "workspaces/client/apps/d");
     const aItem = fixture.packages[0];
     aItem.manifest = path.join(a, "package.json");
     assert.deepEqual(
@@ -949,6 +959,7 @@ test("check-affected selects a changed package and transitive workspace dependen
             "changed file workspaces/client/apps/a/src/page.ts belongs to workspaces/client/apps/a",
         },
         { package: "desktop-b", reason: "reverse dependency of web-a" },
+        { package: "consumer-c", reason: "reverse dependency of desktop-b" },
       ],
     );
     const widened = affectedPlan(
@@ -957,7 +968,7 @@ test("check-affected selects a changed package and transitive workspace dependen
       fixture.packages,
       ["root-unowned.md"],
     );
-    assert.equal(widened.length, 2);
+    assert.equal(widened.length, 4);
     assert.ok(
       widened.every((item) =>
         item.reason.includes("unowned file root-unowned.md"),
@@ -980,44 +991,27 @@ test("check-affected selects a changed package and transitive workspace dependen
 test("check-affected adds Cargo workspace dependents from cargo metadata", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-cargo-affected-"));
   try {
-    mkdirSync(path.join(root, "crates/a"), { recursive: true });
-    mkdirSync(path.join(root, "crates/b"), { recursive: true });
-    mkdirSync(path.join(root, "crates/a/src"));
-    mkdirSync(path.join(root, "crates/b/src"));
+    const graph = [
+      ["a", null],
+      ["b", "a"],
+      ["c", "b"],
+      ["d", null],
+    ];
     writeFileSync(
       path.join(root, "Cargo.toml"),
-      '[workspace]\nresolver = "3"\nmembers = ["crates/a", "crates/b"]\n',
+      '[workspace]\nresolver = "3"\nmembers = ["crates/*"]\n',
     );
-    writeFileSync(
-      path.join(root, "crates/a/Cargo.toml"),
-      '[package]\nname = "crate-a"\nversion = "0.1.0"\nedition = "2024"\n',
-    );
-    writeFileSync(
-      path.join(root, "crates/b/Cargo.toml"),
-      '[package]\nname = "crate-b"\nversion = "0.1.0"\nedition = "2024"\n[dependencies]\ncrate-a = { path = "../a" }\n',
-    );
-    writeFileSync(
-      path.join(root, "crates/a/src/lib.rs"),
-      "pub fn value() {}\n",
-    );
-    writeFileSync(
-      path.join(root, "crates/b/src/lib.rs"),
-      "pub fn value() {}\n",
-    );
-    const packages = [
-      {
-        name: "crate-a",
-        ecosystem: "cargo",
-        dir: "crates/a",
-        manifest: path.join(root, "crates/a/Cargo.toml"),
-      },
-      {
-        name: "crate-b",
-        ecosystem: "cargo",
-        dir: "crates/b",
-        manifest: path.join(root, "crates/b/Cargo.toml"),
-      },
-    ];
+    const packages = graph.map(([name, dependency]) => {
+      const dir = `crates/${name}`;
+      mkdirSync(path.join(root, dir, "src"), { recursive: true });
+      const manifest = path.join(root, dir, "Cargo.toml");
+      writeFileSync(
+        manifest,
+        `[package]\nname = "crate-${name}"\nversion = "0.1.0"\nedition = "2024"\n${dependency ? `[dependencies]\ncrate-${dependency} = { path = "../${dependency}" }\n` : ""}`,
+      );
+      writeFileSync(path.join(root, dir, "src/lib.rs"), "pub fn value() {}\n");
+      return { name: `crate-${name}`, ecosystem: "cargo", dir, manifest };
+    });
     assert.deepEqual(
       affectedPlan(root, "origin/main", packages, ["crates/a/src/lib.rs"]),
       [
@@ -1026,6 +1020,7 @@ test("check-affected adds Cargo workspace dependents from cargo metadata", () =>
           reason: "changed file crates/a/src/lib.rs belongs to crates/a",
         },
         { package: "crate-b", reason: "reverse dependency of crate-a" },
+        { package: "crate-c", reason: "reverse dependency of crate-b" },
       ],
     );
   } finally {

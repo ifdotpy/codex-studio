@@ -63,69 +63,50 @@ impl CapturedExpectations {
             tokens: Default::default(),
         }
     }
-    fn call(&mut self, value: Value) -> Value {
-        #[derive(serde::Deserialize)]
-        #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
-        enum Request {
-            Seed { rust: PathBuf, case: CaseIdentity },
-            Snapshot { root: PathBuf },
-            Normalize { value: SnapshotValue },
+    fn seed(&mut self, rust: &Path, case_id: &str) -> Value {
+        let captured = self
+            .fixture
+            .cases
+            .iter()
+            .find(|row| row.id == case_id)
+            .expect("captured lifecycle case");
+        fs::create_dir_all(rust).expect("case directory");
+        fs::create_dir_all(&captured.expected.python_root).expect("captured workspace directory");
+        fs::create_dir_all(Path::new(&captured.expected.python_root).join("workspace"))
+            .expect("captured shared workspace");
+        for (name, database) in &captured.databases {
+            crate::turn_fixtures::write_database(
+                &rust.join(name),
+                &self.fixture.schemas[&database.schema_key],
+                &database.data,
+            );
         }
-        #[derive(serde::Deserialize)]
-        struct CaseIdentity {
-            id: String,
-        }
-        match serde_json::from_value(value).expect("typed lifecycle fixture request") {
-            Request::Seed { rust, case } => {
-                let captured = self
-                    .fixture
-                    .cases
-                    .iter()
-                    .find(|row| row.id == case.id)
-                    .expect("captured lifecycle case");
-                fs::create_dir_all(&rust).expect("case directory");
-                fs::create_dir_all(&captured.expected.python_root)
-                    .expect("captured workspace directory");
-                fs::create_dir_all(Path::new(&captured.expected.python_root).join("workspace"))
-                    .expect("captured shared workspace");
-                for (name, database) in &captured.databases {
-                    crate::turn_fixtures::write_database(
-                        &rust.join(name),
-                        &self.fixture.schemas[&database.schema_key],
-                        &database.data,
-                    );
-                }
-                for (name, text) in &captured.files {
-                    let path = rust.join(name);
-                    fs::create_dir_all(path.parent().expect("fixture parent"))
-                        .expect("fixture directory");
-                    fs::write(&path, text).expect("captured file");
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        const FIXTURE_CREDENTIAL_DIRECTORY_MODE: u32 = 0o700;
-                        const FIXTURE_CREDENTIAL_FILE_MODE: u32 = 0o600;
-                        fs::set_permissions(
-                            path.parent().expect("credential directory"),
-                            fs::Permissions::from_mode(FIXTURE_CREDENTIAL_DIRECTORY_MODE),
-                        )
-                        .expect("private credential directory");
-                        fs::set_permissions(
-                            &path,
-                            fs::Permissions::from_mode(FIXTURE_CREDENTIAL_FILE_MODE),
-                        )
-                        .expect("private credential file");
-                    }
-                }
-                self.tokens = captured.expected.tokens.clone();
-                let mut expected = json!(captured.expected);
-                expected["before"] = rebind_expected_hashes(captured.expected.before.clone());
-                expected["after"] = rebind_expected_hashes(captured.expected.after.clone());
-                expected
+        for (name, text) in &captured.files {
+            let path = rust.join(name);
+            fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+            fs::write(&path, text).expect("captured file");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                const FIXTURE_CREDENTIAL_DIRECTORY_MODE: u32 = 0o700;
+                const FIXTURE_CREDENTIAL_FILE_MODE: u32 = 0o600;
+                fs::set_permissions(
+                    path.parent().expect("credential directory"),
+                    fs::Permissions::from_mode(FIXTURE_CREDENTIAL_DIRECTORY_MODE),
+                )
+                .expect("private credential directory");
+                fs::set_permissions(
+                    &path,
+                    fs::Permissions::from_mode(FIXTURE_CREDENTIAL_FILE_MODE),
+                )
+                .expect("private credential file");
             }
-            Request::Snapshot { root } => snapshot(&root, &self.tokens),
-            Request::Normalize { value } => value.normalize("", &self.tokens),
         }
+        self.tokens = captured.expected.tokens.clone();
+        let mut expected = json!(captured.expected);
+        expected["before"] = rebind_expected_hashes(captured.expected.before.clone());
+        expected["after"] = rebind_expected_hashes(captured.expected.after.clone());
+        expected
     }
 }
 
@@ -199,7 +180,7 @@ impl SnapshotValue {
     }
 }
 fn normalize_snapshot(value: Value, tokens: &std::collections::BTreeMap<String, String>) -> Value {
-    serde_json::from_value::<SnapshotValue>(value)
+    serde_json::from_value::<SnapshotValue>(value.clone())
         .expect("snapshot value")
         .normalize("", tokens)
 }
@@ -914,7 +895,7 @@ async fn python_written_turn_lifecycle_corpus() {
             }
         }
         let rust = root.0.join(id).join("rust");
-        let expected = oracle.call(json!({"command":"seed","rust":rust,"case":case}));
+        let expected = oracle.seed(&rust, case["id"].as_str().expect("case ID"));
         let store = match RuntimeStore::open(Some(&rust)).await {
             Ok(store) => Arc::new(store),
             Err(error) => {
@@ -940,7 +921,7 @@ async fn python_written_turn_lifecycle_corpus() {
                     !message.contains("CORPUS_PRIVATE_PAYLOAD")
                         && !message.contains("SECRET_STORED_SENTINEL")
                 );
-                let actual = oracle.call(json!({"command":"snapshot","root":rust}));
+                let actual = snapshot(&rust, &oracle.tokens);
                 assert_eq!(
                     actual, expected["before"],
                     "{id}: startup refusal must not write"
@@ -965,7 +946,9 @@ async fn python_written_turn_lifecycle_corpus() {
         let first = Box::pin(apply(&store, case)).await;
         let mut error = first.as_ref().err().cloned();
         if let Ok(value) = &first {
-            let normalized = oracle.call(json!({"command":"normalize","value":value}));
+            let normalized = serde_json::from_value::<SnapshotValue>(value.clone())
+                .expect("snapshot value")
+                .normalize("", &oracle.tokens);
             assert_eq!(normalized, case["return"], "{id}: entry-point return value");
         }
         if let Some(text) = case["afterEventText"].as_str() {
@@ -1082,7 +1065,7 @@ async fn python_written_turn_lifecycle_corpus() {
             }
         }
         drop(store);
-        let actual = oracle.call(json!({"command":"snapshot","root":rust}));
+        let actual = snapshot(&rust, &oracle.tokens);
         let mut diff = vec![];
         let comparison = if let Some(refusal) = case.get("expectRefusal") {
             let message = error

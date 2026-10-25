@@ -440,6 +440,28 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
                 .await
                 .ok()
         }
+        ResourceRef::RenameProgressResource(resource) => state
+            .store?
+            .read_async("runtime-http/rename-progress", move |connection| {
+                let receipt = studio_runtime_store::EventWriteRepository::receipt(
+                    connection,
+                    &resource.request_id,
+                )?;
+                let value = match receipt {
+                    Some(receipt) => serde_json::from_str::<Value>(&receipt.result)?,
+                    None => Value::Null,
+                };
+                let value = if value["id"] == resource.agent_id
+                    && value["request_id"] == resource.request_id
+                {
+                    value
+                } else {
+                    Value::Null
+                };
+                serde_json::to_vec(&value).map_err(studio_runtime_store::StoreError::from)
+            })
+            .await
+            .ok(),
         ResourceRef::AuthProgressResource(resource) => serde_json::to_vec(
             &state
                 .claude_login?
@@ -550,7 +572,7 @@ pub(super) async fn append_progress_frames(
                 (Some(login), Some(id)) => login.progress(id).await.unwrap_or(Value::Null),
                 _ => Value::Null,
             },
-            Some("vault-job-progress") | Some("vault-readiness") => {
+            Some("rename-progress") | Some("vault-job-progress") | Some("vault-readiness") => {
                 let Some(bytes) = resource_content(state.clone(), resource.clone()).await else {
                     continue;
                 };
@@ -1621,6 +1643,101 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[tokio::test]
+    async fn state_stream_rename_failure_carries_the_exact_receipt_without_entity_changes() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction_with(|tx| {
+            let agent = studio_runtime_store::AgentRecord::from_value(json!({
+                "id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "name":"Original",
+                "provider":"codex", "model":"gpt-6", "prompt":"Title fixture", "cwd":"/fixture",
+                "accountKey":"default", "isLead":false, "needsTitle":true, "manualName":false, "autoWake":false
+            }))?;
+            studio_runtime_store::AgentRepository::put(tx, &agent)
+        }).await.expect("seed agent");
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        state.validators = crate::validation::Registry::compile(&[]).expect("validators");
+        let app = crate::router::router(state.clone()).expect("routes");
+        let mut changes = state.sync_changes.subscribe();
+        changes.borrow_and_update();
+        let resource =
+            json!({"kind":"rename-progress", "agentId":"agent", "requestId":"rename-one"});
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/rename")
+            .header("x-canvas-token", "token")
+            .header("host", "127.0.0.1:4620")
+            .header("content-type", "application/json")
+            .header(
+                crate::schema::API_SCHEMA_HASH_HEADER,
+                crate::schema::api_schema_hash(),
+            )
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                12345,
+            ))))
+            .body(Body::from(
+                json!({"id":"agent", "request_id":"rename-one"}).to_string(),
+            ))
+            .expect("request");
+        let response = tower::ServiceExt::oneshot(app, request)
+            .await
+            .expect("rename response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .expect("receipt");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("JSON")["status"],
+            "pending"
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state
+                .resource_notifications
+                .published_revision(&resource)
+                .expect("revision")
+                == 0
+            {
+                changes.changed().await.expect("change source stays open");
+                changes.borrow_and_update();
+            }
+        })
+        .await
+        .expect("failure wakes its exact stream selector");
+        let receipt = json!({"id":"agent", "request_id":"rename-one", "status":"failed", "error":"The title could not be generated. Try /rename again."});
+        let view = ResourceChanges {
+            cursor: state.sync_changes.snapshot(),
+            resources: vec![resource.clone()],
+            versions: vec![1],
+            entity_reset: false,
+            overflow: false,
+        };
+        let mut frames = VecDeque::new();
+        append_progress_frames(&state, &view, &mut frames).await;
+        assert_eq!(frames.len(), 1, "rename failure must arrive in the stream");
+        let frame = event_document(Ok(frames.pop_front().expect("progress frame"))).await;
+        assert_eq!(frame["resource"], resource);
+        assert_eq!(frame["value"], receipt);
+        assert!(frame.get("entityChanges").is_none());
+        let wrong =
+            json!({"kind":"rename-progress", "agentId":"another-agent", "requestId":"rename-one"});
+        let bytes = resource_content(state, wrong)
+            .await
+            .expect("missing scoped receipt");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).expect("JSON"),
+            Value::Null
+        );
+    }
 
     #[tokio::test]
     async fn state_stream_vault_job_progress_includes_missing_receipt() {

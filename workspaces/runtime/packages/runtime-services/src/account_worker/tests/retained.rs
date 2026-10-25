@@ -350,7 +350,10 @@ async fn recovered_publications(state: &State) -> Vec<(String, String)> {
 }
 
 #[derive(Default)]
-struct RecoveredPublicationRecorder(Mutex<Vec<(String, String)>>);
+struct RecoveredPublicationRecorder {
+    records: Mutex<Vec<(String, String)>>,
+    changed: tokio::sync::Notify,
+}
 
 impl crate::notification_runtime_effects::NotificationPostCommitSink
     for RecoveredPublicationRecorder
@@ -372,10 +375,11 @@ impl crate::notification_runtime_effects::NotificationPostCommitSink
                     identity,
                     observation,
                 } => {
-                    self.0
+                    self.records
                         .lock()
                         .expect("recorded recovered publications")
                         .push((identity.clone(), observation.method.clone()));
+                    self.changed.notify_one();
                     Ok(())
                 }
                 _ => Err(
@@ -1796,14 +1800,14 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     worker_barrier(&worker).await;
     // Delivery runs in the worker's own drain task, outside the command barrier.
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
-        while publications.0.lock().expect("recorded").len() < 2 {
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        while publications.records.lock().expect("recorded").len() < 2 {
+            publications.changed.notified().await;
         }
     })
     .await
     .expect("recovered publications delivered");
     let recovered = publications
-        .0
+        .records
         .lock()
         .expect("recorded recovered publications")
         .clone();
@@ -1823,7 +1827,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     worker_barrier(&worker).await;
     assert_eq!(
         publications
-            .0
+            .records
             .lock()
             .expect("recorded recovered publications")
             .len(),

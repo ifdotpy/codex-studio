@@ -1,3 +1,4 @@
+import { watchServerName } from "./serverNames";
 import { createSessionCostCache } from "../usage/sessionCostCache";
 import { createUploads, UPLOAD_DATABASE_NAME } from "../sync/uploads";
 import { createServerAudio } from "../native/serverAudio";
@@ -72,6 +73,7 @@ export function createServerServices(server: StudioServer) {
         resources: ReturnType<typeof createResourceEvents>;
       }
     | undefined;
+  let stopName = () => {};
   const synchronization = () => {
     if (runtime) return runtime;
     let sync!: ReturnType<typeof createSyncClient>;
@@ -107,6 +109,8 @@ export function createServerServices(server: StudioServer) {
             ).join(""),
     });
     runtime = { sync, resources };
+    if (transport.owner.id !== "local")
+      stopName = watchServerName(transport.owner, resources);
     return runtime;
   };
   const outbox = createOutbox({
@@ -202,6 +206,7 @@ export function createServerServices(server: StudioServer) {
     ready,
     close() {
       audio.close();
+      stopName();
       runtime?.resources.dispose();
       transport.close();
     },

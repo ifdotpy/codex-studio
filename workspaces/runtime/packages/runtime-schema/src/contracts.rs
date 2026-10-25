@@ -536,6 +536,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         "ResourceHeartbeatEvent",
         "ResourceTokenRatesEvent",
         "AuthProgressEvent",
+        "RenameProgressEvent",
         "VaultReadinessEvent",
         "VaultJobProgressEvent",
     ] {
@@ -545,6 +546,19 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
                 &format!("/components/schemas/{owner}/properties/protocol/{bound}"),
                 version,
             )?;
+        }
+    }
+    for (owner, consumer) in [("id", "agentId"), ("request_id/anyOf/0", "requestId")] {
+        let source = openapi.pointer(&format!(
+            "/components/schemas/RenameRequest/properties/{owner}"
+        ));
+        let target = openapi.pointer(&format!(
+            "/components/schemas/RenameProgressResource/properties/{consumer}"
+        ));
+        if source != target {
+            return Err(format!(
+                "RenameRequest owns rename selector bounds; RenameProgressResource.{consumer} differs"
+            ));
         }
     }
     for owner in ["TokenRateSnapshot", "ResourceTokenRatesEvent"] {

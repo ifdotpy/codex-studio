@@ -39141,6 +39141,85 @@
         "title": "RemoteWorkerLinkRecordResponse",
         "type": "object"
       },
+      "RenameProgressEvent": {
+        "additionalProperties": false,
+        "description": "Transient rename receipt scoped by agent and request identity; replayed from durable operation receipts.",
+        "properties": {
+          "epoch": {
+            "minLength": 1,
+            "title": "Epoch",
+            "type": "string"
+          },
+          "protocol": {
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
+            "title": "Protocol",
+            "type": "integer"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/RenameProgressResource"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RenameResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workspaceId": {
+            "minLength": 1,
+            "title": "Workspaceid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol",
+          "workspaceId",
+          "epoch",
+          "revision",
+          "resource",
+          "value"
+        ],
+        "title": "RenameProgressEvent",
+        "type": "object"
+      },
+      "RenameProgressResource": {
+        "additionalProperties": false,
+        "properties": {
+          "agentId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "rename-progress",
+            "type": "string"
+          },
+          "requestId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "requestId",
+          "agentId"
+        ],
+        "title": "RenameProgressResource",
+        "type": "object"
+      },
       "RenameRequest": {
         "additionalProperties": false,
         "else": {
@@ -40681,6 +40760,9 @@
           },
           {
             "$ref": "#/components/schemas/VaultJobProgressEvent"
+          },
+          {
+            "$ref": "#/components/schemas/RenameProgressEvent"
           }
         ],
         "title": "ResourceProgressEvent"
@@ -40699,6 +40781,7 @@
             "multi-server": "#/components/schemas/MultiServerResource",
             "queue": "#/components/schemas/QueueResource",
             "receipts": "#/components/schemas/ReceiptsResource",
+            "rename-progress": "#/components/schemas/RenameProgressResource",
             "room": "#/components/schemas/RoomResource",
             "session-cost": "#/components/schemas/SessionCostResource",
             "state": "#/components/schemas/StateResource",
@@ -40784,6 +40867,9 @@
           },
           {
             "$ref": "#/components/schemas/VaultJobProgressResource"
+          },
+          {
+            "$ref": "#/components/schemas/RenameProgressResource"
           }
         ],
         "title": "ResourceRef"

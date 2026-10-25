@@ -569,3 +569,219 @@ async fn conversation_detail_entities_remove_private_answers_and_hard_deleted_so
             .0
     );
 }
+
+/// A lost monitor of `agent`, created and finished at `at`.
+fn lost_monitor(id: &str, agent: &str, at: f64) -> String {
+    json!({"id":id,"agent":agent,"status":"lost","exitCode":null,
+        "error":"Command outcome unknown after losing the provider result; not rerun.",
+        "command":format!("run {id}"),"created":at,"finished":at})
+    .to_string()
+}
+
+/// Full Studio error list rebuilds on the store's writer thread.
+async fn full_publications(store: &studio_runtime_store::RuntimeStore) -> u64 {
+    store
+        .transaction_with(|_| Ok::<_, StoreError>(crate::studio_errors::full_publications()))
+        .await
+        .expect("counter read")
+}
+
+/// The live `studioError` entities equal the list that a full rebuild reads now.
+fn assert_published_list(store: &studio_runtime_store::RuntimeStore) {
+    let (listed, published) = store
+        .test_read_transaction(|tx| {
+            let now = crate::event_write::unix_time().expect("clock");
+            let listed = crate::studio_errors::list(tx, now)?["items"]
+                .as_array()
+                .expect("items")
+                .iter()
+                .map(|row| (row["id"].as_str().expect("id").to_owned(), row.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let mut statement = tx.prepare(
+                "SELECT id,payload FROM sync_entities WHERE collection='studioError' AND deleted=0",
+            )?;
+            let published = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .map(|row| {
+                    let (id, payload) = row?;
+                    let payload: Value = serde_json::from_str(&payload).expect("entity JSON");
+                    Ok((id, payload["value"].clone()))
+                })
+                .collect::<Result<std::collections::BTreeMap<_, _>, StoreError>>()?;
+            Ok((listed, published))
+        })
+        .expect("list and entities read");
+    assert_eq!(published, listed);
+}
+
+/// Almost every writer transaction used to rebuild the whole Studio error list
+/// (about 60 ms on the live state). A write that cannot change the list, here
+/// output of a running command, an own exit, an unrelated receipt, an event
+/// and an unrelated field of an agent that owns a listed error, must not
+/// rebuild it.
+#[tokio::test]
+async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    let now = crate::event_write::unix_time().expect("clock");
+    write(
+        &store,
+        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+        vec!["lost-watch".into(), lost_monitor("lost-watch", CHAT, now)],
+    )
+    .await;
+    assert!(
+        !client_entity(&store, "studioError", "monitor:lost-watch")
+            .expect("listed")
+            .0
+    );
+    let before = full_publications(&store).await;
+
+    let running = json!({"id":"running","agent":CHAT,"status":"running","created":now,"tail":""});
+    write(
+        &store,
+        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+        vec!["running".into(), running.to_string()],
+    )
+    .await;
+    write(
+        &store,
+        "UPDATE runtime_monitors SET record=json_set(record,'$.tail','output') WHERE id=?1",
+        vec!["running".into()],
+    )
+    .await;
+    let own_exit = json!({"id":"own-exit","agent":CHAT,"status":"failed","exitCode":1,
+        "error":"","ruleId":"rule","created":now,"finished":now});
+    write(
+        &store,
+        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+        vec!["own-exit".into(), own_exit.to_string()],
+    )
+    .await;
+    write(
+        &store,
+        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'fixture','{}')",
+        vec!["fixture:receipt".into()],
+    )
+    .await;
+    write(
+        &store,
+        "DELETE FROM runtime_operation_receipts WHERE id=?1",
+        vec!["fixture:receipt".into()],
+    )
+    .await;
+    write(
+        &store,
+        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,'user','Hello','pending',CAST(?3 AS REAL),1)",
+        vec!["event-1".into(), CHAT.into(), now.to_string()],
+    )
+    .await;
+    write(
+        &store,
+        "UPDATE runtime_agents SET record=json_set(record,'$.model','gpt-6-mini') WHERE id=?1",
+        vec![CHAT.to_owned()],
+    )
+    .await;
+    assert_eq!(full_publications(&store).await, before);
+    assert_published_list(&store);
+}
+
+/// Targeted publication must still follow every change that can alter the
+/// list: a new error, an owner rename, deletion and restoration of the owner,
+/// a dismissal and its removal, and removal of the source row.
+#[tokio::test]
+async fn every_studio_error_change_still_publishes_with_its_source_write() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    let now = crate::event_write::unix_time().expect("clock");
+    for id in ["lost-a", "lost-b"] {
+        write(
+            &store,
+            "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+            vec![id.into(), lost_monitor(id, CHAT, now)],
+        )
+        .await;
+    }
+    assert_published_list(&store);
+    assert_eq!(
+        client_entity(&store, "studioError", "monitor:lost-a")
+            .expect("listed")
+            .1["agentName"],
+        "Published chat"
+    );
+
+    write(
+        &store,
+        "UPDATE runtime_agents SET record=json_set(record,'$.name','Renamed') WHERE id=?1",
+        vec![CHAT.to_owned()],
+    )
+    .await;
+    assert_eq!(
+        client_entity(&store, "studioError", "monitor:lost-a")
+            .expect("listed")
+            .1["agentName"],
+        "Renamed"
+    );
+    assert_published_list(&store);
+
+    write(
+        &store,
+        "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',CAST(?2 AS REAL)) WHERE id=?1",
+        vec![CHAT.to_owned(), now.to_string()],
+    )
+    .await;
+    assert!(
+        client_entity(&store, "studioError", "monitor:lost-a")
+            .expect("tombstone")
+            .0
+    );
+    assert_published_list(&store);
+    write(
+        &store,
+        "UPDATE runtime_agents SET record=json_remove(record,'$.deletedAt') WHERE id=?1",
+        vec![CHAT.to_owned()],
+    )
+    .await;
+    assert!(
+        !client_entity(&store, "studioError", "monitor:lost-a")
+            .expect("restored")
+            .0
+    );
+    assert_published_list(&store);
+
+    store
+        .transaction_with(move |tx| crate::studio_errors::dismiss(tx, "monitor:lost-a", now))
+        .await
+        .expect("dismissal commits");
+    assert!(
+        client_entity(&store, "studioError", "monitor:lost-a")
+            .expect("dismissed")
+            .0
+    );
+    write(
+        &store,
+        "DELETE FROM runtime_operation_receipts WHERE id=?1",
+        vec!["studio-errors:dismissed:monitor:lost-a".into()],
+    )
+    .await;
+    assert!(
+        !client_entity(&store, "studioError", "monitor:lost-a")
+            .expect("undismissed")
+            .0
+    );
+
+    write(
+        &store,
+        "DELETE FROM runtime_monitors WHERE id=?1",
+        vec!["lost-b".into()],
+    )
+    .await;
+    assert!(
+        client_entity(&store, "studioError", "monitor:lost-b")
+            .expect("removed")
+            .0
+    );
+    assert_published_list(&store);
+}

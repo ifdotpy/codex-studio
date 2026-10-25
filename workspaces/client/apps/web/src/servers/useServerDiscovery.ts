@@ -29,7 +29,7 @@ import {
 } from "./registry";
 import { LOCAL_ALIAS_KEY } from "./serverAliases";
 import { serverCredentialAdapter } from "./transport";
-import { refreshServerName, watchRegisteredServerNames } from "./serverNames";
+import { refreshServerName } from "./serverNames";
 export const DISCOVERY_REFRESH_EVENT = "studio-server-discovery-refresh";
 export function useServerDiscovery(
   enabled: boolean,
@@ -178,19 +178,6 @@ export function useServerDiscovery(
     ) {
       localStorage.setItem(LOCAL_NAME_KEY, next.localLabel);
       window.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
-    }
-    if (next) {
-      const rows = readServers();
-      const paired = rows.map((row) => {
-        const peer = next.servers.find(
-          (peer) => peer.id === row.id && peer.paired,
-        );
-        return peer && peer.label !== row.label
-          ? { ...row, label: peer.label }
-          : row;
-      });
-      if (paired.some((row, index) => row !== rows[index]))
-        writeServers(paired);
     }
     if (next?.aliases) {
       const aliases =
@@ -355,10 +342,6 @@ export function useServerDiscovery(
     window.addEventListener("storage", update);
     return () => window.removeEventListener("storage", update);
   }, [enabled]);
-  useEffect(() => {
-    if (enabled) return;
-    return watchRegisteredServerNames();
-  }, [enabled, localAvailable]);
   return {
     snapshot: effectiveSnapshot,
     checkedAt,

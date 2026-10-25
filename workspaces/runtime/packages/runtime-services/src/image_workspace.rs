@@ -2039,23 +2039,17 @@ mod tests {
             .expect("provision returned while base copy remained blocked")
             .expect("provision enqueued");
         assert_eq!(pending["state"], "creating");
-        let deadline = std::time::Instant::now() + ASYNC_PROVISION_TIMEOUT;
-        loop {
-            let row = manager
-                .list_workspaces()
-                .expect("workspace rows")
-                .into_iter()
-                .find(|row| row["agentId"] == "async-agent")
-                .expect("durable creating row");
-            if row["state"] == "ready" {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "async workspace ready"
-            );
-            thread::sleep(Duration::from_millis(5));
-        }
+        assert!(wait_for_build_worker(
+            "agent:async-agent",
+            ASYNC_PROVISION_TIMEOUT
+        ));
+        let row = manager
+            .list_workspaces()
+            .expect("workspace rows")
+            .into_iter()
+            .find(|row| row["agentId"] == "async-agent")
+            .expect("durable creating row");
+        assert_eq!(row["state"], "ready");
     }
 
     #[test]

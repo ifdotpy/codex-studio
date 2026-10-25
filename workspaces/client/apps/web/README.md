@@ -128,6 +128,17 @@ Model and reasoning fields retain accessible names without visible captions;
 model descriptions do not add lines below the list. Picker width is owned by
 `--studio-model-picker-size` in [`src/design/layout.css`](src/design/layout.css)
 and stays within the available width on phones.
+The composer model summary adapts to its own available width, including when a
+sidebar is open. Wide composers show all role names and models; medium composers
+keep the lead model and secondary provider marks; phones show the lead model and
+a compact count of the other roles. Open the summary for the full settings;
+its accessible name also retains every role, model, provider, and reasoning level.
+Account-move status appears above the input so it cannot crowd the send controls.
+On narrow composers, saved draft copies and then Stop move into the upper tools
+corner, preserving the lead name and the bottom-row send action.
+The container stages are owned by
+[`empty-chat-settings.css`](src/components/conversation/empty-chat-settings.css).
+
 The server's creation response opens the chat before the full list refreshes.
 An older list cannot remove that confirmed chat while synchronization catches up.
 The client retains the confirmed chat across reloads until the list includes it.

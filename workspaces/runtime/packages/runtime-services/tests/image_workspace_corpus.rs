@@ -2,8 +2,9 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use notify::{RecursiveMode, Watcher};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -238,16 +239,28 @@ fn copy_tree(
     Ok(())
 }
 
-#[allow(clippy::disallowed_methods)]
-fn wait_for_build(manager: &WorkspaceLifecycle<ScriptedBackend>, root: &Path) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(5);
+fn wait_for_build(
+    manager: &WorkspaceLifecycle<ScriptedBackend>,
+    root: &Path,
+    store: &Path,
+) -> Value {
+    let (changed, changes) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        drop(changed.send(event));
+    })
+    .expect("build state watcher");
+    watcher
+        .watch(&store.join("bases"), RecursiveMode::Recursive)
+        .expect("watch base state");
     loop {
         let status = manager.base_status(root).expect("base state");
         if status["state"] != "building" {
             return status;
         }
-        assert!(Instant::now() < deadline, "base build completion");
-        thread::sleep(Duration::from_millis(5));
+        changes
+            .recv_timeout(Duration::from_secs(5))
+            .expect("base build completion")
+            .expect("build state event");
     }
 }
 
@@ -351,7 +364,10 @@ fn lifecycle_writes_state_rows_through_failure_retry_archive_and_plain_folder_re
         },
     );
     manager.start_base_build(&root).expect("start base build");
-    assert_eq!(wait_for_build(&manager, &root)["state"], "failed");
+    assert_eq!(
+        wait_for_build(&manager, &root, &rust_store)["state"],
+        "failed"
+    );
     let key = repo_key(&root);
     let rust_base = rust_store.join("bases").join(&key).join("base.json");
     let mut rust_rows =
@@ -359,7 +375,7 @@ fn lifecycle_writes_state_rows_through_failure_retry_archive_and_plain_folder_re
     manager
         .start_base_build_retry(&root, true)
         .expect("retry base build");
-    let build = wait_for_build(&manager, &root);
+    let build = wait_for_build(&manager, &root, &rust_store);
     assert_eq!(
         build["state"],
         "ready",

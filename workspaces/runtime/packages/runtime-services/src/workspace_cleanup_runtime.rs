@@ -1323,56 +1323,9 @@ mod tests {
     }
 
     async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
-        let directory = tempfile::tempdir().expect("owned cleanup fixture directory");
-        let root = directory.path();
-        let schema: Value = serde_json::from_str(include_str!(
-            "../../runtime-store/src/runtime-state-schema.json"
-        ))
-        .expect("runtime schema fixture parses");
-        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-            let path = root.join(name);
-            let connection = rusqlite::Connection::open(path).expect("fixture DB opens");
-            studio_runtime_store::sqlite_durability::configure_writer(&connection)
-                .expect("fixture pragmas apply");
-            connection
-                .execute_batch("BEGIN;")
-                .expect("fixture pragmas apply");
-            let mut statements = schema[name]["sqlite_master"]
-                .as_array()
-                .expect("schema entries")
-                .iter()
-                .filter_map(|entry| {
-                    Some((
-                        entry["type"].as_str()?,
-                        entry["name"].as_str()?,
-                        entry["sql"].as_str()?,
-                    ))
-                })
-                .collect::<Vec<_>>();
-            statements.sort_by_key(|(kind, _, _)| match *kind {
-                "table" => 0,
-                "index" => 1,
-                "view" => 2,
-                _ => 3,
-            });
-            for (_, object_name, sql) in statements {
-                let exists: bool = connection
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
-                        [object_name],
-                        |row| row.get(0),
-                    )
-                    .expect("schema entry lookup");
-                if !exists {
-                    connection.execute_batch(sql).expect("schema installs");
-                }
-            }
-            connection.execute_batch("COMMIT;").expect("schema commits");
-        }
-        let store = RuntimeStore::open(Some(root))
-            .await
-            .expect("fixture store opens");
-        (directory, Arc::new(store))
+        let (directory, _root, store) =
+            crate::remote_transport::tests::runtime_store_fixture().await;
+        (directory, store)
     }
 
     async fn put_agent(store: &RuntimeStore, mut record: Value) {

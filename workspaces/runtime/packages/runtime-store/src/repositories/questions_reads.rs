@@ -43,53 +43,44 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 #[cfg(test)]
 mod tests {
     use super::{AGENT_FAMILY_SQL, QuestionsReadsRepository, REQUIREMENTS};
-    use crate::StoreResult;
     use rusqlite::Connection;
     use serde_json::json;
 
     /// The indexed family and request reads return what the old read-everything path
     /// returned for that family, and plan on the existing indexes.
-    #[tokio::test]
-    async fn family_reads_match_the_full_scan_and_use_indexes() {
-        let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = crate::RuntimeStore::open(Some(directory.path()))
-            .await
-            .expect("open runtime store");
-        store
-            .transaction_with(|tx| -> StoreResult<()> {
-                for (id, root, deleted) in [
-                    ("r1", "r1", false),
-                    ("c1", "r1", false),
-                    ("c2", "r1", true),
-                    ("r2", "r2", false),
-                    ("c3", "r2", false),
-                ] {
-                    let record = json!({"id": id, "rootId": root, "epoch": 0, "status": "idle",
+    #[test]
+    fn family_reads_match_the_full_scan_and_use_indexes() -> crate::StoreResult<()> {
+        let mut connection = crate::fresh_state::test_canvas();
+        let tx = connection.transaction().expect("seed transaction");
+        for (id, root, deleted) in [
+            ("r1", "r1", false),
+            ("c1", "r1", false),
+            ("c2", "r1", true),
+            ("r2", "r2", false),
+            ("c3", "r2", false),
+        ] {
+            let record = json!({"id": id, "rootId": root, "epoch": 0, "status": "idle",
                         "deletedAt": deleted.then_some(1)});
-                    tx.execute(
-                        "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
-                        [id, &record.to_string()],
-                    )?;
-                }
-                for (id, agent) in [
-                    ("q1", "r1"),
-                    ("q2", "c1"),
-                    ("q3", "c2"),
-                    ("q4", "r2"),
-                    ("q5", "c3"),
-                ] {
-                    let record = json!({"id": id, "agent": agent, "method": "agent/asyncQuestion",
+            tx.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                [id, &record.to_string()],
+            )?;
+        }
+        for (id, agent) in [
+            ("q1", "r1"),
+            ("q2", "c1"),
+            ("q3", "c2"),
+            ("q4", "r2"),
+            ("q5", "c3"),
+        ] {
+            let record = json!({"id": id, "agent": agent, "method": "agent/asyncQuestion",
                         "status": "pending"});
-                    tx.execute(
-                        "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
-                        [id, &record.to_string()],
-                    )?;
-                }
-                Ok(())
-            })
-            .await
-            .expect("seed corpus");
-        let connection = store.test_reader().expect("reader");
+            tx.execute(
+                "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
+                [id, &record.to_string()],
+            )?;
+        }
+        tx.commit().expect("seed corpus");
         let family = QuestionsReadsRepository::agent_family(&connection, "c1").expect("family");
         let family_ids = family
             .iter()
@@ -136,6 +127,7 @@ mod tests {
                 .join(" ");
             assert!(plan.contains(index), "{plan}");
         }
+        Ok(())
     }
 
     #[test]

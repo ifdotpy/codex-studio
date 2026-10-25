@@ -5,7 +5,7 @@ mod bootstrap;
 mod cached_sql;
 pub mod entity_publication;
 pub use cached_sql::{CachedSql, STATEMENT_CACHE_CAPACITY};
-pub use entity_publication::{EntityPublisher, PendingEntities};
+pub use entity_publication::{EntityPublisher, PendingEntities, StudioErrorSources};
 mod feature_schema;
 mod fresh_state;
 

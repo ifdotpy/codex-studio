@@ -14,8 +14,7 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
 }) => {
   test.setTimeout(90000);
   const root = await mkdtemp(join(tmpdir(), "studio-phone-fleet-"));
-  const evidence =
-    process.env.PHONE_FLEET_EVIDENCE || join(root, "screenshots");
+  const evidence = test.info().outputPath("screenshots");
   await mkdir(evidence, { recursive: true });
   const fixture = spawn(process.execPath, [rustUiFixture, root], {
     stdio: ["pipe", "pipe", "pipe"],
