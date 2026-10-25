@@ -144,3 +144,72 @@ The live baseline figures, 6.6 MB for `/api/state?view=chat` and 26.7 MB for `/a
 For the 40-agent fixture, initial raw transfer fell by about 164×, and one agent change fell from 6.6 MB to 1,005 B. Two open windows each pull once for each of 100 visible changes, so the count remains 200 pulls/min; the bytes and server work per pull are bounded by changed entities. Agent WAL growth while writing/upserting entity versions was 824,032 B/min; SQLite reported 819,200 B in committed WAL frames at checkpoint. The separate transcript fixture measured 659,247 WAL B/min while tracking per-item, order, and metadata hashes with NULL payloads. These are independent synthetic loads and exclude unrelated application writes.
 
 The production mobile startup fixture also passed: 9,448 ms cold composer, 370 ms warm draft, and a 4,372,195 B gzip full-state fixture versus a 17,780 B gzip compact snapshot. Those HTTP snapshot measurements validate the fixture, while the raw entity seed measurement above validates the new pull wire format.
+
+## V2 view-scoped replay and field audit
+
+The global view now carries `agentSummary`; an open conversation subscribes to
+`agentDetail`. The existing publisher writes both projections inside the source
+transaction. A detail-only change retains the summary's sequence. The
+[OpenAPI resource schemas](../workspaces/runtime/packages/runtime-http/openapi.json)
+own the collection filters through `x-studio-entity-scope`, and
+`AgentSummaryEntityDto` owns the exact list field set. Generated TypeScript and
+Rust readers consume those owners. Tasks, monitors, command output, detailed
+costs, desktop and terminal data enter the renderer through mounted resource
+subscriptions. Mobile navigation back to the list releases conversation detail
+after the subscription grace period.
+
+The field audit followed `Sidebar`, `SidebarRow`, `chatStatusModel`, the chat
+catalog/read-state helpers and desktop notifications. At this revision the
+summary has 47 fields:
+
+- Identity, hierarchy and routing: `id`, `kind`, `source`, `name`, `isLead`,
+  `parentId`, `rootId`, `role`, `serverId`, `provider`, `model`, `accountKey`,
+  `remoteAnchor`, `remoteOrigin`, `remoteWorker`, `sharedRoomId`, `movedTo`,
+  `moveImportPending`.
+- List placement and ordering: `created`, `updated`, `archived`, `pinned`, `cwd`,
+  `project`, `projectId`, `projectFolder`, `projectFolderRevision`.
+- Operational attention: `status`, `inFlight`, `autoWake`, `epoch`, `empty`,
+  `stall`, `parkedEvent`, `capacityRetry`, `hasApproval`, `hasQuestion`,
+  `hasBackgroundWork`.
+- Result/read identity: `threadId`, `turnId`, `lastCompletedTurn`,
+  `lastCompletedTurnStatus`, `readState`, `readStateSupported`, `lastReadAt`,
+  `hasUnread`, `unreadCount`.
+
+`overview`, `lastAnswer`, `tail`, `commandProgress`, context usage and execution
+settings remain in the detail schema. Summaries contain the completed-turn and
+read identities needed for unread indicators, and pending-input/background-work
+flags needed when panel records are absent.
+
+The offline replay used the existing 120-second v4 capture from
+2026-10-24 16:24:59 UTC. It modeled a background window with no open conversation
+or mounted panels, preserving the token-rate frames. It used the server's Brotli
+quality/window owners, one encoder dictionary for the entire connection, and a
+flush after every event. This is a projection replay, not a live-network claim.
+The historical recording does not contain the new attention flags; the replay
+defaults pending-input flags to false and derives background-work from recorded
+command progress.
+
+| Measured quantity                              | Recorded baseline | View-scoped replay |
+| ---------------------------------------------- | ----------------: | -----------------: |
+| Identity SSE bytes                             |           398,548 |             50,276 |
+| Brotli SSE bytes                               |            31,476 |              6,911 |
+| SSE events                                     |               140 |                 88 |
+| Agent value bytes before duplicate suppression |           301,258 |             59,469 |
+
+The Brotli reduction is 4.55×. The replay suppresses 60 unchanged summaries among
+73 recorded agent updates and excludes 42 panel/detail records or hints. It
+implements whole-entity projection comparison; it does not use field patches.
+
+Reproduce with the private capture kept outside the checkout:
+
+```sh
+node workspaces/tooling/apps/repository-checks/replay-view-scoped.mjs \
+  /path/to/events.sse /path/to/report.json
+```
+
+The script reads the committed OpenAPI field/scope owners and the server encoder
+settings, verifies Brotli decompression against both inputs, and writes aggregate
+measurements without storing conversation text in this repository. The browser
+witness is `tests/sync/view-scoped-subscriptions-browser.spec.mjs`; it checks the
+real renderer's summary-only list, detail subscription on open, and removal
+after returning to the mobile list and advancing the grace period.

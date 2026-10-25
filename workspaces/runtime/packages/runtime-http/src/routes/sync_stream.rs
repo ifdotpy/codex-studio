@@ -2491,7 +2491,7 @@ mod tests {
         assert_eq!(replay.status(), StatusCode::CONFLICT);
         let mut invalid = update.clone();
         invalid["gen"] = json!(2);
-        invalid["add"] = json!([{"kind":"transcript","agentId":""}]);
+        invalid["add"] = json!([{"resource":{"kind":"transcript","agentId":""}}]);
         let response = app
             .clone()
             .oneshot(request(
