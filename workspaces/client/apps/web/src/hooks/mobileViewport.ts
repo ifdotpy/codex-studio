@@ -41,6 +41,7 @@ export function useMobileViewport(active: boolean, compact = false) {
         root.style.removeProperty(property);
     };
     const update = () => {
+      cancelAnimationFrame(frame);
       frame = 0;
       if (
         !compact &&
@@ -131,7 +132,11 @@ export function useMobileViewport(active: boolean, compact = false) {
       if (overlay && composer) {
         const bounds = composer.getBoundingClientRect();
         const naturalBottom = bounds.bottom - composerShift;
-        composerShift = Math.min(0, top + height - naturalBottom);
+        // Both rectangles use the browser's coordinate origin. pageTop may use
+        // a different origin while iOS pans its layout viewport.
+        const visibleTop =
+          document.getElementById("root")?.getBoundingClientRect().top ?? top;
+        composerShift = Math.min(0, visibleTop + height - naturalBottom);
         composer.style.setProperty(
           "--keyboard-composer-shift",
           `${composerShift}px`,
@@ -190,11 +195,11 @@ export function useMobileViewport(active: boolean, compact = false) {
     document.addEventListener("focusout", recoverAfterBlur);
     update();
     coarsePointer.addEventListener("change", schedule);
-    viewport?.addEventListener("resize", schedule);
-    viewport?.addEventListener("scroll", schedule);
-    window.addEventListener("resize", schedule);
-    window.addEventListener("orientationchange", schedule);
-    window.addEventListener("scroll", schedule);
+    viewport?.addEventListener("resize", update);
+    viewport?.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    window.addEventListener("scroll", update);
     return () => {
       cancelAnimationFrame(frame);
       recoveryFrames.forEach(cancelAnimationFrame);
@@ -202,11 +207,11 @@ export function useMobileViewport(active: boolean, compact = false) {
       composerResize.disconnect();
       content.disconnect();
       coarsePointer.removeEventListener("change", schedule);
-      viewport?.removeEventListener("resize", schedule);
-      viewport?.removeEventListener("scroll", schedule);
-      window.removeEventListener("resize", schedule);
-      window.removeEventListener("orientationchange", schedule);
-      window.removeEventListener("scroll", schedule);
+      viewport?.removeEventListener("resize", update);
+      viewport?.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+      window.removeEventListener("scroll", update);
       clear();
     };
   }, [active, compact]);

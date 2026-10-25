@@ -43,6 +43,7 @@ let documentMock: EventTarget & {
   documentElement: typeof root;
   activeElement: unknown;
   querySelectorAll: ReturnType<typeof vi.fn>;
+  getElementById: ReturnType<typeof vi.fn>;
 };
 let queries: EventTarget & { matches: boolean };
 let frames: Map<number, FrameRequestCallback>;
@@ -69,6 +70,7 @@ beforeEach(() => {
     documentElement: root,
     activeElement: null,
     querySelectorAll: vi.fn(() => []),
+    getElementById: vi.fn(() => null),
   });
   vi.stubGlobal(
     "ResizeObserver",
@@ -135,12 +137,14 @@ it("tracks a wide touch viewport with the keyboard already open", () => {
   );
   expect(root.setAttribute).toHaveBeenCalledWith("data-viewport-surface", "");
 });
-it("pins the Duo keyboard frame when innerHeight shrinks and the document scrolls", () => {
+it("pins the Duo keyboard before the viewport event returns", () => {
   mount();
   documentMock.activeElement = new Textarea();
   windowMock.innerHeight = root.clientHeight = 323;
   windowMock.scrollY = 346;
-  resize({ height: 323, offsetTop: 346 });
+  Object.assign(viewport, { height: 323, offsetTop: 346 });
+  viewport.dispatchEvent(new Event("resize"));
+  expect(frames.size).toBe(0);
   expect(root.style.get("--mobile-viewport-top")).toBe("346px");
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
   expect(root.style.get("--mobile-safe-area-bottom")).toBe(
@@ -274,7 +278,7 @@ it("preserves the focused composer scroll exception", () => {
 it("releases geometry and all event listeners on cleanup", () => {
   mount();
   viewport.dispatchEvent(new Event("resize"));
-  expect(frames.size).toBe(1);
+  expect(frames.size).toBe(0);
   cleanup?.();
   cleanup = undefined;
   expect(root.style.size).toBe(0);
