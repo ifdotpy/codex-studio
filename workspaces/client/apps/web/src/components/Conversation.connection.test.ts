@@ -208,7 +208,7 @@ it("retains the reconnecting notice without a saved message", () => {
 });
 it.each([
   ["preparing", "Preparing connection…", "lucide-clock"],
-  ["waiting-owner", "Waiting for connection…", "lucide-clock"],
+  ["waiting-owner", "Waiting for the shared connection…", "lucide-clock"],
   ["retry-scheduled", "Reason unknown. Retry scheduled.", "lucide-clock"],
   ["connecting", "Reason unknown. Reconnecting…", "lucide-loader-circle"],
   ["open", "Reason unknown. Waiting for server updates…", "lucide-clock"],
@@ -242,7 +242,7 @@ it.each([
   ["subscription-timeout", "Server updates did not start in time."],
   ["subscription-rejected", "Could not confirm live updates."],
   ["invalid-frame", "Received invalid server updates."],
-  ["local-state-error", "Could not apply server updates on this device."],
+  ["local-state-error", "Could not prepare or apply local sync data."],
   ["unknown", "Reason unknown."],
 ] as const)(
   "renders the known %s cause and scheduled retry time",

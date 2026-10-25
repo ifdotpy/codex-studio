@@ -154,7 +154,7 @@ it("tracks actual transport activity independently of transcript freshness", () 
 
 it.each([
   ["degraded", "preparing", "Preparing connection…"],
-  ["degraded", "waiting-owner", "Waiting for connection…"],
+  ["degraded", "waiting-owner", "Waiting for the shared connection…"],
   ["degraded", "retry-scheduled", "Reason unknown. Retry scheduled."],
   ["degraded", "connecting", "Reason unknown. Reconnecting…"],
   ["connecting", "connecting", "Connecting…"],

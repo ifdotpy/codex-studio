@@ -144,7 +144,7 @@ it.each([
     "degraded",
     "waiting-owner",
     { failure: "stream-error" },
-    "Connection failed. Waiting for connection…",
+    "Connection failed. Waiting for the shared connection…",
   ],
 ] as const)(
   "uses actual %s health and %s activity for the snapshot warning",

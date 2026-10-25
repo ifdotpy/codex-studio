@@ -13,13 +13,13 @@ const failureLabels: Record<ResourceConnectionFailure, string> = {
   "subscription-timeout": "Server updates did not start in time.",
   "subscription-rejected": "Could not confirm live updates.",
   "invalid-frame": "Received invalid server updates.",
-  "local-state-error": "Could not apply server updates on this device.",
+  "local-state-error": "Could not prepare or apply local sync data.",
   unknown: "Reason unknown.",
 };
 const activityLabels: Record<ResourceStreamState, string> = {
   stopped: "Connection interrupted.",
   preparing: "Preparing connection…",
-  "waiting-owner": "Waiting for connection…",
+  "waiting-owner": "Waiting for the shared connection…",
   "retry-scheduled": "Retry scheduled.",
   connecting: "Connecting…",
   open: "Waiting for server updates…",
