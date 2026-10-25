@@ -1,6 +1,9 @@
 import { isModelWhitelisted, useModelWhitelist } from "./models/modelWhitelist";
 import { modelForValue } from "./models/modelOption";
-import { useServerServices } from "../servers/ServerServicesContext";
+import {
+  ServerServicesProvider,
+  useServerServices,
+} from "../servers/ServerServicesContext";
 import { createServerServices } from "../servers/serverServices";
 import { subscribeStateProjection } from "../sync/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -103,10 +106,17 @@ export default function NewChatModelSettings(props: Props) {
       },
     };
   }, [serverKey, services]);
-  return (
+  const content = (
     <ModelCatalogReader.Provider value={reader}>
       <ModelDraft {...props} server={owner} />
     </ModelCatalogReader.Provider>
+  );
+  return services ? (
+    <ServerServicesProvider services={services}>
+      {content}
+    </ServerServicesProvider>
+  ) : (
+    content
   );
 }
 

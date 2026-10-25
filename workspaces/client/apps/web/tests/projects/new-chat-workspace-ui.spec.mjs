@@ -174,18 +174,26 @@ for (const [choice, badge] of [
         dialog.getByRole("radio", { name: "Layr", exact: true }),
       ).toBeChecked();
       await dialog.getByText(choice, { exact: true }).click();
-      const main = dialog.getByRole("region", {
-        name: "Lead model",
-        exact: true,
-      });
-      await main.getByRole("option", { name: /Sol/ }).click();
-      await main.getByText("High", { exact: true }).click();
-      const worker = dialog.getByRole("region", {
-        name: "Worker model",
-        exact: true,
-      });
-      await worker.getByRole("option", { name: /Astra/ }).click();
-      await worker.getByText("Low", { exact: true }).click();
+      await dialog
+        .getByRole("listbox", { name: "Main agent model", exact: true })
+        .getByRole("option", { name: /Sol/ })
+        .click();
+      await dialog
+        .getByRole("radiogroup", { name: "Main agent reasoning", exact: true })
+        .getByText("High", { exact: true })
+        .click();
+      await dialog.getByText("Workers", { exact: true }).click();
+      await dialog
+        .getByRole("listbox", { name: "Default subagent model", exact: true })
+        .getByRole("option", { name: /Astra/ })
+        .click();
+      await dialog
+        .getByRole("radiogroup", {
+          name: "Default subagent reasoning",
+          exact: true,
+        })
+        .getByText("Low", { exact: true })
+        .click();
       await expect(page.getByRole("dialog")).toHaveCount(1);
       expect(changes).toHaveLength(0);
       await dialog
@@ -270,6 +278,7 @@ for (const width of [320, 390, 1440])
             exact: true,
           }),
         ).toBeVisible();
+        await dialog.getByText("Workers", { exact: true }).click();
         await expect(
           dialog.getByRole("listbox", {
             name: "Default subagent model",
@@ -442,6 +451,7 @@ test("a filtered Claude lead keeps the server's Codex worker default without inj
         .getByRole("listbox", { name: "Main agent model", exact: true })
         .getByRole("option", { selected: true }),
     ).toHaveAccessibleName(/Opus 5.5/);
+    await dialog.getByText("Workers", { exact: true }).click();
     await expect(
       dialog
         .getByRole("listbox", { name: "Default subagent model", exact: true })
@@ -477,9 +487,7 @@ for (const system of ["Darwin", "Linux"]) {
       await expect(
         dialog.getByRole("radio", { name: "Layr VM", exact: true }),
       ).toHaveCount(0);
-      await expect(
-        dialog.getByRole("radio", { name: "WT", exact: true }),
-      ).toBeVisible();
+      await expect(dialog.getByText("WT", { exact: true })).toBeVisible();
       await dialog
         .getByRole("button", { name: "Start chat", exact: true })
         .click();
@@ -500,7 +508,7 @@ test("Linux offers Layr VM only when its server has the Studio VM", async ({
     await expect(
       dialog.getByRole("radio", { name: "Layr", exact: true }),
     ).toBeChecked();
-    await dialog.getByRole("radio", { name: "Layr VM", exact: true }).check();
+    await dialog.getByText("Layr VM", { exact: true }).click();
     await dialog
       .getByRole("button", { name: "Start chat", exact: true })
       .click();
