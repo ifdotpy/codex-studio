@@ -11,6 +11,57 @@ use studio_runtime_store::{AgentRecord, AgentRepository, StoreError};
 const CHAT: &str = "published-chat";
 
 #[tokio::test]
+async fn agent_projections_attention_rejects_stale_requests_and_clears() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({"epoch":2}))).await;
+    let stale = json!({"id":"question","agent":CHAT,"epoch":1,"status":"pending","method":"item/tool/requestUserInput"});
+    write(
+        &store,
+        "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
+        vec!["question".into(), stale.to_string()],
+    )
+    .await;
+    assert!(
+        client_entity(&store, "agentSummary", CHAT)
+            .expect("summary")
+            .1
+            .get("hasQuestion")
+            .is_none(),
+        "stale requests cannot demand attention"
+    );
+    write(
+        &store,
+        "UPDATE runtime_requests SET record=json_set(record,'$.epoch',2) WHERE id=?1",
+        vec!["question".into()],
+    )
+    .await;
+    assert_eq!(
+        client_entity(&store, "agentSummary", CHAT)
+            .expect("summary")
+            .1["hasQuestion"],
+        true
+    );
+    assert!(
+        chat_view(&store, CHAT).get("hasQuestion").is_none(),
+        "legacy agent wire remains unchanged"
+    );
+    write(
+        &store,
+        "UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id=?1",
+        vec!["question".into()],
+    )
+    .await;
+    assert!(
+        client_entity(&store, "agentSummary", CHAT)
+            .expect("summary")
+            .1
+            .get("hasQuestion")
+            .is_none(),
+        "resolved input clears attention without opening the chat"
+    );
+}
+
+#[tokio::test]
 async fn agent_projections_fresh_seed_and_upgrade_marker_are_complete() {
     let (_dir, store) = store().await;
     assert!(
