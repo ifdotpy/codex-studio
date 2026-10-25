@@ -259,7 +259,7 @@ pub trait NotificationEffects {
         _agent: &mut Value,
         _params: &Value,
         _at: f64,
-    ) -> Result<(), NotificationDispatchError> {
+    ) -> Result<crate::budget::UsageAcceptance, NotificationDispatchError> {
         Err(NotificationDispatchError::Dependency(
             NotificationDependency::BudgetCapture.name(),
         ))

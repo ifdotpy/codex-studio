@@ -685,43 +685,6 @@ where
     )
 }
 
-/// Token counts of one Codex `token_count` usage object: input (including
-/// cached), cached input, and output.
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
-struct CodexTokens {
-    input: u64,
-    cached: u64,
-    output: u64,
-}
-
-impl CodexTokens {
-    fn from_usage(usage: Option<&Value>) -> Option<Self> {
-        let usage = usage?;
-        let count = |keys: &[&str]| {
-            keys.iter()
-                .find_map(|key| usage.get(*key).and_then(Value::as_u64))
-                .unwrap_or(0)
-        };
-        Some(Self {
-            input: count(&["input_tokens"]),
-            cached: count(&["cached_input_tokens", "cache_read_input_tokens"]),
-            output: count(&["output_tokens"]),
-        })
-    }
-
-    fn at_least(self, other: Self) -> bool {
-        self.input >= other.input && self.cached >= other.cached && self.output >= other.output
-    }
-
-    fn minus(self, other: Self) -> Self {
-        Self {
-            input: self.input - other.input,
-            cached: self.cached - other.cached,
-            output: self.output - other.output,
-        }
-    }
-}
-
 /// Estimated usage of one model on one local day.
 #[derive(Default)]
 struct CodexModelDay {
@@ -732,7 +695,7 @@ struct CodexModelDay {
 
 /// Scan the Codex session logs of one profile and build the aggregate cost
 /// report. Reads `sessions` and the sibling `archived_sessions` under `home`;
-/// a fork's replayed parent history only advances the running totals.
+/// a fork's replayed parent responses are excluded from its costs.
 /// History completeness is never verified, so coverage is always `partial`.
 fn scan_codex_sessions(
     home: &Path,
@@ -786,11 +749,14 @@ where
     }
     let catalog = fetch_catalog();
     let mut days = BTreeMap::<(String, String), CodexModelDay>::new();
+    let mut responses = BTreeSet::new();
     for path in files.values() {
         let file = File::open(path).map_err(|_| UsageError::Scan)?;
-        let mut model = None::<String>;
+        let mut rollout = crate::analytics_rollout::RolloutContext::from_record(
+            json!({"threadId":"", "model":"gpt-5"}),
+        )
+        .map_err(|_| UsageError::Scan)?;
         let mut fork_at = None::<chrono::DateTime<chrono::FixedOffset>>;
-        let mut previous = CodexTokens::default();
         for line in BufReader::new(file).lines() {
             check_codex_scan(started, cancelled)?;
             let Ok(row) = serde_json::from_str::<Value>(&line.map_err(|_| UsageError::Scan)?)
@@ -811,78 +777,85 @@ where
                             .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
                             .or(at);
                     }
-                }
-                Some("turn_context") => {
-                    let named = |value: Option<&Value>| {
-                        value
-                            .and_then(|v| v.get("model"))
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    };
-                    model = named(payload).or_else(|| named(payload.and_then(|p| p.get("info"))));
-                }
-                Some("event_msg")
-                    if payload.and_then(|p| p.get("type")).and_then(Value::as_str)
-                        == Some("token_count") =>
-                {
-                    let info = payload.and_then(|p| p.get("info"));
-                    let last =
-                        CodexTokens::from_usage(info.and_then(|i| i.get("last_token_usage")));
-                    let total =
-                        CodexTokens::from_usage(info.and_then(|i| i.get("total_token_usage")));
-                    let delta = match (total, last) {
-                        (Some(total), last) => {
-                            let delta = if total.at_least(previous) {
-                                total.minus(previous)
-                            } else {
-                                last.unwrap_or(total)
-                            };
-                            previous = total;
-                            delta
-                        }
-                        (None, Some(last)) => last,
-                        (None, None) => continue,
-                    };
-                    let Some(at) = at else { continue };
-                    if fork_at.is_some_and(|forked| at < forked) || delta == CodexTokens::default()
+                    if let Some(id) = payload
+                        .and_then(|meta| meta.get("id"))
+                        .and_then(Value::as_str)
                     {
-                        continue;
-                    }
-                    let day = at
-                        .with_timezone(&chrono::Local)
-                        .format("%Y-%m-%d")
-                        .to_string();
-                    if day < since_day {
-                        continue;
-                    }
-                    let name = codex_model_name(model.as_deref().unwrap_or("gpt-5"));
-                    let cached = delta.cached.min(delta.input);
-                    let usage = crate::pricing::TokenUsage {
-                        input_tokens: Some(delta.input as f64),
-                        cached_input_tokens: Some(cached as f64),
-                        cache_write_input_tokens: None,
-                        output_tokens: Some(delta.output as f64),
-                    };
-                    let cost = catalog
-                        .as_ref()
-                        .map(|catalog| {
-                            catalog.price_usage(
-                                "openai",
-                                &name,
-                                usage,
-                                Some(delta.input as f64),
-                                false,
-                            )
-                        })
-                        .and_then(|price| price.amount_usd);
-                    let entry = days.entry((day, name)).or_default();
-                    entry.tokens += delta.input + delta.output;
-                    match cost {
-                        Some(cost) => entry.cost_usd += cost,
-                        None => entry.unpriced = true,
+                        let mut context = rollout.record().clone();
+                        context["threadId"] = json!(id);
+                        rollout = crate::analytics_rollout::RolloutContext::from_record(context)
+                            .map_err(|_| UsageError::Scan)?;
                     }
                 }
-                _ => {}
+                Some("turn_context" | "token_usage_record" | "compacted") => {}
+                _ => continue,
+            }
+            // Keep the scanner's older nested model context compatibility. Token
+            // categories and recovered response semantics belong to the rollout owner.
+            let mut row = row;
+            if row["type"] == "turn_context"
+                && row["payload"]["model"].is_null()
+                && row["payload"]["info"]["model"].is_string()
+            {
+                row["payload"]["model"] = row["payload"]["info"]["model"].clone();
+            }
+            let actions = rollout
+                .actions(&row, "account-cost", 0.)
+                .map_err(|_| UsageError::Scan)?;
+            for action in actions {
+                let crate::analytics_rollout::RolloutAction::Event { method, params, .. } = action
+                else {
+                    continue;
+                };
+                if method != "thread/tokenUsage/updated" {
+                    continue;
+                }
+                let studio_runtime_schema::usage::UsageObservation::Response {
+                    response_id,
+                    model,
+                    tokens,
+                    ..
+                } = studio_runtime_schema::usage::parse_token_usage(
+                    studio_runtime_schema::usage::UsageProvider::Codex,
+                    &params,
+                )
+                .map_err(|_| UsageError::Scan)?
+                else {
+                    continue;
+                };
+                let Some(at) = at else { continue };
+                if fork_at.is_some_and(|forked| at < forked) {
+                    continue;
+                }
+                let day = at
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d")
+                    .to_string();
+                if day < since_day || !responses.insert(response_id) {
+                    continue;
+                }
+                let name = codex_model_name(&model);
+                let total = tokens.total().ok_or(UsageError::Scan)?;
+                let input = total - tokens.output;
+                // The shared conversion has already split Codex's inclusive input.
+                let usage = crate::pricing::TokenUsage {
+                    input_tokens: Some(tokens.uncached_input as f64),
+                    cached_input_tokens: Some(tokens.cache_read_input as f64),
+                    cache_write_input_tokens: Some(tokens.cache_write_input as f64),
+                    output_tokens: Some(tokens.output as f64),
+                };
+                let cost = catalog
+                    .as_ref()
+                    .map(|catalog| {
+                        catalog.price_usage("openai", &name, usage, Some(input as f64), true)
+                    })
+                    .and_then(|price| price.amount_usd);
+                let entry = days.entry((day, name)).or_default();
+                entry.tokens += total;
+                match cost {
+                    Some(cost) => entry.cost_usd += cost,
+                    None => entry.unpriced = true,
+                }
             }
         }
     }
@@ -1409,7 +1382,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_session_fixture_counts_total_deltas_skips_fork_replay_and_flags_unpriced_models() {
+    fn codex_session_fixture_prices_records_skips_fork_replay_and_flags_unpriced_models() {
         let root = tempfile::tempdir().expect("fixture directory");
         let home = root.path();
         let day = home.join("sessions/2026/10/15");
@@ -1427,21 +1400,34 @@ mod tests {
             json!({"timestamp":at(minutes),"type":"turn_context","payload":{"model":model}})
                 .to_string()
         };
-        // Repeated totals add nothing: 1_000_000 input (200_000 cached) and 100_000 output.
+        let record = |minutes: i64, id: &str, input: u64, cached: u64, output: u64| {
+            json!({"timestamp":at(minutes),"type":"token_usage_record","payload":{
+                "response_id":id,"usage":{"input_tokens":input,"cached_input_tokens":cached,
+                "output_tokens":output,"reasoning_output_tokens":0,"total_tokens":input+output},
+                "turn_token_usage":{},"thread_token_usage":{}}})
+            .to_string()
+        };
+        // Response records survive both repeated totals and compaction replay.
         let parent = [
             context(60, "openai/gpt-test-2026-01-01"),
+            record(59, "r1", 400_000, 100_000, 40_000),
             count(59, 400_000, 100_000, 40_000),
             count(58, 400_000, 100_000, 40_000),
-            count(57, 1_000_000, 200_000, 100_000),
+            json!({"timestamp":at(57),"type":"compacted","payload":{
+                "latest_token_usage_record":serde_json::from_str::<Value>(&record(57,"r1",400_000,100_000,40_000)).unwrap()["payload"]}}).to_string(),
+            record(56, "r2", 600_000, 100_000, 60_000),
+            // Compaction's cumulative total omits part of the recovered responses.
+            count(55, 900_000, 150_000, 90_000),
         ];
         std::fs::write(day.join("rollout-parent.jsonl"), parent.join("\n")).expect("parent log");
-        // The fork replays the parent history, then adds 1_000 input and 2_000 output tokens.
         let fork = [
             json!({"timestamp":at(30),"type":"session_meta","payload":{"id":"fork",
                 "forked_from_id":"parent","timestamp":at(30)}})
             .to_string(),
             context(40, "gpt-test"),
+            record(39, "r2", 600_000, 100_000, 60_000),
             count(39, 1_000_000, 200_000, 100_000),
+            record(20, "fork-r", 1_000, 0, 2_000),
             count(20, 1_001_000, 200_000, 102_000),
         ];
         std::fs::write(
@@ -1449,7 +1435,10 @@ mod tests {
             fork.join("\n"),
         )
         .expect("fork log");
-        let unknown = [context(10, "gpt-unpriced"), count(9, 10, 0, 5)];
+        let unknown = [
+            context(10, "gpt-unpriced"),
+            record(9, "unknown-r", 10, 0, 5),
+        ];
         std::fs::write(day.join("rollout-unknown.jsonl"), unknown.join("\n")).expect("unknown log");
         let catalog = crate::pricing::PricingCatalog::from_value(&json!({"providers":{
             "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2,"cache_read":0.5}}}},
@@ -1473,6 +1462,33 @@ mod tests {
         assert_eq!(report["historyDays"], 30);
         let latest = (now - chrono::Duration::minutes(9)).with_timezone(&chrono::Local);
         assert_eq!(report["sourceDay"], latest.format("%Y-%m-%d").to_string());
+    }
+
+    #[test]
+    fn codex_session_fixture_token_count_only_is_not_priced() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("sessions")).unwrap();
+        let now = chrono::Utc::now();
+        std::fs::write(root.path().join("sessions/counts.jsonl"), [
+            json!({"type":"turn_context","payload":{"model":"gpt-test"}}).to_string(),
+            json!({"timestamp":now.to_rfc3339(),"type":"event_msg","payload":{"type":"token_count",
+                "info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":0,"output_tokens":1000000}}}}).to_string(),
+        ].join("\n")).unwrap();
+        let catalog = crate::pricing::PricingCatalog::from_value(&json!({"providers":{
+            "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2}}}},
+            "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2}}}}
+        }}))
+        .unwrap();
+        let report = super::scan_codex_sessions_with_catalog(
+            root.path(),
+            now.timestamp() as f64,
+            &AtomicBool::new(false),
+            || Some(catalog),
+        )
+        .unwrap();
+        assert_eq!(report["last30DaysUSD"], Value::Null);
+        assert_eq!(report["last30DaysTokens"], Value::Null);
+        assert_eq!(report["coverage"], "partial");
     }
 
     #[test]

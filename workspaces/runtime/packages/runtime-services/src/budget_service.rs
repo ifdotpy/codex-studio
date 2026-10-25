@@ -87,7 +87,7 @@ pub fn capture(
     source: CaptureSource,
     now: f64,
 ) -> Result<u64, BudgetError> {
-    capture_into(tx, agent, params, at, source, now, true)
+    capture_into(tx, agent, params, at, source, now, true).map(|(tokens, _)| tokens)
 }
 
 /// [`capture`] for a caller that persists the supplied agent copy in the same
@@ -100,8 +100,8 @@ pub fn capture_for_persisting_caller(
     at: f64,
     source: CaptureSource,
     now: f64,
-) -> Result<u64, BudgetError> {
-    capture_into(tx, agent, params, at, source, now, false)
+) -> Result<budget::UsageAcceptance, BudgetError> {
+    capture_into(tx, agent, params, at, source, now, false).map(|(_, acceptance)| acceptance)
 }
 
 fn capture_into(
@@ -112,8 +112,8 @@ fn capture_into(
     source: CaptureSource,
     now: f64,
     patch_agent: bool,
-) -> Result<u64, BudgetError> {
-    let (state, changed) = atomic(tx, || {
+) -> Result<(u64, budget::UsageAcceptance), BudgetError> {
+    let (state, changed, acceptance) = atomic(tx, || {
         let identity = match source {
             CaptureSource::Live => SnapshotIdentity::Live,
             CaptureSource::History => SnapshotIdentity::History,
@@ -128,12 +128,13 @@ fn capture_into(
         if decision.changed {
             save_state(tx, snapshot.agent_id(), &decision.state, patch_agent)?;
         }
-        Ok((decision.state, decision.changed))
+        Ok((decision.state, decision.changed, decision.acceptance))
     })?;
     if !changed {
         return state.patch()["tokensUsed"]
             .as_u64()
-            .ok_or_else(|| BudgetError::Invalid("runtime_budget/spent".into()));
+            .ok_or_else(|| BudgetError::Invalid("runtime_budget/spent".into()))
+            .map(|tokens| (tokens, acceptance));
     }
     let patch = state.patch();
     agent["tokensUsed"] = patch["tokensUsed"].clone();
@@ -141,6 +142,7 @@ fn capture_into(
     patch["tokensUsed"]
         .as_u64()
         .ok_or_else(|| BudgetError::Invalid("runtime_budget/spent".into()))
+        .map(|tokens| (tokens, acceptance))
 }
 
 /// Re-read all same-root members including deleted workers in the owning submit
