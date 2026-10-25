@@ -324,7 +324,7 @@ export function scenarioEvidence(items, provider, root) {
     (bareCat && tool?.command === bareCat) ||
     tool?.command === `cat '${file.replaceAll("'", "'\\''")}'` ||
     (!/[\\$`"]/.test(file) && tool?.command === `cat "${file}"`);
-  const shellWrapper = /^\/[^ ]+\/(?:ba|z)?sh -[lc]+ (.+)$/.exec(
+  const shellWrapper = /^\/bin\/(?:ba|z)?sh -(?:lc|c) (.+)$/.exec(
     tool?.command ?? "",
   );
   const codexCat =

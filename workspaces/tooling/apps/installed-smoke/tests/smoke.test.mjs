@@ -1122,6 +1122,21 @@ test("note proof refuses combined shell operations and wrong file arguments", as
       scenarioEvidence(
         make({
           type: "commandExecution",
+          command: `/owned/custom/sh -c cat ${root}/${NOTES_FILE}`,
+          cwd: root,
+          exitCode: 0,
+          aggregatedOutput: NOTES_MARKER,
+        }),
+        "codex",
+        root,
+      ),
+    /note read/,
+  );
+  assert.throws(
+    () =>
+      scenarioEvidence(
+        make({
+          type: "commandExecution",
           command: `touch changed.txt; cat ${root}/${NOTES_FILE}`,
           cwd: root,
           exitCode: 0,
